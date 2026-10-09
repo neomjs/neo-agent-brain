@@ -13,13 +13,13 @@ setup({
     }
 });
 
-import {test, expect}  from '@playwright/test';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
-import fs              from 'fs-extra';
-import os              from 'os';
-import path            from 'path';
+import {test, expect}           from '@playwright/test';
+import Neo                      from 'neo.mjs/src/Neo.mjs';
+import * as core                from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager          from 'neo.mjs/src/manager/Instance.mjs';
+import fs                       from 'fs-extra';
+import os                       from 'os';
+import path                     from 'path';
 import {execFile, execFileSync} from 'child_process';
 
 /**
@@ -88,7 +88,7 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
         // projector refuses to overwrite TRACKED paths, and the Claude reconciler's ownership
         // predicate is "untracked in the target". A bare directory answers "untracked" to every
         // question, so a non-repo fixture makes the Engine's own guard look like ours to retire —
-        // it would prove the opposite of what it asserts. #250.
+        // it would prove the opposite of what it asserts.
         execFileSync('git', ['init', '-q'], {cwd: fakeWorktree});
         execFileSync('git', ['config', 'user.email', 'spec@neomjs.test'], {cwd: fakeWorktree});
         execFileSync('git', ['config', 'user.name', 'spec'], {cwd: fakeWorktree});
@@ -1512,13 +1512,13 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
             const spy   = async (opts) => { calls.push(opts); return {action: 'wired'}; };
 
             const result = await hydrateCurrentWorktree({
-                mainCheckout      : fakeMainCheckout,
-                projectRoot       : fakeWorktree,
-                log               : () => {},
+                mainCheckout: fakeMainCheckout,
+                projectRoot : fakeWorktree,
+                log         : () => {},
                 // Stubbed because this test's subject is authority 1 in isolation: the spy above
                 // returns without writing a settings file, and the real projector correctly refuses
                 // to place hooks nothing would invoke. What provisioning actually projects is
-                // asserted against the real projector in the #250 block below.
+                // asserted against the real projector in the provisioning block below.
                 projectSeatHooks  : async () => ({pruned: [], written: []}),
                 wireClaudeSettings: spy
             });
@@ -1529,13 +1529,13 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
         });
 
         test('#250 provisioning PLACES the seat hooks — the projector is not merely callable', async () => {
-            // The property RA-1 is about, and the one no spec could answer before: a projector that
+            // The property its review asked for, and the one no spec could answer before: a projector that
             // exists as a CLI and is invoked by nothing places no hooks in any seat. Every assertion
             // here therefore runs through `hydrateCurrentWorktree` — the canonical provisioning path
             // that `prepareManagedAgentWorkspace` and `pruneStaleWorktrees` both route through —
             // rather than calling `projectHooks()` directly, which would only re-prove that the
             // function works when something calls it.
-            const {enumerateProjection} =
+            const {enumerateProjection, PROVENANCE_RECEIPT} =
                 await import('../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs');
 
             const result = await hydrateCurrentWorktree({
@@ -1546,10 +1546,11 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
 
             const expected = enumerateProjection(path.resolve(process.cwd())).map(entry => entry.target).sort();
 
-            // The whole declared projection, not a sample: the seven executables and both config
-            // artifacts. A partial placement is the half-wired seat #250 exists to end.
-            expect(expected.length).toBe(9);
-            expect(result.seatHooks.written.sort()).toEqual(expected);
+            // The whole declared projection, not a sample: the nine executables projectSeatHooks.spec
+            // pins and both config artifacts, written with the provenance receipt that describes them.
+            // A partial placement is the half-wired seat this test exists to end.
+            expect(expected.length).toBe(11);
+            expect(result.seatHooks.written.sort()).toEqual([...expected, PROVENANCE_RECEIPT].sort());
 
             for (const target of expected) {
                 const absTarget = path.join(fakeWorktree, target);
@@ -1569,7 +1570,7 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
             expect(Object.keys(settings.hooks)).toContain('Stop');
             expect(JSON.stringify(settings.hooks)).toContain('laneStateStopHook.mjs');
 
-            // And the placement leaves the seat's `git status` clean, which is #250's acceptance —
+            // And the placement leaves the seat's `git status` clean, which is provisioning's acceptance —
             // untracked artifacts that show up forever train people to stop reading the tree.
             const status = execFileSync('git', ['status', '--porcelain'], {cwd: fakeWorktree, encoding: 'utf8'});
 
@@ -1591,7 +1592,7 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
             // It passed because the installed package is a stale pre-cut artifact that still declares
             // laneStateStopHook. Write the fixture, ignore the fixture, assert a coincidence of
             // staleness. On the next publish the same assertion breaks with nothing having gone
-            // wrong. #250 AC-9.
+            // wrong.
             //
             // So the property under test is now the authority itself, with a sentinel proving the
             // worktree's template is ignored rather than merely absent.
@@ -1627,7 +1628,7 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
             // The control: the worktree's own template contributed nothing.
             expect(written).not.toContain('thisWorktreeTemplateMustBeIgnored');
 
-            // The Engine's own guard is the one entry it owns across the cut (ADR 0040 §2.7), so it
+            // The Engine's own guard is the one entry it owns across the cut (ADR 0040 [not-ticket-ref: decision record] §2.7), so it
             // must be present whichever side of the publish the installed package is on.
             expect(written, 'the installed Engine template no longer declares its own PreToolUse guard')
                 .toContain('rgReplaceGuardHook.mjs');
@@ -1651,7 +1652,7 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
             // so the union is what gets asserted — against a real git repository, because the
             // reconciler's ownership predicate is "untracked in the target" and a non-repo fixture
             // would make every command look ownable.
-            const {execFileSync} = await import('node:child_process');
+            const {execFileSync}       = await import('node:child_process');
             const {initClaudeSettings} = await import('../../../../../../ai/scripts/setup/initServerConfigs.mjs');
             const {reconcileClaudeSettings} =
                 await import('../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs');
