@@ -145,7 +145,6 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
         expect(bridge.composeWriter.observeMessages).toBe(observeMessages);
         expect(Object.hasOwn(bridge.composeWriter, 'markRead')).toBe(false);
         expect(Object.hasOwn(bridge.composeWriter, 'transitionTask')).toBe(false);
-        expect(Object.hasOwn(bridge.composeWriter, 'observeMessages')).toBe(false);
 
         wireOperatorComposeWriter({bridge, addMessage: () => ({}), getMessage});
         expect(Object.hasOwn(bridge.composeWriter, 'observeMessages')).toBe(false);

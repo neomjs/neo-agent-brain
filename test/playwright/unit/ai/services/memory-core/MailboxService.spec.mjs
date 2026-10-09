@@ -458,9 +458,34 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             {listTools: listMemoryCoreTools} = await import('../../../../../../ai/mcp/server/memory-core/toolService.mjs'),
             id = 'MESSAGE:observer-fleet-composition';
         let oldPlane = false, contentCalls = 0;
-        seedObserverMessage(id);
+        const archivedOpenId = 'MESSAGE:observer-fleet-archived-open',
+            workingOpenId = 'MESSAGE:observer-fleet-working-open',
+            terminalId = 'MESSAGE:observer-fleet-terminal',
+            foreignOpenId = 'MESSAGE:observer-fleet-foreign-open',
+            seedQuestion = (messageId, {to = '@bob', state, priority, sentAt, archivedAt = null}) => {
+                GraphService.upsertNode({id: messageId, type: 'MESSAGE', name: 'question fixture', properties: {
+                    subject: 'question fixture', bodyText: 'private Task input must not cross', from: '@alice', to,
+                    sentAt, priority, archivedAt, seenAt: null, readAt: null,
+                    task: {state, assignee: to, inputs: {secret: 'private Task input must not cross'}}
+                }});
+                GraphService.linkNodes(messageId, '@alice', 'SENT_BY');
+                GraphService.linkNodes(messageId, to, 'SENT_TO')
+            };
+        seedObserverMessage(id, {priority: 'normal', sentAt: '2026-10-09T07:00:00.000Z'});
+        seedQuestion(archivedOpenId, {
+            state: 'Submitted', priority: 'high', sentAt: '2026-10-09T06:00:00.000Z',
+            archivedAt: '2026-10-09T07:30:00.000Z'
+        });
+        seedQuestion(workingOpenId, {state: 'Working', priority: 'low', sentAt: '2026-10-09T05:00:00.000Z'});
+        seedQuestion(terminalId, {state: 'Completed', priority: 'high', sentAt: '2026-10-09T04:00:00.000Z'});
+        GraphService.upsertNode({id: '@carol', type: 'AgentIdentity', name: 'Carol', properties: {accountType: 'agent'}});
+        seedQuestion(foreignOpenId, {to: '@carol', state: 'InputRequired', priority: 'high', sentAt: '2026-10-09T03:00:00.000Z'});
         const sqlite = GraphService.db.storage.db,
-            snapshot = () => JSON.stringify(['Nodes', 'Edges'].map(table => sqlite.prepare(`SELECT * FROM ${table} ORDER BY id`).all())),
+            snapshot = () => JSON.stringify({
+                nodes   : sqlite.prepare('SELECT * FROM Nodes ORDER BY id').all(),
+                edges   : sqlite.prepare('SELECT * FROM Edges ORDER BY id').all(),
+                graphLog: sqlite.prepare('SELECT * FROM GraphLog ORDER BY log_id').all()
+            }),
             before = snapshot(),
             rpcReply = (request, result) => new Response(JSON.stringify({jsonrpc: '2.0', id: request.id, result}), {
                 status: 200, headers: {'content-type': 'application/json', 'mcp-session-id': 'observer-fixture'}
@@ -492,6 +517,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
                     return rpcReply(request, BaseServer.prototype.formatToolResult.call({}, result));
                 }
             });
+        const seams = {};
         try {
             expect(await plane.init({expectedIdentity: '@bob'})).toMatchObject({ok: true});
             for (const mode of ['host', 'plane']) {
@@ -503,6 +529,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
                         ? args => MailboxService.listMessages({...args, observer: args.observer ?? {scope: 'own'}})
                         : args => plane.listMessages({...args, observer: args.observer ?? {scope: 'own'}})
                 });
+                seams[mode] = seam;
                 await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
                     const page = await bridge.fleetMailboxMirror.call(seam, {
                         observer: {scope: 'own'}, taskStates: ['InputRequired'], taskOrder: 'priority-age',
@@ -512,6 +539,26 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
                     const detail = await bridge.fleetOwnMessage.call(seam, {messageId: id, observer: {scope: 'own'}});
                     expect(detail.body, mode).toBe('which option?');
                     expect(detail.observation.admissionKey).toBe(page.observation.admissionKey);
+
+                    const questions = await bridge.fleetOwnQuestions.call(seam, {limit: 1, offset: 0}),
+                        nextQuestions = await bridge.fleetOwnQuestions.call(seam, {limit: 1, offset: 1}),
+                        finalQuestions = await bridge.fleetOwnQuestions.call(seam, {limit: 1, offset: 2}),
+                        home = await bridge.fleetOpenWork.call(seam);
+
+                    expect(questions, `${mode}: first open-question page`).toMatchObject({
+                        state: 'ok', reason: null, count: 3, page: {limit: 1, offset: 0, count: 1, hasMore: true}
+                    });
+                    expect(questions.rows).toHaveLength(1);
+                    expect(questions.rows[0]).toMatchObject({messageId: archivedOpenId, taskState: 'Submitted', archivedAt: '2026-10-09T07:30:00.000Z'});
+                    expect(questions.rows[0]).not.toHaveProperty('body');
+                    expect(questions.rows[0]).not.toHaveProperty('inputs');
+                    expect(nextQuestions).toMatchObject({
+                        state: 'ok', count: 3, rows: [{messageId: id}], page: {limit: 1, offset: 1, count: 1, hasMore: true}
+                    });
+                    expect(finalQuestions).toMatchObject({
+                        state: 'ok', count: 3, rows: [{messageId: workingOpenId}], page: {limit: 1, offset: 2, count: 1, hasMore: false}
+                    });
+                    expect(home.questions).toMatchObject({state: 'ok', reason: null, count: 3});
                     expect(snapshot(), mode).toBe(before);
                 });
             }
@@ -519,6 +566,15 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             oldPlane = true;
             expect(await plane.init({expectedIdentity: '@bob'})).toMatchObject({ok: true});
             const priorCalls = contentCalls;
+            const unavailableQuestions = await bridge.fleetOwnQuestions.call(seams.plane, {limit: 1, offset: 0}),
+                unavailableHome = await bridge.fleetOpenWork.call(seams.plane);
+
+            expect(unavailableQuestions).toMatchObject({
+                state: 'unavailable', count: null, rows: [], page: {limit: 1, offset: 0, count: 0, hasMore: false}
+            });
+            expect(unavailableHome.questions).toMatchObject({
+                state: 'unavailable', count: null, reason: expect.any(String)
+            });
             await expect(plane.listMessages({observer: {scope: 'own'}})).rejects.toMatchObject({code: 'MAILBOX_OBSERVER_UNAVAILABLE'});
             await expect(plane.getMessage({messageId: id, observer: {scope: 'own'}})).rejects.toMatchObject({code: 'MAILBOX_OBSERVER_UNAVAILABLE'});
             expect(contentCalls).toBe(priorCalls);

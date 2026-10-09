@@ -354,8 +354,7 @@ async function boot() {
             laneClaimSource
         });
 
-        // No observeMessages: the plane's only list is the model-visible `list_messages`, which records
-        // `seenAt`, so the open questions answer unavailable here rather than mark them seen.
+        // Explicit observation preserves receipts; older planes refuse it before dispatch.
         wireOperatorComposeWriter({
             addMessage    : args => planeClient.addMessage(args),
             getMessage    : args => planeClient.getMessage(args),

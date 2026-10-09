@@ -120,7 +120,9 @@ class PermissionService extends Base {
     }
 
     /**
-     * Lists permissions for an identity. Defaults to the caller.
+     * @summary Lists permissions for an identity. Defaults to the caller.
+     * Ordinary cached reads retain the separately recorded delegated-inbox stale-grant window;
+     * out of scope here (Memory Core defect-note MESSAGE:9cf6556e-5458-4e87-8b0c-3bdf4616950a).
      * @param {Object} opts
      * @param {String} [opts.forIdentity] The identity to list permissions for.
      * @returns {Promise<Object>}
