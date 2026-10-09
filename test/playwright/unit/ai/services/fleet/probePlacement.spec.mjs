@@ -470,6 +470,45 @@ test.describe('probePlacement — the reader-facing verdict: unobserved is told 
         expect(describeUncertainty('vmReservation', `host reservation unobservable; ${VM_RESERVATION_POLICY} applied`).class).toBe('vm-reservation-policy')
     });
 
+    test('independent negative evidence survives the unknown-data path: a negative balance and observed swap are observed refusals, never unverified (review RA-1 / RA-2)', async () => {
+        const
+            HOSTED_PLANE = {planeIdleBytes: 0.4 * GiB, planePeakBytes: 2.5 * GiB, modelsBytes: 0},
+            // RA-1a: every reader answers; the consumers exceed the total — a measured −4 GiB balance, complete
+            overdrawn = await probePlacement({readers: fixtureReaders({
+                totalmem: () => 16 * GiB, hostUse: () => [{name: 'everything', bytes: 20 * GiB, source: 'fixture'}],
+                loadedModels: () => ({inventories: ['lms'], models: []}), vmInfo: () => null, containerStats: () => []
+            })}),
+            // RA-1b: the same balance with the VM reader missing — the observed consumers alone are overdrawn
+            overdrawnUnread = await probePlacement({readers: fixtureReaders({
+                totalmem: () => 16 * GiB, hostUse: () => [{name: 'everything', bytes: 20 * GiB, source: 'fixture'}],
+                loadedModels: () => ({inventories: ['lms'], models: []}), vmInfo: () => { throw new Error('docker info failed') }
+            })}),
+            // RA-1c: the guest's residency exceeds its cap — a measured −2 GiB guest balance while the host has room
+            guestOverdrawn = await probePlacement({readers: fixtureReaders({
+                vmInfo: () => ({backend: 'docker-desktop', capBytes: 4 * GiB, cores: 4, guestOs: 'Ubuntu'}), containerStats: () => [{name: 'big', bytes: 6 * GiB}]
+            })}),
+            // RA-2: the total-memory reader fails, the swap reader reports swap in use — swapping is its own evidence
+            swappingUnread = await probePlacement({readers: fixtureReaders({
+                totalmem: () => { throw new Error('sysctl refused') }, swap: () => ({swapUsedBytes: 1 * GiB, compressedBytes: 0})
+            })});
+
+        expect(overdrawn.host.complete).toBe(true);
+        expect(overdrawn.host.availableBytes).toBe(-4 * GiB);
+        expect(fitsPreset(overdrawn, HOSTED_PLANE)).toMatchObject({fits: false, kind: 'observed', cause: 'the host budget falls 6.5 GiB short', nextStep: 'free 6.5 GiB of memory'});
+
+        expect(overdrawnUnread.host.complete).toBe(false);
+        expect(overdrawnUnread.host.observedAvailableBytes).toBe(-4 * GiB);
+        expect(fitsPreset(overdrawnUnread, HOSTED_PLANE)).toMatchObject({fits: false, kind: 'observed', cause: 'the host budget falls 6.5 GiB short on the observed consumers alone', nextStep: 'free 6.5 GiB of memory'});
+
+        expect(guestOverdrawn.guest.availableBytes).toBe(-2 * GiB);
+        expect(fitsPreset(guestOverdrawn, HOSTED_PLANE)).toMatchObject({fits: false, kind: 'observed', cause: 'the guest budget falls 4.5 GiB short', nextStep: "raise Docker Desktop's memory limit by 4.5 GiB, then re-read"});
+
+        expect(swappingUnread.host.pressure).toBe('swapping');
+        expect(fitsPreset(swappingUnread, LOCAL_FULL)).toMatchObject({fits: false, kind: 'observed', cause: 'the host is swapping: no local preset fits, whatever the arithmetic says'});
+        // the unread total is still named, after the measured refusal
+        expect(fitsPreset(swappingUnread, LOCAL_FULL).reasons).toContain('the host budget is incomplete (unobserved: totalmem)')
+    });
+
     test('AC-4: every cause and next step a verdict or an uncertainty entry carries is a sentence of the vocabulary, and a foreign sentence is not', async () => {
         const
             probes = await Promise.all([

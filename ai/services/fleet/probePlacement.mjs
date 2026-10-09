@@ -357,12 +357,15 @@ export function fitsPreset(probe, workload) {
         guest     = probe?.guest ?? null,
         hostNeed  = modelsBytes + planePeakBytes,
         margins   = {
-            host : host.complete && isByteCount(host.availableBytes) ? host.availableBytes - hostNeed : null,
-            guest: guest?.complete && isByteCount(guest.availableBytes) ? guest.availableBytes - planePeakBytes : null
+            // an availability is a SIGNED balance (consumers may exceed the total; residency may exceed
+            // the cap): finite is the guard, never the nonnegative byte-count guard — a negative balance
+            // is measured evidence, and reading it as "incomplete" would turn a refusal into an unknown
+            host : host.complete && Number.isFinite(host.availableBytes) ? host.availableBytes - hostNeed : null,
+            guest: guest?.complete && Number.isFinite(guest.availableBytes) ? guest.availableBytes - planePeakBytes : null
         },
         // the arithmetic on the observed consumers alone — a measured shortfall there is a refusal even
         // while a reader is missing; a positive margin there is only ever an unverified recommendation
-        observedMargin = isByteCount(host.observedAvailableBytes) ? host.observedAvailableBytes - hostNeed : null,
+        observedMargin = Number.isFinite(host.observedAvailableBytes) ? host.observedAvailableBytes - hostNeed : null,
         missing        = host.missingReaders ?? Object.entries(probe?.observed ?? {}).filter(([, ok]) => !ok).map(([name]) => name),
         // the words of the reader that did not answer, from the probe's own entry when it carries one
         unanswered     = reader => {
@@ -495,13 +498,18 @@ const isModelInventory = value => isPlainObject(value) && Array.isArray(value.in
  * @private
  */
 function classifyPressure(swap, totalBytes) {
-    if (!isPlainObject(swap) || !isByteCount(totalBytes)) return 'unknown';
+    if (!isPlainObject(swap)) return 'unknown';
 
     const {swapUsedBytes = 0, compressedBytes = 0} = swap;
 
     if (!isByteCount(swapUsedBytes) || !isByteCount(compressedBytes)) return 'unknown';
 
-    return swapUsedBytes > 0 || compressedBytes >= SWAPPING_COMPRESSED_SHARE * totalBytes ? 'swapping' : 'ok'
+    // swap in use is evidence on its own: it needs no total to read as swapping. Only the
+    // compressor's share is a ratio, so only that rule waits for the total.
+    if (swapUsedBytes > 0) return 'swapping';
+    if (!isByteCount(totalBytes)) return 'unknown';
+
+    return compressedBytes >= SWAPPING_COMPRESSED_SHARE * totalBytes ? 'swapping' : 'ok'
 }
 
 /**
