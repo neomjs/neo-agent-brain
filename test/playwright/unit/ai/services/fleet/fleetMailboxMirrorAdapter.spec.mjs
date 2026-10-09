@@ -332,6 +332,7 @@ test.describe('fleetMailboxMirrorAdapter — viewer-admitted per-agent mailbox m
         expect(exportNames.sort()).toEqual([
             'DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT',
             'MAX_FLEET_MAILBOX_MIRROR_LIMIT',
+            'createFleetMailboxMirrorRow',
             'createFleetMailboxMirrorSnapshot',
             'readFleetMailboxMirror'
         ])

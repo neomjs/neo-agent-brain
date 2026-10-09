@@ -195,7 +195,7 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
             addMessage  : () => ({}),
             listMessages: args => {
                 calls.push(args);
-                return {totalCount: 3, messages: [{messageId: 'MESSAGE:q', subject: 'which way?', from: '@neo-gpt', to: '@tobiu', priority: 'high', task: {state: 'InputRequired'}, sentAt: '2026-10-08T22:00:00.000Z', bodyText: 'never on the wire'}]}
+                return {totalCount: 3, messages: [{messageId: 'MESSAGE:q', subject: 'which way?', from: '@neo-gpt', to: '@tobiu', priority: 'high', task: {state: 'InputRequired'}, sentAt: '2026-10-08T22:00:00.000Z', archivedAt: '2026-10-08T23:00:00.000Z', bodyText: 'never on the wire'}]}
             }
         });
 
@@ -204,7 +204,9 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
         // no identity-shaped field crosses: the seam reads under the transport-stamped viewer
         expect(calls).toEqual([{box: 'inbox', status: 'all', includeArchived: true, taskStates: ['InputRequired', 'Submitted', 'Working'], taskOrder: 'priority-age', limit: 1, offset: 0}]);
         expect(answer).toMatchObject({state: 'ok', reason: null, count: 3, page: {limit: 1, offset: 0, count: 1, hasMore: true}});
-        expect(answer.rows).toEqual([expect.objectContaining({messageId: 'MESSAGE:q', taskState: 'InputRequired', priority: 'high', from: '@neo-gpt'})]);
+        expect(Date.parse(answer.capturedAt)).not.toBeNaN();
+        // an archived question is still open: its row says it was archived
+        expect(answer.rows).toEqual([expect.objectContaining({messageId: 'MESSAGE:q', taskState: 'InputRequired', priority: 'high', from: '@neo-gpt', archivedAt: '2026-10-08T23:00:00.000Z'})]);
         expect(JSON.stringify(answer)).not.toContain('never on the wire');
 
         // the page is bounded like the mailbox mirror's
@@ -224,6 +226,7 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
         const failed = await FleetControlBridge.fleetOwnQuestions();
 
         expect(failed).toMatchObject({state: 'unavailable', reason: 'fleet: the open-questions read failed', count: null, rows: []});
+        expect(Date.parse(failed.capturedAt)).not.toBeNaN();
         expect(JSON.stringify(failed)).not.toContain('/private/plane');
 
         wireOperatorComposeWriter({addMessage: () => ({}), listMessages: async () => ({messages: []})});

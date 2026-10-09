@@ -72,13 +72,16 @@ const OPEN_TASK_STATES = Object.freeze(['InputRequired', 'Submitted', 'Working']
  * @summary Reads the viewer's open questions through the operator-mailbox seam: its non-terminal A2A Tasks,
  * archived ones included, highest priority then oldest first, with the complete count. The seam reads under
  * the transport-stamped identity, so no identity crosses here. An unwired or failed read answers `unavailable`
- * with its reason, never an empty list or a zero.
+ * with its reason, never an empty list or a zero. `capturedAt` is when the read answered: the age a view
+ * judges the list's freshness by.
  * @param {Object|null} seam The bridge's `composeWriter`.
  * @param {{limit: Number, offset: Number}} page
- * @returns {Promise<Object>} `{state, reason, count, rows, page}`.
+ * @returns {Promise<Object>} `{state, reason, count, rows, page, capturedAt}`.
  */
 async function readOwnQuestions(seam, page) {
-    const unavailable = reason => ({state: 'unavailable', reason, count: null, rows: [], page: {...page, count: 0, hasMore: false}});
+    const unavailable = reason => ({
+        state: 'unavailable', reason, count: null, rows: [], page: {...page, count: 0, hasMore: false}, capturedAt: new Date().toISOString()
+    });
 
     if (typeof seam?.listMessages !== 'function') {
         return unavailable('fleet: operator inbox listMessages not wired')
@@ -110,11 +113,12 @@ async function readOwnQuestions(seam, page) {
         rows       = answer.messages.filter(Boolean).map(message => createFleetMailboxMirrorRow(message, observedAt));
 
     return {
-        state : 'ok',
-        reason: null,
-        count : answer.totalCount,
+        state     : 'ok',
+        reason    : null,
+        count     : answer.totalCount,
         rows,
-        page  : {...page, count: rows.length, hasMore: page.offset + rows.length < answer.totalCount}
+        page      : {...page, count: rows.length, hasMore: page.offset + rows.length < answer.totalCount},
+        capturedAt: observedAt
     }
 }
 
