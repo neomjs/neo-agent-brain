@@ -29,18 +29,20 @@ import FleetControlBridge from './FleetControlBridge.mjs';
  * @param {Function} [options.getMessage]     The own-inbox body read; absent → only its verb is `not-wired`.
  * @param {Function} [options.markRead]       The own-inbox receipt write; same rule.
  * @param {Function} [options.transitionTask] The own-Task move; same rule.
- * @param {Function} [options.listMessages]   The own-inbox list read behind the open questions; same rule.
+ * @param {Function} [options.observeMessages] The own-inbox list read behind the open questions, one that never
+ *     records `seenAt` (`MailboxService.listMessages` does not by omission; the plane's `list_messages` tool
+ *     does); same rule.
  * @param {Object}   [options.bridge=FleetControlBridge] The control bridge to wire (a stub in specs).
  * @returns {Object|null} the installed writer, or `null` when no writer is available (left unwired).
  */
-export function wireOperatorComposeWriter({addMessage, getMessage, markRead, transitionTask, listMessages, bridge = FleetControlBridge} = {}) {
+export function wireOperatorComposeWriter({addMessage, getMessage, markRead, transitionTask, observeMessages, bridge = FleetControlBridge} = {}) {
     if (typeof addMessage !== 'function') {
         return null
     }
 
     const writer = {addMessage};
 
-    Object.entries({getMessage, markRead, transitionTask, listMessages}).forEach(([name, primitive]) => {
+    Object.entries({getMessage, markRead, transitionTask, observeMessages}).forEach(([name, primitive]) => {
         if (typeof primitive === 'function') writer[name] = primitive
     });
 

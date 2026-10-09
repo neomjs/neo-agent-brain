@@ -71,8 +71,10 @@ const OPEN_TASK_STATES = Object.freeze(['InputRequired', 'Submitted', 'Working']
 /**
  * @summary Reads the viewer's open questions through the operator-mailbox seam: its non-terminal A2A Tasks,
  * archived ones included, highest priority then oldest first, with the complete count. The seam reads under
- * the transport-stamped identity, so no identity crosses here. An unwired or failed read answers `unavailable`
- * with its reason, never an empty list or a zero. The page is the mailbox's own window (its applied `limit` and
+ * the transport-stamped identity, so no identity crosses here. Only its `observeMessages` serves, a read that
+ * never records `seenAt`: a Fleet read is an observation, and a seen mark it left would let a mark-all-read drain
+ * a question the operator never displayed. A seam without one, or a failed read, answers `unavailable` with its
+ * reason, never an empty list or a zero. The page is the mailbox's own window (its applied `limit` and
  * `offset`, and `hasMore` from its `truncated`): it advances by the rows storage served, so a row the graph could
  * not project never ends a middle page or extends a final one. `capturedAt` is when the read answered: the age a
  * view judges the list's freshness by.
@@ -85,14 +87,14 @@ async function readOwnQuestions(seam, page) {
         state: 'unavailable', reason, count: null, rows: [], page: {...page, count: 0, hasMore: false}, capturedAt: new Date().toISOString()
     });
 
-    if (typeof seam?.listMessages !== 'function') {
-        return unavailable('fleet: operator inbox listMessages not wired')
+    if (typeof seam?.observeMessages !== 'function') {
+        return unavailable('fleet: no read here lists the open questions without marking them seen')
     }
 
     let answer;
 
     try {
-        answer = await seam.listMessages({
+        answer = await seam.observeMessages({
             box            : 'inbox',
             status         : 'all',
             includeArchived: true,
@@ -466,8 +468,9 @@ class FleetControlBridge extends Base {
      * an honest `not-wired` refusal, never a fabricated acceptance.
      *
      * Named for its first verb, the seam also carries the operator's own-inbox primitives:
-     * `getMessage`, `markRead` and `transitionTask`, each optional and each acting under the same
-     * request identity. A missing one leaves only its verb `not-wired`.
+     * `getMessage`, `markRead`, `transitionTask` and `observeMessages` (the open questions' list, which
+     * never records `seenAt`), each optional and each acting under the same request identity. A missing
+     * one leaves only its verb `not-wired`.
      * @member {Object|null} composeWriter=null
      */
     composeWriter = null
@@ -1159,8 +1162,9 @@ class FleetControlBridge extends Base {
     /**
      * @summary READ-OBSERVE: the operator's open questions, the viewer's own non-terminal A2A Tasks, highest
      * priority then oldest first, with their complete count. Read under the TRANSPORT-STAMPED request identity
-     * through the operator-mailbox seam: `MailboxService.listMessages` decides whose inbox it reads, and an
-     * archived but open Task still counts. Rows are the mailbox mirror's body-free rows.
+     * through the operator-mailbox seam's observational read, which leaves every message unseen:
+     * `MailboxService.listMessages` decides whose inbox it reads, and an archived but open Task still counts.
+     * Rows are the mailbox mirror's body-free rows.
      * @param {Object} [params] `{limit, offset}`, bounded like the mailbox mirror's page.
      * @returns {Promise<Object>} `{state: 'ok', reason: null, count, rows, page}`, or `unavailable` with its
      *     reason, `count: null` and no rows.
