@@ -6,6 +6,7 @@ import {
     VM_PROCESS_PATTERNS,
     VM_RESERVATION_POLICY,
     createDefaultReaders,
+    describeUncertainty,
     fitsPreset,
     parseComposeLs,
     parseComposePorts,
@@ -17,7 +18,8 @@ import {
     parseSwapUsage,
     parseVmStatCompressed,
     partitionProcessInventory,
-    probePlacement
+    probePlacement,
+    vocabularyMatches
 } from '../../../../../../ai/services/fleet/probePlacement.mjs';
 
 // Pure module, injected readers: every arm runs without docker, lms or a VM on the test host.
@@ -136,7 +138,12 @@ test.describe('probePlacement — two budgets kept apart', () => {
         expect(probe.host.consumers.find(row => row.name === 'vm:docker-desktop')).toEqual({name: 'vm:docker-desktop', bytes: 4.5 * GiB, source: `policy:${VM_RESERVATION_POLICY}`, population: 'vm'});
         expect(probe.guest.reservationPolicy).toBe(VM_RESERVATION_POLICY);
         expect(probe.guest.complete).toBe(true);
-        expect(probe.uncertainty).toEqual([{reader: 'vmReservation', reason: `host reservation unobservable; ${VM_RESERVATION_POLICY} applied`}]);
+        expect(probe.uncertainty).toEqual([{
+            reader  : 'vmReservation',
+            reason  : `host reservation unobservable; ${VM_RESERVATION_POLICY} applied`,
+            cause   : "the VM's host reservation could not be observed; the policy estimate stands in",
+            nextStep: 'none: the estimate is conservative'
+        }]);
         expect(probe.host.availableBytes).toBe((64 - 14 - 20 - 4.5) * GiB);
         expect(probe.host.consumers.every(row => typeof row.source === 'string' && row.source.length > 0)).toBe(true)
     });
@@ -158,7 +165,7 @@ test.describe('probePlacement — two budgets kept apart', () => {
 
         const unreadable = await probePlacement({readers: fixtureReaders({composeLs: () => { throw new Error('docker compose ls failed') }})});
         expect(unreadable.runningPlane).toBeNull();
-        expect(unreadable.uncertainty).toEqual([{reader: 'composeLs', reason: 'docker compose ls failed'}]);
+        expect(unreadable.uncertainty).toEqual([{reader: 'composeLs', reason: 'docker compose ls failed', cause: 'the compose projects could not be read', nextStep: 're-read; if it repeats, report the reason'}]);
         expect(unreadable.host.complete).toBe(true)   // the plane detector is not part of the budget
     });
 
@@ -168,8 +175,9 @@ test.describe('probePlacement — two budgets kept apart', () => {
         expect(fitsPreset(big, undefined)).toBeNull();
         expect(fitsPreset(big, null)).toBeNull();
         // the host backs the plane's peak as well as the models, with or without a VM
-        expect(fitsPreset(big, LOCAL_FULL)).toEqual({fits: true, margins: {host: 5 * GiB, guest: 27 * GiB}, reasons: []});
-        expect(fitsPreset(big, HOSTED)).toEqual({fits: true, margins: {host: 25 * GiB, guest: 27 * GiB}, reasons: []});
+        // a fit is an observed verdict with nothing to say: no cause, no next step
+        expect(fitsPreset(big, LOCAL_FULL)).toEqual({fits: true, kind: 'observed', margins: {host: 5 * GiB, guest: 27 * GiB}, observedMargin: 5 * GiB, reasons: [], cause: null, nextStep: null});
+        expect(fitsPreset(big, HOSTED)).toEqual({fits: true, kind: 'observed', margins: {host: 25 * GiB, guest: 27 * GiB}, observedMargin: 25 * GiB, reasons: [], cause: null, nextStep: null});
 
         const small = await probePlacement({readers: fixtureReaders({
             totalmem    : () => 32 * GiB,
@@ -179,7 +187,7 @@ test.describe('probePlacement — two budgets kept apart', () => {
 
         expect(small.host.availableBytes).toBe(15.5 * GiB);
         expect(fitsPreset(small, LOCAL_FULL)).toMatchObject({fits: false, reasons: ['the host budget falls 7.0 GiB short']});
-        expect(fitsPreset(small, HOSTED)).toEqual({fits: true, margins: {host: 13 * GiB, guest: 11 * GiB}, reasons: []});
+        expect(fitsPreset(small, HOSTED)).toEqual({fits: true, kind: 'observed', margins: {host: 13 * GiB, guest: 11 * GiB}, observedMargin: 13 * GiB, reasons: [], cause: null, nextStep: null});
 
         // a VM cap below the preset's recommendation is named even when the budgets fit
         const lowCap = await probePlacement({readers: fixtureReaders({vmInfo: () => ({backend: 'docker-desktop', capBytes: 6 * GiB, cores: 4, guestOs: 'Ubuntu'})})});
@@ -198,7 +206,10 @@ test.describe('probePlacement — two budgets kept apart', () => {
         expect(probe.host.pressure).toBe('unknown');
         expect(probe.disk).toBeNull();
         expect(probe.observed).toMatchObject({totalmem: false, statfs: false, hostUse: true});
-        expect(probe.uncertainty).toEqual([{reader: 'totalmem', reason: 'sysctl refused'}, {reader: 'statfs', reason: 'df refused'}])
+        expect(probe.uncertainty).toEqual([
+            {reader: 'totalmem', reason: 'sysctl refused', cause: "the host's total memory could not be read", nextStep: 're-read; if it repeats, report the reason'},
+            {reader: 'statfs',   reason: 'df refused',     cause: 'the disk space could not be read',          nextStep: 're-read; if it repeats, report the reason'}
+        ])
     });
 });
 
@@ -210,7 +221,14 @@ test.describe('probePlacement — unknown capacity never yields an affirmative f
 
         expect(unknown.host.complete).toBe(false);
         expect(unknown.host.availableBytes).toBeNull();
-        expect(fitsPreset(unknown, LOCAL_FULL)).toEqual({fits: false, margins: {host: null, guest: 27 * GiB}, reasons: ['the host budget is incomplete (unobserved: loadedModels)']});
+        // unverified, never a fit: the observed consumers alone (14 + 2.5 GiB) would leave 1 GiB for local-full,
+        // and the reader that did not answer gives the verdict its cause and next step
+        expect(fitsPreset(unknown, LOCAL_FULL)).toEqual({
+            fits: false, kind: 'unverified', margins: {host: null, guest: 27 * GiB}, observedMargin: 1 * GiB,
+            reasons : ['the host budget is incomplete (unobserved: loadedModels)'],
+            cause   : 'the loaded models could not be read',
+            nextStep: 're-read; if it repeats, report the reason'
+        });
         expect(fitsPreset(unknown, HOSTED).fits).toBe(false);
 
         // the same host with the 20 GiB read: 3.5 GiB left, local-full short by 19
@@ -225,7 +243,8 @@ test.describe('probePlacement — unknown capacity never yields an affirmative f
         expect(failed.observed.vmInfo).toBe(false);
         expect(failed.host.complete).toBe(false);
         expect(failed.host.containers).toBeNull();
-        expect(failed.uncertainty).toEqual([{reader: 'vmInfo', reason: 'docker info failed'}]);
+        // a generic failure is never read as Docker stopped: that sentence needs the daemon's own word
+        expect(failed.uncertainty).toEqual([{reader: 'vmInfo', reason: 'docker info failed', cause: "the Docker engine's VM could not be read", nextStep: 're-read; if it repeats, report the reason'}]);
         expect(fitsPreset(failed, LOCAL_FULL).fits).toBe(false);
         expect(fitsPreset(failed, LOCAL_FULL).reasons[0]).toBe('the host budget is incomplete (unobserved: vmInfo)');
 
@@ -233,7 +252,7 @@ test.describe('probePlacement — unknown capacity never yields an affirmative f
         const malformed = await probePlacement({readers: fixtureReaders({vmInfo: () => ({backend: 'docker-desktop'})})});
 
         expect(malformed.guest).toBeNull();
-        expect(malformed.uncertainty).toEqual([{reader: 'vmInfo', reason: 'not a VM description'}]);
+        expect(malformed.uncertainty).toEqual([{reader: 'vmInfo', reason: 'not a VM description', cause: "the Docker engine's VM answered in an unexpected form", nextStep: 're-read; if it repeats, report the answer'}]);
         expect(fitsPreset(malformed, HOSTED).fits).toBe(false)
     });
 
@@ -241,7 +260,12 @@ test.describe('probePlacement — unknown capacity never yields an affirmative f
         const probe = await probePlacement({readers: fixtureReaders()});
 
         for (const workload of [{}, [], 'local', 42, {planePeakBytes: 'big', modelsBytes: 0}, {planePeakBytes: 2 * GiB}, {planePeakBytes: -1, modelsBytes: 0}, {planePeakBytes: Infinity, modelsBytes: 0}]) {
-            expect(fitsPreset(probe, workload)).toEqual({fits: false, margins: {host: null, guest: null}, reasons: ['the workload is malformed: planePeakBytes and modelsBytes must be byte counts']})
+            expect(fitsPreset(probe, workload)).toEqual({
+                fits: false, kind: 'observed', margins: {host: null, guest: null}, observedMargin: null,
+                reasons : ['the workload is malformed: planePeakBytes and modelsBytes must be byte counts'],
+                cause   : 'the workload is malformed: planePeakBytes and modelsBytes must be byte counts',
+                nextStep: 'choose another preset'
+            })
         }
     });
 
@@ -259,7 +283,12 @@ test.describe('probePlacement — unknown capacity never yields an affirmative f
 
         const fit = fitsPreset(probe, {planePeakBytes: 10 * GiB, modelsBytes: 0});
 
-        expect(fit).toEqual({fits: false, margins: {host: -9 * GiB, guest: 22 * GiB}, reasons: ['the host budget falls 9.0 GiB short']})
+        expect(fit).toEqual({
+            fits: false, kind: 'observed', margins: {host: -9 * GiB, guest: 22 * GiB}, observedMargin: -9 * GiB,
+            reasons : ['the host budget falls 9.0 GiB short'],
+            cause   : 'the host budget falls 9.0 GiB short',
+            nextStep: 'free 9.0 GiB of memory'   // a hosted workload: no hosted preset to point at
+        })
     });
 });
 
@@ -375,9 +404,94 @@ test.describe('probePlacement — production readers over fixture command output
             probe   = await probePlacement({readers});
 
         expect(probe.observed.loadedModels).toBe(false);
-        expect(probe.uncertainty).toEqual([{reader: 'loadedModels', reason: "lms ps row 'mystery-model' carries no sizeBytes"}]);
+        expect(probe.uncertainty).toEqual([{reader: 'loadedModels', reason: "lms ps row 'mystery-model' carries no sizeBytes", cause: 'the loaded models could not be read', nextStep: 're-read; if it repeats, report the reason'}]);
         expect(probe.host.complete).toBe(false);
         expect(fitsPreset(probe, HOSTED).fits).toBe(false)
+    });
+});
+
+test.describe('probePlacement — the reader-facing verdict: unobserved is told from unsupported, with a cause and a next step (#956)', () => {
+    const DAEMON_DOWN = "Command failed: docker info --format '{{.MemTotal}} {{.NCPU}} {{.OperatingSystem}}'\nCannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
+
+    test('AC-1: the VM reader absent and the rest observed is an unverified recommendation that names Docker and the one thing to do — never a refusal of every preset', async () => {
+        const probe = await probePlacement({readers: fixtureReaders({vmInfo: () => { throw new Error(DAEMON_DOWN) }})});
+
+        expect(probe.observed.vmInfo).toBe(false);
+        expect(probe.host.complete).toBe(false);
+        expect(probe.host.missingReaders).toEqual(['vmInfo']);
+        // the observed consumers alone: 14 GiB of other use and 20 GiB of models leave 30 of 64
+        expect(probe.host.observedAvailableBytes).toBe(30 * GiB);
+        expect(probe.uncertainty).toEqual([{reader: 'vmInfo', reason: DAEMON_DOWN, cause: 'Docker Desktop is not running', nextStep: 'start Docker Desktop, then re-read'}]);
+
+        for (const workload of [LOCAL_FULL, HOSTED]) {
+            const fit = fitsPreset(probe, workload);
+
+            expect(fit.fits).toBe(false);
+            expect(fit.kind).toBe('unverified');
+            expect(fit.cause).toBe('Docker Desktop is not running');
+            expect(fit.nextStep).toBe('start Docker Desktop, then re-read');
+            expect(fit.reasons[0]).toBe('the host budget is incomplete (unobserved: vmInfo)')
+        }
+
+        expect(fitsPreset(probe, LOCAL_FULL).observedMargin).toBe(7.5 * GiB);
+        expect(fitsPreset(probe, HOSTED).observedMargin).toBe(27.5 * GiB)
+    });
+
+    test('AC-2: the four fixture classes — a fit, an unobserved host, an observed shortfall, observed swapping — and a measured shortfall stays observed while a reader is missing', async () => {
+        const
+            fit       = fitsPreset(await probePlacement({readers: fixtureReaders()}), LOCAL_FULL),
+            unobserved = fitsPreset(await probePlacement({readers: fixtureReaders({vmInfo: () => { throw new Error(DAEMON_DOWN) }})}), LOCAL_FULL),
+            short     = fitsPreset(await probePlacement({readers: fixtureReaders({totalmem: () => 32 * GiB, loadedModels: () => ({inventories: ['lms'], models: []}), vmInfo: () => ({backend: 'docker-desktop', capBytes: 16 * GiB, cores: 8, guestOs: 'Ubuntu'})})}), LOCAL_FULL),
+            swapping  = fitsPreset(await probePlacement({readers: fixtureReaders({swap: () => ({swapUsedBytes: 1 * GiB, compressedBytes: 0})})}), LOCAL_FULL),
+            // 24 GiB total, no model reading: the observed consumers alone (14 + 2.5 GiB) leave 7.5, local-full needs 22.5
+            shortUnread = fitsPreset(await probePlacement({readers: fixtureReaders({totalmem: () => 24 * GiB, loadedModels: () => { throw new Error('lms unreachable') }})}), LOCAL_FULL);
+
+        expect(fit).toMatchObject({fits: true, kind: 'observed', cause: null, nextStep: null});
+        expect(unobserved).toMatchObject({fits: false, kind: 'unverified', cause: 'Docker Desktop is not running'});
+        expect(short).toMatchObject({fits: false, kind: 'observed', cause: 'the host budget falls 7.0 GiB short', nextStep: 'free 7.0 GiB of memory, or choose the hosted preset'});
+        expect(swapping).toMatchObject({fits: false, kind: 'observed', cause: 'the host is swapping: no local preset fits, whatever the arithmetic says', nextStep: 'close the applications holding memory, then re-read'});
+        expect(shortUnread).toMatchObject({
+            fits: false, kind: 'observed', observedMargin: -15 * GiB,
+            reasons : ['the host budget falls 15.0 GiB short on the observed consumers alone', 'the host budget is incomplete (unobserved: loadedModels)'],
+            cause   : 'the host budget falls 15.0 GiB short on the observed consumers alone',
+            nextStep: 'free 15.0 GiB of memory, or choose the hosted preset'
+        })
+    });
+
+    test('the failure classes come from the reader\'s own word: Docker stopped or missing only from a Docker reader, lms missing only from the model reader, the rest generic', () => {
+        expect(describeUncertainty('vmInfo', DAEMON_DOWN)).toEqual({class: 'docker-stopped', cause: 'Docker Desktop is not running', nextStep: 'start Docker Desktop, then re-read'});
+        expect(describeUncertainty('containerStats', 'Is the docker daemon running?').class).toBe('docker-stopped');
+        expect(describeUncertainty('vmInfo', 'spawn docker ENOENT')).toEqual({class: 'docker-missing', cause: 'Docker is not installed', nextStep: 'install Docker Desktop, then re-read'});
+        expect(describeUncertainty('loadedModels', 'spawn lms ENOENT').class).toBe('lms-missing');
+        // a non-Docker reader never yields the Docker sentence, whatever its error says
+        expect(describeUncertainty('hostUse', 'Is the docker daemon running?')).toEqual({class: 'unreadable', cause: 'the process inventory could not be read', nextStep: 're-read; if it repeats, report the reason'});
+        expect(describeUncertainty('totalmem', 'no reader')).toEqual({class: 'reader-missing', cause: "the host's total memory has no reader in this build", nextStep: 're-read once a build with the reader is installed'});
+        expect(describeUncertainty('hostUse', 'not a consumer list').class).toBe('unexpected-form');
+        expect(describeUncertainty('vmReservation', `host reservation unobservable; ${VM_RESERVATION_POLICY} applied`).class).toBe('vm-reservation-policy')
+    });
+
+    test('AC-4: every cause and next step a verdict or an uncertainty entry carries is a sentence of the vocabulary, and a foreign sentence is not', async () => {
+        const
+            probes = await Promise.all([
+                probePlacement({readers: fixtureReaders({vmInfo: () => { throw new Error(DAEMON_DOWN) }})}),
+                probePlacement({readers: fixtureReaders({totalmem: () => 24 * GiB, loadedModels: () => { throw new Error('lms unreachable') }, statfs: () => { throw new Error('df refused') }})}),
+                probePlacement({readers: fixtureReaders({swap: () => ({swapUsedBytes: 1 * GiB, compressedBytes: 0}), vmReservation: () => null})}),
+                probePlacement({readers: fixtureReaders({vmInfo: () => ({backend: 'docker-desktop', capBytes: 6 * GiB, cores: 4, guestOs: 'Ubuntu'})})})
+            ]),
+            sentences = [];
+
+        for (const probe of probes) {
+            for (const entry of probe.uncertainty) sentences.push(entry.cause, entry.nextStep);
+            for (const workload of [LOCAL_FULL, HOSTED, {}]) {
+                const fit = fitsPreset(probe, workload);
+                fit.cause !== null && sentences.push(fit.cause, fit.nextStep)
+            }
+        }
+
+        expect(sentences.length).toBeGreaterThan(8);
+        for (const sentence of sentences) expect(vocabularyMatches(sentence), sentence).toBe(true);
+        expect(vocabularyMatches('the host is tired')).toBe(false);
+        expect(vocabularyMatches('')).toBe(false)
     });
 });
 

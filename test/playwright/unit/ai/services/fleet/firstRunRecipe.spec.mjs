@@ -278,6 +278,36 @@ test.describe('firstRunRecipe', () => {
         expect(byId(nothing.steps).placement.placement.refused).toHaveLength(2);
     });
 
+    test('AC-3 (#956): a host whose VM reader did not answer reads ok · unverified with the cause and the next step; only observed refusals that leave no preset read failed', async () => {
+        const
+            unverifiedProbe = {
+                host       : {complete: false, availableBytes: null, observedAvailableBytes: 40 * GiB, missingReaders: ['vmInfo'], pressure: 'ok'},
+                guest      : null,
+                observed   : {totalmem: true, hostUse: true, vmInfo: false, loadedModels: true, swap: true},
+                uncertainty: [{reader: 'vmInfo', reason: 'Is the docker daemon running?', cause: 'Docker Desktop is not running', nextStep: 'start Docker Desktop, then re-read'}]
+            },
+            unverified = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), placement: async () => unverifiedProbe}, presets, now: () => NOW}),
+            step       = byId(unverified.steps).placement,
+            rows       = recommendPlacement({probe: unverifiedProbe, presets});
+
+        expect(step.status).toBe(STEP_STATUSES.ok);
+        expect(step.verdict).toBe('unverified');
+        expect(step.reason).toBe(`unverified: ${presets.map(row => row.id).join(', ')} (Docker Desktop is not running; next: start Docker Desktop, then re-read)`);
+        expect(rows.unverified.map(row => row.id)).toEqual(presets.map(row => row.id));
+        expect(rows.refused).toEqual([]);
+        expect(rows.unverified.every(row => row.kind === 'unverified' && row.cause === 'Docker Desktop is not running' && row.nextStep === 'start Docker Desktop, then re-read')).toBe(true);
+
+        // the same reader missing on a host whose observed consumers alone fall short: a measured refusal, failed
+        const
+            shortProbe = {...unverifiedProbe, host: {...unverifiedProbe.host, observedAvailableBytes: 1 * GiB}},
+            failed     = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), placement: async () => shortProbe}, presets: presets.filter(row => row.id !== 'hosted'), now: () => NOW}),
+            failedRows = recommendPlacement({probe: shortProbe, presets: presets.filter(row => row.id !== 'hosted')});
+
+        expect(byId(failed.steps).placement.status).toBe(STEP_STATUSES.failed);
+        expect(failedRows.unverified).toEqual([]);
+        expect(failedRows.refused.every(row => row.kind === 'observed' && /on the observed consumers alone$/.test(row.cause) && /^free [\d.]+ GiB of memory/.test(row.nextStep))).toBe(true)
+    });
+
     test('a missing observer is unknown, never green, and the step order and kinds are the recipe\'s', async () => {
         const result = await evaluateRecipe({target: targetA, record: null, observers: {}, presets, now: () => NOW});
 
