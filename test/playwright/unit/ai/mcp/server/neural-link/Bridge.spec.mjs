@@ -178,3 +178,107 @@ test.describe('Bridge.handleAgentMessage — agent-message sidecar emit', () => 
         expect(frame.sessionId).toBe(sessionId);
     });
 });
+
+test.describe('Bridge — an Agent that joins later learns what connected Apps announced (#953)', () => {
+    // An App announces itself once per socket open; every frame below arrives before the late Agent joins
+    const fromApp  = (id, method, params) => Bridge.handleAppMessage(id, Buffer.from(JSON.stringify({jsonrpc: '2.0', method, params})));
+    const replayOf = (agentWs, appWorkerId) => agentWs.sent.map(JSON.parse)
+        .filter(frame => frame.type === 'app_message' && frame.appWorkerId === appWorkerId)
+        .map(frame => frame.message);
+
+    test.beforeEach(() => {
+        Bridge.agents   = new Map();
+        Bridge.apps     = new Map();
+        Bridge.appState = new Map();
+    });
+
+    test('app_connected is followed by the registration and each open window, never by history', () => {
+        Bridge.registerApp('app-1', makeWs(), 'agentos');
+        fromApp('app-1', 'register',         {appWorkerId: 'app-1', environment: 'development', isSharedWorker: true});
+        fromApp('app-1', 'window_connected', {windowId: 'w1', appName: 'AgentOS'});
+        fromApp('app-1', 'console_log',      {message: 'history'});
+        fromApp('app-1', 'window_connected', {windowId: 'w2', appName: 'AgentOS'});
+
+        const agentWs = makeWs();
+        Bridge.registerAgent('agent-late', agentWs);
+
+        const types  = agentWs.sent.map(JSON.parse).map(frame => frame.type),
+              replay = replayOf(agentWs, 'app-1');
+
+        expect(types.indexOf('app_connected')).toBeLessThan(types.indexOf('app_message'));
+        expect(replay.map(message => message.method)).toEqual(['register', 'window_connected', 'window_connected']);
+        expect(replay[0].params.environment).toBe('development');
+        expect(replay.slice(1).map(message => message.params.windowId)).toEqual(['w1', 'w2'])
+    });
+
+    test('a window closed before the join is not replayed', () => {
+        Bridge.registerApp('app-1', makeWs(), 'agentos');
+        fromApp('app-1', 'window_connected',    {windowId: 'w1'});
+        fromApp('app-1', 'window_connected',    {windowId: 'w2'});
+        fromApp('app-1', 'window_disconnected', {windowId: 'w1'});
+
+        const agentWs = makeWs();
+        Bridge.registerAgent('agent-late', agentWs);
+
+        expect(replayOf(agentWs, 'app-1').map(message => message.params.windowId)).toEqual(['w2'])
+    });
+
+    test('a reconnect under the same id starts afresh, and the replaced socket closing evicts nothing', () => {
+        const replaced = makeWs(), successor = makeWs(), earlyAgent = makeWs();
+
+        Bridge.registerAgent('agent-early', earlyAgent);
+        Bridge.registerApp('app-1', replaced, 'agentos');
+        fromApp('app-1', 'register',         {environment: 'before'});
+        fromApp('app-1', 'window_connected', {windowId: 'w-before'});
+
+        Bridge.registerApp('app-1', successor, 'agentos');
+        replaced.handlers.close(); // the replaced socket's close lands after its successor registered
+        fromApp('app-1', 'register',         {environment: 'after'});
+        fromApp('app-1', 'window_connected', {windowId: 'w-after'});
+
+        const lateAgent = makeWs();
+        Bridge.registerAgent('agent-late', lateAgent);
+
+        expect(Bridge.apps.get('app-1')).toBe(successor);
+        expect(earlyAgent.sent.map(JSON.parse).some(frame => frame.type === 'app_disconnected')).toBe(false);
+        expect(replayOf(lateAgent, 'app-1').map(message => message.params.environment ?? message.params.windowId))
+            .toEqual(['after', 'w-after'])
+    });
+
+    test('the App leaving drops what it announced', () => {
+        const appWs = makeWs();
+
+        Bridge.registerApp('app-1', appWs, 'agentos');
+        fromApp('app-1', 'window_connected', {windowId: 'w1'});
+        appWs.handlers.close();
+
+        const agentWs = makeWs();
+        Bridge.registerAgent('agent-late', agentWs);
+
+        expect(Bridge.appState.has('app-1')).toBe(false);
+        expect(agentWs.sent.map(JSON.parse).some(frame => frame.appWorkerId === 'app-1')).toBe(false)
+    });
+
+    test('the late Agent\'s ConnectionService folds the replay into a reachable session', async () => {
+        const {default: ConnectionService} = await import('../../../../../../../ai/services/neural-link/ConnectionService.mjs');
+
+        Bridge.registerApp('app-953', makeWs(), 'agentos');
+        fromApp('app-953', 'register',         {appWorkerId: 'app-953', environment: 'development', isSharedWorker: true});
+        fromApp('app-953', 'window_connected', {windowId: 'w1', appName: 'AgentOS'});
+        fromApp('app-953', 'window_connected', {windowId: 'w2', appName: 'AgentOS'});
+
+        const agentWs = makeWs();
+        Bridge.registerAgent('agent-late', agentWs);
+
+        try {
+            agentWs.sent.forEach(frame => ConnectionService.handleBridgeMessage(Buffer.from(frame)));
+
+            const session = ConnectionService.sessionData.get('app-953');
+
+            expect(session.environment).toBe('development');
+            expect([...session.windows.keys()]).toEqual(['w1', 'w2'])
+        } finally {
+            ConnectionService.sessionData.delete('app-953')
+        }
+    });
+});

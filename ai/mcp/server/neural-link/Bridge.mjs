@@ -49,6 +49,13 @@ class Bridge extends Base {
      */
     apps = new Map()
     /**
+     * What each connected App announced about itself: its last `register` message and one `window_connected`
+     * message per open window. An App sends both once per socket open, so an Agent that joins later learns them
+     * only from this replay. Logs and events are history, not state, and are never kept.
+     * Map<appWorkerId, {register: Object|null, windows: Map<windowId, Object>}>
+     */
+    appState = new Map()
+    /**
      * WebSocket Server instance.
      */
     wss = null
@@ -117,6 +124,7 @@ class Bridge extends Base {
 
         this.agents.clear();
         this.apps.clear();
+        this.appState.clear();
 
         return new Promise((resolve) => {
             this.wss.close(() => {
@@ -251,7 +259,8 @@ class Bridge extends Base {
             agentId: id
         });
 
-        // Notify the new Agent of all already-connected apps
+        // Notify the new Agent of all already-connected apps, each followed by what it announced before this Agent
+        // joined: without its registration and windows, the Agent sees the app connected but cannot reach it
         for (const [appWorkerId, appWs] of this.apps.entries()) {
             if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
@@ -259,7 +268,47 @@ class Bridge extends Base {
                     appWorkerId,
                     appName: appWs.appName || 'Unknown'
                 }));
+
+                for (const message of this.replayOf(appWorkerId)) {
+                    ws.send(JSON.stringify({type: 'app_message', appWorkerId, message}))
+                }
             }
+        }
+    }
+
+    /**
+     * @summary The messages that bring an Agent joining now up to date on one App: its last registration, then
+     * one `window_connected` per open window.
+     * @param {String} appWorkerId
+     * @returns {Object[]}
+     * @protected
+     */
+    replayOf(appWorkerId) {
+        const state = this.appState.get(appWorkerId);
+
+        return state ? [...(state.register ? [state.register] : []), ...state.windows.values()] : []
+    }
+
+    /**
+     * @summary Keeps what an App announces about itself, for Agents that join later.
+     * A `register` replaces the previous one; `window_connected` and `window_disconnected` maintain the open
+     * windows by `windowId`. Every other message is history and only passes through.
+     * @param {String} appId
+     * @param {Object} message A JSON-RPC message from the App
+     * @protected
+     */
+    rememberAppState(appId, message) {
+        const state    = this.appState.get(appId),
+              windowId = message?.params?.windowId;
+
+        if (!state) return;
+
+        if (message.method === 'register') {
+            state.register = message
+        } else if (message.method === 'window_connected' && windowId) {
+            state.windows.set(windowId, message)
+        } else if (message.method === 'window_disconnected' && windowId) {
+            state.windows.delete(windowId)
         }
     }
 
@@ -289,11 +338,18 @@ class Bridge extends Base {
 
         ws.appName = appName;
         this.apps.set(id, ws);
+        // A new socket announces itself anew: nothing the replaced one said carries over
+        this.appState.set(id, {register: null, windows: new Map()});
 
         ws.on('message', (data) => this.handleAppMessage(id, data));
         ws.on('close',   ()     => {
+            // A socket replaced by a reconnect under the same id closes after its successor registered:
+            // that is not the App leaving, so it must not evict the successor
+            if (this.apps.get(id) !== ws) return;
+
             logger.info(`Bridge: App disconnected [${id}] (${appName})`);
             this.apps.delete(id);
+            this.appState.delete(id);
             this.broadcastToAgents({
                 type       : 'app_disconnected',
                 appWorkerId: id
@@ -369,6 +425,8 @@ class Bridge extends Base {
         try {
             // Validate it's JSON (App always sends JSON)
             const message = JSON.parse(data.toString());
+
+            message && this.rememberAppState(appId, message);
 
             this.broadcastToAgents({
                 type       : 'app_message',
