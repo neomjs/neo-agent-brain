@@ -7,7 +7,8 @@ import {
     LAUNCH_ADMISSION_OUTCOMES as OUTCOMES,
     LAUNCH_ADMISSION_REASONS  as REASONS,
     LAUNCH_ADMISSION_REFUSALS as REFUSALS,
-    LAUNCH_ADMISSION_STATES   as STATES
+    LAUNCH_ADMISSION_STATES   as STATES,
+    isLaunchAdmissionProofReason
 }                                 from '../../../src/fleet/contract/launchAdmission.mjs';
 import {mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
 import {launchRowEnvNames}               from './managedAgentWorkspacePlan.mjs';
@@ -15,7 +16,6 @@ import {
     LAUNCH_ADMISSION_MAX_BYTES,
     LAUNCH_ADMISSION_PATH,
     isLaunchIdentity,
-    isPublicProofReason,
     launchRefusal,
     mintLaunchGrant,
     parseLaunchRequest,
@@ -488,7 +488,7 @@ class McpLaunchAdmissionService extends Base {
 
         if (index > -1) {
             return refuse(failed > -1 ? REFUSALS.CREDENTIAL_UNPROVEN : REFUSALS.PROOF_UNAVAILABLE,
-                failed < 0 && isPublicProofReason(proofs[index].reason) ? proofs[index].reason : ownerCredentialKind(owners[index]))
+                failed < 0 && isLaunchAdmissionProofReason(proofs[index].reason) ? proofs[index].reason : ownerCredentialKind(owners[index]))
         }
 
         const observed = observeProcess(generation.probe);
@@ -539,7 +539,7 @@ class McpLaunchAdmissionService extends Base {
                 .then(result => ({
                     verdict: ['proved', 'refused', 'unanswered'].includes(result?.verdict)
                         ? result.verdict : result?.verdict === undefined && result?.ok === true ? 'proved' : 'refused',
-                    ...(isPublicProofReason(result?.reason) ? {reason: result.reason} : {})
+                    ...(isLaunchAdmissionProofReason(result?.reason) ? {reason: result.reason} : {})
                 }), () => ({verdict: 'unanswered', reason: 'proof-unavailable'}))
                 .finally(() => {
                     clearTimeout(timer);
