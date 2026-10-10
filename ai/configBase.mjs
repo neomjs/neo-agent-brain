@@ -541,7 +541,8 @@ class ConfigBase extends ConfigProvider {
                  * healthy-but-loaded windows as degraded, a fabrication class, not caution.
                  * 30s covers the measured loaded tail with margin while keeping boot-path
                  * failure detection bounded; a wedged plane failing this probe after 30s is the
-                 * honest outcome, not the defect. Milliseconds.
+                 * honest outcome, not the defect. Launch admission additionally supplies its shorter
+                 * overall proof AbortSignal; each request obeys both bounds. Milliseconds.
                  * @type {number}
                  */
                 tenantProbeTimeoutMs: leaf(30000, 'NEO_FLEET_TENANT_PROBE_TIMEOUT_MS', 'number'),

@@ -1,6 +1,7 @@
 import {expect, test}  from '@playwright/test';
 import {spawn}         from 'node:child_process';
 import fs              from 'node:fs/promises';
+import http            from 'node:http';
 import os              from 'node:os';
 import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -10,6 +11,7 @@ import {
     composeTargetEnv,
     issuerOrigin,
     parseLauncherArgs,
+    postAdmission,
     resolveTarget,
     runTarget
 } from '../../../../../../ai/mcp/client/fleetMcpLauncher.mjs';
@@ -52,6 +54,71 @@ function issuer(grant, answer) {
 const admitted = (request, grant) => signLaunchResponse(grant.secret, request, {outcome: 'admitted', env: {GH_TOKEN: 'ghp_fixture'}, args: [TARGET]});
 
 test.describe('fleetMcpLauncher', () => {
+    test('#964 a streaming partial response cannot extend the request deadline', async () => {
+        const intervals = [];
+        const server    = http.createServer((req, res) => {
+            res.writeHead(200, {'content-type': 'application/json'});
+            res.write('{');
+            intervals.push(setInterval(() => res.write(' '), 5))
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        try {
+            await expect(postAdmission(`http://127.0.0.1:${server.address().port}`, {}, {timeoutMs: 40}))
+                .rejects.toMatchObject({code: 'issuer-unavailable'})
+        } finally {
+            intervals.forEach(clearInterval);
+            server.closeAllConnections();
+            await new Promise(resolve => server.close(resolve))
+        }
+    });
+
+    test('#964 retries transient refusals with fresh proofs, then admits within the same deadline', async () => {
+        const grant  = mintLaunchGrant(), calls = [], sleeps = [];
+        let   clock  = 0;
+        const launch = await admitLaunch({
+            argv   : ['--server', 'github-workflow'], env: rowEnv(grant), now: () => clock,
+            sleep  : async ms => { sleeps.push(ms); clock += ms },
+            request: async (origin, body, {timeoutMs}) => {
+                calls.push({body, timeoutMs});
+                clock += 500;
+                return signLaunchResponse(grant.secret, parseLaunchRequest(body), calls.length < 3
+                    ? {outcome: 'refused', code: 'proof-unavailable', reason: 'proof-timeout'}
+                    : {outcome: 'admitted', env: {}, args: [TARGET]})
+            }
+        });
+        expect(launch.args).toEqual([TARGET]);
+        expect(sleeps).toEqual([1000, 2000]);
+        expect(new Set(calls.map(({body}) => body.nonce)).size).toBe(3);
+        expect(new Set(calls.map(({body}) => body.proof)).size).toBe(3);
+        expect(clock).toBe(4500)
+    });
+
+    test('#964 bounds elapsed request time, not only backoff, and never admits a late answer', async () => {
+        const grant = mintLaunchGrant(), bounds = [];
+        let   clock = 0;
+        await expect(admitLaunch({
+            argv   : ['--server', 'github-workflow'], env: rowEnv(grant), now: () => clock,
+            sleep  : async ms => { clock += ms },
+            request: async (origin, body, {timeoutMs}) => {
+                bounds.push(timeoutMs);
+                clock += timeoutMs;
+                return signLaunchResponse(grant.secret, parseLaunchRequest(body), bounds.length === 1
+                    ? {outcome: 'refused', code: 'pending-timeout'}
+                    : {outcome: 'admitted', env: {}, args: [TARGET]})
+            }
+        })).rejects.toMatchObject({code: 'pending-timeout'});
+        expect(bounds).toEqual([45000, 14000]);
+        expect(clock).toBe(60000)
+    });
+
+    test('#964 does not spend the retry budget on credential rejection', async () => {
+        const grant = mintLaunchGrant(), request = issuer(grant, (body, owned) => signLaunchResponse(owned.secret, body,
+            {outcome: 'refused', code: 'credential-unproven', reason: 'seat-pat'}));
+        await expect(admitLaunch({argv: ['--server', 'github-workflow'], env: rowEnv(grant), request,
+            sleep: () => { throw new Error('terminal refusal must not sleep') }})).rejects.toMatchObject({code: 'credential-unproven'});
+        expect(request.calls).toHaveLength(1)
+    });
+
     test('its grammar is exactly --server <key>; the issuer is a loopback origin and nothing else', () => {
         expect(parseLauncherArgs(['--server', 'github-workflow'])).toEqual({server: 'github-workflow'});
 

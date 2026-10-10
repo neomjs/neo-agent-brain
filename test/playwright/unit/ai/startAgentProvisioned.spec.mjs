@@ -1061,7 +1061,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(plane.credential).toBe('plane-bearer');
         expect(plane.resolve()).toBe('tenant_plane_credential');
         expect(tenantService.calls.credential.at(-1)).toBe('tenant-a');
-        expect(await plane.prove('tenant_plane_credential')).toEqual({ok: true});
+        expect(await plane.prove('tenant_plane_credential')).toEqual({verdict: 'proved'});
         expect(tenantService.calls.probe.at(-1)).toEqual({tenantId: 'tenant-a', credential: 'tenant_plane_credential', expectedIdentity: '@seat'});
 
         // the Start's own acceptance: both resources answer and the Memory Core names the seat
@@ -1070,7 +1070,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             {'memory-core': {ok: true, identity: '@someone-else'}, 'knowledge-base': {ok: true}}
         ]) {
             tenantService.probeSeatCredential = async () => ({ok: true, resources});
-            expect(await plane.prove('tenant_plane_credential')).toEqual({ok: false})
+            expect(await plane.prove('tenant_plane_credential')).toEqual({verdict: 'refused'})
         }
     });
 

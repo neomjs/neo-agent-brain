@@ -15,6 +15,7 @@ import {
     LAUNCH_ADMISSION_MAX_BYTES,
     LAUNCH_ADMISSION_PATH,
     isLaunchIdentity,
+    isPublicProofReason,
     launchRefusal,
     mintLaunchGrant,
     parseLaunchRequest,
@@ -86,8 +87,9 @@ class McpLaunchAdmissionService extends Base {
     pendingTimeoutMs = 30000
 
     /**
-     * How long a credential proof may take before it counts as unproved. With {@link pendingTimeoutMs}, it
-     * stays inside the launcher's own bound.
+     * How long a credential proof may take before it is unanswered. Its AbortSignal caps each request's
+     * AiConfig.fleet.tenantProbeTimeoutMs; that per-request ceiling cannot extend this overall proof budget.
+     * With {@link pendingTimeoutMs}, it stays inside the launcher's per-attempt bound.
      * @member {Number} proofTimeoutMs=10000
      */
     proofTimeoutMs = 10000
@@ -258,7 +260,7 @@ class McpLaunchAdmissionService extends Base {
      * @param {Object<String,Object>} [options.owners] The owner Start selected for each seat credential, by
      *     the name its value goes under: `{credential, resolve, prove}`, where `credential` is a
      *     `LAUNCH_ADMISSION_CREDENTIALS` value, `resolve()` returns what the owner holds now, and
-     *     `prove(value)` answers `{ok}`.
+     *     `prove(value, {signal})` answers `{verdict, reason}`. Legacy `{ok}` answers remain supported.
      * @param {Function} options.probe `() => 'live'|'gone'|'unknown'`, whether the launched process is still
      *     the seat: the lifecycle's own process proof.
      * @returns {Object} The seat's admission status ({@link statusOf}).
@@ -474,13 +476,20 @@ class McpLaunchAdmissionService extends Base {
             credentials = server.owned.map((name, index) => readOwner(owners[index])),
             missing     = credentials.indexOf(null);
 
-        if (missing > -1) return refuse(REFUSALS.CREDENTIAL_MISSING, owners[missing].credential);
+        if (missing > -1) return refuse(REFUSALS.CREDENTIAL_MISSING, ownerCredentialKind(owners[missing]));
 
-        const unproven = (await Promise.all(server.owned.map((name, index) => this.prove(generation, name, credentials[index])))).indexOf(false);
-
-        if (unproven > -1) return refuse(REFUSALS.CREDENTIAL_UNPROVEN, owners[unproven].credential);
-
+        const proofs = await Promise.all(server.owned.map((name, index) => this.prove(generation, name, credentials[index])));
         if (revoked()) return refuse(REFUSALS.REVOKED, server.reason ?? generation.reason);
+
+        // A definite refusal wins over a concurrent unavailable proof; neither retires the generation.
+        const failed  = proofs.findIndex(proof => proof.verdict === 'refused'),
+              pending = proofs.findIndex(proof => proof.verdict === 'unanswered'),
+              index   = failed > -1 ? failed : pending;
+
+        if (index > -1) {
+            return refuse(failed > -1 ? REFUSALS.CREDENTIAL_UNPROVEN : REFUSALS.PROOF_UNAVAILABLE,
+                isPublicProofReason(proofs[index].reason) ? proofs[index].reason : ownerCredentialKind(owners[index]))
+        }
 
         const observed = observeProcess(generation.probe);
 
@@ -500,12 +509,12 @@ class McpLaunchAdmissionService extends Base {
 
     /**
      * @summary Prove one credential value with its owner. Concurrent redemptions proving the same value share
-     * one proof; a proof that throws, answers anything but `ok: true`, or outlasts {@link proofTimeoutMs} did
-     * not prove.
+     * one proof. The owner classifies transport facts; a throw or deadline is unanswered. Expiry aborts
+     * the owner's requests. Legacy `{ok}` owners remain supported, with a negative result terminal.
      * @param {Object} generation
      * @param {String} name The name the value goes under.
      * @param {String} value
-     * @returns {Promise<Boolean>}
+     * @returns {Promise<{verdict: String, reason?: String}>}
      * @protected
      */
     prove(generation, name, value) {
@@ -515,12 +524,23 @@ class McpLaunchAdmissionService extends Base {
 
         if (!proofs.has(key)) {
             let timer;
+            const controller = new AbortController();
 
             const proof = Promise.race([
-                Promise.resolve().then(() => owners[name].prove(value)),
-                new Promise(resolve => (timer = setTimeout(resolve, this.proofTimeoutMs, null)).unref?.())
+                Promise.resolve().then(() => owners[name].prove(value, {signal: controller.signal})),
+                new Promise(resolve => {
+                    timer = setTimeout(() => {
+                        resolve({verdict: 'unanswered', reason: 'proof-timeout'});
+                        controller.abort()
+                    }, this.proofTimeoutMs);
+                    timer.unref?.()
+                })
             ])
-                .then(result => result?.ok === true, () => false)
+                .then(result => ({
+                    verdict: ['proved', 'refused', 'unanswered'].includes(result?.verdict)
+                        ? result.verdict : result?.ok === true ? 'proved' : 'refused',
+                    ...(isPublicProofReason(result?.reason) ? {reason: result.reason} : {})
+                }), () => ({verdict: 'unanswered', reason: 'proof-unavailable'}))
                 .finally(() => {
                     clearTimeout(timer);
                     proofs.get(key) === proof && proofs.delete(key)
@@ -720,6 +740,12 @@ function readOwner(owner) {
     } catch {
         return null
     }
+}
+
+/** @summary Return a fixed credential-type label, never an owner-supplied value. @param {Object} owner @returns {String|undefined} */
+function ownerCredentialKind(owner) {
+    if (owner.credential === 'seat-pat') return 'seat-pat';
+    if (owner.credential === 'plane-bearer') return 'plane-bearer'
 }
 
 /**

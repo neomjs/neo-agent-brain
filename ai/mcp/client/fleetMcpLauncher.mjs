@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
-import {spawn}                                  from 'node:child_process';
-import fs                                       from 'node:fs';
-import http                                     from 'node:http';
-import path                                     from 'node:path';
-import {fileURLToPath, pathToFileURL}           from 'node:url';
+import {spawn}                        from 'node:child_process';
+import fs                             from 'node:fs';
+import http                           from 'node:http';
+import path                           from 'node:path';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {
     LAUNCH_ADMISSION_CREDENTIALS as CREDENTIALS,
     LAUNCH_ADMISSION_OUTCOMES    as OUTCOMES,
@@ -19,6 +19,7 @@ import {
     createLaunchRequest,
     isAdmissibleEnvName,
     isLaunchIdentity,
+    isPublicProofReason,
     parseLaunchCapability,
     verifyLaunchResponse
 }                                               from '../../services/fleet/mcpLaunchAdmission.mjs';
@@ -28,6 +29,8 @@ const
     INSTALL_ROOT      = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
     // Longer than the issuer's own bounds together: a Start still in progress, then a credential proof.
     REQUEST_TIMEOUT_MS = 45000,
+    STARTUP_BUDGET_MS  = 60000,
+    TRANSIENT_CODES   = new Set([REFUSALS.PROOF_UNAVAILABLE, REFUSALS.ISSUER_UNAVAILABLE, REFUSALS.PENDING_TIMEOUT]),
     FORWARDED_SIGNALS = ['SIGHUP', 'SIGINT', 'SIGTERM'],
     REFUSAL_CODES     = new Set(Object.values(REFUSALS)),
     REFUSAL_REASONS   = new Set([...Object.values(REASONS), ...Object.values(CREDENTIALS)]);
@@ -44,9 +47,9 @@ export class LaunchRefusal extends Error {
      */
     constructor(code, reason = null) {
         // a restart does not mend a credential: its owner does, and the next child redeems it again
-        const restart = code !== REFUSALS.CREDENTIAL_MISSING && code !== REFUSALS.CREDENTIAL_UNPROVEN;
+        const restart = code !== REFUSALS.CREDENTIAL_MISSING && code !== REFUSALS.CREDENTIAL_UNPROVEN && code !== REFUSALS.PROOF_UNAVAILABLE;
 
-        super(`Neo MCP launch refused (${code}${reason ? `, ${reason}` : ''}). Fleet Manager shows this seat's admission${restart ? '; restart the seat there' : ''}.`);
+        super(`Neo MCP launch refused (${code}${reason ? `, ${reason}` : ''}). Fleet Manager shows this seat's admission${restart ? '; restart the seat there' : code === REFUSALS.PROOF_UNAVAILABLE ? '; retry when the credential service is available' : ''}.`);
 
         this.name   = 'LaunchRefusal';
         this.code   = code;
@@ -131,16 +134,18 @@ export function composeTargetEnv(env, admitted) {
 }
 
 /**
- * @summary Redeem the row's grant and return what the target starts with.
+ * @summary Redeem the grant, retrying transient failures within one 60s wall-clock budget including requests.
  * @param {Object} options
  * @param {String[]} options.argv
  * @param {Object} options.env
  * @param {String} [options.root=INSTALL_ROOT]
- * @param {Function} [options.request=postAdmission] `(origin, body) => Promise<parsed answer>`.
+ * @param {Function} [options.request=postAdmission] `(origin, body, {timeoutMs}) => Promise<parsed answer>`.
+ * @param {Function} [options.now=performance.now] Monotonic clock seam for deadline controls.
+ * @param {Function} [options.sleep] Backoff seam; production waits with a timer.
  * @returns {Promise<{args: String[], env: Object}>}
  * @throws {LaunchRefusal}
  */
-export async function admitLaunch({argv, env, root = INSTALL_ROOT, request = postAdmission}) {
+export async function admitLaunch({argv, env, root = INSTALL_ROOT, request = postAdmission, now = () => performance.now(), sleep = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
     const
         {server} = parseLauncherArgs(argv),
         grant    = parseLaunchCapability(env[LAUNCH_GRANT_ENV_VAR]),
@@ -148,23 +153,41 @@ export async function admitLaunch({argv, env, root = INSTALL_ROOT, request = pos
 
     if (!grant || !origin || !isLaunchIdentity(env.NEO_AGENT_IDENTITY)) throw new LaunchRefusal(REFUSALS.MALFORMED);
 
-    const
-        body     = createLaunchRequest({grant, server, identity: env.NEO_AGENT_IDENTITY}),
-        response = await request(origin, body),
-        payload  = verifyLaunchResponse(grant.secret, body, response);
+    const deadline = now() + STARTUP_BUDGET_MS;
+    let   delay    = 1000, last = new LaunchRefusal(REFUSALS.ISSUER_UNAVAILABLE);
 
-    if (!payload) {
-        // an unsigned refusal is believed, since refusing is the safe direction; nothing unsigned admits
-        const code = response?.outcome === OUTCOMES.REFUSED && REFUSAL_CODES.has(response.code) ? response.code : REFUSALS.UNAUTHENTICATED;
+    while (now() < deadline) {
+        try {
+            const
+                body     = createLaunchRequest({grant, server, identity: env.NEO_AGENT_IDENTITY}),
+                response = await request(origin, body, {timeoutMs: Math.min(REQUEST_TIMEOUT_MS, deadline - now())}),
+                payload  = verifyLaunchResponse(grant.secret, body, response);
 
-        throw new LaunchRefusal(code)
+            if (now() >= deadline) throw last;
+
+            if (!payload) {
+                // Nothing unsigned admits; only closed refusal codes may cause another bounded attempt.
+                throw new LaunchRefusal(response?.outcome === OUTCOMES.REFUSED && REFUSAL_CODES.has(response.code) ? response.code : REFUSALS.UNAUTHENTICATED)
+            }
+
+            if (payload.outcome !== OUTCOMES.ADMITTED) {
+                throw new LaunchRefusal(REFUSAL_CODES.has(payload.code) ? payload.code : REFUSALS.UNAUTHENTICATED,
+                    REFUSAL_REASONS.has(payload.reason) || isPublicProofReason(payload.reason) ? payload.reason : null)
+            }
+
+            return {args: resolveTarget(payload.args, root), env: composeTargetEnv(env, payload.env)}
+        } catch (error) {
+            if (!(error instanceof LaunchRefusal) || !TRANSIENT_CODES.has(error.code)) throw error;
+            last = error
+        }
+
+        const remaining = deadline - now();
+        if (remaining <= 0) break;
+        await sleep(Math.min(delay, remaining));
+        delay = Math.min(delay * 2, 8000)
     }
 
-    if (payload.outcome !== OUTCOMES.ADMITTED) {
-        throw new LaunchRefusal(REFUSAL_CODES.has(payload.code) ? payload.code : REFUSALS.UNAUTHENTICATED, REFUSAL_REASONS.has(payload.reason) ? payload.reason : null)
-    }
-
-    return {args: resolveTarget(payload.args, root), env: composeTargetEnv(env, payload.env)}
+    throw last
 }
 
 /**
@@ -188,7 +211,7 @@ export function runTarget({args, env, execPath = process.execPath, spawnFn = spa
             return
         }
 
-        const forward = signal => () => child.kill(signal);
+        const forward  = signal => () => child.kill(signal);
         const handlers = FORWARDED_SIGNALS.map(signal => [signal, forward(signal)]);
 
         handlers.forEach(([signal, handler]) => process.on(signal, handler));
@@ -211,20 +234,23 @@ export function runTarget({args, env, execPath = process.execPath, spawnFn = spa
  * `issuer-unavailable`, an answer that is not bounded JSON is `unauthenticated-response`.
  * @param {String} origin
  * @param {Object} body
+ * @param {Object} options
+ * @param {Number} options.timeoutMs Remaining startup budget, capped by the per-request maximum.
  * @returns {Promise<*>}
  * @private
  */
-function postAdmission(origin, body) {
+export function postAdmission(origin, body, {timeoutMs}) {
+    let timer;
     return new Promise((resolve, reject) => {
         const
             payload = JSON.stringify(body),
             req     = http.request(new URL(LAUNCH_ADMISSION_PATH, origin), {
                 method : 'POST',
                 headers: {'content-type': 'application/json', 'content-length': Buffer.byteLength(payload)},
-                timeout: REQUEST_TIMEOUT_MS
+                timeout: timeoutMs
             }, res => {
                 const chunks = [];
-                let size = 0;
+                let   size   = 0;
 
                 res.on('data', chunk => {
                     size += chunk.length;
@@ -236,7 +262,7 @@ function postAdmission(origin, body) {
                         reject(new LaunchRefusal(REFUSALS.UNAUTHENTICATED))
                     }
                 });
-                res.on('error', () => reject(new LaunchRefusal(REFUSALS.UNAUTHENTICATED)));
+                res.on('error', () => reject(new LaunchRefusal(REFUSALS.ISSUER_UNAVAILABLE)));
                 res.on('end', () => {
                     try {
                         resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
@@ -248,8 +274,11 @@ function postAdmission(origin, body) {
 
         req.on('timeout', () => req.destroy());
         req.on('error', () => reject(new LaunchRefusal(REFUSALS.ISSUER_UNAVAILABLE)));
+        // Socket inactivity alone does not bound a peer that keeps streaming a partial answer.
+        timer = setTimeout(() => req.destroy(), timeoutMs);
+        timer.unref?.();
         req.end(payload)
-    })
+    }).finally(() => clearTimeout(timer))
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

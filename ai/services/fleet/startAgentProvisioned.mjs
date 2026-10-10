@@ -480,9 +480,13 @@ async function provisionAgent({
         planeOwner = {
             credential: LAUNCH_ADMISSION_CREDENTIALS.PLANE_BEARER,
             resolve   : () => activeTenantService.resolveMcpCredential(target.tenantId),
-            prove     : async credential => ({
-                ok: tenantProvesSeat(await activeTenantService.probeSeatCredential({tenantId: target.tenantId, credential, expectedIdentity}), expectedIdentity)
-            })
+            prove     : async (credential, {signal} = {}) => {
+                const proof = await activeTenantService.probeSeatCredential({tenantId: target.tenantId, credential, expectedIdentity, signal});
+                return {
+                    verdict: proof?.verdict === 'unanswered' ? 'unanswered'
+                        : tenantProvesSeat(proof, expectedIdentity) ? 'proved' : 'refused'
+                }
+            }
         }
     } else if (placement?.kind === 'plane') {
         const
@@ -538,7 +542,7 @@ async function provisionAgent({
         planeOwner = {
             credential: LAUNCH_ADMISSION_CREDENTIALS.PLANE_BEARER,
             resolve   : () => activeTenantService.resolveSeatPlaneCredential(storedArgs)?.credential ?? null,
-            prove     : credential => activeTenantService.probeSeatPlaneCredential({planeBase: placement.endpoint, credential, expectedIdentity, expectedPlane: provenPlane})
+            prove     : (credential, {signal} = {}) => activeTenantService.probeSeatPlaneCredential({planeBase: placement.endpoint, credential, expectedIdentity, expectedPlane: provenPlane, signal})
         }
     }
 
@@ -703,7 +707,7 @@ async function provisionAgent({
                         pat: {
                             credential: LAUNCH_ADMISSION_CREDENTIALS.SEAT_PAT,
                             resolve   : () => registry.resolveCredential(agentId),
-                            prove     : credential => proveForgeAccount({agent, credential})
+                            prove     : (credential, {signal} = {}) => proveForgeAccount({agent, credential, signal})
                         },
                         ...(planeOwner ? {plane: planeOwner} : {})
                     }

@@ -36,12 +36,40 @@ export const LAUNCH_ADMISSION_PATH = '/fleet/mcp-launch/v1';
  */
 export const LAUNCH_ADMISSION_MAX_BYTES = 64 * 1024;
 
+/**
+ * @summary Classify a proof's transport observation before its diagnostic wording is composed.
+ * @param {Boolean} ok Whether this response proved the requested fact.
+ * @param {Number} [status] Absent when the transport did not answer.
+ * @returns {'proved'|'refused'|'unanswered'}
+ */
+export function httpProofVerdict(ok, status) {
+    return ok ? 'proved' : status === undefined || status === 429 || status >= 500 && status <= 599 ? 'unanswered' : 'refused'
+}
+
+const PROOF_REASONS = new Set([
+    'proof-timeout', 'proof-unavailable', 'mismatch', 'unknown',
+    'plane endpoint unreachable', 'plane rejected the credential', 'plane authentication failed',
+    'the seat holds no proven plane credential', 'the credential resolves to another identity',
+    'the plane at this endpoint is not the one the credential was stored for',
+    'the plane did not identify itself',
+    'the Memory Core and Knowledge Base at this endpoint belong to different planes'
+]);
+
+/**
+ * @summary Admit only producer-owned diagnostic words. This validates display text, never a verdict.
+ * @param {*} reason
+ * @returns {Boolean}
+ */
+export function isPublicProofReason(reason) {
+    return typeof reason === 'string' && (PROOF_REASONS.has(reason) || /^plane MCP readiness failed \([1-5]\d{2}\)$/.test(reason))
+}
+
 const
-    PROTOCOL        = 'neo-fleet-mcp-launch/v1',
-    TOKEN_PATTERN   = /^[A-Za-z0-9_-]{22,128}$/,
-    SERVER_PATTERN  = /^[a-z][a-z0-9-]{0,63}$/,
-    LOGIN_PATTERN   = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$/,
-    ENV_NAME        = /^[A-Z][A-Z0-9_]*$/,
+    PROTOCOL       = 'neo-fleet-mcp-launch/v1',
+    TOKEN_PATTERN  = /^[A-Za-z0-9_-]{22,128}$/,
+    SERVER_PATTERN = /^[a-z][a-z0-9-]{0,63}$/,
+    LOGIN_PATTERN  = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$/,
+    ENV_NAME       = /^[A-Z][A-Z0-9_]*$/,
     // Slots no admitted environment may set: they would change how the target process itself runs.
     PROCESS_CONTROL = new Set(['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE', 'PATH', 'HOME', 'SHELL', 'TMPDIR', LAUNCH_ISSUER_ENV_VAR, LAUNCH_GRANT_ENV_VAR]);
 

@@ -1,7 +1,8 @@
-import {execFile}  from 'node:child_process';
-import fs          from 'node:fs/promises';
-import path        from 'node:path';
-import {promisify} from 'node:util';
+import {execFile}         from 'node:child_process';
+import fs                 from 'node:fs/promises';
+import path               from 'node:path';
+import {promisify}        from 'node:util';
+import {httpProofVerdict} from './mcpLaunchAdmission.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -110,8 +111,9 @@ export function gitIdentityEnv({name, email}) {
  * @throws {Error} Carrying the response's `status` when it is not a success, or the transport's own error.
  * @private
  */
-async function readJson(fetchFn, url, headers, timeoutMs) {
-    const response = await fetchFn(url, {headers, signal: AbortSignal.timeout(timeoutMs)});
+async function readJson(fetchFn, url, headers, timeoutMs, signal) {
+    const timeout  = AbortSignal.timeout(timeoutMs);
+    const response = await fetchFn(url, {headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout});
 
     if (!response.ok) {
         throw Object.assign(new Error(`HTTP ${response.status}`), {status: response.status})
@@ -136,15 +138,15 @@ async function readJson(fetchFn, url, headers, timeoutMs) {
  * @returns {Promise<{login: String, name: String|null, candidates: Object[]}>}
  * @private
  */
-async function readGithubAccount({credential, fetchFn, timeoutMs, addresses = true}) {
+async function readGithubAccount({credential, fetchFn, timeoutMs, addresses = true, signal}) {
     const
         headers = {Accept: 'application/vnd.github+json', Authorization: `Bearer ${credential}`, 'X-GitHub-Api-Version': '2022-11-28'},
-        user    = await readJson(fetchFn, `${GITHUB_API}/user`, headers, timeoutMs);
+        user    = await readJson(fetchFn, `${GITHUB_API}/user`, headers, timeoutMs, signal);
 
     let emails = [];
 
     try {
-        if (addresses) emails = await readJson(fetchFn, `${GITHUB_API}/user/emails?per_page=100`, headers, timeoutMs)
+        if (addresses) emails = await readJson(fetchFn, `${GITHUB_API}/user/emails?per_page=100`, headers, timeoutMs, signal)
     } catch (error) {
         if (error.status !== 403 && error.status !== 404) throw error
     }
@@ -172,8 +174,8 @@ async function readGithubAccount({credential, fetchFn, timeoutMs, addresses = tr
  * @returns {Promise<{login: String, name: String|null, candidates: Object[]}>}
  * @private
  */
-async function readGitlabAccount({forgeHost, credential, fetchFn, timeoutMs}) {
-    const user = await readJson(fetchFn, `${forgeHost}/api/v4/user`, {Authorization: `Bearer ${credential}`}, timeoutMs);
+async function readGitlabAccount({forgeHost, credential, fetchFn, timeoutMs, signal}) {
+    const user = await readJson(fetchFn, `${forgeHost}/api/v4/user`, {Authorization: `Bearer ${credential}`}, timeoutMs, signal);
 
     return {
         login     : user.username,
@@ -195,15 +197,18 @@ async function readGitlabAccount({forgeHost, credential, fetchFn, timeoutMs}) {
  *     `{state: 'unknown', reason}`.
  * @private
  */
-async function readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses}) {
+async function readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses, signal}) {
     let account;
 
     try {
         account = agent?.forge === 'gitlab'
-            ? await readGitlabAccount({forgeHost: agent.forgeHost, credential, fetchFn, timeoutMs})
-            : await readGithubAccount({credential, fetchFn, timeoutMs, addresses})
+            ? await readGitlabAccount({forgeHost: agent.forgeHost, credential, fetchFn, timeoutMs, signal})
+            : await readGithubAccount({credential, fetchFn, timeoutMs, addresses, signal})
     } catch (error) {
-        return {state: 'unknown', reason: `its forge account could not be read (${error.message})`}
+        return {
+            state: 'unknown', reason: `its forge account could not be read (${error.message})`,
+            ...(!addresses ? {verdict: httpProofVerdict(false, error.status)} : {})
+        }
     }
 
     const
@@ -230,13 +235,14 @@ async function readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses
  * @param {String}   options.credential            The PAT to prove.
  * @param {Function} [options.fetchFn=globalThis.fetch]
  * @param {Number}   [options.timeoutMs=10000]     Per request.
- * @returns {Promise<Object>} `{ok: true}`, or `{ok: false, reason: 'mismatch' | 'unknown'}`: another account's PAT, or
- *     an account that could not be read.
+ * @param {AbortSignal} [options.signal] Issuer's overall proof budget, combined with the request timeout.
+ * @returns {Promise<Object>} `{ok, verdict, reason?}`: transport errors and 429/5xx are unanswered;
+ *     authentication refusal and another account's PAT are refused. The reason never carries remote text.
  */
-export async function proveSeatForgeAccount({agent, credential, fetchFn = globalThis.fetch, timeoutMs = 10000}) {
-    const read = await readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses: false});
+export async function proveSeatForgeAccount({agent, credential, fetchFn = globalThis.fetch, timeoutMs = 10000, signal}) {
+    const read = await readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses: false, signal});
 
-    return read.state === 'own' ? {ok: true} : {ok: false, reason: read.state}
+    return read.state === 'own' ? {ok: true, verdict: 'proved'} : {ok: false, verdict: read.verdict ?? 'refused', reason: read.state}
 }
 
 /**
@@ -336,9 +342,9 @@ export async function convergeSeatGitIdentity({repoPath, identity, env = process
         };
 
     const
-        dirs     = await Promise.all([git(['rev-parse', '--absolute-git-dir']), git(['rev-parse', '--git-common-dir'])]),
+        dirs                = await Promise.all([git(['rev-parse', '--absolute-git-dir']), git(['rev-parse', '--git-common-dir'])]),
         [gitDir, commonDir] = await Promise.all(dirs.map(dir => fs.realpath(path.resolve(repoPath, dir)))),
-        scope    = gitDir === commonDir ? 'local' : 'worktree',
+        scope               = gitDir === commonDir ? 'local' : 'worktree',
         // a linked worktree has a scope of its own only once the repository enables per-worktree config
         readable = scope === 'local' || await read(['config', '--local', '--type=bool', '--get', 'extensions.worktreeConfig']) === 'true',
         own      = async key => readable ? read(['config', `--${scope}`, '--get', key]) : null,

@@ -209,6 +209,13 @@ paths:
         Use this as a first-step diagnostic tool to ensure the memory system is operational before attempting other operations.
       tags: [Health]
       parameters:
+        - name: scope
+          in: query
+          required: false
+          description: "plane returns only authenticated process identity and deployedRevision, without dependency probes or a health verdict; full preserves the ordinary healthcheck."
+          schema:
+            type: string
+            enum: [full, plane]
         - name: freshObservability
           in: query
           required: false
