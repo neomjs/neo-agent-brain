@@ -197,7 +197,8 @@ async function readSlot(read, slot, params, capturedAt) {
         capability: {...snapshot.capability, slot},
         scanned   : Number.isInteger(snapshot.scanned) && snapshot.scanned >= 0 ? snapshot.scanned : null,
         counts    : Array.isArray(snapshot.counts) ? snapshot.counts : [],
-        events    : Array.isArray(snapshot.events) ? snapshot.events : []
+        events    : Array.isArray(snapshot.events) ? snapshot.events : [],
+        ...(slot === FLEET_ACTIVITY_SLOTS.a2a && snapshot.a2a ? {a2a: structuredClone(snapshot.a2a)} : {})
     }
 }
 
@@ -478,9 +479,10 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
         },
 
         /**
-         * @summary Read the requested slots, retaining only the newest viewer-bound first mailbox page.
+         * @summary Read the requested slots; explicit observers never enter ordinary mailbox retention.
          * @param {Object} params Activity selection and paging.
-         * @returns {Promise<Object>} The bounded composite activity snapshot.
+         * @returns {Promise<Object>} The bounded snapshot, with optional `a2a` admission, canonical page
+         * and continuation. A mixed cut rereads its source page through `slots: ['a2a']` before advancing.
          */
         async readActivitySnapshot(params = {}) {
             const
@@ -488,7 +490,7 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
                 bound          = normalizeBound(params.limit, limit),
                 offset         = normalizeOffset(params.offset),
                 selected       = selectSlots(params.slots, slots),
-                holdsA2A       = offset === 0 && selected.some(({slot}) => slot === FLEET_ACTIVITY_SLOTS.a2a),
+                holdsA2A       = params.observer === undefined && offset === 0 && selected.some(({slot}) => slot === FLEET_ACTIVITY_SLOTS.a2a),
                 generation     = holdsA2A ? ++newestA2ARead : null,
                 viewerIdentity = holdsA2A ? resolveViewerIdentity() : null,
                 // Every asked slot is read even when one is expected to fail: a contributor that cannot
@@ -506,10 +508,18 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
                 viewerIdentity && lanes.fold(viewerIdentity, a2a)
             }
 
+            const events             = boundEvents(contributions.flatMap(contribution => contribution.events), bound),
+                  a2a                = contributions.find(contribution => contribution.a2a),
+                  visible            = new Set(events.map(event => event.eventId)),
+                  omitted            = a2a?.events.some(event => !visible.has(event.eventId)),
+                  continuationOffset = omitted ? a2a.a2a.page.offset : a2a?.a2a.page.nextOffset;
+
             return {
                 capability: composeCapability(contributions.map(contribution => contribution.capability), capturedAt),
                 counts    : composeCounts(contributions),
-                events    : boundEvents(contributions.flatMap(contribution => contribution.events), bound)
+                events,
+                ...(a2a ? {a2a: {...a2a.a2a, continuation: continuationOffset === null
+                    ? null : {slots: [FLEET_ACTIVITY_SLOTS.a2a], offset: continuationOffset}}} : {})
             }
         }
     }

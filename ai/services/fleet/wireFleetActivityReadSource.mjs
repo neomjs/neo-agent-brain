@@ -5,6 +5,7 @@ import {makeReadPrLaneSnapshot}        from './readPrLaneActivitySnapshot.mjs';
 import {withProducerPrLane}            from './producerPrLaneEvents.mjs';
 import {resolveContentOrigins}         from '../graph/contentOrigins.mjs';
 import {CORPUS_PROJECTION_ORIGIN}      from '../graph/corpusProjectionContract.mjs';
+import {normalizeMailboxObserver}      from '../memory-core/helpers/mailboxObservation.mjs';
 
 /**
  * @module ai/services/fleet/wireFleetActivityReadSource
@@ -36,17 +37,25 @@ import {CORPUS_PROJECTION_ORIGIN}      from '../graph/corpusProjectionContract.m
  * @summary The A2A slot reader — one bounded snapshot over the injected mailbox read path. The caller
  * owns the `listMessages` binding, so a broken/absent mailbox surfaces as this slot's own degraded
  * capability rather than a composer guess about it. The composer's page offset becomes the mailbox
- * query's `offset`; the first page asks without one, as it always has.
+ * query's `offset`; the first page asks without one. An explicit closed observer selector uses the
+ * same canonical non-stamping list path in local and plane bindings, with no identity supplied by UI.
  * @param {Function} listMessages MailboxService-compatible `listMessages(args)`.
  * @returns {Function} `params => Promise<{capability, events}>`
  * @private
  */
 function makeReadA2ASnapshot(listMessages) {
-    return params => readFleetA2AActivitySnapshot({
-        listArgs: params.offset > 0 ? {offset: params.offset} : {},
-        listMessages,
-        limit   : params.limit
-    })
+    return params => {
+        const listArgs = params.offset > 0 ? {offset: params.offset} : {};
+
+        if (params.observer !== undefined) {
+            if (Object.keys(params).some(key => !['observer', 'limit', 'offset', 'slots'].includes(key))) {
+                throw new TypeError('observer activity accepts only observer, limit, offset and slots; identity is server-bound')
+            }
+            listArgs.observer = normalizeMailboxObserver(params.observer)
+        }
+
+        return readFleetA2AActivitySnapshot({listArgs, listMessages, limit: params.limit})
+    }
 }
 
 /**

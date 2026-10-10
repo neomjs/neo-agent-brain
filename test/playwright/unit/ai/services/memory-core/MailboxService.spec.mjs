@@ -323,9 +323,9 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
      */
     function seedObserverMessage(id, properties = {}) {
         GraphService.upsertNode({id, type: 'MESSAGE', name: 'observer witness', properties: {
-            subject: 'observer witness', bodyText: 'which option?', sentAt: '2026-10-09T07:00:00.000Z',
+            subject : 'observer witness', bodyText: 'which option?', sentAt: '2026-10-09T07:00:00.000Z',
             priority: 'high', readAt: null, seenAt: null,
-            task: {state: 'InputRequired', assignee: '@bob', inputs: {privatePayload: 'do not project'}},
+            task    : {state: 'InputRequired', assignee: '@bob', inputs: {privatePayload: 'do not project'}},
             ...properties
         }});
         GraphService.linkNodes(id, '@alice', 'SENT_BY');
@@ -336,11 +336,11 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         const id = 'MESSAGE:observer-mcp-boundary';
         seedObserverMessage(id);
         const sqlite = GraphService.db.storage.db,
-            before = sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data;
+            before   = sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data;
 
         await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
             const page = await callMemoryCoreTool('list_messages', {
-                observer: {scope: 'own'}, box: 'inbox', status: 'all', includeArchived: true,
+                observer  : {scope: 'own'}, box: 'inbox', status: 'all', includeArchived: true,
                 taskStates: ['InputRequired', 'Submitted', 'Working'], taskOrder: 'priority-age', limit: 1
             });
             expect(page).toMatchObject({totalCount: 1, truncated: false, nextOffset: null, limit: 1, offset: 0,
@@ -352,6 +352,16 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             expect(detail.body).toBe('which option?');
             expect(detail.task).toEqual({state: 'InputRequired'});
             expect(detail.observation.admissionKey).toBe(page.observation.admissionKey);
+            expect(sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data).toBe(before);
+
+            const {wireFleetActivityReadSource} = await import('../../../../../../ai/services/fleet/wireFleetActivityReadSource.mjs'),
+                activity                        = wireFleetActivityReadSource({
+                    bridge    : {}, listMessages: args => MailboxService.listMessages(args),
+                    readPrLane: async () => ({capability: {state: 'wired'}, events: []})
+                }),
+                observedActivity = await activity.readActivitySnapshot({observer: {scope: 'own'}, limit: 1, slots: ['a2a']});
+            expect(observedActivity.a2a.observation).toEqual(page.observation);
+            expect(observedActivity.events[0].payload.messageId).toBe(id);
             expect(sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data).toBe(before);
 
             await callMemoryCoreTool('list_messages', {box: 'inbox', limit: 1});
@@ -370,7 +380,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             await RequestContextService.run({agentIdentityNodeId: viewer}, async () => {
                 const ordinary = await callMemoryCoreTool('list_messages', {});
                 expect(ordinary.totalCount).toBe(0);
-                const team = await callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'team'}}),
+                const team           = await callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'team'}}),
                     configuredPolicy = mailboxAiConfig.memorySharing.defaultPolicy;
                 expect(team.totalCount).toBe(configuredPolicy === 'team' ? 1 : 0);
                 expect(team.observation).toMatchObject({viewer, policy: configuredPolicy, clamped: configuredPolicy !== 'team'});
@@ -387,7 +397,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             });
         }
         const asObserver = fn => RequestContextService.run({agentIdentityNodeId: '@observer-agent'}, fn);
-        const before = await asObserver(() => callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'private'}}));
+        const before     = await asObserver(() => callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'private'}}));
         await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => PermissionService.grantPermission({to: '@observer-agent', scope: 'CAN_READ_INBOX_OF'}));
         const granted = await asObserver(() => callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'private'}}));
         expect(granted.totalCount).toBe(1);
@@ -405,15 +415,15 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         GraphService.upsertNode({id: viewer, type: 'AgentIdentity', name: viewer, properties: {accountType: 'agent'}});
         await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => PermissionService.grantPermission({to: viewer, scope: 'CAN_READ_INBOX_OF'}));
         const memory = GraphService.db.storage.db,
-            file = path.join(os.tmpdir(), `observer-revoke-${process.pid}-${Date.now()}.sqlite`);
+            file     = path.join(os.tmpdir(), `observer-revoke-${process.pid}-${Date.now()}.sqlite`);
         fs.writeFileSync(file, memory.serialize());
         const reader = new Database(file);
         reader.pragma('journal_mode = WAL');
         const writer = new Database(file), prepare = reader.prepare,
             asViewer = fn => RequestContextService.run({agentIdentityNodeId: viewer}, fn),
-            read = () => asViewer(() => callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'private'}})),
-            grant = writer.prepare("SELECT * FROM Edges WHERE source = ? AND type = 'CAN_READ_INBOX_OF'").get(viewer),
-            revoke = () => writer.prepare('DELETE FROM Edges WHERE id = ?').run(grant.id);
+            read     = () => asViewer(() => callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'private'}})),
+            grant    = writer.prepare("SELECT * FROM Edges WHERE source = ? AND type = 'CAN_READ_INBOX_OF'").get(viewer),
+            revoke   = () => writer.prepare('DELETE FROM Edges WHERE id = ?').run(grant.id);
         GraphService.db.storage.db = reader;
         try {
             const admitted = await read();
@@ -452,12 +462,12 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
     });
 
     test('#921: composed Fleet host and plane SDK observer reads do not stamp the admitted mailbox', async () => {
-        const {default: bridge} = await import('../../../../../../ai/services/fleet/FleetControlBridge.mjs'),
-            {wireOperatorComposeWriter} = await import('../../../../../../ai/services/fleet/wireOperatorComposeWriter.mjs'),
-            {createPlaneMailboxClient} = await import('../../../../../../ai/services/fleet/planeMailboxClient.mjs'),
+        const {default: bridge}              = await import('../../../../../../ai/services/fleet/FleetControlBridge.mjs'),
+            {wireOperatorComposeWriter}      = await import('../../../../../../ai/services/fleet/wireOperatorComposeWriter.mjs'),
+            {createPlaneMailboxClient}       = await import('../../../../../../ai/services/fleet/planeMailboxClient.mjs'),
             {listTools: listMemoryCoreTools} = await import('../../../../../../ai/mcp/server/memory-core/toolService.mjs'),
-            id = 'MESSAGE:observer-fleet-composition';
-        let oldPlane = false, contentCalls = 0;
+            id                               = 'MESSAGE:observer-fleet-composition';
+        let   oldPlane       = false, contentCalls = 0;
         const archivedOpenId = 'MESSAGE:observer-fleet-archived-open',
             workingOpenId = 'MESSAGE:observer-fleet-working-open',
             terminalId = 'MESSAGE:observer-fleet-terminal',
@@ -473,7 +483,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             };
         seedObserverMessage(id, {priority: 'normal', sentAt: '2026-10-09T07:00:00.000Z'});
         seedQuestion(archivedOpenId, {
-            state: 'Submitted', priority: 'high', sentAt: '2026-10-09T06:00:00.000Z',
+            state     : 'Submitted', priority: 'high', sentAt: '2026-10-09T06:00:00.000Z',
             archivedAt: '2026-10-09T07:30:00.000Z'
         });
         seedQuestion(workingOpenId, {state: 'Working', priority: 'low', sentAt: '2026-10-09T05:00:00.000Z'});
@@ -491,14 +501,14 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
                 status: 200, headers: {'content-type': 'application/json', 'mcp-session-id': 'observer-fixture'}
             }),
             plane = createPlaneMailboxClient({
-                baseUrl: 'http://127.0.0.1:3102/mc/mcp',
+                baseUrl  : 'http://127.0.0.1:3102/mc/mcp',
                 fetchImpl: async (url, init = {}) => {
                     if (init.method === 'GET') return new Response(null, {status: 405});
                     if (init.method === 'DELETE') return new Response(null, {status: 200});
                     const request = JSON.parse(init.body);
                     if (request.method === 'initialize') return rpcReply(request, {
                         protocolVersion: request.params.protocolVersion, capabilities: {tools: {}},
-                        serverInfo: {name: 'observer-fixture', version: '1'}
+                        serverInfo     : {name: 'observer-fixture', version: '1'}
                     });
                     if (request.method === 'notifications/initialized') return new Response(null, {status: 202});
                     if (request.method === 'tools/list') {
@@ -523,8 +533,8 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             for (const mode of ['host', 'plane']) {
                 const seam = {};
                 wireOperatorComposeWriter({
-                    bridge: seam, addMessage: () => {throw new Error('observation must never send')},
-                    getMessage: mode === 'host' ? args => MailboxService.getMessage(args) : args => plane.getMessage(args),
+                    bridge         : seam, addMessage: () => {throw new Error('observation must never send')},
+                    getMessage     : mode === 'host' ? args => MailboxService.getMessage(args) : args => plane.getMessage(args),
                     observeMessages: mode === 'host'
                         ? args => MailboxService.listMessages({...args, observer: args.observer ?? {scope: 'own'}})
                         : args => plane.listMessages({...args, observer: args.observer ?? {scope: 'own'}})
@@ -533,17 +543,17 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
                 await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
                     const page = await bridge.fleetMailboxMirror.call(seam, {
                         observer: {scope: 'own'}, taskStates: ['InputRequired'], taskOrder: 'priority-age',
-                        limit: 1, includeArchived: true
+                        limit   : 1, includeArchived: true
                     });
                     expect(page.totalCount, mode).toBe(1);
                     const detail = await bridge.fleetOwnMessage.call(seam, {messageId: id, observer: {scope: 'own'}});
                     expect(detail.body, mode).toBe('which option?');
                     expect(detail.observation.admissionKey).toBe(page.observation.admissionKey);
 
-                    const questions = await bridge.fleetOwnQuestions.call(seam, {limit: 1, offset: 0}),
-                        nextQuestions = await bridge.fleetOwnQuestions.call(seam, {limit: 1, offset: 1}),
+                    const questions    = await bridge.fleetOwnQuestions.call(seam, {limit: 1, offset: 0}),
+                        nextQuestions  = await bridge.fleetOwnQuestions.call(seam, {limit: 1, offset: 1}),
                         finalQuestions = await bridge.fleetOwnQuestions.call(seam, {limit: 1, offset: 2}),
-                        home = await bridge.fleetOpenWork.call(seam);
+                        home           = await bridge.fleetOpenWork.call(seam);
 
                     expect(questions, `${mode}: first open-question page`).toMatchObject({
                         state: 'ok', reason: null, count: 3, page: {limit: 1, offset: 0, count: 1, hasMore: true}
@@ -565,7 +575,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             await plane.close();
             oldPlane = true;
             expect(await plane.init({expectedIdentity: '@bob'})).toMatchObject({ok: true});
-            const priorCalls = contentCalls;
+            const priorCalls           = contentCalls;
             const unavailableQuestions = await bridge.fleetOwnQuestions.call(seams.plane, {limit: 1, offset: 0}),
                 unavailableHome = await bridge.fleetOpenWork.call(seams.plane);
 
@@ -591,7 +601,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         const id = 'MESSAGE:observer-retracted';
         seedObserverMessage(id, {retracted: true, bodyText: 'old text must stay hidden'});
         await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
-            const list = await callMemoryCoreTool('list_messages', {observer: {scope: 'own'}});
+            const list   = await callMemoryCoreTool('list_messages', {observer: {scope: 'own'}});
             const detail = await callMemoryCoreTool('get_message', {messageId: id, observer: {scope: 'own'}});
             expect(list.totalCount).toBe(1);
             expect(detail).toMatchObject({subject: '[retracted by sender]', body: '[retracted by sender]', retracted: true});

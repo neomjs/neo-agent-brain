@@ -1029,8 +1029,10 @@ class FleetControlBridge extends Base {
      * mirroring {@link #getBootIdentity}'s advisory-empty degrade, so the cockpit renders a
      * "feed not wired" state rather than a silent freeze or invented traffic.
      * @param {Object} [params] Optional bounds forwarded to the source: `limit`, the A2A lane's page
-     *     `offset`, and `slots`, the lanes to read (a history page asks `['a2a']`).
-     * @returns {Promise<Object>|Object} `{capability, events}` — the bounded cockpit activity snapshot.
+     *     `offset`, and `slots`, the lanes to read (a history page asks `['a2a']`). Explicit `observer`
+     *     uses the canonical non-stamping mailbox read; identity remains server-bound.
+     * @returns {Promise<Object>|Object} `{capability, counts, events, a2a?}`. `a2a` carries canonical
+     *     `observation` and `page` metadata plus a safe `continuation` through the A2A-only slot.
      */
     fleetActivity(params) {
         return this.activitySource
@@ -1358,8 +1360,8 @@ class FleetControlBridge extends Base {
      */
     fleetOwnMessage(params = {}) {
         const {messageId, observer} = params ?? {};
-        const args = {messageId};
-        let invalid = null;
+        const args                  = {messageId};
+        let   invalid               = null;
 
         if (observer !== undefined) {
             try {
