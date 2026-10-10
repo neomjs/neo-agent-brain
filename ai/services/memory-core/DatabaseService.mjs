@@ -57,10 +57,11 @@ class DatabaseService extends Base {
      * @param {String} backupPath The directory to save the backup file.
      * @param {String} filePrefix The prefix for the backup filename.
      * @param {String} collectionName Stable collection label for logs, stats, and fail-loud errors.
-     * @returns {Promise<{collection: String, collectionId: String|null, backupFile: String|null, expected: Number, exported: Number, skipped: Number, skippedIds: String[]}>} Export statistics.
+     * @param {String} [payloadEncoding='jsonl'] A `bundlePayload` encoding token; the daily bundle asks for `jsonl+br`.
+     * @returns {Promise<{collection: String, collectionId: String|null, backupFile: String|null, payloadEncoding: String|null, expected: Number, exported: Number, skipped: Number, skippedIds: String[]}>} Export statistics.
      * @private
      */
-    async #exportCollection(collection, backupPath, filePrefix, collectionName = collection.name || filePrefix) {
+    async #exportCollection(collection, backupPath, filePrefix, collectionName = collection.name || filePrefix, payloadEncoding = 'jsonl') {
         logger.log(`Fetching all documents from "${collectionName}"...`);
 
         // Identity, captured beside the name and never in place of it. The name survives a promotion
@@ -103,7 +104,7 @@ class DatabaseService extends Base {
 
         await fs.ensureDir(backupPath);
         const timestamp   = new Date().toISOString().replace(/:/g, '-');
-        const backupFile  = path.join(backupPath, bundlePayloadFileName(filePrefix, timestamp));
+        const backupFile  = path.join(backupPath, bundlePayloadFileName(filePrefix, timestamp, payloadEncoding));
         const writeStream = createBundlePayloadWriteStream(backupFile);
         const stats       = {
             collection     : collectionName,
@@ -219,12 +220,13 @@ class DatabaseService extends Base {
      * Helper method to export the Native Graph (Nodes and Edges) as JSONL.
      * @param {String} backupPath The directory to save the backup file.
      * @param {String} filePrefix The prefix for the backup filename.
-     * @returns {Promise<{collection: String, backupFile: String|null, expected: Number, exported: Number, skipped: Number, skippedIds: String[]}>} Export statistics preserving source-row completeness.
+     * @param {String} [payloadEncoding='jsonl'] A `bundlePayload` encoding token; the daily bundle asks for `jsonl+br`.
+     * @returns {Promise<{collection: String, backupFile: String|null, payloadEncoding: String|null, expected: Number, exported: Number, skipped: Number, skippedIds: String[]}>} Export statistics preserving source-row completeness.
      * @throws {Error} `GRAPH_COUNT_QUERY_FAILED` when the source tables cannot be counted.
      * @throws {Error} `PARTIAL_COLLECTION_EXPORT` when one or more counted rows cannot be exported.
      * @private
      */
-    async #exportGraph(backupPath, filePrefix) {
+    async #exportGraph(backupPath, filePrefix, payloadEncoding = 'jsonl') {
         logger.log(`Fetching all nodes and edges from the native graph...`);
         const GraphService   = (await import('./GraphService.mjs')).default,
               collectionName = 'native-graph',
@@ -279,7 +281,7 @@ class DatabaseService extends Base {
         await fs.ensureDir(backupPath);
 
         const timestamp   = new Date().toISOString().replace(/:/g, '-');
-        const backupFile  = path.join(backupPath, bundlePayloadFileName(filePrefix, timestamp));
+        const backupFile  = path.join(backupPath, bundlePayloadFileName(filePrefix, timestamp, payloadEncoding));
         const writeStream = createBundlePayloadWriteStream(backupFile);
         const stats       = {
             collection     : collectionName,
@@ -407,30 +409,32 @@ class DatabaseService extends Base {
      * @param {Object}    options
      * @param {String[]} [options.include=['memories','summaries','temporal-summaries','graph']] Array of collections to export.
      * @param {String}   [options.backupPath=aiConfig.backupPath]           Directory for the JSONL artifacts.
+     * @param {String}   [options.payloadEncoding='jsonl']                   A `bundlePayload` encoding token. The daily
+     *                   bundle asks for `jsonl+br`; every other caller keeps the plain JSONL it always received.
      * @returns {Promise<Object>}
      */
-    async exportDatabase({include=['memories', 'summaries', 'temporal-summaries', 'graph'], backupPath = aiConfig.backupPath} = {}) {
+    async exportDatabase({include=['memories', 'summaries', 'temporal-summaries', 'graph'], backupPath = aiConfig.backupPath, payloadEncoding = 'jsonl'} = {}) {
         try {
             logger.log('Starting agent memory export...');
             let memoryStats = null, summaryStats = null, temporalSummaryStats = null, graphStats = null;
 
             if (include.includes('memories')) {
                 const collection = await StorageRouter.getMemoryCollection();
-                memoryStats      = await this.#exportCollection(collection, backupPath, 'memory-backup', aiConfig.collections.memory);
+                memoryStats      = await this.#exportCollection(collection, backupPath, 'memory-backup', aiConfig.collections.memory, payloadEncoding);
             }
 
             if (include.includes('summaries')) {
                 const collection = await StorageRouter.getSummaryCollection();
-                summaryStats     = await this.#exportCollection(collection, backupPath, 'summaries-backup', aiConfig.collections.session);
+                summaryStats     = await this.#exportCollection(collection, backupPath, 'summaries-backup', aiConfig.collections.session, payloadEncoding);
             }
 
             if (include.includes('temporal-summaries')) {
                 const collection = await StorageRouter.getTemporalSummaryCollection();
-                temporalSummaryStats = await this.#exportCollection(collection, backupPath, 'temporal-summary-backup', aiConfig.collections.temporalSummary);
+                temporalSummaryStats = await this.#exportCollection(collection, backupPath, 'temporal-summary-backup', aiConfig.collections.temporalSummary, payloadEncoding);
             }
 
             if (include.includes('graph')) {
-                graphStats = await this.#exportGraph(backupPath, 'graph-backup')
+                graphStats = await this.#exportGraph(backupPath, 'graph-backup', payloadEncoding)
             }
 
             const memoryCount          = memoryStats?.exported || 0,

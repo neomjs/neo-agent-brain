@@ -5,6 +5,7 @@ import path           from 'path';
 import zlib           from 'zlib';
 
 import {
+    BUNDLE_EXPORT_ENCODING,
     BUNDLE_PAYLOAD_ENCODINGS,
     BUNDLE_PAYLOAD_EXTENSION,
     bundlePayloadEncoding,
@@ -73,10 +74,14 @@ test.describe('ai/services/shared/bundlePayload — one encoding decision for ev
         expect(Object.values(BUNDLE_PAYLOAD_ENCODINGS).sort()).toEqual(['jsonl', 'jsonl+br', 'jsonl+gz']);
     });
 
-    test('new exports are named with the compressed extension, in one place', () => {
+    test('an export is plain unless its caller asks; the daily bundle asks in one place', () => {
         expect(BUNDLE_PAYLOAD_EXTENSION).toBe('.jsonl.br');
-        expect(bundlePayloadFileName('memory-backup', '2026-10-10T13-15-00.000Z')).toBe('memory-backup-2026-10-10T13-15-00.000Z.jsonl.br');
-        expect(bundlePayloadEncoding(bundlePayloadFileName('graph-backup', 'ts'))).toBe('jsonl+br');
+        expect(BUNDLE_EXPORT_ENCODING).toBe('jsonl+br');
+        // The default is the file every exporter consumer received before compression: the release uploader reads it.
+        expect(bundlePayloadFileName('knowledge-base-backup', '2026-10-10T13-15-00.000Z')).toBe('knowledge-base-backup-2026-10-10T13-15-00.000Z.jsonl');
+        expect(bundlePayloadFileName('memory-backup', '2026-10-10T13-15-00.000Z', BUNDLE_EXPORT_ENCODING)).toBe('memory-backup-2026-10-10T13-15-00.000Z.jsonl.br');
+        expect(bundlePayloadEncoding(bundlePayloadFileName('graph-backup', 'ts', 'jsonl+gz'))).toBe('jsonl+gz');
+        expect(() => bundlePayloadFileName('graph-backup', 'ts', 'zip')).toThrow(/not a bundle payload/);
     });
 
     for (const extension of Object.keys(BUNDLE_PAYLOAD_ENCODINGS)) {

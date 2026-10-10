@@ -95,9 +95,10 @@ test.describe('Memory_DatabaseService — backupPath routing (#10129 Phase 2 pre
         Memory_StorageRouter.getSummaryCollection = async () => fakeCollection(summaryRows, 'fake-summaries');
 
         const result = await Memory_DatabaseService.manageDatabaseBackup({
-            action    : 'export',
-            include   : ['memories', 'summaries'],
-            backupPath: tmpDir
+            action         : 'export',
+            include        : ['memories', 'summaries'],
+            backupPath     : tmpDir,
+            payloadEncoding: 'jsonl+br'
         });
 
         expect(result.message).toMatch(/Exported 1 memories, 1 summaries/);
@@ -116,7 +117,7 @@ test.describe('Memory_DatabaseService — backupPath routing (#10129 Phase 2 pre
         expect(result.summaries.collectionId).toBe('fake-summaries-collection-id');
         expect(result.memories.collectionId).not.toMatch(/^neo-base-\d+$/u);
 
-        // Written compressed at the head; each exporter's receipt names the encoding.
+        // Written compressed when the daily bundle asks; each exporter's receipt names the encoding.
         const produced = fs.readdirSync(tmpDir).filter(f => f.endsWith('.jsonl.br')).sort();
         expect(produced.length).toBe(2);
         expect(result.memories.payloadEncoding).toBe('jsonl+br');

@@ -170,15 +170,16 @@ test.describe('KB_DatabaseService — manageDatabaseBackup (#10129 Phase 1)', ()
         KB_ChromaManager.getKnowledgeBaseCollection = async () => fakeCollection;
 
         const result = await KB_DatabaseService.manageDatabaseBackup({
-            action    : 'export',
-            backupPath: tmpBackupDir
+            action         : 'export',
+            backupPath     : tmpBackupDir,
+            payloadEncoding: 'jsonl+br'
         });
 
         expect(result.message).toMatch(/Exported 2 knowledge base chunks/);
         // Numeric count surfaced for the backup orchestrator's verifyBundleIntegrity KB row-count parity.
         expect(result.count).toBe(2);
 
-        // Written compressed at the head; the receipt names the encoding.
+        // Written compressed when the daily bundle asks; the receipt names the encoding.
         const produced = fs.readdirSync(tmpBackupDir)
             .filter(f => f.startsWith('knowledge-base-backup-') && f.endsWith('.jsonl.br'));
         expect(produced).toHaveLength(1);
@@ -191,6 +192,32 @@ test.describe('KB_DatabaseService — manageDatabaseBackup (#10129 Phase 1)', ()
         expect(records).toHaveLength(2);
         expect(records[0]).toEqual({id: 'id-1', embedding: [0.1, 0.2], metadata: {kind: 'class'},  document: 'doc-1'});
         expect(records[1]).toEqual({id: 'id-2', embedding: [0.3, 0.4], metadata: {kind: 'method'}, document: 'doc-2'});
+    });
+
+    test('the release uploader still finds a plain JSONL export it did not ask to compress — the exporter serves two consumers', async () => {
+        // The same export SDK stages the Knowledge Base release artifact (`uploadKnowledgeBase.mjs`),
+        // whose selector and packer consume plain JSONL. A default export must stay that file.
+        const {resolveSingleArtifactJsonl} = await import('../../../../../../ai/scripts/maintenance/knowledgeBaseArtifact.mjs');
+        const stageDir                     = path.join(tmpBackupDir, 'release-stage');
+        const rows                         = [{id: 'rel-1', embedding: [0.5, 0.6], metadata: {kind: 'class'}, document: 'doc'}];
+
+        KB_ChromaManager.getKnowledgeBaseCollection = async () => ({
+            name : 'fake-kb-release',
+            count: async () => rows.length,
+            get  : async ({include = []} = {}) => include.length === 0
+                ? {ids: rows.map(r => r.id)}
+                : {ids: rows.map(r => r.id), documents: rows.map(r => r.document), metadatas: rows.map(r => r.metadata), embeddings: rows.map(r => r.embedding)}
+        });
+
+        const result = await KB_DatabaseService.manageDatabaseBackup({action: 'export', backupPath: stageDir});
+
+        expect(result.count).toBe(1);
+        expect(result.payloadEncoding).toBe('jsonl');
+
+        const jsonlPath = await resolveSingleArtifactJsonl({artifactDir: stageDir});
+
+        expect(path.basename(jsonlPath)).toMatch(/^knowledge-base-backup-.*\.jsonl$/);
+        expect(JSON.parse(fs.readFileSync(jsonlPath, 'utf8').trim())).toEqual(rows[0]);
     });
 
     test('returns gracefully without producing a JSONL when the collection is empty', async () => {

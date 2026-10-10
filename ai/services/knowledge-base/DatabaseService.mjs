@@ -180,7 +180,9 @@ class DatabaseService extends Base {
      *
      * @param {Object}  options
      * @param {String} [options.backupPath=aiConfig.backupPath] Directory for the JSONL artifact.
-     * @returns {Promise<{message: String, status: String, reason: String|null, count: Number, expected: Number, collectionId: String|null}>}
+     * @param {String} [options.payloadEncoding='jsonl'] A `bundlePayload` encoding token. The daily bundle
+     *          asks for `jsonl+br`; the release uploader and every other caller keep plain JSONL.
+     * @returns {Promise<{message: String, status: String, reason: String|null, count: Number, expected: Number, collectionId: String|null, payloadEncoding: String|null}>}
      *          `status` is the branchable field — `degraded` when the source collection was empty, so a
      *          consumer never has to string-match the prose to learn the bundle holds no KB rows.
      *          `expected` is the pre-pass collection count, carried so a zero has something to be zero
@@ -195,12 +197,12 @@ class DatabaseService extends Base {
      *          degrades that axis to `unknown` rather than asserting continuity.
      *          See `ai/services/shared/captureReceipt.mjs`.
      */
-    async exportDatabase({backupPath = aiConfig.backupPath} = {}) {
+    async exportDatabase({backupPath = aiConfig.backupPath, payloadEncoding: requestedEncoding = 'jsonl'} = {}) {
         try {
             logger.log('Starting knowledge base export...');
             const collection                                     = await ChromaManager.getKnowledgeBaseCollection();
             const bootstrapped                                   = ChromaManager.knowledgeBaseCollectionBootstrapped;
-            const {expected, exported, payloadEncoding, verdict} = await this.#exportCollection(collection, backupPath, 'knowledge-base-backup');
+            const {expected, exported, payloadEncoding, verdict} = await this.#exportCollection(collection, backupPath, 'knowledge-base-backup', requestedEncoding);
 
             // A zero-row export against a POPULATED collection already throws upstream
             // (`PARTIAL_COLLECTION_EXPORT`). What reaches here is an empty corpus — a real state, and
@@ -268,7 +270,7 @@ class DatabaseService extends Base {
      *          certify a bundle.
      * @private
      */
-    async #exportCollection(collection, backupPath, filePrefix) {
+    async #exportCollection(collection, backupPath, filePrefix, payloadEncoding = 'jsonl') {
         logger.log(`Fetching all documents from "${collection.name}"...`);
 
         const count = await collection.count();
@@ -281,7 +283,7 @@ class DatabaseService extends Base {
 
         await fs.ensureDir(backupPath);
         const timestamp   = new Date().toISOString().replace(/:/g, '-');
-        const backupFile  = path.join(backupPath, bundlePayloadFileName(filePrefix, timestamp));
+        const backupFile  = path.join(backupPath, bundlePayloadFileName(filePrefix, timestamp, payloadEncoding));
         const writeStream = createBundlePayloadWriteStream(backupFile);
 
         const limit    = 2000;

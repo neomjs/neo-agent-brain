@@ -29,9 +29,10 @@ import zlib       from 'zlib';
  * decompressor alone, with the file's errors forwarded onto it and the file closed when it closes,
  * so a missing file rejects with `ENOENT`, a torn compressed file with `Z_BUF_ERROR`, and bytes that
  * are not brotli under a `.br` name with a format error. A torn bundle therefore fails the restore
- * probe loudly instead of reading as a shorter valid one. On the write side,
- * `compose(compressor, fileStream)` makes `end()`'s callback wait for the FILE to finish and close,
- * so a receipt written after it describes bytes on disk.
+ * probe loudly instead of reading as a shorter valid one. On the write side the composed writer's
+ * `end()` callback fires on `'finish'`, before a deferred file error can surface, so the completion
+ * and error boundary is {@link endBundlePayload}: a receipt written after it awaits describes bytes
+ * on disk, or never gets written.
  *
  * @module ai/services/shared/bundlePayload
  */
@@ -52,10 +53,20 @@ export const BUNDLE_PAYLOAD_ENCODINGS = Object.freeze({
 });
 
 /**
- * @summary The extension every exported payload (kb, mc, graph) is written with at the head.
+ * @summary The extension the daily bundle's exported payloads (kb, mc, graph) are written with.
+ *
+ * The bundle orchestrator asks for it; the exporters themselves default to plain `.jsonl`, because
+ * the same export SDK serves the Knowledge Base release artifact, whose staging selector and
+ * packer consume plain JSONL and refuse anything else.
  * @type {String}
  */
 export const BUNDLE_PAYLOAD_EXTENSION = '.jsonl.br';
+
+/**
+ * @summary The `payloadEncoding` token the daily bundle passes to every exporter.
+ * @type {String}
+ */
+export const BUNDLE_EXPORT_ENCODING = BUNDLE_PAYLOAD_ENCODINGS[BUNDLE_PAYLOAD_EXTENSION];
 
 /**
  * @summary Brotli quality for exports. Measured on today's rows: quality 4 gives 2.8× at 2.3 s per
@@ -99,13 +110,22 @@ export function isBundlePayload(name) {
 }
 
 /**
- * @summary Names a new export payload: `<prefix>-<timestamp><BUNDLE_PAYLOAD_EXTENSION>`.
+ * @summary Names a new export payload: `<prefix>-<timestamp>` plus the extension of its encoding.
  * @param {String} prefix The exporter's file prefix, e.g. `memory-backup`.
  * @param {String} timestamp The bundle's file-safe ISO timestamp.
+ * @param {String} [encoding='jsonl'] A {@link BUNDLE_PAYLOAD_ENCODINGS} token; plain JSONL unless
+ *     the caller asks, so an exporter's existing consumers keep the file they always received.
  * @returns {String}
+ * @throws {Error} `BUNDLE_PAYLOAD_EXTENSION` when the token is not an encoding.
  */
-export function bundlePayloadFileName(prefix, timestamp) {
-    return `${prefix}-${timestamp}${BUNDLE_PAYLOAD_EXTENSION}`
+export function bundlePayloadFileName(prefix, timestamp, encoding = 'jsonl') {
+    const extension = Object.keys(BUNDLE_PAYLOAD_ENCODINGS).find(key => BUNDLE_PAYLOAD_ENCODINGS[key] === encoding);
+
+    if (!extension) {
+        throw notABundlePayload(`${prefix}-${timestamp} (encoding ${encoding})`);
+    }
+
+    return `${prefix}-${timestamp}${extension}`
 }
 
 /**
@@ -202,8 +222,9 @@ export function closeBundlePayload(rl) {
 /**
  * @summary Opens a payload for writing, compressing by extension. Pair with {@link endBundlePayload}.
  * @param {String} filePath Absolute path ending in a {@link BUNDLE_PAYLOAD_ENCODINGS} key.
- * @returns {import('stream').Writable} For a compressed extension, a stream whose `end()` callback
- *     waits for the file to finish and close.
+ * @returns {import('stream').Writable} A stream to write lines to. Its `end()` callback is not the
+ *     completion boundary: await {@link endBundlePayload}, which settles on `'close'` and rejects
+ *     on any error, including a file that could not be opened.
  * @throws {Error} `BUNDLE_PAYLOAD_EXTENSION` when the name is not a payload.
  */
 export function createBundlePayloadWriteStream(filePath) {

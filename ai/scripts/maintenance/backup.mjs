@@ -22,9 +22,9 @@ import {
     Memory_LifecycleService
 } from '../../services.mjs';
 
-import {RECOVERY_SUBSTRATES}                from '../../services/memory-core/helpers/bundleIntegrity.mjs';
-import {isBundlePayload, openBundlePayload} from '../../services/shared/bundlePayload.mjs';
-import {buildSourceReceipt}                 from '../../services/shared/captureReceipt.mjs';
+import {RECOVERY_SUBSTRATES}                                        from '../../services/memory-core/helpers/bundleIntegrity.mjs';
+import {BUNDLE_EXPORT_ENCODING, isBundlePayload, openBundlePayload} from '../../services/shared/bundlePayload.mjs';
+import {buildSourceReceipt}                                         from '../../services/shared/captureReceipt.mjs';
 import {
     resolveHeavyMaintenanceLeasePath,
     withHeavyMaintenanceLease
@@ -634,24 +634,30 @@ async function captureBackup({
 
     const subsystems = {};
 
+    // The bundle asks for compression; the exporters default to plain JSONL for their other callers.
+    const payloadEncoding = BUNDLE_EXPORT_ENCODING;
+
     logger.log('[1/8] Exporting Knowledge Base...');
     subsystems.kb = await KB_DatabaseService.manageDatabaseBackup({
         action    : 'export',
-        backupPath: layout.kb
+        backupPath: layout.kb,
+        payloadEncoding
     });
 
     logger.log('[2/8] Exporting Memory Core (memories + summaries)...');
     subsystems.mc = await Memory_DatabaseService.manageDatabaseBackup({
         action    : 'export',
         include   : ['memories', 'summaries'],
-        backupPath: layout.mc
+        backupPath: layout.mc,
+        payloadEncoding
     });
 
     logger.log('[3/8] Exporting Memory Core graph...');
     subsystems.graph = await Memory_DatabaseService.manageDatabaseBackup({
         action    : 'export',
         include   : ['graph'],
-        backupPath: layout.graph
+        backupPath: layout.graph,
+        payloadEncoding
     });
 
     logger.log('[4/8] Copying Concept Ontology...');
