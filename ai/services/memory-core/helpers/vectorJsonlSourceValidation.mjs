@@ -1,7 +1,5 @@
-import fs       from 'node:fs';
-import readline from 'node:readline';
-
-import {classifyRowVector} from './vectorWriteInvariant.mjs';
+import {closeBundlePayload, openBundlePayload} from '../../shared/bundlePayload.mjs';
+import {classifyRowVector}                     from './vectorWriteInvariant.mjs';
 
 /**
  * @summary Full-source JSONL validation for import/restore entry paths: proves an entire backup
@@ -33,7 +31,7 @@ export const SOURCE_REJECTION_REASONS = Object.freeze({
  * @summary Streams one JSONL source file and validates every row, throwing on the first defect.
  *
  * @param {Object} options
- * @param {String} options.filePath Absolute path of the `.jsonl` source file.
+ * @param {String} options.filePath Absolute path of the source payload (`.jsonl`, `.jsonl.br` or `.jsonl.gz`).
  * @param {Number} options.expectedDimension Required vector dimension for vector rows.
  * @param {Boolean} [options.vectorRows=true] `false` for non-vector files (e.g. graph backups):
  *     rows are then only required to parse.
@@ -42,8 +40,7 @@ export const SOURCE_REJECTION_REASONS = Object.freeze({
  *     {@link SOURCE_REJECTION_REASONS}; vector-row failures also name the row id when present.
  */
 export async function validateJsonlSourceFile({filePath, expectedDimension, vectorRows = true}) {
-    const stream = fs.createReadStream(filePath, {encoding: 'utf8'});
-    const rl     = readline.createInterface({input: stream, crlfDelay: Infinity});
+    const rl = openBundlePayload(filePath);
 
     let lineNo   = 0,
         rowCount = 0;
@@ -77,8 +74,7 @@ export async function validateJsonlSourceFile({filePath, expectedDimension, vect
             }
         }
     } finally {
-        rl.close();
-        stream.destroy();
+        closeBundlePayload(rl);
     }
 
     return {rowCount}

@@ -156,6 +156,29 @@ test.describe('Memory_DatabaseService — Chroma preserve-live parity for #impor
         expect(memoryCollection.upsertCalls.length).toBe(0);
     });
 
+    test('merge mode: a compressed payload (.jsonl.br) goes through the same preflight as a bare one (#974)', async () => {
+        const zlib             = (await import('zlib')).default;
+        const memoryCollection = buildFakeCollection({name: 'fake-memories', liveIds: ['mem-1']});
+        Memory_StorageRouter.getMemoryCollection  = async () => memoryCollection;
+        Memory_StorageRouter.getSummaryCollection = async () => buildFakeCollection({name: 'fake-summaries'});
+
+        const backupFile = path.join(tmpDir, `memory-backup-compressed-${Date.now()}.jsonl.br`);
+        fs.writeFileSync(backupFile, zlib.brotliCompressSync(Buffer.from([
+            {id: 'mem-1', embedding: validEmbedding, metadata: {tag: 'BACKUP'}, document: 'backup-doc-for-mem-1'},
+            {id: 'mem-9', embedding: validEmbedding, metadata: {tag: 'NEW'},    document: 'new-doc-mem-9'}
+        ].map(record => JSON.stringify(record)).join('\n') + '\n')));
+
+        const result = await Memory_DatabaseService.manageDatabaseBackup({
+            action: 'import',
+            file  : backupFile,
+            mode  : 'merge'
+        });
+
+        expect(result.imported).toBe(1);
+        expect(result.counts.memories.skippedExisting).toBe(1);
+        expect(memoryCollection.addCalls.map(call => call.ids)).toEqual([['mem-9']]);
+    });
+
     test('merge mode: full collision = zero inserted, all skipped, add() never invoked', async () => {
         const memoryCollection = buildFakeCollection({name: 'fake-memories', liveIds: ['mem-1', 'mem-2']});
         Memory_StorageRouter.getMemoryCollection  = async () => memoryCollection;

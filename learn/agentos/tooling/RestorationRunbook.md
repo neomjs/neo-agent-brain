@@ -81,7 +81,7 @@ Two operations share this CLI and need **opposite** read-state policies. Read-st
 
 ### Pre-flight validation
 
-Before any write touches a service, the orchestrator validates the bundle: the required subdirectories exist, every `.jsonl` in each declared bundle member is parseable (a torn write / corruption fails fast), the incident ledgers' non-JSONL `heal-attempts.json` and nested `recovery-runs/*.jsonl` are parsed too, and `bundle-meta.json` (when present) parses and passes the topology check. A torn or partial bundle aborts with a clear error and zero side effects on the live substrate.
+Before any write touches a service, the orchestrator validates the bundle: the required subdirectories exist, every payload in each declared bundle member is parseable (`.jsonl`, or the brotli-compressed `.jsonl.br` that bundles written since v1 compression carry for `kb/`, `mc/` and `graph/`; a torn write / corruption fails fast), the incident ledgers' non-JSONL `heal-attempts.json` and nested `recovery-runs/*.jsonl` are parsed too, and `bundle-meta.json` (when present) parses and passes the topology check. A torn or partial bundle aborts with a clear error and zero side effects on the live substrate.
 
 **Scope of that promise, stated precisely:** validation covers files reachable from the declared bundle layout. It is not a guarantee about arbitrary content an operator drops into a bundle directory, and the restorability probe (`verifyLatestBackupRestorable`) reports `RESTORABLE` only when the bundle is both structurally valid **and** carries a non-zero row count — a bundle that parses cleanly while containing nothing is not a recovery source.
 
@@ -186,7 +186,7 @@ Memory Core memories and session summaries live as the `neo-agent-memory` and `n
 **Procedure:**
 1. Re-import the MC JSONL from the backup bundle via the SDK (`mode: 'replace'` clears and repopulates the MC collections at collection scope — no folder deletion):
    ```bash
-   node -e "import('./ai/services.mjs').then(s => s.default.memory.manageDatabaseBackup({action: 'import', file: process.env.BUNDLE_ROOT + '/backup-<timestamp>/mc/memory-backup-<timestamp>.jsonl', mode: 'replace'}))"
+   node -e "import('./ai/services.mjs').then(s => s.default.memory.manageDatabaseBackup({action: 'import', file: process.env.BUNDLE_ROOT + '/backup-<timestamp>/mc/memory-backup-<timestamp>.jsonl.br', mode: 'replace'}))"
    ```
    *(Note: For full-bundle restores, prefer the Atomic-Bundle Restore CLI above. The direct SDK import remains the manual per-subsystem fallback. Do **not** `rm -rf` the `chroma/unified` folder — it is shared with the Knowledge Base; MC restore is collection-scoped via the SDK above.)*
 
@@ -251,7 +251,7 @@ The Memory Core Edge Graph is persisted in SQLite.
    ```
 2. Re-import the Graph JSONL from the backup bundle via the SDK:
    ```bash
-   node -e "import('./ai/services.mjs').then(s => s.default.memory.manageDatabaseBackup({action: 'import', file: process.env.BUNDLE_ROOT + '/backup-<timestamp>/graph/graph-backup-<timestamp>.jsonl', mode: 'replace'}))"
+   node -e "import('./ai/services.mjs').then(s => s.default.memory.manageDatabaseBackup({action: 'import', file: process.env.BUNDLE_ROOT + '/backup-<timestamp>/graph/graph-backup-<timestamp>.jsonl.br', mode: 'replace'}))"
    ```
 
 ### 5. Concept Ontology

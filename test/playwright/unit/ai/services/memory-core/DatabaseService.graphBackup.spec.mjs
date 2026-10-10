@@ -62,9 +62,9 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
                 backupPath: ${JSON.stringify(tmpDir)}
             });
             const graphBackupFile = (await import('node:fs')).readdirSync(${JSON.stringify(tmpDir)})
-                .find(file => file.startsWith('graph-backup-') && file.endsWith('.jsonl'));
+                .find(file => file.startsWith('graph-backup-') && file.endsWith('.jsonl.br'));
             const graphBackupPath    = (await import('node:path')).join(${JSON.stringify(tmpDir)}, graphBackupFile);
-            const graphBackupContent = (await import('node:fs')).readFileSync(graphBackupPath, 'utf8');
+            const graphBackupContent = (await import('node:zlib')).brotliDecompressSync((await import('node:fs')).readFileSync(graphBackupPath)).toString('utf8');
             const graphBackupLines   = graphBackupContent.trimEnd().split('\n');
             const graphBackupRecords = graphBackupLines.map(line => JSON.parse(line));
 

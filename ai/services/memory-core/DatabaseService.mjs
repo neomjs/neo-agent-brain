@@ -2,7 +2,6 @@ import aiConfig                                                              fro
 import fs                                                                    from 'fs-extra';
 import logger                                                                from '../../mcp/server/memory-core/logger.mjs';
 import path                                                                  from 'path';
-import readline                                                              from 'readline';
 import Base                                                                  from 'neo.mjs/src/core/Base.mjs';
 import StorageRouter                                                         from './managers/StorageRouter.mjs';
 import DestructiveOperationGuard                                             from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
@@ -10,6 +9,14 @@ import {classifyExportCompleteness, EXPORT_COMPLETENESS, recordExportGrowth} fro
 import {partitionRowsByVectorValidity, summarizeVectorRejections}            from './helpers/vectorWriteInvariant.mjs';
 import {validateJsonlSourceFile}                                             from './helpers/vectorJsonlSourceValidation.mjs';
 import {importGraphJsonl}                                                    from './helpers/graphJsonlImport.mjs';
+import {
+    bundlePayloadEncoding,
+    bundlePayloadFileName,
+    createBundlePayloadWriteStream,
+    endBundlePayload,
+    isBundlePayload,
+    openBundlePayload
+} from '../shared/bundlePayload.mjs';
 
 /**
  * @summary Service for exporting and importing memory core data.
@@ -62,7 +69,7 @@ class DatabaseService extends Base {
         // Absent on sources that have no Chroma handle (the native graph); `null` degrades the
         // lineage axis to `unknown` rather than asserting continuity it cannot observe.
         //
-        // #281: this line previously read `collection?.id` unconditionally. In production every caller
+        // The source-identity fix: this line previously read `collection?.id` unconditionally. In production every caller
         // passes a `CollectionProxy` — a `Neo.core.Base` subclass whose `id` is a framework INSTANCE id
         // (`neo-base-86`) — so the receipt recorded construction order where the comment above promises
         // a source identity, and `deriveLineage` compared counters that move on restart and hold across
@@ -81,13 +88,14 @@ class DatabaseService extends Base {
         if (count === 0) {
             logger.log(`No documents found in ${collectionName} to export.`);
             return {
-                collection: collectionName,
+                collection     : collectionName,
                 collectionId,
-                backupFile: null,
-                expected  : 0,
-                exported  : 0,
-                skipped   : 0,
-                skippedIds: []
+                backupFile     : null,
+                payloadEncoding: null,
+                expected       : 0,
+                exported       : 0,
+                skipped        : 0,
+                skippedIds     : []
             }
         }
 
@@ -95,16 +103,18 @@ class DatabaseService extends Base {
 
         await fs.ensureDir(backupPath);
         const timestamp   = new Date().toISOString().replace(/:/g, '-');
-        const backupFile  = path.join(backupPath, `${filePrefix}-${timestamp}.jsonl`);
-        const writeStream = fs.createWriteStream(backupFile);
+        const backupFile  = path.join(backupPath, bundlePayloadFileName(filePrefix, timestamp));
+        const writeStream = createBundlePayloadWriteStream(backupFile);
         const stats       = {
-            collection: collectionName,
+            collection     : collectionName,
             collectionId,
             backupFile,
-            expected  : count,
-            exported  : 0,
-            skipped   : 0,
-            skippedIds: []
+            // A receipt for `bundle-meta.json`, never a reader input: readers detect by extension.
+            payloadEncoding: bundlePayloadEncoding(backupFile),
+            expected       : count,
+            exported       : 0,
+            skipped        : 0,
+            skippedIds     : []
         };
 
         // 2. Paginated Fetch
@@ -170,7 +180,7 @@ class DatabaseService extends Base {
             offset += limit;
         }
 
-        await new Promise(resolve => writeStream.end(resolve));
+        await endBundlePayload(writeStream);
 
         const verdict = classifyExportCompleteness(stats.exported, stats.expected);
 
@@ -219,12 +229,13 @@ class DatabaseService extends Base {
         const GraphService   = (await import('./GraphService.mjs')).default,
               collectionName = 'native-graph',
               emptyStats     = {
-                  collection: collectionName,
-                  backupFile: null,
-                  expected  : 0,
-                  exported  : 0,
-                  skipped   : 0,
-                  skippedIds: []
+                  collection     : collectionName,
+                  backupFile     : null,
+                  payloadEncoding: null,
+                  expected       : 0,
+                  exported       : 0,
+                  skipped        : 0,
+                  skippedIds     : []
               };
 
         // Ensure graph is initialized
@@ -268,15 +279,16 @@ class DatabaseService extends Base {
         await fs.ensureDir(backupPath);
 
         const timestamp   = new Date().toISOString().replace(/:/g, '-');
-        const backupFile  = path.join(backupPath, `${filePrefix}-${timestamp}.jsonl`);
-        const writeStream = fs.createWriteStream(backupFile);
+        const backupFile  = path.join(backupPath, bundlePayloadFileName(filePrefix, timestamp));
+        const writeStream = createBundlePayloadWriteStream(backupFile);
         const stats       = {
-            collection: collectionName,
+            collection     : collectionName,
             backupFile,
-            expected  : totalCount,
-            exported  : 0,
-            skipped   : 0,
-            skippedIds: []
+            payloadEncoding: bundlePayloadEncoding(backupFile),
+            expected       : totalCount,
+            exported       : 0,
+            skipped        : 0,
+            skippedIds     : []
         };
 
         // Export Nodes
@@ -309,7 +321,7 @@ class DatabaseService extends Base {
              }
         }
 
-        await new Promise(resolve => writeStream.end(resolve));
+        await endBundlePayload(writeStream);
 
         const verdict = classifyExportCompleteness(stats.exported, stats.expected);
 
@@ -463,7 +475,7 @@ class DatabaseService extends Base {
             let filesToImport = [];
 
             // If the user specifies a specific file
-            if (file && (file.endsWith('.jsonl') || file.endsWith('.json'))) {
+            if (file && (isBundlePayload(file) || file.endsWith('.json'))) {
                 if (!await fs.pathExists(file)) {
                     throw new Error(`Backup file not found at ${file}`);
                 }
@@ -482,7 +494,7 @@ class DatabaseService extends Base {
                         if (stat.isDirectory()) {
                             const dirFiles = await fs.readdir(sweepTarget);
                             for (const df of dirFiles) {
-                                if (df.endsWith('.jsonl')) {
+                                if (isBundlePayload(df)) {
                                     filesToImport.push(path.join(sweepTarget, df));
                                 }
                             }
@@ -701,8 +713,7 @@ class DatabaseService extends Base {
                     }
                 };
 
-                const fileStream = fs.createReadStream(filePath);
-                const rl         = readline.createInterface({input: fileStream, crlfDelay: Infinity});
+                const rl = openBundlePayload(filePath);
 
                 for await (const line of rl) {
                     if (!line.trim()) continue;

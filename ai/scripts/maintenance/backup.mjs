@@ -1,7 +1,6 @@
 import {execFile}      from 'child_process';
 import fs              from 'fs-extra';
 import path            from 'path';
-import readline        from 'readline';
 import {promisify}     from 'util';
 import {fileURLToPath} from 'url';
 
@@ -23,8 +22,9 @@ import {
     Memory_LifecycleService
 } from '../../services.mjs';
 
-import {RECOVERY_SUBSTRATES} from '../../services/memory-core/helpers/bundleIntegrity.mjs';
-import {buildSourceReceipt}  from '../../services/shared/captureReceipt.mjs';
+import {RECOVERY_SUBSTRATES}                from '../../services/memory-core/helpers/bundleIntegrity.mjs';
+import {isBundlePayload, openBundlePayload} from '../../services/shared/bundlePayload.mjs';
+import {buildSourceReceipt}                 from '../../services/shared/captureReceipt.mjs';
 import {
     resolveHeavyMaintenanceLeasePath,
     withHeavyMaintenanceLease
@@ -52,10 +52,10 @@ const execFileAsync = promisify(execFile);
  *
  * ```
  * .neo-ai-data/backups/backup-<ISO-timestamp>/
- * ├── kb/                 # Knowledge Base ChromaDB as JSONL
- * ├── mc/                 # Memory Core memories + summaries as JSONL
- * ├── graph/              # Memory Core SQLite graph as JSONL
- * ├── concepts/           # Concept Ontology JSONL (nodes, edges)
+ * ├── kb/                 # Knowledge Base ChromaDB as brotli-compressed JSONL (.jsonl.br)
+ * ├── mc/                 # Memory Core memories + summaries as .jsonl.br
+ * ├── graph/              # Memory Core SQLite graph as .jsonl.br
+ * ├── concepts/           # Concept Ontology JSONL (nodes, edges), copied verbatim
  * ├── trajectories/       # RLAIF training trajectories JSONL
  * ├── mailbox/            # Mailbox sent-to-cull archive JSONL
  * └── ledgers/            # Incident ledgers: heal-attempts.json, heal-events.jsonl, recovery-runs/
@@ -269,7 +269,7 @@ const LINEAGE_SOURCES = Object.freeze([
  *
  * **`rowCounts` is governed by that same sentence and does not weaken it.** It exists so a capture can
  * tell a source that came back empty from a source that came back empty *having demonstrably held
- * rows* (#270). An absent, unreadable, or count-less predecessor yields `null` for that source, which
+ * rows* (the capture-collapse gate). An absent, unreadable, or count-less predecessor yields `null` for that source, which
  * is an unavailable expectation — never `0` — so it can never make a capture refuse. The refusal this
  * feeds needs an affirmative prior count, so every failure to read one degrades toward publishing,
  * exactly as the paragraph above requires.
@@ -714,7 +714,7 @@ async function captureBackup({
         logger
     });
 
-    // #270. The gate is here rather than beside the `empty` warning above because it needs the one
+    // The capture-collapse gate. It is here rather than beside the `empty` warning above because it needs the one
     // fact that warning does not have: what the PREVIOUS bundle counted. `integrity` answers what
     // this bundle HOLDS, and a zero there is legitimate often enough that escalating it would
     // fail a fresh environment's first backup. `capture` answers what happened to the SOURCE, and
@@ -772,24 +772,19 @@ async function captureBackup({
 }
 
 /**
- * Counts non-empty (trimmed) lines in a JSONL file by streaming, so files larger than V8's
+ * Counts non-empty (trimmed) lines in a bundle payload by streaming, so files larger than V8's
  * maximum string length (`0x1fffffe8`, ~512 MB) are counted without `ERR_STRING_TOO_LONG`.
  * Replaces a whole-file `fs.readFile(..., 'utf8').split('\n')`, which throws on the 1+ GB
  * Memory Core / Knowledge Base exports. Each JSONL record is exactly one line, so the
- * non-empty line count is the row count.
+ * non-empty line count is the row count; a compressed payload is counted by its decoded lines.
  *
- * @param {String} filePath Absolute path to the JSONL file.
+ * @param {String} filePath Absolute path to the payload (`.jsonl`, `.jsonl.br` or `.jsonl.gz`).
  * @returns {Promise<Number>} Count of non-empty lines.
  */
 export async function countNonEmptyJsonlLines(filePath) {
-    const rl = readline.createInterface({
-        input    : fs.createReadStream(filePath),
-        crlfDelay: Infinity
-    });
-
     let count = 0;
 
-    for await (const line of rl) {
+    for await (const line of openBundlePayload(filePath)) {
         if (line.trim()) {
             count++;
         }
@@ -929,7 +924,7 @@ export async function verifyBundleIntegrity(layout, subsystems) {
             continue;
         }
 
-        const files       = (await fs.readdir(dir)).filter(f => f.endsWith('.jsonl'));
+        const files       = (await fs.readdir(dir)).filter(isBundlePayload);
         let   bundleCount = 0;
 
         for (const file of files) {
@@ -1193,7 +1188,7 @@ export async function classifyBundleRecoverability(bundlePath) {
             }
 
             for (const entry of entries) {
-                if (!entry.endsWith('.jsonl')) continue;
+                if (!isBundlePayload(entry)) continue;
 
                 try {
                     bytes += (await fs.stat(path.join(dir, entry))).size;

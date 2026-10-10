@@ -1,5 +1,4 @@
-import fs       from 'fs';
-import readline from 'readline';
+import {closeBundlePayload, openBundlePayload} from '../../shared/bundlePayload.mjs';
 
 /**
  * @module ai/services/memory-core/helpers/graphJsonlImport
@@ -17,7 +16,7 @@ import readline from 'readline';
  *
  * @param {Object} options
  * @param {Object} options.db Open better-sqlite3 database with Nodes/Edges.
- * @param {String} options.filePath JSONL source.
+ * @param {String} options.filePath JSONL source, bare or compressed (`.jsonl`, `.jsonl.br`, `.jsonl.gz`).
  * @param {'merge'|'replace'} options.mode Import mode.
  * @param {Number} [options.batchSize=2000] Maximum transaction batch.
  * @param {Function} [options.warn=()=>{}] Bounded warning sink.
@@ -126,8 +125,7 @@ export async function importGraphJsonl({
     });
 
     const
-        input = fs.createReadStream(filePath),
-        lines = readline.createInterface({input, crlfDelay: Infinity}),
+        lines = openBundlePayload(filePath),
         batch = [];
 
     try {
@@ -150,8 +148,7 @@ export async function importGraphJsonl({
             insertBatch(batch)
         }
     } finally {
-        lines.close();
-        input.destroy()
+        closeBundlePayload(lines)
     }
 
     return {

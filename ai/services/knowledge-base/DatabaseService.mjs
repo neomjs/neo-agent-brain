@@ -1,7 +1,15 @@
-import aiConfig                                                                                                            from '../../mcp/server/knowledge-base/config.mjs';
-import {classifyExportCompleteness, EXPORT_COMPLETENESS}                                                                   from '../memory-core/helpers/exportCompleteness.mjs';
-import {partitionRowsByVectorValidity}                                                                                     from '../memory-core/helpers/vectorWriteInvariant.mjs';
-import {validateJsonlSourceFile}                                                                                           from '../memory-core/helpers/vectorJsonlSourceValidation.mjs';
+import aiConfig                                          from '../../mcp/server/knowledge-base/config.mjs';
+import {classifyExportCompleteness, EXPORT_COMPLETENESS} from '../memory-core/helpers/exportCompleteness.mjs';
+import {partitionRowsByVectorValidity}                   from '../memory-core/helpers/vectorWriteInvariant.mjs';
+import {validateJsonlSourceFile}                         from '../memory-core/helpers/vectorJsonlSourceValidation.mjs';
+import {
+    bundlePayloadEncoding,
+    bundlePayloadFileName,
+    createBundlePayloadWriteStream,
+    endBundlePayload,
+    isBundlePayload,
+    openBundlePayload
+} from '../shared/bundlePayload.mjs';
 import {assertNoNaturalKeyDivergence, classifyIncomingRow, DIVERGENCE_SCAN, KB_MERGE_NATURAL_KEY_DIVERGENCE, naturalKeyOf} from './helpers/mergeIdentityContract.mjs';
 import {embedCoreCorpusProfiles, materializeCoreCorpusProfiles, prepareCoreCorpusProfiles}                                 from './helpers/coreCorpusProfileRunner.mjs';
 import {assertNoCoreCorpusAcquisitionOverlap}                                                                              from './helpers/coreCorpusProfilePlan.mjs';
@@ -15,7 +23,6 @@ import dotenv                                                                   
 import fs                                                                                                                  from 'fs-extra';
 import logger                                                                                                              from '../../mcp/server/knowledge-base/logger.mjs';
 import path                                                                                                                from 'path';
-import readline                                                                                                            from 'readline';
 
 /**
  * Refusal codes `importDatabase` re-throws unwrapped. A refusal's value is that a caller can tell it
@@ -50,7 +57,7 @@ dotenv.config({
  * upstream and cannot arrive here, but a verdict added to the classifier later would, and the safe
  * direction for an unrecognised completeness state is "not certified".
  *
- * **A zero has two causes and now has two codes (#270).** `source-collection-empty` used to answer
+ * **A zero has two causes and now has two codes.** `source-collection-empty` used to answer
  * both "this collection legitimately holds nothing" and "I could not find this collection, so one was
  * created and it holds nothing" — states with opposite operational meanings sharing one verdict, so a
  * consumer branching on the code could not act differently on them however carefully it read. The
@@ -191,9 +198,9 @@ class DatabaseService extends Base {
     async exportDatabase({backupPath = aiConfig.backupPath} = {}) {
         try {
             logger.log('Starting knowledge base export...');
-            const collection                    = await ChromaManager.getKnowledgeBaseCollection();
-            const bootstrapped                  = ChromaManager.knowledgeBaseCollectionBootstrapped;
-            const {expected, exported, verdict} = await this.#exportCollection(collection, backupPath, 'knowledge-base-backup');
+            const collection                                     = await ChromaManager.getKnowledgeBaseCollection();
+            const bootstrapped                                   = ChromaManager.knowledgeBaseCollectionBootstrapped;
+            const {expected, exported, payloadEncoding, verdict} = await this.#exportCollection(collection, backupPath, 'knowledge-base-backup');
 
             // A zero-row export against a POPULATED collection already throws upstream
             // (`PARTIAL_COLLECTION_EXPORT`). What reaches here is an empty corpus — a real state, and
@@ -203,7 +210,7 @@ class DatabaseService extends Base {
             // "Empty" is not automatically "genuinely empty", which is why `bootstrapped` is read here
             // and not inferred from the counts: a collection this process just CREATED because it
             // could not find the canonical one also exports zero rows, and is a resolution failure
-            // rather than a fact about the corpus (#270). Read from the manager immediately after the
+            // rather than a fact about the corpus (the capture-collapse gate's case). Read from the manager immediately after the
             // resolution it describes, before any other caller can invalidate the cache.
             //
             // `status` is the branchable field: a consumer must not have to string-match the prose to
@@ -224,7 +231,9 @@ class DatabaseService extends Base {
                 reason,
                 count       : exported,
                 expected,
-                collectionId: collection?.id ?? null
+                collectionId: collection?.id ?? null,
+                // A receipt for `bundle-meta.json`, never a reader input: readers detect by extension.
+                payloadEncoding
             };
         } catch (error) {
             logger.error('[DatabaseService] Error exporting knowledge base:', error);
@@ -265,15 +274,15 @@ class DatabaseService extends Base {
         const count = await collection.count();
         if (count === 0) {
             logger.log(`No documents found in ${collection.name} to export.`);
-            return {expected: 0, exported: 0, verdict: EXPORT_COMPLETENESS.complete};
+            return {expected: 0, exported: 0, payloadEncoding: null, verdict: EXPORT_COMPLETENESS.complete};
         }
 
         logger.log(`Found ${count} documents in ${collection.name} to export.`);
 
         await fs.ensureDir(backupPath);
         const timestamp   = new Date().toISOString().replace(/:/g, '-');
-        const backupFile  = path.join(backupPath, `${filePrefix}-${timestamp}.jsonl`);
-        const writeStream = fs.createWriteStream(backupFile);
+        const backupFile  = path.join(backupPath, bundlePayloadFileName(filePrefix, timestamp));
+        const writeStream = createBundlePayloadWriteStream(backupFile);
 
         const limit    = 2000;
         let   exported = 0,
@@ -333,7 +342,7 @@ class DatabaseService extends Base {
             offset += limit;
         }
 
-        await new Promise(resolve => writeStream.end(resolve));
+        await endBundlePayload(writeStream);
 
         // This used to `return count` — the PRE-PASS snapshot — and log it as the exported total,
         // so the receipt restated the input instead of measuring the bundle. The backup
@@ -369,7 +378,7 @@ class DatabaseService extends Base {
         // `verdict` travels with both so the caller does not RE-DERIVE a completeness judgement the
         // classifier already made. A second, coarser derivation is how a `grew` capture — complete
         // -or-better but not provably exact — gets certified as a clean one.
-        return {expected: count, exported, verdict};
+        return {expected: count, exported, payloadEncoding: bundlePayloadEncoding(backupFile), verdict};
     }
 
     /**
@@ -432,7 +441,7 @@ class DatabaseService extends Base {
      * Making `replace` semantics target-aware is a separate change and deliberately not attempted here.
      *
      * @param {Object}        options
-     * @param {String}        options.file               Absolute path to a JSONL file OR a directory containing `.jsonl` files.
+     * @param {String}        options.file               Absolute path to a bundle payload (`.jsonl`, `.jsonl.br`, `.jsonl.gz`) OR a directory containing them.
      * @param {String}       [options.mode='merge']      `'merge'` upserts on top of existing data; `'replace'` truncates the collection first via the destructive-operation guard.
      * @param {String|Object} [options.confirmation]     Explicit production confirmation token (forwarded to `truncateDatabase` when mode is `'replace'`).
      * @param {String}       [options.targetCollection]  Disposable collection to import into instead of the canonical one. Refuses canonical names; requires `mode: 'merge'`.
@@ -478,14 +487,14 @@ class DatabaseService extends Base {
             if (stat.isDirectory()) {
                 const entries = await fs.readdir(file);
                 for (const entry of entries) {
-                    if (entry.endsWith('.jsonl')) {
+                    if (isBundlePayload(entry)) {
                         sourceFiles.push(path.join(file, entry));
                     }
                 }
-            } else if (file.endsWith('.jsonl')) {
+            } else if (isBundlePayload(file)) {
                 sourceFiles.push(file);
             } else {
-                throw new Error(`Unsupported source: ${file} is neither a directory nor a .jsonl file`);
+                throw new Error(`Unsupported source: ${file} is neither a directory nor a bundle payload (.jsonl, .jsonl.br, .jsonl.gz)`);
             }
 
             if (sourceFiles.length === 0) {
@@ -579,8 +588,7 @@ class DatabaseService extends Base {
                     const divergent = [];
 
                     for (const filePath of sourceFiles) {
-                        const scanStream = fs.createReadStream(filePath);
-                        const scanReader = readline.createInterface({input: scanStream, crlfDelay: Infinity});
+                        const scanReader = openBundlePayload(filePath);
 
                         for await (const line of scanReader) {
                             if (!line.trim()) continue;
@@ -614,8 +622,7 @@ class DatabaseService extends Base {
                 // substitute empty strings for any remaining nulls in mixed batches so each
                 // array element satisfies Chroma's string-shape requirement uniformly.
                 const BATCH_SIZE   = 500;
-                const fileStream   = fs.createReadStream(filePath);
-                const rl           = readline.createInterface({input: fileStream, crlfDelay: Infinity});
+                const rl           = openBundlePayload(filePath);
                 let   batch        = [];
                 let   fileImported = 0;
 
@@ -870,8 +877,8 @@ class DatabaseService extends Base {
      * @summary Embeds the two published repository artifacts under separate ownership stamps.
      *
      * The first profile cut is additive: routine stale deletion remains disabled until the
-     * replacement-proven old-code-row retirement from #419 and scoped conversation cleanup
-     * from #417. A caller-supplied stale strategy is refused, never passed through.
+     * replacement-proven old-code-row retirement and the scoped cleanup of the legacy neo-owned
+     * conversation rows land. A caller-supplied stale strategy is refused, never passed through.
      * @param {Object}  [opts]
      * @param {Boolean} [opts.viaMcp=false] True when invoked via MCP tool dispatch;
      *                                      threaded to VectorService.embed for the

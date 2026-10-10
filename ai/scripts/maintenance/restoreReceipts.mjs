@@ -2,8 +2,9 @@ import {Command}       from 'commander';
 import Database        from 'better-sqlite3';
 import fs              from 'node:fs';
 import path            from 'node:path';
-import readline        from 'node:readline';
 import {pathToFileURL} from 'node:url';
+
+import {isBundlePayload, openBundlePayload} from '../../services/shared/bundlePayload.mjs';
 
 /**
  * @module ai/scripts/maintenance/restoreReceipts
@@ -59,10 +60,10 @@ export function resolveGraphJsonl(source) {
     }
 
     const graphDir = path.join(resolved, 'graph'),
-          files    = fs.existsSync(graphDir) ? fs.readdirSync(graphDir).filter(name => name.endsWith('.jsonl')) : [];
+          files    = fs.existsSync(graphDir) ? fs.readdirSync(graphDir).filter(isBundlePayload) : [];
 
     if (files.length !== 1) {
-        throw new Error(`bundle must hold exactly one graph/*.jsonl, found ${files.length}: ${graphDir}`);
+        throw new Error(`bundle must hold exactly one graph payload (graph/*.jsonl or *.jsonl.br), found ${files.length}: ${graphDir}`);
     }
 
     return path.join(graphDir, files[0]);
@@ -74,7 +75,7 @@ export function resolveGraphJsonl(source) {
  * @yields {{type: String, data: Object}}
  */
 export async function* readGraphRecords(file) {
-    const lines = readline.createInterface({input: fs.createReadStream(file, {encoding: 'utf8'}), crlfDelay: Infinity});
+    const lines = openBundlePayload(file);
 
     for await (const line of lines) {
         if (line.trim()) {
@@ -90,7 +91,7 @@ export async function* readGraphRecords(file) {
  * @throws {Error} Naming the 1-based line of the first record that does not parse or has no `type`/`data.id`.
  */
 export async function validateGraphJsonl(file) {
-    const lines = readline.createInterface({input: fs.createReadStream(file, {encoding: 'utf8'}), crlfDelay: Infinity});
+    const lines      = openBundlePayload(file);
     let   lineNumber = 0,
           records    = 0;
 
@@ -158,9 +159,9 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
             WHERE NOT EXISTS (SELECT 1 FROM Edges WHERE source = ? AND target = ? AND type = ?)`);
 
     const
-        ledger  = () => ({matched: 0, filled: 0, alreadySet: 0, missingLive: 0, duplicateInBundle: 0}),
-        result  = {receipts: {edges: ledger(), nodes: ledger()}, edges: {requested, types: {}}},
-        typeRow = type => result.edges.types[type] ??= {bundle: 0, live: liveTypeCounts.get(type) || 0, absentLive: 0, restorable: 0, missingEndpoint: 0, duplicateInBundle: 0, inserted: 0},
+        ledger      = () => ({matched: 0, filled: 0, alreadySet: 0, missingLive: 0, duplicateInBundle: 0}),
+        result      = {receipts: {edges: ledger(), nodes: ledger()}, edges: {requested, types: {}}},
+        typeRow     = type => result.edges.types[type] ??= {bundle: 0, live: liveTypeCounts.get(type) || 0, absentLive: 0, restorable: 0, missingEndpoint: 0, duplicateInBundle: 0, inserted: 0},
         seenTriples = new Set(),
         seenFills   = new Set(),
         identity    = (source, target, type) => `${source}\u0000${target}\u0000${type}`;

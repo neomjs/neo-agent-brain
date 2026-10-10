@@ -153,6 +153,44 @@ test.describe('restore.mjs filters + hooks (#11141)', () => {
         return records;
     }
 
+    test('filter: a compressed graph payload is read, and the filtered copy keeps its encoding (#974)', async () => {
+        const zlib                                 = (await import('zlib')).default;
+        const {isBundlePayload, openBundlePayload} = await import('../../../../../../ai/services/shared/bundlePayload.mjs');
+        const sourceDir                            = path.join(workRoot, 'compressed-filter');
+        const lines                                = [
+            JSON.stringify({type: 'node', data: {id: 'n1', label: 'CONCEPT', properties: {}}}),
+            JSON.stringify({type: 'node', data: {id: 'n2', label: 'FILE',    properties: {}}}),
+            JSON.stringify({type: 'edge', data: {id: 'e1', source: 'n1', target: 'n2', type: 'TAGGED_CONCEPT', properties: {}}})
+        ];
+
+        await fsExtra.ensureDir(sourceDir);
+        await fsExtra.writeFile(path.join(sourceDir, 'graph-backup-test.jsonl.br'), zlib.brotliCompressSync(Buffer.from(lines.join('\n') + '\n')));
+
+        const stats   = {filteredNodes: 0, filteredEdges: 0, orphanEdges: 0, acceptedNodes: 0};
+        const tempDir = await prepareFilteredGraphDir({
+            sourceDir,
+            filterLabels   : ['CONCEPT'],
+            filterEdgeTypes: [],
+            liveNodeIds    : new Set(),
+            stats,
+            logger         : silentLogger
+        });
+
+        const files   = (await fsExtra.readdir(tempDir)).filter(isBundlePayload);
+        const records = [];
+
+        for (const file of files) {
+            for await (const line of openBundlePayload(path.join(tempDir, file))) {
+                if (line.trim()) records.push(JSON.parse(line));
+            }
+        }
+
+        expect(files).toEqual(['graph-backup-test.jsonl.br']);
+        // n1 dropped by label; e1 dropped as an orphan once n1 is gone; n2 survives.
+        expect(records.map(r => r.data.id)).toEqual(['n2']);
+        expect(stats).toMatchObject({acceptedNodes: 1, filteredNodes: 1, orphanEdges: 1});
+    });
+
     test('filter: drops nodes with matching labels', async () => {
         const sourceDir = await buildSyntheticGraphBundle('label-filter', [
             {id: 'n1', label: 'CONCEPT', properties: {}},
@@ -273,7 +311,7 @@ test.describe('restore.mjs filters + hooks (#11141)', () => {
     });
 
     // ─────────────────────────────────────────────────────────────────────
-    // Row-level INSERT OR IGNORE preserve-live semantics (RA-3 from /pr-review)
+    // Row-level INSERT OR IGNORE preserve-live semantics (a review's required action)
     //
     // This is the core semantic correction the entire PR exists for: in merge
     // mode, conflicting graph IDs must preserve the LIVE row (not overwrite

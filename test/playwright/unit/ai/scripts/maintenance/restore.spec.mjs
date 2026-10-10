@@ -23,6 +23,7 @@ import fs              from 'fs';
 import fsExtra         from 'fs-extra';
 import os              from 'os';
 import path            from 'path';
+import zlib            from 'zlib';
 
 // Serial mode: this file mutates SDK service methods and StorageRouter accessors across
 // beforeAll/beforeEach. Running in serial protects against intra-file races during
@@ -48,7 +49,8 @@ test.describe('restore.mjs orchestrator — bundle-aware substrate restore (#108
         chromaUnified,
         shared_topology,
         includeMailbox = true,
-        omitSubdirs = []
+        omitSubdirs = [],
+        payloadEncoding = 'jsonl'
     }) {
         const bundleRoot = path.join(workRoot, bundleName);
         fs.mkdirSync(bundleRoot, {recursive: true});
@@ -61,27 +63,21 @@ test.describe('restore.mjs orchestrator — bundle-aware substrate restore (#108
             fs.mkdirSync(path.join(bundleRoot, sub), {recursive: true});
         }
 
+        // The exported substrates (kb, mc, graph) in the requested encoding; the flat copies stay bare.
+        const writePayload = (subdir, baseName, text) => fs.writeFileSync(
+            path.join(bundleRoot, subdir, payloadEncoding === 'jsonl+br' ? `${baseName}.jsonl.br` : `${baseName}.jsonl`),
+            payloadEncoding === 'jsonl+br' ? zlib.brotliCompressSync(Buffer.from(text)) : text
+        );
+
         if (!omitSubdirs.includes('kb')) {
-            fs.writeFileSync(
-                path.join(bundleRoot, 'kb', 'knowledge-base-backup-2026.jsonl'),
-                '{"id":"kb-1","embedding":[0.1],"metadata":{"k":"class"},"document":"kb-doc"}\n'
-            );
+            writePayload('kb', 'knowledge-base-backup-2026', '{"id":"kb-1","embedding":[0.1],"metadata":{"k":"class"},"document":"kb-doc"}\n');
         }
         if (!omitSubdirs.includes('mc')) {
-            fs.writeFileSync(
-                path.join(bundleRoot, 'mc', 'memory-backup-2026.jsonl'),
-                '{"id":"m-1","embedding":[0.2],"metadata":{"t":"prompt"},"document":"mem-doc"}\n'
-            );
-            fs.writeFileSync(
-                path.join(bundleRoot, 'mc', 'summaries-backup-2026.jsonl'),
-                '{"id":"s-1","embedding":[0.3],"metadata":{"cat":"feat"},"document":"sum-doc"}\n'
-            );
+            writePayload('mc', 'memory-backup-2026',    '{"id":"m-1","embedding":[0.2],"metadata":{"t":"prompt"},"document":"mem-doc"}\n');
+            writePayload('mc', 'summaries-backup-2026', '{"id":"s-1","embedding":[0.3],"metadata":{"cat":"feat"},"document":"sum-doc"}\n');
         }
         if (!omitSubdirs.includes('graph')) {
-            fs.writeFileSync(
-                path.join(bundleRoot, 'graph', 'graph-backup-2026.jsonl'),
-                '{"type":"node","data":{"id":"n-1"}}\n'
-            );
+            writePayload('graph', 'graph-backup-2026', '{"type":"node","data":{"id":"n-1"}}\n');
         }
         if (!omitSubdirs.includes('concepts')) {
             fs.writeFileSync(path.join(bundleRoot, 'concepts', 'nodes.jsonl'),
@@ -601,6 +597,42 @@ test.describe('restore.mjs orchestrator — bundle-aware substrate restore (#108
         const meta = await validateBundle(bundleRoot, layout, silentLogger, 1);
         expect(meta.bundleVersion).toBe(1);
         expect(meta.topology.chromaUnified).toBe(true);
+    });
+
+    test('validateBundle: streams compressed payloads row for row — the counts prove it read them (#974)', async () => {
+        const bundleRoot = buildSyntheticBundle({bundleName: 'validate-compressed', chromaUnified: true, payloadEncoding: 'jsonl+br'});
+        const layout     = {
+            kb          : path.join(bundleRoot, 'kb'),
+            mc          : path.join(bundleRoot, 'mc'),
+            graph       : path.join(bundleRoot, 'graph'),
+            concepts    : path.join(bundleRoot, 'concepts'),
+            trajectories: path.join(bundleRoot, 'trajectories'),
+            mailbox     : path.join(bundleRoot, 'mailbox')
+        };
+
+        expect(fs.readdirSync(path.join(bundleRoot, 'kb'))).toEqual(['knowledge-base-backup-2026.jsonl.br']);
+
+        const meta = await validateBundle(bundleRoot, layout, silentLogger, 1);
+
+        expect(meta.bundleVersion).toBe(1);
+        expect(meta.streamedCounts).toEqual({kb: 1, memories: 1, summaries: 1});
+    });
+
+    test('validateBundle: a torn compressed payload fails validation instead of passing unread (#974)', async () => {
+        const bundleRoot = buildSyntheticBundle({bundleName: 'validate-torn', chromaUnified: true, payloadEncoding: 'jsonl+br'});
+        const kbFile     = path.join(bundleRoot, 'kb', 'knowledge-base-backup-2026.jsonl.br');
+        const layout     = {
+            kb          : path.join(bundleRoot, 'kb'),
+            mc          : path.join(bundleRoot, 'mc'),
+            graph       : path.join(bundleRoot, 'graph'),
+            concepts    : path.join(bundleRoot, 'concepts'),
+            trajectories: path.join(bundleRoot, 'trajectories'),
+            mailbox     : path.join(bundleRoot, 'mailbox')
+        };
+
+        fs.writeFileSync(kbFile, fs.readFileSync(kbFile).subarray(0, 8));
+
+        await expect(validateBundle(bundleRoot, layout, silentLogger, 1)).rejects.toThrow();
     });
 
     test('the incident ledgers survive a volume replacement — bundled, then readable again after the data dir is gone', async () => {

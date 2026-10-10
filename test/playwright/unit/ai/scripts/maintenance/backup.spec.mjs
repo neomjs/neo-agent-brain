@@ -194,14 +194,23 @@ test.describe('backup.mjs orchestrator — atomic bundle assembly (#10129 Phase 
             'bundle-meta.json', 'concepts', 'graph', 'kb', 'ledgers', 'mailbox', 'mc', 'trajectories'
         ]);
 
-        const kbFiles = fs.readdirSync(path.join(bundleRoot, 'kb')).filter(f => f.endsWith('.jsonl'));
+        // The exported substrates are written compressed; the flat copies below stay bare `.jsonl`.
+        const kbFiles = fs.readdirSync(path.join(bundleRoot, 'kb'));
         expect(kbFiles.length).toBe(1);
         expect(kbFiles[0].startsWith('knowledge-base-backup-')).toBe(true);
+        expect(kbFiles[0].endsWith('.jsonl.br')).toBe(true);
 
-        const mcFiles = fs.readdirSync(path.join(bundleRoot, 'mc')).filter(f => f.endsWith('.jsonl')).sort();
+        const mcFiles = fs.readdirSync(path.join(bundleRoot, 'mc')).sort();
         expect(mcFiles.length).toBe(2);
+        expect(mcFiles.every(f => f.endsWith('.jsonl.br'))).toBe(true);
         expect(mcFiles.some(f => f.startsWith('memory-backup-'))).toBe(true);
         expect(mcFiles.some(f => f.startsWith('summaries-backup-'))).toBe(true);
+
+        // The receipt names the encoding per exported subsystem — a receipt, never a reader input.
+        expect(result.subsystems.kb.payloadEncoding).toBe('jsonl+br');
+        expect(result.subsystems.mc.memories.payloadEncoding).toBe('jsonl+br');
+        expect(result.subsystems.mc.summaries.payloadEncoding).toBe('jsonl+br');
+        expect(result.meta.subsystems.kb.payloadEncoding).toBe('jsonl+br');
 
         const conceptFiles = fs.readdirSync(path.join(bundleRoot, 'concepts')).sort();
         expect(conceptFiles).toEqual(['edges.jsonl', 'nodes.jsonl']);
@@ -620,6 +629,30 @@ test.describe('backup.mjs orchestrator — atomic bundle assembly (#10129 Phase 
         expect(kb.bundleCount).toBe(3);
     });
 
+    test('verifyBundleIntegrity: a compressed payload counts by its decoded rows, beside a bare one (#974)', async () => {
+        const zlib     = (await import('zlib')).default;
+        const tempRoot = path.join(workRoot, 'integrity-compressed');
+        const kbDir    = path.join(tempRoot, 'kb');
+        const mcDir    = path.join(tempRoot, 'mc');
+
+        fs.mkdirSync(kbDir, {recursive: true});
+        fs.mkdirSync(mcDir, {recursive: true});
+        fs.writeFileSync(path.join(kbDir, 'kb-data.jsonl.br'), zlib.brotliCompressSync(Buffer.from('{"id":"1"}\n{"id":"2"}\n{"id":"3"}\n')));
+        // A retained bundle and a head bundle can sit side by side in one directory after a manual
+        // copy; both encodings count, and nothing else in the directory does.
+        fs.writeFileSync(path.join(mcDir, 'memory-backup-x.jsonl'), '{"id":"m1"}\n');
+        fs.writeFileSync(path.join(mcDir, 'summaries-backup-x.jsonl.br'), zlib.brotliCompressSync(Buffer.from('{"id":"s1"}\n')));
+        fs.writeFileSync(path.join(mcDir, 'notes.json'), '{"id":"not-a-row"}\n');
+
+        const checks = await verifyBundleIntegrity(
+            {kb: kbDir, mc: mcDir, graph: path.join(tempRoot, 'graph-missing')},
+            {kb: 3, mc: 2}
+        );
+
+        expect(checks.find(c => c.subsystem === 'kb')).toMatchObject({status: 'pass', sourceCount: 3, bundleCount: 3});
+        expect(checks.find(c => c.subsystem === 'mc')).toMatchObject({status: 'pass', sourceCount: 2, bundleCount: 2});
+    });
+
     test('verifyBundleIntegrity: fail when bundle row count diverges from source count (#10871)', async () => {
         const tempRoot = path.join(workRoot, 'integrity-fail');
         const kbDir    = path.join(tempRoot, 'kb');
@@ -723,6 +756,17 @@ test.describe('backup.mjs orchestrator — atomic bundle assembly (#10129 Phase 
         fs.mkdirSync(tempRoot, {recursive: true});
         // 3 records — with a blank line, a whitespace-only line, and NO trailing newline on the last.
         fs.writeFileSync(file, '{"id":"1"}\n\n{"id":"2"}\n   \n{"id":"3"}');
+
+        expect(await countNonEmptyJsonlLines(file)).toBe(3);
+    });
+
+    test('countNonEmptyJsonlLines: a compressed payload is counted by its decoded lines, not its bytes (#974)', async () => {
+        const zlib     = (await import('zlib')).default;
+        const tempRoot = path.join(workRoot, 'count-nonempty-br');
+        const file     = path.join(tempRoot, 'rows.jsonl.br');
+
+        fs.mkdirSync(tempRoot, {recursive: true});
+        fs.writeFileSync(file, zlib.brotliCompressSync(Buffer.from('{"id":"1"}\n\n{"id":"2"}\n   \n{"id":"3"}')));
 
         expect(await countNonEmptyJsonlLines(file)).toBe(3);
     });
@@ -931,7 +975,7 @@ test.describe('backup.mjs orchestrator — atomic bundle assembly (#10129 Phase 
         test('an UNREADABLE predecessor still publishes — the fail-soft position is not annexed', async () => {
             // `readPreviousBundleIdentities` argues that a backup refusing because it cannot find its
             // predecessor is a worse failure than one that cannot prove emptiness. That governs
-            // `lineage: unknown`, and #270 must not have quietly widened into it: here the count is
+            // `lineage: unknown`, and the capture-collapse gate must not have quietly widened into it: here the count is
             // zero and the predecessor is unreadable, which is exactly the shape a careless
             // implementation would refuse.
             const root   = path.join(workRoot, 'unreadable-pred-root'),
