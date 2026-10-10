@@ -586,10 +586,12 @@ test.describe('McpLaunchAdmissionService — seat credentials, redeemed from the
                 owners.owners.NEO_MCP_REMOTE_TOKEN.prove = async () => ({verdict, reason});
                 const answer = await redeem(reservation.grants['memory-core'], {server: 'memory-core'});
                 expect(answer.code).toBe(code);
-                expect(answer.reason).toBe(reason === 'plane endpoint unreachable' ? reason : 'plane-bearer');
+                expect(answer.reason).toBe(verdict === 'unanswered' && reason === 'plane endpoint unreachable' ? reason : 'plane-bearer');
                 expect(JSON.stringify(service.statusOf('seat'))).not.toContain(PAT)
             }
         }
+        owners.owners.NEO_MCP_REMOTE_TOKEN.prove = async () => ({ok: true, verdict: 'unknown'});
+        expect((await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).code).toBe('credential-unproven');
         owners.owners.NEO_MCP_REMOTE_TOKEN.credential = PAT;
         expect(await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).not.toHaveProperty('reason');
         expect(service.statusOf('seat').state).toBe('active')

@@ -488,7 +488,7 @@ class McpLaunchAdmissionService extends Base {
 
         if (index > -1) {
             return refuse(failed > -1 ? REFUSALS.CREDENTIAL_UNPROVEN : REFUSALS.PROOF_UNAVAILABLE,
-                isPublicProofReason(proofs[index].reason) ? proofs[index].reason : ownerCredentialKind(owners[index]))
+                failed < 0 && isPublicProofReason(proofs[index].reason) ? proofs[index].reason : ownerCredentialKind(owners[index]))
         }
 
         const observed = observeProcess(generation.probe);
@@ -538,7 +538,7 @@ class McpLaunchAdmissionService extends Base {
             ])
                 .then(result => ({
                     verdict: ['proved', 'refused', 'unanswered'].includes(result?.verdict)
-                        ? result.verdict : result?.ok === true ? 'proved' : 'refused',
+                        ? result.verdict : result?.verdict === undefined && result?.ok === true ? 'proved' : 'refused',
                     ...(isPublicProofReason(result?.reason) ? {reason: result.reason} : {})
                 }), () => ({verdict: 'unanswered', reason: 'proof-unavailable'}))
                 .finally(() => {
