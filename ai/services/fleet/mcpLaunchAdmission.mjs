@@ -46,24 +46,6 @@ export function httpProofVerdict(ok, status) {
     return ok ? 'proved' : status === undefined || status === 429 || status >= 500 && status <= 599 ? 'unanswered' : 'refused'
 }
 
-const PROOF_REASONS = new Set([
-    'proof-timeout', 'proof-unavailable', 'mismatch', 'unknown',
-    'plane endpoint unreachable', 'plane rejected the credential', 'plane authentication failed',
-    'the seat holds no proven plane credential', 'the credential resolves to another identity',
-    'the plane at this endpoint is not the one the credential was stored for',
-    'the plane did not identify itself',
-    'the Memory Core and Knowledge Base at this endpoint belong to different planes'
-]);
-
-/**
- * @summary Admit only producer-owned diagnostic words. This validates display text, never a verdict.
- * @param {*} reason
- * @returns {Boolean}
- */
-export function isPublicProofReason(reason) {
-    return typeof reason === 'string' && (PROOF_REASONS.has(reason) || /^plane MCP readiness failed \([1-5]\d{2}\)$/.test(reason))
-}
-
 const
     PROTOCOL       = 'neo-fleet-mcp-launch/v1',
     TOKEN_PATTERN  = /^[A-Za-z0-9_-]{22,128}$/,

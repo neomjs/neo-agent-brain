@@ -121,3 +121,32 @@ export const LAUNCH_ADMISSION_REFUSALS = Object.freeze({
     /** The admitted target could not be started. */
     SPAWN_FAILED           : 'spawn-failed'
 });
+
+/**
+ * @summary The wordings a `proof-unavailable` audit entry may carry as its `reason`: the issuer's bounded
+ * diagnostics for a proof the plane did not answer. Any other `proof-unavailable` reason is the
+ * credential's kind (`LAUNCH_ADMISSION_CREDENTIALS`). A consumer prints a diagnostic only when
+ * `isLaunchAdmissionProofReason` admits it, so an unlisted string never reaches a card.
+ * @type {ReadonlyArray<String>}
+ */
+export const LAUNCH_ADMISSION_PROOF_REASONS = Object.freeze([
+    'proof-timeout', 'proof-unavailable', 'mismatch', 'unknown',
+    'plane endpoint unreachable', 'plane rejected the credential', 'plane authentication failed',
+    'the seat holds no proven plane credential', 'the credential resolves to another identity',
+    'the plane at this endpoint is not the one the credential was stored for',
+    'the plane did not identify itself',
+    'the Memory Core and Knowledge Base at this endpoint belong to different planes'
+]);
+
+const PROOF_REASONS = new Set(LAUNCH_ADMISSION_PROOF_REASONS);
+
+/**
+ * @summary Whether a value is one of the issuer's public proof diagnostics: a listed wording, or the
+ * plane's readiness status as `plane MCP readiness failed (<status>)`. This admits display text, never
+ * a verdict.
+ * @param {*} reason
+ * @returns {Boolean}
+ */
+export function isLaunchAdmissionProofReason(reason) {
+    return typeof reason === 'string' && (PROOF_REASONS.has(reason) || /^plane MCP readiness failed \([1-5]\d{2}\)$/.test(reason))
+}

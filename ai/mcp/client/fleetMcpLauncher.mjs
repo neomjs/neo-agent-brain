@@ -9,7 +9,8 @@ import {
     LAUNCH_ADMISSION_CREDENTIALS as CREDENTIALS,
     LAUNCH_ADMISSION_OUTCOMES    as OUTCOMES,
     LAUNCH_ADMISSION_REASONS     as REASONS,
-    LAUNCH_ADMISSION_REFUSALS    as REFUSALS
+    LAUNCH_ADMISSION_REFUSALS    as REFUSALS,
+    isLaunchAdmissionProofReason
 }                                               from '../../../src/fleet/contract/launchAdmission.mjs';
 import {
     LAUNCH_ADMISSION_MAX_BYTES,
@@ -19,7 +20,6 @@ import {
     createLaunchRequest,
     isAdmissibleEnvName,
     isLaunchIdentity,
-    isPublicProofReason,
     parseLaunchCapability,
     verifyLaunchResponse
 }                                               from '../../services/fleet/mcpLaunchAdmission.mjs';
@@ -172,7 +172,7 @@ export async function admitLaunch({argv, env, root = INSTALL_ROOT, request = pos
 
             if (payload.outcome !== OUTCOMES.ADMITTED) {
                 throw new LaunchRefusal(REFUSAL_CODES.has(payload.code) ? payload.code : REFUSALS.UNAUTHENTICATED,
-                    REFUSAL_REASONS.has(payload.reason) || isPublicProofReason(payload.reason) ? payload.reason : null)
+                    REFUSAL_REASONS.has(payload.reason) || isLaunchAdmissionProofReason(payload.reason) ? payload.reason : null)
             }
 
             return {args: resolveTarget(payload.args, root), env: composeTargetEnv(env, payload.env)}
