@@ -2199,7 +2199,7 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitHub-PAT outa
     });
 
     test('feature-off is pinned at the leaf default — flipping it to implicit-on fails this arm', async () => {
-        // Mutation control for RA-6's fixture-integrity finding: the tier must be OFF unless a
+        // Mutation control for the fixture's integrity: the tier must be OFF unless a
         // profile explicitly places a path. Asserted against the CONFIG TEMPLATE SOURCE, because
         // the runtime tree always carries the leaf and cannot express "was it born empty".
         const configSource = fs.readFileSync(
@@ -2207,5 +2207,38 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — GitHub-PAT outa
         );
 
         expect(configSource).toMatch(/patDiskCachePath\s*:\s*leaf\('',/)
+    })
+});
+
+/**
+ * The forge facts a PAT admission stamps, read through one function the Fleet's forge-connection registry
+ * declares its binding from: the mode's forge and its trimmed API base, and none for a mode without a forge PAT.
+ */
+test.describe('AuthService — the forge facts an admission stamps', () => {
+    test('forgeAdmissionFacts names the mode\'s forge and the API base its verifier stamps; a mode that admits no forge PAT names none', async () => {
+        const {default: AuthService, forgeAdmissionFacts, forgeApiBase} = await import('../../../../../../../ai/mcp/server/shared/services/AuthService.mjs');
+
+        const
+            auth          = {mode: 'github-pat', githubApiBaseUrl: 'https://GHE.example.com/api/v3//', gitlabApiBaseUrl: 'https://gitlab.example.com/', patCacheTtlSeconds: 300, patDiskCachePath: '', patValidationTimeoutMs: 5000},
+            originalFetch = globalThis.fetch;
+
+        expect(forgeAdmissionFacts(auth)).toEqual({authProvider: 'github', providerBaseUrl: 'https://GHE.example.com/api/v3'});
+        expect(forgeAdmissionFacts({...auth, mode: 'gitlab-pat'})).toEqual({authProvider: 'gitlab', providerBaseUrl: 'https://gitlab.example.com'});
+        expect(forgeApiBase(auth, 'gitlab')).toBe('https://gitlab.example.com');
+
+        for (const mode of ['oidc', 'local-bearer', 'seat-token']) {
+            expect(forgeAdmissionFacts({...auth, mode}), mode).toBeNull()
+        }
+
+        // the verifier stamps exactly that base, so a binding declared from it is the endpoint admissions present
+        globalThis.fetch = async () => ({ok: true, headers: {get: () => null}, json: async () => ({id: 42, login: 'octocat', name: 'The Octocat'})});
+
+        try {
+            const info = await AuthService.createGithubPatVerifier({aiConfig: {auth}, logger: {info() {}, warn() {}, error() {}}, InvalidTokenError: class extends Error {}}).verifyAccessToken('ghp_abc');
+
+            expect(info.providerBaseUrl).toBe(forgeAdmissionFacts(auth).providerBaseUrl)
+        } finally {
+            globalThis.fetch = originalFetch
+        }
     })
 });

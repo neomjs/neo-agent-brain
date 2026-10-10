@@ -2,7 +2,7 @@
  * @module ai/services/fleet/hostEffects
  * @summary The first run's host effects and the bootstrap record's one writer (bootstrap-record decision§2.2, §2.6).
  * Every effect names an executable local handler — the plane env carrier, the secret files (mode 0600),
- * `docker compose up` — or an explicit operator action; nothing is skipped silently. `applyEffect` writes
+ * `docker compose up`, the plane's forge registration — or an explicit operator action; nothing is skipped silently. `applyEffect` writes
  * a `pending` receipt before a handler runs and an `accepted` one after it returned, so a run interrupted
  * in between leaves exactly the trace a resume must not replay: it becomes `reconcile-required` and is
  * settled only by a fresh matching observation (`settleReceipt`), never by running the handler again.
@@ -18,6 +18,7 @@ import net               from 'node:net';
 import path              from 'node:path';
 import {promisify}       from 'node:util';
 import {writeFileAtomic} from '../shared/atomicFileWrite.mjs';
+import {ANY_FORGE_NAME, forgeProviderName} from './forgeProviders.mjs';
 import {
     RECEIPT_OUTCOMES,
     contentDigest,
@@ -36,11 +37,157 @@ const execFileAsync = promisify(execFile);
  * @type {Object}
  */
 export const EFFECT_IDS = Object.freeze({
-    writeEnv    : 'write-env',
-    writeSecrets: 'write-secrets',
-    composeUp   : 'compose-up',
-    verify      : 'verify'
+    writeEnv     : 'write-env',
+    writeSecrets : 'write-secrets',
+    composeUp    : 'compose-up',
+    registerForge: 'register-forge',
+    verify       : 'verify'
 });
+
+const
+    // the compose service whose volume holds the plane's Fleet data root, and the registry's one writer inside it
+    FORGE_SERVICE = 'fleet-server',
+    FORGE_CLI     = 'ai/scripts/fleet/forgeConnections.mjs';
+
+/**
+ * @summary Runs the plane's forge-connection CLI where its registry lives: inside the compose project's Fleet
+ * service, against the data root that service mounts, never a host checkout's own config. Answers the CLI's
+ * JSON. A refused mutation exits 1 with its JSON, which is still an answer; a command that prints none failed.
+ * @param {Object}   context `{project, cwd, envFile, composeFiles, profiles}`, the compose context `compose-up` used.
+ * @param {String[]} args    The CLI's arguments.
+ * @param {Object}   host    From {@link createHost}.
+ * @returns {Promise<Object>}
+ */
+export async function runForgeConnections({project, cwd, envFile, composeFiles, profiles = []}, args, host) {
+    const command = ['compose', '-p', project, '--env-file', envFile, ...composeFiles.flatMap(file => ['-f', file]), ...profiles.flatMap(profile => ['--profile', profile]), 'exec', '-T', FORGE_SERVICE, 'node', FORGE_CLI, ...args];
+
+    let stdout;
+
+    try {
+        ({stdout} = await host.run('docker', command, {cwd}));
+    } catch (error) {
+        stdout = error?.stdout;
+
+        if (!stdout) {
+            throw new Error(`the plane's connection registry did not answer: ${error?.message ?? error} — a new run asks again`);
+        }
+    }
+
+    try {
+        return JSON.parse(stdout);
+    } catch {
+        throw new Error('the plane\'s connection registry answered no JSON — a new run asks again');
+    }
+}
+
+/**
+ * @summary The CLI's `status` answer when it is the canonical one, or a throw with the reason it is not. A refusal
+ * or an envelope without the store state, the declaration and the binding is no evidence about the plane's
+ * configuration: read as a no-PAT plane or an empty registry it would be an invented fact, so its reason surfaces
+ * instead and the row reads unknown.
+ * @param {Object} answer
+ * @returns {Object}
+ */
+function canonicalForgeStatus(answer) {
+    if (answer?.ok === false) {
+        throw new Error(`the plane's connection registry refused 'status': ${answer.reason ?? answer.refused ?? 'no reason given'} — a new run asks again`);
+    }
+
+    if (answer?.ok !== true || !['absent', 'ok', 'corrupt'].includes(answer.state) || !Object.hasOwn(answer, 'declared') || !Object.hasOwn(answer, 'binding')) {
+        throw new Error('the plane\'s connection registry answered an incomplete status — a new run asks again');
+    }
+
+    return answer;
+}
+
+/**
+ * @summary Reads the plane's registry `status` through {@link runForgeConnections}, admitting only its canonical
+ * answer ({@link canonicalForgeStatus}).
+ * @param {Object} context `{project, cwd, envFile, composeFiles, profiles}`
+ * @param {Object} host
+ * @returns {Promise<Object>}
+ */
+export async function readForgeStatus(context, host) {
+    return canonicalForgeStatus(await runForgeConnections(context, ['status'], host));
+}
+
+/**
+ * @summary What a forge-connection `status` answer means for the plane's owners, as an effect observation: the
+ * declared endpoint bound to its forge is present (its digest names the binding); anything else is not, with the
+ * reason in the row's words, naming the forge as a stranger reads it ({@link forgeProviderName}). A store that
+ * cannot be used, a tombstone or another forge's binding is a reason no run can fix, and the register effect
+ * refuses it with the same words. An answer that is not the canonical `status` throws its own reason.
+ * @param {Object} status The CLI's `status` answer.
+ * @returns {{present: Boolean, digest?: String, problem?: null, reason?: String}}
+ */
+export function forgeObservation(status) {
+    const {binding, declared} = canonicalForgeStatus(status);
+
+    if (declared && binding?.authProvider === declared.authProvider) {
+        return {present: true, digest: contentDigest(`${declared.authProvider} ${declared.endpoint} ${binding.connectionId}`), problem: null};
+    }
+
+    return {present: false, reason: forgeRefusal(status) ?? (status.state === 'absent'
+        ? `the plane's ${forgeProviderName(declared.authProvider)} connection is not registered yet`
+        : `nothing binds ${declared.endpoint} yet`)};
+}
+
+/**
+ * @summary Why the plane's forge connection cannot be registered by a run, or `null` when a run can do it. Every
+ * reason ends with the way out, or says that only a fresh plane is one.
+ * @param {Object} status The CLI's `status` answer.
+ * @returns {String|null}
+ */
+function forgeRefusal(status) {
+    const {binding, declared, declaredReason, reason, state, tombstoned} = status ?? {};
+
+    if (!declared) {
+        return declaredReason ?? `the plane declares no ${ANY_FORGE_NAME} PAT, so no seat can be owned on it — choose a profile that admits one`;
+    }
+
+    if (state === 'corrupt') {
+        return `the plane's connection registry cannot be used, and is never replaced: ${reason} — only a fresh plane recovers it`;
+    }
+
+    if (tombstoned) {
+        return `${declared.endpoint} was detached from the plane, and never binds again — only a fresh plane recovers it`;
+    }
+
+    return binding && binding.authProvider !== declared.authProvider
+        ? `${declared.endpoint} is bound to a ${forgeProviderName(binding.authProvider)} connection, not ${forgeProviderName(declared.authProvider)} — only a fresh plane recovers it`
+        : null;
+}
+
+/**
+ * @summary Why a run cannot accept this `status` for the declaration it set out to register: a reason no run can
+ * fix ({@link forgeRefusal}), or a plane that now declares another provider or endpoint, whose binding must never
+ * be accepted under this request's input digest. `null` when the status speaks for the request's own declaration.
+ * @param {Object} declared The request's `{authProvider, endpoint}`.
+ * @param {Object} status   A canonical `status` answer.
+ * @returns {String|null}
+ */
+function declarationRefusal(declared, status) {
+    return forgeRefusal(status) ?? (declared?.endpoint !== status.declared.endpoint || declared?.authProvider !== status.declared.authProvider
+        ? `the plane now declares ${forgeProviderName(status.declared.authProvider)} at ${status.declared.endpoint}: a new run registers it`
+        : null);
+}
+
+/**
+ * @summary One mutation of the plane's registry, through its CLI; a refusal throws its reason.
+ * @param {Object}   context
+ * @param {String[]} args
+ * @param {Object}   host
+ * @returns {Promise<Object>}
+ */
+async function mutateForgeConnections(context, args, host) {
+    const answer = await runForgeConnections(context, args, host);
+
+    if (answer?.ok !== true) {
+        throw new Error(`the plane refused '${args[0]}': ${answer?.reason ?? 'no reason given'} — a new run reads the registry first`);
+    }
+
+    return answer;
+}
 
 /**
  * Owner-only: the mode of every file this module writes — the env carrier holds tokens, the secret files
@@ -167,6 +314,55 @@ export const hostEffectHandlers = Object.freeze({
             await host.run('docker', args, {cwd});
 
             return {digest: contentDigest(args.join(' ')), references: [`compose:${project}`]};
+        }
+    }),
+    [EFFECT_IDS.registerForge]: Object.freeze({
+        id      : EFFECT_IDS.registerForge,
+        describe: input => input?.declared
+            ? `register the plane's ${forgeProviderName(input.declared.authProvider)} connection at ${input.declared.endpoint}`
+            : `register the plane's ${ANY_FORGE_NAME} connection`,
+        /**
+         * Observe first: an endpoint already bound to the declared forge is adopted as it is. Otherwise an absent
+         * store is initialized and the endpoint registered, and a fresh read must show the binding. Neither
+         * mutation is replayed: both refuse a repeat, so a resumed run observes instead. Both reads are fenced to
+         * the request's own declaration ({@link declarationRefusal}): a plane that changed its declaration between
+         * them refuses, so another forge's binding is never accepted under this input digest.
+         * @param {Object} input The compose context plus `{declared, declaredReason}`, from the plane's own `status`.
+         * @param {Object} host
+         * @returns {Promise<{digest: String, references: String[]}>}
+         */
+        async handler(input, host) {
+            const {declared} = input ?? {};
+
+            let status  = await readForgeStatus(input, host),
+                refusal = declarationRefusal(declared, status);
+
+            if (refusal) {
+                throw new Error(refusal);
+            }
+
+            if (!status.binding) {
+                if (status.state === 'absent') {
+                    await mutateForgeConnections(input, ['init', '--apply'], host);
+                }
+
+                await mutateForgeConnections(input, ['register', '--provider', declared.authProvider, '--endpoint', declared.endpoint, '--apply'], host);
+
+                status  = await readForgeStatus(input, host);
+                refusal = declarationRefusal(declared, status);
+
+                if (refusal) {
+                    throw new Error(refusal);
+                }
+            }
+
+            const observed = forgeObservation(status);
+
+            if (!observed.present) {
+                throw new Error(`the registration did not show in the plane's registry: ${observed.reason}${forgeRefusal(status) ? '' : ' — a new run reads it again'}`);
+            }
+
+            return {digest: observed.digest, references: [`forge-connection:${status.binding.connectionId}`]};
         }
     })
 });

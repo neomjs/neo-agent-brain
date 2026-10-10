@@ -9,7 +9,7 @@ import {PLANE_MEMORY_CORE_PATH, fakeHostObservers, hostLayout, parseArgs, produc
 import {RECIPE_VERSION, evaluateRecipe}                                                                    from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
 import {createHost}                                                                                        from '../../../../../../ai/services/fleet/hostEffects.mjs';
 import {presets}                                                                                           from '../../../../../../ai/services/fleet/placementPresets.mjs';
-import {createSetupRecord, runTarget, withConsent}                                                         from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {contentDigest, createSetupRecord, runTarget, withConsent}                                          from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
 
 // The CLI on a fake host: a child process per arm, stdin closed (never a TTY), the record under a temp setup root.
 
@@ -34,16 +34,17 @@ async function scratch() {
 }
 
 /**
- * The fixture names the observers a fake host cannot read for real (the probe, the served plane, the
- * provider round trip, the first persistence); the carrier, the secret files and the compose project are
- * read from the temp layout and the recording runner by the CLI's own fake-host seam.
+ * The fixture names the observers a fake host cannot read for real (the probe, the plane's forge registry,
+ * the served plane, the provider round trip, the first persistence); the carrier, the secret files and the
+ * compose project are read from the temp layout and the recording runner by the CLI's own fake-host seam.
  */
 function greenFake({patPath, planeId = 'plane-a', dataRoot = '/srv/plane-a', servedPlane = {id: planeId, dataRoot}, done = {queryAnswered: true, persisted: true}, answers = true}) {
     return {
         observers: {
-            placement : {host: {complete: true, availableBytes: 64 * 1073741824, pressure: 'ok'}, guest: null, observed: {}, runningPlane: null},
+            placement      : {host: {complete: true, availableBytes: 64 * 1073741824, pressure: 'ok'}, guest: null, observed: {}, runningPlane: null},
+            forgeConnection: {present: true, digest: null, problem: null},
             servedPlane,
-            validation: {provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: 1024}},
+            validation     : {provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: 1024}},
             // a fake host has no plane to witness through: the witness effect's observation and the terminal read are the fixture's
             verification: {present: true, digest: null, problem: null},
             done
@@ -85,7 +86,7 @@ test.describe('firstRun CLI', () => {
         expect(result.code, result.stderr).toBe(0);
         expect(output.runId).toBe(RUN_ID);
         expect(output.binding).toBe('bound');
-        expect(output.steps).toHaveLength(12);
+        expect(output.steps).toHaveLength(13);
 
         for (const step of output.steps) {
             expect(typeof step.status, step.id).toBe('string');
@@ -499,6 +500,34 @@ test.describe('firstRun CLI', () => {
 
         expect(thrown).toMatchObject({status: 'unknown', reason: expect.stringContaining('401')});
         expect(wrong).toMatchObject({status: 'failed', reason: expect.stringContaining("served plane id is 'neo-local-canonical', expected 'plane-b'")});
+    });
+
+    test('the production forge observer reads the registry inside the plane the layout names, and only while that plane runs: before, its row is unknown, never an empty registry', async () => {
+        const
+            layout  = hostLayout({stateRoot: '/srv/state'}),
+            calls   = [],
+            running = {plane: null},
+            status  = {ok: true, declared: {authProvider: 'github', endpoint: 'https://api.github.com'}, declaredReason: null, state: 'ok', reason: null, binding: {connectionId: 'c1', authProvider: 'github'}, tombstoned: false},
+            host    = createHost({now: () => Date.UTC(2026, 9, 6), run: async (command, args, options) => {
+                calls.push({command, args, cwd: options?.cwd});
+
+                return {stdout: JSON.stringify(status), stderr: ''};
+            }}),
+            observers = productionObservers({layout, host, probe: async () => ({host: {complete: true}, guest: null, observed: {}, runningPlane: running.plane})});
+
+        await expect(observers.forgeConnection()).rejects.toThrow('the plane is not running, so its GitHub or GitLab connection cannot be read');
+        expect(calls).toEqual([]);
+
+        // the next evaluation's placement read finds the plane up: the registry is read through compose-up's own context
+        running.plane = {project: layout.composeProject};
+        await observers.placement();
+
+        await expect(observers.forgeConnection()).resolves.toEqual({present: true, digest: contentDigest('github https://api.github.com c1'), problem: null});
+        expect(calls).toEqual([{
+            command: 'docker',
+            args   : ['compose', '-p', layout.composeProject, '--env-file', layout.envFile, ...layout.composeFiles.flatMap(file => ['-f', file]), ...layout.composeProfiles.flatMap(profile => ['--profile', profile]), 'exec', '-T', 'fleet-server', 'node', 'ai/scripts/fleet/forgeConnections.mjs', 'status'],
+            cwd    : layout.composeDir
+        }]);
     });
 
     test('AC-1 / AC-4 (observers): validation runs the probe fresh with the consented preset and key file at every call and never reads a receipt; verification and done read this run\'s section — unknown without one, failed with a recorded refusal, ok only with the plane\'s answers', async () => {

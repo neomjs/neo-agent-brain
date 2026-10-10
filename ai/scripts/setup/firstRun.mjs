@@ -25,18 +25,21 @@ import {fileURLToPath} from 'node:url';
 
 import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe, exitCodeFor} from '../../services/fleet/firstRunRecipe.mjs';
 import {secretFileNames}                                                                      from '../../services/fleet/credentialStep.mjs';
-import {admitCredentialReference, createHost, persistSetupRecord, recordConsent}              from '../../services/fleet/hostEffects.mjs';
-import {PLANE_MEMORY_CORE_PATH}                                                               from '../../services/fleet/mcpWireParsing.mjs';
-import {presets}                                                                              from '../../services/fleet/placementPresets.mjs';
-import {createDefaultReaders, probePlacement}                                                 from '../../services/fleet/probePlacement.mjs';
-import {probeValidation}                                                                      from '../../services/fleet/providerValidation.mjs';
+import {ANY_FORGE_NAME}                                                                       from '../../services/fleet/forgeProviders.mjs';
+import {
+    admitCredentialReference, createHost, forgeObservation, persistSetupRecord, readForgeStatus, recordConsent
+} from '../../services/fleet/hostEffects.mjs';
+import {PLANE_MEMORY_CORE_PATH}               from '../../services/fleet/mcpWireParsing.mjs';
+import {presets}                              from '../../services/fleet/placementPresets.mjs';
+import {createDefaultReaders, probePlacement} from '../../services/fleet/probePlacement.mjs';
+import {probeValidation}                      from '../../services/fleet/providerValidation.mjs';
 import {
     RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, findConsent, readSetupRecord, retireCurrentProof, runTarget, setupRecordPath
 } from '../../services/fleet/setupRunRecord.mjs';
-import {performEffects, settlePending}            from '../../services/fleet/setupOrchestration.mjs';
-import {VERIFY_EXITS}                             from '../../services/fleet/verifyEffect.mjs';
-import {CANONICAL_PLANE_ID, resolvePlaneDataRoot} from '../../planeConfig.mjs';
-import {runHealthcheck}                           from '../diagnostics/mcpHealthcheck.mjs';
+import {composeContextOf, performEffects, settlePending} from '../../services/fleet/setupOrchestration.mjs';
+import {VERIFY_EXITS}                                    from '../../services/fleet/verifyEffect.mjs';
+import {CANONICAL_PLANE_ID, resolvePlaneDataRoot}        from '../../planeConfig.mjs';
+import {runHealthcheck}                                  from '../diagnostics/mcpHealthcheck.mjs';
 
 const
     brainRoot       = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
@@ -140,8 +143,9 @@ export {PLANE_MEMORY_CORE_PATH};
 
 /**
  * @summary The production observers over the host layout: the placement probe, the carrier by digest, the
- * secret files as the consented preset's whole set and by mode, the compose project, the served plane's
- * identity through the MCP healthcheck, the provider round trip, and the run's own witness.
+ * secret files as the consented preset's whole set and by mode, the compose project, the plane's forge
+ * registration read inside its Fleet service, the served plane's identity through the MCP healthcheck, the
+ * provider round trip, and the run's own witness.
  *
  * `servedPlane` asks the plane the way its clients do: the Memory Core route below the endpoint, the
  * consented plane credential as the bearer (read from the file the record references at call time — the
@@ -230,6 +234,17 @@ export function productionObservers({layout, host, probe = probePlacement, healt
             const result = probed ?? await placement();
 
             return {present: result.runningPlane?.project === layout.composeProject, digest: null, reason: 'the compose project is not running'};
+        },
+        // read inside the plane's Fleet service: a plane that is not running has no registry to read, which is
+        // unknown — never an empty one, and never an accepted registration gone
+        forgeConnection: async () => {
+            const result = probed ?? await placement();
+
+            if (result.runningPlane?.project !== layout.composeProject) {
+                throw new Error(`the plane is not running, so its ${ANY_FORGE_NAME} connection cannot be read`);
+            }
+
+            return forgeObservation(await readForgeStatus(composeContextOf(layout), host));
         },
         servedPlane : async (target, {record = null} = {}) => {
             const health = await healthcheck({
@@ -470,8 +485,9 @@ export async function main(argv = process.argv.slice(2), io = {}) {
 
         observers = {
             ...productionObservers({layout, host}),
-            placement   : async () => { throw new Error('no placement on the fake host') },
-            runningPlane: async () => ({present: (await readCalls()).some(call => call.command === 'docker' && call.args[0] === 'compose' && call.args.includes('up')), digest: null, reason: 'the compose project is not running'}),
+            placement      : async () => { throw new Error('no placement on the fake host') },
+            runningPlane   : async () => ({present: (await readCalls()).some(call => call.command === 'docker' && call.args[0] === 'compose' && call.args.includes('up')), digest: null, reason: 'the compose project is not running'}),
+            forgeConnection: async () => { throw new Error('no forge registry on the fake host') },
             ...fakeHost.observers
         };
         answers = fakeHost.answers;
