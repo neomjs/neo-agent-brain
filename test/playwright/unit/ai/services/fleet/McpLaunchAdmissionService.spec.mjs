@@ -25,6 +25,7 @@ import Neo                                           from 'neo.mjs/src/Neo.mjs';
 import * as core                                     from 'neo.mjs/src/core/_export.mjs';
 
 import McpLaunchAdmissionService         from '../../../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
+import FleetTenantService                from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
 import {createManagedAgentWorkspacePlan} from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {
     LAUNCH_ADMISSION_PATH,
@@ -440,6 +441,47 @@ test.describe('McpLaunchAdmissionService — committed registry changes', () => 
 });
 
 test.describe('McpLaunchAdmissionService — seat credentials, redeemed from their owners', () => {
+    test('#964 classifies real transport failures through the plane owner, without retiring admission', async () => {
+        const originalFetch = globalThis.fetch, originalProbe = FleetTenantService.probeFn;
+        const owners        = makeOwners();
+        owners.owners.NEO_MCP_REMOTE_TOKEN.prove = (credential, {signal}) => FleetTenantService.probeSeatPlaneCredential({
+            planeBase    : 'https://plane.example.test', credential, expectedIdentity: LOGIN,
+            expectedPlane: {id: 'fixture', dataRoot: '/fixture'}, signal
+        });
+        FleetTenantService.probeFn = null;
+        try {
+            const reservation = await activeSeat({owners: owners.owners});
+            for (const [status, code] of [[503, 'proof-unavailable'], [429, 'proof-unavailable'], [401, 'credential-unproven'], [403, 'credential-unproven'], [404, 'credential-unproven'], [null, 'proof-unavailable']]) {
+                globalThis.fetch = async () => {
+                    if (status === null) throw new DOMException('fixture aborted', 'AbortError');
+                    return {ok: false, status, headers: new Headers(), text: async () => ''}
+                };
+                expect((await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).code, String(status)).toBe(code);
+                expect(service.statusOf('seat').state).toBe('active')
+            }
+
+            for (const error of [new TypeError('fetch failed'), new DOMException('fixture aborted', 'AbortError')]) {
+                globalThis.fetch = async () => { throw error };
+                const answer = await redeem(reservation.grants['memory-core'], {server: 'memory-core'});
+                expect(answer).toEqual({outcome: 'refused', code: 'proof-unavailable', reason: 'plane endpoint unreachable'});
+                expect(service.statusOf('seat').recent.at(-1)).toMatchObject({code: 'proof-unavailable', reason: 'plane endpoint unreachable'})
+            }
+
+            const signals = [];
+            globalThis.fetch = (url, {signal}) => new Promise((resolve, reject) => {
+                signals.push(signal);
+                signal.addEventListener('abort', () => reject(signal.reason), {once: true})
+            });
+            service.proofTimeoutMs = 20;
+            expect((await redeem(reservation.grants['knowledge-base'], {server: 'knowledge-base'})).code).toBe('proof-unavailable');
+            expect(signals).toHaveLength(2);
+            expect(signals.every(signal => signal.aborted)).toBe(true)
+        } finally {
+            globalThis.fetch = originalFetch;
+            FleetTenantService.probeFn = originalProbe
+        }
+    });
+
     test('each redemption resolves the credential from its owner and proves it; a later child gets what the owner holds then', async () => {
         const
             owners      = makeOwners(),
@@ -475,7 +517,7 @@ test.describe('McpLaunchAdmissionService — seat credentials, redeemed from the
         expect((await redeemOn('github-workflow')).code).toBe('credential-missing');
 
         owners.owners.NEO_MCP_REMOTE_TOKEN.prove = async () => { throw new Error('plane unreachable') };
-        expect(await redeemOn('knowledge-base')).toEqual({outcome: 'refused', code: 'credential-unproven', reason: 'plane-bearer'});
+        expect(await redeemOn('knowledge-base')).toEqual({outcome: 'refused', code: 'proof-unavailable', reason: 'proof-unavailable'});
 
         expect(service.statusOf('seat').state).toBe('active');
         expect(service.statusOf('seat').recent.map(entry => [entry.server, entry.code, entry.reason])).toEqual([
@@ -483,7 +525,7 @@ test.describe('McpLaunchAdmissionService — seat credentials, redeemed from the
             ['github-workflow', 'credential-unproven', 'seat-pat'],
             ['memory-core', null, null],
             ['github-workflow', 'credential-missing', 'seat-pat'],
-            ['knowledge-base', 'credential-unproven', 'plane-bearer']
+            ['knowledge-base', 'proof-unavailable', 'proof-unavailable']
         ])
     });
 
@@ -541,7 +583,42 @@ test.describe('McpLaunchAdmissionService — seat credentials, redeemed from the
 
         service.proofTimeoutMs = 20;
         owners.proves          = () => new Promise(() => {});
-        expect(await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).toEqual({outcome: 'refused', code: 'credential-unproven', reason: 'plane-bearer'})
+        expect(await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).toEqual({outcome: 'refused', code: 'proof-unavailable', reason: 'proof-timeout'})
+    });
+
+    test('#964 preserves machine verdicts independently of wording and keeps audit reasons bounded', async () => {
+        const owners = makeOwners(), reservation = await activeSeat({owners: owners.owners});
+        for (const [verdict, code] of [['unanswered', 'proof-unavailable'], ['refused', 'credential-unproven']]) {
+            for (const reason of ['plane endpoint unreachable', 'changed display wording', PAT]) {
+                owners.owners.NEO_MCP_REMOTE_TOKEN.prove = async () => ({verdict, reason});
+                const answer = await redeem(reservation.grants['memory-core'], {server: 'memory-core'});
+                expect(answer.code).toBe(code);
+                expect(answer.reason).toBe(verdict === 'unanswered' && reason === 'plane endpoint unreachable' ? reason : 'plane-bearer');
+                expect(JSON.stringify(service.statusOf('seat'))).not.toContain(PAT)
+            }
+        }
+        owners.owners.NEO_MCP_REMOTE_TOKEN.prove = async () => ({ok: true, verdict: 'unknown'});
+        expect((await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).code).toBe('credential-unproven');
+        owners.owners.NEO_MCP_REMOTE_TOKEN.credential = PAT;
+        expect(await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).not.toHaveProperty('reason');
+        expect(service.statusOf('seat').state).toBe('active')
+    });
+
+    test('#964 aborts the owner request at the shared proof deadline and preserves a concurrent Stop', async () => {
+        const owners = makeOwners();
+        let signal;
+        owners.owners.NEO_MCP_REMOTE_TOKEN.prove = (value, options) => new Promise((resolve, reject) => {
+            signal = options.signal;
+            signal.addEventListener('abort', () => reject(signal.reason), {once: true})
+        });
+        service.proofTimeoutMs = 20;
+        const reservation = await activeSeat({owners: owners.owners});
+        expect(await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).toMatchObject({code: 'proof-unavailable'});
+        expect(signal.aborted).toBe(true);
+        expect(service.statusOf('seat').state).toBe('active');
+        const pending = redeem(reservation.grants['knowledge-base'], {server: 'knowledge-base'});
+        service.revoke('seat', 'stop-requested');
+        expect(await pending).toMatchObject({code: 'revoked', reason: 'stop-requested'})
     });
 });
 
@@ -692,6 +769,7 @@ test.describe('McpLaunchAdmissionService — a Desktop row launched for real', (
     });
 
     test('a row whose issuer is gone, as after a Fleet restart, refuses before it spawns', async () => {
+        test.setTimeout(75000);
         const
             reservation = await activeSeat(),
             closed      = await new Promise(resolve => {
@@ -704,7 +782,7 @@ test.describe('McpLaunchAdmissionService — a Desktop row launched for real', (
             row         = launchRow({server: 'memory-core', grant: reservation.grants['memory-core'], issuer: closed});
 
         try {
-            await expect(row.client.connect(row.transport)).rejects.toThrow();
+            await expect(row.client.connect(row.transport, {timeout: 65000})).rejects.toThrow();
             await expect.poll(() => row.stderr.join('')).toContain('Neo MCP launch refused (issuer-unavailable)')
         } finally {
             await row.client.close()

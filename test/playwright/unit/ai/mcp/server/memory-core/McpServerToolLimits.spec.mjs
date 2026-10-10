@@ -26,6 +26,28 @@ const
     repoRoot   = path.resolve(__dirname, '../../../../../../..');
 
 test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
+    test('#964 plane-only health dispatch on both servers bypasses health and WAL producers', async () => {
+        const mcTools   = await import('../../../../../../../ai/mcp/server/memory-core/toolService.mjs');
+        const kbTools   = await import('../../../../../../../ai/mcp/server/knowledge-base/toolService.mjs');
+        const mcHealth  = (await import('../../../../../../../ai/services/memory-core/HealthService.mjs')).default;
+        const kbHealth  = (await import('../../../../../../../ai/services/knowledge-base/HealthService.mjs')).default;
+        const memory    = (await import('../../../../../../../ai/services/memory-core/MemoryService.mjs')).default;
+        const originals = [mcHealth.healthcheck, kbHealth.healthcheck, memory.describeDrainState];
+        mcHealth.healthcheck = kbHealth.healthcheck = memory.describeDrainState = () => { throw new Error('plane identity must not probe health') };
+        try {
+            for (const tools of [mcTools, kbTools]) {
+                const listed = await tools.listTools();
+                expect(listed.tools.find(tool => tool.name === 'healthcheck').inputSchema.properties.scope.enum).toEqual(['full', 'plane']);
+                const result = await tools.callTool('healthcheck', {scope: 'plane'});
+                expect(Object.keys(result).sort()).toEqual(['deployedRevision', 'plane']);
+                expect(result.plane).toEqual({id: expect.any(String), dataRoot: expect.any(String)});
+                expect(result).not.toHaveProperty('status')
+            }
+        } finally {
+            [mcHealth.healthcheck, kbHealth.healthcheck, memory.describeDrainState] = originals
+        }
+    });
+
     let toolService;
 
     test.beforeAll(async () => {

@@ -42,6 +42,7 @@ paths:
     get:
       summary: Health Check
       operationId: healthcheck
+      x-pass-as-object: true
       x-neo-tool-tier: read
       x-annotations:
         readOnlyHint: true
@@ -53,6 +54,14 @@ paths:
         tools are failing. It provides a quick status check on the server and its
         primary dependency.
       tags: [Health]
+      parameters:
+        - name: scope
+          in: query
+          required: false
+          description: "plane returns only authenticated process identity and deployedRevision, without dependency probes or a health verdict; full preserves the ordinary healthcheck."
+          schema:
+            type: string
+            enum: [full, plane]
       responses:
         '200':
           description: Server is healthy and connected to the database.

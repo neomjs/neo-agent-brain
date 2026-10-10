@@ -1,13 +1,14 @@
-import DatabaseService               from '../../../services/knowledge-base/DatabaseService.mjs';
-import DocumentService               from '../../../services/knowledge-base/DocumentService.mjs';
-import HealthService                 from '../../../services/knowledge-base/HealthService.mjs';
-import IngestionService              from '../../../services/knowledge-base/IngestionService.mjs';
-import KBRecorderService             from '../../../services/knowledge-base/KBRecorderService.mjs';
-import QueryService                  from '../../../services/knowledge-base/QueryService.mjs';
-import SearchService                 from '../../../services/knowledge-base/SearchService.mjs';
-import ToolService                   from '../../ToolService.mjs';
-import AiConfig                      from '../../../config.mjs';
-import kbConfig                      from './config.mjs';
+import DatabaseService        from '../../../services/knowledge-base/DatabaseService.mjs';
+import DocumentService        from '../../../services/knowledge-base/DocumentService.mjs';
+import HealthService          from '../../../services/knowledge-base/HealthService.mjs';
+import IngestionService       from '../../../services/knowledge-base/IngestionService.mjs';
+import KBRecorderService      from '../../../services/knowledge-base/KBRecorderService.mjs';
+import QueryService           from '../../../services/knowledge-base/QueryService.mjs';
+import SearchService          from '../../../services/knowledge-base/SearchService.mjs';
+import ToolService            from '../../ToolService.mjs';
+import AiConfig               from '../../../config.mjs';
+import kbConfig               from './config.mjs';
+import {readDeployedRevision} from '../../../services/shared/deployedRevision.mjs';
 import {
     readDeploymentStateSnapshot,
     selectLastServiceDeath
@@ -90,6 +91,32 @@ export function composeKnowledgeBaseHealthcheck({
     };
 }
 
+/**
+ * @summary Read the authenticated process identity without probing dependencies, or run the full health check.
+ * @param {Object} [args] `scope: 'plane'` selects identity only; it makes no health assertion.
+ * @returns {Promise<Object>}
+ */
+export async function readKnowledgeBaseHealthcheck(args) {
+    if (args?.scope === 'plane') {
+        return {
+            plane           : {id: kbConfig.plane.id, dataRoot: kbConfig.plane.dataRoot},
+            deployedRevision: readDeployedRevision()
+        }
+    }
+
+    return composeKnowledgeBaseHealthcheck({
+        health              : await HealthService.healthcheck(),
+        plane               : {id: kbConfig.plane.id, dataRoot: kbConfig.plane.dataRoot},
+        deploymentInspection: await readDeploymentInspection(),
+        serviceKey          : 'kb-server',
+        // Elected + parked vector-generation identities; a plane without an election reads missing.
+        // Generation-cutover acceptance consumes this block.
+        vectorGeneration    : await projectVectorGenerationHealth({
+            dir: resolveVectorGenerationElectionDir({planeDataRoot: kbConfig.plane.dataRoot})
+        })
+    })
+}
+
 const serviceMapping = {
     ask_knowledge_base   : SearchService           .ask                .bind(SearchService),
     get_class_hierarchy  : QueryService            .getClassHierarchy  .bind(QueryService),
@@ -99,17 +126,7 @@ const serviceMapping = {
     // manifest's observed column). Read from the SAME per-server config the boot assertion
     // verified (`Server.aiConfig` === this singleton) — never a second Provider, so a custom
     // child overlay can never verify one identity and report another.
-    healthcheck                  : async () => composeKnowledgeBaseHealthcheck({
-        health              : await HealthService.healthcheck(),
-        plane               : {id: kbConfig.plane.id, dataRoot: kbConfig.plane.dataRoot},
-        deploymentInspection: await readDeploymentInspection(),
-        serviceKey          : 'kb-server',
-        // Elected + parked vector-generation identities (never throws; `missing` on a plane that
-        // has not declared an election) — acceptance for a generation cutover reads this block.
-        vectorGeneration: await projectVectorGenerationHealth({
-            dir: resolveVectorGenerationElectionDir({planeDataRoot: kbConfig.plane.dataRoot})
-        })
-    }),
+    healthcheck                  : readKnowledgeBaseHealthcheck,
     get_deployment_state_snapshot: readDeploymentInspection,
     inspect_deployment           : readDeploymentInspection,
     get_ingestion_progress       : IngestionService        .getIngestionProgress.bind(IngestionService),

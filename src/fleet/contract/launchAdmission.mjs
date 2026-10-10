@@ -82,11 +82,11 @@ export const LAUNCH_ADMISSION_CREDENTIALS = Object.freeze({
 });
 
 /**
- * @summary Why a redemption was refused. The issuer records the codes up to `credential-unproven`. The
+ * @summary Why a redemption was refused. The issuer records the codes up to `proof-unavailable`. The
  * launcher reports the last four itself, because they arise where no issuer answered or none can be
- * trusted. `revoked` carries the grant's revocation reason separately, and the two credential codes a
- * `LAUNCH_ADMISSION_CREDENTIALS` value. A credential refusal ends nothing: the next child is admitted once
- * the credential's owner holds a value that proves.
+ * trusted. `revoked` carries the grant's revocation reason. Proof failures carry a bounded producer reason
+ * or credential-type label. Unanswered proofs are retryable; definite refusals require the credential owner.
+ * Neither ends the generation: a later redemption proves the owner's current value again.
  * @type {Readonly<Object<String, String>>}
  */
 export const LAUNCH_ADMISSION_REFUSALS = Object.freeze({
@@ -108,8 +108,10 @@ export const LAUNCH_ADMISSION_REFUSALS = Object.freeze({
     PROCESS_UNKNOWN        : 'process-unknown',
     /** The credential's owner holds no value for the seat. */
     CREDENTIAL_MISSING     : 'credential-missing',
-    /** The value the credential's owner holds did not prove: another account's, or no proof could be made. */
+    /** The credential's owner refused the value, for example because it belongs to another account. */
     CREDENTIAL_UNPROVEN    : 'credential-unproven',
+    /** The owner could not finish a proof; the launcher may retry within its startup deadline. */
+    PROOF_UNAVAILABLE      : 'proof-unavailable',
     /** The launcher could not reach an issuer, for example after a Fleet restart. */
     ISSUER_UNAVAILABLE     : 'issuer-unavailable',
     /** An answer carried no valid proof of the issuer that holds the grant. */

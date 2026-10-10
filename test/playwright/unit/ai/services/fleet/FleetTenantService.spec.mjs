@@ -561,9 +561,10 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — connectTenant
         expect(result).toEqual({
             ok       : true,
             status   : 200,
+            verdict  : 'proved',
             resources: {
-                'memory-core'   : {ok: true, status: 200},
-                'knowledge-base': {ok: true, status: 200}
+                'memory-core'   : {ok: true, status: 200, verdict: 'proved'},
+                'knowledge-base': {ok: true, status: 200, verdict: 'proved'}
             }
         })
 
@@ -725,7 +726,7 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — connectTenant
             })
 
             expect(result.ok).toBe(false)
-            expect(result.resources['memory-core']).toEqual({ok: false})
+            expect(result.resources['memory-core']).toEqual({ok: false, verdict: 'unanswered'})
         } finally {
             globalThis.fetch = originalFetch
         }
@@ -795,7 +796,7 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — connectTenant
 
             expect(accepted.ok).toBe(true)
             expect(accepted.resources['memory-core'])
-                .toEqual({ok: true, status: 200, identity: '@neo-gpt'})
+                .toEqual({ok: true, status: 200, verdict: 'proved', identity: '@neo-gpt'})
 
             observedIdentity = '@another-valid-user'
 
@@ -808,7 +809,7 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — connectTenant
             expect(rejected.ok).toBe(false)
             // the other identity is named as such, never carried
             expect(rejected.resources['memory-core'])
-                .toEqual({ok: false, status: 200, identity: null, anotherIdentity: true})
+                .toEqual({ok: false, status: 200, verdict: 'refused', identity: null, anotherIdentity: true})
         } finally {
             globalThis.fetch = originalFetch
         }
@@ -879,8 +880,8 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — connectTenant
 
         expect(result.ok).toBe(false)
         expect(result.status).toBe(503)
-        expect(result.resources['memory-core']).toEqual({ok: true, status: 200})
-        expect(result.resources['knowledge-base']).toEqual({ok: false, status: 503})
+        expect(result.resources['memory-core']).toEqual({ok: true, status: 200, verdict: 'proved'})
+        expect(result.resources['knowledge-base']).toEqual({ok: false, status: 503, verdict: 'unanswered'})
         expect(JSON.stringify(result)).not.toContain(PAT)
         expect(JSON.stringify(result)).not.toContain(remoteText)
     })
@@ -902,8 +903,8 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — connectTenant
             })
 
             expect(result.ok).toBe(false)
-            expect(result.resources['memory-core']).toEqual({ok: false, status: 200})
-            expect(result.resources['knowledge-base']).toEqual({ok: false, status: 200})
+            expect(result.resources['memory-core']).toEqual({ok: false, status: 200, verdict: 'refused'})
+            expect(result.resources['knowledge-base']).toEqual({ok: false, status: 200, verdict: 'refused'})
             expect(JSON.stringify(result)).not.toContain('proxy fallback')
         } finally {
             globalThis.fetch = originalFetch
@@ -1004,13 +1005,13 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — connectTenant
 
         await expect(FleetTenantService.probeSeatCredential({
             tenantId: connected.id, credential: '   ', expectedIdentity: '@neo-gpt'
-        })).resolves.toEqual({ok: false})
+        })).resolves.toEqual({ok: false, verdict: 'refused'})
         await expect(FleetTenantService.probeSeatCredential({
             tenantId: 'missing', credential: PAT, expectedIdentity: '@neo-gpt'
-        })).resolves.toEqual({ok: false})
+        })).resolves.toEqual({ok: false, verdict: 'refused'})
         await expect(FleetTenantService.probeSeatCredential({
             tenantId: connected.id, credential: PAT
-        })).resolves.toEqual({ok: false})
+        })).resolves.toEqual({ok: false, verdict: 'refused'})
         expect(calls).toHaveLength(1)
     })
 })
@@ -1174,7 +1175,7 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
         expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId})).toEqual({credential: explicit, plane: SERVED});
         expect(await FleetTenantService.probeSeatPlaneCredential({
             planeBase: PLANE, credential: explicit, expectedIdentity: identity, expectedPlane: SERVED
-        })).toEqual({ok: true})
+        })).toEqual({ok: true, verdict: 'proved'})
 
         // The explicit setter omits ifAbsent and remains an intentional rebind.
         expect(await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId, identity, credential: 'manual-rebind-pat'}))
@@ -1219,10 +1220,10 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
             if (selected.credential && selected.plane?.id) {
                 expect(resolved).toEqual({credential: selected.credential, plane: selected.plane});
                 await expect(FleetTenantService.probeSeatPlaneCredential({
-                    planeBase: PLANE,
-                    credential: selected.credential,
+                    planeBase       : PLANE,
+                    credential      : selected.credential,
                     expectedIdentity: identity,
-                    expectedPlane: selected.plane
+                    expectedPlane   : selected.plane
                 })).resolves.toMatchObject({ok: false})
             } else {
                 expect(resolved).toBeNull()
@@ -1298,13 +1299,28 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
             {credential, plane} = FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie'}),
             prove               = () => FleetTenantService.probeSeatPlaneCredential({planeBase: PLANE, credential, expectedIdentity: '@neo-gpt-sophie', expectedPlane: plane})
 
-        expect(await prove()).toEqual({ok: true})
+        expect(await prove()).toEqual({ok: true, verdict: 'proved'})
 
         // another id, and the same id over other storage
         for (const served of [{...SERVED, id: 'neo-local-recreated'}, {...SERVED, dataRoot: '/elsewhere/.neo-ai-data'}]) {
             FleetTenantService.probeFn = asSeatOn(served)
 
-            expect(await prove()).toEqual({ok: false, reason: 'the plane at this endpoint is not the one the credential was stored for'})
+            expect(await prove()).toEqual({ok: false, verdict: 'refused', reason: 'the plane at this endpoint is not the one the credential was stored for'})
+        }
+    })
+
+    test('a status-less failure through the real plane probe reports unreachable, never authentication failure', async () => {
+        const originalFetch = globalThis.fetch;
+        FleetTenantService.probeFn = null;
+        try {
+            for (const error of [new TypeError('fetch failed'), new DOMException('fixture aborted', 'AbortError')]) {
+                globalThis.fetch = async () => { throw error };
+                expect(await FleetTenantService.probeSeatPlaneCredential({
+                    planeBase: PLANE, credential: PAT, expectedIdentity: '@neo-gpt-sophie', expectedPlane: SERVED
+                })).toEqual({ok: false, verdict: 'unanswered', reason: 'plane endpoint unreachable'})
+            }
+        } finally {
+            globalThis.fetch = originalFetch
         }
     })
 
@@ -1319,7 +1335,7 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
         ]) {
             FleetTenantService.probeFn = probe
 
-            expect(await FleetTenantService.probeSeatPlaneCredential(proof)).toEqual({ok: false, reason})
+            expect(await FleetTenantService.probeSeatPlaneCredential(proof)).toEqual({ok: false, verdict: reason === 'plane endpoint unreachable' ? 'unanswered' : 'refused', reason})
         }
 
         let probed = 0
@@ -1328,7 +1344,7 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
 
         for (const override of [{expectedPlane: null}, {credential: ' '}, {expectedIdentity: ''}, {planeBase: 'http://plane.example.com'}]) {
             expect(await FleetTenantService.probeSeatPlaneCredential({...proof, ...override}))
-                .toEqual({ok: false, reason: 'the seat holds no proven plane credential'})
+                .toEqual({ok: false, verdict: 'refused', reason: 'the seat holds no proven plane credential'})
         }
 
         expect(probed).toBe(0)
@@ -1366,18 +1382,20 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
             expect(asked).toEqual({
                 ok       : true,
                 status   : 200,
+                verdict  : 'proved',
                 resources: {
-                    'memory-core'   : {ok: true, status: 200, identity: '@neo-gpt-sophie', plane: SERVED},
-                    'knowledge-base': {ok: true, status: 200, plane: SERVED}
+                    'memory-core'   : {ok: true, status: 200, verdict: 'proved', identity: '@neo-gpt-sophie', plane: SERVED},
+                    'knowledge-base': {ok: true, status: 200, verdict: 'proved', plane: SERVED}
                 }
             })
             // one healthcheck per resource, inside that resource's own session
             expect(healthchecks().map(call => [call.url, call.session]).sort())
                 .toEqual([[`${PLANE}/kb/mcp`, 'session-kb'], [`${PLANE}/mc/mcp`, 'session-mc']])
+            expect(healthchecks().map(call => call.request.params.arguments)).toEqual([{scope: 'plane'}, {scope: 'plane'}])
 
             const unasked = await probeTenantEndpoint({endpoint: PLANE, credential: PAT, expectedIdentity: '@neo-gpt-sophie'})
 
-            expect(unasked.resources['memory-core']).toEqual({ok: true, status: 200, identity: '@neo-gpt-sophie'})
+            expect(unasked.resources['memory-core']).toEqual({ok: true, status: 200, verdict: 'proved', identity: '@neo-gpt-sophie'})
             expect(healthchecks()).toHaveLength(2)
 
             // a server that names no plane is no plane, and readiness is still decided by readiness alone

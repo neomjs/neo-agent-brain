@@ -10,6 +10,7 @@ import Base                        from 'neo.mjs/src/core/Base.mjs';
 import AiConfig                    from '../../config.mjs';
 import {resolveFleetCredentialKey} from './FleetRegistryService.mjs';
 import {assertSeatSegment}         from './deriveAgentRepoPath.mjs';
+import {httpProofVerdict}          from './mcpLaunchAdmission.mjs';
 import {
     normalizeAgentIdentity,
     normalizeSecureMcpEndpoint,
@@ -270,9 +271,10 @@ class FleetTenantService extends Base {
      * @param {String} options.credential Plane credential resolved once from this tenant service.
      * @param {String} options.expectedIdentity Canonical seat identity the provider credential must
      *     resolve to. A valid credential for a different provider subject fails closed.
-     * @returns {Promise<Object>} Bounded `{ok,status,resources}`; never remote prose or a token.
+     * @param {AbortSignal} [options.signal] Issuer's overall proof budget.
+     * @returns {Promise<Object>} Bounded `{ok,status,verdict,resources}`; never remote prose or a token.
      */
-    async probeSeatCredential({tenantId, credential, expectedIdentity}={}) {
+    async probeSeatCredential({tenantId, credential, expectedIdentity, signal}={}) {
         const
             resolved          = this.resolveMcpResources(tenantId),
             canonicalIdentity = normalizeAgentIdentity(expectedIdentity);
@@ -281,23 +283,24 @@ class FleetTenantService extends Base {
             typeof credential !== 'string' ||
             !credential.trim() ||
             !canonicalIdentity) {
-            return {ok: false}
+            return {ok: false, verdict: 'refused'}
         }
 
         try {
             const readiness = await this.getProbeFn()({
                 endpoint        : resolved.endpoint,
                 credential,
-                expectedIdentity: canonicalIdentity
+                expectedIdentity: canonicalIdentity,
+                signal
             });
 
-            if (readiness?.resources?.['memory-core']?.identity !== canonicalIdentity) {
-                return {...readiness, ok: false}
+            if (readiness?.ok && readiness.resources?.['memory-core']?.identity !== canonicalIdentity) {
+                return {...readiness, ok: false, verdict: 'refused'}
             }
 
             return readiness
         } catch {
-            return {ok: false}
+            return {ok: false, verdict: 'unanswered'}
         }
     }
 
@@ -424,27 +427,28 @@ class FleetTenantService extends Base {
      * @param {String} params.credential From {@link resolveSeatPlaneCredential}.
      * @param {String} params.expectedIdentity The seat's identity.
      * @param {Object} params.expectedPlane `{id, dataRoot}` stored with the credential.
-     * @returns {Promise<Object>} `{ok: true}`, or `{ok: false, reason}` with a reason from a closed
-     *     vocabulary.
+     * @param {AbortSignal} [params.signal] Issuer's overall proof budget.
+     * @returns {Promise<Object>} `{ok,verdict,reason?}`. The machine verdict survives unavailable transport;
+     *     the reason is producer-owned display text, never a classification input.
      */
-    async probeSeatPlaneCredential({planeBase, credential, expectedIdentity, expectedPlane} = {}) {
+    async probeSeatPlaneCredential({planeBase, credential, expectedIdentity, expectedPlane, signal} = {}) {
         const
             endpoint = this.normalizeEndpoint(planeBase),
             identity = normalizeAgentIdentity(expectedIdentity);
 
         if (!endpoint || !identity || typeof credential !== 'string' || !credential.trim() || !expectedPlane?.id) {
-            return {ok: false, reason: 'the seat holds no proven plane credential'}
+            return {ok: false, verdict: 'refused', reason: 'the seat holds no proven plane credential'}
         }
 
-        const proof = await this.proveSeatOnPlane({endpoint, credential, identity});
+        const proof = await this.proveSeatOnPlane({endpoint, credential, identity, signal});
 
         if (!proof.ok) return proof;
 
         if (proof.plane.id !== expectedPlane.id || proof.plane.dataRoot !== expectedPlane.dataRoot) {
-            return {ok: false, reason: 'the plane at this endpoint is not the one the credential was stored for'}
+            return {ok: false, verdict: 'refused', reason: 'the plane at this endpoint is not the one the credential was stored for'}
         }
 
-        return {ok: true}
+        return {ok: true, verdict: 'proved'}
     }
 
     /**
@@ -455,17 +459,17 @@ class FleetTenantService extends Base {
      * @param {String} params.endpoint Canonical plane endpoint.
      * @param {String} params.credential
      * @param {String} params.identity Canonical `@login`.
-     * @returns {Promise<Object>} `{ok: true, plane: {id, dataRoot}}`, or `{ok: false, reason}` with a
-     *     reason from a closed vocabulary.
+     * @param {AbortSignal} [params.signal] Issuer's overall proof budget.
+     * @returns {Promise<Object>} `{ok,verdict,plane?,reason?}` with bounded producer-owned diagnostics.
      * @protected
      */
-    async proveSeatOnPlane({endpoint, credential, identity}) {
+    async proveSeatOnPlane({endpoint, credential, identity, signal}) {
         let probe;
 
         try {
-            probe = await this.getProbeFn()({endpoint, credential, expectedIdentity: identity, servedPlane: true})
+            probe = await this.getProbeFn()({endpoint, credential, expectedIdentity: identity, servedPlane: true, signal})
         } catch {
-            return {ok: false, reason: 'plane endpoint unreachable'}
+            return {ok: false, verdict: 'unanswered', reason: 'plane endpoint unreachable'}
         }
 
         const
@@ -473,22 +477,24 @@ class FleetTenantService extends Base {
             kb = probe?.resources?.['knowledge-base'];
 
         if (mc?.anotherIdentity || (probe?.ok && mc?.identity !== identity)) {
-            return {ok: false, reason: 'the credential resolves to another identity'}
+            return {ok: false, verdict: 'refused', reason: 'the credential resolves to another identity'}
         }
 
         if (!probe?.ok) {
-            return {ok: false, reason: rejectionReasonFor(probe?.status, 'plane')}
+            const reason = probe?.verdict === 'unanswered' && !Number.isInteger(probe.status)
+                ? 'plane endpoint unreachable' : rejectionReasonFor(probe?.status, 'plane');
+            return {ok: false, verdict: probe?.verdict ?? 'refused', reason}
         }
 
         if (!mc.plane?.id || !kb?.plane?.id) {
-            return {ok: false, reason: 'the plane did not identify itself'}
+            return {ok: false, verdict: 'refused', reason: 'the plane did not identify itself'}
         }
 
         if (mc.plane.id !== kb.plane.id || mc.plane.dataRoot !== kb.plane.dataRoot) {
-            return {ok: false, reason: 'the Memory Core and Knowledge Base at this endpoint belong to different planes'}
+            return {ok: false, verdict: 'refused', reason: 'the Memory Core and Knowledge Base at this endpoint belong to different planes'}
         }
 
-        return {ok: true, plane: {id: mc.plane.id, dataRoot: mc.plane.dataRoot}}
+        return {ok: true, verdict: 'proved', plane: {id: mc.plane.id, dataRoot: mc.plane.dataRoot}}
     }
 
     /**
@@ -764,7 +770,7 @@ class FleetTenantService extends Base {
 // the fleet subsystem's one MCP-wire parsing authority, shared with planeMailboxClient.
 
 /**
- * @summary Call one argument-less MCP tool inside an initialized session.
+ * @summary Call one MCP tool inside an initialized session and preserve the transport verdict.
  * @param {Object} options
  * @param {String} options.url
  * @param {String} options.credential
@@ -772,10 +778,12 @@ class FleetTenantService extends Base {
  * @param {String} options.protocolVersion Negotiated initialize response version.
  * @param {Number} options.id JSON-RPC request id.
  * @param {String} options.name Tool name.
- * @returns {Promise<Object>} `{ok, status, payload}`; the payload is structured JSON or `null`.
+ * @param {Object} [options.args={}] Tool arguments.
+ * @param {AbortSignal} [options.signal] Overall proof budget.
+ * @returns {Promise<Object>} `{ok, status, verdict, payload}`; the payload is structured JSON or `null`.
  * @private
  */
-async function callMcpTool({url, credential, sessionId, protocolVersion, id, name}) {
+async function callMcpTool({url, credential, sessionId, protocolVersion, id, name, args = {}, signal}) {
     const response = await fetch(url, {
         method : 'POST',
         headers: {
@@ -789,14 +797,15 @@ async function callMcpTool({url, credential, sessionId, protocolVersion, id, nam
             jsonrpc: '2.0',
             id,
             method : 'tools/call',
-            params : {name, arguments: {}}
+            params : {name, arguments: args}
         }),
-        signal: AbortSignal.timeout(AiConfig.fleet.tenantProbeTimeoutMs)
+        signal: probeSignal(signal)
     });
 
     return {
         ok     : response.ok,
         status : response.status,
+        verdict: httpProofVerdict(response.ok, response.status),
         payload: readMcpToolPayload(parseMcpEnvelope(await response.text()))
     }
 }
@@ -812,12 +821,13 @@ async function callMcpTool({url, credential, sessionId, protocolVersion, id, nam
  * @param {String} options.sessionId
  * @param {String} options.protocolVersion Negotiated initialize response version.
  * @param {String} options.expectedIdentity
+ * @param {AbortSignal} [options.signal] Overall proof budget.
  * @returns {Promise<Object>} Bounded `{ok,status,identity}`, plus `anotherIdentity: true` when the
  *     server named a valid identity that is not the expected one. The other identity is never carried.
  * @private
  */
-async function probeMcpIdentity({url, credential, sessionId, protocolVersion, expectedIdentity}) {
-    const {ok, status, payload} = await callMcpTool({url, credential, sessionId, protocolVersion, id: 2, name: 'list_permissions'});
+async function probeMcpIdentity({url, credential, sessionId, protocolVersion, expectedIdentity, signal}) {
+    const {ok, status, payload, verdict} = await callMcpTool({url, credential, sessionId, protocolVersion, id: 2, name: 'list_permissions', signal});
 
     const
         identity = normalizeAgentIdentity(payload?.identity),
@@ -826,33 +836,35 @@ async function probeMcpIdentity({url, credential, sessionId, protocolVersion, ex
     return {
         ok      : matches,
         status,
+        verdict : ok ? matches ? 'proved' : 'refused' : verdict,
         identity: matches ? expectedIdentity : null,
         ...(ok && identity && !matches ? {anotherIdentity: true} : {})
     }
 }
 
 /**
- * @summary Ask an MCP server which plane serves it. `healthcheck` always reports a `plane` block, the
- * `id` and `dataRoot` this process resolved at boot. The values are remote-authored, so only bounded
- * strings pass, and a server that names no plane, or fails to answer, reads as `null`.
+ * @summary Ask which plane serves this authenticated session, without a full health probe. An older server
+ * may ignore the scope and return full health; only its bounded identity block is consumed. Missing identity
+ * remains distinct from an unanswered transport, so the caller retains the refusal/retry decision.
  * @param {Object} options
  * @param {String} options.url
  * @param {String} options.credential
  * @param {String} options.sessionId
  * @param {String} options.protocolVersion Negotiated initialize response version.
- * @returns {Promise<Object|null>} `{id, dataRoot}`, or `null`.
+ * @param {AbortSignal} [options.signal] Overall proof budget.
+ * @returns {Promise<Object>} `{ok, status?, verdict, plane}`; plane is `{id,dataRoot}` or null.
  * @private
  */
-async function readServedPlane({url, credential, sessionId, protocolVersion}) {
+async function readServedPlane({url, credential, sessionId, protocolVersion, signal}) {
     const bounded = value => typeof value === 'string' && value.trim() !== '' && value.length <= 1024;
 
     try {
-        const {ok, payload} = await callMcpTool({url, credential, sessionId, protocolVersion, id: 3, name: 'healthcheck'});
-        const plane         = payload?.plane;
+        const {ok, status, payload, verdict} = await callMcpTool({url, credential, sessionId, protocolVersion, id: 3, name: 'healthcheck', args: {scope: 'plane'}, signal});
+        const plane                          = payload?.plane;
 
-        return ok && bounded(plane?.id) && bounded(plane?.dataRoot) ? {id: plane.id, dataRoot: plane.dataRoot} : null
+        return {ok, status, verdict, plane: ok && bounded(plane?.id) && bounded(plane?.dataRoot) ? {id: plane.id, dataRoot: plane.dataRoot} : null}
     } catch {
-        return null
+        return {ok: false, verdict: 'unanswered', plane: null}
     }
 }
 
@@ -864,10 +876,11 @@ async function readServedPlane({url, credential, sessionId, protocolVersion}) {
  * @param {String} options.credential
  * @param {String|null} options.sessionId
  * @param {String} options.protocolVersion Negotiated initialize response version.
- * @returns {Promise<Object>} Bounded `{ok,status}`.
+ * @param {AbortSignal} [options.signal] Overall proof budget.
+ * @returns {Promise<Object>} Bounded `{ok,status,verdict}`.
  * @private
  */
-async function notifyMcpInitialized({url, credential, sessionId, protocolVersion}) {
+async function notifyMcpInitialized({url, credential, sessionId, protocolVersion, signal}) {
     const headers = {
         Accept                : 'application/json, text/event-stream',
         Authorization         : `Bearer ${credential}`,
@@ -884,12 +897,12 @@ async function notifyMcpInitialized({url, credential, sessionId, protocolVersion
             jsonrpc: '2.0',
             method : 'notifications/initialized'
         }),
-        signal: AbortSignal.timeout(AiConfig.fleet.tenantProbeTimeoutMs)
+        signal: probeSignal(signal)
     });
 
     await response.text();
 
-    return {ok: response.ok, status: response.status}
+    return {ok: response.ok, status: response.status, verdict: httpProofVerdict(response.ok, response.status)}
 }
 
 /**
@@ -901,9 +914,10 @@ async function notifyMcpInitialized({url, credential, sessionId, protocolVersion
  * @param {String} options.credential
  * @param {String|null} [options.expectedIdentity] Memory Core caller identity to prove.
  * @param {Boolean} [options.servedPlane=false] Also read which plane serves the resource.
- * @returns {Promise<Object>} `{ok,status,identity?,anotherIdentity?,plane?}` with no remote prose.
+ * @param {AbortSignal} [options.signal] Overall proof budget.
+ * @returns {Promise<Object>} `{ok,status,verdict,identity?,anotherIdentity?,plane?}` with no remote prose.
  */
-async function initializeMcpResource({url, credential, expectedIdentity=null, servedPlane=false}) {
+async function initializeMcpResource({url, credential, expectedIdentity=null, servedPlane=false, signal}) {
     const requestedProtocolVersion = '2024-11-05';
     const headers                  = {
         Accept        : 'application/json, text/event-stream',
@@ -923,7 +937,7 @@ async function initializeMcpResource({url, credential, expectedIdentity=null, se
                 clientInfo     : {name: 'neo-fleet-readiness', version: '1'}
             }
         }),
-        signal: AbortSignal.timeout(AiConfig.fleet.tenantProbeTimeoutMs)
+        signal: probeSignal(signal)
     });
 
     const sessionId = response.headers.get('mcp-session-id');
@@ -946,30 +960,33 @@ async function initializeMcpResource({url, credential, expectedIdentity=null, se
             result &&
             SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion);
 
-        let observation = {ok: !!initialized, status: response.status};
+        let observation = {ok: !!initialized, status: response.status, verdict: httpProofVerdict(!!initialized, response.status)};
 
         if (observation.ok) {
             const notification = await notifyMcpInitialized({
                 url,
                 credential,
                 sessionId,
-                protocolVersion
+                protocolVersion,
+                signal
             });
 
             observation = {
-                ok    : notification.ok,
-                status: notification.ok ? response.status : notification.status
+                ok     : notification.ok,
+                status : notification.ok ? response.status : notification.status,
+                verdict: notification.verdict
             }
         }
 
         if (observation.ok && expectedIdentity) {
             observation = sessionId
-                ? await probeMcpIdentity({url, credential, sessionId, protocolVersion, expectedIdentity})
-                : {ok: false, status: response.status, identity: null}
+                ? await probeMcpIdentity({url, credential, sessionId, protocolVersion, expectedIdentity, signal})
+                : {ok: false, status: response.status, verdict: 'refused', identity: null}
         }
 
         if (observation.ok && servedPlane) {
-            observation.plane = sessionId ? await readServedPlane({url, credential, sessionId, protocolVersion}) : null
+            const planeRead = sessionId ? await readServedPlane({url, credential, sessionId, protocolVersion, signal}) : {plane: null};
+            observation = {...observation, ...planeRead}
         }
 
         return observation
@@ -983,7 +1000,7 @@ async function initializeMcpResource({url, credential, expectedIdentity=null, se
                         'mcp-protocol-version': protocolVersion || requestedProtocolVersion,
                         'mcp-session-id'      : sessionId
                     },
-                    signal : AbortSignal.timeout(2_000)
+                    signal : signal ? AbortSignal.any([signal, AbortSignal.timeout(2_000)]) : AbortSignal.timeout(2_000)
                 });
 
                 await closeResponse.text()
@@ -1008,10 +1025,11 @@ async function initializeMcpResource({url, credential, expectedIdentity=null, se
  * @param {String} options.credential The tenant bearer (used for the probe only; never logged).
  * @param {String|null} [options.expectedIdentity] Canonical seat identity to verify through MC.
  * @param {Boolean} [options.servedPlane=false] Also read the plane each ready resource names; it
- *     never decides `ok`.
- * @returns {Promise<Object>} `{ok, status, resources}`.
+ *     never treats dependency health as identity proof.
+ * @param {AbortSignal} [options.signal] Overall proof budget; every request also obeys its configured ceiling.
+ * @returns {Promise<Object>} `{ok, status, verdict, resources}`. A refused resource outranks an unanswered one.
  */
-export async function probeTenantEndpoint({endpoint, credential, expectedIdentity=null, servedPlane=false}) {
+export async function probeTenantEndpoint({endpoint, credential, expectedIdentity=null, servedPlane=false, signal}) {
     const resources = planeMcpResources(endpoint);
     const entries   = await Promise.all(Object.entries(resources).map(async ([key, {url}]) => {
         try {
@@ -1019,20 +1037,33 @@ export async function probeTenantEndpoint({endpoint, credential, expectedIdentit
                 url,
                 credential,
                 expectedIdentity: key === 'memory-core' ? expectedIdentity : null,
-                servedPlane
+                servedPlane,
+                signal
             })]
         } catch {
-            return [key, {ok: false}]
+            return [key, {ok: false, verdict: 'unanswered'}]
         }
     }));
     const observations = Object.fromEntries(entries);
-    const failed       = entries.find(([, observation]) => !observation.ok)?.[1];
+    const failed       = entries.find(([, observation]) => observation.verdict === 'refused')?.[1]
+        ?? entries.find(([, observation]) => !observation.ok)?.[1];
 
     return {
         ok       : !failed,
-        status   : failed?.status ?? 200,
+        status   : failed ? failed.status : 200,
+        verdict  : failed?.verdict ?? 'proved',
         resources: observations
     };
+}
+
+/**
+ * @summary A request may use the configured probe timeout only within its caller's proof budget.
+ * @param {AbortSignal} [signal] Issuer proof deadline/cancellation; absent for ordinary readiness callers.
+ * @returns {AbortSignal}
+ */
+function probeSignal(signal) {
+    const timeout = AbortSignal.timeout(AiConfig.fleet.tenantProbeTimeoutMs);
+    return signal ? AbortSignal.any([signal, timeout]) : timeout
 }
 
 export default Neo.setupClass(FleetTenantService);
