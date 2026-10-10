@@ -23,14 +23,15 @@ import zlib       from 'zlib';
  * one of the {@link BUNDLE_PAYLOAD_ENCODINGS} keys, so `bundle-meta.json`, `heal-attempts.json` and
  * a writer's scratch file never enter a row count.
  *
- * **Why `stream.compose` on both sides.** A bare `fs.createReadStream(...).pipe(decompressor)` does
- * not forward the file stream's errors: a missing payload crashes the process with an unhandled
- * `'error'` while the reader waits for lines that never come. `compose` forwards every member's
- * error to the one stream the reader holds, so a missing file rejects with `ENOENT`, a torn
- * compressed file with `Z_BUF_ERROR`, and bytes that are not brotli under a `.br` name with a
- * format error. A torn bundle therefore fails the restore probe loudly instead of reading as a
- * shorter valid one. On the write side, `compose(compressor, fileStream)` makes `end()`'s callback
- * wait for the FILE to finish and close, so a receipt written after it describes bytes on disk.
+ * **One stream per side, every error on it.** A bare `fs.createReadStream(...).pipe(decompressor)`
+ * does not forward the file stream's errors: a missing payload crashes the process with an unhandled
+ * `'error'` while the reader waits for lines that never come. The reader therefore holds the
+ * decompressor alone, with the file's errors forwarded onto it and the file closed when it closes,
+ * so a missing file rejects with `ENOENT`, a torn compressed file with `Z_BUF_ERROR`, and bytes that
+ * are not brotli under a `.br` name with a format error. A torn bundle therefore fails the restore
+ * probe loudly instead of reading as a shorter valid one. On the write side,
+ * `compose(compressor, fileStream)` makes `end()`'s callback wait for the FILE to finish and close,
+ * so a receipt written after it describes bytes on disk.
  *
  * @module ai/services/shared/bundlePayload
  */
@@ -131,12 +132,34 @@ export function createBundlePayloadReadStream(filePath) {
         case 'jsonl':
             return fs.createReadStream(filePath, {encoding: 'utf8'});
         case 'jsonl+br':
-            return compose(fs.createReadStream(filePath), zlib.createBrotliDecompress());
+            return decodeThrough(filePath, zlib.createBrotliDecompress());
         case 'jsonl+gz':
-            return compose(fs.createReadStream(filePath), zlib.createGunzip());
+            return decodeThrough(filePath, zlib.createGunzip());
         default:
             throw notABundlePayload(filePath);
     }
+}
+
+/**
+ * @summary Pipes a file into a decompressor and hands back the decompressor as the one stream a
+ * reader holds, with the file's errors forwarded onto it.
+ *
+ * `stream.compose` was the first shape here. Under the test runner on Node 24 the composed duplex
+ * surfaced a torn file's `Z_BUF_ERROR` a second time, after the reader's loop had already rejected
+ * with it, as an uncaught error on a later tick; a plain pipe with one forwarded error has one
+ * emission, which readline turns into the loop's rejection.
+ * @param {String} filePath
+ * @param {import('stream').Transform} decompressor
+ * @returns {import('stream').Transform}
+ */
+function decodeThrough(filePath, decompressor) {
+    const file = fs.createReadStream(filePath);
+
+    file.on('error', error => decompressor.destroy(error));
+    // A reader that leaves early destroys the decompressor; the file descriptor goes with it.
+    decompressor.on('close', () => file.destroy());
+
+    return file.pipe(decompressor)
 }
 
 /**
@@ -158,11 +181,11 @@ export function openBundlePayload(filePath) {
  * @summary Closes a reader from {@link openBundlePayload} and releases its file, whether the loop
  * ran to the end or left early on a refused row.
  *
- * A composed reader destroyed before its own close reports that destroy as an `AbortError` on the
- * stream. The bare `rl.close(); rl.input.destroy()` the readers used to carry was silent on a plain
- * file stream and, on a compressed one, crashed the process a tick later with an unhandled
- * `'error'` — in whichever caller's turn it was by then. Every read error has already rejected the
- * loop by the time a consumer closes, so an error after the close is the close.
+ * The readers used to carry a bare `rl.close(); rl.input.destroy()`, silent on a plain file stream
+ * and, on the composed reader this module first shipped, an unhandled `AbortError` a tick later in
+ * whichever caller's turn it was by then. The close lives here so no reader reasons about what its
+ * input is. Every read error has already rejected the loop by the time a consumer closes, so an
+ * error after the close is the close.
  * @param {readline.Interface} rl A reader from {@link openBundlePayload}.
  */
 export function closeBundlePayload(rl) {
