@@ -113,6 +113,35 @@ test.describe('KB_DatabaseService — manageDatabaseBackup (#10129 Phase 1)', ()
         expect(upserts[0].embeddings).toHaveLength(2);
     });
 
+    test('imports a compressed payload (.jsonl.br) through the same gate as a bare one (#974)', async () => {
+        const zlib           = (await import('zlib')).default;
+        const upserts        = [];
+        const fakeCollection = {
+            name  : 'fake-kb-import-compressed',
+            count : async () => 0,
+            get   : async () => ({ids: [], metadatas: []}),
+            upsert: async args => { upserts.push(args) }
+        };
+
+        KB_ChromaManager.getKnowledgeBaseCollection = async () => fakeCollection;
+
+        const importFile = path.join(tmpBackupDir, 'import-compressed.jsonl.br');
+        fs.writeFileSync(importFile, zlib.brotliCompressSync(Buffer.from([
+            JSON.stringify({id: 'br-1', embedding: new Array(4096).fill(0.1), metadata: {kind: 'class'},  document: 'doc-1'}),
+            JSON.stringify({id: 'br-2', embedding: new Array(4096).fill(0.2), metadata: {kind: 'method'}, document: 'doc-2'})
+        ].join('\n') + '\n')));
+
+        const result = await KB_DatabaseService.manageDatabaseBackup({
+            action: 'import',
+            file  : importFile,
+            mode  : 'merge'
+        });
+
+        expect(result.imported).toBe(2);
+        expect(upserts).toHaveLength(1);
+        expect(upserts[0].ids).toEqual(['br-1', 'br-2']);
+    });
+
     test('exports a populated collection as a timestamped JSONL artifact', async () => {
         const fakeRows = [
             {id: 'id-1', embedding: [0.1, 0.2], metadata: {kind: 'class'},  document: 'doc-1'},
@@ -141,24 +170,54 @@ test.describe('KB_DatabaseService — manageDatabaseBackup (#10129 Phase 1)', ()
         KB_ChromaManager.getKnowledgeBaseCollection = async () => fakeCollection;
 
         const result = await KB_DatabaseService.manageDatabaseBackup({
-            action    : 'export',
-            backupPath: tmpBackupDir
+            action         : 'export',
+            backupPath     : tmpBackupDir,
+            payloadEncoding: 'jsonl+br'
         });
 
         expect(result.message).toMatch(/Exported 2 knowledge base chunks/);
         // Numeric count surfaced for the backup orchestrator's verifyBundleIntegrity KB row-count parity.
         expect(result.count).toBe(2);
 
+        // Written compressed when the daily bundle asks; the receipt names the encoding.
         const produced = fs.readdirSync(tmpBackupDir)
-            .filter(f => f.startsWith('knowledge-base-backup-') && f.endsWith('.jsonl'));
+            .filter(f => f.startsWith('knowledge-base-backup-') && f.endsWith('.jsonl.br'));
         expect(produced).toHaveLength(1);
+        expect(result.payloadEncoding).toBe('jsonl+br');
 
-        const jsonl   = fs.readFileSync(path.join(tmpBackupDir, produced[0]), 'utf8');
+        const zlib    = (await import('zlib')).default;
+        const jsonl   = zlib.brotliDecompressSync(fs.readFileSync(path.join(tmpBackupDir, produced[0]))).toString('utf8');
         const records = jsonl.trim().split('\n').map(line => JSON.parse(line));
 
         expect(records).toHaveLength(2);
         expect(records[0]).toEqual({id: 'id-1', embedding: [0.1, 0.2], metadata: {kind: 'class'},  document: 'doc-1'});
         expect(records[1]).toEqual({id: 'id-2', embedding: [0.3, 0.4], metadata: {kind: 'method'}, document: 'doc-2'});
+    });
+
+    test('the release uploader still finds a plain JSONL export it did not ask to compress — the exporter serves two consumers', async () => {
+        // The same export SDK stages the Knowledge Base release artifact (`uploadKnowledgeBase.mjs`),
+        // whose selector and packer consume plain JSONL. A default export must stay that file.
+        const {resolveSingleArtifactJsonl} = await import('../../../../../../ai/scripts/maintenance/knowledgeBaseArtifact.mjs');
+        const stageDir                     = path.join(tmpBackupDir, 'release-stage');
+        const rows                         = [{id: 'rel-1', embedding: [0.5, 0.6], metadata: {kind: 'class'}, document: 'doc'}];
+
+        KB_ChromaManager.getKnowledgeBaseCollection = async () => ({
+            name : 'fake-kb-release',
+            count: async () => rows.length,
+            get  : async ({include = []} = {}) => include.length === 0
+                ? {ids: rows.map(r => r.id)}
+                : {ids: rows.map(r => r.id), documents: rows.map(r => r.document), metadatas: rows.map(r => r.metadata), embeddings: rows.map(r => r.embedding)}
+        });
+
+        const result = await KB_DatabaseService.manageDatabaseBackup({action: 'export', backupPath: stageDir});
+
+        expect(result.count).toBe(1);
+        expect(result.payloadEncoding).toBe('jsonl');
+
+        const jsonlPath = await resolveSingleArtifactJsonl({artifactDir: stageDir});
+
+        expect(path.basename(jsonlPath)).toMatch(/^knowledge-base-backup-.*\.jsonl$/);
+        expect(JSON.parse(fs.readFileSync(jsonlPath, 'utf8').trim())).toEqual(rows[0]);
     });
 
     test('returns gracefully without producing a JSONL when the collection is empty', async () => {
@@ -195,12 +254,12 @@ test.describe('KB_DatabaseService — manageDatabaseBackup (#10129 Phase 1)', ()
     });
 
     test('rejects unsupported actions at the dispatcher layer', async () => {
-        // No openapi operation is registered for `manage_database_backup` in KB (retired per
-        // #10132 script-over-tool reduction — ticket-ref-ok: load-bearing history for why no
-        // no-match passthrough applies), so `makeSafe` no-match passthrough forwards
+        // No openapi operation is registered for `manage_database_backup` in KB (retired in the
+        // script-over-tool reduction, which is why no no-match passthrough applies), so `makeSafe`
+        // no-match passthrough forwards
         // args raw — the manual `throw new Error('Unknown action...')` inside the dispatcher
-        // is the rejection path. `'import'` and `'truncate'` were added in #10871 AC-B (ticket-ref-ok:
-        // load-bearing anchor for the dispatcher contract under test); this
+        // is the rejection path. `'import'` and `'truncate'` were added with the bundle-aware restore
+        // (the dispatcher contract under test); this
         // assertion uses an unambiguously-unsupported action to keep the dispatcher rejection
         // contract under test.
         await expect(

@@ -64,7 +64,7 @@ test.describe('Memory_DatabaseService — graph.import.replace preserves committ
 
             // Export NOW: the snapshot carries the DELIVERED_TO edge with readAt null (send-time truth, pre-mark).
             await MemoryDatabaseService.manageDatabaseBackup({action: 'export', include: ['graph'], backupPath: ${JSON.stringify(tmpDir)}});
-            const graphBackupFile = (await import('node:fs')).readdirSync(${JSON.stringify(tmpDir)}).find(file => file.startsWith('graph-backup-') && file.endsWith('.jsonl'));
+            const graphBackupFile = (await import('node:fs')).readdirSync(${JSON.stringify(tmpDir)}).find(file => file.startsWith('graph-backup-'));
             const graphBackupPath = (await import('node:path')).join(${JSON.stringify(tmpDir)}, graphBackupFile);
 
             // Simulate markRead committing a read AFTER the snapshot was captured (storage write; the WAL stays null).

@@ -18,6 +18,12 @@ import {summarizeBundleIntegrity}                   from '../../services/memory-
 import {HEAL_LEDGER_DIR_NAME, HEAL_LEDGER_FILENAME} from '../../services/memory-core/helpers/healEventLedgerStore.mjs';
 import {INCIDENT_LEDGER_BUNDLE_MEMBERS}             from '../../services/memory-core/helpers/incidentLedgerBundle.mjs';
 import {
+    createBundlePayloadWriteStream,
+    endBundlePayload,
+    isBundlePayload,
+    openBundlePayload
+} from '../../services/shared/bundlePayload.mjs';
+import {
     KB_DatabaseService,
     KB_LifecycleService,
     Memory_DatabaseService,
@@ -575,7 +581,6 @@ export async function validateBundle(bundleRoot, layout, logger = console, expec
     // BEFORE any mutation. Line-1 sampling cannot satisfy the gate — a corrupt final row is the
     // exact shape this closes. Streamed totals are keyed per actual vector collection (kb chunks,
     // Memory Core memories, summaries, temporal summaries) and feed the declared-count check below.
-    const readline       = (await import('readline')).default;
     const allSubdirs     = [...REQUIRED_BUNDLE_SUBDIRS, ...OPTIONAL_BUNDLE_SUBDIRS];
     const streamedCounts = {};
 
@@ -593,10 +598,9 @@ export async function validateBundle(bundleRoot, layout, logger = console, expec
         // restorable on the strength of content nobody looked at.
         if (await pathIsProvablyAbsent(dir)) continue;
         const entries    = await fs.readdir(dir);
-        const jsonlFiles = entries.filter(f => f.endsWith('.jsonl'));
+        const jsonlFiles = entries.filter(isBundlePayload);
         for (const file of jsonlFiles) {
-            const stream = fs.createReadStream(path.join(dir, file), {encoding: 'utf8'});
-            const rl     = readline.createInterface({input: stream, crlfDelay: Infinity});
+            const rl     = openBundlePayload(path.join(dir, file));
             let   lineNo = 0;
             for await (const line of rl) {
                 if (!line.trim()) continue;
@@ -625,7 +629,6 @@ export async function validateBundle(bundleRoot, layout, logger = console, expec
                 }
             }
             rl.close();
-            stream.destroy();
         }
     }
 
@@ -673,8 +676,7 @@ export async function validateBundle(bundleRoot, layout, logger = console, expec
 
         if (!await pathIsProvablyAbsent(runsDir)) {
             for (const file of (await fs.readdir(runsDir)).filter(name => name.endsWith('.jsonl'))) {
-                const stream = fs.createReadStream(path.join(runsDir, file), {encoding: 'utf8'}),
-                      rl     = readline.createInterface({crlfDelay: Infinity, input: stream});
+                const rl     = openBundlePayload(path.join(runsDir, file));
                 let   lineNo = 0;
 
                 for await (const line of rl) {
@@ -1564,14 +1566,13 @@ async function restoreFlatFile({sourceDir, targetFile, mode, force, confirmation
  */
 export async function prepareFilteredGraphDir({sourceDir, filterLabels, filterEdgeTypes, liveNodeIds, stats, logger = console}) {
     const os       = (await import('os')).default;
-    const readline = (await import('readline')).default;
     const labelSet = new Set(filterLabels);
     const typeSet  = new Set(filterEdgeTypes);
 
     const tempDir = path.join(os.tmpdir(), `neo-restore-graph-${Date.now()}`);
     await fs.ensureDir(tempDir);
 
-    const sourceFiles = (await fs.readdir(sourceDir)).filter(f => f.endsWith('.jsonl'));
+    const sourceFiles = (await fs.readdir(sourceDir)).filter(isBundlePayload);
     if (sourceFiles.length === 0) return sourceDir; // empty bundle, fall through unchanged
 
     // ───── Stage 1: cross-bundle node classification ─────
@@ -1580,7 +1581,7 @@ export async function prepareFilteredGraphDir({sourceDir, filterLabels, filterEd
     // classification (the previous shape) would FK-violate on cross-file edges.
     const acceptedBackupNodeIds = new Set();
     for (const fileName of sourceFiles) {
-        const rl = readline.createInterface({input: fs.createReadStream(path.join(sourceDir, fileName)), crlfDelay: Infinity});
+        const rl = openBundlePayload(path.join(sourceDir, fileName));
         for await (const line of rl) {
             if (!line.trim()) continue;
             try {
@@ -1603,8 +1604,9 @@ export async function prepareFilteredGraphDir({sourceDir, filterLabels, filterEd
     for (const fileName of sourceFiles) {
         const inPath  = path.join(sourceDir, fileName);
         const outPath = path.join(tempDir, fileName);
-        const rl      = readline.createInterface({input: fs.createReadStream(inPath), crlfDelay: Infinity});
-        const out     = fs.createWriteStream(outPath);
+        // The filtered copy keeps the source file's name, so it keeps the source file's encoding.
+        const rl  = openBundlePayload(inPath);
+        const out = createBundlePayloadWriteStream(outPath);
         for await (const line of rl) {
             if (!line.trim()) continue;
             try {
@@ -1621,7 +1623,7 @@ export async function prepareFilteredGraphDir({sourceDir, filterLabels, filterEd
                 out.write(line + '\n');
             } catch (e) { /* skip malformed lines */ }
         }
-        await new Promise(resolve => out.end(resolve));
+        await endBundlePayload(out);
     }
 
     logger.log?.(`[Restore][graph] pre-import filter: ${stats.acceptedNodes} accepted backup nodes, ${liveNodeIds.size} live nodes; writing filtered JSONL to ${tempDir}`);

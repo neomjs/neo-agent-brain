@@ -345,6 +345,22 @@ test.describe('cleanOldBackups — configurable retention', () => {
         ).toContain(olderPass);
     });
 
+    test('a compressed payload certifies its substrate — bytes establish non-empty in either encoding (#974)', async () => {
+        const zlib                           = (await import('zlib')).default;
+        const {classifyBundleRecoverability} = await import('../../../../../../ai/scripts/maintenance/backup.mjs');
+        const bundle                         = await seedBackup(1, {substrates: ['kb', 'mc']});
+        const kbDir                          = path.join(tmpRoot, bundle, 'kb');
+
+        // Rewrite kb the way a bundle written at the head holds it: one `.jsonl.br`, no bare file beside it.
+        for (const entry of await fs.readdir(kbDir)) await fs.remove(path.join(kbDir, entry));
+        await fs.writeFile(path.join(kbDir, 'kb-backup-head.jsonl.br'), zlib.brotliCompressSync(Buffer.from('{"id":"row-1"}\n')));
+
+        const verdict = await classifyBundleRecoverability(path.join(tmpRoot, bundle));
+
+        expect(verdict.substrates.kb, 'the compressed bytes are the substrate\'s bytes').toBeGreaterThan(0);
+        expect(verdict.restorableFor.sort()).toEqual(['kb', 'mc']);
+    });
+
     test('an UNRECOGNIZED status hard-keeps the bundle — not-certifiable is not the same as deletable', async () => {
         // @neo-gpt's cycle-5 destructive probe, and the fifth reproduction of one mechanism. The
         // cycle-4 repair certified only on `pass`, which is right — but it left deletion as the

@@ -56,14 +56,14 @@ test.describe('restoreReceipts maintenance script', () => {
     const writeBundle = records => fs.writeFileSync(jsonlPath, records.map(record => JSON.stringify(record)).join('\n') + '\n');
 
     const liveEdges = () => {
-        const db = openDb();
+        const db   = openDb();
         const rows = db.prepare("SELECT id, source, target, type, json_extract(data, '$.properties.readAt') AS readAt, json_extract(data, '$.properties.archivedAt') AS archivedAt FROM Edges ORDER BY type, source, target").all();
         db.close();
         return rows;
     };
 
     const liveNode = id => {
-        const db = openDb();
+        const db  = openDb();
         const row = db.prepare("SELECT json_extract(data, '$.properties.readAt') AS readAt FROM Nodes WHERE id = ?").get(id);
         db.close();
         return row;
@@ -103,6 +103,27 @@ test.describe('restoreReceipts maintenance script', () => {
         ]);
         expect(liveNode('MESSAGE:m1').readAt).toBe('2026-09-25T10:00:00.000Z');
         expect(liveNode('MESSAGE:m2').readAt).toBe('2026-09-25T20:00:00.000Z');
+    });
+
+    test('a bundle written at the head holds graph/*.jsonl.br — the receipts come from the compressed payload (#974)', async () => {
+        const zlib       = (await import('zlib')).default;
+        const bundleRoot = path.dirname(path.dirname(jsonlPath));
+
+        seedLive([
+            node('MESSAGE:m1', 'MESSAGE', {readAt: null}), node('@a', 'AgentIdentity'),
+            edge('re-derived-id', 'MESSAGE:m1', '@a', 'DELIVERED_TO', {readAt: null, archivedAt: null})
+        ]);
+
+        const records = [
+            node('MESSAGE:m1', 'MESSAGE', {readAt: '2026-09-25T10:00:00.000Z'}),
+            edge('original-id', 'MESSAGE:m1', '@a', 'DELIVERED_TO', {readAt: '2026-09-25T11:00:00.000Z', archivedAt: null})
+        ];
+        fs.writeFileSync(`${jsonlPath}.br`, zlib.brotliCompressSync(Buffer.from(records.map(record => JSON.stringify(record)).join('\n') + '\n')));
+
+        const result = await runRestoreReceipts({dbPath, source: bundleRoot, apply: true, logger: quiet});
+
+        expect(result.receipts.edges).toMatchObject({matched: 1, filled: 1});
+        expect(liveNode('MESSAGE:m1').readAt).toBe('2026-09-25T10:00:00.000Z');
     });
 
     test('a mailbox edge with no live counterpart is reported, never inserted', async () => {

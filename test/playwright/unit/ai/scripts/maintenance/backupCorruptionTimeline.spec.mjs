@@ -118,6 +118,18 @@ test.describe('backupCorruptionTimeline — readArtifactSizes (injected fs)', ()
 
         expect(sizes).toEqual({mcMemory: 0, mcSummaries: 4242, kb: 4242, graph: null});
     });
+
+    test('a bundle written at the head names its artifacts .jsonl.br — their bytes are the artifact bytes (#974)', async () => {
+        const fsModule = {
+            pathExists: async () => true,
+            readdir   : async dir => dir.endsWith('/mc') ? ['memory-backup-x.jsonl.br', 'summaries-backup-x.jsonl.br']
+                                   : dir.endsWith('/kb') ? ['knowledge-base-backup-x.jsonl.br']
+                                   : ['graph-backup-x.jsonl.br'],
+            stat      : async () => ({size: 777})
+        };
+
+        expect(await readArtifactSizes({backupDir: '/b', fsModule})).toEqual({mcMemory: 777, mcSummaries: 777, kb: 777, graph: 777});
+    });
 });
 
 test.describe('backupCorruptionTimeline — readBackupEntries (injected fs)', () => {

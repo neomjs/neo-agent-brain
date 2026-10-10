@@ -57,14 +57,15 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
                 'SELECT (SELECT count(*) FROM Nodes) + (SELECT count(*) FROM Edges) AS c'
             ).get().c;
             const exportResult = await MemoryDatabaseService.manageDatabaseBackup({
-                action    : 'export',
-                include   : ['graph'],
-                backupPath: ${JSON.stringify(tmpDir)}
+                action         : 'export',
+                include        : ['graph'],
+                backupPath     : ${JSON.stringify(tmpDir)},
+                payloadEncoding: 'jsonl+br'
             });
             const graphBackupFile = (await import('node:fs')).readdirSync(${JSON.stringify(tmpDir)})
-                .find(file => file.startsWith('graph-backup-') && file.endsWith('.jsonl'));
+                .find(file => file.startsWith('graph-backup-') && file.endsWith('.jsonl.br'));
             const graphBackupPath    = (await import('node:path')).join(${JSON.stringify(tmpDir)}, graphBackupFile);
-            const graphBackupContent = (await import('node:fs')).readFileSync(graphBackupPath, 'utf8');
+            const graphBackupContent = (await import('node:zlib')).brotliDecompressSync((await import('node:fs')).readFileSync(graphBackupPath)).toString('utf8');
             const graphBackupLines   = graphBackupContent.trimEnd().split('\n');
             const graphBackupRecords = graphBackupLines.map(line => JSON.parse(line));
 

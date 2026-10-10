@@ -3,6 +3,7 @@ import fs                             from 'fs-extra';
 import path                           from 'path';
 import {fileURLToPath, pathToFileURL} from 'url';
 import Neo                            from 'neo.mjs/src/Neo.mjs';
+import {isBundlePayload}              from '../../services/shared/bundlePayload.mjs';
 
 /**
  * @summary Read-only backup-corruption timeline diagnostic — artifact-verified, not manifest-trusted.
@@ -104,7 +105,7 @@ export async function readArtifactSizes({backupDir, fsModule = fs} = {}) {
         let   bytes  = null;
 
         if (await fsModule.pathExists(subdir)) {
-            const file = (await fsModule.readdir(subdir)).find(name => name.startsWith(spec.prefix) && name.endsWith('.jsonl'));
+            const file = (await fsModule.readdir(subdir)).find(name => name.startsWith(spec.prefix) && isBundlePayload(name));
 
             if (file) {
                 bytes = (await fsModule.stat(path.join(subdir, file))).size

@@ -22,6 +22,8 @@ import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import fs              from 'fs';
 import path            from 'path';
 
+import {openBundlePayload} from '../../../../../../ai/services/shared/bundlePayload.mjs';
+
 // Serial mode: see DatabaseService.backup.spec.mjs for rationale (singleton mutation
 // across beforeAll/afterAll; local-DX safeguard — CI already uses workers:1).
 test.describe.configure({mode: 'serial'});
@@ -70,14 +72,14 @@ test.describe('Memory_DatabaseService — backupPath routing (#10129 Phase 2 pre
         ];
 
         // Stands in for what `StorageRouter.getMemoryCollection()` returns — a `CollectionProxy`, not a
-        // raw Chroma collection. `resolveCollectionId` is part of that contract (#281): the exporter
+        // raw Chroma collection. `resolveCollectionId` is part of that contract (the source-identity fix): the exporter
         // asks the proxy for the underlying SOURCE identity, because the proxy's own `id` is a
         // `Neo.core.Base` instance counter and recording it made the backup lineage axis blind.
         const fakeCollection = (rows, name) => ({
             name,
             resolveCollectionId: async () => `${name}-collection-id`,
-            count: async () => rows.length,
-            get  : async ({include = [], limit, offset = 0} = {}) => {
+            count              : async () => rows.length,
+            get                : async ({include = [], limit, offset = 0} = {}) => {
                 if (include.length === 0) return {ids: rows.map(r => r.id)};
                 const sliced = rows.slice(offset, offset + (limit ?? rows.length));
                 return {
@@ -93,9 +95,10 @@ test.describe('Memory_DatabaseService — backupPath routing (#10129 Phase 2 pre
         Memory_StorageRouter.getSummaryCollection = async () => fakeCollection(summaryRows, 'fake-summaries');
 
         const result = await Memory_DatabaseService.manageDatabaseBackup({
-            action    : 'export',
-            include   : ['memories', 'summaries'],
-            backupPath: tmpDir
+            action         : 'export',
+            include        : ['memories', 'summaries'],
+            backupPath     : tmpDir,
+            payloadEncoding: 'jsonl+br'
         });
 
         expect(result.message).toMatch(/Exported 1 memories, 1 summaries/);
@@ -105,7 +108,7 @@ test.describe('Memory_DatabaseService — backupPath routing (#10129 Phase 2 pre
         expect(result.summaries.exported).toBe(1);
         expect(result.summaries.expected).toBe(1);
 
-        // #281 RED CONTROL — the receipt must carry the SOURCE identity the resolver reports, not the
+        // RED CONTROL for the source-identity fix — the receipt must carry the SOURCE identity the resolver reports, not the
         // proxy's `Neo.core.Base` instance id. Declaring `resolveCollectionId` on the fake proves only
         // that the method exists; these assert the exporter actually consumed it, so reverting the
         // call site to `collection?.id` reds here rather than passing with a plausible-looking
@@ -114,8 +117,11 @@ test.describe('Memory_DatabaseService — backupPath routing (#10129 Phase 2 pre
         expect(result.summaries.collectionId).toBe('fake-summaries-collection-id');
         expect(result.memories.collectionId).not.toMatch(/^neo-base-\d+$/u);
 
-        const produced = fs.readdirSync(tmpDir).filter(f => f.endsWith('.jsonl')).sort();
+        // Written compressed when the daily bundle asks; each exporter's receipt names the encoding.
+        const produced = fs.readdirSync(tmpDir).filter(f => f.endsWith('.jsonl.br')).sort();
         expect(produced.length).toBe(2);
+        expect(result.memories.payloadEncoding).toBe('jsonl+br');
+        expect(result.summaries.payloadEncoding).toBe('jsonl+br');
         expect(produced.some(f => f.startsWith('memory-backup-'))).toBe(true);
         expect(produced.some(f => f.startsWith('summaries-backup-'))).toBe(true);
     });
@@ -173,9 +179,11 @@ test.describe('Memory_DatabaseService — backupPath routing (#10129 Phase 2 pre
         const produced = fs.readdirSync(partialDir).filter(f => f.startsWith('memory-backup-'));
         expect(produced.length).toBe(1);
 
-        const exportedLines = fs.readFileSync(path.join(partialDir, produced[0]), 'utf8')
-            .split('\n')
-            .filter(Boolean);
+        // The partial export is a compressed payload like every other: read it the way restore does.
+        const exportedLines = [];
+        for await (const line of openBundlePayload(path.join(partialDir, produced[0]))) {
+            line.trim() && exportedLines.push(line);
+        }
         expect(exportedLines).toHaveLength(1);
         expect(exportedLines[0]).toContain('mem-ok');
         expect(exportedLines[0]).not.toContain('mem-corrupt');
