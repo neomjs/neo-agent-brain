@@ -111,7 +111,7 @@ export const LAUNCH_ADMISSION_REFUSALS = Object.freeze({
     /** The credential's owner refused the value, for example because it belongs to another account. */
     CREDENTIAL_UNPROVEN    : 'credential-unproven',
     /** The owner could not finish a proof; the launcher may retry within its startup deadline. */
-    PROOF_UNAVAILABLE     : 'proof-unavailable',
+    PROOF_UNAVAILABLE      : 'proof-unavailable',
     /** The launcher could not reach an issuer, for example after a Fleet restart. */
     ISSUER_UNAVAILABLE     : 'issuer-unavailable',
     /** An answer carried no valid proof of the issuer that holds the grant. */

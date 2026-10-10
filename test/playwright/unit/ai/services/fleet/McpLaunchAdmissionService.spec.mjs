@@ -460,6 +460,13 @@ test.describe('McpLaunchAdmissionService — seat credentials, redeemed from the
                 expect(service.statusOf('seat').state).toBe('active')
             }
 
+            for (const error of [new TypeError('fetch failed'), new DOMException('fixture aborted', 'AbortError')]) {
+                globalThis.fetch = async () => { throw error };
+                const answer = await redeem(reservation.grants['memory-core'], {server: 'memory-core'});
+                expect(answer).toEqual({outcome: 'refused', code: 'proof-unavailable', reason: 'plane endpoint unreachable'});
+                expect(service.statusOf('seat').recent.at(-1)).toMatchObject({code: 'proof-unavailable', reason: 'plane endpoint unreachable'})
+            }
+
             const signals = [];
             globalThis.fetch = (url, {signal}) => new Promise((resolve, reject) => {
                 signals.push(signal);

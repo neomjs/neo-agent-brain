@@ -545,9 +545,16 @@ export async function readMemoryCoreHealthcheck(args) {
         memoryWalDrain           : await MemoryService.describeDrainState(),
         plane                    : {id: mcConfig.plane.id, dataRoot: mcConfig.plane.dataRoot},
         corpusProjectionFreshness: await readCorpusProjectionFreshness(),
-        deploymentInspection     : await readDeploymentInspection(),
-        serviceKey               : 'mc-server',
+        // Fresh bridge truth only. The composer keeps stale/unavailable observations explicit but
+        // prevents either from authorizing a backup degradation.
+        deploymentInspection: await readDeploymentInspection(),
+        serviceKey          : 'mc-server',
+        // The starvation receipt is bounded by its producer's cadence, not the bridge snapshot's:
+        // the snapshot is rewritten every 30s, the receipt only on a watchdog run. The formula
+        // couples this bound to that cadence so fresh bridge writes cannot make old receipts current.
         starvationStaleAfterMs   : AiConfig.orchestrator.heavyMaintenanceLease.starvationReceiptStaleAfterMs,
+        // Elected + parked vector-generation identities; a plane without an election reads missing.
+        // Generation-cutover acceptance consumes this block.
         vectorGeneration         : await projectVectorGenerationHealth({
             dir: resolveVectorGenerationElectionDir({planeDataRoot: mcConfig.plane.dataRoot})
         })

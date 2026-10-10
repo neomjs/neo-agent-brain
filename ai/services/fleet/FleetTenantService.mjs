@@ -481,7 +481,9 @@ class FleetTenantService extends Base {
         }
 
         if (!probe?.ok) {
-            return {ok: false, verdict: probe?.verdict ?? 'refused', reason: rejectionReasonFor(probe?.status, 'plane')}
+            const reason = probe?.verdict === 'unanswered' && !Number.isInteger(probe.status)
+                ? 'plane endpoint unreachable' : rejectionReasonFor(probe?.status, 'plane');
+            return {ok: false, verdict: probe?.verdict ?? 'refused', reason}
         }
 
         if (!mc.plane?.id || !kb?.plane?.id) {

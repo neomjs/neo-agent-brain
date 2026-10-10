@@ -109,6 +109,8 @@ export async function readKnowledgeBaseHealthcheck(args) {
         plane               : {id: kbConfig.plane.id, dataRoot: kbConfig.plane.dataRoot},
         deploymentInspection: await readDeploymentInspection(),
         serviceKey          : 'kb-server',
+        // Elected + parked vector-generation identities; a plane without an election reads missing.
+        // Generation-cutover acceptance consumes this block.
         vectorGeneration    : await projectVectorGenerationHealth({
             dir: resolveVectorGenerationElectionDir({planeDataRoot: kbConfig.plane.dataRoot})
         })

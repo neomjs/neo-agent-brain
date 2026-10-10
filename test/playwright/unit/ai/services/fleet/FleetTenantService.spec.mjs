@@ -1309,6 +1309,21 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
         }
     })
 
+    test('a status-less failure through the real plane probe reports unreachable, never authentication failure', async () => {
+        const originalFetch = globalThis.fetch;
+        FleetTenantService.probeFn = null;
+        try {
+            for (const error of [new TypeError('fetch failed'), new DOMException('fixture aborted', 'AbortError')]) {
+                globalThis.fetch = async () => { throw error };
+                expect(await FleetTenantService.probeSeatPlaneCredential({
+                    planeBase: PLANE, credential: PAT, expectedIdentity: '@neo-gpt-sophie', expectedPlane: SERVED
+                })).toEqual({ok: false, verdict: 'unanswered', reason: 'plane endpoint unreachable'})
+            }
+        } finally {
+            globalThis.fetch = originalFetch
+        }
+    })
+
     test('a start proof fails with the plane\'s reason, and an unproven input never reaches the probe', async () => {
         const proof = {planeBase: PLANE, credential: PAT, expectedIdentity: '@neo-gpt-sophie', expectedPlane: SERVED}
 
