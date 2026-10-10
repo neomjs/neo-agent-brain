@@ -16,7 +16,7 @@ import {
 /**
  * The Claude seat's wake listener (`wakeListenerHook.mjs`): it exits 2 with the
  * digest exactly when events arrive past its stored watermark, never on the seat's backlog, and one
- * listener holds a seat at a time — the newest live session's.
+ * listener holds a seat at a time — that of the live session prompted last.
  */
 
 const
@@ -145,13 +145,13 @@ test.describe('AC-2: a digest wakes, the backlog does not', () => {
         expect(sleeps).toEqual([POLL_INTERVAL_MS, 2 * POLL_INTERVAL_MS, POLL_INTERVAL_MS])
     });
 
-    test('a newer session takes the seat at SessionStart, so an older poll in flight cannot consume its digest', async () => {
-        // The SessionStart run claims and exits; the older listener re-reads after its poll and stands
-        // down without the watermark moving, and the newer session's first Stop gets the event.
+    test('a prompted session takes the seat, so an older poll in flight cannot consume its digest', async () => {
+        // The prompt's run claims and exits; the older listener re-reads after its poll and stands
+        // down without the watermark moving, and the prompted session's first Stop gets the event.
         const
-            STARTER = {pid: 901, ppid: NEWER.pid, startedAt: 'Fri Oct 2 12:05:00 2026', command: 'node wakeListenerHook.mjs'},
+            CLAIMER = {pid: 901, ppid: NEWER.pid, startedAt: 'Fri Oct 2 12:05:00 2026', command: 'node wakeListenerHook.mjs'},
             POLLER  = {pid: 902, ppid: NEWER.pid, startedAt: 'Fri Oct 2 12:10:00 2026', command: 'node wakeListenerHook.mjs'},
-            table   = new Map([[OLDER.pid, OLDER], [NEWER.pid, NEWER], [LISTENER.pid, LISTENER], [STARTER.pid, STARTER]]);
+            table   = new Map([[OLDER.pid, OLDER], [NEWER.pid, NEWER], [LISTENER.pid, LISTENER], [CLAIMER.pid, CLAIMER]]);
 
         writeState({watermark: 10, source: SOURCE});
 
@@ -161,18 +161,19 @@ test.describe('AC-2: a digest wakes, the backlog does not', () => {
 
         await inFlight;
 
-        const started = await listen({procs: table, event: 'SessionStart', session: NEWER, sessionId: 'session-newer', pid: STARTER.pid});
+        const claimed = await listen({procs: table, event: 'UserPromptSubmit', session: NEWER, sessionId: 'session-newer', pid: CLAIMER.pid});
 
-        expect(started.outcome).toEqual({exit: 0, reason: 'claimed'});
-        expect([started.connects, started.polls, started.sleeps]).toEqual([[], [], []]);
+        expect(claimed.outcome).toEqual({exit: 0, reason: 'claimed'});
+        expect([claimed.connects, claimed.polls, claimed.sleeps]).toEqual([[], [], []]);
         expect(readState().owner.sessionId).toBe('session-newer');
+        expect(readState().listener).toBe(null);
 
         release({pending: 1, digest: 'D', watermark: 11});
 
         expect((await older).outcome).toEqual({exit: 0, reason: 'superseded'});
         expect(readState().watermark).toBe(10);
 
-        table.delete(STARTER.pid);
+        table.delete(CLAIMER.pid);
         table.set(POLLER.pid, POLLER);
 
         const first = await listen({procs: table, session: NEWER, sessionId: 'session-newer', pid: POLLER.pid,
@@ -180,6 +181,34 @@ test.describe('AC-2: a digest wakes, the backlog does not', () => {
 
         expect(first.outcome).toEqual({exit: 2, digest: 'D'});
         expect(first.polls).toEqual([10])
+    });
+
+    test('a resumed session that nobody prompts never takes the seat, so the live listener still wakes', async () => {
+        // A resume starts a new process for an old session and fires SessionStart without a prompt. The
+        // run touches nothing: the older session's poll in flight keeps the seat and wakes with the digest.
+        const
+            RESUMER = {pid: 901, ppid: NEWER.pid, startedAt: 'Fri Oct 2 12:05:00 2026', command: 'node wakeListenerHook.mjs'},
+            table   = new Map([[OLDER.pid, OLDER], [NEWER.pid, NEWER], [LISTENER.pid, LISTENER], [RESUMER.pid, RESUMER]]);
+
+        writeState({watermark: 10, source: SOURCE});
+
+        let release, polling;
+        const inFlight = new Promise(resolve => {polling = resolve}),
+              older    = listen({procs: table, onPoll: polling, answers: [new Promise(resolve => {release = resolve})]});
+
+        await inFlight;
+
+        const before  = readState(),
+              resumed = await listen({procs: table, event: 'SessionStart', session: NEWER, sessionId: 'session-newer', pid: RESUMER.pid});
+
+        expect(resumed.outcome).toEqual({exit: 0, reason: 'a session start claims nothing'});
+        expect([resumed.connects, resumed.polls, resumed.sleeps]).toEqual([[], [], []]);
+        expect(readState()).toEqual(before);
+
+        release({pending: 1, digest: 'D', watermark: 11});
+
+        expect((await older).outcome).toEqual({exit: 2, digest: 'D'});
+        expect(readState().owner.sessionId).toBe('session-older')
     });
 
     test('a second Stop in the owning session, with its listener alive, arms nothing new', async () => {
@@ -229,33 +258,48 @@ test.describe('AC-2: a digest wakes, the backlog does not', () => {
     })
 });
 
-test.describe('AC-3: the newest live session owns the seat', () => {
-    test('an older session\'s listener exits once a newer session claims the seat', async () => {
+test.describe('AC-3: the live session prompted last owns the seat', () => {
+    test('a polling listener exits once another session takes the seat', async () => {
         const {outcome} = await listen({
             answers: [{pending: 0, watermark: 10}],
-            onSleep: () => writeState({...readState(), owner: {sessionId: 'session-newer', session: NEWER}, listener: {pid: 902, startedAt: 'x'}})
+            onSleep: () => writeState({...readState(), owner: {sessionId: 'session-newer', session: NEWER}, listener: null})
         });
 
         expect(outcome).toEqual({exit: 0, reason: 'superseded'});
         expect(readState().owner.sessionId).toBe('session-newer')
     });
 
-    test('an older session\'s Stop yields to a live newer owner without touching the plane', async () => {
-        writeState({owner: {sessionId: 'session-newer', session: NEWER}, listener: null});
+    test('a Stop yields to a live owner prompted later, whichever process started first, without touching the plane', async () => {
+        writeState({owner: {sessionId: 'session-older', session: OLDER}, listener: null});
 
-        const {outcome, connects} = await listen();
+        const {outcome, connects} = await listen({session: NEWER, sessionId: 'session-newer'});
 
         expect(outcome).toEqual({exit: 0, reason: 'superseded'});
         expect(connects).toEqual([])
     });
 
-    test('a newer session takes the seat from a live older owner', async () => {
-        writeState({owner: {sessionId: 'session-older', session: OLDER}, listener: null, watermark: 20, source: SOURCE});
+    test('a prompt takes the seat from a live owner whose process started later, and its Stop then polls', async () => {
+        writeState({owner: {sessionId: 'session-newer', session: NEWER}, listener: null, watermark: 20, source: SOURCE});
 
-        const {outcome} = await listen({session: NEWER, sessionId: 'session-newer', answers: [{pending: 1, digest: 'D', watermark: 21}]});
+        const prompted = await listen({event: 'UserPromptSubmit'});
 
-        expect(outcome).toEqual({exit: 2, digest: 'D'});
-        expect(readState().owner.sessionId).toBe('session-newer')
+        expect(prompted.outcome).toEqual({exit: 0, reason: 'claimed'});
+        expect(readState().owner.sessionId).toBe('session-older');
+
+        const stopped = await listen({answers: [{pending: 1, digest: 'D', watermark: 21}]});
+
+        expect(stopped.outcome).toEqual({exit: 2, digest: 'D'});
+        expect(stopped.polls).toEqual([20])
+    });
+
+    test('a prompt in the owning session keeps its running listener', async () => {
+        writeState({owner: {sessionId: 'session-older', session: OLDER}, listener: {pid: LISTENER.pid, startedAt: LISTENER.startedAt}, watermark: 5, source: SOURCE});
+
+        const {outcome, connects} = await listen({event: 'UserPromptSubmit', pid: 903});
+
+        expect(outcome).toEqual({exit: 0, reason: 'already-owner'});
+        expect(connects).toEqual([]);
+        expect(readState().listener.pid).toBe(LISTENER.pid)
     });
 
     test('a dead owner frees the seat, even for an older session', async () => {
@@ -279,19 +323,24 @@ test.describe('AC-3: the newest live session owns the seat', () => {
         expect(polls).toEqual([0])
     });
 
-    test('decideClaim: a tie on start time keeps the current owner', () => {
-        const me = {sessionId: 'b', session: {pid: 2, startedAt: OLDER.startedAt}};
+    test('decideClaim: process start order decides nothing; a prompt claims, a Stop yields to any other live owner', () => {
+        const newer = {sessionId: 'b', session: {pid: 2, startedAt: NEWER.startedAt}},
+              older = {sessionId: 'b', session: {pid: 2, startedAt: OLDER.startedAt}};
 
-        expect(decideClaim({record: {owner: {sessionId: 'a', session: OLDER}}, me, live: {owner: true}})).toBe('superseded');
-        expect(decideClaim({record: null, me, live: {}})).toBe('listen')
+        expect(decideClaim({event: 'Stop', record: {owner: {sessionId: 'a', session: OLDER}}, me: newer, live: {owner: true}})).toBe('superseded');
+        expect(decideClaim({event: 'UserPromptSubmit', record: {owner: {sessionId: 'a', session: NEWER}}, me: older, live: {owner: true}})).toBe('claim');
+        expect(decideClaim({event: 'Stop', record: null, me: older, live: {}})).toBe('listen');
+        expect(decideClaim({event: 'UserPromptSubmit', record: null, me: older, live: {}})).toBe('claim')
     });
 
     test('decideClaim: a matching session id and PID are not the owner while the owner is dead', () => {
         const record = {owner: {sessionId: 's', session: {pid: 1, startedAt: 'then'}}},
               me     = {sessionId: 's', session: {pid: 1, startedAt: 'now'}};
 
-        expect(decideClaim({record, me, live: {owner: false, listener: true}})).toBe('listen');
-        expect(decideClaim({record, me, live: {owner: true, listener: true}})).toBe('already-listening')
+        expect(decideClaim({event: 'Stop', record, me, live: {owner: false, listener: true}})).toBe('listen');
+        expect(decideClaim({event: 'Stop', record, me, live: {owner: true, listener: true}})).toBe('already-listening');
+        expect(decideClaim({event: 'UserPromptSubmit', record, me, live: {owner: false, listener: true}})).toBe('claim');
+        expect(decideClaim({event: 'UserPromptSubmit', record, me, live: {owner: true, listener: true}})).toBe('already-owner')
     })
 });
 

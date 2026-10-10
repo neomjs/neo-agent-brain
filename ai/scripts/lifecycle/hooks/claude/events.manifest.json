@@ -9,11 +9,12 @@
     "Timeouts are part of the contract, not decoration: wakeArmingHook exports HOOK_TIMEOUT_MS = 15000",
     "and reports before it, so a drift between that constant and the 15 below loses the report.",
     "wakeListenerHook polls on Stop with asyncRewake: in the background, and exit 2 wakes the session",
-    "with the digest. On SessionStart it only takes the seat for the newest session and exits, bounded:",
-    "the harness holds the first response for SessionStart hooks, so a poller there blocks the very",
-    "prompt it would wait beside. The harness documents no timeout exemption for asyncRewake (only for",
-    "async), so the Stop entry carries an explicit day instead of the 600 s default, which would end an",
-    "idle seat's listener.",
+    "with the digest. On UserPromptSubmit it only takes the seat for the prompted session and exits,",
+    "bounded: the harness holds the prompt for it, so a poller there would block the turn it serves.",
+    "It is not on SessionStart, because a resume starts an old session that nobody may prompt, and an",
+    "owner that never reaches Stop never polls. The harness documents no timeout exemption for",
+    "asyncRewake (only for async), so the Stop entry carries an explicit day instead of the 600 s",
+    "default, which would end an idle seat's listener.",
     "Commands are byte-identical to the pre-cut Engine template at c623b2f63c^, so the reconciliation",
     "restores the wiring that existed rather than a re-derived approximation.",
     "turnPresenceHook's progress beacon runs async, so no tool call waits on it; the harness enforces no",
@@ -51,11 +52,6 @@
             "type": "command",
             "command": "/usr/bin/env node '<agentosRuntimeRoot>/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs'",
             "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/wakeListenerHook.mjs\"",
-            "timeout": 10
           }
         ]
       }
@@ -67,6 +63,11 @@
             "type": "command",
             "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/turnPresenceHook.mjs\" start",
             "timeout": 2
+          },
+          {
+            "type": "command",
+            "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/wakeListenerHook.mjs\"",
+            "timeout": 10
           }
         ]
       }
