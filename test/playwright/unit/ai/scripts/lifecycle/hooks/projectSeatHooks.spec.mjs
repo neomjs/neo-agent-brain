@@ -1266,28 +1266,31 @@ test.describe('the real Claude manifest — contract properties of the shipped f
         expect(HOOK_TIMEOUT_MS).toBe(registered * 1000)
     });
 
-    test('wakeListenerHook polls on Stop in the background and only claims, bounded, on SessionStart', () => {
+    test('wakeListenerHook polls on Stop in the background, claims bounded on a prompt, and never runs on SessionStart', () => {
         // The listener wakes a session only when the harness runs it in the background (`asyncRewake`),
-        // and Stop re-arms it after each turn. SessionStart holds the first response, so there it may only
-        // take the seat for the newest session — a background flag or a day-long timeout would let it block.
+        // and Stop re-arms it after each turn. The harness holds the prompt for UserPromptSubmit, so there it
+        // may only take the seat — a background flag or a day-long timeout would let it block. SessionStart
+        // also fires for a resumed session nobody prompts, which would take the seat and never poll.
         const
             LISTENER   = '/.claude/hooks/wakeListenerHook.mjs',
             {settings} = reconcileClaudeEvents({isOwned: () => false, manifest, settings: {}}),
-            wired      = (events, event) => events[event].flatMap(bucket => bucket.hooks).filter(entry => entry.command.includes(LISTENER)),
+            wired      = (events, event) => (events[event] || []).flatMap(bucket => bucket.hooks).filter(entry => entry.command.includes(LISTENER)),
             stop       = wired(manifest.events, 'Stop'),
-            start      = wired(manifest.events, 'SessionStart');
+            prompt     = wired(manifest.events, 'UserPromptSubmit');
 
         expect(stop, 'Stop wires the listener exactly once').toHaveLength(1);
         expect(stop[0].asyncRewake).toBe(true);
         // Above the harness's 600 s default, which would end an idle seat's listener.
         expect(stop[0].timeout).toBeGreaterThan(600);
 
-        expect(start, 'SessionStart wires the listener exactly once').toHaveLength(1);
-        expect(start[0].asyncRewake).toBeUndefined();
-        expect(start[0].async).toBeUndefined();
-        expect(start[0].timeout).toBeLessThanOrEqual(15);
+        expect(prompt, 'UserPromptSubmit wires the listener exactly once').toHaveLength(1);
+        expect(prompt[0].asyncRewake).toBeUndefined();
+        expect(prompt[0].async).toBeUndefined();
+        expect(prompt[0].timeout).toBeLessThanOrEqual(15);
 
-        ['Stop', 'SessionStart'].forEach(event => {
+        expect(wired(manifest.events, 'SessionStart'), 'SessionStart never wires the listener').toEqual([]);
+
+        ['Stop', 'UserPromptSubmit'].forEach(event => {
             expect(wired(settings.hooks, event), `${event} keeps the listener entry through reconciliation`).toEqual(wired(manifest.events, event))
         });
 

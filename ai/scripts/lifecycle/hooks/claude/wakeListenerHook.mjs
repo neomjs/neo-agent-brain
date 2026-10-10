@@ -99,28 +99,33 @@ export async function isLive(proc, read = readProcess) {
 /**
  * @summary Decides what one hook run does with the seat. Pure.
  *
- * The newest live session owns the seat. A newcomer takes it from an older or dead owner. An owning
- * session whose listener is already running arms nothing new, so a second `Stop` is a no-op. Owning
- * needs the recorded process alive: a resumed session keeps its id and may get the old PID back.
+ * The live session that last received a prompt owns the seat. A prompt marks the session someone uses;
+ * a process start does not, because resuming an old session starts a process that nobody may ever
+ * prompt, and an owner that never reaches `Stop` never polls. So a prompt takes the seat from any other
+ * owner, and a `Stop` polls only while its session owns the seat: another live owner was prompted
+ * later. A dead or absent owner frees the seat for either event. An owning session whose listener is
+ * already running arms nothing new, so a second `Stop` is a no-op. Owning needs the recorded process
+ * alive: a resumed session keeps its id and may get the old PID back.
  * @param {Object} options
+ * @param {String} [options.event] `UserPromptSubmit` claims; any other event listens.
  * @param {Object|null} options.record The seat's listener record.
  * @param {Object} options.me `{sessionId, session: {pid, startedAt}}`
  * @param {Object} options.live `{owner, listener}` — whether the record's session and listener still run.
- * @returns {String} `listen`, `superseded` or `already-listening`.
+ * @returns {String} `claim` or `already-owner` for a prompt; `listen`, `superseded` or `already-listening` otherwise.
  */
-export function decideClaim({record, me, live}) {
-    const owner = record?.owner;
+export function decideClaim({event, record, me, live}) {
+    const owner = record?.owner,
+          owned = live.owner && owner.sessionId === me.sessionId && owner.session.pid === me.session.pid;
 
-    if (owner && owner.sessionId !== me.sessionId && live.owner &&
-        Date.parse(owner.session.startedAt) >= Date.parse(me.session.startedAt)) {
-        return 'superseded'
+    if (event === 'UserPromptSubmit') {
+        return owned ? 'already-owner' : 'claim'
     }
 
-    if (owner?.sessionId === me.sessionId && owner.session.pid === me.session.pid && live.owner && live.listener) {
-        return 'already-listening'
+    if (owned) {
+        return live.listener ? 'already-listening' : 'listen'
     }
 
-    return 'listen'
+    return live.owner ? 'superseded' : 'listen'
 }
 
 async function readRecord(statePath, fs) {
@@ -142,19 +147,23 @@ async function writeRecord(statePath, record, fs) {
 /**
  * @summary Runs this session's listener until it has a digest to wake with, or a reason to stop.
  *
- * One record per seat holds the owning session, its listener and the watermark, so a newer session
+ * One record per seat holds the owning session, its listener and the watermark, so the next owner
  * inherits where the last one stopped. A watermark is a position in one plane's GraphLog, so it is kept
  * with the plane that wrote it, and a session on another plane starts from a fresh baseline instead.
  * The record is only read and written under its lock, and never held across a network call.
  *
- * Polling stops with `exit: 0` when the plane is not configured, when the seat belongs to a newer
- * session, or when this session has ended. It returns `exit: 2` only with a digest, and only for
+ * The event decides the run ({@link decideClaim}). `UserPromptSubmit` only takes the seat and exits: the
+ * harness holds the prompt for it, and the takeover makes an older poll stand down before this turn's
+ * digest. `SessionStart` touches nothing, since a resumed session may never be prompted. `Stop` polls.
+ *
+ * Polling stops with `exit: 0` when the plane is not configured, when another session was prompted
+ * later, or when this session has ended. It returns `exit: 2` only with a digest, and only for
  * events past a stored watermark: a first poll records the baseline, because a seat's backlog is not
  * news. A credential the plane refuses for this seat stops it by name; any other connect or poll
  * failure backs off and retries.
  *
  * @param {Object} options
- * @param {Object} options.payload The hook's stdin: `session_id` names the session.
+ * @param {Object} options.payload The hook's stdin: `session_id` names the session, `hook_event_name` the event.
  * @param {String} [options.homeDir=os.homedir()]
  * @param {Object} [options.config] Injected `{planeBase, planeBearer, identity}`; read from the seat leaves when absent.
  * @param {Function} [options.connect=connectSeatPlane]
@@ -184,9 +193,11 @@ export async function runListener({
     pollIntervalMs = POLL_INTERVAL_MS,
     maxBackoffMs   = MAX_BACKOFF_MS
 } = {}) {
-    const sessionId = payload?.session_id;
+    const sessionId = payload?.session_id,
+          event     = payload?.hook_event_name;
 
     if (typeof sessionId !== 'string' || !sessionId) return {exit: 0, reason: 'the hook payload names no session_id'};
+    if (event === 'SessionStart')                    return {exit: 0, reason: 'a session start claims nothing'};
 
     const seat = config ?? await readSeatConfig(),
           gap  = seatPlaneGap(seat);
@@ -208,21 +219,22 @@ export async function runListener({
     const decision = await lock(statePath, async () => {
         const record = await readRecord(statePath, fs),
               live   = {owner: await isLive(record?.owner?.session, read), listener: await isLive(record?.listener, read)},
-              claim  = decideClaim({record, me, live});
+              claim  = decideClaim({event, record, me, live});
 
-        if (claim === 'listen') {
+        if (claim === 'claim' || claim === 'listen') {
             await writeRecord(statePath, {
-                ...record, owner: me, listener, ...(record?.source === source ? {} : {source, watermark: null})
+                ...record,
+                owner   : me,
+                listener: claim === 'listen' ? listener : null,
+                ...(record?.source === source ? {} : {source, watermark: null})
             }, fs)
         }
 
         return claim
     });
 
+    if (decision === 'claim')  return {exit: 0, reason: 'claimed'};
     if (decision !== 'listen') return {exit: 0, reason: decision};
-
-    // SessionStart holds the first response, so a session only takes the seat there; Stop polls.
-    if (payload.hook_event_name === 'SessionStart') return {exit: 0, reason: 'claimed'};
 
     let backoff = 0, client = null, subscriptionId = null;
 
