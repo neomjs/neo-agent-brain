@@ -278,7 +278,7 @@ export function describeBackupRetryState({
  * than unread — and that is now a property of the supplier rather than an assumption made here.
  * It previously was NOT true: an unmounted backup root raises the same `ENOENT` as an empty one, so
  * `readBackupReceipt` returned `missing` for both and a blind observer projected the same `null` a
- * fresh deployment does. The reader discriminates them at the root (#233); an observer that cannot
+ * fresh deployment does. The reader discriminates them at the root; an observer that cannot
  * see where backups live projects `{status: 'unreachable'}`, so reaching this function as `null`
  * means the root was read and held no receipt. **Do not restore the collapse by widening `missing`.**
  * `retryState`, by contrast, reaches this
@@ -299,8 +299,8 @@ export function describeBackupRetryState({
  * claiming the lane NEVER succeeded is falsified by any success receipt at all, while a code
  * claiming the current recovery window is spent is not — so the two must never be traded for each
  * other on the strength of a timestamp comparison.
- * ticket-ref-ok: #17338 authored the asymmetric half of this contract; naming it is how a future
- * editor knows the one-directional wording was tried and superseded rather than simply forgotten.
+ * An earlier revision authored only the asymmetric half of this contract (its ticket is in this
+ * file's history): the one-directional wording was tried and superseded, not simply forgotten.
  *
  * **The third state is UNOBSERVABLE, and it is not a shade of either.** The contract above bounds a
  * verdict that has evidence; a receipt the observer cannot reach — or cannot trust — supplies none,
@@ -359,8 +359,8 @@ export function describeBackupMaintenanceHealth({
         // **A receipt we cannot parse may well be a SUCCESS receipt**, so it falsifies nothing and
         // proves nothing, exactly like one we cannot reach. An earlier revision named only
         // `unreachable` here, and the sibling read-failure kept reaching the definite negative — the
-        // same fabrication, one state over. ticket-ref-ok: #233 RA-1 is where that asymmetry was
-        // caught; naming it stops the narrower test being restored as a simplification.
+        // same fabrication, one state over. The review that caught that asymmetry is in this file's
+        // history; the narrower test must not be restored as a simplification.
         receiptEvidence = lastBackup?.status === 'unreachable' || lastBackup?.status === 'unreadable'
             ? 'unobservable'
             : lastBackup?.backup?.status === 'success' ? 'proves-success' : 'no-success';
@@ -404,15 +404,15 @@ export function describeBackupMaintenanceHealth({
     // `backup-retry-exhausted`, which stays put; conflating the two is how a true statement about
     // this streak gets published as a false statement about the lane's history.
     //
-    // THE CO-DEFECT this branch reports, and how it gets retired. `TaskStateService.markCompleted()`
-    // writes `lastSuccessAt` AND clears `failureStreakStartedAt` in one call, so a lane completing
-    // through the task-state path cannot reach the state reconciled here: an open streak with no
-    // recorded success, while receipts keep succeeding, means the lane writes its receipt without
-    // going through that path. Repairing the writer is not this function's job, and needs no
-    // calendar reminder to be picked up — **this code is the observer.** `backup-state-conflict` is
-    // emitted only when the two records have actually diverged, so its first live appearance in a
-    // healthcheck is the trigger; fix the writer then, and this branch becomes dead code the moment
-    // the ledger stops disagreeing with the receipt.
+    // THE PRODUCER this branch reports. `TaskStateService.markCompleted()` writes `lastSuccessAt`
+    // AND clears `failureStreakStartedAt` in one call, so a success receipt beside an open streak
+    // means the lane's run was marked FAILED after it wrote that receipt. One producer is measured:
+    // `runBackupWithOffHostSync` (ai/scripts/maintenance/backup.mjs) throws the required-off-host
+    // refusal after the success receipt, so a deployment that requires off-host durability without
+    // configuring a sync command exits 1 on every restorable bundle. The local overlay declares the
+    // documented opt-out (`NEO_ORCHESTRATOR_OFF_HOST_BACKUP_REQUIRED=false`); whether that refusal
+    // should fail the task at all on cloud planes is an open decision for the orchestrator seam
+    // stewards. **This code is the observer**: it reports the divergence, it does not resolve it.
     //
     // THE UNOBSERVABLE ARM emits NEITHER code, and the reasoning is the same one that forbids the
     // recency test above. `backup-never-succeeded` is falsified by any success receipt at all, so a

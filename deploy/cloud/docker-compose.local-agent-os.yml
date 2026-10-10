@@ -117,6 +117,12 @@ services:
       # container. Monitor only the Compose services it actually starts.
       NEO_ORCHESTRATOR_RUNTIME_ACCESS_ALLOWED_SERVICES: &local-runtime-services chroma,kb-server,mc-server,fleet-server,orchestrator
       NEO_DEPLOYMENT_STATE_BRIDGE_ALLOWED_SERVICES: *local-runtime-services
+      # The documented local default for `orchestrator.cloudOnly.offHostBackupRequired`: the
+      # operator's own machine is not a durability boundary we can reason about, and the
+      # bundles live beside the plane. Left null, the `cloud` deployment mode (correct for this
+      # Docker plane) resolves it to required, and `backup.mjs` exits 1 after every restorable
+      # bundle, which opens a failure streak the health surface reports as an incident.
+      NEO_ORCHESTRATOR_OFF_HOST_BACKUP_REQUIRED: "false"
     secrets:
       - gemini-api-key
     # N=1 tenant bootstrap: the pull-mode sync's tiered resolver reads
