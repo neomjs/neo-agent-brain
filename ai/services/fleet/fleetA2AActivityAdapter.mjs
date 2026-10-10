@@ -63,16 +63,25 @@ export async function readFleetA2AActivitySnapshot({
             ...listArgs
         })
 
-        return createFleetA2AActivitySnapshot({
-            capturedAt,
-            limit,
-            messages  : result?.messages || [],
-            pageOffset: result?.offset ?? listArgs.offset ?? 0,
-            totalCount: result?.totalCount,
-            truncated : result?.truncated === true,
-            since,
-            until
-        })
+        if (!result || !Array.isArray(result.messages) || ['rejected', 'unavailable', 'not-wired', 'denied', 'error', 'failed'].includes(result.status) || result.success === false || result.ok === false || result.isError === true) {
+            throw new Error(result?.reason || 'Memory Core mailbox returned no valid messages envelope')
+        }
+
+        const a2a = listArgs.observer !== undefined ? observerActivityPage(result, listArgs.observer, limit, listArgs.offset ?? 0) : null;
+
+        return {
+            ...createFleetA2AActivitySnapshot({
+                capturedAt,
+                limit,
+                messages  : result.messages,
+                pageOffset: result.offset ?? listArgs.offset ?? 0,
+                totalCount: result.totalCount,
+                truncated : result.truncated === true,
+                since,
+                until
+            }),
+            ...(a2a ? {a2a} : {})
+        }
     } catch (error) {
         return createFleetA2AActivitySnapshot({
             capturedAt,
@@ -80,6 +89,39 @@ export async function readFleetA2AActivitySnapshot({
             limit
         })
     }
+}
+
+/**
+ * @summary Validates and projects the canonical observer admission and page without deriving policy or counts.
+ * @param {Object} result MailboxService observer response.
+ * @param {Object} observer Validated request selector.
+ * @param {Number} bound Maximum requested page size.
+ * @param {Number} requestedOffset Requested position in the admitted population.
+ * @returns {Object} A2A-qualified admission and canonical page metadata.
+ * @private
+ */
+function observerActivityPage(result, observer, bound, requestedOffset) {
+    const {messages, observation, totalCount, truncated, nextOffset, limit, offset} = result,
+          validRows                                                                 = messages.every(message => message && typeof message === 'object' && typeof message.messageId === 'string' && message.messageId),
+          rowIds                                                                    = new Set(messages.map(message => message?.messageId));
+
+    if (!validRows || rowIds.size !== messages.length ||
+        !Number.isSafeInteger(totalCount) || totalCount < 0 ||
+        !Number.isSafeInteger(offset) || offset !== requestedOffset ||
+        !Number.isInteger(limit) || limit < 1 || limit > bound || messages.length !== Math.min(limit, Math.max(0, totalCount - offset)) ||
+        typeof truncated !== 'boolean' || truncated !== (offset + messages.length < totalCount) ||
+        nextOffset !== (truncated ? offset + messages.length : null) || (truncated && !messages.length)) {
+        throw new Error('Memory Core observer returned malformed page metadata')
+    }
+
+    if (!observation || ['viewer', 'planeId', 'admissionKey'].some(key => typeof observation[key] !== 'string' || !observation[key]) ||
+        observation.scope !== observer.scope || !['private', 'legacy', 'team'].includes(observation.policy) || typeof observation.clamped !== 'boolean') {
+        throw new Error('Memory Core observer returned no valid admission context')
+    }
+
+    const {viewer, planeId, scope, policy, clamped, admissionKey} = observation;
+
+    return {observation: {viewer, planeId, scope, policy, clamped, admissionKey}, page: {totalCount, truncated, nextOffset, limit, offset}}
 }
 
 /**

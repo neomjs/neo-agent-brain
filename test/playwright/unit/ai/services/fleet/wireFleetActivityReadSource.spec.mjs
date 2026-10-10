@@ -4,6 +4,7 @@ import Neo                           from 'neo.mjs/src/Neo.mjs';
 import * as core                     from 'neo.mjs/src/core/_export.mjs';
 import {wireFleetActivityReadSource} from '../../../../../../ai/services/fleet/wireFleetActivityReadSource.mjs';
 import {resolveContentOrigins}       from '../../../../../../ai/services/graph/contentOrigins.mjs';
+import {createPlaneMailboxClient}    from '../../../../../../ai/services/fleet/planeMailboxClient.mjs';
 import {FLEET_COCKPIT_SOURCES}       from '../../../../../../src/fleet/contract/cockpit.mjs';
 import fs                            from 'node:fs';
 import os                            from 'node:os';
@@ -194,6 +195,141 @@ test.describe('Neo.ai.services.fleet.wireFleetActivityReadSource', () => {
             fs.rmSync(issuesDir, {recursive: true, force: true})
         }
     });
+});
+
+test.describe('Fleet Activity — explicit mailbox observation', () => {
+    const observer    = {scope: 'all'},
+          observation = {viewer: 'neo-gpt', planeId: 'test-plane', scope: 'all', policy: 'team', clamped: false, admissionKey: 'admitted-test'},
+          message     = (id, subject = 'mail') => ({messageId: `MESSAGE:${id}`, from: '@alice', to: '@bob', subject, sentAt: '2026-10-09T12:00:00.000Z'}),
+          page        = (messages = [], overrides = {}) => ({messages, totalCount: messages.length, truncated: false, nextOffset: null, limit: 2, offset: 0, observation, ...overrides}),
+          prEvent     = {eventId: 'pr:new', source: FLEET_COCKPIT_SOURCES.prLane, occurredAt: '2026-10-09T13:00:00.000Z'},
+          prLane      = async () => ({capability: {state: 'wired'}, events: [prEvent]}),
+          source      = (listMessages, options = {}) => wireFleetActivityReadSource({bridge: {}, listMessages, readPrLane: prLane, ...options});
+
+    test('forwards the closed observer selector through the local list binding and preserves canonical admission', async () => {
+            const asks = [],
+                  read = source(async args => {
+                      asks.push(args);
+                      return page([message('later')], {offset: 2, totalCount: 3, limit: 2})
+                  }),
+                  result = await read.readActivitySnapshot({observer, limit: 2, offset: 2, slots: ['a2a']});
+
+            expect(asks).toEqual([{box: 'all', status: 'all', limit: 2, offset: 2, observer}]);
+            expect(result.a2a).toEqual({observation, page: {totalCount: 3, truncated: false, nextOffset: null, limit: 2, offset: 2}, continuation: null});
+            expect(result.events[0].payload.messageId).toBe('MESSAGE:later')
+        })
+
+    for (const supported of [true, false]) {
+        test(`real plane client keeps observer schema admission (supported: ${supported})`, async () => {
+            const calls  = [],
+                  client = createPlaneMailboxClient({baseUrl: 'https://plane.example/mc/mcp', createSession: () => ({
+                      transport: {close: async () => {}},
+                      client   : {
+                          connect  : async () => {}, close: async () => {},
+                          listTools: async () => ({tools: [{name: 'list_messages', inputSchema: {type: 'object', properties: supported
+                              ? {observer: {type: 'object', properties: {scope: {type: 'string', enum: ['all']}}}}
+                              : {}}}]}),
+                          callTool: async ({name, arguments: args}) => {
+                              calls.push({name, args});
+                              return {content: [{type: 'text', text: JSON.stringify(name === 'list_permissions' ? {identity: '@neo-gpt'} : page())}]}
+                          }
+                      }
+                  })});
+
+            try {
+                expect((await client.init({expectedIdentity: '@neo-gpt'})).ok).toBe(true);
+                const result = await source(args => client.listMessages(args)).readActivitySnapshot({observer, limit: 2});
+                expect(result.capability.slots.a2a.state).toBe(supported ? 'wired' : 'degraded');
+                expect(calls.filter(call => call.name === 'list_messages')).toEqual(supported
+                    ? [{name: 'list_messages', args: {box: 'all', status: 'all', limit: 2, observer}}] : []);
+                expect(result.capability.slots['pr-lane'].state).toBe('wired')
+            } finally {
+                await client.close()
+            }
+        })
+    }
+
+    test('a mixed display cut restarts the source page; A2A-only continuation reaches later authorized mail', async () => {
+        const asks = [],
+              read = source(async args => {
+                  asks.push(args);
+                  return args.offset === 2
+                      ? page([message('later')], {offset: 2, totalCount: 3})
+                      : page([message('first'), message('second')], {totalCount: 3, truncated: true, nextOffset: 2})
+              }),
+              mixed = await read.readActivitySnapshot({observer, limit: 2});
+
+        expect(mixed.events.map(event => event.eventId)).toContain('pr:new');
+        expect(mixed.a2a.page.nextOffset).toBe(2);
+        expect(mixed.a2a.continuation).toEqual({slots: ['a2a'], offset: 0});
+        const full = await read.readActivitySnapshot({observer, limit: 2, ...mixed.a2a.continuation});
+        expect(full.events.map(event => event.payload.messageId)).toEqual(['MESSAGE:first', 'MESSAGE:second']);
+        expect(full.a2a.continuation).toEqual({slots: ['a2a'], offset: 2});
+        const later = await read.readActivitySnapshot({observer, limit: 2, ...full.a2a.continuation});
+        expect(later.events.map(event => event.payload.messageId)).toEqual(['MESSAGE:later']);
+        expect(later.a2a.continuation).toBeNull();
+        expect(asks.map(args => args.offset)).toEqual([undefined, undefined, 2])
+    });
+
+    for (const refusal of [undefined, {}, {messages: 'malformed'}, {status: 'rejected', reason: 'schema unsupported'}, page([], {observation: undefined}), page([], {nextOffset: 9}), page([null]), page([message('wrong-count')], {totalCount: 0}), page([], {status: 'not-wired'})]) {
+        test(`malformed/refused observer result ${JSON.stringify(refusal)} degrades only A2A`, async () => {
+            const result = await source(async () => refusal).readActivitySnapshot({observer, limit: 2});
+
+            expect(result.capability.state).toBe('degraded');
+            expect(result.capability.slots.a2a.state).toBe('degraded');
+            expect(result.capability.slots['pr-lane'].state).toBe('wired');
+            expect(result.events.some(event => event.eventId === 'pr:new')).toBe(true);
+            expect(result.counts).toEqual([]);
+            expect(result.a2a).toBeUndefined()
+        })
+    }
+
+    test('empty, clamped and unavailable remain distinct', async () => {
+        const empty       = await source(async () => page()).readActivitySnapshot({observer, limit: 2}),
+              clamped     = await source(async () => page([], {observation: {...observation, policy: 'private', clamped: true}})).readActivitySnapshot({observer, limit: 2}),
+              unavailable = await wireFleetActivityReadSource({bridge: {}, readPrLane: prLane}).readActivitySnapshot({observer, limit: 2});
+
+        expect(empty.a2a.page.totalCount).toBe(0);
+        expect(empty.a2a.observation.clamped).toBe(false);
+        expect(clamped.a2a.observation).toEqual({...observation, policy: 'private', clamped: true});
+        expect(unavailable.a2a).toBeUndefined();
+        expect(unavailable.capability.state).toBe('degraded')
+    });
+
+    for (const params of [{observer: {...observer, viewer: '@bob'}}, {observer, viewer: '@bob'}, {observer, to: '@bob'}, {observer, agentIdentity: '@bob'}, {observer: null}]) {
+        test(`identity/selector override ${JSON.stringify(params)} never reaches storage`, async () => {
+            let   reads  = 0;
+            const result = await source(async () => { reads++; return page() }).readActivitySnapshot({...params, limit: 2});
+            expect(reads).toBe(0);
+            expect(result.capability.state).toBe('degraded');
+            expect(result.events.some(event => event.eventId === 'pr:new')).toBe(true)
+        })
+    }
+
+    for (const observerFinishesFirst of [true, false]) {
+        test(`explicit observer never displaces ordinary held mail or lane claims (observer first: ${observerFinishesFirst})`, async () => {
+            const waits = [], saves = [],
+                  read  = source(args => new Promise(resolve => waits.push({args, resolve})), {
+                      resolveViewerIdentity: () => '@viewer',
+                      laneClaimSource      : 'test-mailbox',
+                      laneClaimStore       : {load: () => null, save: value => saves.push(value)}
+                  });
+            const ordinary       = read.readActivitySnapshot({limit: 2}),
+                  observed       = read.readActivitySnapshot({observer, limit: 2}),
+                  ordinaryResult = page([message('own', '[lane-claim] own lane')]),
+                  observedResult = page([message('foreign', '[lane-claim] foreign lane')]);
+
+            const first = observerFinishesFirst ? 1 : 0, second = 1 - first;
+            waits[first].resolve(first === 0 ? ordinaryResult : observedResult);
+            await (first === 0 ? ordinary : observed);
+            waits[second].resolve(second === 0 ? ordinaryResult : observedResult);
+            await Promise.all([ordinary, observed]);
+            expect(waits[0].args.observer).toBeUndefined();
+            expect(read.readHeldA2ASnapshot().events[0].payload.messageId).toBe('MESSAGE:own');
+            expect(read.readHeldA2ASnapshot().laneClaims.map(row => row.payload.subject)).toEqual(['[lane-claim] own lane']);
+            expect(saves).toHaveLength(1)
+        })
+    }
 });
 
 /**
