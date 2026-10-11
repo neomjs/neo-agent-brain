@@ -79,6 +79,7 @@ function lifecycleItem(id = 'lifecycle-one', overrides = {}) {
         subjectId      : '#16111',
         headSha        : 'abc123',
         actionableSince: '2026-07-28T17:00:00.000Z',
+        clockBasis: 'transition',
         checkedAt      : CAPTURED_AT,
         citations      : ['https://github.com/neomjs/neo/pull/16111'],
         ...overrides
@@ -254,7 +255,13 @@ test.describe('hookProjectionReader — pure bounded hook rendering', () => {
         ({readHookProjection}       = await import('../../../../../../ai/scripts/lifecycle/hookProjectionReader.mjs'))
     });
 
-    test('the load-bearing acceptance runs the REAL writer → real current.json → REAL reader, with no stub on either side', () => {
+    for (const [label, clock, expected] of [
+        ['transition', {clockBasis: 'transition'}, 'actionable since 2026-07-28T17:00:00.000Z'],
+        ['observation', {clockBasis: 'observation'}, 'observed actionable at 2026-07-28T17:00:00.000Z'],
+        ['unavailable', {actionableSince: null, clockBasis: 'unavailable', clockReason: 'request withdrawal is undated'},
+            'actionable date unavailable — request withdrawal is undated']
+    ]) {
+    test(`the REAL writer → current.json → REAL reader preserves a ${label} clock and its sibling route`, () => {
         const root  = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-projection-composed-')),
               db    = new Database(':memory:'),
               tuple = {
@@ -281,7 +288,7 @@ test.describe('hookProjectionReader — pure bounded hook rendering', () => {
             writer.submitChannel({
                 tuple,
                 channel          : 'lifecycle-frontier',
-                envelope         : lifecycle(),
+                envelope         : lifecycle({items: [lifecycleItem('lifecycle-one', clock)]}),
                 sourceWatermark  : 'lifecycle-watermark-1',
                 capturedAt       : CAPTURED_AT,
                 expiresAt        : EXPIRES_AT,
@@ -313,7 +320,8 @@ test.describe('hookProjectionReader — pure bounded hook rendering', () => {
             expect(result.status).toBe('rendered');
             expect(result.render).toContain('Lifecycle');
             expect(result.render).toContain('lifecycle-one');
-            expect(result.render).toContain('actionable since 2026-07-28T17:00:00.000Z');
+            expect(result.render).toContain(expected);
+            if (label === 'unavailable') expect(result.render).not.toContain('actionable since');
             expect(result.render).toContain('Route route-v1');
             expect(result.render).toContain('issue-15315');
             expect(result.render).toContain('as of 2026-07-28T18:29:00.000Z');
@@ -324,6 +332,8 @@ test.describe('hookProjectionReader — pure bounded hook rendering', () => {
             fs.rmSync(root, {recursive: true, force: true});
         }
     });
+
+    }
 
     test('imports only local filesystem + typed contract guards — no network, MCP, GitHub, LLM, or ranking dependency', () => {
         const source = fs.readFileSync(
@@ -510,6 +520,7 @@ test.describe('hookProjectionReader — pure bounded hook rendering', () => {
     test('row and byte budgets both truncate explicitly, never silently', () => {
         const manyLifecycleRows = Array.from({length: 5}, (_, index) => lifecycleItem(`lifecycle-${index + 1}`, {
                   actionableSince: `2026-07-28T17:0${index}:00.000Z`,
+                  clockBasis: 'transition',
                   subjectId      : `#${16120 + index}`
               })),
               manyRouteRows = Array.from({length: 5}, (_, index) => ({

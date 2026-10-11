@@ -398,11 +398,13 @@ function renderLifecycle(wrapper, attested, now, bindingState, expectedWatermark
         return [`Lifecycle empty — no response-required rows (as of ${frontier.capturedAt})`]
     }
 
-    return frontier.items.map(item =>
-        `Lifecycle ${oneLine(item.id)} [${oneLine(item.stage)}/${oneLine(item.state)}] ` +
-        `${oneLine(item.subjectId)} — actionable since ${oneLine(item.actionableSince)} ` +
-        `(as of ${oneLine(frontier.capturedAt)})`
-    )
+    return frontier.items.map(item => {
+        const clock = item.clockBasis === 'unavailable'
+            ? `actionable date unavailable — ${oneLine(item.clockReason)}`
+            : `${item.clockBasis === 'observation' ? 'observed actionable at' : 'actionable since'} ${oneLine(item.actionableSince)}`;
+        return `Lifecycle ${oneLine(item.id)} [${oneLine(item.stage)}/${oneLine(item.state)}] ` +
+            `${oneLine(item.subjectId)} — ${clock} (as of ${oneLine(frontier.capturedAt)})`
+    })
 }
 
 /**

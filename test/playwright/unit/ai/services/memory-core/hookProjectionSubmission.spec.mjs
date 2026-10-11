@@ -37,7 +37,7 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
         db,
         targetId,
         channel          : 'lifecycle-frontier',
-        envelope         : {schemaVersion: 'lifecycle-frontier.v1', items: [], notAuthority: true},
+        envelope         : {schemaVersion: 'lifecycle-frontier.v2', items: [], notAuthority: true},
         sourceWatermark  : '2026-07-16T12:00:00.000Z',
         capturedAt       : now,
         expiresAt        : '2026-07-16T12:05:00.000Z',
@@ -45,6 +45,12 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
         isTargetAdmitted : () => true,
         mayProduceChannel: () => true,
         ...overrides
+    });
+
+    test('a v1 lifecycle envelope is refused before a channel row is stored', () => {
+        expect(submit({envelope: {schemaVersion: 'lifecycle-frontier.v1', items: [], notAuthority: true}}))
+            .toMatchObject({accepted: false, outcome: 'schema-mismatch'});
+        expect(storedRow()).toBeUndefined();
     });
 
     const storedRow = () => db.prepare(`
@@ -82,7 +88,7 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
 
         const result = submit({
             sourceWatermark: '2026-07-16T12:01:00.000Z',
-            envelope       : {schemaVersion: 'lifecycle-frontier.v1', items: [{id: 'a'}], notAuthority: true}
+            envelope       : {schemaVersion: 'lifecycle-frontier.v2', items: [{id: 'a'}], notAuthority: true}
         });
 
         expect(result.outcome).toBe('advanced');
@@ -103,7 +109,7 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
     test('an equal watermark with a DIFFERENT payload degrades the channel and keeps the prior', () => {
         submit();
 
-        const conflict = submit({envelope: {schemaVersion: 'lifecycle-frontier.v1', items: [{id: 'contested'}], notAuthority: true}});
+        const conflict = submit({envelope: {schemaVersion: 'lifecycle-frontier.v2', items: [{id: 'contested'}], notAuthority: true}});
 
         expect(conflict.accepted).toBe(false);
         expect(conflict.outcome).toBe('source-conflict');
@@ -120,7 +126,7 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
 
         const stale = submit({
             sourceWatermark: '2026-07-16T12:01:00.000Z',
-            envelope       : {schemaVersion: 'lifecycle-frontier.v1', items: [{id: 'old'}], notAuthority: true}
+            envelope       : {schemaVersion: 'lifecycle-frontier.v2', items: [{id: 'old'}], notAuthority: true}
         });
 
         expect(stale.accepted).toBe(false);
@@ -131,7 +137,7 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
 
     test('a newer watermark CLEARS an earlier conflict — the source moved past the contested point', () => {
         submit();
-        submit({envelope: {schemaVersion: 'lifecycle-frontier.v1', items: [{id: 'contested'}], notAuthority: true}});
+        submit({envelope: {schemaVersion: 'lifecycle-frontier.v2', items: [{id: 'contested'}], notAuthority: true}});
         expect(storedRow().conflict_reason).toContain('two payloads');
 
         submit({sourceWatermark: '2026-07-16T12:09:00.000Z'});
@@ -182,7 +188,7 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
                           result = submit({
                               [gate]: predicate,
                               sourceWatermark: phase === 'advance' ? '2026-07-16T12:01:00.000Z' : now,
-                              envelope: {schemaVersion: 'lifecycle-frontier.v1', items: [{id: 'changed'}], notAuthority: true}
+                              envelope: {schemaVersion: 'lifecycle-frontier.v2', items: [{id: 'changed'}], notAuthority: true}
                           });
 
                     expect(result).toMatchObject({accepted: false, outcome});
@@ -288,7 +294,7 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
         // the party that notices — the disagreement is between them.
         const mismatched = submit({
             channel : 'computed-route',
-            envelope: {schemaVersion: 'lifecycle-frontier.v1', items: [], notAuthority: true}
+            envelope: {schemaVersion: 'lifecycle-frontier.v2', items: [], notAuthority: true}
         });
 
         expect(mismatched.accepted).toBe(false);

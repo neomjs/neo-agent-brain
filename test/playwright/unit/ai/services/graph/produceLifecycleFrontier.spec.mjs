@@ -39,8 +39,10 @@ test.describe('produceLifecycleFrontier — injected source reads into one hones
         isDraft  : false,
         headSha  : 'abc123',
         mergeable: true,
-        // Source-shaped: the review names the commit it reviewed AND when it was submitted. The clock
-        // owner derives repairActionableSince from exactly this, so no caller supplies it.
+        // The source explicitly dates the current uninterrupted repair obligation.
+        repairActionableSince: '2026-07-16T11:00:00.000Z',
+        repairActionableSinceHeadSha: 'abc123',
+        repairActionableSinceClockBasis: 'transition',
         reviews  : [{state: 'CHANGES_REQUESTED', commitSha: 'abc123', submittedAt: '2026-07-16T11:00:00.000Z'}],
         checks   : [{name: 'unit', required: true, conclusion: 'SUCCESS', headSha: 'abc123', completedAt: '2026-07-16T10:30:00.000Z'}],
         checkedAt: '2026-07-16T12:00:00.000Z',
@@ -63,7 +65,7 @@ test.describe('produceLifecycleFrontier — injected source reads into one hones
     test('an attested agent gets a fresh, stage-ordered frontier with an explicit expiry', async () => {
         const frontier = await produceLifecycleFrontier({scope: attested, sources: sources(), now, ttlMs});
 
-        expect(frontier.schemaVersion).toBe('lifecycle-frontier.v1');
+        expect(frontier.schemaVersion).toBe('lifecycle-frontier.v2');
         expect(frontier.status).toBe('fresh');
         expect(frontier.notAuthority).toBe(true);
         expect(frontier.capturedAt).toBe('2026-07-16T12:00:00.000Z');
@@ -72,6 +74,25 @@ test.describe('produceLifecycleFrontier — injected source reads into one hones
         expect(frontier.coverage.sources).toEqual(LIFECYCLE_SOURCES);
         expect(frontier.coverage.degradedSources).toEqual([]);
         expect(frontier.items.map(item => item.stage)).toEqual(['own-pr-repair']);
+    });
+
+    test('an explicitly unavailable source clock stays fresh and unchanged across producer pulses', async () => {
+        const pr = {...repairPr, repairActionableSince: null, repairActionableSinceClockBasis: 'unavailable',
+            repairActionableSinceClockReason: 'repair re-entry is undated'};
+        const source = sources({readPullRequests: async () => [pr]});
+        const first = await produceLifecycleFrontier({scope: attested, sources: source, now, ttlMs});
+        const second = await produceLifecycleFrontier({scope: attested, sources: source, now: new Date(now.getTime() + 1_000), ttlMs});
+        expect(first.status).toBe('fresh');
+        expect(second.status).toBe('fresh');
+        expect(first.items[0]).toMatchObject({actionableSince: null, clockBasis: 'unavailable', clockReason: 'repair re-entry is undated'});
+        expect(second.items[0]).toEqual(first.items[0]);
+        expect(second.capturedAt).not.toBe(first.capturedAt);
+    });
+
+    test('a missing needed declaration is a producer error rather than an empty or inferred frontier', async () => {
+        const pr = {...repairPr, repairActionableSince: undefined};
+        await expect(produceLifecycleFrontier({scope: attested, sources: sources({readPullRequests: async () => [pr]}), now, ttlMs}))
+            .rejects.toThrow(/repairActionableSince/);
     });
 
     test('an UNATTESTED binding reads no source at all — never-foreign beats complete', async () => {

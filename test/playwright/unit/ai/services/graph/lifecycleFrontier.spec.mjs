@@ -18,11 +18,11 @@ import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 /**
- * Contract tests for the lifecycle-frontier.v1 envelope: stage ordering, never-foreign enforcement,
+ * Contract tests for the lifecycle-frontier.v2 envelope: stage ordering, never-foreign enforcement,
  * honest status independence, and the consumer-side fail-open guard.
  */
-test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
-    let buildLifecycleFrontier, validateLifecycleFrontier, LIFECYCLE_STAGES, LIFECYCLE_FRONTIER_STATUSES;
+test.describe('lifecycleFrontier — lifecycle-frontier.v2 contract', () => {
+    let buildLifecycleFrontier, validateLifecycleFrontier, normalizeLifecycleClock, LIFECYCLE_STAGES, LIFECYCLE_FRONTIER_STATUSES;
 
     const base = (overrides = {}) => ({
         scope          : {agentId: '@neo-opus-ada', harnessInstance: 'inst-1', resolution: 'agent-instance'},
@@ -46,6 +46,8 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
         subjectId      : 'pr-15231',
         headSha        : 'head-2',
         actionableSince: '2026-07-16T09:00:00.000Z',
+        clockBasis     : 'transition',
+        clockReason    : null,
         checkedAt      : '2026-07-16T10:00:00.000Z',
         citations      : ['https://github.com/neomjs/neo/pull/15231'],
         ...overrides
@@ -55,6 +57,7 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
         const mod = await import('../../../../../../ai/services/graph/lifecycleFrontier.mjs');
         buildLifecycleFrontier      = mod.buildLifecycleFrontier;
         validateLifecycleFrontier   = mod.validateLifecycleFrontier;
+        normalizeLifecycleClock     = mod.normalizeLifecycleClock;
         LIFECYCLE_STAGES            = mod.LIFECYCLE_STAGES;
         LIFECYCLE_FRONTIER_STATUSES = mod.LIFECYCLE_FRONTIER_STATUSES;
     });
@@ -62,7 +65,7 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
     test('stamps the schema + notAuthority and deeply freezes the envelope', () => {
         const frontier = buildLifecycleFrontier(base({items: [item()]}));
 
-        expect(frontier.schemaVersion).toBe('lifecycle-frontier.v1');
+        expect(frontier.schemaVersion).toBe('lifecycle-frontier.v2');
         expect(frontier.notAuthority).toBe(true);
         expect(Object.isFrozen(frontier)).toBe(true);
         expect(Object.isFrozen(frontier.items)).toBe(true);
@@ -140,9 +143,9 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
         expect(degraded.items).toHaveLength(1);
     });
 
-    test('every item must name its stage, subject and actionableSince — an undateable row is unreasonable-about', () => {
+    test('every item must name its stage, subject and explicit clock declaration', () => {
         expect(() => buildLifecycleFrontier(base({items: [item({stage: 'bogus'})]}))).toThrow(/stage must be one of/);
-        expect(() => buildLifecycleFrontier(base({items: [item({actionableSince: undefined})]}))).toThrow(/actionableSince must be a non-empty string/);
+        expect(() => buildLifecycleFrontier(base({items: [item({actionableSince: undefined})]}))).toThrow(/actionableSince must be a parseable timestamp/);
         expect(() => buildLifecycleFrontier(base({items: [item({subjectId: ''})]}))).toThrow(/subjectId must be a non-empty string/);
         expect(() => buildLifecycleFrontier(base({status: 'bogus'}))).toThrow(/status must be one of/);
         expect(() => buildLifecycleFrontier(base({scope: {resolution: 'guessed'}}))).toThrow(/scope.resolution must be one of/);
@@ -179,7 +182,7 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
         // build — a legacy writer, a torn file, another version. So the torn row is hand-built here
         // rather than minted, which is exactly how it would arrive.
         const torn = {
-            schemaVersion  : 'lifecycle-frontier.v1',
+            schemaVersion  : 'lifecycle-frontier.v2',
             status         : 'fresh',
             capturedAt     : '2026-07-16T12:00:00.000Z',
             sourceWatermark: 'w-1',
@@ -195,6 +198,8 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
                 subjectId      : 'pr-15231',
                 headSha        : null,
                 actionableSince: '2026-07-16T09:00:00.000Z',
+                clockBasis     : 'transition',
+                clockReason    : null,
                 checkedAt      : '2026-07-16T10:00:00.000Z',
                 citations      : []
             }],
@@ -231,7 +236,7 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
         expect(validateLifecycleFrontier({schemaVersion: 'legacy'}, {shapeOnly: true}).valid).toBe(false);
 
         const foreign = validateLifecycleFrontier({
-            schemaVersion: 'lifecycle-frontier.v1',
+            schemaVersion: 'lifecycle-frontier.v2',
             status       : 'fresh',
             notAuthority : true,
             scope        : {resolution: 'omitted'},
@@ -253,7 +258,7 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
         // returned valid:true — the two failures the guard exists to catch. Optional reader facts were
         // themselves a fail-open, so the shape-only choice must now be made at the call site.
         const expiredForeign = {
-            schemaVersion  : 'lifecycle-frontier.v1',
+            schemaVersion  : 'lifecycle-frontier.v2',
             status         : 'empty',
             capturedAt     : '2020-01-01T00:00:00.000Z',
             sourceWatermark: 'w',
@@ -280,7 +285,7 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
 
     test('an envelope that expires before it was captured was never valid for an instant', () => {
         const inverted = validateLifecycleFrontier({
-            schemaVersion  : 'lifecycle-frontier.v1',
+            schemaVersion  : 'lifecycle-frontier.v2',
             status         : 'empty',
             capturedAt     : '2026-07-16T12:00:00.000Z',
             sourceWatermark: 'w',
@@ -298,7 +303,7 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
 
     test('EVERY emitted item field is validated, members included — not the interesting ones', () => {
         const bad = validateLifecycleFrontier({
-            schemaVersion  : 'lifecycle-frontier.v1',
+            schemaVersion  : 'lifecycle-frontier.v2',
             status         : 'fresh',
             capturedAt     : '2026-07-16T12:00:00.000Z',
             sourceWatermark: 'w',
@@ -331,7 +336,7 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
         // live is undecidable), and no scope (whose obligations are these?) — each omission converting
         // a DETECTABLE tear into a confident wrong answer.
         const {valid, errors} = validateLifecycleFrontier({
-            schemaVersion: 'lifecycle-frontier.v1',
+            schemaVersion: 'lifecycle-frontier.v2',
             status       : 'empty',
             notAuthority : true,
             items        : []
@@ -347,7 +352,7 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
 
     test('the guard rejects a foreign-capable scope and a missing coverage shape, still without throwing', () => {
         const attestedNoId = validateLifecycleFrontier({
-            schemaVersion  : 'lifecycle-frontier.v1',
+            schemaVersion  : 'lifecycle-frontier.v2',
             status         : 'fresh',
             capturedAt     : '2026-07-16T12:00:00.000Z',
             sourceWatermark: '2026-07-16T12:00:00.000Z',
@@ -363,7 +368,7 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
         expect(attestedNoId.errors.join(' ')).toContain('attested scope must carry a non-empty agentId');
 
         const badCoverage = validateLifecycleFrontier({
-            schemaVersion  : 'lifecycle-frontier.v1',
+            schemaVersion  : 'lifecycle-frontier.v2',
             status         : 'degraded',
             capturedAt     : '2026-07-16T12:00:00.000Z',
             sourceWatermark: '2026-07-16T12:00:00.000Z',
@@ -377,4 +382,112 @@ test.describe('lifecycleFrontier — lifecycle-frontier.v1 contract', () => {
         expect(badCoverage.valid).toBe(false);
         expect(badCoverage.errors.join(' ')).toContain('coverage.sources must be an array');
     });
+    test('normalizes explicit dated bases without fabricating a reason or changing the timestamp', () => {
+        for (const clockBasis of ['transition', 'observation']) {
+            const declared = {actionableSince: '2026-07-16T09:00:00.000Z', clockBasis},
+                  normalized = normalizeLifecycleClock(declared);
+
+            expect(normalized).toEqual({...declared, clockReason: null});
+            expect(Object.isFrozen(normalized)).toBe(true);
+            expect(declared).not.toHaveProperty('clockReason');
+        }
+    });
+
+    test('an explicitly unavailable clock is frozen and keeps its bounded source reason', () => {
+        const declared = {actionableSince: null, clockBasis: 'unavailable', clockReason: 'x'.repeat(240)},
+              normalized = normalizeLifecycleClock(declared, 'source clock');
+
+        expect(normalized).toEqual(declared);
+        expect(Object.isFrozen(normalized)).toBe(true);
+    });
+
+    test('missing, malformed and incoherent clock declarations are producer errors', () => {
+        const dated = {actionableSince: '2026-07-16T09:00:00.000Z', clockBasis: 'transition'},
+              unavailable = {actionableSince: null, clockBasis: 'unavailable', clockReason: 'request history unavailable'},
+              malformed = [
+                  undefined, null, [], {},
+                  {...dated, actionableSince: undefined},
+                  {...dated, actionableSince: null},
+                  {...dated, actionableSince: 0},
+                  {...dated, actionableSince: 'not-a-time'},
+                  {...dated, actionableSince: '0'},
+                  {...dated, actionableSince: '2026-07-16'},
+                  {...dated, clockBasis: undefined},
+                  {...dated, clockBasis: 'guessed'},
+                  {...dated, clockReason: 'a dated clock cannot claim unavailable evidence'},
+                  {...unavailable, actionableSince: undefined},
+                  {...unavailable, actionableSince: dated.actionableSince},
+                  {...unavailable, clockReason: undefined},
+                  {...unavailable, clockReason: null},
+                  {...unavailable, clockReason: ''},
+                  {...unavailable, clockReason: '   '},
+                  {...unavailable, clockReason: 'provider\nerror'},
+                  {...unavailable, clockReason: 'provider\rerror'},
+                  {...unavailable, clockReason: 'provider\u2028error'},
+                  {...unavailable, clockReason: 'x'.repeat(241)}
+              ];
+
+        for (const declaration of malformed) {
+            expect.soft(() => normalizeLifecycleClock(declaration, 'source clock'))
+                .toThrow(/\[lifecycleFrontier\].*source clock/);
+        }
+    });
+
+    test('unavailable dates preserve a fresh obligation and its current-head identity', () => {
+        const declaration = {actionableSince: null, clockBasis: 'unavailable', clockReason: 'head activation history unavailable'},
+              frontier = buildLifecycleFrontier(base({items: [item(declaration)]}));
+
+        expect(frontier.status).toBe('fresh');
+        expect(frontier.coverage.degradedSources).toEqual([]);
+        expect(frontier.items[0]).toMatchObject({...declaration, headSha: 'head-2'});
+        expect(validateLifecycleFrontier(frontier, {now: '2026-07-16T10:01:00.000Z', agentId: '@neo-opus-ada'}))
+            .toEqual({valid: true, errors: []});
+        expect(() => buildLifecycleFrontier(base({items: [item({...declaration, headSha: undefined})]})))
+            .toThrow(/headSha/);
+    });
+
+    test('dated rows precede unavailable dates within their stage; stage priority and stable ties remain', () => {
+        const unavailable = {actionableSince: null, clockBasis: 'unavailable', clockReason: 'transition history unavailable'},
+              frontier = buildLifecycleFrontier(base({items: [
+                  item({id: 'a-undated', ...unavailable}),
+                  item({id: 'z-newer', actionableSince: '2026-07-16T09:00:00.000Z', clockBasis: 'observation'}),
+                  item({id: 'b-undated', ...unavailable}),
+                  item({id: 'y-older', actionableSince: '2026-07-16T08:00:00.000Z'}),
+                  item({id: 'later-stage', stage: 'requested-review', actionableSince: '2026-07-01T00:00:00.000Z'})
+              ]}));
+
+        expect(frontier.items.map(row => row.id)).toEqual(['y-older', 'z-newer', 'a-undated', 'b-undated', 'later-stage']);
+        expect(validateLifecycleFrontier(frontier, {shapeOnly: true})).toEqual({valid: true, errors: []});
+
+        const wrongOrder = {...frontier, items: [frontier.items[2], frontier.items[0], frontier.items[1], ...frontier.items.slice(3)]};
+        expect(validateLifecycleFrontier(wrongOrder, {shapeOnly: true}).errors.join(' ')).toContain('contract order');
+    });
+
+    test('builder and independent reader reject omitted basis, invalid dates and malformed unavailability', () => {
+        const valid = buildLifecycleFrontier(base({items: [item()]})),
+              malformed = [
+                  {clockBasis: undefined},
+                  {clockBasis: 'unknown'},
+                  {actionableSince: undefined},
+                  {actionableSince: 'not-a-time'},
+                  {actionableSince: null, clockBasis: 'transition'},
+                  {actionableSince: null, clockBasis: 'unavailable', clockReason: undefined},
+                  {actionableSince: null, clockBasis: 'unavailable', clockReason: 'multi\nline'},
+                  {actionableSince: null, clockBasis: 'unavailable', clockReason: 'x'.repeat(241)}
+              ];
+
+        for (const declaration of malformed) {
+            expect.soft(() => buildLifecycleFrontier(base({items: [item(declaration)]})))
+                .toThrow(/actionableSince|clockBasis|clockReason/);
+            const torn = {...valid, items: [{...valid.items[0], ...declaration}]};
+            expect.soft(validateLifecycleFrontier(torn, {shapeOnly: true}).valid).toBe(false);
+        }
+    });
+
+    test('v1 envelopes are rejected instead of silently supplying v2 clock metadata', () => {
+        const frontier = buildLifecycleFrontier(base({items: [item()]}));
+        expect(validateLifecycleFrontier({...frontier, schemaVersion: 'lifecycle-frontier.v1'}, {shapeOnly: true}).errors.join(' '))
+            .toContain('schemaVersion must be "lifecycle-frontier.v2"');
+    });
+
 });

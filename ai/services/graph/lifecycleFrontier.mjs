@@ -1,6 +1,6 @@
 /**
  * @module ai/services/graph/lifecycleFrontier
- * @summary The typed `lifecycle-frontier.v1` contract: what already requires ONE agent's response now.
+ * @summary The typed `lifecycle-frontier.v2` contract: what already requires ONE agent's response now.
  *
  * This is the counterpart to the computed route, not a competitor. The route answers "which direction
  * best serves the declared goals next"; this answers "what is already waiting on me". They are separate
@@ -25,7 +25,7 @@
  * @summary The frontier's schema version.
  * @type {String}
  */
-export const LIFECYCLE_FRONTIER_SCHEMA_VERSION = 'lifecycle-frontier.v1';
+export const LIFECYCLE_FRONTIER_SCHEMA_VERSION = 'lifecycle-frontier.v2';
 
 /**
  * The five response-required stages, in presentation order. The order is the contract: an own-PR repair
@@ -90,12 +90,50 @@ function assertNonEmptyString(value, label) {
 }
 
 /**
+ * @summary Validates one source-declared lifecycle clock without inferring a missing date.
+ * @param {Object} clock Declared actionableSince, clockBasis and optional clockReason.
+ * @param {String} [label='clock'] Source label used in contract errors.
+ * @returns {Object} Frozen clock fields; dated clocks carry a null reason.
+ * @throws {TypeError} When the declaration is missing, malformed or incoherent.
+ */
+export function normalizeLifecycleClock(clock, label='clock') {
+    if (!clock || typeof clock !== 'object' || Array.isArray(clock)) {
+        throw new TypeError(`[lifecycleFrontier] ${label} must declare a clock object.`)
+    }
+
+    const {actionableSince, clockBasis, clockReason = null} = clock;
+
+    if (clockBasis === 'unavailable') {
+        if (actionableSince !== null) {
+            throw new TypeError(`[lifecycleFrontier] ${label}.actionableSince must be null for an unavailable clock.`)
+        }
+        if (typeof clockReason !== 'string' || clockReason.trim().length === 0 || clockReason.length > 240 ||
+            /[\u0000-\u001f\u007f\u2028\u2029]/.test(clockReason)) {
+            throw new TypeError(`[lifecycleFrontier] ${label}.clockReason must be a nonempty single-line source reason of at most 240 characters.`)
+        }
+    } else {
+        if (clockBasis !== 'transition' && clockBasis !== 'observation') {
+            throw new TypeError(`[lifecycleFrontier] ${label}.clockBasis must be transition, observation or unavailable.`)
+        }
+        if (typeof actionableSince !== 'string' ||
+            !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(actionableSince) ||
+            !Number.isFinite(Date.parse(actionableSince))) {
+            throw new TypeError(`[lifecycleFrontier] ${label}.actionableSince must be a parseable timestamp for a dated clock.`)
+        }
+        if (clockReason !== null) {
+            throw new TypeError(`[lifecycleFrontier] ${label}.clockReason must be null for a dated clock.`)
+        }
+    }
+
+    return Object.freeze({actionableSince, clockBasis, clockReason})
+}
+
+/**
  * @summary Normalizes one response-required item, validating the fields a consumer must be able to
  * trust: which stage it belongs to, what it points at, and since when it has been actionable.
  *
- * `actionableSince` is required because it is the only thing that makes the list orderable by age
- * rather than by discovery accident — and because a row that cannot say since when it needed a
- * response cannot be reasoned about at all.
+ * The explicit clock distinguishes a dated obligation from one whose source cannot date it. An
+ * unavailable date keeps the obligation visible without inventing its age.
  *
  * `headSha` carries the head a PR-derived row was observed against: a row that outlives its head is
  * stale by construction, and the head is what a consumer re-checks against.
@@ -117,7 +155,7 @@ function normalizeFrontierItem(item, index) {
     assertNonEmptyString(item.id,              `items[${index}].id`);
     assertNonEmptyString(item.source,          `items[${index}].source`);
     assertNonEmptyString(item.subjectId,       `items[${index}].subjectId`);
-    assertNonEmptyString(item.actionableSince, `items[${index}].actionableSince`);
+    const clock = normalizeLifecycleClock(item, `items[${index}]`);
 
     // A PR-derived row without its head is a PRODUCER bug, so it fails loud here rather than being
     // normalized to null and handed on. Closing this at the consumer alone left the producer happily
@@ -136,15 +174,31 @@ function normalizeFrontierItem(item, index) {
         source         : item.source,
         subjectId      : item.subjectId,
         headSha        : typeof item.headSha === 'string' ? item.headSha : null,
-        actionableSince: item.actionableSince,
+        ...clock,
         checkedAt      : typeof item.checkedAt === 'string' ? item.checkedAt : null,
         citations      : Object.freeze(Array.isArray(item.citations) ? [...item.citations] : [])
     })
 }
 
 /**
- * @summary Orders the frontier: stage rank first, then oldest `actionableSince` first, then stable
- * source id.
+ * @summary Compares stage priority, then dated-before-unavailable clocks, then date and stable id.
+ * @param {Object} a First row.
+ * @param {Object} b Second row.
+ * @returns {Number} Contract order, shared by construction and validation.
+ */
+function compareFrontierItems(a, b) {
+    const aTime = typeof a?.actionableSince === 'string' ? Date.parse(a.actionableSince) : NaN,
+          bTime = typeof b?.actionableSince === 'string' ? Date.parse(b.actionableSince) : NaN,
+          aDated = Number.isFinite(aTime), bDated = Number.isFinite(bTime);
+
+    return (STAGE_RANK[a?.stage] - STAGE_RANK[b?.stage]) ||
+        (Number(bDated) - Number(aDated)) ||
+        (aDated && bDated ? aTime - bTime : 0) ||
+        String(a?.id).localeCompare(String(b?.id))
+}
+
+/**
+ * @summary Orders the frontier by stage, then dated rows oldest-first, then unavailable dates and stable id.
  *
  * The id tiebreak is not cosmetic — without it two equal-aged rows could swap between passes and a
  * consumer diffing consecutive frontiers would report movement that never happened.
@@ -153,15 +207,11 @@ function normalizeFrontierItem(item, index) {
  * @returns {Object[]} A new, ordered array.
  */
 function orderFrontierItems(items) {
-    return [...items].sort((a, b) =>
-        (STAGE_RANK[a.stage] - STAGE_RANK[b.stage]) ||
-        (Date.parse(a.actionableSince) - Date.parse(b.actionableSince)) ||
-        String(a.id).localeCompare(String(b.id))
-    )
+    return [...items].sort(compareFrontierItems)
 }
 
 /**
- * @summary Builds a validated, frozen `lifecycle-frontier.v1` envelope for ONE attested agent.
+ * @summary Builds a validated, frozen `lifecycle-frontier.v2` envelope for ONE attested agent.
  *
  * Producer-side: fails LOUD on a contract violation, because a malformed frontier is a producer bug and
  * a plausible-but-wrong obligation list is worse than none. Source degradation is NOT a violation —
@@ -399,8 +449,10 @@ export function validateLifecycleFrontier(frontier, {now, agentId, shapeOnly = f
                 }
             }
 
-            if (typeof item?.actionableSince !== 'string' || Number.isNaN(Date.parse(item?.actionableSince))) {
-                errors.push(`items[${index}].actionableSince must be a parseable ISO timestamp`)
+            try {
+                normalizeLifecycleClock(item, `items[${index}]`)
+            } catch (error) {
+                errors.push(error.message)
             }
 
             // A PR-derived row MUST name its head. Every such row resets on head change, and a row with
@@ -423,14 +475,10 @@ export function validateLifecycleFrontier(frontier, {now, agentId, shapeOnly = f
         // Order is part of the contract, so a reader can trust position instead of re-sorting. An
         // out-of-order envelope means the producer's ordering was bypassed — the reader cannot tell
         // whether the rest of the contract held either.
-        const ordered = [...items].sort((a, b) =>
-            (STAGE_RANK[a?.stage] - STAGE_RANK[b?.stage]) ||
-            (Date.parse(a?.actionableSince) - Date.parse(b?.actionableSince)) ||
-            String(a?.id).localeCompare(String(b?.id))
-        );
+        const ordered = orderFrontierItems(items);
 
         if (items.some((item, index) => item !== ordered[index])) {
-            errors.push('items are not in contract order (stage, then actionableSince oldest-first, then id)')
+            errors.push('items are not in contract order (stage, then dated oldest-first, then unavailable dates, then id)')
         }
     }
 

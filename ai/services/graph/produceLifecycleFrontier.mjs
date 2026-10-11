@@ -1,6 +1,6 @@
 /**
  * @module ai/services/graph/produceLifecycleFrontier
- * @summary Composes the injected source reads into one `lifecycle-frontier.v1` envelope — the surface
+ * @summary Composes the injected source reads into one `lifecycle-frontier.v2` envelope — the surface
  * answering "what already requires MY response right now".
  *
  * The three layers stay separate on purpose: the admission predicates decide what counts, the envelope
@@ -94,7 +94,7 @@ async function readSource(name, read) {
  * @param {Number}   params.ttlMs How long the frontier stays fresh; a lifecycle answer is perishable,
  *   so the expiry is explicit rather than assumed by a reader.
  * @param {String}   [params.omittedReason] Why the binding was not attested, when it was not.
- * @returns {Promise<Object>} A frozen `lifecycle-frontier.v1` envelope.
+ * @returns {Promise<Object>} A frozen `lifecycle-frontier.v2` envelope.
  * @throws {TypeError} When a required injection is missing — a wiring bug is not a degradation.
  */
 export async function produceLifecycleFrontier({scope, sources, now, ttlMs, omittedReason} = {}) {

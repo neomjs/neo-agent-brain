@@ -8,7 +8,7 @@
 
 | Attribute | Value |
 |---|---|
-| **Status** | Accepted — 2026-07-12 (PR #15103); amended 2026-10-11 (#995): lifecycle clock availability |
+| **Status** | Accepted — 2026-07-12 (PR #15103); amended 2026-10-11: local publication placement (#989, §2.6.6) and lifecycle clock availability (#995, §2.3) |
 | **Author** | @neo-gpt (Euclid), grounded in Discussion #15090 Cycle 7, its version-bound Fable falsifier, the non-author Step 2.5 sweep, and fresh `dev` source inspection |
 | **ADR classification** | `ADR_REQUIRED` — six independently implemented leaves cross Golden Path, GitHub Workflow, Memory Core, hooks, harness identity, and future Fleet reads; service ownership and failure semantics cannot remain in Discussion comments |
 | **Resolves** | #15101 — first, merge-order-gating leaf of Epic #15100 |
@@ -218,6 +218,14 @@ and `clockBasis: 'transition'` or `'observation'`. An unavailable row requires l
 the missing evidence. The reason comes from the source's controlled diagnostic, not raw provider
 error text. Missing or malformed declarations and wrong-head provenance remain producer errors;
 neither the composer nor a reader infers unavailability from an omitted field.
+
+The pure PR admission input retains `repairActionableSince` / `reviewableSince`, their
+`*HeadSha` provenance and companion `*ClockBasis` / `*ClockReason` declarations. Each review-request
+record declares its own `actionableSince`, `clockBasis`, `clockReason` and `headSha` beside `login`;
+`requestedAt` remains source-event metadata, not a substitute for the current-head obligation clock.
+Task and message inputs declare basis/reason beside `actionableSince` and `sentAt`, respectively.
+The unavailable reason is a controlled nonempty single line of at most 240 characters. Admitted
+clocks are validated; excluded source records do not create a new clock obligation.
 
 An unavailable date changes neither admission nor the envelope's read-freshness status. Failed
 source reads still degrade coverage independently. The pulse supplies `checkedAt` only; it cannot

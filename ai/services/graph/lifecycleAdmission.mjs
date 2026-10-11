@@ -21,12 +21,13 @@
  *   action-requiring state is.
  */
 
+import {normalizeLifecycleClock} from './lifecycleFrontier.mjs';
+
 /**
  * @summary The logins a PR's review requests name, tolerating both source shapes.
  *
- * A request arrives either as a bare login or as `{login, requestedAt}`. Only the second can be dated,
- * so the richer shape is what a datable frontier needs — but the identity question is the same either
- * way, and reading it in one place keeps the two from drifting.
+ * Membership accepts a bare login or a request record. Clock knowledge is separate: an admitted
+ * request must carry its own explicit declaration; membership alone cannot supply one.
  *
  * @param {Object} pr Normalized PR record.
  * @param {String} agentId
@@ -39,187 +40,57 @@ function requestsInclude(pr, agentId) {
 }
 
 /**
- * @summary Derives a PR's lifecycle clocks from CURRENT-HEAD evidence, so the head-change reset is
- * structural rather than promised.
- *
- * This is the clock owner. The earlier shape demanded that some upstream remember when each head became
- * actionable and reset it on every push — a contract nothing implemented, and a stateful one at that.
- * It is unnecessary: the source already carries the timestamps. A `CHANGES_REQUESTED` review names the
- * commit it reviewed and when it was submitted; a failed check names its completion. So the clock for
- * head X is simply *the earliest current-head evidence*, and its provenance is X **by construction**.
- *
- * The reset then costs nothing. When the head moves to Y, every X-attached review and check stops being
- * current-head evidence, so the clock re-derives from Y's own facts or the row leaves the frontier
- * entirely. A's clock cannot survive into B because it was never stored — only computed.
- *
- * Clears and re-entries follow for free: a predicate that stops holding drops the row, and satisfying it
- * again derives a fresh clock from the evidence that satisfied it.
- *
- * @param {Object} pr Raw source PR `{headSha, reviews, checks, reviewRequests, mergeableSince?}`.
- * @returns {Object} The PR with `repairActionableSince` / `reviewableSince` / `reviewRequestedSince`
- *   and their `*HeadSha` provenance derived from current-head facts.
+ * @summary Projects explicit per-target source clocks without inventing a date or head witness.
+ * Admission predicates validate only the clocks of obligations they admit. Missing declarations on
+ * unrelated records therefore create no obligation, while a needed malformed clock fails loud.
+ * @param {Object} pr Source PR carrying stage clocks and per-reviewer declarations.
+ * @returns {Object} The source record with per-target clocks indexed by login.
  */
 export function normalizeLifecycleClocks(pr) {
-    const head = pr?.headSha;
+    const requested = Object.fromEntries((pr?.reviewRequests || []).map(request => [
+        typeof request === 'string' ? request : request?.login,
+        typeof request === 'object' && request ? {
+            actionableSince: request.actionableSince,
+            clockBasis: request.clockBasis,
+            clockReason: request.clockReason,
+            headSha: request.headSha
+        } : undefined
+    ]).filter(([login]) => typeof login === 'string' && login.length > 0));
 
-    // Only evidence attached to the CURRENT head can date the current head.
-    const currentHeadReviews = (pr?.reviews || []).filter(review => review.commitSha === head),
-          currentHeadChecks  = currentHeadChecksOf(pr);
-
-    const clean    = stamps => stamps.filter(stamp => typeof stamp === 'string' && stamp.length > 0).sort(),
-          earliest = stamps => clean(stamps)[0] ?? null,
-          latest   = stamps => clean(stamps).at(-1) ?? null;
-
-    // Each stage's clock is a DIFFERENT algebra, because each answers a different question. One reducer
-    // for all three was wrong in three distinct ways.
-    const headCommittedAt = typeof pr?.headCommittedAt === 'string' ? pr.headCommittedAt : null;
-
-    // A current-head clock can never predate the head itself: the state being dated belongs to code
-    // that did not exist earlier. A conflict timestamp carried over from a previous head, stamped with
-    // current-head provenance, claimed a duration this head never had.
-    const clampToHead = stamp =>
-        stamp !== null && headCommittedAt !== null && stamp < headCommittedAt ? headCommittedAt : stamp;
-
-    // REPAIR — EARLIEST. "When did this head first need repair?" The first blocking evidence is the
-    // answer; later evidence is more of the same obligation.
-    const repairSince = clampToHead(earliest([
-        ...currentHeadReviews.filter(review => review.state === 'CHANGES_REQUESTED').map(review => review.submittedAt),
-        ...currentHeadChecks.filter(check => check.required === true && check.conclusion === 'FAILURE').map(check => check.completedAt),
-        // A conflict carries no evidence timestamp of its own; the source states when it observed one.
-        // Gated on an ACTIVE conflict: a stale `mergeableSince` from a conflict that has since been
-        // resolved is not evidence of anything, and letting it into the earliest() dated an unrelated
-        // repair from a problem that no longer exists.
-        pr?.mergeable === false ? pr?.mergeableSince : null
-    ]));
-
-    // REVIEWABLE — LATEST, and only once ALL required checks have passed. "When did this head become
-    // reviewable?" is when the LAST required check went green. At the earliest one it was not reviewable
-    // at all, so dating it there claims a readiness that did not exist.
-    //
-    // A repo requiring NO checks is reviewable from the moment the head exists — the ADR admits "all
-    // pass OR none exist", and treating zero-required as undatable threw on a perfectly ordinary repo.
-    //
-    // A source-owned transition timestamp WINS when present. Check facts are evergreen: once green at
-    // 10:30 they stay green, so they cannot express a same-head loss and re-entry (reviewable at 10:30,
-    // a request arrives at 11:00 and removes the row, the request is withdrawn at 12:00 and it re-enters
-    // — which is 12:00, not 10:30). Only the source can date a transition it observed; deriving one from
-    // an evergreen fact would invent it.
-    const requiredChecks = currentHeadChecks.filter(check => check.required === true),
-          allPassed      = requiredChecks.every(check => check.conclusion === 'SUCCESS'),
-          derivedGreen   = requiredChecks.length === 0 ? headCommittedAt : latest(requiredChecks.map(check => check.completedAt));
-
-    const reviewableSince = allPassed
-        ? clampToHead(sourceTransition(pr, 'reviewerRoutingSince') ?? derivedGreen)
-        : null;
-
-    // REQUESTED — LATER of the request and the head, PER TARGET. Taking the earliest across all agents
-    // dated a peer's 11:00 request from someone else's 09:00 one: each reviewer's obligation begins when
-    // THEY were asked, so one shared clock is not a rounding error, it is the wrong reviewer's fact.
-    // The per-target map is resolved by the predicate that knows which agent is consuming.
-    const requestedByTarget = Object.fromEntries((pr?.reviewRequests || [])
-        .map(request => typeof request === 'object' ? [request.login, clampToHead(request.requestedAt ?? null)] : [request, null])
-        .filter(([login]) => typeof login === 'string' && login.length > 0));
-
-    return {
-        ...pr,
-        repairActionableSince       : repairSince,
-        repairActionableSinceHeadSha: repairSince === null ? null : head,
-        reviewableSince,
-        reviewableSinceHeadSha      : reviewableSince === null ? null : head,
-        reviewRequestedByTarget     : requestedByTarget,
-        reviewRequestedSinceHeadSha : head
-    }
+    return {...pr, reviewRequestedByTarget: requested}
 }
 
 /**
- * @summary Reads a source-owned transition timestamp, but only when the source proves it belongs to the
- * CURRENT head.
- *
- * A transition is something only the source can witness: a snapshot of evergreen facts cannot say when
- * a state was LOST and re-entered, because the facts read identically before and after. Where the source
- * records that transition it is authoritative over anything derived; where it does not, the derivation
- * stands and the same-head re-entry case remains the source's to close.
- *
+ * @summary Resolves the consuming reviewer's explicit current-head clock declaration.
+ * A peer's request date cannot date another peer, and an unavailable clock still needs head proof.
  * @param {Object} pr Normalized PR record.
- * @param {String} field The transition field.
- * @returns {String|null}
- */
-function sourceTransition(pr, field) {
-    const stamp = pr?.[field];
-
-    if (typeof stamp !== 'string' || stamp.length === 0) {
-        return null
-    }
-
-    // An unprovenanced or stale transition is not usable: it would carry a previous head's history into
-    // this one under current-head provenance.
-    return pr?.[`${field}HeadSha`] === pr?.headSha ? stamp : null
-}
-
-/**
- * @summary Resolves the review-request clock for ONE consuming target.
- *
- * Each reviewer's obligation begins when THEY were asked. A single shared clock dated every reviewer
- * from whoever was asked first, so a peer added at 11:00 inherited someone else's 09:00 — not a
- * rounding error but the wrong reviewer's fact, and the age is what a peer sorts by.
- *
- * @param {Object} pr Normalized PR record carrying `reviewRequestedByTarget`.
  * @param {String} agentId The consuming agent.
- * @returns {String} The clock, proven current-head.
- * @throws {TypeError} When the source dated no request for this target.
+ * @returns {Object} Validated clock fields for the frontier item.
  */
 export function resolveTargetRequestClock(pr, agentId) {
-    const stamp = pr?.reviewRequestedByTarget?.[agentId];
-
-    if (typeof stamp !== 'string' || stamp.length === 0) {
-        throw new TypeError(
-            `[lifecycleAdmission] no dated review request for ${agentId} on PR ${pr?.id} — ` +
-            'the source must state when each reviewer was asked; a row without its clock cannot be ordered'
-        )
+    const clock = pr?.reviewRequestedByTarget?.[agentId];
+    if (!clock || typeof pr?.headSha !== 'string' || !pr.headSha || clock.headSha !== pr.headSha) {
+        throw new TypeError(`[lifecycleAdmission] review-request clock for ${agentId} on PR ${pr?.id} must declare the current head`)
     }
-
-    if (pr?.reviewRequestedSinceHeadSha !== pr?.headSha) {
-        throw new TypeError(`[lifecycleAdmission] the review-request clock for PR ${pr?.id} does not belong to the current head`)
-    }
-
-    return stamp
+    return normalizeLifecycleClock(clock, 'review-request clock')
 }
 
 /**
- * @summary Returns a PR-derived clock only when the source proves it belongs to the CURRENT head.
- *
- * Every PR-derived row resets on head change. A stateless predicate cannot *perform* that reset — it
- * has no memory of the previous head — so it can only *verify* it, and only if the source states which
- * head the clock was started for. Without that provenance the predicate would copy a clock from three
- * pushes ago and present it as the current head's, which is a confidently wrong timestamp: a peer reads
- * "blocked for 6 hours" about code that has existed for 30 seconds.
- *
- * A missing or stale-provenance clock is a SOURCE CONTRACT violation, not a non-admission: the row is
- * genuinely actionable, so silently dropping it would hide an obligation, and admitting it with an
- * unprovable clock would fabricate one. Failing loud surfaces the wiring gap instead of choosing
- * between two wrong answers.
- *
+ * @summary Resolves one explicit source stage clock, including unavailable dates, at the current head.
+ * Neither commit creation, a read pulse nor evergreen check facts can repair a missing declaration.
  * @param {Object} pr Normalized PR record.
- * @param {String} field The clock field (`repairActionableSince` / `reviewableSince` / `reviewRequestedSince`).
- * @returns {String} The clock, proven current-head.
- * @throws {TypeError} When the clock is absent, or was measured against a different head.
+ * @param {String} field Stage clock field.
+ * @returns {Object} Validated clock fields for the frontier item.
  */
 export function resolveHeadScopedClock(pr, field) {
-    const clock        = pr?.[field],
-          clockHeadSha = pr?.[`${field}HeadSha`];
-
-    if (typeof clock !== 'string' || clock.length === 0) {
-        throw new TypeError(`[lifecycleAdmission] ${field} is required on PR ${pr?.id} — a row without its clock cannot be ordered`)
+    if (typeof pr?.headSha !== 'string' || !pr.headSha || pr?.[`${field}HeadSha`] !== pr.headSha) {
+        throw new TypeError(`[lifecycleAdmission] ${field} clock on PR ${pr?.id} must declare the current head`)
     }
-
-    if (clockHeadSha !== pr?.headSha) {
-        throw new TypeError(
-            `[lifecycleAdmission] ${field} on PR ${pr?.id} was measured at head ${clockHeadSha ?? 'unknown'} but the current head is ${pr?.headSha}; ` +
-            'the source must reset PR-derived clocks on head change and state the head each clock belongs to'
-        )
-    }
-
-    return clock
+    return normalizeLifecycleClock({
+        actionableSince: pr[field],
+        clockBasis: pr[`${field}ClockBasis`],
+        clockReason: pr[`${field}ClockReason`]
+    }, field)
 }
 
 /**
@@ -336,7 +207,7 @@ export function admitOwnPrRepair({pr, agentId} = {}) {
         source         : 'github-workflow',
         subjectId      : pr.id,
         headSha        : pr.headSha,
-        actionableSince: resolveHeadScopedClock(pr, 'repairActionableSince'),
+        ...resolveHeadScopedClock(pr, 'repairActionableSince'),
         checkedAt      : pr.checkedAt,
         citations      : [pr.url].filter(Boolean)
     }
@@ -374,7 +245,7 @@ export function admitOwnPrReviewerRouting({pr, agentId} = {}) {
         source         : 'github-workflow',
         subjectId      : pr.id,
         headSha        : pr.headSha,
-        actionableSince: resolveHeadScopedClock(pr, 'reviewableSince'),
+        ...resolveHeadScopedClock(pr, 'reviewableSince'),
         checkedAt      : pr.checkedAt,
         citations      : [pr.url].filter(Boolean)
     }
@@ -405,7 +276,7 @@ export function admitRequestedReview({pr, agentId} = {}) {
         source         : 'github-workflow',
         subjectId      : pr.id,
         headSha        : pr.headSha,
-        actionableSince: resolveTargetRequestClock(pr, agentId),
+        ...resolveTargetRequestClock(pr, agentId),
         checkedAt      : pr.checkedAt,
         citations      : [pr.url].filter(Boolean)
     }
@@ -443,7 +314,7 @@ export function admitClaimedTask({task, agentId, actionableStates = ACTIONABLE_T
         source         : 'memory-core-a2a',
         subjectId      : task.id,
         headSha        : null,
-        actionableSince: task.actionableSince,
+        ...normalizeLifecycleClock(task, 'task clock'),
         checkedAt      : task.checkedAt,
         citations      : [task.messageId].filter(Boolean)
     }
@@ -483,7 +354,7 @@ export function admitDirectMessage({message, agentId} = {}) {
         source         : 'memory-core-a2a',
         subjectId      : message.messageId,
         headSha        : null,
-        actionableSince: message.sentAt,
+        ...normalizeLifecycleClock({...message, actionableSince: message.sentAt}, 'message clock'),
         checkedAt      : message.checkedAt,
         citations      : [message.messageId].filter(Boolean)
     }
@@ -509,8 +380,7 @@ export function collectLifecycleItems({agentId, prs = [], tasks = [], messages =
     const items = [];
 
     for (const raw of prs) {
-        // The clock owner runs HERE, at the normalization boundary, so every predicate downstream reads
-        // clocks derived from the current head rather than whatever a caller happened to pass.
+        // Index source declarations before the admitted stage validates its required clock.
         const pr = normalizeLifecycleClocks(raw);
 
         const repair  = admitOwnPrRepair({pr, agentId}),

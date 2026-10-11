@@ -90,7 +90,7 @@ test.describe('hookProjectionWriter — the one place the primitives meet the wo
         wr.submitChannel({
             tuple,
             channel          : 'lifecycle-frontier',
-            envelope         : {schemaVersion: 'lifecycle-frontier.v1', items: [], notAuthority: true},
+            envelope         : {schemaVersion: 'lifecycle-frontier.v2', items: [], notAuthority: true},
             sourceWatermark  : 'w-1',
             capturedAt       : '2026-07-16T12:00:00.000Z',
             expiresAt        : '2026-07-16T12:05:00.000Z',
@@ -109,7 +109,7 @@ test.describe('hookProjectionWriter — the one place the primitives meet the wo
         expect(payload.schemaVersion).toBe('live-lane-awareness-projection.v1');
         expect(payload.publication.targetId).toBe(result.targetId);
         expect(payload.consumerBinding).toEqual(binding);
-        expect(payload.lifecycleActions.envelope).toEqual({schemaVersion: 'lifecycle-frontier.v1', items: [], notAuthority: true});
+        expect(payload.lifecycleActions.envelope).toEqual({schemaVersion: 'lifecycle-frontier.v2', items: [], notAuthority: true});
         // a slot nobody published is honestly missing, not absent
         expect(payload.computedRoute.status).toBe('missing');
     });
@@ -212,7 +212,7 @@ test.describe('hookProjectionWriter — the one place the primitives meet the wo
         wr.submitChannel({
             tuple,
             channel          : 'lifecycle-frontier',
-            envelope         : {schemaVersion: 'lifecycle-frontier.v1', items: [], notAuthority: true},
+            envelope         : {schemaVersion: 'lifecycle-frontier.v2', items: [], notAuthority: true},
             sourceWatermark  : 'w-1',
             capturedAt       : '2026-07-16T12:00:00.000Z',
             expiresAt        : '2026-07-16T12:05:00.000Z',

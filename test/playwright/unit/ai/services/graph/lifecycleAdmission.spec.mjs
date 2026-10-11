@@ -31,9 +31,7 @@ test.describe('lifecycleAdmission — the five stages and their exclusions', () 
           HEAD = 'head-2',
           OLD  = 'head-1';
 
-    // SOURCE-shaped, not clock-shaped: reviews name the commit they reviewed and when, checks name their
-    // head and completion. The clock owner derives every `*Since` from exactly these, so a fixture that
-    // hand-supplied clocks would be testing a contract nothing produces.
+    // Provider timestamps remain metadata; these fixtures explicitly declare current-head clocks.
     const sourcePr = (overrides = {}) => ({
         id             : 'pr-15231',
         authorId       : ME,
@@ -48,7 +46,16 @@ test.describe('lifecycleAdmission — the five stages and their exclusions', () 
         url            : 'https://github.com/neomjs/neo/pull/15231',
         mergeableSince : '2026-07-16T09:00:00.000Z',
         checkedAt      : '2026-07-16T10:00:00.000Z',
-        ...overrides
+        repairActionableSince: '2026-07-16T09:00:00.000Z',
+        repairActionableSinceHeadSha: HEAD,
+        repairActionableSinceClockBasis: 'transition',
+        reviewableSince: '2026-07-16T09:30:00.000Z',
+        reviewableSinceHeadSha: HEAD,
+        reviewableSinceClockBasis: 'transition',
+        ...overrides,
+        reviewRequests: (overrides.reviewRequests || []).map(request => typeof request === 'object' ? {
+            actionableSince: request.requestedAt, headSha: HEAD, clockBasis: 'transition', ...request
+        } : request)
     });
 
     // What the collector hands the predicates.
@@ -145,7 +152,7 @@ test.describe('lifecycleAdmission — the five stages and their exclusions', () 
     });
 
     test('stage 4 admits only a CLAIMED task in an action-requiring state', () => {
-        const task = {id: 't-1', ownerId: ME, state: 'InputRequired', actionableSince: '2026-07-16T09:00:00.000Z'};
+        const task = {id: 't-1', ownerId: ME, state: 'InputRequired', actionableSince: '2026-07-16T09:00:00.000Z', clockBasis: 'transition'};
 
         expect(admitClaimedTask({task, agentId: ME}).stage).toBe('claimed-a2a-task');
         // EXCLUSION: an unclaimed broadcast has no owner — awareness never becomes an obligation
@@ -159,7 +166,7 @@ test.describe('lifecycleAdmission — the five stages and their exclusions', () 
     });
 
     test('stage 5 admits an unread DIRECT message; broadcasts and read messages are excluded', () => {
-        const message = {messageId: 'm-1', to: ME, readAt: null, sentAt: '2026-07-16T09:00:00.000Z'};
+        const message = {messageId: 'm-1', to: ME, readAt: null, sentAt: '2026-07-16T09:00:00.000Z', clockBasis: 'transition'};
 
         expect(admitDirectMessage({message, agentId: ME}).stage).toBe('direct-message');
         expect(admitDirectMessage({message: {...message, readAt: '2026-07-16T09:30:00.000Z'}, agentId: ME})).toBeNull();
@@ -182,8 +189,8 @@ test.describe('lifecycleAdmission — the five stages and their exclusions', () 
                 ownPr({id: 'pr-a', reviews: [{state: 'CHANGES_REQUESTED', commitSha: HEAD, submittedAt: '2026-07-16T09:00:00.000Z'}]}),
                 ownPr({id: 'pr-b', authorId: PEER, reviewRequests: [{login: ME, requestedAt: '2026-07-16T09:45:00.000Z'}]})
             ],
-            tasks   : [{id: 't-1', ownerId: ME, state: 'InputRequired', actionableSince: '2026-07-16T09:00:00.000Z'}],
-            messages: [{messageId: 'm-1', to: ME, readAt: null, sentAt: '2026-07-16T09:00:00.000Z'}]
+            tasks   : [{id: 't-1', ownerId: ME, state: 'InputRequired', actionableSince: '2026-07-16T09:00:00.000Z', clockBasis: 'transition'}],
+            messages: [{messageId: 'm-1', to: ME, readAt: null, sentAt: '2026-07-16T09:00:00.000Z', clockBasis: 'transition'}]
         });
 
         expect(items.map(entry => entry.stage).sort()).toEqual(
@@ -225,11 +232,8 @@ test.describe('lifecycleAdmission — the five stages and their exclusions', () 
         expect(admitRequestedReview({pr: stale, agentId: ME}).stage).toBe('requested-review');
     });
 
-    test('a clock whose provenance names a DIFFERENT head fails loud — the guard behind the derivation', () => {
-        // Defence in depth. The clock owner derives provenance by construction, so this cannot arise
-        // from `normalizeLifecycleClocks` — only from a caller that pre-normalized with its own logic.
-        // A clock from three pushes ago reports "blocked for 6 hours" about 30-second-old code, so the
-        // predicate refuses the record rather than trusting it.
+    test('a clock whose source provenance names a DIFFERENT head fails loud', () => {
+        // Normalization preserves the declaration; admission must reject its stale head proof.
         const withCurrentHeadReview = sourcePr({
             reviews: [{state: 'CHANGES_REQUESTED', commitSha: HEAD, submittedAt: '2026-07-16T09:00:00.000Z'}]
         });
@@ -241,123 +245,13 @@ test.describe('lifecycleAdmission — the five stages and their exclusions', () 
                 repairActionableSinceHeadSha: OLD
             },
             agentId: ME
-        })).toThrow(/was measured at head head-1 but the current head is head-2/);
+        })).toThrow(/current head/);
 
         // an absent clock is equally a source-contract violation, not a silent drop
         expect(() => admitOwnPrRepair({
             pr     : {...withCurrentHeadReview, repairActionableSince: undefined, repairActionableSinceHeadSha: HEAD},
             agentId: ME
-        })).toThrow(/repairActionableSince is required/);
-    });
-
-    test('the SAME subject moving head A → clear → head B carries no clock across the transition', async () => {
-        const {normalizeLifecycleClocks} = await import('../../../../../../ai/services/graph/lifecycleAdmission.mjs');
-
-        // Head A: a CHANGES_REQUESTED review dates this head from its own submittedAt.
-        const atHeadA = normalizeLifecycleClocks({
-            id     : 'pr-1',
-            headSha: OLD,
-            reviews: [{state: 'CHANGES_REQUESTED', commitSha: OLD, submittedAt: '2026-07-16T09:00:00.000Z'}],
-            checks : []
-        });
-
-        expect(atHeadA.repairActionableSince).toBe('2026-07-16T09:00:00.000Z');
-        expect(atHeadA.repairActionableSinceHeadSha).toBe(OLD);
-
-        // The author pushes. The A-attached review is no longer current-head evidence, so the clock
-        // does not merely reset — it ceases to exist, because it was never stored.
-        const atHeadB = normalizeLifecycleClocks({...atHeadA, headSha: HEAD});
-
-        expect(atHeadB.repairActionableSince).toBeNull();
-        expect(atHeadB.repairActionableSinceHeadSha).toBeNull();
-        // A's clock cannot survive into B even though the caller passed A's normalized record forward
-        expect(atHeadB.repairActionableSince).not.toBe('2026-07-16T09:00:00.000Z');
-
-        // Re-entry on head B derives a FRESH clock from B's own evidence.
-        const reentered = normalizeLifecycleClocks({
-            ...atHeadB,
-            reviews: [{state: 'CHANGES_REQUESTED', commitSha: HEAD, submittedAt: '2026-07-16T11:00:00.000Z'}]
-        });
-
-        expect(reentered.repairActionableSince).toBe('2026-07-16T11:00:00.000Z');
-        expect(reentered.repairActionableSinceHeadSha).toBe(HEAD);
-    });
-
-    test('each clock has its OWN algebra — min for repair, max-when-all-pass for reviewable', () => {
-        // One reducer for three questions was wrong three different ways. These are the reviewer's exact
-        // literals.
-
-        // REVIEWABLE: required checks at 10:05 and 10:30 → the head became reviewable at 10:30, when the
-        // LAST one went green. At 10:05 it was not reviewable at all.
-        const twoChecks = normalizeClocks({
-            headSha        : HEAD,
-            headCommittedAt: '2026-07-16T10:00:00.000Z',
-            checks         : [
-                {name: 'a', required: true, conclusion: 'SUCCESS', headSha: HEAD, completedAt: '2026-07-16T10:05:00.000Z'},
-                {name: 'b', required: true, conclusion: 'SUCCESS', headSha: HEAD, completedAt: '2026-07-16T10:30:00.000Z'}
-            ]
-        });
-
-        expect(twoChecks.reviewableSince).toBe('2026-07-16T10:30:00.000Z');
-
-        // ...and until ALL pass there is no reviewable clock at all
-        const oneStillRunning = normalizeClocks({
-            headSha        : HEAD,
-            headCommittedAt: '2026-07-16T10:00:00.000Z',
-            checks         : [
-                {name: 'a', required: true, conclusion: 'SUCCESS', headSha: HEAD, completedAt: '2026-07-16T10:05:00.000Z'},
-                {name: 'b', required: true, conclusion: null,      headSha: HEAD}
-            ]
-        });
-
-        expect(oneStillRunning.reviewableSince).toBeNull();
-
-        // REPAIR: earliest blocking evidence — the first thing that broke this head dates it.
-        const twoBlockers = normalizeClocks({
-            headSha        : HEAD,
-            headCommittedAt: '2026-07-16T10:00:00.000Z',
-            reviews        : [{state: 'CHANGES_REQUESTED', commitSha: HEAD, submittedAt: '2026-07-16T10:40:00.000Z'}],
-            checks         : [{name: 'a', required: true, conclusion: 'FAILURE', headSha: HEAD, completedAt: '2026-07-16T10:20:00.000Z'}]
-        });
-
-        expect(twoBlockers.repairActionableSince).toBe('2026-07-16T10:20:00.000Z');
-    });
-
-    test('a clock can never predate its own head — later(evidence, head), not the evidence alone', () => {
-        // REQUESTED: a request at 09:00 followed by a push at 10:00 is not a request to review THIS
-        // code. The obligation restarts with the head.
-        const requestedBeforePush = normalizeClocks({
-            headSha        : HEAD,
-            headCommittedAt: '2026-07-16T10:00:00.000Z',
-            reviewRequests : [{login: ME, requestedAt: '2026-07-16T09:00:00.000Z'}],
-            checks         : []
-        });
-
-        expect(requestedBeforePush.reviewRequestedByTarget[ME]).toBe('2026-07-16T10:00:00.000Z');
-        expect(requestedBeforePush.reviewRequestedSinceHeadSha).toBe(HEAD);
-
-        // CONFLICT: a conflict observed at 09:00 cannot describe a head committed at 10:00. Keeping
-        // 09:00 while stamping current-head provenance claimed a duration this head never had.
-        const conflictBeforePush = normalizeClocks({
-            headSha        : HEAD,
-            headCommittedAt: '2026-07-16T10:00:00.000Z',
-            mergeable      : false,
-            mergeableSince : '2026-07-16T09:00:00.000Z',
-            reviews        : [],
-            checks         : []
-        });
-
-        expect(conflictBeforePush.repairActionableSince).toBe('2026-07-16T10:00:00.000Z');
-
-        // a request AFTER the push keeps its own timestamp — the clamp is a floor, not an override
-        const requestedAfterPush = normalizeClocks({
-            headSha        : HEAD,
-            headCommittedAt: '2026-07-16T10:00:00.000Z',
-            reviewRequests : [{login: ME, requestedAt: '2026-07-16T11:00:00.000Z'}],
-            checks         : []
-        });
-
-        expect(requestedAfterPush.reviewRequestedByTarget[ME]).toBe('2026-07-16T11:00:00.000Z');
+        })).toThrow(/repairActionableSince.actionableSince must be a parseable timestamp/);
     });
 
     test('an OLD-head failed check neither blocks nor clears the current head', () => {
@@ -402,102 +296,103 @@ test.describe('lifecycleAdmission — the five stages and their exclusions', () 
         expect(admitOwnPrRepair({pr: attested, agentId: ME}).kind).toBe('failed-required-check');
     });
 
-    test('a RESOLVED conflict does not date a repair — mergeableSince is gated on an active one', () => {
-        // mergeable:true means there is no conflict now, so a leftover mergeableSince is evidence of a
-        // problem that no longer exists. Ungated, it dated an unrelated repair from it.
-        const resolved = normalizeClocks({
-            headSha        : HEAD,
-            headCommittedAt: '2026-07-16T10:00:00.000Z',
-            mergeable      : true,
-            mergeableSince : '2026-07-16T08:00:00.000Z',
-            reviews        : [{state: 'CHANGES_REQUESTED', commitSha: HEAD, submittedAt: '2026-07-16T11:00:00.000Z'}],
-            checks         : []
+    test('source clock declarations are preserved rather than recalculated from provider facts', () => {
+        const pr = ownPr({
+            headCommittedAt: '2026-07-16T08:00:00.000Z',
+            reviewableSince: '2026-07-16T12:00:00.000Z',
+            reviewableSinceClockBasis: 'transition'
         });
-
-        // the RC dates it, not the stale conflict
-        expect(resolved.repairActionableSince).toBe('2026-07-16T11:00:00.000Z');
+        expect(admitOwnPrReviewerRouting({pr, agentId: ME})).toMatchObject({
+            actionableSince: '2026-07-16T12:00:00.000Z', clockBasis: 'transition'
+        });
     });
 
-    test('a repo requiring NO checks is reviewable from the head — "all pass OR none exist"', () => {
-        // Treating zero-required as undatable threw on a perfectly ordinary repo.
-        const noChecks = ownPr({checks: []});
-
-        expect(noChecks.reviewableSince).toBe('2026-07-16T08:00:00.000Z');
-        expect(admitOwnPrReviewerRouting({pr: noChecks, agentId: ME}).actionableSince).toBe('2026-07-16T08:00:00.000Z');
+    test('zero-required checks and a previously created SHA use the source-proven activation clock', () => {
+        const pr = ownPr({checks: [], headCommittedAt: '2026-07-16T08:00:00.000Z',
+            reviewableSince: '2026-07-16T12:00:00.000Z'});
+        expect(admitOwnPrReviewerRouting({pr, agentId: ME}).actionableSince).toBe('2026-07-16T12:00:00.000Z');
     });
 
-    test('each reviewer is dated from when THEY were asked, not from whoever was asked first', () => {
-        const twoTargets = normalizeClocks({
-            id             : 'pr-multi',
-            authorId       : '@someone-else',
-            state          : 'OPEN',
-            isDraft        : false,
-            headSha        : HEAD,
-            headCommittedAt: '2026-07-16T10:00:00.000Z',
-            reviewRequests : [
-                {login: ME,   requestedAt: '2026-07-16T09:00:00.000Z'},
-                {login: PEER, requestedAt: '2026-07-16T11:00:00.000Z'}
-            ],
-            reviews: [],
-            checks : [],
-            url    : 'https://github.com/neomjs/neo/pull/2'
+    test('same-head re-entry retains its declared observation basis instead of evergreen green', () => {
+        const pr = ownPr({reviewableSince: '2026-07-16T12:00:00.000Z',
+            reviewableSinceClockBasis: 'observation'});
+        expect(admitOwnPrReviewerRouting({pr, agentId: ME})).toMatchObject({
+            actionableSince: '2026-07-16T12:00:00.000Z', clockBasis: 'observation'
         });
-
-        // ME asked at 09:00, before the 10:00 push → clamped to the head
-        expect(admitRequestedReview({pr: twoTargets, agentId: ME}).actionableSince).toBe('2026-07-16T10:00:00.000Z');
-        // PEER asked at 11:00 keeps their OWN clock — one shared clock gave them someone else's 09:00,
-        // which is not a rounding error but the wrong reviewer's fact, and age is what a peer sorts by
-        expect(admitRequestedReview({pr: twoTargets, agentId: PEER}).actionableSince).toBe('2026-07-16T11:00:00.000Z');
     });
 
-    test('a source-owned transition beats an evergreen fact — same-head re-entry', () => {
-        // Checks are evergreen: green at 10:30 stays green, and reads identically before and after a
-        // request arrives and is withdrawn. So the facts cannot express "reviewable at 10:30, lost at
-        // 11:00, re-entered at 12:00" — only the source that WITNESSED the transition can date it.
-        const reentered = ownPr({
-            reviewerRoutingSince       : '2026-07-16T12:00:00.000Z',
-            reviewerRoutingSinceHeadSha: HEAD
+    test('target-specific declarations retain undated requests without borrowing another target date', () => {
+        const pr = ownPr({authorId: PEER, reviewRequests: [
+            {login: ME, requestedAt: '2026-07-16T09:00:00.000Z', actionableSince: null,
+                clockBasis: 'unavailable', clockReason: 'head activation is undated'},
+            {login: PEER, requestedAt: '2026-07-16T11:00:00.000Z'}
+        ]});
+        expect(admitRequestedReview({pr, agentId: ME})).toMatchObject({
+            actionableSince: null, clockBasis: 'unavailable', clockReason: 'head activation is undated'
         });
-
-        expect(reentered.reviewableSince).toBe('2026-07-16T12:00:00.000Z');
-
-        // ...but an unprovenanced transition is ignored: it would carry a previous head's history into
-        // this one under current-head provenance.
-        const staleTransition = ownPr({
-            reviewerRoutingSince       : '2026-07-16T12:00:00.000Z',
-            reviewerRoutingSinceHeadSha: OLD
-        });
-
-        expect(staleTransition.reviewableSince).toBe('2026-07-16T09:30:00.000Z');
+        expect(admitRequestedReview({pr, agentId: PEER}).actionableSince).toBe('2026-07-16T11:00:00.000Z');
     });
 
-    test('the clock owner runs inside collectLifecycleItems — a raw source row needs no caller clock', () => {
-        // The provenance contract is worthless if nothing produces it. Raw rows carry only source facts.
-        const items = collectLifecycleItems({
-            agentId: ME,
-            prs    : [{
-                id       : 'pr-raw',
-                authorId : ME,
-                state    : 'OPEN',
-                isDraft  : false,
-                headSha  : HEAD,
-                mergeable: true,
-                reviews  : [{state: 'CHANGES_REQUESTED', commitSha: HEAD, submittedAt: '2026-07-16T08:00:00.000Z'}],
-                checks   : [{name: 'unit', required: true, conclusion: 'SUCCESS', headSha: HEAD, completedAt: '2026-07-16T07:00:00.000Z'}],
-                url      : 'https://github.com/neomjs/neo/pull/1'
-            }]
-        });
+    test('raw request creation does not replace the source-declared later head activation', () => {
+        const pr = ownPr({authorId: PEER, reviewRequests: [{
+            login: ME, requestedAt: '2026-07-16T09:00:00.000Z',
+            actionableSince: '2026-07-16T12:00:00.000Z'
+        }]});
+        expect(admitRequestedReview({pr, agentId: ME}).actionableSince).toBe('2026-07-16T12:00:00.000Z');
+    });
 
-        expect(items).toHaveLength(1);
-        expect(items[0].stage).toBe('own-pr-repair');
-        // derived from the review that dates THIS head, not supplied by the caller
-        expect(items[0].actionableSince).toBe('2026-07-16T08:00:00.000Z');
+    test('a head move rejects prior declarations until the source supplies the new head', () => {
+        const pr = ownPr({headSha: OLD});
+        expect(() => collectLifecycleItems({agentId: ME, prs: [pr]})).toThrow(/current head/);
+        const fresh = ownPr({headSha: OLD, reviewableSinceHeadSha: OLD,
+            reviewableSince: null, reviewableSinceClockBasis: 'unavailable',
+            reviewableSinceClockReason: 'new head entry is undated'});
+        expect(collectLifecycleItems({agentId: ME, prs: [fresh]})[0].actionableSince).toBeNull();
+    });
+
+    test('unavailable clock knowledge does not relax existing lifecycle eligibility', () => {
+        const unavailable = {reviewableSince: null, reviewableSinceClockBasis: 'unavailable',
+            reviewableSinceClockReason: 'history unavailable'};
+        for (const overrides of [{state: 'CLOSED'}, {isDraft: true}, {authorId: PEER},
+            {checks: [{headSha: HEAD, required: true, conclusion: null}]}]) {
+            expect(collectLifecycleItems({agentId: ME, prs: [ownPr({...unavailable, ...overrides})]})).toEqual([]);
+        }
+    });
+
+    test('an explicitly unavailable current-head clock retains an eligible routing obligation', () => {
+        const pr = sourcePr({
+            reviewableSince: null, reviewableSinceHeadSha: HEAD,
+            reviewableSinceClockBasis: 'unavailable', reviewableSinceClockReason: 'request withdrawal is undated'
+        });
+        expect(collectLifecycleItems({agentId: ME, prs: [pr]})).toMatchObject([{
+            stage: 'own-pr-reviewer-routing', actionableSince: null,
+            clockBasis: 'unavailable', clockReason: 'request withdrawal is undated', headSha: HEAD
+        }]);
+    });
+
+    test('Task and direct-message unavailable declarations remain visible without changing eligibility', () => {
+        const clock = {actionableSince: null, clockBasis: 'unavailable', clockReason: 'source transition unavailable'};
+        expect(admitClaimedTask({task: {id: 't-undated', ownerId: ME, state: 'InputRequired', ...clock}, agentId: ME}))
+            .toMatchObject(clock);
+        expect(admitDirectMessage({message: {messageId: 'm-undated', to: ME, readAt: null, sentAt: null,
+            clockBasis: 'unavailable', clockReason: clock.clockReason}, agentId: ME})).toMatchObject(clock);
+    });
+
+    test('green checks and commit creation never fill an omitted source clock', () => {
+        expect(() => collectLifecycleItems({agentId: ME, prs: [sourcePr({reviewableSince: undefined, reviewableSinceClockBasis: undefined})]})).toThrow(/clock|reviewableSince/);
+    });
+
+    test('a stale-head unavailable declaration is an error, never a dated fallback', () => {
+        expect(() => collectLifecycleItems({agentId: ME, prs: [sourcePr({
+            reviewableSince: null, reviewableSinceHeadSha: OLD,
+            reviewableSinceClockBasis: 'unavailable', reviewableSinceClockReason: 'history unavailable'
+        })]})).toThrow(/current head|different head/);
     });
 
     test('archived and retracted direct messages are removed — unread is not the only clearing', () => {
         // Both are unread forever. Keying on readAt alone pins them to the frontier permanently, and a
         // row that cannot be cleared teaches the reader to ignore the surface.
-        const base = {messageId: 'm-1', to: ME, readAt: null, sentAt: '2026-07-16T09:00:00.000Z'};
+        const base = {messageId: 'm-1', to: ME, readAt: null, sentAt: '2026-07-16T09:00:00.000Z', clockBasis: 'transition'};
 
         expect(admitDirectMessage({message: base, agentId: ME}).stage).toBe('direct-message');
         expect(admitDirectMessage({message: {...base, archivedAt: '2026-07-16T09:30:00.000Z'}, agentId: ME})).toBeNull();

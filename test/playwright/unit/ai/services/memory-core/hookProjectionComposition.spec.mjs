@@ -114,7 +114,7 @@ test.describe('hookProjection — the lease and the transport, actually composed
             {writeAtomic} = makeAtomicProjectionTransport({fs, runtimeRoot: root, uniqueSuffix: () => 't1'});
 
         submit('computed-route', 'w-1', {schemaVersion: 'computed-route.v1', notAuthority: true});
-        submit('lifecycle-frontier', 'w-2', {schemaVersion: 'lifecycle-frontier.v1', items: [], notAuthority: true});
+        submit('lifecycle-frontier', 'w-2', {schemaVersion: 'lifecycle-frontier.v2', items: [], notAuthority: true});
 
         const lease  = acquireProjectionLease({db, targetId, instanceDigest: 'i1', now: t0, leaseTtlMs: ttl, mintToken, hashToken}),
               result = publishProjection({db, targetId, token: lease.token, epoch: lease.epoch, clock: () => t0 + 1, consumerBinding: binding, hashToken, writeAtomic, sweepOrphans: () => {}});
@@ -141,7 +141,7 @@ test.describe('hookProjection — the lease and the transport, actually composed
 
         // FIXED SLOTS, not a list: a lifecycle update cannot erase the route and vice versa
         expect(payload.lifecycleActions.status).toBe('fresh');
-        expect(payload.lifecycleActions.envelope).toEqual({schemaVersion: 'lifecycle-frontier.v1', items: [], notAuthority: true});
+        expect(payload.lifecycleActions.envelope).toEqual({schemaVersion: 'lifecycle-frontier.v2', items: [], notAuthority: true});
         expect(payload.computedRoute.status).toBe('fresh');
         expect(payload.computedRoute.envelope).toEqual({schemaVersion: 'computed-route.v1', notAuthority: true});
         expect(payload.contextViews).toEqual([]);
@@ -153,9 +153,9 @@ test.describe('hookProjection — the lease and the transport, actually composed
             fs            = makeFs(),
             {writeAtomic} = makeAtomicProjectionTransport({fs, runtimeRoot: root, uniqueSuffix: () => 't1'});
 
-        submit('lifecycle-frontier', 'w-1', {schemaVersion: 'lifecycle-frontier.v1', items: [], notAuthority: true});
+        submit('lifecycle-frontier', 'w-1', {schemaVersion: 'lifecycle-frontier.v2', items: [], notAuthority: true});
         // same watermark, different payload → source conflict, recorded on the row
-        submit('lifecycle-frontier', 'w-1', {schemaVersion: 'lifecycle-frontier.v1', items: [{id: 'x'}], notAuthority: true});
+        submit('lifecycle-frontier', 'w-1', {schemaVersion: 'lifecycle-frontier.v2', items: [{id: 'x'}], notAuthority: true});
 
         const lease = acquireProjectionLease({db, targetId, instanceDigest: 'i1', now: t0, leaseTtlMs: ttl, mintToken, hashToken});
         publishProjection({db, targetId, token: lease.token, epoch: lease.epoch, clock: () => t0 + 1, consumerBinding: binding, hashToken, writeAtomic, sweepOrphans: () => {}});
@@ -175,7 +175,7 @@ test.describe('hookProjection — the lease and the transport, actually composed
             {writeAtomic} = makeAtomicProjectionTransport({fs, runtimeRoot: root, uniqueSuffix: () => 't1'});
 
         submit('computed-route', 'w-1', {schemaVersion: 'computed-route.v1', notAuthority: true});
-        submit('lifecycle-frontier', 'w-2', {schemaVersion: 'lifecycle-frontier.v1', items: [], notAuthority: true});
+        submit('lifecycle-frontier', 'w-2', {schemaVersion: 'lifecycle-frontier.v2', items: [], notAuthority: true});
 
         // A torn row, as a crash or a partial write would leave it.
         db.prepare(`UPDATE HookProjectionChannels SET envelope_json = '{"schemaVersion":' WHERE target_id = ? AND channel = ?`)
@@ -211,7 +211,7 @@ test.describe('hookProjection — the lease and the transport, actually composed
             db,
             targetId,
             channel          : 'lifecycle-frontier',
-            envelope         : {schemaVersion: 'lifecycle-frontier.v1', items: [], notAuthority: true},
+            envelope         : {schemaVersion: 'lifecycle-frontier.v2', items: [], notAuthority: true},
             sourceWatermark  : 'w-old',
             capturedAt       : iso(t0 - 7_200_000),
             expiresAt        : iso(t0 - 3_600_000),

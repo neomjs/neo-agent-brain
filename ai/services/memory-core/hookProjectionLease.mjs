@@ -61,7 +61,7 @@ export const PROJECTION_CHANNEL_SLOTS = Object.freeze({
  * A channel and its schema are ONE fact, not two: `computed-route` means `computed-route.v1` and nothing
  * else. Requiring merely that SOME nonempty schemaVersion be present proved only that an envelope was
  * typed, never that it was typed correctly for the slot it was landing in — so a `computed-route`
- * submission carrying a `lifecycle-frontier.v1` payload advanced, and the store held a row whose slot and
+ * submission carrying a `lifecycle-frontier.v2` payload advanced, and the store held a row whose slot and
  * contents disagreed. A reader binds to the slot, discovers the mismatch at render time, and is the party
  * least able to do anything about it.
  *
@@ -71,7 +71,7 @@ export const PROJECTION_CHANNEL_SLOTS = Object.freeze({
  * @type {Object}
  */
 export const PROJECTION_CHANNEL_SCHEMAS = Object.freeze({
-    'lifecycle-frontier': 'lifecycle-frontier.v1',
+    'lifecycle-frontier': 'lifecycle-frontier.v2',
     'computed-route'    : 'computed-route.v1'
 });
 
