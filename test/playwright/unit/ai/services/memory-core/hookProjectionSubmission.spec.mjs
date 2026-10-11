@@ -212,9 +212,10 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
             const root = mkdtempSync(join(tmpdir(), 'hook-submission-admission-'));
             let revoker;
             db.close();
-            db = new Database(join(root, 'projection.sqlite'));
+            db = null;
 
             try {
+                db = new Database(join(root, 'projection.sqlite'));
                 createHookProjectionTables(db);
                 db.exec('CREATE TABLE AdmissionGrant (active INTEGER NOT NULL)');
                 db.prepare('INSERT INTO AdmissionGrant VALUES (1)').run();
@@ -244,7 +245,7 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
                     .toEqual({accepted: true, outcome: 'advanced'});
             } finally {
                 revoker?.close();
-                db.close();
+                db?.close();
                 db = null;
                 rmSync(root, {recursive: true, force: true});
             }
