@@ -383,6 +383,53 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         })
     });
 
+    test('scoped memory discovery binds the host seat and requires the producer echo', async () => {
+        const instanceRoot = '/test/managed',
+              agent        = {id: 'alice', harnessType: 'codex-desktop', seatHome: '/test/managed/alice'},
+              envelope     = {capability: {state: 'wired'}, scope: {kind: 'seat', id: 'alice'}, candidates: [], count: 0};
+
+        registryStub.getDefinition = id => id === agent.id ? agent : null;
+        registryStub.getAgent = () => {throw new Error('public projection hides raw-launch ownership')};
+        registryStub.getAgentsRoot = () => instanceRoot;
+        managerStub.getLifecycleService = () => ({getInstanceRoot: () => instanceRoot});
+        FleetControlBridge.memoryCandidatesSource = {readMemoryCandidates: async context => {
+            calls.push(context);
+            return envelope
+        }};
+
+        const result = await dispatchFleetRequest(createFleetWireRequest('fleetMemoryCandidates', {id: 'alice'}), FleetControlBridge);
+        expect(result).toMatchObject({ok: true, result: envelope});
+        expect(calls).toEqual([{agent, instanceRoot}]);
+
+        for (const response of [
+            {capability: {state: 'wired'}, candidates: [], count: 0},
+            {...envelope, scope: {kind: 'seat', id: 'bob'}}
+        ]) {
+            FleetControlBridge.memoryCandidatesSource.readMemoryCandidates = async () => response;
+            expect(await FleetControlBridge.fleetMemoryCandidates({id: 'alice'})).toMatchObject({capability: {state: 'unavailable'}, candidates: []})
+        }
+        FleetControlBridge.memoryCandidatesSource.readMemoryCandidates = async () => {throw new Error('unreadable source')};
+        expect(await FleetControlBridge.fleetMemoryCandidates({id: 'alice'})).toMatchObject({capability: {state: 'unavailable'}});
+
+        calls.length = 0;
+        FleetControlBridge.memoryCandidatesSource.readMemoryCandidates = async context => {calls.push(context); return envelope};
+        for (const params of [null, [], {id: ''}, {id: 2}, {id: 'alice', instanceRoot: '/attacker'}, {id: 'ghost'}]) {
+            expect(await FleetControlBridge.fleetMemoryCandidates(params)).toMatchObject({capability: {state: 'unavailable'}})
+        }
+        agent.seatHome = '/old/alice';
+        expect(await FleetControlBridge.fleetMemoryCandidates({id: 'alice'})).toMatchObject({capability: {state: 'unavailable'}});
+        agent.seatHome = '/test/managed/alice';
+        agent.metadata = {launch: {command: 'external-runtime'}};
+        expect(await FleetControlBridge.fleetMemoryCandidates({id: 'alice'})).toMatchObject({capability: {state: 'unavailable'}});
+        delete agent.metadata;
+        registryStub.getAgentsRoot = () => '/different/registry';
+        expect(await FleetControlBridge.fleetMemoryCandidates({id: 'alice'})).toMatchObject({capability: {state: 'unavailable'}});
+        expect(calls, 'no invalid scope reaches filesystem discovery').toEqual([]);
+
+        FleetControlBridge.memoryCandidatesSource = null;
+        expect(await FleetControlBridge.fleetMemoryCandidates({id: 'alice'})).toMatchObject({capability: {state: 'unavailable'}})
+    });
+
     // ---- read-observe: the deployment-state projection (advisory read verb; observe-only) ----
 
     test('fleetDeploymentState returns the injected source projection verbatim — read-observe, params ignored', async () => {
@@ -523,17 +570,17 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             FleetControlBridge.composeWriter = {observeMessages: args => { observed.push(args); return answer }};
 
             const result = await FleetControlBridge.fleetMailboxMirror({
-                observer      : {scope: 'involves-me', memorySharing: 'team'},
-                status        : 'all',
-                threadId      : 'thread-1',
-                taggedConcepts: ['concept-1'],
-                taskStates    : ['InputRequired'],
-                taskOrder     : 'priority-age',
-                includeArchived: true,
-                box           : 'all',
-                fromIdentity  : '@author',
-                limit         : 999,
-                offset        : -4,
+                observer           : {scope: 'involves-me', memorySharing: 'team'},
+                status             : 'all',
+                threadId           : 'thread-1',
+                taggedConcepts     : ['concept-1'],
+                taskStates         : ['InputRequired'],
+                taskOrder          : 'priority-age',
+                includeArchived    : true,
+                box                : 'all',
+                fromIdentity       : '@author',
+                limit              : 999,
+                offset             : -4,
                 agentIdentityNodeId: '@mallory'
             });
 
@@ -542,7 +589,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
                 observer       : {scope: 'involves-me', memorySharing: 'team'},
                 box            : 'all',
                 status         : 'all',
-                fromIdentity  : '@author',
+                fromIdentity   : '@author',
                 threadId       : 'thread-1',
                 taggedConcepts : ['concept-1'],
                 taskStates     : ['InputRequired'],

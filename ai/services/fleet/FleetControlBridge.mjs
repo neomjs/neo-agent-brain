@@ -1,9 +1,9 @@
-import Base                     from 'neo.mjs/src/core/Base.mjs';
-import FleetManager             from './FleetManager.mjs';
-import FleetRegistryService     from './FleetRegistryService.mjs';
-import FleetTenantService       from './FleetTenantService.mjs';
-import {resolveIdentityDisplay} from './resolveIdentityDisplay.mjs';
-import {seatHoldsMemory}        from './seatMemoryImport.mjs';
+import Base                                   from 'neo.mjs/src/core/Base.mjs';
+import FleetManager                           from './FleetManager.mjs';
+import FleetRegistryService                   from './FleetRegistryService.mjs';
+import FleetTenantService                     from './FleetTenantService.mjs';
+import {resolveIdentityDisplay}               from './resolveIdentityDisplay.mjs';
+import {managedMemorySource, seatHoldsMemory} from './seatMemoryImport.mjs';
 
 import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from './deriveHarnessLaunchSpec.mjs';
 import {launchRefusalOf}                              from '../../../src/fleet/contract/launchAuthority.mjs';
@@ -420,7 +420,7 @@ class FleetControlBridge extends Base {
     recentTurnsSource = null
     /**
      * Host-local memory-candidates source — an injected collaborator exposing
-     * `readMemoryCandidates()`: the existing agents' memory folders an added seat could import, read
+     * `readMemoryCandidates({agent, instanceRoot}?)`: the existing agents' memory folders a seat could import, read
      * where the seats live. Only an entrypoint on that host wires it; a service elsewhere stays
      * unwired and says so.
      * @member {Object|null} memoryCandidatesSource=null
@@ -1132,17 +1132,46 @@ class FleetControlBridge extends Base {
      * @summary READ-OBSERVE: the existing agents' memory an added seat could import — per candidate
      * its family, the `source` a `memoryImport` consent names, its name, note count and newest change,
      * never a file's contents. An empty list means the host holds none; an unwired source is named as
-     * unavailable, never reported as an empty host.
+     * unavailable, never reported as an empty host. A selected seat adds its host-derived native source;
+     * the producer must echo the validated scope so a legacy global answer cannot become scoped emptiness.
+     * @param {Object} [params] Closed optional `{id}`; no id retains Add Agent's global discovery.
      * @returns {Promise<Object>|Object}
      */
-    fleetMemoryCandidates() {
-        return typeof this.memoryCandidatesSource?.readMemoryCandidates === 'function'
-            ? this.memoryCandidatesSource.readMemoryCandidates()
-            : {
-                capability: {state: 'unavailable', reason: 'memory candidates are read on the host that holds the seats'},
-                candidates: [],
-                count     : 0
-            };
+    fleetMemoryCandidates(params = {}) {
+        const unavailable = reason => ({capability: {state: 'unavailable', reason}, candidates: [], count: 0});
+
+        if (!params || typeof params !== 'object' || Array.isArray(params) ||
+            Object.keys(params).some(key => key !== 'id') ||
+            (Object.hasOwn(params, 'id') && (typeof params.id !== 'string' || !params.id.trim()))) {
+            return unavailable('memory discovery accepts only an optional, non-empty seat id')
+        }
+
+        const source = this.memoryCandidatesSource;
+
+        if (typeof source?.readMemoryCandidates !== 'function') {
+            return unavailable('memory candidates are read on the host that holds the seats')
+        }
+        if (!Object.hasOwn(params, 'id')) return source.readMemoryCandidates();
+
+        let agent, instanceRoot;
+
+        try {
+            const registry = this.getRegistry();
+            agent = registry.getDefinition(params.id);
+            if (!agent) return unavailable(`Unknown seat '${params.id}'.`);
+            managedMemorySource({agent, instanceRoot: registry.getAgentsRoot()});
+            instanceRoot = this.getManager().getLifecycleService().getInstanceRoot();
+            managedMemorySource({agent, instanceRoot});
+        } catch {
+            return unavailable(`Seat '${params.id}' has no matching managed memory placement on this host.`)
+        }
+
+        return Promise.resolve().then(() => source.readMemoryCandidates({agent, instanceRoot})).then(result =>
+            result?.scope?.kind === 'seat' && result.scope.id === agent.id
+                ? result
+                : unavailable('the host did not return memory discovery for the selected seat'),
+            () => unavailable('the selected seat memory source could not be read on this host')
+        )
     }
 
     /**

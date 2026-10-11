@@ -2,6 +2,7 @@ import fs                                              from 'fs/promises';
 import os                                              from 'os';
 import path                                            from 'path';
 import {deriveAgentInstanceHome, deriveAgentMemoryDir} from './deriveAgentInstanceHome.mjs';
+import {deriveCodexHome}                               from './deriveHarnessLaunchSpec.mjs';
 import {writeFileAtomic}                               from '../shared/atomicFileWrite.mjs';
 
 /**
@@ -12,7 +13,8 @@ import {writeFileAtomic}                               from '../shared/atomicFil
  *
  * The consent is the registry row's `memoryImport`: a source path or `'none'`, recorded at birth by
  * `defineAgent`, or later through `configureAgent` while the seat neither runs nor holds its memory
- * ({@link seatHoldsMemory}). A seat with no consent is a fresh one and starts empty by design. The destination is
+ * ({@link seatHoldsMemory}). Native notes in an existing managed Codex home require an explicit choice
+ * before birth files; a fresh seat or explicit `'none'` starts empty. The destination is
  * never a field: supported families share the seat-owned folder ({@link memoryDestination}). The copy never moves
  * the source, which stays the rollback. Its receipt beside that folder is
  * provenance only: it keeps a later Start from copying again over memory the seat has written since.
@@ -34,6 +36,26 @@ export const MEMORY_IMPORT_RECEIPT = '.neo-fleet-seat-memory-import.json';
 const MEMORY_FAMILIES = new Set(['claude-code', 'claude-desktop', 'codex', 'codex-desktop', 'kimi-code', 'opencode']);
 
 /**
+ * @summary Derives a bound seat's native Codex notes from its current host placement, never a caller path.
+ * @param {Object} options
+ * @param {Object} options.agent Existing registry definition, including its recorded seat home.
+ * @param {String} options.instanceRoot Trusted host agents root.
+ * @returns {String|null} The selected Codex source, or null for another harness family.
+ * @throws {TypeError} If the seat is unbound, relocated without reconciliation, or uses a raw launch.
+ */
+export function managedMemorySource({agent, instanceRoot}) {
+    const instanceHome = deriveAgentInstanceHome({instanceRoot, agentId: agent.id, harnessType: agent.harnessType});
+
+    if (agent.metadata?.launch || agent.seatHome !== path.resolve(instanceRoot, agent.id)) {
+        throw new TypeError(`Seat '${agent.id}' has no matching managed memory placement on this host.`)
+    }
+
+    const codexHome = deriveCodexHome({harnessType: agent.harnessType, instanceHome});
+
+    return codexHome ? path.join(codexHome, 'memories') : null
+}
+
+/**
  * @summary Whether `source` is an agent's memory folder under `homeDir`: a Claude project's `memory`,
  * the Codex home's `memories`, or a Codex instance's. `defineAgent` is a wire verb, so the consent may
  * name nothing else: the import reads agent memory, never an arbitrary host directory.
@@ -53,19 +75,21 @@ function isMemoryFolder(source, homeDir) {
 
 /**
  * @summary Validates one `memoryImport` consent: `'none'`, or an agent's memory folder under the home
- * directory (`~/.claude/projects/<project>/memory`, `~/.codex/memories`, `~/.codex-instances/<name>/memories`).
+ * directory, or the exact native Codex source of an existing, host-bound seat.
  * @param {*} value
  * @param {Object} [options]
  * @param {String} [options.homeDir=os.homedir()]
+ * @param {Object} [options.agent] Existing registry definition; omitted for Add Agent.
+ * @param {String} [options.instanceRoot] Trusted host placement when agent is supplied.
  * @returns {String} The consent, a path resolved.
  * @throws {TypeError} For anything else.
  */
-export function normalizeMemoryImport(value, {homeDir = os.homedir()} = {}) {
+export function normalizeMemoryImport(value, {homeDir = os.homedir(), agent, instanceRoot} = {}) {
     if (value === MEMORY_IMPORT_NONE) return value;
 
     const source = typeof value === 'string' && !value.includes('\0') && path.isAbsolute(value) ? path.resolve(value) : null;
 
-    if (!source || !isMemoryFolder(source, homeDir)) {
+    if (!source || (!isMemoryFolder(source, homeDir) && (!agent || source !== managedMemorySource({agent, instanceRoot})))) {
         throw new TypeError(`'memoryImport' must be '${MEMORY_IMPORT_NONE}' or an agent's memory folder: ~/.claude/projects/<project>/memory, ~/.codex/memories or ~/.codex-instances/<name>/memories.`)
     }
 
@@ -435,10 +459,13 @@ function candidateName(source, homeDir) {
  * @param {Object} [options]
  * @param {String} [options.homeDir=os.homedir()]
  * @param {Object} [options.fileSystem=fs]
+ * @param {Object} [options.agent] Existing seat for a scoped read; its host placement must match.
+ * @param {String} [options.instanceRoot] Trusted host agents root for the scoped read.
  * @returns {Promise<Array<{family: String, source: String, name: String, notes: Number, lastChanged: String}>>}
  */
-export async function detectMemoryCandidates({homeDir = os.homedir(), fileSystem = fs} = {}) {
+export async function detectMemoryCandidates({homeDir = os.homedir(), fileSystem = fs, agent, instanceRoot} = {}) {
     const
+        managed   = agent ? managedMemorySource({agent, instanceRoot}) : null,
         projects  = path.join(homeDir, '.claude', 'projects'),
         instances = path.join(homeDir, '.codex-instances'),
         folders   = [
@@ -448,8 +475,15 @@ export async function detectMemoryCandidates({homeDir = os.homedir(), fileSystem
         ],
         candidates = [];
 
-    for (const {family, source} of folders.filter(folder => isMemoryFolder(folder.source, homeDir))) {
-        if (await firstNonFolder(homeDir, source, fileSystem)) continue;
+    if (managed) {
+        if (await firstUnsafePathEntry(managed, instanceRoot, fileSystem) || await firstUnsafeTreeEntry(managed, fileSystem)) {
+            throw new TypeError(`Seat '${agent.id}' native memory source contains a link or a non-folder.`)
+        }
+        folders.push({family: 'codex', source: managed})
+    }
+
+    for (const {family, source} of folders.filter(folder => folder.source === managed || isMemoryFolder(folder.source, homeDir))) {
+        if (source !== managed && await firstNonFolder(homeDir, source, fileSystem)) continue;
 
         const files = await regularFiles(source, fileSystem);
 
@@ -460,7 +494,7 @@ export async function detectMemoryCandidates({homeDir = os.homedir(), fileSystem
         candidates.push({
             family,
             source,
-            name       : candidateName(source, homeDir),
+            name       : source === managed ? agent.id : candidateName(source, homeDir),
             notes      : files.length,
             lastChanged: new Date(Math.max(...changed)).toISOString()
         })
@@ -503,6 +537,8 @@ export async function seatHoldsMemory({agent, instanceRoot, fileSystem = fs}) {
  * and no matching receipt, the first import must complete: the source is copied into the seat's destination
  * (never moved, links skipped, the folder owner-only), proven identical and receipted. A source that
  * holds nothing, or a file the seat already holds with other bytes, refuses before anything is copied.
+ * An existing managed Codex seat with native notes but no consent or established shared memory
+ * refuses before the caller can scaffold birth files; explicit `'none'` remains an empty-memory choice.
  * A matching receipt survives root, home and harness changes without re-reading the old source.
  * Legacy harness-home receipts are retained and normalized beside memory. The destination must
  * still hold memory. Every refusal names the source, the destination and the step.
@@ -518,7 +554,24 @@ export async function seatHoldsMemory({agent, instanceRoot, fileSystem = fs}) {
 export async function importSeatMemory({agent, instanceRoot, homeDir = os.homedir(), fileSystem = fs, now = () => new Date().toISOString()}) {
     const source = agent.memoryImport;
 
-    if (!source || source === MEMORY_IMPORT_NONE) return {state: 'none'};
+    if (!source || source === MEMORY_IMPORT_NONE) {
+        // Start has already checked the recorded home. Unbound legacy records have no admitted
+        // native source here; explicit none and a seat's established memory need no discovery.
+        if (!source && agent.seatHome && ['codex', 'codex-desktop'].includes(agent.harnessType) &&
+            !await seatHoldsMemory({agent, instanceRoot, fileSystem})) {
+            const nativeSource = managedMemorySource({agent, instanceRoot});
+
+            if (nativeSource) {
+                if (await firstUnsafePathEntry(nativeSource, instanceRoot, fileSystem) || await firstUnsafeTreeEntry(nativeSource, fileSystem)) {
+                    throw unconverged(nativeSource, memoryDestination({instanceRoot, agentId: agent.id, harnessType: agent.harnessType}), 'the native source contains a link or a non-folder')
+                }
+                if ((await regularFiles(nativeSource, fileSystem))?.length) {
+                    throw unconverged(nativeSource, memoryDestination({instanceRoot, agentId: agent.id, harnessType: agent.harnessType}), 'existing native notes require an explicit memory source or empty-memory choice before Start')
+                }
+            }
+        }
+        return {state: 'none'}
+    }
 
     const destination = memoryDestination({instanceRoot, agentId: agent.id, harnessType: agent.harnessType});
 
@@ -544,12 +597,16 @@ export async function importSeatMemory({agent, instanceRoot, homeDir = os.homedi
 
     if (!receiptMatches) {
         try {
-            normalizeMemoryImport(source, {homeDir})
+            normalizeMemoryImport(source, {homeDir, agent, instanceRoot})
         } catch {
             throw unconverged(source, destination, 'the consent names no agent memory folder')
         }
 
-        if (await firstNonFolder(homeDir, source, fileSystem)) {
+        const unsafe = isMemoryFolder(source, homeDir)
+            ? await firstNonFolder(homeDir, source, fileSystem)
+            : await firstUnsafePathEntry(source, instanceRoot, fileSystem) || await firstUnsafeTreeEntry(source, fileSystem);
+
+        if (unsafe) {
             throw unconverged(source, destination, 'a part of the source path is a link or a file, not a real folder')
         }
     }

@@ -1,4 +1,8 @@
 import {test, expect}                              from '@playwright/test';
+import fs                                          from 'node:fs/promises';
+import os                                          from 'node:os';
+import path                                        from 'node:path';
+import {importSeatMemory}                          from '../../../../ai/services/fleet/seatMemoryImport.mjs';
 import {CREDENTIAL_FAMILIES}                       from '../../../../ai/services/fleet/redactCredentials.mjs';
 import {LAUNCHABLE_HARNESS_TYPES, deriveCodexHome} from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
 import {deriveAgentInstanceHome}                   from '../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
@@ -21,6 +25,7 @@ function startAgentProvisioned(options) {
         resolveGitIdentity : async () => SEAT_GIT_IDENTITY,
         convergeGitIdentity: async () => ({state: 'converged', scope: 'local', action: 'kept'}),
         installDependencies: async ({checkouts}) => checkouts.map(({repoSlug}) => ({repoSlug, state: 'present'})),
+        importMemory       : async () => ({state: 'none'}),
         ...options
     })
 }
@@ -2045,6 +2050,39 @@ test.describe('startAgentProvisioned — an adopted seat\'s memory import', () =
         expect(lifecycle.calls.start).toHaveLength(0)
     });
 
+    test('real managed native notes without consent stop before preparation; explicit none starts', async () => {
+        const root      = await fs.mkdtemp(path.join(os.tmpdir(), 'native-memory-start-')),
+              events    = [], agents = repoAgent('a'),
+              source    = path.join(root, 'a', 'harness', 'codex', 'memories'),
+              lifecycle = makeLifecycle({agents, events});
+
+        agents.a.seatHome = path.join(root, 'a');
+        lifecycle.getInstanceRoot = () => root;
+        try {
+            await fs.mkdir(source, {recursive: true});
+            await fs.writeFile(path.join(source, 'MEMORY.md'), 'native source stays intact');
+            const invoke = () => startAgentProvisioned({
+                lifecycleService: lifecycle, agentId: 'a', managedRoot: root,
+                ensureRepo      : makeEnsureRepo(path.join(root, 'a', 'neomjs', 'neo'), events),
+                prepareWorkspace: makePrepareWorkspace(events), importMemory: importSeatMemory,
+                nodePath        : '/usr/bin/node'
+            });
+
+            await expect(invoke()).rejects.toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED'});
+            expect(events).not.toContain('prepare');
+            expect(lifecycle.calls.start).toHaveLength(0);
+            await expect(fs.stat(path.join(root, 'a', 'memory'))).rejects.toMatchObject({code: 'ENOENT'});
+            expect(await fs.readFile(path.join(source, 'MEMORY.md'), 'utf8')).toBe('native source stays intact');
+
+            agents.a.memoryImport = 'none';
+            expect((await invoke()).state).toBe('running');
+            expect(events).toContain('prepare');
+            expect(lifecycle.calls.start).toHaveLength(1);
+        } finally {
+            await fs.rm(root, {recursive: true, force: true})
+        }
+    });
+
     test('a fresh seat imports nothing and its status carries no import', async () => {
         const status = await start({lifecycle: makeLifecycle({agents: repoAgent('a')})});
 
@@ -2090,6 +2128,7 @@ test.describe('startAgentProvisioned — the seat commits as itself', () => {
             ensureRepo      : ensureRepo(events, failing),
             prepareWorkspace: makePrepareWorkspace(events),
             nodePath        : '/usr/bin/node',
+            importMemory    : async () => ({state: 'none'}),
             resolveGitIdentity,
             convergeGitIdentity
         });

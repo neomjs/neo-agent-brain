@@ -384,10 +384,10 @@ async function boot() {
             // the request context the authenticated ingress stamped; the seam carries payload, never
             // identity. Fail-soft: an unavailable singleton leaves the compose seam honestly unwired.
             wireOperatorComposeWriter({
-                addMessage    : MailboxService.addMessage.bind(MailboxService),
-                getMessage    : MailboxService.getMessage.bind(MailboxService),
-                markRead      : MailboxService.markRead.bind(MailboxService),
-                transitionTask: MailboxService.transitionTask.bind(MailboxService),
+                addMessage     : MailboxService.addMessage.bind(MailboxService),
+                getMessage     : MailboxService.getMessage.bind(MailboxService),
+                markRead       : MailboxService.markRead.bind(MailboxService),
+                transitionTask : MailboxService.transitionTask.bind(MailboxService),
                 observeMessages: args => MailboxService.listMessages({...args, observer: args.observer ?? {scope: 'own'}})
             })
         }).catch(error => console.warn('[fleet] activity source not wired:', error?.message ?? error))
@@ -497,10 +497,11 @@ async function boot() {
     // Memory candidates are read where the seats live, and this relay is the process that launches
     // them; the composed plane service holds no seats and leaves the source unwired.
     FleetControlBridge.memoryCandidatesSource = {
-        async readMemoryCandidates() {
-            const candidates = await detectMemoryCandidates();
+        async readMemoryCandidates(context) {
+            const candidates = await detectMemoryCandidates(context);
 
-            return {capability: {state: 'wired'}, candidates, count: candidates.length}
+            return {capability: {state: 'wired'}, candidates, count: candidates.length,
+                ...(context ? {scope: {kind: 'seat', id: context.agent.id}} : {})}
         }
     };
 
