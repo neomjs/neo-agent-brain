@@ -1,19 +1,22 @@
-import Base                                                     from 'neo.mjs/src/core/Base.mjs';
-import FleetLifecycleService                                    from './FleetLifecycleService.mjs';
-import {armFleetSeatWake}                                       from './armFleetSeatWake.mjs';
-import {ensureAgentRepos}                                       from './ensureAgentRepo.mjs';
-import {isOnInstance}                                           from './provisionAgentRepo.mjs';
-import {REPO_FORGES, assertNoCheckoutCollision, assertRepoSlug} from './deriveAgentRepoPath.mjs';
-import {inspectFleetRepos}                                      from './inspectFleetRepos.mjs';
-import {launchRefusalOf}                                        from '../../../src/fleet/contract/launchAuthority.mjs';
-import {readFleetPresenceSnapshot}                              from './fleetPresenceStateAdapter.mjs';
-import {readFleetThrottleStateSnapshot}                         from './fleetThrottleStateAdapter.mjs';
-import {readFleetWakeStateSnapshot}                             from './fleetWakeStateAdapter.mjs';
-import {redactReadFailure}                                      from './redactReadFailure.mjs';
-import {convergeSeatGitIdentity, resolveSeatGitIdentity}        from './seatGitIdentity.mjs';
-import {readSeatModelCatalog}                                   from './seatModelCatalog.mjs';
-import {startAgentProvisioned}                                  from './startAgentProvisioned.mjs';
-import path                                                     from 'node:path';
+import Base                                                                          from 'neo.mjs/src/core/Base.mjs';
+import FleetLifecycleService                                                         from './FleetLifecycleService.mjs';
+import {armFleetSeatWake}                                                            from './armFleetSeatWake.mjs';
+import {ensureAgentRepos}                                                            from './ensureAgentRepo.mjs';
+import {isOnInstance}                                                                from './provisionAgentRepo.mjs';
+import {REPO_FORGES, assertNoCheckoutCollision, assertRepoSlug, deriveAgentRepoPath} from './deriveAgentRepoPath.mjs';
+import {DEPENDENCY_RECEIPT, readDependencyReceipt}                                   from './installAgentRepoDependencies.mjs';
+import {inspectAgentRepo}                                                            from './inspectAgentRepo.mjs';
+import {inspectRepoRemoval, removeAgentRepo}                                         from './removeAgentRepo.mjs';
+import {inspectFleetRepos}                                                           from './inspectFleetRepos.mjs';
+import {launchRefusalOf}                                                             from '../../../src/fleet/contract/launchAuthority.mjs';
+import {readFleetPresenceSnapshot}                                                   from './fleetPresenceStateAdapter.mjs';
+import {readFleetThrottleStateSnapshot}                                              from './fleetThrottleStateAdapter.mjs';
+import {readFleetWakeStateSnapshot}                                                  from './fleetWakeStateAdapter.mjs';
+import {redactReadFailure}                                                           from './redactReadFailure.mjs';
+import {convergeSeatGitIdentity, resolveSeatGitIdentity}                             from './seatGitIdentity.mjs';
+import {readSeatModelCatalog}                                                        from './seatModelCatalog.mjs';
+import {startAgentProvisioned}                                                       from './startAgentProvisioned.mjs';
+import path                                                                          from 'node:path';
 
 /**
  * @summary The one rule for a repository a seat clones: a slug that passes the checkout path's own rule
@@ -204,6 +207,12 @@ class FleetManager extends Base {
      * @member {Object|null} repoPreparationOptions=null
      */
     repoPreparationOptions = null
+    /**
+     * Local inspection/removal seams for {@link removeRepoCheckout}: `readGit` and `removeDir`.
+     * Paths and receipt ownership remain manager-owned.
+     * @member {Object|null} repoRemovalOptions=null
+     */
+    repoRemovalOptions = null
     /**
      * Throttle-state observation options for {@link fleetThrottleStatus} — `{resolveThrottleState}`
      * per the `fleetThrottleStateAdapter` contract. `null` ⇒ every row is honestly `unknown`: no
@@ -887,6 +896,70 @@ class FleetManager extends Base {
         entries.length && assertNoCheckoutCollision([working.repoSlug, ...entries.map(entry => entry.repoSlug)], caller);
 
         return registry.updateAgent(id, {metadata: {repos: entries}});
+    }
+
+    /**
+     * @summary Delete an unlisted checkout only after inspecting its retained work. Working/listed
+     * repositories (including overlapping paths) are protected. The seat-home hold excludes Start
+     * and preparation; the definition is read again immediately before the synchronous remover.
+     * Dirty/untracked/ignored files, stashes and local refs/HEAD absent from remote-tracking refs
+     * refuse. Only root node_modules with an installed dependency receipt is disposable.
+     * No fetch or open-folder check runs; external processes can still write during these reads.
+     * Nested/shared Git storage (submodules, module histories and linked worktrees) is refused.
+     * Success retires this checkout's current Lifecycle outcome so a refresh cannot revive its row.
+     * @param {Object} payload Closed `{id, repoSlug}`; paths never come from the caller.
+     * @returns {Promise<Object|null>} `{removed: true, repoPath}` or `{removed: false, reason}`;
+     * null for an unknown seat. Filesystem failure may leave a partially removed checkout.
+     */
+    async removeRepoCheckout(payload = {}) {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+            Object.keys(payload).some(key => !['id', 'repoSlug'].includes(key)) || typeof payload.id !== 'string' || !payload.id.trim()) {
+            throw new Error('FleetManager.removeRepoCheckout: name only a seat id and repository slug.')
+        }
+        try {
+            assertRepoSlug(payload.repoSlug, 'FleetManager.removeRepoCheckout')
+        } catch {
+            throw new Error('FleetManager.removeRepoCheckout: name a valid managed repository slug.')
+        }
+        const {id, repoSlug} = payload, lifecycle = this.getLifecycleService(), registry = lifecycle.getRegistry();
+
+        return this.withSeatHome(id, async () => {
+            const agent = registry.getDefinition(id);
+            if (!agent) return null;
+            const managedRoot = this.getManagedRoot(), options = this.repoRemovalOptions || {},
+                  repoPath    = deriveAgentRepoPath({managedRoot, agentId: id, repoSlug}),
+                  refusal     = current => {
+                      if (current.metadata?.launch || current.seatHome !== path.resolve(managedRoot, id) || managedRoot !== this.getManagedRoot()) {
+                          return 'The seat has no matching managed home; reconcile its placement before deleting a checkout.'
+                      }
+                      const overlaps = slug => slug && (slug === repoSlug || slug.startsWith(`${repoSlug}/`) || repoSlug.startsWith(`${slug}/`));
+                      if (overlaps(current.metadata?.repo?.repoSlug)) return 'The working repository cannot be deleted.';
+                      if ((current.metadata?.repos ?? []).some(entry => overlaps(entry.repoSlug))) return 'Unlist the repository before deleting its checkout.';
+                      return null
+                  };
+            let reason = refusal(agent);
+            if (reason) return {removed: false, reason};
+
+            const inspection = inspectAgentRepo({repoPath});
+            if (!inspection.isCheckout) return {removed: false, reason: 'No readable checkout was found at the managed path; nothing was deleted.'};
+
+            const receipt = readDependencyReceipt(path.join(agent.seatHome, DEPENDENCY_RECEIPT)),
+                  guard   = await inspectRepoRemoval({managedRoot, repoPath, dependenciesOwned: receipt[repoSlug]?.state === 'installed', readGit: options.readGit});
+            if (!guard.safe) return {removed: false, reason: guard.reason};
+
+            const current = registry.getDefinition(id);
+            if (!current) return null;
+            reason = refusal(current);
+            if (reason) return {removed: false, reason};
+
+            try {
+                const result = removeAgentRepo({managedRoot, agentId: id, repoSlug, removeDir: options.removeDir});
+                if (result.removed) lifecycle.retireRepoOutcome(id, repoSlug);
+                return result.removed ? {removed: true, repoPath: result.repoPath} : {removed: false, reason: 'The checkout is no longer readable at its managed path.'}
+            } catch {
+                return {removed: false, reason: 'The checkout could not be fully removed. Inspect the remaining files before retrying.'}
+            }
+        })
     }
 
     /**

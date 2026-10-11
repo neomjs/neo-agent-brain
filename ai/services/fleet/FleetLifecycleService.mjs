@@ -1354,6 +1354,22 @@ class FleetLifecycleService extends Base {
     }
 
     /**
+     * @summary Retire a successfully removed checkout's current outcome, including a stopped seat's
+     * last-start row. Sibling outcomes remain; absence is a no-op. The caller owns the seat-home hold.
+     * @param {String} id
+     * @param {String} repoSlug
+     * @returns {Boolean} Whether an outcome row was retired.
+     */
+    retireRepoOutcome(id, repoSlug) {
+        const record = this.processes.get(id), rows = record?.repos;
+        if (!rows) return false;
+        const next = rows.filter(row => row.repoSlug !== repoSlug);
+        if (next.length === rows.length) return false;
+        record.repos = next;
+        return true
+    }
+
+    /**
      * @summary Records the dependency rows a pending Start has reached, so {@link status} reports its install phase
      * before any launch exists, and its final rows after it ends, launched or not. Bound to that attempt: a signal the
      * seat no longer has pending is refused, so a finished attempt's late report never rewrites them; a later

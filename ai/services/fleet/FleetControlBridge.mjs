@@ -916,6 +916,15 @@ class FleetControlBridge extends Base {
     }
 
     /**
+     * @summary Remove an unlisted checkout only through the manager's retained-work guard.
+     * @param {Object} payload `{id, repoSlug}`; no caller-selected path or force option.
+     * @returns {Promise<Object|null>} Removal result or the operator-facing refusal.
+     */
+    removeRepoCheckout(payload) {
+        return this.getManager().removeRepoCheckout(payload)
+    }
+
+    /**
      * @summary Set an agent's profile-avatar reference (`metadata.avatarUrl`) on its definition (fleet
      * authority — the FM owns the registry, as with `defineAgent`). A single-`params` payload, so it is
      * pane-reachable over the wire. Non-destructive to other metadata.

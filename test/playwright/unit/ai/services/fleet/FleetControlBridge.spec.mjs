@@ -669,6 +669,15 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         }
     });
 
+    test('removeRepoCheckout preserves success, refusal and unknown-seat outcomes through the wire', async () => {
+        const payload = {id: 'alice', repoSlug: 'x/y'};
+        for (const result of [null, {removed: true, repoPath: '/fixture/alice/x/y'}, {removed: false, reason: 'Keep the unpushed commits.'}]) {
+            managerStub.removeRepoCheckout = input => {expect(input).toEqual(payload); return Promise.resolve(result)};
+            expect(await dispatchFleetRequest(createFleetWireRequest('removeRepoCheckout', payload), FleetControlBridge))
+                .toMatchObject({ok: true, result})
+        }
+    });
+
     test('setRepos delegates the single payload to the manager and answers the updated definition as accepted (fleet authority)', () => {
         const payload = {id: 'alice', repos: [{repoSlug: 'neomjs/neo-agent-brain'}]};
         expect(FleetControlBridge.setRepos(payload)).toEqual({status: 'accepted', agent: {id: 'alice', metadata: {repos: payload.repos}}});

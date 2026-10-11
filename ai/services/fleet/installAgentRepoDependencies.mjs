@@ -253,9 +253,8 @@ export async function installAgentRepoDependencies({
  * @summary Reads the seat's dependency receipt; a missing or unreadable one reads as no owned install at all.
  * @param {String} receiptPath
  * @returns {Object}
- * @private
  */
-function readReceipt(receiptPath) {
+export function readDependencyReceipt(receiptPath) {
     try {
         const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
 
@@ -300,7 +299,7 @@ export async function installSeatDependencies({
 }) {
     const
         receiptPath = path.join(seatRoot, DEPENDENCY_RECEIPT),
-        receipt     = readReceipt(receiptPath),
+        receipt     = readDependencyReceipt(receiptPath),
         stops       = [signal, skipSignal].filter(Boolean),
         rows        = checkouts.map(() => null),
         report      = (index, row) => {

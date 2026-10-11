@@ -13,21 +13,302 @@ setup({
     }
 });
 
-import {test, expect}             from '@playwright/test';
-import Neo                        from 'neo.mjs/src/Neo.mjs';
-import * as core                  from 'neo.mjs/src/core/_export.mjs';
-import FleetControlBridge         from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
-import FleetLifecycleService      from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
-import FleetManager               from '../../../../../../ai/services/fleet/FleetManager.mjs';
-import FleetRegistryService       from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
-import {armFleetSeatWake}         from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
-import {createFleetCockpitStatus} from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
-import {createFleetWireRequest}   from '../../../../../../src/fleet/contract/wire.mjs';
-import {dispatchFleetRequest}     from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
-import {installSeatDependencies}  from '../../../../../../ai/services/fleet/installAgentRepoDependencies.mjs';
-import fs                         from 'fs';
-import os                         from 'os';
-import path                       from 'path';
+import {test, expect}                                from '@playwright/test';
+import Neo                                           from 'neo.mjs/src/Neo.mjs';
+import * as core                                     from 'neo.mjs/src/core/_export.mjs';
+import FleetControlBridge                            from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
+import FleetLifecycleService                         from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
+import FleetManager                                  from '../../../../../../ai/services/fleet/FleetManager.mjs';
+import FleetRegistryService                          from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import {armFleetSeatWake}                            from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
+import {createFleetCockpitStatus}                    from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
+import {createFleetWireRequest}                      from '../../../../../../src/fleet/contract/wire.mjs';
+import {dispatchFleetRequest}                        from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
+import {DEPENDENCY_RECEIPT, installSeatDependencies} from '../../../../../../ai/services/fleet/installAgentRepoDependencies.mjs';
+import {execFileSync}                                from 'node:child_process';
+import fs                                            from 'fs';
+import os                                            from 'os';
+import path                                          from 'path';
+
+test.describe('FleetManager guarded checkout removal (#951)', () => {
+    let root, repoPath, agent, retired;
+    const git = (...args) => execFileSync('git', ['-C', repoPath, ...args], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        env     : {...process.env, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0'}
+    }).trim();
+    const remove = () => FleetManager.removeRepoCheckout({id: 'seat', repoSlug: 'x/extra'});
+
+    test.beforeEach(() => {
+        root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-remove-policy-'));
+        repoPath = path.join(root, 'seat', 'x', 'extra');
+        fs.mkdirSync(repoPath, {recursive: true});
+        agent = {id: 'seat', harnessType: 'codex', seatHome: path.join(root, 'seat'),
+            metadata: {repo: {repoSlug: 'x/main'}, repos: []}};
+        retired = [];
+        FleetManager.managedRoot = root;
+        FleetManager.lifecycleService = {
+            getRegistry      : () => ({getDefinition: id => id === 'seat' && agent ? structuredClone(agent) : null}),
+            retireRepoOutcome: (id, slug) => retired.push([id, slug])
+        };
+        git('init', '-b', 'main');
+        git('config', 'user.name', 'Removal fixture');
+        git('config', 'user.email', 'removal@example.invalid');
+        fs.writeFileSync(path.join(repoPath, '.gitignore'), 'notes.local\nnode_modules/\n');
+        fs.writeFileSync(path.join(repoPath, 'tracked.txt'), 'seed');
+        git('add', '.');
+        git('commit', '-m', 'test(fleet): seed removal fixture (#951)');
+        git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+    });
+
+    test.afterEach(() => {
+        FleetManager.lifecycleService = null;
+        FleetManager.managedRoot = null;
+        FleetManager.repoRemovalOptions = null;
+        FleetManager.seatHomeHolds.clear();
+        fs.rmSync(root, {recursive: true, force: true})
+    });
+
+    test('removes only an unlisted clean checkout at the derived path', async () => {
+        expect(await remove()).toEqual({removed: true, repoPath});
+        expect(retired).toEqual([['seat', 'x/extra']]);
+        expect(fs.existsSync(repoPath)).toBe(false)
+    });
+
+    for (const kind of ['listed', 'working', 'dirty', 'untracked', 'ignored', 'unpushed', 'stash', 'detached', 'tag-only', 'local-ref']) {
+        test(`${kind} work refuses without deleting the checkout`, async () => {
+            if (kind === 'listed') agent.metadata.repos = [{repoSlug: 'x/extra'}];
+            else if (kind === 'working') agent.metadata.repo.repoSlug = 'x/extra';
+            else if (kind === 'dirty' || kind === 'stash') fs.writeFileSync(path.join(repoPath, 'tracked.txt'), 'changed');
+            else if (kind === 'untracked') fs.writeFileSync(path.join(repoPath, 'new.txt'), 'keep');
+            else if (kind === 'ignored') fs.writeFileSync(path.join(repoPath, 'notes.local'), 'keep');
+            else {
+                if (kind !== 'unpushed') git('checkout', '--detach');
+                fs.writeFileSync(path.join(repoPath, 'tracked.txt'), 'unpublished');
+                git('commit', '-am', 'test(fleet): unpublished removal fixture (#951)');
+                if (kind === 'tag-only') {
+                    git('tag', 'local-only');
+                    git('checkout', 'main')
+                } else if (kind === 'local-ref') {
+                    git('update-ref', 'refs/keep/local-work', 'HEAD');
+                    git('checkout', 'main')
+                }
+            }
+            if (kind === 'stash') git('stash', 'push');
+
+            const result = await remove();
+            expect(result.removed).toBe(false);
+            expect(retired).toEqual([]);
+            expect(result.reason).toMatch(kind === 'listed' ? /unlist/i : kind === 'working' ? /working/i :
+                kind === 'stash' ? /stash/i : ['unpushed', 'detached', 'tag-only', 'local-ref'].includes(kind) ? /unpushed/i :
+                    kind === 'ignored' ? /notes\.local/ : /changed|untracked/i);
+            expect(fs.existsSync(path.join(repoPath, '.git'))).toBe(true)
+        })
+    }
+
+    for (const owned of [false, true]) {
+        test(`ignored root node_modules with installed receipt=${owned}`, async () => {
+            fs.mkdirSync(path.join(repoPath, 'node_modules'));
+            fs.writeFileSync(path.join(repoPath, 'node_modules', 'package.txt'), 'dependency');
+            fs.writeFileSync(path.join(agent.seatHome, DEPENDENCY_RECEIPT), JSON.stringify({'x/extra': {state: owned ? 'installed' : 'unverified'}}));
+            const result = await remove();
+            expect(result.removed).toBe(owned);
+            if (!owned) expect(result.reason).toMatch(/node_modules/);
+            expect(fs.existsSync(repoPath)).toBe(!owned)
+        })
+    }
+
+    test('the dependency receipt cannot exempt another ignored entry', async () => {
+        fs.mkdirSync(path.join(repoPath, 'node_modules'));
+        fs.writeFileSync(path.join(repoPath, 'node_modules', 'package.txt'), 'dependency');
+        fs.writeFileSync(path.join(repoPath, 'notes.local'), 'keep');
+        fs.writeFileSync(path.join(agent.seatHome, DEPENDENCY_RECEIPT), JSON.stringify({'x/extra': {state: 'installed'}}));
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringContaining('notes.local')});
+        expect(fs.existsSync(repoPath)).toBe(true)
+    });
+
+    test('an installed receipt exempts neither nested node_modules nor malformed ownership', async () => {
+        fs.mkdirSync(path.join(repoPath, 'packages', 'local', 'node_modules'), {recursive: true});
+        fs.writeFileSync(path.join(repoPath, 'packages', 'local', 'node_modules', 'notes.txt'), 'keep');
+        fs.writeFileSync(path.join(agent.seatHome, DEPENDENCY_RECEIPT), JSON.stringify({'x/extra': {state: 'installed'}}));
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringContaining('packages')});
+        fs.rmSync(path.join(repoPath, 'packages'), {recursive: true});
+        fs.mkdirSync(path.join(repoPath, 'node_modules'));
+        fs.writeFileSync(path.join(repoPath, 'node_modules', 'notes.txt'), 'keep');
+        fs.writeFileSync(path.join(agent.seatHome, DEPENDENCY_RECEIPT), 'unreadable json');
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringContaining('node_modules')})
+    });
+
+    test('a clean gitlink cannot hide unpublished history in an initialized nested repository', async () => {
+        git('init', '-b', 'main', 'nested');
+        git('-C', 'nested', 'config', 'user.name', 'Nested fixture');
+        git('-C', 'nested', 'config', 'user.email', 'nested@example.invalid');
+        fs.writeFileSync(path.join(repoPath, 'nested', 'seed.txt'), 'seed');
+        git('-C', 'nested', 'add', '.');
+        git('-C', 'nested', 'commit', '-m', 'test(fleet): seed nested fixture (#951)');
+        git('-C', 'nested', 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+        git('add', 'nested');
+        git('commit', '-m', 'test(fleet): record nested fixture (#951)');
+        git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+        git('-C', 'nested', 'checkout', '-b', 'local-work');
+        fs.writeFileSync(path.join(repoPath, 'nested', 'work.txt'), 'unpublished');
+        git('-C', 'nested', 'add', '.');
+        git('-C', 'nested', 'commit', '-m', 'test(fleet): retain nested work (#951)');
+        git('-C', 'nested', 'checkout', 'main');
+        expect(git('status', '--porcelain')).toBe('');
+        const removed = [];
+        FleetManager.repoRemovalOptions = {removeDir: target => removed.push(target)};
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringMatching(/submodule/i)});
+        expect(removed).toEqual([])
+    });
+
+    for (const flag of ['--assume-unchanged', '--skip-worktree']) {
+        test(`index flag ${flag} cannot hide modified tracked files`, async () => {
+            git('update-index', flag, 'tracked.txt');
+            fs.writeFileSync(path.join(repoPath, 'tracked.txt'), 'hidden local work');
+            expect(git('status', '--porcelain')).toBe('');
+            const removed = [];
+            FleetManager.repoRemovalOptions = {removeDir: target => removed.push(target)};
+            expect(await remove()).toMatchObject({removed: false, reason: expect.stringMatching(/index|working.tree/i)});
+            expect(removed).toEqual([])
+        })
+    }
+
+    test('deinitialized module histories remain protected without a gitlink', async () => {
+        fs.mkdirSync(path.join(repoPath, '.git', 'modules', 'former-submodule'), {recursive: true});
+        fs.writeFileSync(path.join(repoPath, '.git', 'modules', 'former-submodule', 'HEAD'), 'retained history');
+        expect(git('ls-files', '--stage')).not.toContain('160000');
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringMatching(/submodule history/i)});
+        expect(fs.existsSync(repoPath)).toBe(true)
+    });
+
+    test('an uninitialized submodule declaration refuses', async () => {
+        fs.writeFileSync(path.join(repoPath, '.gitmodules'), '[submodule "later"]\npath = later\n');
+        git('add', '.gitmodules');
+        git('commit', '-m', 'test(fleet): declare a future submodule (#951)');
+        git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringMatching(/submodule/i)});
+        expect(fs.existsSync(repoPath)).toBe(true)
+    });
+
+    test('Git-reported linked worktree metadata protects the shared object store', async () => {
+        const linked = path.join(root, 'linked'), metadata = path.join(repoPath, '.git', 'worktrees', 'linked');
+        fs.mkdirSync(linked);
+        fs.mkdirSync(metadata, {recursive: true});
+        fs.writeFileSync(path.join(metadata, 'HEAD'), `${git('rev-parse', 'HEAD')}\n`);
+        fs.writeFileSync(path.join(metadata, 'gitdir'), `${path.join(linked, '.git')}\n`);
+        fs.writeFileSync(path.join(metadata, 'commondir'), '../..\n');
+        fs.writeFileSync(path.join(linked, '.git'), `gitdir: ${metadata}\n`);
+        expect(git('worktree', 'list', '--porcelain')).toContain(linked);
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringMatching(/linked worktree/i)});
+        expect(fs.existsSync(path.join(repoPath, '.git', 'objects'))).toBe(true)
+    });
+
+    test('Git environment overrides cannot redirect the read away from retained work', async () => {
+        const prior = {GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE};
+        fs.writeFileSync(path.join(repoPath, 'tracked.txt'), 'keep');
+        try {
+            process.env.GIT_DIR = path.join(root, 'does-not-exist');
+            process.env.GIT_WORK_TREE = root;
+            expect(await remove()).toMatchObject({removed: false, reason: expect.stringMatching(/changed|untracked/i)});
+            expect(fs.readFileSync(path.join(repoPath, 'tracked.txt'), 'utf8')).toBe('keep')
+        } finally {
+            for (const [key, value] of Object.entries(prior)) value === undefined ? delete process.env[key] : process.env[key] = value
+        }
+    });
+
+    test('a detached commit and local tag both covered by a remote-tracking ref pass', async () => {
+        git('checkout', '--detach');
+        fs.writeFileSync(path.join(repoPath, 'tracked.txt'), 'published');
+        git('commit', '-am', 'test(fleet): published detached fixture (#951)');
+        git('tag', 'published-tag');
+        git('update-ref', 'refs/remotes/origin/published', 'HEAD');
+        expect(await remove()).toEqual({removed: true, repoPath})
+    });
+
+    test('unknown, absent and foreign paths never call the remover', async () => {
+        const removed = [];
+        FleetManager.repoRemovalOptions = {removeDir: target => removed.push(target)};
+        expect(await FleetManager.removeRepoCheckout({id: 'unknown', repoSlug: 'x/extra'})).toBeNull();
+        fs.rmSync(repoPath, {recursive: true});
+        expect(await remove()).toMatchObject({removed: false, reason: expect.any(String)});
+        fs.mkdirSync(repoPath);
+        fs.writeFileSync(path.join(repoPath, 'foreign.txt'), 'keep');
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringMatching(/checkout/i)});
+        expect(removed).toEqual([]);
+        expect(fs.readFileSync(path.join(repoPath, 'foreign.txt'), 'utf8')).toBe('keep')
+    });
+
+    for (const change of ['relist', 'working', 'remove seat']) {
+        test(`a definition change during the guard (${change}) prevents removal`, async () => {
+            const removed = [];
+            FleetManager.repoRemovalOptions = {
+                removeDir: target => removed.push(target),
+                readGit  : async (target, args) => {
+                    const result = git(...args);
+                    if (args.includes('--all')) {
+                        if (change === 'relist') agent.metadata.repos = [{repoSlug: 'x/extra'}];
+                        else if (change === 'working') agent.metadata.repo.repoSlug = 'x/extra';
+                        else agent = null
+                    }
+                    return result
+                }
+            };
+            const result = await remove();
+            expect(result === null || result.removed === false).toBe(true);
+            expect(removed).toEqual([]);
+            expect(fs.existsSync(repoPath)).toBe(true)
+        })
+    }
+
+    test('the seat hold serializes removal and re-reads the definition after waiting', async () => {
+        let release;
+        const holding = FleetManager.withSeatHome('seat', () => new Promise(resolve => {release = resolve}));
+        await Promise.resolve();
+        const pending = remove();
+        agent.metadata.repos = [{repoSlug: 'x/extra'}];
+        release();
+        await holding;
+        expect(await pending).toMatchObject({removed: false, reason: expect.stringMatching(/unlist/i)});
+        expect(fs.existsSync(repoPath)).toBe(true)
+    });
+
+    test('the one remover receives the derived path once', async () => {
+        const removed = [];
+        FleetManager.repoRemovalOptions = {removeDir: target => removed.push(target)};
+        expect(await remove()).toEqual({removed: true, repoPath});
+        expect(removed).toEqual([repoPath])
+    });
+
+    test('a failed remover keeps the current outcome row', async () => {
+        FleetManager.repoRemovalOptions = {removeDir: () => {throw new Error('filesystem failure')}};
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringMatching(/fully removed/i)});
+        expect(retired).toEqual([]);
+        expect(fs.existsSync(repoPath)).toBe(true)
+    });
+
+    test('caller paths, traversal, nested protected repositories and foreign seat homes refuse', async () => {
+        for (const payload of [{id: 'seat', repoSlug: '../extra'}, {id: 'seat', repoSlug: 'x/extra', repoPath: '/outside'}]) {
+            await expect(FleetManager.removeRepoCheckout(payload)).rejects.toThrow()
+        }
+        agent.metadata.repo.repoSlug = 'x/extra/working';
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringMatching(/working/i)});
+        agent.metadata.repo.repoSlug = 'x/main';
+        agent.seatHome = path.join(root, 'other');
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringMatching(/managed home/i)});
+        expect(fs.existsSync(repoPath)).toBe(true)
+    });
+
+    test('a symlinked owner directory cannot redirect the guard or deletion', async () => {
+        const target = path.join(root, 'outside');
+        fs.renameSync(path.join(root, 'seat', 'x'), target);
+        fs.symlinkSync(target, path.join(root, 'seat', 'x'));
+        let reads = 0;
+        FleetManager.repoRemovalOptions = {readGit: async () => {reads++; return ''}};
+        expect(await remove()).toMatchObject({removed: false, reason: expect.stringMatching(/link|path/i)});
+        expect(reads).toBe(0);
+        expect(fs.existsSync(path.join(target, 'extra', 'tracked.txt'))).toBe(true)
+    })
+});
 
 test.describe('FleetManager prepares repositories for a live launch', () => {
     let root, agent, launch, calls, lifecycle;

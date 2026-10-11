@@ -2466,6 +2466,21 @@ test.describe('FleetLifecycleService.setRepoOutcomes — a start\'s per-reposito
             .toEqual([{repoSlug: 'x/new', state: 'installed'}]);
     });
 
+    for (const state of ['running', 'stopped']) {
+        test(`retiring a removed checkout preserves sibling rows on a ${state} seat`, () => {
+            const kept = {repoSlug: 'x/kept', state: 'failed', reason: 'retained'};
+            FleetLifecycleService.processes.set('seat', {id: 'seat', state, ...launch, repos: [
+                {repoSlug: 'x/removed', state: 'prepared'}, kept
+            ]});
+            expect(FleetLifecycleService.retireRepoOutcome('seat', 'x/removed')).toBe(true);
+            expect(FleetLifecycleService.status('seat').repos).toEqual([kept]);
+            expect(FleetLifecycleService.retireRepoOutcome('seat', 'x/absent')).toBe(false);
+            expect(FleetLifecycleService.retireRepoOutcome('nobody', 'x/removed')).toBe(false);
+            expect(FleetLifecycleService.retireRepoOutcome('seat', 'x/kept')).toBe(true);
+            expect(FleetLifecycleService.status('seat').repos).toEqual([])
+        })
+    }
+
     test('an outcome for an earlier launch, an unknown seat or no launch at all is refused', () => {
         FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'running', ...launch});
 

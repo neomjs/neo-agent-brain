@@ -1055,6 +1055,7 @@ test.describe('Fleet S1 wire policy', () => {
             setRepo               : 'awaiting-s4',
             setRepos              : 'awaiting-s4',
             prepareRepos          : 'awaiting-s4',
+            removeRepoCheckout    : 'awaiting-s4',
             setAvatar             : 'awaiting-s4',
             markFleetCaughtUp     : 'awaiting-s4',
             resolveViewerIdentity : 'awaiting-s4',
