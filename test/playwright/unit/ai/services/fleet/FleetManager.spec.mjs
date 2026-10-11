@@ -127,7 +127,7 @@ test.describe('FleetManager prepares repositories for a live launch', () => {
     });
 
     test('clone and identity errors are redacted before they become outcome rows', async () => {
-        const secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+        const secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789'; // secret-scan-ok: synthetic alphabet token exercises outcome redaction
         FleetManager.repoPreparationOptions.convergeGitIdentity = async () => {throw new Error(`identity ${secret}`)};
         FleetManager.repoPreparationOptions.cloneRepo = async () => {throw new Error(`clone ${secret}`)};
         const result = await FleetManager.prepareRepos({id: 'seat'});
