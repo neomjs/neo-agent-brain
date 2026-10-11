@@ -8,7 +8,7 @@
 
 | Attribute | Value |
 |---|---|
-| **Status** | Accepted — 2026-07-12 (PR #15103) |
+| **Status** | Accepted — 2026-07-12 (PR #15103); amended 2026-10-11 (#995): lifecycle clock availability |
 | **Author** | @neo-gpt (Euclid), grounded in Discussion #15090 Cycle 7, its version-bound Fable falsifier, the non-author Step 2.5 sweep, and fresh `dev` source inspection |
 | **ADR classification** | `ADR_REQUIRED` — six independently implemented leaves cross Golden Path, GitHub Workflow, Memory Core, hooks, harness identity, and future Fleet reads; service ownership and failure semantics cannot remain in Discussion comments |
 | **Resolves** | #15101 — first, merge-order-gating leaf of Epic #15100 |
@@ -154,7 +154,7 @@ The lifecycle producer emits one agent-scoped envelope:
 
 ```js
 {
-    schemaVersion: 'lifecycle-frontier.v1',
+    schemaVersion: 'lifecycle-frontier.v2',
     scope: {agentId, harnessInstance: null},
     status, // fresh | empty | missing | stale | degraded
     capturedAt,
@@ -170,7 +170,9 @@ The lifecycle producer emits one agent-scoped envelope:
             source,
             subjectId,
             headSha,
-            actionableSince,
+            actionableSince, // ISO timestamp, or null only with an explicit unavailable declaration
+            clockBasis, // transition | observation | unavailable
+            clockReason, // bounded source-owned reason; required when unavailable
             checkedAt,
             citations: []
         }
@@ -179,12 +181,13 @@ The lifecycle producer emits one agent-scoped envelope:
 }
 ```
 
-The producer orders stages first, then `actionableSince` oldest-first, then stable source id:
+The producer orders stages first. Within a stage, dated rows precede unavailable dates; dated rows
+are oldest-first, and stable source id breaks ties, including between unavailable rows:
 
 | Stage | Admission predicate | `actionableSince` | Reset/removal |
 |---|---|---|---|
 | 1. Own-PR repair | Current head has `CHANGES_REQUESTED`, failed required CI, or merge-conflict/non-mergeable state | First time the current head satisfies any repair predicate | Any head change resets every PR-derived row; clearing all repair predicates removes it; re-entry starts a new clock |
-| 2. Own-PR reviewer routing | Own PR is non-draft; all required checks pass (or none exist); no outstanding review request; no current-head closing review | Time the current head first becomes reviewable | Head change or loss of reviewability resets/removes; a new outstanding request or current-head closing review removes it |
+| 2. Own-PR reviewer routing | Own PR is open and non-draft; no repair predicate, including conflict; all required checks pass (or none exist); no outstanding review request; no current-head closing review | Start of the current uninterrupted reviewable interval | Head change or loss of reviewability resets/removes; a new outstanding request or current-head closing review removes it |
 | 3. Requested review | A live review request targets the consuming agent and has no current-head closing review | Later of request creation or current-head change | Request removal, closing review, PR terminal state, or head change removes/resets |
 | 4. Claimed A2A task | Structured A2A Task's current owner/target recipient is the consuming agent and its non-terminal state requires that agent's action (for example `InputRequired`) | Transition time into that actionable state | Ownership/recipient change, terminal state, or non-actionable transition removes/resets |
 | 5. Direct message | Unread direct message targets the consuming agent | Message `sentAt` | Read/archive/retraction removes it |
@@ -205,6 +208,57 @@ Explicit exclusions are as important as admissions:
 
 Lifecycle facts stay lifecycle facts. They are never converted into Golden Path score inputs by
 this composition.
+
+#### 2.3.1 Clock knowledge, provenance, and adoption
+
+**Eligibility and clock knowledge are separate.** An otherwise admitted obligation remains visible
+when its source explicitly declares an unavailable clock. A dated row requires a valid timestamp
+and `clockBasis: 'transition'` or `'observation'`. An unavailable row requires literal
+`actionableSince: null`, `clockBasis: 'unavailable'`, and a nonempty, bounded `clockReason` naming
+the missing evidence. The reason comes from the source's controlled diagnostic, not raw provider
+error text. Missing or malformed declarations and wrong-head provenance remain producer errors;
+neither the composer nor a reader infers unavailability from an omitted field.
+
+An unavailable date changes neither admission nor the envelope's read-freshness status. Failed
+source reads still degrade coverage independently. The pulse supplies `checkedAt` only; it cannot
+be copied into `actionableSince` or restart an obligation's age on each read.
+
+**Date the current uninterrupted obligation.** For reviewer routing, the source accounts for every
+conjunct in the admission predicate: PR open, non-draft, current head, effective required checks
+passed or none required, no repair predicate, no outstanding request, and no current-head closing
+review. Complete dated provider facts may establish the latest transition that makes that
+conjunction true, but they must reconcile with the current source snapshot. Same-head reopen,
+ready-for-review, request withdrawal, review dismissal and base-driven conflict clearance can
+cause re-entry. Missing history, a snapshot mismatch or an undated necessary transition produces
+an explicit unavailable declaration. An old green check does not prove that no later loss occurred.
+
+Commit creation is not PR head activation. The v2 implementation must remove both v1 uses of
+`headCommittedAt`: the floor in `clampToHead` and the zero-required-check `derivedGreen` fallback.
+Use a source-proven head-activation witness instead. Zero required checks and an existing SHA
+entering this PR after its checks completed are explicit evidence cases; a prior completion alone
+cannot date that PR's head entry. PR clock declarations remain bound to the current head even when
+their date is unavailable.
+
+Required-check calculations use the effective policy read at `checkedAt`; they do not claim that
+policy existed at an earlier check completion. A dated source observation of conflict or target
+membership uses `clockBasis: 'observation'`, never a provider-transition label. Where no suitable
+dated witness exists, the source declares unavailability. Hooks render transition dates as
+“actionable since”, observation dates as “observed actionable at”, and unavailable dates with their
+bounded reason. The independent capture-time “as of” label remains; an observation label makes no
+first-onset claim.
+
+**Adopt the incompatible shape coherently.** Admission normalization, frontier builder/validator
+and ordering, publication channel schema pin, and shared hook renderer must agree on v2. Both
+Claude and Codex append paths remain pure renderers. Existing v1 readers reject v2; the replacement
+does not silently coerce missing fields or grant mixed-generation compatibility. Preserve sibling
+channels and bare-policy fallback at their existing boundaries; §2.6.6 still governs writer-generation
+schema changes.
+
+The bounded source census at `7ca66028`, refreshed at `a126f919`, found only writer/producer
+definitions and no registered production call site. The amended implementation replaces v1
+outright; no dual-read migration is prescribed. This census is source evidence, not an inventory
+of every published file or proof of installed acceptance. Runtime, source-adapter, admission and
+local-publication acceptance remain separate implementation obligations.
 
 ### 2.4 Consumer binding is asymmetric and categorical
 
@@ -560,7 +614,7 @@ their one-PR contracts from this table, not Discussion archaeology:
 | Leaf family | Minimum executable evidence |
 |---|---|
 | Typed route + consumer migration | Schema tests for every status; route/advisory separation; current-focus substitution; one-pass/one-version identity; handoff parity; AgentOrchestrator no Markdown parse |
-| Lifecycle frontier | Full admission/exclusion matrix; head-change clocks; required-vs-optional checks; current-head review semantics; claimed-task ownership; direct-vs-broadcast; never-foreign identity |
+| Lifecycle frontier | Full admission/exclusion matrix; head-change and same-head loss/re-entry clocks; zero-required checks and an existing SHA entering after check completion; complete/mismatched/incomplete source history; declared unavailable vs missing/malformed/wrong-head clock; mixed dated/unavailable ordering and read freshness; required-vs-optional checks; current-head review semantics; claimed-task ownership; direct-vs-broadcast; never-foreign identity; coherent v2 publication/reader rejection and both hook render paths |
 | Projection broker/writer | Two-process contention; monotonic epoch; token+epoch release; expired takeover; old-holder wake; malformed row; DB unavailable; atomic crash points; channel watermark regression/conflict; no lost channel update |
 | Claude/Codex readers | Bound byte/row density; schema/recipient/TTL rejection; independent channel degradation; bare-policy fallback; descriptor-reference-only behavior |
 | Current lane landscape | Goal/dependency/authority dimensions; cite-backed unknown coverage; no durable current-state write; no ranking/assignment |
