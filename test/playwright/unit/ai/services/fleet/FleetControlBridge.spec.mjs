@@ -658,6 +658,17 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(calls).toEqual([['setRepo', payload]]);
     });
 
+    test('prepareRepos preserves every declared outcome through the actual wire and bridge', async () => {
+        const payload = {id: 'alice'};
+        for (const result of [null, {state: 'at-start', repos: []}, {state: 'identity-unavailable', repos: []},
+            {state: 'complete', repos: [{repoSlug: 'x/y', state: 'prepared', via: 'prepare', at: '2026-10-11T01:00:00.000Z'}]},
+            {state: 'superseded', repos: [{repoSlug: 'x/y', state: 'prepared'}]}]) {
+            managerStub.prepareRepos = input => {expect(input).toEqual(payload); return Promise.resolve(result)};
+            expect(await dispatchFleetRequest(createFleetWireRequest('prepareRepos', payload), FleetControlBridge))
+                .toMatchObject({ok: true, result})
+        }
+    });
+
     test('setRepos delegates the single payload to the manager and answers the updated definition as accepted (fleet authority)', () => {
         const payload = {id: 'alice', repos: [{repoSlug: 'neomjs/neo-agent-brain'}]};
         expect(FleetControlBridge.setRepos(payload)).toEqual({status: 'accepted', agent: {id: 'alice', metadata: {repos: payload.repos}}});

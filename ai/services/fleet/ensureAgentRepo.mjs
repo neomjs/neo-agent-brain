@@ -2,6 +2,7 @@ import {assertRoot, deriveAgentRepoPath} from './deriveAgentRepoPath.mjs';
 import {ensureSeatRoot}                  from './ensureSeatRoot.mjs';
 import {inspectAgentRepo}                from './inspectAgentRepo.mjs';
 import {provisionAgentRepo}              from './provisionAgentRepo.mjs';
+import {redactReadFailure}               from './redactReadFailure.mjs';
 import {execFile}                        from 'node:child_process';
 import fs                                from 'node:fs/promises';
 import path                              from 'node:path';
@@ -66,6 +67,60 @@ export async function ensureAgentRepo({managedRoot, agentId, repoSlug, cloneUrl,
         });
 
     return {repoPath, state: inspection.state, action: result.action, cloned: result.cloned};
+}
+
+/**
+ * @summary Ensures the ordered additional-repository list for Start or a running launch. One failed
+ * checkout becomes a redacted row; the remaining entries continue. Ownership is checked around
+ * awaits, but an already dispatched clone is not interrupted or rolled back.
+ * @param {Object} options
+ * @param {Object[]} options.repos Declared additional repositories, excluding the working checkout.
+ * @param {String} options.managedRoot Trusted checkout root.
+ * @param {String} options.agentId
+ * @param {String} [options.credential]
+ * @param {String} [options.credentialOrigin]
+ * @param {'start'|'prepare'} options.via The operation producing the rows.
+ * @param {Function} [options.ensureRepo=ensureAgentRepo] Single-checkout seam.
+ * @param {Function} [options.cloneRepo] Clone seam forwarded unchanged.
+ * @param {Function} [options.onEnsured] Optional post-clone work before a row is prepared.
+ * @param {Function} [options.isCurrent] Ownership check; Start may throw its cancellation here.
+ * @param {Function} [options.now] ISO observation clock.
+ * @returns {Promise<{repos: Object[], checkouts: Object[], current: Boolean}>}
+ */
+export async function ensureAgentRepos({repos, managedRoot, agentId, credential, credentialOrigin, via,
+    ensureRepo = ensureAgentRepo, cloneRepo, onEnsured, isCurrent = () => true, now = () => new Date().toISOString()}) {
+    const rows = [], checkouts = [];
+
+    for (const {repoSlug, cloneUrl} of repos) {
+        if (!isCurrent()) return {repos: rows, checkouts, current: false};
+
+        let ensured, reason;
+
+        try {
+            ensured = await ensureRepo({managedRoot, agentId, repoSlug, cloneUrl, credential, credentialOrigin, cloneRepo})
+        } catch (error) {
+            reason = redactReadFailure(error) ?? 'no legible error'
+        }
+
+        if (!isCurrent()) {
+            rows.push({repoSlug, state: 'failed', reason: 'the launch changed before repository preparation completed', via, at: now()});
+            return {repos: rows, checkouts, current: false}
+        }
+
+        if (ensured && onEnsured) {
+            try {
+                await onEnsured({repoSlug, cloneUrl, ...ensured})
+            } catch (error) {
+                reason = redactReadFailure(error) ?? 'no legible error'
+            }
+        }
+
+        if (!reason) checkouts.push({repoSlug, cloneUrl, repoPath: ensured.repoPath});
+        rows.push({repoSlug, state: reason ? 'failed' : 'prepared', ...(reason ? {reason} : {}), via, at: now()});
+        if (!isCurrent()) return {repos: rows, checkouts, current: false};
+    }
+
+    return {repos: rows, checkouts, current: isCurrent()}
 }
 
 /**

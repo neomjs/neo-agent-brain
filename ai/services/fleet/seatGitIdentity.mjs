@@ -324,10 +324,11 @@ function withoutGitOverrides(env) {
  * @param {String} options.repoPath          The managed checkout.
  * @param {Object} options.identity          `{name, email}` the seat commits as.
  * @param {Object} [options.env=process.env] The environment the probes start from.
+ * @param {Boolean} [options.readOnly=false] Verify an existing checkout without changing config or ownership records.
  * @returns {Promise<Object>} `{state: 'converged', scope, action: 'written' | 'kept' | 'updated'}`, or
  *     `{state: 'mismatch', scope, found, reason}`, where `found` is the identity the checkout holds or git records.
  */
-export async function convergeSeatGitIdentity({repoPath, identity, env = process.env}) {
+export async function convergeSeatGitIdentity({repoPath, identity, env = process.env, readOnly = false}) {
     const
         baseEnv = withoutGitOverrides(env),
         git     = async (args, runEnv = baseEnv) => (await execFileAsync('git', args, {cwd: repoPath, env: runEnv, timeout: 10000})).stdout.trim(),
@@ -361,6 +362,9 @@ export async function convergeSeatGitIdentity({repoPath, identity, env = process
     let action = 'kept';
 
     if (current.name !== identity.name || current.email !== identity.email) {
+        if (readOnly) {
+            return {state: 'mismatch', scope, found: held, reason: `does not record the running launch's Git identity in its ${scope} config; existing checkout left unchanged`}
+        }
         if (!empty && !fleets) {
             const unset  = current.name === null ? 'user.name' : 'user.email',
                   reason = current.name === null || current.email === null

@@ -1211,6 +1211,7 @@ class FleetLifecycleService extends Base {
      *     seat this server re-adopted from its lease rather than spawned; such a seat holds no pipe,
      *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`). `repos` is the
      *     per-repository outcome {@link setRepoOutcomes} recorded for this launch, `null` until one is;
+     *     repository rows carry `via: 'start'|'prepare'` and observation time `at` when supplied by their producer;
      *     `dependencies` is each checkout's row from the seat's latest Start that reached its install
      *     ({@link setPendingDependencies}): live while that Start is pending, its final rows once it ended, launched or
      *     not; `null` before one.
@@ -1330,9 +1331,10 @@ class FleetLifecycleService extends Base {
      * @summary Records the per-repository outcome of the provisioned start behind a launch, so
      * {@link status} still reports which of the seat's other repositories it prepared, and why one
      * failed, after the start's own answer is gone. Bound to that launch like {@link setWakeRoute}: a
-     * fresh start writes a fresh record.
+     * fresh start writes a fresh record. Runtime preparation merges only the rows it touched.
+     * A stopped record retains its launch key but cannot accept a late preparation result.
      * @param {String} id
-     * @param {Object[]} repos `[{repoSlug, state: 'prepared' | 'failed', reason?}]`, reasons already
+     * @param {Object[]} repos `[{repoSlug, state: 'prepared' | 'failed', reason?, via?, at?}]`, reasons already
      *     redacted at the source.
      * @param {Object} launch `{pid, startedAt}` from the status of that start.
      * @returns {Boolean} `true` when recorded; `false` for an unknown seat or a launch it has since replaced.
@@ -1340,9 +1342,14 @@ class FleetLifecycleService extends Base {
     setRepoOutcomes(id, repos, {pid, startedAt} = {}) {
         const record = this.processes.get(id);
 
-        if (!record || record.pid !== pid || record.startedAt !== startedAt) return false;
+        if (!record || record.state !== 'running' || record.pid !== pid || record.startedAt !== startedAt) return false;
 
-        record.repos = this.outcomeRows(repos);
+        const merged = new Map((record.repos ?? []).map(row => [row.repoSlug, row]));
+        for (const {repoSlug, state, reason, via, at} of repos) {
+            merged.set(repoSlug, {repoSlug, state, ...(reason != null ? {reason} : {}),
+                ...(via != null ? {via} : {}), ...(at != null ? {at} : {})})
+        }
+        record.repos = [...merged.values()];
         return true
     }
 

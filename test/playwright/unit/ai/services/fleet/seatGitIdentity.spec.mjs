@@ -328,6 +328,29 @@ test.describe('proveSeatForgeAccount', () => {
 });
 
 test.describe('convergeSeatGitIdentity (real git)', () => {
+    test('read-only verification never writes missing or different config, including Fleet-owned values', async () => {
+        const {root, env, repo} = fixture(), config = path.join(repo, '.git', 'config');
+        try {
+            const empty = fs.readFileSync(config);
+            expect((await convergeSeatGitIdentity({repoPath: repo, identity: SEAT, env, readOnly: true})).state).toBe('mismatch');
+            expect(fs.readFileSync(config)).toEqual(empty);
+
+            await convergeSeatGitIdentity({repoPath: repo, identity: SEAT, env});
+            const owned = fs.readFileSync(config);
+            expect(await convergeSeatGitIdentity({repoPath: repo, identity: SEAT, env, readOnly: true}))
+                .toMatchObject({state: 'converged', action: 'kept'});
+            expect((await convergeSeatGitIdentity({repoPath: repo, identity: RENAMED, env, readOnly: true})).state).toBe('mismatch');
+            expect(fs.readFileSync(config)).toEqual(owned);
+
+            git(repo, env, 'config', '--local', 'user.name', 'Edited by operator');
+            const edited = fs.readFileSync(config);
+            expect((await convergeSeatGitIdentity({repoPath: repo, identity: SEAT, env, readOnly: true})).state).toBe('mismatch');
+            expect(fs.readFileSync(config)).toEqual(edited);
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
     let fx;
 
     test.beforeEach(() => {

@@ -29,6 +29,141 @@ import fs                         from 'fs';
 import os                         from 'os';
 import path                       from 'path';
 
+test.describe('FleetManager prepares repositories for a live launch', () => {
+    let root, agent, launch, calls, lifecycle;
+    const at = '2026-10-11T01:00:00.000Z';
+
+    test.beforeEach(() => {
+        root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-prepare-repos-'));
+        calls = [];
+        agent = {id: 'seat', harnessType: 'codex', seatHome: path.join(root, 'seat'),
+            gitName : 'Pending Name', gitEmail: 'pending@example.test',
+            metadata: {repo: {repoSlug: 'x/main'}, repos: [
+                {repoSlug: 'x/present', cloneUrl: 'https://github.com/x/present.git'},
+                {repoSlug: 'x/new', cloneUrl: 'https://github.com/x/new.git'}
+            ]}};
+        launch = {pid: 123, startedAt: at, state: 'running', gitIdentity: {state: 'derived', name: 'Running Name', email: 'running@example.test'}};
+        fs.mkdirSync(path.join(root, 'seat', 'x', 'present', '.git'), {recursive: true});
+        lifecycle = {
+            getRegistry: () => ({getDefinition: id => id === 'seat' ? structuredClone(agent) : null,
+                resolveCredential: () => 'ghp_fixture_only'}),
+            isRunning      : () => launch.state === 'running',
+            status         : () => structuredClone(launch),
+            setRepoOutcomes: (id, rows, token) => {calls.push(['publish', id, rows, token]); return true}
+        };
+        FleetManager.lifecycleService = lifecycle;
+        FleetManager.managedRoot = root;
+        FleetManager.repoPreparationOptions = {
+            now      : () => at,
+            cloneRepo: async (url, destination) => {
+                calls.push(['clone', url, destination]);
+                fs.mkdirSync(path.join(destination, '.git'), {recursive: true})
+            },
+            convergeGitIdentity: async args => {calls.push(['identity', args]); return {state: 'converged'}}
+        };
+    });
+
+    test.afterEach(() => {
+        FleetManager.lifecycleService = null;
+        FleetManager.managedRoot = null;
+        FleetManager.repoPreparationOptions = null;
+        FleetManager.seatHomeHolds.clear();
+        fs.rmSync(root, {recursive: true, force: true});
+    });
+
+    test('clones only the absent repository and gives it the captured launch identity', async () => {
+        const result = await FleetManager.prepareRepos({id: 'seat'});
+        expect(result).toEqual({state: 'complete', repos: [
+            {repoSlug: 'x/present', state: 'prepared', via: 'prepare', at},
+            {repoSlug: 'x/new', state: 'prepared', via: 'prepare', at}
+        ]});
+        expect(calls.filter(([kind]) => kind === 'clone')).toEqual([
+            ['clone', 'https://github.com/x/new.git', path.join(root, 'seat', 'x', 'new')]
+        ]);
+        expect(calls.filter(([kind]) => kind === 'identity')).toEqual([
+            ['identity', {repoPath: path.join(root, 'seat', 'x', 'present'), identity: {name: 'Running Name', email: 'running@example.test'}, readOnly: true}],
+            ['identity', {repoPath: path.join(root, 'seat', 'x', 'new'), identity: {name: 'Running Name', email: 'running@example.test'}, readOnly: false}]
+        ]);
+        expect(calls.at(-1)[0]).toBe('publish');
+        expect(launch.state).toBe('running');
+    });
+
+    test('unknown, stopped and identity-unavailable launches perform no filesystem work', async () => {
+        expect(await FleetManager.prepareRepos({id: 'unknown'})).toBeNull();
+        launch.state = 'stopped';
+        expect(await FleetManager.prepareRepos({id: 'seat'})).toEqual({state: 'at-start', repos: []});
+        launch.state = 'running';
+        delete launch.gitIdentity;
+        expect(await FleetManager.prepareRepos({id: 'seat'})).toMatchObject({state: 'identity-unavailable', repos: [], reason: expect.stringMatching(/Start/)});
+        expect(calls).toEqual([]);
+        expect(fs.existsSync(path.join(root, 'seat', 'x', 'new'))).toBe(false);
+    });
+
+    test('a failed repository stays a row while the next repository prepares', async () => {
+        fs.rmSync(path.join(root, 'seat', 'x', 'present', '.git'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'seat', 'x', 'present', 'work.txt'), 'keep');
+        const result = await FleetManager.prepareRepos({id: 'seat'});
+        expect(result.state).toBe('complete');
+        expect(result.repos[0]).toMatchObject({repoSlug: 'x/present', state: 'failed', via: 'prepare', at, reason: expect.any(String)});
+        expect(result.repos[1]).toMatchObject({repoSlug: 'x/new', state: 'prepared'});
+        expect(fs.readFileSync(path.join(root, 'seat', 'x', 'present', 'work.txt'), 'utf8')).toBe('keep');
+    });
+
+    test('queued preparations clone once and the second only verifies the reused identity', async () => {
+        const results = await Promise.all([FleetManager.prepareRepos({id: 'seat'}), FleetManager.prepareRepos({id: 'seat'})]);
+        expect(results.map(result => result.state)).toEqual(['complete', 'complete']);
+        expect(calls.filter(([kind]) => kind === 'clone')).toHaveLength(1);
+        expect(calls.filter(([kind, args]) => kind === 'identity' && !args.readOnly)).toHaveLength(1);
+        expect(FleetManager.seatHomeHolds.size).toBe(0);
+    });
+
+    test('closed input and a mismatched seat home cannot reach the clone seam', async () => {
+        for (const payload of [null, [], {}, {id: 'seat', repoPath: '/outside'}]) {
+            await expect(FleetManager.prepareRepos(payload)).rejects.toThrow(/seat id/)
+        }
+        agent.seatHome = path.join(root, 'other-seat');
+        await expect(FleetManager.prepareRepos({id: 'seat'})).rejects.toThrow(/matching managed home/);
+        expect(calls).toEqual([]);
+    });
+
+    test('clone and identity errors are redacted before they become outcome rows', async () => {
+        const secret = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
+        FleetManager.repoPreparationOptions.convergeGitIdentity = async () => {throw new Error(`identity ${secret}`)};
+        FleetManager.repoPreparationOptions.cloneRepo = async () => {throw new Error(`clone ${secret}`)};
+        const result = await FleetManager.prepareRepos({id: 'seat'});
+        expect(result.repos.map(row => row.state)).toEqual(['failed', 'failed']);
+        expect(JSON.stringify(result)).not.toContain(secret);
+    });
+
+    test('retrying a clone whose identity failed cannot promote it to prepared by reuse alone', async () => {
+        FleetManager.repoPreparationOptions.convergeGitIdentity = async () => ({state: 'mismatch', reason: 'the checkout holds another identity'});
+        const first = await FleetManager.prepareRepos({id: 'seat'});
+        expect(first.repos[1]).toMatchObject({state: 'failed'});
+        const retry = await FleetManager.prepareRepos({id: 'seat'});
+        expect(retry.repos[1]).toMatchObject({state: 'failed'});
+        expect(calls.filter(([kind]) => kind === 'clone')).toHaveLength(1);
+    });
+
+    for (const change of ['stop', 'replace']) {
+        test(`${change} during a clone cannot publish or prepare another repository`, async () => {
+            agent.metadata.repos.push({repoSlug: 'x/later', cloneUrl: 'https://github.com/x/later.git'});
+            const clone = FleetManager.repoPreparationOptions.cloneRepo;
+            FleetManager.repoPreparationOptions.cloneRepo = async (...args) => {
+                await clone(...args);
+                if (change === 'stop') launch.state = 'stopped';
+                else launch.pid++;
+            };
+            const result = await FleetManager.prepareRepos({id: 'seat'});
+            expect(result.state).toBe('superseded');
+            expect(calls.filter(([kind]) => kind === 'publish')).toEqual([]);
+            expect(calls.filter(([kind, args]) => kind === 'identity' && !args.readOnly)).toEqual([]);
+            expect(calls.filter(([kind]) => kind === 'clone')).toHaveLength(1);
+            expect(fs.existsSync(path.join(root, 'seat', 'x', 'new', '.git'))).toBe(true);
+            expect(fs.existsSync(path.join(root, 'seat', 'x', 'later'))).toBe(false);
+        });
+    }
+});
+
 /** Borrow real Start cancellation methods while isolating mutable lifecycle state per test. */
 function lifecycleWithStarts(overrides = {}) {
     return Object.assign(Object.create(FleetLifecycleService), {

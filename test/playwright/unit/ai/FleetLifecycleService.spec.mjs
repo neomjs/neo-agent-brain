@@ -2442,6 +2442,30 @@ test.describe('FleetLifecycleService.setRepoOutcomes — a start\'s per-reposito
         ])
     });
 
+    test('runtime outcomes retain provenance, merge touched rows and refuse a stopped launch', () => {
+        const at = '2026-10-11T01:00:00.000Z';
+        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'running', ...launch});
+        FleetLifecycleService.setRepoOutcomes('seat', [
+            {repoSlug: 'x/kept', state: 'prepared', via: 'start', at},
+            {repoSlug: 'x/changed', state: 'failed', reason: 'earlier', via: 'start', at}
+        ], launch);
+        expect(FleetLifecycleService.setRepoOutcomes('seat', [
+            {repoSlug: 'x/changed', state: 'prepared', via: 'prepare', at, credential: 'never'},
+            {repoSlug: 'x/new', state: 'prepared', via: 'prepare', at}
+        ], launch)).toBe(true);
+        const rows = FleetLifecycleService.status('seat').repos;
+        expect(rows).toEqual([
+            {repoSlug: 'x/kept', state: 'prepared', via: 'start', at},
+            {repoSlug: 'x/changed', state: 'prepared', via: 'prepare', at},
+            {repoSlug: 'x/new', state: 'prepared', via: 'prepare', at}
+        ]);
+        FleetLifecycleService.processes.get('seat').state = 'stopped';
+        expect(FleetLifecycleService.setRepoOutcomes('seat', [{repoSlug: 'x/new', state: 'failed'}], launch)).toBe(false);
+        expect(FleetLifecycleService.status('seat').repos).toEqual(rows);
+        expect(FleetLifecycleService.outcomeRows([{repoSlug: 'x/new', state: 'installed', via: 'prepare', at}]))
+            .toEqual([{repoSlug: 'x/new', state: 'installed'}]);
+    });
+
     test('an outcome for an earlier launch, an unknown seat or no launch at all is refused', () => {
         FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'running', ...launch});
 

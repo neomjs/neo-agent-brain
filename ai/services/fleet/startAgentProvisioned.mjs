@@ -1,10 +1,9 @@
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                          from './mcpServers.mjs';
-import {ensureAgentRepo}                                        from './ensureAgentRepo.mjs';
+import {ensureAgentRepo, ensureAgentRepos}                      from './ensureAgentRepo.mjs';
 import {installSeatDependencies}                                from './installAgentRepoDependencies.mjs';
 import {LAUNCH_ADMISSION_CREDENTIALS, LAUNCH_ADMISSION_REASONS} from '../../../src/fleet/contract/launchAdmission.mjs';
 import {launchRefusalOf}                                        from '../../../src/fleet/contract/launchAuthority.mjs';
 import {prepareManagedAgentWorkspace}                           from './prepareManagedAgentWorkspace.mjs';
-import {redactReadFailure}                                      from './redactReadFailure.mjs';
 import {resolveSeatPlaneTarget}                                 from './resolveSeatPlaneTarget.mjs';
 import {importSeatMemory, MEMORY_IMPORT_NONE}                   from './seatMemoryImport.mjs';
 import {
@@ -565,25 +564,16 @@ async function provisionAgent({
         });
     startSignal.throwIfAborted();
 
-    // The seat's other repositories go beside the working checkout, with the same PAT. One that fails is
-    // reported on the status and the launch goes on: the working checkout is the seat's cwd and its gate,
-    // while the others are only places it reaches into. A failure here is response data, out of the
-    // dispatcher's sanitizer's reach, and a clone error can echo the PAT.
+    // Additional repositories use the same ordered preparation as the live-seat operation. The
+    // working checkout remains the launch gate; a failed additional clone remains a redacted row.
     const
-        repos     = [],
-        checkouts = [{...repo, repoPath: targetRepoRoot}];
-
-    for (const {repoSlug, cloneUrl} of agent.metadata?.repos ?? []) {
-        try {
-            const {repoPath} = await ensureRepo({managedRoot, agentId, repoSlug, cloneUrl, credential: resolvedCredential, credentialOrigin, cloneRepo});
-
-            checkouts.push({repoSlug, cloneUrl, repoPath});
-            repos.push({repoSlug, state: 'prepared'})
-        } catch (error) {
-            repos.push({repoSlug, state: 'failed', reason: redactReadFailure(error) ?? 'no legible error'})
-        }
-        startSignal.throwIfAborted();
-    }
+        additional = await ensureAgentRepos({
+            repos: agent.metadata?.repos ?? [], managedRoot, agentId, credential: resolvedCredential,
+            credentialOrigin, cloneRepo, ensureRepo, via: 'start',
+            isCurrent: () => {startSignal.throwIfAborted(); return true}
+        }),
+        repos = additional.repos,
+        checkouts = [{...repo, repoPath: targetRepoRoot}, ...additional.checkouts];
 
     // Every checkout the seat commits in carries its identity before anything runs there. One that holds another
     // identity keeps it, and the start stops: a disagreement is never masked by the launch env.

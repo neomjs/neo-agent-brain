@@ -907,6 +907,15 @@ class FleetControlBridge extends Base {
     }
 
     /**
+     * @summary Prepares the registered additional repositories for the current live launch.
+     * @param {Object} payload `{id}`; paths and credentials remain owned by the manager.
+     * @returns {Promise<Object|null>} The manager's finite preparation outcome and per-repository rows.
+     */
+    prepareRepos(payload) {
+        return this.getManager().prepareRepos(payload)
+    }
+
+    /**
      * @summary Set an agent's profile-avatar reference (`metadata.avatarUrl`) on its definition (fleet
      * authority — the FM owns the registry, as with `defineAgent`). A single-`params` payload, so it is
      * pane-reachable over the wire. Non-destructive to other metadata.

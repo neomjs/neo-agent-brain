@@ -327,8 +327,8 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(events).toEqual(['credential', 'ensure', 'ensure', 'ensure', 'prepare', 'start']);
         expect(lifecycle.calls.start[0].opts.cwd).toBe('/managed/a/neomjs/neo');
         expect(status.repos).toEqual([
-            {repoSlug: 'neomjs/neo-agent-brain',       state: 'prepared'},
-            {repoSlug: 'neomjs/neo-agent-institution', state: 'prepared'}
+            {repoSlug: 'neomjs/neo-agent-brain',       state: 'prepared', via: 'start', at: expect.any(String)},
+            {repoSlug: 'neomjs/neo-agent-institution', state: 'prepared', via: 'start', at: expect.any(String)}
         ]);
 
         // the launch record keeps the same outcome for every later read, bound to this launch
@@ -383,7 +383,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
               });
 
         expect(lifecycle.calls.start).toHaveLength(1);
-        expect(status.repos).toEqual([{repoSlug: 'neomjs/missing', state: 'failed', reason: 'ensureAgentRepo: clone failed'}]);
+        expect(status.repos).toEqual([{repoSlug: 'neomjs/missing', state: 'failed', reason: 'ensureAgentRepo: clone failed', via: 'start', at: expect.any(String)}]);
         expect(prepareWorkspace.calls[0].assignedRepos).toEqual([{...REPO, repoPath: '/managed/a/neomjs/neo'}]);
     });
 

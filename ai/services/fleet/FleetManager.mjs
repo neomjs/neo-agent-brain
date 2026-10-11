@@ -1,6 +1,7 @@
 import Base                                                     from 'neo.mjs/src/core/Base.mjs';
 import FleetLifecycleService                                    from './FleetLifecycleService.mjs';
 import {armFleetSeatWake}                                       from './armFleetSeatWake.mjs';
+import {ensureAgentRepos}                                       from './ensureAgentRepo.mjs';
 import {isOnInstance}                                           from './provisionAgentRepo.mjs';
 import {REPO_FORGES, assertNoCheckoutCollision, assertRepoSlug} from './deriveAgentRepoPath.mjs';
 import {inspectFleetRepos}                                      from './inspectFleetRepos.mjs';
@@ -9,9 +10,10 @@ import {readFleetPresenceSnapshot}                              from './fleetPre
 import {readFleetThrottleStateSnapshot}                         from './fleetThrottleStateAdapter.mjs';
 import {readFleetWakeStateSnapshot}                             from './fleetWakeStateAdapter.mjs';
 import {redactReadFailure}                                      from './redactReadFailure.mjs';
-import {resolveSeatGitIdentity}                                 from './seatGitIdentity.mjs';
+import {convergeSeatGitIdentity, resolveSeatGitIdentity}        from './seatGitIdentity.mjs';
 import {readSeatModelCatalog}                                   from './seatModelCatalog.mjs';
 import {startAgentProvisioned}                                  from './startAgentProvisioned.mjs';
+import path                                                     from 'node:path';
 
 /**
  * @summary The one rule for a repository a seat clones: a slug that passes the checkout path's own rule
@@ -196,6 +198,12 @@ class FleetManager extends Base {
      * @member {Function|null} repoStatusFn=null
      */
     repoStatusFn = null
+    /**
+     * Isolated repository-operation seams for {@link prepareRepos}: `ensureRepo`, `cloneRepo`,
+     * `convergeGitIdentity` and `now`. No root, seat or credential comes from this test seam.
+     * @member {Object|null} repoPreparationOptions=null
+     */
+    repoPreparationOptions = null
     /**
      * Throttle-state observation options for {@link fleetThrottleStatus} — `{resolveThrottleState}`
      * per the `fleetThrottleStateAdapter` contract. `null` ⇒ every row is honestly `unknown`: no
@@ -879,6 +887,74 @@ class FleetManager extends Base {
         entries.length && assertNoCheckoutCollision([working.repoSlug, ...entries.map(entry => entry.repoSlug)], caller);
 
         return registry.updateAgent(id, {metadata: {repos: entries}});
+    }
+
+    /**
+     * @summary Prepares a running seat's additional repositories without restarting its harness or
+     * rewriting its workspace. New checkouts receive the captured launch's Git identity; reuse
+     * verifies it without writing, including a previous clone whose identity step failed.
+     * Results publish only while that same launch remains live.
+     * An in-flight clone cannot be interrupted: superseded results retain their rows, and the next
+     * Start can reuse any checkout the old operation created.
+     * @param {Object} payload Closed `{id}`; repository coordinates remain registry-owned.
+     * @returns {Promise<Object|null>} `{state: 'complete'|'at-start'|'identity-unavailable'|'superseded',
+     * repos, reason?}`; null for an unknown seat. Missing launch identity requires the next Start.
+     */
+    async prepareRepos(payload = {}) {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+            Object.keys(payload).some(key => key !== 'id') || typeof payload.id !== 'string' || !payload.id.trim()) {
+            throw new Error('FleetManager.prepareRepos: name exactly one seat id.')
+        }
+
+        const {id}  = payload, lifecycle = this.getLifecycleService(), registry = lifecycle.getRegistry(),
+              agent = registry.getDefinition(id);
+
+        if (!agent) return null;
+
+        const launch    = lifecycle.status(id),
+              isCurrent = () => {
+                  const current = lifecycle.status(id);
+                  return lifecycle.isRunning(id) && current.pid === launch.pid && current.startedAt === launch.startedAt
+              };
+
+        if (!lifecycle.isRunning(id) || !launch.pid || !launch.startedAt) return {state: 'at-start', repos: []};
+        if (!['declared', 'derived'].includes(launch.gitIdentity?.state) || !launch.gitIdentity.name || !launch.gitIdentity.email) {
+            return {state: 'identity-unavailable', repos: [], reason: 'The running launch has no recorded Git identity; its next Start records it.'}
+        }
+
+        return this.withSeatHome(id, async () => {
+            if (!isCurrent()) return {state: 'superseded', repos: []};
+
+            const managedRoot = this.getManagedRoot();
+            if (agent.metadata?.launch || agent.seatHome !== path.resolve(managedRoot, id)) {
+                throw new Error('FleetManager.prepareRepos: the seat has no matching managed home; reconcile its placement before preparing repositories.')
+            }
+
+            const options  = this.repoPreparationOptions || {},
+                  identity = {name: launch.gitIdentity.name, email: launch.gitIdentity.email};
+            let credential, credentialFailure;
+
+            try {
+                credential = registry.resolveCredential(id);
+                if (!credential) credentialFailure = 'the seat has no stored credential; update it before preparing repositories'
+            } catch (error) {
+                credentialFailure = redactReadFailure(error) ?? 'the stored credential could not be read'
+            }
+
+            const result = await ensureAgentRepos({
+                repos           : agent.metadata?.repos ?? [], managedRoot, agentId: id, credential,
+                credentialOrigin: agent.forgeHost, via: 'prepare', isCurrent,
+                cloneRepo       : options.cloneRepo, now: options.now,
+                ensureRepo      : credentialFailure ? async () => {throw new Error(credentialFailure)} : options.ensureRepo,
+                onEnsured       : async ({repoPath, cloned}) => {
+                    const outcome = await (options.convergeGitIdentity || convergeSeatGitIdentity)({repoPath, identity, readOnly: !cloned});
+                    if (outcome.state !== 'converged') throw new Error(outcome.reason || 'the checkout Git identity did not converge')
+                }
+            });
+            const recorded = result.current && isCurrent() && lifecycle.setRepoOutcomes(id, result.repos, launch);
+
+            return {state: recorded ? 'complete' : 'superseded', repos: result.repos}
+        })
     }
 
     /**
