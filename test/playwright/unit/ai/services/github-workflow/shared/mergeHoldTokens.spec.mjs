@@ -40,8 +40,15 @@ test.describe('mergeHoldTokens', () => {
             }).held).toBe(false);
         });
 
+        test('a first approval tied with the hold grants no prior standing', () => {
+            expect(resolveMergeHold({
+                comments: [hold('peer-a', T1)],
+                reviews : [rev('peer-a', T1)]
+            })).toEqual({held: false, holders: []});
+        });
+
         test('the live T1 specimen still holds — an approver who then posts a hold', () => {
-            // Non-vacuity: the three arms above must not be satisfiable by disabling the feature.
+            // Non-vacuity: the four arms above must not be satisfiable by disabling the feature.
             const verdict = resolveMergeHold({comments: [hold('peer-a', T1)], reviews: [rev('peer-a', T0)]});
 
             expect(verdict.held).toBe(true);
@@ -50,6 +57,24 @@ test.describe('mergeHoldTokens', () => {
     });
 
     test.describe('clearing', () => {
+        for (const state of ['COMMENTED', 'APPROVED']) {
+            test(`a tied ${state} review preserves an already established hold`, () => {
+                const comment = hold('peer-a', T1);
+
+                expect(resolveMergeHold({
+                    comments: [comment],
+                    reviews : [rev('peer-a', T0), rev('peer-a', T1, state)]
+                })).toEqual({held: true, holders: [comment]});
+            });
+
+            test(`a strictly later own ${state} review clears the hold`, () => {
+                expect(resolveMergeHold({
+                    comments: [hold('peer-a', T1)],
+                    reviews : [rev('peer-a', T0), rev('peer-a', T2, state)]
+                })).toEqual({held: false, holders: []});
+            });
+        }
+
         test('a newer submitted review from the SAME reviewer clears, in any state', () => {
             expect(resolveMergeHold({
                 comments: [hold('peer-a', T1)],

@@ -143,9 +143,9 @@ export function mergeHoldToken(body = '') {
 export function resolveMergeHold({comments = [], reviews = [], truncated = false} = {}) {
     const
         // Two indices, because standing and clearing ask different questions of the same timeline:
-        // an APPROVED review grants the right to hold, any submitted review spends it.
-        latestApprovalByLogin = new Map(),
-        latestReviewByLogin   = new Map();
+        // a strictly prior APPROVED review grants standing; only a strictly newer review clears it.
+        earliestApprovalByLogin = new Map(),
+        latestReviewByLogin     = new Map();
 
     for (const review of reviews) {
         const login = review?.login;
@@ -161,10 +161,10 @@ export function resolveMergeHold({comments = [], reviews = [], truncated = false
         }
 
         if (review.state === 'APPROVED') {
-            const approved = latestApprovalByLogin.get(login);
+            const approved = earliestApprovalByLogin.get(login);
 
-            if (!approved || review.submittedAt > approved) {
-                latestApprovalByLogin.set(login, review.submittedAt);
+            if (!approved || review.submittedAt < approved) {
+                earliestApprovalByLogin.set(login, review.submittedAt);
             }
         }
     }
@@ -174,10 +174,10 @@ export function resolveMergeHold({comments = [], reviews = [], truncated = false
             return false;
         }
 
-        const approvedAt = latestApprovalByLogin.get(comment.login);
+        const approvedAt = earliestApprovalByLogin.get(comment.login);
 
-        // STANDING. No approval to withdraw, no hold — and an approval at-or-after the token means
-        // the reviewer's latest word is the approval itself.
+        // STANDING. At least one strictly prior approval must confer standing. A tied approval
+        // cannot grant it, nor erase an earlier approval that already did.
         if (!approvedAt || approvedAt >= comment.createdAt) {
             return false;
         }
@@ -186,7 +186,7 @@ export function resolveMergeHold({comments = [], reviews = [], truncated = false
         // assumed to supersede it, and an equality that guessed would guess in the permissive
         // direction. `clearedAt` is always defined here — the approval that granted standing is
         // itself a submitted review.
-        return comment.createdAt > latestReviewByLogin.get(comment.login)
+        return comment.createdAt >= latestReviewByLogin.get(comment.login)
     });
 
     return {
