@@ -1412,6 +1412,13 @@ function reviewDatabaseId(review) {
 }
 
 /**
+ * A submitted review's GitHub state as a submission names it, the vocabulary the Round-2 state matrix reads.
+ * `APPROVED` is spelled the same in both.
+ * @type {Readonly<Object<String, String>>}
+ */
+const SUBMISSION_STATE_OF_REVIEW = Object.freeze({CHANGES_REQUESTED: 'REQUEST_CHANGES', COMMENTED: 'COMMENT'});
+
+/**
  * @summary Validates an ordinary Round 2 against the round it claims to disposition.
  *
  * The body-only tier proves a document is disposition-SHAPED. It cannot prove a disposition occurred,
@@ -1433,10 +1440,13 @@ function reviewDatabaseId(review) {
  * With two reviewers requesting changes, the newest RC is the other reviewer's whenever theirs came
  * later, and the correct disposition of one's own round was refused against their actions (neo#19125).
  *
+ * **Both verbs run it.** Editing a submitted review is a second way to post a round, so `update` reads
+ * the pull request's reviews with the edited one and leaves that one out: a review is never its own Round 1.
+ *
  * @param {Object}   options
  * @param {String}   options.body        The candidate Round-2 body.
  * @param {Object[]} options.reviews     Prior review nodes (`{body, databaseId, id, state, submittedAt, url, author}`).
- * @param {String}   options.state       The GitHub review state being submitted.
+ * @param {String}   options.state       The state being submitted, as a submission names it: `APPROVED`, `REQUEST_CHANGES` or `COMMENT`.
  * @returns {Object|null} Failure payload, or `null` when the round is a faithful disposition.
  */
 function getRound2DispositionRelationFailure({body, reviews, state}) {
@@ -4550,8 +4560,8 @@ class PullRequestService extends Base {
             // @neo-gpt drove both injections at the exact head and both reached the mutation.
             //
             // This is where being stateless pays: the update path holds the review's own state and
-            // body but no PR projection, so a budget-scoped rule could not be applied here at all
-            // without a second fetch. A body-and-state rule applies identically on both paths.
+            // body and the PR's reviews, but no budget projection, so a budget-scoped rule could not be
+            // applied here at all without a second fetch. A body-and-state rule applies identically on both paths.
             //
             // `CHANGES_REQUESTED` is deliberately absent: a demand packet is what that state is FOR,
             // and its ordinary round was charged when the review was created.
@@ -4568,6 +4578,19 @@ class PullRequestService extends Base {
 
             if (updateDemandFailure) {
                 return updateDemandFailure
+            }
+
+            // The Round-2 relation, as on create; the edited review is no candidate, it would cite itself
+            if (isRound2PrReview(body)) {
+                const relationFailure = getRound2DispositionRelationFailure({
+                    body,
+                    reviews: (currentReview.pullRequest?.reviews?.nodes || []).filter(review => review?.id !== currentReview.id),
+                    state  : SUBMISSION_STATE_OF_REVIEW[currentReview.state] ?? currentReview.state
+                });
+
+                if (relationFailure) {
+                    return relationFailure
+                }
             }
 
             const updateData = await GraphqlService.query(UPDATE_PULL_REQUEST_REVIEW, {

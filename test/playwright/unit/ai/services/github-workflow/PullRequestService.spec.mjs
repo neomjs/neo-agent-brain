@@ -3743,6 +3743,63 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         expect(capturedVariables.body).toContain('[ARCH_ALIGNMENT]'); // template anchor preserved through dispatch
     });
 
+    // #981: the Round-2 relation ran on `create` only, so a disposition body refused there was accepted as an edit
+    const round2UpdateStub = ({reviewId = REVIEW_NODE.id, reviews, state = 'APPROVED'}, mutations) => async (queryString, variables) => {
+        if (queryString.includes('GetPullRequestReview')) {
+            return {node: {id: reviewId, body: VALID_REVIEW_BODY, state, pullRequest: {number: 11273, reviews: {nodes: reviews}}}}
+        }
+
+        mutations.push(variables);
+        return {updatePullRequestReview: {pullRequestReview: {...REVIEW_NODE, id: reviewId, state}}}
+    };
+
+    test('#981: update refuses a Round 2 on a pull request with no CHANGES_REQUESTED review, with create\'s payload', async () => {
+        const {getRound2DispositionRelationFailure} = await import('../../../../../../ai/services/github-workflow/PullRequestService.mjs'),
+              mutations                             = [];
+
+        GraphqlService.query = round2UpdateStub({reviews: [{...REVIEW_NODE, body: VALID_REVIEW_BODY}]}, mutations);
+
+        const result = await PullRequestService.managePrReview({action: 'update', review_id: REVIEW_NODE.id, body: VALID_ROUND_2_REVIEW_BODY});
+
+        expect(result).toEqual(getRound2DispositionRelationFailure({body: VALID_ROUND_2_REVIEW_BODY, reviews: [], state: 'APPROVED'}));
+        expect(result.message).toContain('no submitted');
+        expect(mutations, 'refused before the mutation').toHaveLength(0)
+    });
+
+    test('#981: update admits a faithful Round 2 of another review; the edited review is never its own Round 1', async () => {
+        const mutations = [];
+
+        GraphqlService.query = round2UpdateStub({reviews: [priorRequestChanges(), {...REVIEW_NODE, body: VALID_REVIEW_BODY}]}, mutations);
+
+        const admitted = await PullRequestService.managePrReview({action: 'update', review_id: REVIEW_NODE.id, body: VALID_ROUND_2_REVIEW_BODY});
+
+        expect(admitted.error, 'the cited CHANGES_REQUESTED review is another node').toBeUndefined();
+        expect(mutations).toHaveLength(1);
+
+        // Written into the cited review itself, the relation finds no round to cite — not the state matrix's complaint
+        GraphqlService.query = round2UpdateStub({reviewId: 'PRR_123', reviews: [priorRequestChanges()], state: 'CHANGES_REQUESTED'}, mutations);
+
+        const self = await PullRequestService.managePrReview({action: 'update', review_id: 'PRR_123', body: VALID_ROUND_2_REVIEW_BODY});
+
+        expect(self.message).toContain('no submitted');
+        expect(mutations).toHaveLength(1)
+    });
+
+    test('#981: on update the edited review\'s state is the round\'s state — COMMENTED carries a STILL_OPEN round', async () => {
+        const body      = ROUND_2_STILL_OPEN_BODY.replace('**Status:** Approved', '**Status:** Comment'),
+              mutations = [];
+
+        GraphqlService.query = round2UpdateStub({reviews: [priorRequestChanges()], state: 'COMMENTED'}, mutations);
+
+        expect((await PullRequestService.managePrReview({action: 'update', review_id: REVIEW_NODE.id, body})).error).toBeUndefined();
+
+        GraphqlService.query = round2UpdateStub({reviews: [priorRequestChanges()], state: 'APPROVED'}, mutations);
+
+        expect((await PullRequestService.managePrReview({action: 'update', review_id: REVIEW_NODE.id, body})).message,
+            'an approval cannot carry a STILL_OPEN round').toContain('STILL_OPEN');
+        expect(mutations).toHaveLength(1)
+    });
+
     test('#15257: review updates cannot promote or demote ordinary RC and terminal Drop+Supersede', async () => {
         const ordinaryBody = managedReviewBody(
             VALID_ORDINARY_REQUEST_CHANGES_BODY

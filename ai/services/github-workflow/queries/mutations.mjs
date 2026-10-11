@@ -661,7 +661,8 @@ export const GET_PULL_REQUEST_ID = `
  *
  * The managed review-budget audit lives in the review body because GitHub exposes no
  * custom immutable metadata field on a review. Reading the current body before update
- * lets the managed path refuse edits that would erase terminal or budget provenance.
+ * lets the managed path refuse edits that would erase terminal or budget provenance. The
+ * pull request's reviews come along because a Round-2 body must cite one of them, as on create.
  *
  * Variables required:
  * - $reviewId: ID! - GraphQL node ID of the submitted pull-request review.
@@ -676,6 +677,15 @@ export const GET_PULL_REQUEST_REVIEW = `
         pullRequest {
           number
           repository { nameWithOwner }
+          reviews(last: 100) {
+            nodes {
+              body
+              id
+              state
+              url
+              databaseId
+            }
+          }
         }
       }
     }
