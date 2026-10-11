@@ -17,6 +17,9 @@ import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 import Database       from 'better-sqlite3';
+import {mkdtempSync, rmSync} from 'node:fs';
+import {tmpdir}              from 'node:os';
+import {join}                from 'node:path';
 
 /**
  * Producer submission against a real store. The three watermark cases are genuinely different facts,
@@ -45,7 +48,7 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
     });
 
     const storedRow = () => db.prepare(`
-        SELECT source_watermark, envelope_json, conflict_reason FROM HookProjectionChannels
+        SELECT * FROM HookProjectionChannels
         WHERE target_id = ? AND channel = ?
     `).get(targetId, 'lifecycle-frontier');
 
@@ -154,6 +157,128 @@ test.describe('hookProjectionSubmission — one producer, one channel, monotonic
         expect(() => submit({sourceWatermark: undefined})).toThrow(/sourceWatermark is required/);
         expect(() => submit({isTargetAdmitted: undefined})).toThrow(/isTargetAdmitted and mayProduceChannel/);
         expect(() => submit({envelope: undefined})).toThrow(/envelope must be a plain object/);
+    });
+
+    for (const [gate, outcome] of [
+        ['isTargetAdmitted', 'target-not-admitted'],
+        ['mayProduceChannel', 'foreign-producer']
+    ]) {
+        for (const [answer, predicate] of [
+            ['async true', async () => true],
+            ['async false', async () => false],
+            ['number', () => 1],
+            ['string', () => 'true'],
+            ['object', () => ({})],
+            ['promise', () => Promise.resolve(true)],
+            ['thenable', () => ({then() { throw new Error('must not await admission') }})]
+        ]) {
+            test(`${gate} refuses ${answer} without inserting, advancing or recording a conflict`, () => {
+                for (const phase of ['insert', 'advance', 'conflict']) {
+                    db.prepare('DELETE FROM HookProjectionChannels').run();
+                    if (phase !== 'insert') {
+                        submit();
+                    }
+                    const before = storedRow(),
+                          result = submit({
+                              [gate]: predicate,
+                              sourceWatermark: phase === 'advance' ? '2026-07-16T12:01:00.000Z' : now,
+                              envelope: {schemaVersion: 'lifecycle-frontier.v1', items: [{id: 'changed'}], notAuthority: true}
+                          });
+
+                    expect(result).toMatchObject({accepted: false, outcome});
+                    expect(storedRow()).toEqual(before);
+                }
+            });
+        }
+
+        test(`${gate} exceptions roll back callback writes and preserve the channel`, () => {
+            submit();
+            const before = storedRow();
+            db.exec('CREATE TABLE AdmissionAudit (detail TEXT)');
+
+            expect(() => submit({
+                [gate]: () => {
+                    db.prepare('INSERT INTO AdmissionAudit VALUES (?)').run('attempted');
+                    throw new Error('admission unavailable')
+                },
+                sourceWatermark: '2026-07-16T12:01:00.000Z'
+            })).toThrow('admission unavailable');
+            expect(storedRow()).toEqual(before);
+            expect(db.prepare('SELECT COUNT(*) AS n FROM AdmissionAudit').get().n).toBe(0);
+            expect(db.inTransaction).toBe(false);
+        });
+
+        test(`${gate} sees a revocation committed before transaction entry`, () => {
+            const root = mkdtempSync(join(tmpdir(), 'hook-submission-admission-'));
+            let revoker;
+            db.close();
+            db = new Database(join(root, 'projection.sqlite'));
+
+            try {
+                createHookProjectionTables(db);
+                db.exec('CREATE TABLE AdmissionGrant (active INTEGER NOT NULL)');
+                db.prepare('INSERT INTO AdmissionGrant VALUES (1)').run();
+                submit();
+                const before = storedRow(),
+                      transaction = db.transaction.bind(db),
+                      predicate = () => db.prepare('SELECT active FROM AdmissionGrant').get().active === 1;
+                revoker = new Database(join(root, 'projection.sqlite'));
+
+                // A second writer commits after any pre-transaction gate read, before BEGIN IMMEDIATE.
+                db.transaction = fn => {
+                    const write = transaction(fn);
+                    return {immediate: () => {
+                        revoker.prepare('UPDATE AdmissionGrant SET active = 0').run();
+                        return write.immediate()
+                    }}
+                };
+
+                expect(submit({[gate]: predicate, sourceWatermark: '2026-07-16T12:01:00.000Z'}))
+                    .toMatchObject({accepted: false, outcome});
+                expect(storedRow()).toEqual(before);
+                expect(db.inTransaction).toBe(false);
+
+                db.transaction = transaction;
+                revoker.prepare('UPDATE AdmissionGrant SET active = 1').run();
+                expect(submit({[gate]: predicate, sourceWatermark: '2026-07-16T12:01:00.000Z'}))
+                    .toEqual({accepted: true, outcome: 'advanced'});
+            } finally {
+                revoker?.close();
+                db.close();
+                db = null;
+                rmSync(root, {recursive: true, force: true});
+            }
+        });
+    }
+
+    test('both admission reads observe the active submission transaction', () => {
+        const observations = [];
+        expect(submit({
+            isTargetAdmitted: id => {
+                observations.push(['target', id, db.inTransaction]);
+                return true
+            },
+            mayProduceChannel: binding => {
+                observations.push(['producer', binding, db.inTransaction]);
+                return true
+            }
+        })).toEqual({accepted: true, outcome: 'advanced'});
+        expect(observations).toEqual([
+            ['target', targetId, true],
+            ['producer', {targetId, channel: 'lifecycle-frontier'}, true]
+        ]);
+    });
+
+    test('admission denials retain precedence over channel, schema and serialization errors', () => {
+        const circular = {schemaVersion: 'foreign.v1'};
+        circular.self = circular;
+        expect(submit({isTargetAdmitted: () => false, channel: 'unknown', envelope: circular}).outcome)
+            .toBe('target-not-admitted');
+        expect(submit({mayProduceChannel: () => false, channel: 'unknown', envelope: circular}).outcome)
+            .toBe('foreign-producer');
+        expect(submit({channel: 'unknown', envelope: circular}).outcome).toBe('unknown-channel');
+        expect(submit({envelope: circular}).outcome).toBe('schema-mismatch');
+        expect(storedRow()).toBeUndefined();
     });
 
     test('a FOREIGN schema is refused — a typed envelope in the wrong channel is not a typed channel', () => {

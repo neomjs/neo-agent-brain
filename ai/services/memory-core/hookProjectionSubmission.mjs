@@ -72,10 +72,13 @@ export function addProjectionConflictColumn(db) {
  * @param {String}   params.capturedAt ISO stamp of the producer's read.
  * @param {String}   params.expiresAt ISO stamp after which this channel is stale.
  * @param {String}   params.now ISO stamp for the row's `updated_at` (injected — no hidden clock).
- * @param {Function} params.isTargetAdmitted `targetId => Boolean` — admission is the server's call.
- * @param {Function} params.mayProduceChannel `({targetId, channel}) => Boolean` — producer identity.
+ * @param {Function} params.isTargetAdmitted Synchronous, read-only `targetId => Boolean` admission
+ *   predicate over this store. Only literal `true` grants; external lookups belong before registration.
+ * @param {Function} params.mayProduceChannel Synchronous, read-only `({targetId, channel}) => Boolean`
+ *   producer predicate over this store, evaluated in the same transaction; only literal `true` grants.
  * @returns {SubmissionResult}
  * @throws {TypeError} On a missing injection — a wiring bug is not a rejected submission.
+ * @throws {Error} An admission callback error propagates after transaction rollback.
  */
 export function submitProjectionChannel({
     db,
@@ -130,41 +133,38 @@ export function submitProjectionChannel({
         throw new TypeError(`[hookProjectionSubmission] expiresAt ${expiresAt} is not after capturedAt ${capturedAt}`)
     }
 
-    // Admission and identity are decided OUTSIDE this primitive and enforced here: the store never
-    // infers who a producer is from what it submitted.
-    if (!isTargetAdmitted(targetId)) {
-        return {accepted: false, outcome: 'target-not-admitted', reason: `target ${targetId} is not admitted`}
-    }
-
-    if (!mayProduceChannel({targetId, channel})) {
-        return {accepted: false, outcome: 'foreign-producer', reason: `this producer may not write channel ${channel}`}
-    }
-
-    // Identity says a producer may write this channel; it says nothing about what it wrote. The schema
-    // binding is checked after identity so an unauthorized producer is still reported as foreign rather
-    // than as a schema problem — the coarser violation is the true one.
-    if (!Object.hasOwn(PROJECTION_CHANNEL_SCHEMAS, channel)) {
-        return {
-            accepted: false,
-            outcome : 'unknown-channel',
-            reason  : `channel ${channel} has no pinned schema contract`
-        }
-    }
-
-    const expectedSchema = PROJECTION_CHANNEL_SCHEMAS[channel];
-
-    if (envelope.schemaVersion !== expectedSchema) {
-        return {
-            accepted: false,
-            outcome : 'schema-mismatch',
-            reason  : `channel ${channel} requires ${expectedSchema}; envelope carries ${envelope.schemaVersion}`
-        }
-    }
-
-    const payload = JSON.stringify(envelope);
-
     const submit = db.transaction(() => {
-        const row = db.prepare(`
+        // The injected owner decides admission; this transaction evaluates its current store reads.
+        // A Promise is not a synchronous grant, and the store never infers identity from the payload.
+        if (isTargetAdmitted(targetId) !== true) {
+            return {accepted: false, outcome: 'target-not-admitted', reason: `target ${targetId} is not admitted`}
+        }
+
+        if (mayProduceChannel({targetId, channel}) !== true) {
+            return {accepted: false, outcome: 'foreign-producer', reason: `this producer may not write channel ${channel}`}
+        }
+
+        // Keep identity refusal ahead of schema and serialization failures.
+        if (!Object.hasOwn(PROJECTION_CHANNEL_SCHEMAS, channel)) {
+            return {
+                accepted: false,
+                outcome : 'unknown-channel',
+                reason  : `channel ${channel} has no pinned schema contract`
+            }
+        }
+
+        const expectedSchema = PROJECTION_CHANNEL_SCHEMAS[channel];
+
+        if (envelope.schemaVersion !== expectedSchema) {
+            return {
+                accepted: false,
+                outcome : 'schema-mismatch',
+                reason  : `channel ${channel} requires ${expectedSchema}; envelope carries ${envelope.schemaVersion}`
+            }
+        }
+
+        const payload = JSON.stringify(envelope),
+              row = db.prepare(`
             SELECT source_watermark, envelope_json FROM HookProjectionChannels
             WHERE target_id = ? AND channel = ?
         `).get(targetId, channel);
