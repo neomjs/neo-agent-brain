@@ -554,8 +554,8 @@ test.describe('onboardPeer — long-lived Fleet owner transport', () => {
         let spawnCount = 0,
               capturedSpawn;
         const root         = fs.mkdtempSync(path.join(os.tmpdir(), 'onboard-peer-owner-')),
-              managedRoot  = path.join(root, 'repos'),
-              instanceRoot = path.join(root, 'instance homes'),
+              managedRoot  = path.join(root, 'managed homes'),
+              instanceRoot = managedRoot,
               repoPath     = deriveAgentRepoPath({managedRoot, agentId: 'neo-gpt-2', repoSlug: 'x/y'}),
               original     = {
                   bridgeManager        : FleetControlBridge.manager,
