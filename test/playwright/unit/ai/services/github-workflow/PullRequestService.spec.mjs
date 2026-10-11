@@ -2075,10 +2075,9 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             '- **Successor map citation:** https://github.com/neomjs/neo/issues/15257#issuecomment-1'
         ].join('\n');
 
-    // The default body now carries a Required Actions packet matching `VALID_ROUND_2_REVIEW_BODY`'s
-    // single disposition row. Before the relation check existed, a prior round only had to EXIST for
-    // these budget cases; now an ordinary Round 2 must actually disposition it, which is what the
-    // managed path sees in production. A fixture whose prior round raises nothing is a first review,
+    // The default body carries a Required Actions packet matching `VALID_ROUND_2_REVIEW_BODY`'s single
+    // disposition row: an ordinary Round 2 must actually disposition the review it cites, which is what
+    // the managed path sees in production. A fixture whose cited review raises nothing is a first review,
     // and a Round 2 against it is exactly the shape the relation refuses.
     const priorRequestChanges = ({
         body=['# PR Review Summary', '', '### 📋 Required Actions', '', '- [ ] prior template miss'].join('\n'),
@@ -2161,11 +2160,10 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         };
     });
 
-    // The Round-2 tier's negative corpus. @neo-gpt falsified the first implementation at review: it
-    // filtered heading presence and nothing else, so a body carrying the four headings, no prior
-    // round, no origin, and an invented `RA-999` was admitted with zero missing anchors. Each case
-    // below is one way that body got through; the positive control travels with them, because a gate
-    // that rejects everything passes a negative corpus just as well as a correct one.
+    // The Round-2 tier's negative corpus. Heading presence alone would admit a body carrying the four
+    // headings, no cited review, no origin, and an invented action label, with zero missing anchors.
+    // Each case below is one way such a body gets through; the positive control travels with them,
+    // because a gate that rejects everything passes a negative corpus just as well as a correct one.
     test('#17178: the Round-2 tier refuses a body that is disposition-SHAPED but dispositions nothing', () => {
         const invented = [
             '# PR Review — Round 2',
@@ -2409,11 +2407,11 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     });
 
     test('#17284: a no-pipe difference is NOT diagnosed as a pipe — the byte is the witness', async () => {
-        // Emmy's falsifier, RA-1 on the round-2 review. `collapsePipesAndSpace` removes spaces as
-        // well as pipes, so "observed partial" and "observedpartial" compare equal with no pipe
-        // anywhere in either string. Similarity alone was enough to reach the pipe branch, which then
-        // told an author to escape a pipe their text does not contain -- the exact unfollowable
-        // instruction this gate exists to remove, reintroduced by the diagnosis rather than the rule.
+        // `collapsePipesAndSpace` removes spaces as well as pipes, so "observed partial" and
+        // "observedpartial" compare equal with no pipe anywhere in either string. Similarity alone would
+        // reach the pipe branch, which would then tell an author to escape a pipe their text does not
+        // contain -- the exact unfollowable instruction this gate exists to remove, reintroduced by the
+        // diagnosis rather than the rule.
         //
         // The discriminating half is the SECOND assertion. Refusing is right either way; refusing
         // with the wrong mechanism is the defect, so an arm that only checked for rejection would
@@ -2430,8 +2428,8 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     });
 
     test('#17284: sub-lettered and section labels are stripped, and a real first cell is NOT', async () => {
-        // The original defect. `RA-1a` / `§0` were folded into the carried action, so the row compared
-        // as reworded against a prior round that never contained the label.
+        // A sub-lettered label like `RA-1a` or a section label like `§0` folded into the carried action
+        // would make the row compare as reworded against a cited review that never contained the label.
         const withLabel = label => VALID_ROUND_2_REVIEW_BODY.replace(
             '| RA-1 | prior template miss |', `| ${label} | prior template miss |`
         );
@@ -3128,7 +3126,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
     test('#17141: a repair-minted re-entry is refused unless every clause checks out', async () => {
         // The exception exists for one situation: a defect that did NOT exist, or was undiscoverable,
-        // at the head Round 1 reviewed, and that the author's own repair created or exposed. "Noticed
+        // at the head the Round-1 review saw, and that the author's own repair created or exposed. "Noticed
         // later" is not that situation, and free prose cannot tell the two apart — which is why the
         // prior contract accepted "release safety exception" and asserted nothing checkable.
         //
@@ -3743,7 +3741,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         expect(capturedVariables.body).toContain('[ARCH_ALIGNMENT]'); // template anchor preserved through dispatch
     });
 
-    // #981: the Round-2 relation ran on `create` only, so a disposition body refused there was accepted as an edit
+    // The Round-2 relation holds an edit to what it holds a new review to
     const round2UpdateStub = ({reviewId = REVIEW_NODE.id, reviews, state = 'APPROVED'}, mutations) => async (queryString, variables) => {
         if (queryString.includes('GetPullRequestReview')) {
             return {node: {id: reviewId, body: VALID_REVIEW_BODY, state, pullRequest: {number: 11273, reviews: {nodes: reviews}}}}
@@ -5147,7 +5145,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     // @neo-gpt caught it — an item pointing at the close target names work the merge is about to
     // declare finished. The anti-pattern was shipped as its own proof.
     //
-    // `line #42` is the second non-owner: a coordinate names a place, not a ticket accepting work.
+    // `line #N` is the second non-owner: a coordinate names a place, not a ticket accepting work.
     test('#17214: a coordinate and the PR\'s own close target are both refused as owners', async () => {
         const approveWith = async followUp => {
             let mutationCallCount = 0;

@@ -1422,9 +1422,9 @@ const SUBMISSION_STATE_OF_REVIEW = Object.freeze({CHANGES_REQUESTED: 'REQUEST_CH
  * @summary Validates an ordinary Round 2 against the round it claims to disposition.
  *
  * The body-only tier proves a document is disposition-SHAPED. It cannot prove a disposition occurred,
- * because that is a claim about two documents — and a shaped body with a plausible review id and an
- * invented `RA-999` passed the shape gate at review. This is the half that needs the prior round, so
- * it runs where the prior round is already in hand rather than duplicating a fetch.
+ * because that is a claim about two documents: a shaped body with a plausible review id and an invented
+ * action label passes the shape gate. This is the half that needs the cited review, so it runs where
+ * that review is already in hand rather than duplicating a fetch.
  *
  * **Complete, ordered, unchanged.** Each is a distinct evasion. Dropping a row retires an action by
  * omission; reordering breaks the numbering the original review is cited by; rewording is how a
@@ -1436,9 +1436,9 @@ const SUBMISSION_STATE_OF_REVIEW = Object.freeze({CHANGES_REQUESTED: 'REQUEST_CH
  * APPROVED round carrying a `STILL_OPEN` silently discharges the item it just declared unresolved,
  * and a REQUEST_CHANGES spends a round the per-family budget does not have.
  *
- * **The prior round is the one the body cites**, never the newest `CHANGES_REQUESTED` on the pull request.
- * With two reviewers requesting changes, the newest RC is the other reviewer's whenever theirs came
- * later, and the correct disposition of one's own round was refused against their actions (neo#19125).
+ * **The dispositioned review is the one the body cites**, never the newest `CHANGES_REQUESTED` on the pull
+ * request. With two reviewers requesting changes, the newest RC is the other reviewer's whenever theirs
+ * came later, and a correct disposition of one's own round would be refused against their actions.
  *
  * **Both verbs run it.** Editing a submitted review is a second way to post a round, so `update` reads
  * the pull request's reviews with the edited one and leaves that one out: a review is never its own Round 1.
@@ -1820,7 +1820,7 @@ function splitTableRow(line) {
 }
 
 // The template's first column is `#`, carrying the row's LABEL. It is the row's number, not part of
-// the carried action, and folding it in made every row compare as reworded against a prior round
+// the carried action; folding it in would make every row compare as reworded against a cited review
 // that never contained it — the verbatim check failing on the one thing legitimately not verbatim.
 //
 // Widened from digits-only after `RA-1a` and `§0` were folded in. Deliberately still a SHAPE and not
@@ -1916,9 +1916,8 @@ const MARKDOWN_HEADING_PATTERN      = /^[ \t]{0,3}#{1,6}[ \t]/;
 /**
  * @summary Matches an owning-issue citation on a follow-up action line.
  *
- * A bare `#\d+` anywhere on the line was the first version and @neo-gpt falsified it at the exact head:
- * `line #42` satisfied it, so any prose number read as an owner. The reference now has to stand as its
- * own token — not glued to a preceding word — which is how an issue is actually cited, and a full
+ * A bare `#\d+` anywhere on the line is not enough: `line #N` would satisfy it, so any prose number
+ * would read as an owner. The reference has to stand as its own token — not glued to a preceding word — which is how an issue is actually cited, and a full
  * issue URL is accepted for the same reason.
  * @type {RegExp}
  */
@@ -1927,7 +1926,7 @@ const ACTION_PACKET_OWNER_PATTERN = /(?:^|[\s([<])#(\d+)\b|\/issues\/(\d+)\b/;
 /**
  * @summary Words that turn a following `#N` into a coordinate rather than an owner.
  *
- * `line #42`, `column #3`, `comment #5` — each cites a coordinate rather than a ticket that accepts
+ * `line #N`, `column #N`, `comment #N` — each cites a coordinate rather than a ticket that accepts
  * ownership of work. Listing the coordinate words is narrower than trying to define what an owner IS.
  * @type {RegExp}
  */
@@ -1946,13 +1945,12 @@ const ACTION_PACKET_NON_OWNER_PATTERN = /\b(?:line|lines|col|column|row|page|ste
  * live demands past a budget that recorded a single ordinary round. Every demanded item there sat
  * under that heading, one of them spelled singular, which is why the pattern accepts both.
  *
- * **A demand is not only a checkbox.** The first version read that measured population as the whole
- * grammar and matched unchecked checkboxes alone; @neo-gpt submitted `RA-999: fix the production
- * boundary` under this very heading and it sailed through. The measured specimens are evidence about
- * what HAS been written, never permission to narrow the contract to that one form — so an `RA-N`
- * demand line counts too. Both forms stay SECTION-scoped, which is what keeps a disposition table's
- * `| RA-1 | ... |` rows (they live under `Disposition`, and are cells rather than lines) and a verdict
- * block from reading as fresh demands.
+ * **A demand is not only a checkbox.** Matching unchecked checkboxes alone would read that measured
+ * population as the whole grammar, and an `RA-N: fix the production boundary` line under this very
+ * heading would sail through. The measured specimens are evidence about what HAS been written, never
+ * permission to narrow the contract to that one form — so an `RA-N` demand line counts too. Both forms
+ * stay SECTION-scoped, which is what keeps a disposition table's `| RA-N | ... |` rows (they live under
+ * `Disposition`, and are cells rather than lines) and a verdict block from reading as fresh demands.
  *
  * Two exclusions fall out of the line shape rather than being special-cased:
  * - **Blockquoted** carried actions (`> - [ ] prior action`) fail the item pattern, so quoting Round 1
@@ -2212,18 +2210,17 @@ function getMicroDeltaPrReviewTemplateMisses(body) {
 function getRound2PrReviewTemplateValidationFailure(body) {
     const
         missing  = getRound2PrReviewTemplateSkeletonAnchors().filter(anchor => !body.includes(anchor)),
-        // Heading presence was the ENTIRE gate here, and @neo-gpt falsified it at review with a body
-        // carrying the four headings, no prior round, no origin, and an invented `RA-999` — zero
-        // missing anchors, admitted. That is the anti-Goodhart failure this file already knew about:
-        // `INVISIBLE_PR_REVIEW_ANCHORS` exists precisely because a gate that names its anchors gets
-        // satisfied by writing them, and the new tier reproduced the defect one tier along.
+        // Heading presence alone is no gate: a body carrying the four headings, no cited review, no
+        // origin, and an invented action label has zero missing anchors. That is the anti-Goodhart
+        // failure this file already knows about: `INVISIBLE_PR_REVIEW_ANCHORS` exists precisely because
+        // a gate that names its anchors gets satisfied by writing them.
         //
-        // A format gate cannot prove a disposition OCCURRED — that needs the prior round, and the
+        // A format gate cannot prove a disposition OCCURRED — that needs the cited review, and the
         // caller holding PR context owns it. What a body-only gate can prove is that this document
         // is SHAPED like a disposition rather than a first review wearing its headings: it points at
-        // a real prior round, it dispositions at least one row, every disposition is a defined verb,
-        // and it mints no fresh action packet. Those are checkable here and each one is a way the
-        // falsifier passed.
+        // a real Round-1 review, it dispositions at least one row, every disposition is a defined verb,
+        // and it mints no fresh action packet. Those are checkable here, and each closes one way such a
+        // body would pass.
         defects  = [];
 
     if (missing.length > 0) {
@@ -2788,8 +2785,8 @@ function getCommentActionPacketFailure({body, subject}) {
  * unowned at the moment the PR becomes mergeable — the point after which nobody is looking.
  *
  * **Independent is the load-bearing word, and two ways of failing it are checkable offline.** A
- * coordinate is not an owner: `line #42` cites a place, not a ticket accepting work, and the first
- * version of this guard accepted it. Nor is this PR's own close target: an item pointing at the ticket
+ * coordinate is not an owner: `line #N` cites a place, not a ticket accepting work. Nor is this PR's
+ * own close target: an item pointing at the ticket
  * the approval closes describes work the merge is about to declare finished, which is the precise
  * opposite of independent follow-up. Both were @neo-gpt's findings, and the second had been encoded as
  * this suite's POSITIVE fixture — the anti-pattern shipped as its own proof.
@@ -2928,7 +2925,7 @@ function getReviewBudgetFailure(pr_number, message, audit = {}) {
  * @summary Parses a repair-minted re-entry receipt out of an override disclosure.
  *
  * The exceptional second round exists for exactly one situation: a defect that did NOT exist, or was
- * undiscoverable, at the head Round 1 reviewed — and that the author's own repair created or exposed.
+ * undiscoverable, at the head the Round-1 review saw — and that the author's own repair created or exposed.
  * "I noticed it later" is not that situation, and free prose cannot tell the two apart. So the receipt
  * names four things and each is checked against something outside the sentence:
  *
@@ -3381,7 +3378,7 @@ function validatePrReviewBudget({
     const incomingTerminal    = classifyDropSupersedeReview(body);
 
     // WHOSE round is being spent. The budget's unit is the reviewer FAMILY, so the count that matters
-    // is this family's prior rounds — not the PR's total. A global count let one family's exhausted
+    // is this family's own rounds so far — not the PR's total. A global count let one family's exhausted
     // budget silence a family that had never reviewed, and let a family buy extra rounds by rotating
     // identities; both are answered by counting the same way the authority defines membership.
     const reviewerFamily = resolveReviewerFamily({author: {login: reviewerLogin}});
