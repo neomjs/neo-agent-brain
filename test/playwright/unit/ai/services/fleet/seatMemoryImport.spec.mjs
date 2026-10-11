@@ -1,7 +1,9 @@
-import {test, expect} from '@playwright/test';
-import fs             from 'node:fs';
-import os             from 'node:os';
-import path           from 'node:path';
+import {test, expect}            from '@playwright/test';
+import fs                        from 'node:fs';
+import os                        from 'node:os';
+import path                      from 'node:path';
+import {deriveAgentInstanceHome} from '../../../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
+import {deriveCodexHome}         from '../../../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
 import {
     detectMemoryCandidates,
     importSeatMemory,
@@ -59,6 +61,93 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
             expect(memoryDestination({instanceRoot: agents, agentId: 'a', harnessType})).toBe(path.join(agents, 'a', 'memory'))
         }
         expect(memoryDestination({instanceRoot: agents, agentId: 'a', harnessType: 'antigravity'})).toBeNull()
+    });
+
+    for (const harnessType of ['codex', 'codex-desktop']) {
+        test(`${harnessType}: a scoped source belongs only to the selected, placed seat`, async () => {
+            const agent  = {...seat(null, harnessType), seatHome: path.join(agents, 'neo-fable')},
+                  source = path.join(deriveCodexHome({harnessType,
+                      instanceHome: deriveAgentInstanceHome({instanceRoot: agents, agentId: agent.id, harnessType})}), 'memories'),
+                  other = source.replace(`${path.sep}neo-fable${path.sep}`, `${path.sep}other-seat${path.sep}`),
+                  options = {homeDir: home, instanceRoot: agents, agent};
+
+            write(source, {'MEMORY.md': 'retained native notes'});
+            write(other, {'MEMORY.md': 'another seat'});
+            write(path.join(home, '.codex', 'memories'), {'MEMORY.md': 'classic notes'});
+
+            expect(normalizeMemoryImport(source, options)).toBe(source);
+            expect(() => normalizeMemoryImport(other, options)).toThrow();
+            expect(() => normalizeMemoryImport(source, {homeDir: home})).toThrow();
+            expect(() => normalizeMemoryImport(source, {...options, agent: {...agent, seatHome: path.join(root, 'old-seat')}})).toThrow();
+
+            const metadataOnly = {...fs.promises, readFile: async () => {throw new Error('discovery read document contents')}};
+            const candidates   = await detectMemoryCandidates({...options, fileSystem: metadataOnly});
+            expect(candidates.map(candidate => candidate.source).sort()).toEqual([source, path.join(home, '.codex', 'memories')].sort());
+            expect(candidates.find(candidate => candidate.source === source)).toMatchObject({family: 'codex', notes: 1});
+            expect(await detectMemoryCandidates({homeDir: home})).toHaveLength(1);
+            await expect(detectMemoryCandidates({...options, agent: {...agent, seatHome: path.join(root, 'old-seat')}})).rejects.toThrow();
+
+            const result = await importFor({...agent, memoryImport: source});
+            expect(result.state).toBe('copied');
+            expect(fs.readFileSync(path.join(agents, agent.id, 'memory', 'MEMORY.md'), 'utf8')).toBe('retained native notes');
+            expect(fs.readFileSync(path.join(source, 'MEMORY.md'), 'utf8')).toBe('retained native notes');
+        });
+    }
+
+    test('managed source links and unreadable discovery fail instead of reporting an empty seat', async () => {
+        const agent   = {...seat(null, 'codex'), seatHome: path.join(agents, 'neo-fable')},
+              source  = path.join(agent.seatHome, 'harness', 'codex', 'memories'),
+              options = {agent, instanceRoot: agents, homeDir: home};
+        write(source, {'MEMORY.md': 'own'});
+        write(path.join(root, 'outside'), {'private.md': 'never'});
+        fs.symlinkSync(path.join(root, 'outside'), path.join(source, 'escape'), 'dir');
+        await expect(detectMemoryCandidates(options)).rejects.toThrow(/link/);
+        await expect(importFor({...agent, memoryImport: source})).rejects.toThrow(/link/);
+        expect(fs.existsSync(path.join(agent.seatHome, 'memory'))).toBe(false);
+
+        fs.unlinkSync(path.join(source, 'escape'));
+        const unreadable = {...fs.promises, readdir: async (dir, opts) => {
+            if (dir === source) throw Object.assign(new Error('unreadable'), {code: 'EACCES'});
+            return fs.promises.readdir(dir, opts)
+        }};
+        await expect(detectMemoryCandidates({...options, fileSystem: unreadable})).rejects.toThrow('unreadable');
+        fs.rmSync(source, {recursive: true});
+        fs.symlinkSync(path.join(root, 'outside'), source, 'dir');
+        await expect(detectMemoryCandidates(options)).rejects.toThrow(/link/);
+        await expect(importFor({...agent, memoryImport: source})).rejects.toThrow(/link/);
+    });
+
+    test('managed consent must be renewed after a move; a completed import retains its receipt', async () => {
+        const agent      = {...seat(null, 'codex'), seatHome: path.join(agents, 'neo-fable')},
+              source     = path.join(agent.seatHome, 'harness', 'codex', 'memories'),
+              movedRoot  = path.join(root, 'moved-agents'),
+              movedAgent = {...agent, seatHome: path.join(movedRoot, agent.id), memoryImport: source};
+        write(source, {'MEMORY.md': 'original'});
+        await fs.promises.cp(agents, movedRoot, {recursive: true});
+        await expect(importSeatMemory({agent: movedAgent, instanceRoot: movedRoot, homeDir: home})).rejects.toThrow(/no agent memory folder/);
+        expect(fs.existsSync(path.join(movedAgent.seatHome, 'memory'))).toBe(false);
+
+        await importFor({...agent, memoryImport: source});
+        write(path.join(agent.seatHome, 'memory'), {'MEMORY.md': 'authored after import'});
+        await fs.promises.rm(movedRoot, {recursive: true});
+        await fs.promises.rename(agents, movedRoot);
+        expect((await importSeatMemory({agent: movedAgent, instanceRoot: movedRoot, homeDir: home})).state).toBe('present');
+        expect(fs.readFileSync(path.join(movedAgent.seatHome, 'memory', 'MEMORY.md'), 'utf8')).toBe('authored after import');
+    });
+
+    test('native notes require a choice before birth, while none, fresh and held memory keep their meanings', async () => {
+        const agent       = {...seat(null, 'codex-desktop'), seatHome: path.join(agents, 'neo-fable')},
+              source      = path.join(agent.seatHome, 'harness', 'codex-desktop', 'codex-home', 'memories'),
+              destination = path.join(agent.seatHome, 'memory');
+
+        expect(await importFor(agent)).toEqual({state: 'none'});
+        write(source, {'MEMORY.md': 'native notes to choose'});
+        await expect(importFor(agent)).rejects.toThrow(/explicit|choice|consent/i);
+        expect(fs.existsSync(destination)).toBe(false);
+        expect(await importFor({...agent, memoryImport: 'none'})).toEqual({state: 'none'});
+        write(destination, {'MEMORY.md': 'seat-owned notes'});
+        expect(await importFor(agent)).toEqual({state: 'none'});
+        expect(fs.readFileSync(path.join(destination, 'MEMORY.md'), 'utf8')).toBe('seat-owned notes');
     });
 
     test('detection lists the memory folders that hold files, most first, by name, notes and newest change, and reads nothing else', async () => {

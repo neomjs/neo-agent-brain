@@ -363,6 +363,16 @@ Fleet therefore keeps imported markdown in `<seat>/memory/` and projects its `ME
 remains separate; it is not the destination of the migration copy. Preparing the seat's memory
 before the first Start leaves the checkout path `<seat>/<owner>/<repo>` free for cloning.
 
+An existing managed Codex seat may already have native notes in its own harness home. The
+host can discover that selected seat's source as metadata and accept it through the existing
+memory-import consent. Its registered directory must match the host's current placement;
+another seat's source, an arbitrary folder, and linked paths are refused. A global discovery
+reply does not establish that the selected seat has no notes: the chooser needs the matching
+seat scope. Until an import or authored shared memory exists, native notes without a choice
+stop Start before birth files are created. Explicitly choosing empty memory remains possible.
+Moving the seat before its first import requires choosing its new source again; after a
+completed import, its receipt protects later authored notes without rereading the old source.
+
 The recipe, in order. A step marked *(Claude)* or *(Codex)* applies to that family only:
 
 1. Register the agent in the Fleet Manager and do **not** start it. Note the seat's clone

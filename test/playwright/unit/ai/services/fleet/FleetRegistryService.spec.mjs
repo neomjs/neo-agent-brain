@@ -877,6 +877,26 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — an adopted seat\'s
         expect(FleetRegistryService.getAgent('leak')).toBeNull()
     });
 
+    test('configureAgent admits only the selected seat native source under the effective harness', () => {
+        FleetRegistryService.agentsRoot = path.join(tmpDir, 'agents');
+        try {
+            const agent      = FleetRegistryService.defineAgent({githubUsername: 'own-native', harnessType: 'codex', credential: PAT}),
+                  source     = path.join(agent.seatHome, 'harness', 'codex', 'memories'),
+                  peerSource = path.join(FleetRegistryService.agentsRoot, 'peer', 'harness', 'codex', 'memories');
+
+            expect(FleetRegistryService.configureAgent({id: agent.id, memoryImport: source}).memoryImport).toBe(source);
+            expect(() => FleetRegistryService.configureAgent({id: agent.id, memoryImport: peerSource})).toThrow();
+            expect(() => FleetRegistryService.configureAgent({id: agent.id, harnessType: 'codex-desktop', memoryImport: source})).toThrow();
+            expect(FleetRegistryService.getAgent(agent.id)).toMatchObject({harnessType: 'codex', memoryImport: source});
+
+            FleetRegistryService.agentsRoot = path.join(tmpDir, 'moved-agents');
+            expect(() => FleetRegistryService.configureAgent({id: agent.id, memoryImport: source})).toThrow(/matching managed memory placement/);
+            expect(FleetRegistryService.getAgent(agent.id).memoryImport).toBe(source);
+        } finally {
+            FleetRegistryService.agentsRoot = null
+        }
+    });
+
     test('configureAgent records a late consent the same way, withdraws it with null, and refuses anything else without a write', () => {
         const
             source  = path.join(os.homedir(), '.claude', 'projects', '-Users-x-neo', 'memory'),

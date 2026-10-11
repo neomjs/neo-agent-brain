@@ -699,16 +699,6 @@ class FleetRegistryService extends Base {
 
         const declaration = declaring ? gitIdentityDeclaration('configureAgent', intent) : null;
 
-        let consent = null;
-
-        if (consenting && intent.memoryImport !== null) {
-            try {
-                consent = normalizeMemoryImport(intent.memoryImport)
-            } catch (error) {
-                reject(error.message)
-            }
-        }
-
         this.ensureLoaded();
 
         const existing = this.agents.get(id);
@@ -716,6 +706,20 @@ class FleetRegistryService extends Base {
 
         if (Object.hasOwn(intent, 'harnessType') && !this.harnessTypes.includes(harnessType)) {
             reject(`invalid harnessType '${harnessType}'. Must be one of: ${this.harnessTypes.join(', ')}.`)
+        }
+
+        const nextHarnessType = Object.hasOwn(intent, 'harnessType') ? harnessType : existing.harnessType;
+
+        let consent = null;
+
+        if (consenting && intent.memoryImport !== null) {
+            try {
+                consent = normalizeMemoryImport(intent.memoryImport, {
+                    agent: {...existing, harnessType: nextHarnessType}, instanceRoot: this.getAgentsRoot()
+                })
+            } catch (error) {
+                reject(error.message)
+            }
         }
 
         const catalog = mcpCatalogFor(existing.forge);
@@ -740,9 +744,7 @@ class FleetRegistryService extends Base {
             }
         }
 
-        const
-            nextHarnessType = Object.hasOwn(intent, 'harnessType') ? harnessType : existing.harnessType,
-            seat            = seatModelDeclaration('configureAgent', nextHarnessType, intent);
+        const seat = seatModelDeclaration('configureAgent', nextHarnessType, intent);
 
         const refusal = mcpDeclarationRefusal({harnessType: nextHarnessType, mcpMatrix: resolveMcpMatrix(matrix, catalog), tenant: !!target, forge: existing.forge});
 
