@@ -209,6 +209,19 @@ The election is **per profile**, not one bind-versus-volume rule imposed on unli
 
 **Revalidation trigger:** adding a durable profile, moving a profile-pinned leaf, changing the local 31xx/81xx publication, or enabling a local-only wake lane inside a container profile reopens this election. The change must update this matrix and re-run plane-config coherence, static Compose placement coverage, served-identity checks, and the integration-parity topology suite.
 
+**Local hook-projection publication:** the canonical-local election may expose a dedicated
+MC-written host bind at the resolved `hookProjectionRoot`, as specified by ADR 0035 §2.6.6. This
+plane member keeps its classification and container target beneath the resolved root; the
+pre-Docker durable plane remains an import source, never the live publication bind. Host source
+and container target are separate namespace contracts under §10.9. Their declarations and trusted
+Start serialization are reviewed together, with no second resolver or config alias.
+
+Packaged own mode has one host namespace and serializes its resolved placement. Cloud/remote and
+profiles without local host publication inherit no local-hook grant. Adoption re-runs
+plane-config coherence, static Compose placement coverage, served-identity checks, and the
+integration-parity topology suite. ADR 0035 owns the fresh root-scoped witness, recipient-binding
+rules and resource-side fencing; this election records no deployed publication receipt.
+
 ### 10.8 Orchestrator task-authority profiles (#16166)
 
 `orchestrator.deploymentMode` and task authority are orthogonal. Deployment mode owns the existing

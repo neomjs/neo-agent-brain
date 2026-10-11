@@ -382,6 +382,40 @@ the actual rename is what prevents an old holder from mutating the resource afte
 | 6 | Projection writer winner | Clear lease only with matching token+epoch and commit | Crash leaves bounded expired lease for higher-epoch takeover |
 | 7 | Hook reader | Read local `current.json`; validate target/schema/binding/channel TTLs; render fixed order | Invalid/missing projection falls to bare policy; no network repair |
 
+#### 2.6.6 Per-profile local publication
+
+The local projection contract must be placed explicitly across the container/host boundary. The
+profile elections live in ADR 0019 §10.7; its §10.9 separates namespace contracts, not writer authority.
+
+| Profile | MC-owned publication resource | Local hook disposition |
+|---|---|---|
+| Canonical local Docker | A dedicated host directory bound read-write at the resolved `hookProjectionRoot`; MC writes the temporary sibling and renames it under §2.6.2's SQLite transaction. | Start injects the reader path only after fresh namespace agreement; missing or divergent placement withholds enrichment. |
+| Packaged Fleet Manager own mode | The resolved MC root is already on the host filesystem; no container mapping or independently guessed root. | Trusted Start serialization carries the resolved reader inputs; the same binding and freshness gates apply. |
+| Cloud / remote, or a profile without local host publication | Internal server storage grants no local-hook publication. | No hook-time fetch or container-file copy; absent local publication uses bare policy. A cross-machine transport reopens §6. |
+
+Host source and container target are separately declared coordinates. `hookProjectionRoot` remains
+a plane member; its Docker target stays beneath the resolved plane root. The host coordinate uses
+its owning Provider's resolution, never a plane-id, checkout, container-path or session derivation.
+
+**Namespace agreement is current, root-scoped evidence.** Start supplies a fresh nonce; MC writes it
+at root scope, outside target directories and their orphan-sibling cleanup; Start compares it at the
+declared host source before injecting reader placement. An old witness cannot satisfy the nonce.
+Changing either root requires a new witness. The witness proves namespace agreement only: it does
+not grant a target, attest an agent or upgrade a harness instance.
+
+The existing §2.4 conditions remain independent. Authentication, registration, raw tuples, producer
+labels and MCP session ids never become recipient-matching instance proof. The launcher-owned
+attester remains an implementation obligation; validated agent-wide fallback still requires an
+agent-wide lifecycle producer. Missing binding proof withholds lifecycle; missing reader placement
+withholds the entire enrichment.
+
+Before adoption, capture a host read loop over real MC publications, expired-holder/higher-epoch
+takeover across the bind, a moved/divergent-root negative control, and foreign-target lifecycle
+suppression. Name the measured file-sharing backend in the receipt; same-filesystem construction
+alone does not prove host-observed atomicity. Placement changes after Start expire through the
+existing channel TTLs. Lease/channel schema changes across writer generations reopen §6 trigger 3;
+this amendment does not establish mixed-generation compatibility or live resident acceptance.
+
 ### 2.7 The combined projection contract
 
 The writer publishes exactly one logical envelope per target:
