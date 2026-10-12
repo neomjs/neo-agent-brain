@@ -19,10 +19,13 @@ import {pathToFileURL} from 'url';
  *
  * Refusals are checked before anything is deleted:
  * - a selected row whose `source` is outside `resources/content/` (the filter would reach a non-mirror row);
- * - no conversation rows under any other repository of the tenant (nothing would answer in their place).
+ * - no replacement: the configured tenant repository that is the corpus source must have an accepted
+ *   manifest from its configured extraction identity, and conversation rows of its own.
  *
  * Destructive execution requires `--apply` and the confirmation token. The CLI holds the shared
- * heavy-maintenance lease, so no Knowledge Base writer runs between the census and the recount.
+ * heavy-maintenance lease, so no Knowledge Base writer runs between the census and the recount. Chroma
+ * has no transaction: once deletion has begun, an interruption or a changed preserved count exits
+ * non-zero with the receipt of what was confirmed, and the pre-run backup is the way back.
  *
  * Usage, inside the orchestrator container:
  *   node ai/scripts/maintenance/retireLegacyConversationRows.mjs
@@ -51,15 +54,12 @@ function refuse(code, message) {
  * @summary Builds the Chroma `where` clause for one stamp, optionally narrowed to the conversation types.
  * @param {Object}  scope
  * @param {String}  scope.tenantId
- * @param {Object}  scope.repoSlug An exact slug, or a Chroma operator object such as `{$ne: 'neo'}`.
+ * @param {String}  scope.repoSlug
  * @param {Boolean} [conversationOnly=false]
  * @returns {Object}
  */
 export function scopeWhere({tenantId, repoSlug}, conversationOnly = false) {
-    const clauses = [
-        {tenantId: {$eq: tenantId}},
-        {repoSlug: typeof repoSlug === 'string' ? {$eq: repoSlug} : repoSlug}
-    ];
+    const clauses = [{tenantId: {$eq: tenantId}}, {repoSlug: {$eq: repoSlug}}];
 
     if (conversationOnly) {
         clauses.push({type: {$in: [...CONVERSATION_TYPES]}})
@@ -94,14 +94,70 @@ export async function scanRows({collection, where, onRow, withMetadata = false, 
 }
 
 /**
+ * @summary Judges the observed replacement corpus before anything is deleted.
+ *
+ * The replacement is the configured tenant repository whose clone URL is the corpus source. It counts only
+ * with an accepted manifest (a proof-bound extraction snapshot from the repository's configured extraction
+ * identity) and conversation rows of its own. Another repository's conversation rows prove nothing about it.
+ * @param {Object} options
+ * @param {Object} options.collection Chroma collection or compatible seam.
+ * @param {Object} options.scope The legacy stamp `{tenantId, repoSlug}`.
+ * @param {Object} options.replacement The observation: `{repoSlug, extractionIdentity, manifest}`, `{repoSlug: null}`
+ * when no configured repository is the corpus source, or `{error}` when the configuration or manifest was unreadable.
+ * @returns {Promise<{refusal: Object|null, evidence: Object|null}>}
+ */
+export async function assessReplacement({collection, scope, replacement}) {
+    if (replacement?.error) {
+        return {refusal: {code: 'KB_LEGACY_RETIRE_CORPUS_UNREADABLE', message: `The corpus configuration or manifest could not be read: ${replacement.error}`}, evidence: null}
+    }
+
+    if (!replacement?.repoSlug) {
+        return {refusal: {code: 'KB_LEGACY_RETIRE_CORPUS_UNCONFIGURED', message: `No configured repository of tenant '${scope.tenantId}' is the corpus source.`}, evidence: null}
+    }
+
+    if (replacement.repoSlug === scope.repoSlug) {
+        return {refusal: {code: 'KB_LEGACY_RETIRE_CORPUS_IS_LEGACY_STAMP', message: `The corpus resolves to the legacy stamp '${scope.repoSlug}' itself.`}, evidence: null}
+    }
+
+    const {manifest} = replacement,
+          snapshot   = manifest?.source === 'graph' ? manifest.extractionSnapshot : null;
+
+    if (!snapshot) {
+        return {refusal: {code: 'KB_LEGACY_RETIRE_CORPUS_MANIFEST_ABSENT', message: `'${replacement.repoSlug}' has no accepted manifest.`}, evidence: null}
+    }
+
+    const evidence = {
+        repoSlug          : replacement.repoSlug,
+        manifestUpdatedAt : manifest.updatedAt,
+        extractionIdentity: snapshot.extractionIdentity,
+        attemptId         : snapshot.proof.attemptId,
+        envelopeDigest    : snapshot.proof.envelopeDigest,
+        recordedAt        : snapshot.proof.recordedAt
+    };
+
+    if (snapshot.extractionIdentity !== replacement.extractionIdentity) {
+        return {refusal: {code: 'KB_LEGACY_RETIRE_CORPUS_MANIFEST_STALE', message: `'${replacement.repoSlug}' was last extracted with ${snapshot.extractionIdentity}, not its configured ${replacement.extractionIdentity}.`}, evidence}
+    }
+
+    const rows = await collection.get({where: scopeWhere({tenantId: scope.tenantId, repoSlug: replacement.repoSlug}, true), include: [], limit: 1});
+
+    if (rows.ids.length === 0) {
+        return {refusal: {code: 'KB_LEGACY_RETIRE_NO_REPLACEMENT_CORPUS', message: `'${replacement.repoSlug}' holds no conversation rows to answer in place of the retired ones.`}, evidence}
+    }
+
+    return {refusal: null, evidence}
+}
+
+/**
  * @summary Reads the stamp's population and every reason to refuse, without deleting anything.
  * @param {Object} options
  * @param {Object} options.collection Chroma collection or compatible seam.
  * @param {Object} options.scope The default stamp `{tenantId, repoSlug}` the legacy Sources wrote.
+ * @param {Object} options.replacement The replacement observation, see {@link assessReplacement}.
  * @param {Number} [options.pageSize=DEFAULT_PAGE_SIZE]
- * @returns {Promise<Object>} `{scopeTotal, preserved, conversationByType, ids, refusals}`
+ * @returns {Promise<Object>} `{scopeTotal, preserved, conversationByType, ids, replacement, refusals}`
  */
-export async function buildRetirementPlan({collection, scope, pageSize = DEFAULT_PAGE_SIZE}) {
+export async function buildRetirementPlan({collection, scope, replacement, pageSize = DEFAULT_PAGE_SIZE}) {
     const conversationByType = {},
           ids                = [],
           outside            = [],
@@ -132,20 +188,11 @@ export async function buildRetirementPlan({collection, scope, pageSize = DEFAULT
         })
     }
 
-    const replacement = await collection.get({
-        where  : scopeWhere({tenantId: scope.tenantId, repoSlug: {$ne: scope.repoSlug}}, true),
-        include: [],
-        limit  : 1
-    });
+    const {refusal, evidence} = await assessReplacement({collection, scope, replacement});
 
-    if (replacement.ids.length === 0) {
-        refusals.push({
-            code   : 'KB_LEGACY_RETIRE_NO_REPLACEMENT_CORPUS',
-            message: `No conversation rows exist under another repository of tenant '${scope.tenantId}'; nothing would answer in place of the retired rows.`
-        })
-    }
+    refusal && refusals.push(refusal);
 
-    return {scopeTotal, preserved: scopeTotal - ids.length, conversationByType, ids, refusals}
+    return {scopeTotal, preserved: scopeTotal - ids.length, conversationByType, ids, replacement: evidence, refusals}
 }
 
 /**
@@ -163,46 +210,70 @@ export function assertApplyConfirmed(confirmation) {
  * @param {Object}  options
  * @param {Object}  options.collection Chroma collection or compatible seam.
  * @param {Object}  options.scope The default stamp `{tenantId, repoSlug}`.
+ * @param {Object}  options.replacement The replacement observation, see {@link assessReplacement}.
  * @param {Boolean} [options.apply=false]
  * @param {String}  [options.confirmation='']
  * @param {Number}  [options.pageSize=DEFAULT_PAGE_SIZE]
- * @returns {Promise<Object>} The receipt: scope, before, refusals, retired, after.
+ * @returns {Promise<Object>} The receipt: scope, replacement, before, refusals, retired, after.
+ * @throws {Error} `KB_LEGACY_RETIRE_INTERRUPTED` or `KB_LEGACY_RETIRE_PRESERVATION_VIOLATED`, each carrying `receipt`.
  */
-export async function runRetirement({collection, scope, apply = false, confirmation = '', pageSize = DEFAULT_PAGE_SIZE}) {
+export async function runRetirement({collection, scope, replacement, apply = false, confirmation = '', pageSize = DEFAULT_PAGE_SIZE}) {
     if (apply) {
         assertApplyConfirmed(confirmation)
     }
 
-    const plan    = await buildRetirementPlan({collection, scope, pageSize}),
+    const plan    = await buildRetirementPlan({collection, scope, replacement, pageSize}),
           receipt = {
               apply,
               scope,
-              before  : {scopeTotal: plan.scopeTotal, preserved: plan.preserved, conversationByType: plan.conversationByType},
-              refusals: plan.refusals,
-              retired : 0,
-              after   : null
+              replacement: plan.replacement,
+              before     : {scopeTotal: plan.scopeTotal, preserved: plan.preserved, conversationByType: plan.conversationByType},
+              refusals   : plan.refusals,
+              retired    : 0,
+              after      : null
           };
 
     if (!apply || plan.refusals.length > 0 || plan.ids.length === 0) {
         return receipt
     }
 
-    for (let index = 0; index < plan.ids.length; index += pageSize) {
-        const ids = plan.ids.slice(index, index + pageSize);
+    let stage          = 'delete',
+        confirmedPages = 0;
 
-        await collection.delete({ids});
-        receipt.retired += ids.length
+    try {
+        for (let index = 0; index < plan.ids.length; index += pageSize) {
+            const ids = plan.ids.slice(index, index + pageSize);
+
+            await collection.delete({ids});
+            receipt.retired += ids.length;
+            confirmedPages++
+        }
+
+        stage = 'recount';
+
+        const scopeTotal   = await scanRows({collection, where: scopeWhere(scope), pageSize}),
+              conversation = await scanRows({collection, where: scopeWhere(scope, true), pageSize});
+
+        receipt.after = {scopeTotal, preserved: scopeTotal - conversation, conversation}
+    } catch (cause) {
+        receipt.failure = stage === 'delete'
+            ? {stage, confirmedPages, uncertainRows: Math.min(pageSize, plan.ids.length - receipt.retired), message: cause.message}
+            : {stage, message: cause.message};
+
+        const error = refuse(
+            'KB_LEGACY_RETIRE_INTERRUPTED',
+            `Stopped during ${stage} after ${receipt.retired} confirmed deletes; the failing page's outcome is unknown. Recount with a dry run, or restore from the pre-run backup.`
+        );
+
+        error.receipt = receipt;
+        error.cause   = cause;
+        throw error
     }
 
-    const scopeTotal   = await scanRows({collection, where: scopeWhere(scope), pageSize}),
-          conversation = await scanRows({collection, where: scopeWhere(scope, true), pageSize});
-
-    receipt.after = {scopeTotal, preserved: scopeTotal - conversation, conversation};
-
-    if (receipt.after.preserved !== plan.preserved || conversation !== 0) {
+    if (receipt.after.preserved !== plan.preserved || receipt.after.conversation !== 0) {
         const error = refuse(
             'KB_LEGACY_RETIRE_PRESERVATION_VIOLATED',
-            `Preserved rows went ${plan.preserved} -> ${receipt.after.preserved} and ${conversation} conversation rows remain; restore from the pre-run backup.`
+            `Preserved rows went ${plan.preserved} -> ${receipt.after.preserved} and ${receipt.after.conversation} conversation rows remain; restore from the pre-run backup.`
         );
 
         error.receipt = receipt;
@@ -210,6 +281,15 @@ export async function runRetirement({collection, scope, apply = false, confirmat
     }
 
     return receipt
+}
+
+/**
+ * @summary The JSON the CLI prints on failure: the code, the message and whatever receipt the failure carries.
+ * @param {Error} error
+ * @returns {Object}
+ */
+export function failureReport(error) {
+    return {code: error.code, message: error.message, receipt: error.receipt}
 }
 
 /**
@@ -238,23 +318,53 @@ export async function runCli(argv = process.argv) {
         throw new Error(`page-size must be a positive integer; received ${options.pageSize}`)
     }
 
-    const {default: AiConfig}      = await import('../../config.mjs'),
-          {default: ChromaManager} = await import('../../services/knowledge-base/ChromaManager.mjs'),
-          {default: VectorService} = await import('../../services/knowledge-base/VectorService.mjs'),
+    const {default: AiConfig}                                           = await import('../../config.mjs'),
+          {default: ChromaManager}                                      = await import('../../services/knowledge-base/ChromaManager.mjs'),
+          {default: IngestionService}                                   = await import('../../services/knowledge-base/IngestionService.mjs'),
+          {default: VectorService}                                      = await import('../../services/knowledge-base/VectorService.mjs'),
+          {deriveRepoSlugFromCloneUrl}                                  = await import('../../services/knowledge-base/helpers/tenantRepoAccessContract.mjs'),
           {resolveHeavyMaintenanceLeasePath, withHeavyMaintenanceLease} = await import('../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs');
 
     const {tenantId, repoSlug} = VectorService.resolveTenantStamp();
 
+    // host/owner/name, so `.git` and trailing-slash spellings of one repository compare equal
+    const repositoryKey = url => {
+        try {
+            return deriveRepoSlugFromCloneUrl(url)
+        } catch (e) {
+            return null
+        }
+    };
+
     await ChromaManager.ready();
 
     const outcome = await withHeavyMaintenanceLease(
-        async () => runRetirement({
-            collection  : await ChromaManager.getKnowledgeBaseCollection(),
-            scope       : {tenantId, repoSlug},
-            apply       : options.apply,
-            confirmation: options.confirm,
-            pageSize
-        }),
+        async () => {
+            let replacement;
+
+            try {
+                const corpusKey     = repositoryKey(AiConfig.orchestrator.corpusProjection.sourceRepository),
+                      {tenantRepos} = await IngestionService.listConfiguredTenantRepos(),
+                      corpus        = corpusKey && tenantRepos.find(repo => repo.tenantId === tenantId && repositoryKey(repo.cloneUrl) === corpusKey);
+
+                replacement = corpus ? {
+                    repoSlug          : corpus.repoSlug,
+                    extractionIdentity: corpus.extractionIdentity,
+                    manifest          : await IngestionService.getTenantManifest({tenantId, repoSlug: corpus.repoSlug})
+                } : {repoSlug: null}
+            } catch (error) {
+                replacement = {error: error.message}
+            }
+
+            return runRetirement({
+                collection  : await ChromaManager.getKnowledgeBaseCollection(),
+                scope       : {tenantId, repoSlug},
+                replacement,
+                apply       : options.apply,
+                confirmation: options.confirm,
+                pageSize
+            })
+        },
         {
             leasePath   : resolveHeavyMaintenanceLeasePath({dataDir: AiConfig.orchestrator.dataDir}),
             owner       : 'kbLegacyConversationRetirement',
@@ -281,7 +391,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     try {
         await runCli()
     } catch (error) {
-        console.error(JSON.stringify({code: error.code, message: error.message, receipt: error.receipt}, null, 2));
+        console.error(JSON.stringify(failureReport(error), null, 2));
         process.exitCode = 1
     }
 }
