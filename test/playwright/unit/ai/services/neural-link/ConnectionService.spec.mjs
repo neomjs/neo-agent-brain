@@ -11,33 +11,39 @@ setup({
     }
 });
 
-import {test, expect}            from '@playwright/test';
-import fs                        from 'fs';
-import os                        from 'os';
-import path                      from 'path';
-import Neo                       from 'neo.mjs/src/Neo.mjs';
-import * as core                 from 'neo.mjs/src/core/_export.mjs';
-import {STALE_BRIDGE_ERROR_CODE} from '../../../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
+import {test, expect}                                     from '@playwright/test';
+import fs                                                 from 'fs';
+import {once}                                             from 'node:events';
+import os                                                 from 'os';
+import path                                               from 'path';
+import {WebSocketServer}                                  from 'ws';
+import Neo                                                from 'neo.mjs/src/Neo.mjs';
+import * as core                                          from 'neo.mjs/src/core/_export.mjs';
+import {createBridgeInfoPayload, STALE_BRIDGE_ERROR_CODE} from '../../../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
 
 /**
  * @summary Unit coverage for Neural Link connection freshness and Bridge process boundaries.
  *
- * These tests deliberately stub `connectToBridge` / `spawnBridge` rather than opening a WebSocket:
- * importing the singleton is safe because `unitTestMode` suppresses auto-connect, and the branch logic
- * is what decides whether a stale shared Bridge is reused, spawned over, or failed loudly.
+ * Most tests stub `connectToBridge` / `spawnBridge`; the socket-close cases use an ephemeral loopback
+ * WebSocketServer with the real freshness handshake. Importing the singleton is safe because `unitTestMode`
+ * suppresses auto-connect. No test reaches or spawns the live Bridge.
  */
 test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshness gate (#13299)', () => {
     const rpcClients = [];
     let BRIDGE_CWD_MISSING_SCRIPT, BRIDGE_NPM_SCRIPT, ConnectionService, getBridgeStdioLogPath, logBridgePayload,
         normalizeBridgePayloadDebugMaxChars, stringifyBridgePayloadForDebug,
-        originalConnectToBridge, originalCwd, originalOpenBridgeLogFile,
+        TARGET_DISCONNECTED_ERROR_CODE, BRIDGE_CLOSED_ERROR_CODE,
+        originalConnectToBridge, originalCreateBridgeUrl, originalCwd, originalOpenBridgeLogFile,
         originalSpawnBridge, originalSpawnBridgeProcess;
+    const localBridgeServers = new Set();
 
     test.beforeAll(async () => {
         const module = await import('../../../../../../ai/services/neural-link/ConnectionService.mjs');
 
         BRIDGE_CWD_MISSING_SCRIPT            = module.BRIDGE_CWD_MISSING_SCRIPT;
         BRIDGE_NPM_SCRIPT                    = module.BRIDGE_NPM_SCRIPT;
+        TARGET_DISCONNECTED_ERROR_CODE        = module.TARGET_DISCONNECTED_ERROR_CODE;
+        BRIDGE_CLOSED_ERROR_CODE              = module.BRIDGE_CLOSED_ERROR_CODE;
         ConnectionService                    = module.default;
         getBridgeStdioLogPath                = module.getBridgeStdioLogPath;
         logBridgePayload                     = module.logBridgePayload;
@@ -47,25 +53,39 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
 
     test.beforeEach(() => {
         originalConnectToBridge    = ConnectionService.connectToBridge;
+        originalCreateBridgeUrl    = ConnectionService.createBridgeUrl;
         originalCwd                = ConnectionService.cwd;
         originalOpenBridgeLogFile  = ConnectionService.openBridgeLogFile;
         originalSpawnBridge        = ConnectionService.spawnBridge;
         originalSpawnBridgeProcess = ConnectionService.spawnBridgeProcess;
         ConnectionService.bridgeSocket = null;
+        ConnectionService.bridgeProcess = null;
+        ConnectionService.pendingRequests.clear();
+        ConnectionService.sessionData.clear();
     });
 
-    test.afterEach(() => {
+    test.afterEach(async () => {
         rpcClients.splice(0).forEach(client => {
             client.pendingRequests.forEach(pending => clearTimeout(pending.timeout));
             client.pendingRequests.clear();
         });
+        ConnectionService.pendingRequests.forEach(pending => clearTimeout(pending.timeout));
+        ConnectionService.pendingRequests.clear();
+        ConnectionService.sessionData.clear();
+        if (ConnectionService.bridgeSocket?.readyState === 1) ConnectionService.bridgeSocket.close();
+        ConnectionService.bridgeSocket         = null;
+        ConnectionService.bridgeProcess        = null;
         ConnectionService.connectToBridge      = originalConnectToBridge;
+        ConnectionService.createBridgeUrl      = originalCreateBridgeUrl;
         ConnectionService.cwd                  = originalCwd;
         ConnectionService.openBridgeLogFile    = originalOpenBridgeLogFile;
         ConnectionService.spawnBridge          = originalSpawnBridge;
         ConnectionService.spawnBridgeProcess   = originalSpawnBridgeProcess;
-        ConnectionService.bridgeProcess        = null;
-        ConnectionService.bridgeSocket         = null;
+        await Promise.all([...localBridgeServers].map(async server => {
+            server.clients.forEach(socket => socket.terminate());
+            await new Promise(resolve => server.close(() => resolve()))
+        }));
+        localBridgeServers.clear()
     });
 
     test('builds the Bridge URL from an explicit port and encoded fleet token', () => {
@@ -91,6 +111,31 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         return client;
     }
 
+    /** @summary Starts a fresh in-process Bridge endpoint; this never spawns the managed Bridge. */
+    async function startLocalBridge() {
+        const sockets = [],
+            server    = new WebSocketServer({host: '127.0.0.1', port: 0});
+
+        server.on('connection', socket => {
+            sockets.push(socket);
+            socket.send(JSON.stringify(createBridgeInfoPayload()))
+        });
+
+        await once(server, 'listening');
+
+        localBridgeServers.add(server);
+
+        return {server, sockets, url: `ws://127.0.0.1:${server.address().port}`}
+    }
+
+    /** @summary Observes resolution/rejection without leaving an unhandled promise during teardown. */
+    function observe(promise, onSettle=() => {}) {
+        return promise.then(
+            value => { onSettle(); return {value} },
+            error => { onSettle(); return {error} }
+        )
+    }
+
     for (const peerTarget of ['app-a', 'app-b']) {
         test(`broadcast replies stay with their caller when the peer targets ${peerTarget}`, async () => {
             const owner     = createRpcClient(), peer = createRpcClient();
@@ -108,6 +153,11 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
             expect(owner.pendingRequests.size + peer.pendingRequests.size).toBe(0);
         });
     }
+
+    test('disconnect error codes are stable public contracts', () => {
+        expect(TARGET_DISCONNECTED_ERROR_CODE).toBe('NEURAL_LINK_TARGET_DISCONNECTED');
+        expect(BRIDGE_CLOSED_ERROR_CODE).toBe('NEURAL_LINK_BRIDGE_CLOSED')
+    });
 
     test('a foreign app cannot consume a matching request ID with a result or error', async () => {
         const client = createRpcClient(), call = client.call('app-a', 'owned');
@@ -140,7 +190,194 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         await expect(second).resolves.toBe('second');
     });
 
-    test('the existing timeout still rejects and cleans a call after disconnect', async () => {
+    test('app_disconnected rejects only that session’s pending RPCs once and clears their timers', async () => {
+        const client             = createRpcClient(),
+            originalSetTimeout   = globalThis.setTimeout,
+            originalClearTimeout = globalThis.clearTimeout,
+            timers               = new Map(),
+            cleared              = new Set();
+        let timerId       = 0,
+            a1Settlements = 0,
+            a2Settlements = 0;
+
+        globalThis.setTimeout = callback => {
+            const id = ++timerId;
+            timers.set(id, callback);
+            return id
+        };
+        globalThis.clearTimeout = id => { cleared.add(id) };
+
+        try {
+            const a1    = observe(client.call('app-a', 'first'), () => a1Settlements++),
+                a1Id    = client.sent[0].message.id,
+                a1Timer = client.pendingRequests.get(a1Id).timeout,
+                a2      = observe(client.call('app-a', 'second'), () => a2Settlements++),
+                a2Id    = client.sent[1].message.id,
+                a2Timer = client.pendingRequests.get(a2Id).timeout,
+                b       = observe(client.call('app-b', 'survives')),
+                bId     = client.sent[2].message.id,
+                bTimer  = client.pendingRequests.get(bId).timeout;
+
+            client.handleBridgeMessage(Buffer.from(JSON.stringify({type: 'app_disconnected', appWorkerId: 'app-a'})));
+
+            expect(client.pendingRequests.has(a1Id)).toBe(false);
+            expect(client.pendingRequests.has(a2Id)).toBe(false);
+            expect(client.pendingRequests.has(bId)).toBe(true);
+            expect(cleared).toEqual(new Set([a1Timer, a2Timer]));
+            expect(cleared.has(bTimer)).toBe(false);
+
+            const [a1Result, a2Result] = await Promise.all([a1, a2]);
+            expect(a1Result.error).toMatchObject({code: TARGET_DISCONNECTED_ERROR_CODE, sessionId: 'app-a'});
+            expect(a2Result.error).toMatchObject({code: TARGET_DISCONNECTED_ERROR_CODE, sessionId: 'app-a'});
+
+            // A repeated disconnect and late replies are idempotent; the sibling's request remains live.
+            client.handleBridgeMessage(Buffer.from(JSON.stringify({type: 'app_disconnected', appWorkerId: 'app-a'})));
+            client.handleAppMessage('app-a', {id: a1Id, result: 'late-first'});
+            client.handleAppMessage('app-a', {id: a2Id, result: 'late-second'});
+            timers.get(a1Timer)();
+            timers.get(a2Timer)();
+            await Promise.resolve();
+            expect(a1Settlements).toBe(1);
+            expect(a2Settlements).toBe(1);
+            expect(client.pendingRequests.has(bId)).toBe(true);
+
+            client.handleAppMessage('app-b', {id: bId, result: 'survived'});
+            await expect(b).resolves.toMatchObject({value: 'survived'});
+            expect(cleared.has(bTimer)).toBe(true)
+        } finally {
+            globalThis.setTimeout = originalSetTimeout;
+            globalThis.clearTimeout = originalClearTimeout;
+            for (const [id, pending] of client.pendingRequests) {
+                cleared.add(pending.timeout);
+                pending.reject(new Error('test cleanup'));
+                client.pendingRequests.delete(id)
+            }
+        }
+    });
+
+    test('an actual Bridge close settles pending calls after stop nulled the current socket', async () => {
+        const bridge             = await startLocalBridge(),
+            originalSetTimeout   = globalThis.setTimeout,
+            originalClearTimeout = globalThis.clearTimeout,
+            cleared              = new Set(),
+            observedTimers       = new Set();
+        let socket;
+
+        ConnectionService.createBridgeUrl = () => bridge.url;
+
+        try {
+            await ConnectionService.connectToBridge();
+            socket = ConnectionService.bridgeSocket;
+            ConnectionService.handleAppConnected('app-a');
+            ConnectionService.handleAppConnected('app-b');
+
+            // Keep real timers, but remember the two RPC deadlines so the close handler's cleanup is observable.
+            globalThis.setTimeout = (callback, delay, ...args) => {
+                const timer = originalSetTimeout(callback, delay, ...args);
+                observedTimers.add(timer);
+                return timer
+            };
+            globalThis.clearTimeout = timer => {
+                observedTimers.has(timer) && cleared.add(timer);
+                return originalClearTimeout(timer)
+            };
+
+            const a          = observe(ConnectionService.call('app-a', 'pending-a')),
+                aId          = [...ConnectionService.pendingRequests].find(([, pending]) => pending.sessionId === 'app-a')[0],
+                aTimer       = ConnectionService.pendingRequests.get(aId).timeout,
+                b            = observe(ConnectionService.call('app-b', 'pending-b')),
+                bId          = [...ConnectionService.pendingRequests].find(([, pending]) => pending.sessionId === 'app-b')[0],
+                bTimer       = ConnectionService.pendingRequests.get(bId).timeout,
+                socketClosed = new Promise(resolve => socket.once('close', resolve));
+
+            expect(observedTimers.has(aTimer)).toBe(true);
+            expect(observedTimers.has(bTimer)).toBe(true);
+
+            await ConnectionService.manageConnection({action: 'stop'});
+            expect(ConnectionService.bridgeSocket).toBeNull(); // stop retires the field before the close event
+            await socketClosed;
+
+            expect(ConnectionService.pendingRequests.size).toBe(0);
+            expect(cleared.has(aTimer)).toBe(true);
+            expect(cleared.has(bTimer)).toBe(true);
+            const [aResult, bResult] = await Promise.all([a, b]);
+            expect(aResult.error).toMatchObject({code: BRIDGE_CLOSED_ERROR_CODE});
+            expect(bResult.error).toMatchObject({code: BRIDGE_CLOSED_ERROR_CODE})
+        } finally {
+            globalThis.setTimeout = originalSetTimeout;
+            globalThis.clearTimeout = originalClearTimeout;
+            if (socket?.readyState === 1) socket.terminate();
+        }
+    });
+
+    test('a retired socket close cannot reject calls on its replacement socket', async () => {
+        const bridge             = await startLocalBridge(),
+            originalSetTimeout   = globalThis.setTimeout,
+            originalClearTimeout = globalThis.clearTimeout,
+            cleared              = new Set(),
+            observedTimers       = new Set();
+        let firstSocket, secondSocket;
+
+        ConnectionService.createBridgeUrl = () => bridge.url;
+
+        try {
+            await ConnectionService.connectToBridge();
+            firstSocket = ConnectionService.bridgeSocket;
+            ConnectionService.handleAppConnected('app-a');
+
+            globalThis.setTimeout = (callback, delay, ...args) => {
+                const timer = originalSetTimeout(callback, delay, ...args);
+                observedTimers.add(timer);
+                return timer
+            };
+            globalThis.clearTimeout = timer => {
+                observedTimers.has(timer) && cleared.add(timer);
+                return originalClearTimeout(timer)
+            };
+
+            const a    = observe(ConnectionService.call('app-a', 'old-socket')),
+                aId    = [...ConnectionService.pendingRequests].find(([, pending]) => pending.sessionId === 'app-a')[0],
+                aTimer = ConnectionService.pendingRequests.get(aId).timeout;
+
+            await ConnectionService.connectToBridge();
+            secondSocket = ConnectionService.bridgeSocket;
+            expect(secondSocket).not.toBe(firstSocket);
+            ConnectionService.handleAppConnected('app-b');
+
+            const serverSecondMessage = new Promise(resolve => bridge.sockets[1].once('message', data => resolve(JSON.parse(data.toString())))),
+                b                     = observe(ConnectionService.call('app-b', 'new-socket')),
+                bId                   = [...ConnectionService.pendingRequests].find(([, pending]) => pending.sessionId === 'app-b')[0],
+                bTimer                = ConnectionService.pendingRequests.get(bId).timeout,
+                oldSocketClosed       = new Promise(resolve => firstSocket.once('close', resolve));
+
+            const bEnvelope = await serverSecondMessage;
+            expect(observedTimers.has(aTimer)).toBe(true);
+            expect(observedTimers.has(bTimer)).toBe(true);
+
+            bridge.sockets[0].close(1000, 'retire old Bridge socket');
+            await oldSocketClosed;
+
+            expect(ConnectionService.bridgeSocket).toBe(secondSocket);
+            expect(ConnectionService.pendingRequests.has(bId)).toBe(true);
+            await expect(a).resolves.toMatchObject({error: {code: BRIDGE_CLOSED_ERROR_CODE}});
+            expect(cleared.has(aTimer)).toBe(true);
+
+            bridge.sockets[1].send(JSON.stringify({
+                type       : 'app_message',
+                appWorkerId: 'app-b',
+                message    : {id: bEnvelope.message.id, result: 'replacement-survived'}
+            }));
+            await expect(b).resolves.toMatchObject({value: 'replacement-survived'});
+            expect(cleared.has(bTimer)).toBe(true)
+        } finally {
+            globalThis.setTimeout = originalSetTimeout;
+            globalThis.clearTimeout = originalClearTimeout;
+            if (firstSocket?.readyState === 1) firstSocket.terminate();
+            if (secondSocket?.readyState === 1) secondSocket.terminate()
+        }
+    });
+
+    test('the existing timeout still rejects and cleans a connected silent target', async () => {
         const client = createRpcClient(), originalSetTimeout = globalThis.setTimeout;
         let expire, timer, call;
         try {
@@ -152,7 +389,7 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         } finally {
             globalThis.setTimeout = originalSetTimeout;
         }
-        client.bridgeSocket = null;
+        expect(client.bridgeSocket, 'the silent App has a live Bridge route').toBeTruthy();
         const rejection = expect(call).rejects.toThrow('Request timed out');
         expire();
         clearTimeout(timer);

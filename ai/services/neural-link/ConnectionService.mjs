@@ -23,6 +23,18 @@ export const BRIDGE_NPM_SCRIPT = 'ai:server-neural-link';
 export const BRIDGE_CWD_MISSING_SCRIPT = 'BRIDGE_CWD_MISSING_SCRIPT';
 
 /**
+ * @summary Identifies explicit loss of the App Worker targeted by a pending call.
+ * @type {String}
+ */
+export const TARGET_DISCONNECTED_ERROR_CODE = 'NEURAL_LINK_TARGET_DISCONNECTED';
+
+/**
+ * @summary Identifies loss of the Bridge socket carrying a pending call.
+ * @type {String}
+ */
+export const BRIDGE_CLOSED_ERROR_CODE = 'NEURAL_LINK_BRIDGE_CLOSED';
+
+/**
  * What `--cwd` has to be. One sentence, shared by the spawn refusal and the start error so the two cannot drift.
  * @type {String}
  */
@@ -251,7 +263,7 @@ class ConnectionService extends Base {
     bridgeSocket = null
     /**
      * Pending RPC requests awaiting response from Browser.
-     * Map<messageId, {sessionId, resolve, reject, timeout}>
+     * Map<messageId, {sessionId, socket, resolve, reject, timeout}>
      */
     pendingRequests = new Map()
     /**
@@ -311,14 +323,16 @@ class ConnectionService extends Base {
 
     /**
      * Sends a JSON-RPC request to a specific session via the Bridge.
-     * @summary Uses requester-independent IDs because app replies are broadcast to every client.
+     * @summary Uses requester-independent IDs and settles explicit target/socket loss before the ordinary timeout.
+     * App loss rejects with NEURAL_LINK_TARGET_DISCONNECTED and sessionId; socket loss uses NEURAL_LINK_BRIDGE_CLOSED.
      * @param {String} sessionId    The target session ID.
      * @param {String} method      The RPC method name.
      * @param {Object} [params={}] The RPC parameters.
      * @returns {Promise<any>}
      */
     async call(sessionId, method, params={}) {
-        if (!this.bridgeSocket) {
+        const socket = this.bridgeSocket;
+        if (!socket) {
             throw new Error('Not connected to Neural Link Bridge');
         }
 
@@ -343,16 +357,14 @@ class ConnectionService extends Base {
         return new Promise((resolve, reject) => {
             // Timeout after configured time
             const timeout = setTimeout(() => {
-                if (this.pendingRequests.has(id)) {
-                    this.pendingRequests.delete(id);
+                if (this.settleRequest(id, new Error('Request timed out'))) {
                     logger.error(`[ConnectionService] Call ${id} timed out`);
-                    reject(new Error('Request timed out'));
                 }
             }, aiConfig.rpcTimeout);
 
-            this.pendingRequests.set(id, {sessionId, resolve, reject, timeout});
+            this.pendingRequests.set(id, {sessionId, socket, resolve, reject, timeout});
 
-            this.bridgeSocket.send(JSON.stringify(bridgePayload));
+            socket.send(JSON.stringify(bridgePayload));
         });
     }
 
@@ -437,7 +449,14 @@ class ConnectionService extends Base {
 
             ws.on('close', () => {
                 logger.warn('Disconnected from Neural Link Bridge');
-                this.bridgeSocket = null;
+                if (this.bridgeSocket === ws) this.bridgeSocket = null;
+                for (const [id, pending] of this.pendingRequests) {
+                    if (pending.socket === ws) {
+                        const error = new Error('Neural Link Bridge closed');
+                        error.code = BRIDGE_CLOSED_ERROR_CODE;
+                        this.settleRequest(id, error);
+                    }
+                }
                 rejectOnce(new Error('Neural Link Bridge closed before freshness handshake completed.'), false);
                 // Optional: Auto-reconnect logic could go here
             });
@@ -690,11 +709,20 @@ class ConnectionService extends Base {
     }
 
     /**
+     * @summary Retires only the departed App Worker's pending calls, without cancelling renderer work.
      * @param {String} appWorkerId
      */
     handleAppDisconnected(appWorkerId) {
         logger.info(`App Worker disconnected: ${appWorkerId}`);
         this.sessionData.delete(appWorkerId);
+        for (const [id, pending] of this.pendingRequests) {
+            if (pending.sessionId === appWorkerId) {
+                const error = new Error(`App Worker ${appWorkerId} disconnected`);
+                error.code = TARGET_DISCONNECTED_ERROR_CODE;
+                error.sessionId = appWorkerId;
+                this.settleRequest(id, error);
+            }
+        }
     }
 
     /**
@@ -856,15 +884,28 @@ class ConnectionService extends Base {
         const pending = this.pendingRequests.get(message.id);
         if (pending && pending.sessionId === sessionId) {
             logger.info(`[ConnectionService] Received response for ${message.id} from ${sessionId}`);
-            clearTimeout(pending.timeout);
-            this.pendingRequests.delete(message.id);
-
-            if (message.error) {
-                pending.reject(new Error(message.error.message || 'Unknown RPC Error'));
-            } else {
-                pending.resolve(message.result);
-            }
+            this.settleRequest(message.id, message.error ? new Error(message.error.message || 'Unknown RPC Error') : null,
+                message.result);
         }
+    }
+
+    /**
+     * @summary Removes one pending entry and its deadline before notifying its caller, at most once.
+     * @param {String} id The requester-independent message ID.
+     * @param {Error|null} error A rejection reason, or null for a reply result.
+     * @param {*} [result] The successful reply value.
+     * @returns {Boolean} True when this call settled a still-pending entry.
+     * @protected
+     */
+    settleRequest(id, error, result) {
+        const pending = this.pendingRequests.get(id);
+        if (!pending) return false;
+
+        this.pendingRequests.delete(id);
+        clearTimeout(pending.timeout);
+        if (error) pending.reject(error);
+        else pending.resolve(result);
+        return true;
     }
 
     /**
