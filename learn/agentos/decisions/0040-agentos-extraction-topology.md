@@ -229,7 +229,7 @@ docking record, filed side by side; `A2A.md` and `DockZoneModel.md` are the same
 directory up. A blanket "`decisions/` moves" rule would relocate the Body's design records into the
 Brain and reproduce, one level lower, exactly the location heuristic this section exists to reject.
 
-**This section names the categories and the invariant; it does not enumerate.** The exact per-file
+**The wave-one category rule does not substitute for its exact-identity inventory.** The per-file
 identities are the cut manifest's census (`#17787`), which is where a mixed corpus of this size can
 be resolved file by file and evidenced. What §2.7 guarantees is that every `learn/agentos` path has
 a category to be classified *into*, and that the classifier is subject rather than location.
@@ -246,6 +246,42 @@ Chroma/SQLite reach) moves with the Agent OS tests despite its shared-root locat
 fixture stays Engine (losing its live Brain imports per §2.3's whitebox tier), and `apps/agentos`
 specs split — pure UI/component specs stay with the Engine app, specs instantiating Fleet/MCP server
 implementations move with their service owner or become served-contract integration tests.
+
+#### §2.7.1 Fleet Manager decision custody
+
+[D19427](https://github.com/orgs/neomjs/discussions/19427) applies §2.7's subject rule to the
+Fleet Manager records. Their canonical source belongs to `neomjs/neo-agent-institution`,
+not the Engine or the Brain implementation that enforces part of a decision:
+
+| Whole record | Destination under Institution `learn/agentos/decisions/` | Semantic disposition |
+|---|---|---|
+| 0020 | `0020-agent-harness-concept.md` | Preserve the decision; qualify evidenced historical references |
+| 0032 | `0032-institution-cockpit-render-model.md` | Preserve the decision |
+| 0034 | `0034-electron-shell-architecture.md` | Preserve the landed runtime-generation amendment from [Engine continuity amendment](https://github.com/neomjs/neo/pull/19726) |
+| 0037 | `0037-fleet-manager-outward-door-topology.md` | Semantic disposition pending: custody does not repair its monorepo-only clauses |
+| 0038 | `0038-fm-client-topology.md` | Move whole, preserving the landed admission-continuity amendment from [the same amendment](https://github.com/neomjs/neo/pull/19726) |
+
+The authoritative per-record source revisions, hashes, aliases and graph/KB state belong to
+the reviewed migration manifest under [Brain #1010](https://github.com/neomjs/neo-agent-brain/issues/1010).
+The table declares custody, not a completed cut. ADR 0029 docking and ADR 0021 generic Neural
+Link enforcement stay Engine-owned; ADR 0041 stays Brain-owned. ADRs 0018 and 0031 do not move
+merely because a layer label mentions Institution.
+
+[ADR 0006 §§2.6–2.10](0006-adrs-as-graph-queryable-entities.md#26-repository-qualified-identity-and-local-allocation)
+owns qualified identity, local allocation, the one redirect convention and migration safeguards.
+Identity and evidenced historical citation origins survive the move. Reader/alias compatibility
+and adopted authoring guidance precede publication/custody admission. Old Engine paths become
+classified pointers, not competing full records; no missing file implies decision retirement.
+
+Engine retains generated Portal/SEO/tree ownership. Before the cut,
+[the publication delivery](https://github.com/neomjs/neo/issues/19729) must explicitly choose and
+verify whether the site renders full FM content sourced from Institution or presents pointers
+as the accepted reader outcome. Pointers cannot silently replace promised full content. The
+declared outcome needs built-candidate and deployed semantic-destination evidence.
+
+ADR 0037's semantic amendment remains separate, with its own review; neither that follow-up nor
+this custody migration adds a release or Fleet-adoption gate. Human-only PR merge authority and
+the Engine-only package boundary above remain unchanged.
 
 ### §2.8 Conversion, canary, cut window
 

@@ -71,6 +71,143 @@ Each edge has a named consumer. No speculative edges.
 
 ---
 
+### 2.6 Repository-qualified identity and local allocation
+
+The [D19427 decision](https://github.com/orgs/neomjs/discussions/19427), delivered through
+[Brain #1010](https://github.com/neomjs/neo-agent-brain/issues/1010), replaces org-wide number
+uniqueness with repository-owned decisions. This extends the specific `ADR` authority above;
+it does not widen the LLM extraction taxonomy or remove apoptosis protection.
+
+A canonical decision identity contains four strings:
+
+| Field | Authority |
+|---|---|
+| `forge` | Canonical provider authority, including a non-default port when applicable; no URL scheme or credentials |
+| `repositoryId` | The forge's evidenced stable repository resource ID, not its current name |
+| `namespace` | Full organization/repository name recorded at this decision's assignment |
+| `number` | Four ASCII decimal digits, `0001` through `9999` |
+
+The key is `adr:<E(forge)>:<E(repositoryId)>:<E(namespace)>:<number>`. `E` encodes UTF-8
+bytes using [RFC 3986 §§2.1–2.3](https://datatracker.ietf.org/doc/html/rfc3986#section-2.1):
+only ASCII letters, digits, `-`, `.`, `_`, and `~`
+remain literal, and hex digits are uppercase. Encode each field separately; decode once and
+require canonical re-encoding equality. The forge's provider adapter supplies its canonical
+authority/name spelling; the opaque resource ID and the assigned namespace are not normalized
+again. Reject missing proof, malformed fields or noncanonical spelling before admission.
+
+For example, the reviewed Institution binding gives ADR 0038 the key
+`adr:github.com:1347756127:neomjs%2Fneo-agent-institution:0038`. The same number assigned to
+Brain's evidenced repository is
+`adr:github.com:1344062228:neomjs%2Fneo-agent-brain:0038`: a different decision. These are
+identity examples, not permission to create another record or mutate existing data.
+
+A reviewed legacy assignment supplies the namespace once; it does not infer birth provenance
+from the current file location. A later custody move does not change any identity field. A
+proved repository rename reserves the old qualified locator as an alias; occupying that name
+with a different repository ID cannot inherit the decision or alias. An unproved repository
+identity change refuses reconciliation. A new decision records its evidenced namespace at
+creation; a rename never makes an already-used number available again in the same repository.
+
+Allocation is local to `(forge, repositoryId)`, across that repository's admitted namespaces
+and reserved aliases: choose one above the greatest admitted or reserved decision number,
+starting at `0001` for an empty population. Do not recycle gaps or consult other repositories'
+number sequences. Competing proposals may choose the same slot; admission rechecks the
+current authoritative population and refuses the duplicate. An exhausted four-digit range
+refuses explicitly rather than wrapping. This is no org-wide allocator, reservation service
+or additional operator registration ceremony.
+
+### 2.7 Source authority, custody and aliases
+
+The admitted, source-backed ADR catalog owns the identity, the `ADR` type and its canonical
+document-vector binding. It is the existing source/admission projection's decision view, not
+a parallel source registry. Non-authoritative semantic writers may enrich relationships and
+provenance but cannot replace those authority fields. Membership is proved by admission,
+never by an `adr-` or `adr:` prefix.
+
+Each admitted record binds its identity to a canonical source tuple
+`(repository identity, commit revision, repository-relative path, source hash)`. The reviewed
+migration manifest additionally carries the legacy ID, identity-assignment evidence, current
+and intended custody, reserved aliases, historical citation dispositions, observed node/vector/
+edge state, and semantic disposition. A branch name or a directory traversal is not a pinned
+source. Source hashes and revisions are preconditions, not hints.
+
+A staged destination file is not a second authority. The declared source at its verified
+revision is the writer; an undeclared competing canonical claim refuses mutation and retains
+the last admitted state. The manifest's custody transition must be explicit and recoverable.
+It must not silently elect whichever full copy was scanned last.
+
+Reserve admitted legacy aliases instead of repointing them on a move. Human-qualified references
+use `forge/organization/repository#adr-NNNN`; a bare `adr-NNNN` remains a legacy lookup.
+Where alias evidence identifies more than one legitimate target, return those candidates
+and uncertainty. A locator conflicting with a reserved historical alias requires the canonical
+identity key. Never choose by current custodian, newest content or current URL occupancy.
+
+### 2.8 Historical references and graph preservation
+
+A reference's evidenced origin is independent of document custody. This record's implementation
+ticket remains [neomjs/neo#11377](https://github.com/neomjs/neo/issues/11377); moving this ADR
+to Brain did not make it a Brain issue. Likewise, ADR 0041's publishing PR remains
+[neomjs/neo-agent-brain#680](https://github.com/neomjs/neo-agent-brain/pull/680).
+Normalize a citation explicitly or retain proved source context. Missing origin evidence stays
+unresolved; it never defaults to the destination repository.
+
+Qualified issue/PR references consume the existing conversation-origin identity authority.
+They do not create parallel nodes beside admitted conversation identities. Known endpoints
+retain their actual `ADR`, `ISSUE` or `PR` types through empty/out-of-order ingestion and
+alias resolution; unresolved authority references are not invented `CONCEPT` nodes.
+
+Migration preserves every incident edge and its properties/provenance, not only the edges
+this ingestor can reconstruct. Inventory every owner of an old vector pointer before rekeying
+or deletion. A summary vector shared with another node is not the ADR's exclusive document:
+reconstruct the ADR binding from pinned source without deleting or stealing unrelated retrieval.
+A later semantic write is a required negative control after repair.
+
+### 2.9 Redirect document convention
+
+An old source path may retain this explicitly non-authoritative pointer:
+
+```yaml
+---
+type: redirect
+target: adr:github.com:1347756127:neomjs%2Fneo-agent-institution:0038
+---
+```
+
+These are the only frontmatter fields of this convention: `type` is exactly `redirect`;
+`target` is the canonical decision key from §2.6. The body states that the record moved and
+links to its declared canonical document for human readers. That URL is a locator, not identity
+or admission authority. The pointer contains no ADR status, number, title or supersession
+frontmatter, and no full competing decision text.
+
+Classify the document before applying a numbered-filename heuristic. Graph ingestion, both KB
+extraction paths, source tombstone/reconciliation handling, composition/census and published
+navigation must all admit the distinction before the first move. A redirect produces no second
+ADR authority node or canonical ADR knowledge chunk. Resolve `target` through the admitted
+catalog; do not infer identity by following its body URL or an arbitrary pointer chain.
+An unknown target stays unresolved; an unavailable canonical document stays unavailable.
+The `guide-authoring` skill consumes this definition by reference rather than defining another.
+
+### 2.10 Availability, migration and retirement boundaries
+
+| Observation | Required result |
+|---|---|
+| Old or new declared source available alone | One admitted identity/document at the verified custody revision |
+| Both full sources present | Only the declared source can be admitted; an undeclared competing claim refuses mutation |
+| Neither source available | Retain last admitted identity/aliases and graph/edges with stale-source evidence; report document and KB availability separately |
+| Legacy citation resolves but document cannot be read | Report identity resolution and unavailable document as separate facts |
+| Interrupted or retried migration | Reconcile from a durable phase and matching preconditions; a completed rerun is a no-op |
+
+Current ADR ingestion is upsert-only: deleting a file does not prune its graph node. Neither
+source absence nor custody movement retires a decision. Unrelated decision-retirement and
+renumbering semantics are outside this migration; no destructive cleanup is inferred here.
+
+Reader compatibility precedes file movement. A complete reviewed manifest, source/data-bound
+dry run, coordinated writers and validated recovery/rollback precede live application. Graph
+nodes/edges, graph vectors, repository-bound KB documents and tombstones are separate mutation
+surfaces; unchanged counts do not prove cross-store success. Final acceptance uses the actual
+old/qualified citation, graph, KB and published-reader paths. This amendment defines their
+contract; it does not claim that the current readers or stored data already implement it.
+
 ## 3. Implementation Details
 
 ### 3.1 Deterministic ingestion
