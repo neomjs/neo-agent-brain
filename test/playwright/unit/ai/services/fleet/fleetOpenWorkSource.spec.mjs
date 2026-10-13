@@ -18,7 +18,7 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         const {state: freshness, seats, unobserved, awaitingMerge} = source(state()).readOpenWork();
 
         const summary = {repo: 'acme/app', number: 7, title: 'fix: the head goes green', head: 'a1', ci: 'red', verdict: 'CHANGES_REQUESTED', mergeable: 'MERGEABLE', draft: false, reviews: [review], observedAt: OBSERVED, stale: false,
-            holder: {role: 'author', ids: ['@neo-opus-ada']}};
+            holder: {role: 'author', kind: 'repair-ci', ids: ['@neo-opus-ada']}};
 
         expect(freshness).toBe('ok');
         expect(unobserved).toBe(0);
@@ -27,6 +27,22 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
             '@neo-gpt'     : {authored: [], reviewing: [summary]}
         });
         expect(awaitingMerge).toEqual([])
+    });
+
+    test('routing and rebase actions propagate unchanged into each public seat view inside a partial pulse', () => {
+        const
+            approval = {reviewer: '@neo-gpt', state: 'APPROVED', onHead: true},
+            routing  = {...row(1), ci: 'green', verdict: null, requested: [], reviews: [], opinions: [], partial: false},
+            rebase   = {...row(2), ci: 'green', verdict: 'APPROVED', mergeable: 'CONFLICTING', requested: ['@neo-gpt'], reviews: [approval], opinions: [approval], partial: false},
+            read     = source(state({coverage: 'partial'}, [routing, rebase])).readOpenWork();
+
+        expect(read.coverage).toBe('partial');
+        expect(read.seats['@neo-opus-ada'].authored.map(({number, holder}) => ({number, holder}))).toEqual([
+            {number: 1, holder: {role: 'author', kind: 'route-review', ids: ['@neo-opus-ada']}},
+            {number: 2, holder: {role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']}}
+        ]);
+        expect(read.seats['@neo-gpt'].reviewing[0].holder).toEqual({role: 'author', kind: 'rebase', ids: ['@neo-opus-ada']});
+        expect(read.awaitingMerge).toEqual([])
     });
 
     test('a row stored before the snapshot carried titles answers with a null title', () => {
@@ -86,7 +102,7 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         // more reviews or opinions went unread: the approval cannot be shown to stand alone
         expect(awaiting({moreReviews: true})).toEqual([]);
         expect(awaiting({moreOpinions: true})).toEqual([]);
-        expect(read({moreReviews: true}).seats['@neo-opus-ada'].authored.map(({holder}) => holder)).toEqual([{role: 'unknown', ids: []}]);
+        expect(read({moreReviews: true}).seats['@neo-opus-ada'].authored.map(({holder}) => holder)).toEqual([{role: 'unknown', kind: null, ids: []}]);
         // the reviewer approved, then commented on the same head: the latest review is the comment
         expect(awaiting({latest: commented})).toEqual([[9, 'operator']]);
         // a change request survives a later comment the same way, and keeps the PR out of the queue

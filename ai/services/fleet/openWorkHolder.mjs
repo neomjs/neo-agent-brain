@@ -9,6 +9,9 @@
  * on the head is engagement only. `operator` and `rotation` are roles that name nobody; the reader
  * that renders or wakes resolves them, so no operator's handle lives here.
  *
+ * The kind distinguishes successive actions held by the same seat: fixing CI, addressing changes,
+ * rebasing and routing a review are different episodes even though the author holds each one.
+ *
  * A partial read (a review, opinion or request list truncated or unresolved, or no opinion list at
  * all) decides only on positive evidence: a red head, or a change request on the head, is the
  * author's. Every other rule reads an absence a missing page could hold, so the holder is `unknown`,
@@ -18,7 +21,8 @@
 /**
  * @summary The holder of one open snapshot row; the first rule below that matches wins.
  * @param {Object} row An open row of the producer's snapshot.
- * @returns {{role: 'rotation'|'author'|'reviewer'|'operator'|'none'|'unknown', ids: String[]}}
+ * @returns {{role: 'rotation'|'author'|'reviewer'|'operator'|'none'|'unknown',
+ *     kind: 'repair-ci'|'address-changes'|'rebase'|'review'|'route-review'|'merge'|null, ids: String[]}}
  */
 export function holderOf({ci, mergeable, draft, owner, partial = false, requested = [], reviews = [], opinions}) {
     const
@@ -29,26 +33,34 @@ export function holderOf({ci, mergeable, draft, owner, partial = false, requeste
 
     // "untouched" is an absence, so only a complete read hands an outside PR to the rotation
     if (owner?.kind === 'outside' && finished && untouched && !incomplete) {
-        return {role: 'rotation', ids: []}
+        return {role: 'rotation', kind: null, ids: []}
     }
 
     if (ci === 'red' || onHead('CHANGES_REQUESTED')) {
-        return {role: 'author', ids: owner?.seat ? [owner.seat] : []}
+        return {role: 'author', kind: ci === 'red' ? 'repair-ci' : 'address-changes', ids: owner?.seat ? [owner.seat] : []}
     }
 
     if (incomplete) {
-        return {role: 'unknown', ids: []}
+        return {role: 'unknown', kind: null, ids: []}
+    }
+
+    if (ci === 'green' && onHead('APPROVED') && mergeable === 'CONFLICTING') {
+        return {role: 'author', kind: 'rebase', ids: owner?.seat ? [owner.seat] : []}
     }
 
     if (ci === 'green' && requested.length) {
-        return {role: 'reviewer', ids: [...requested]}
+        return {role: 'reviewer', kind: 'review', ids: [...requested]}
+    }
+
+    if (ci === 'green' && owner?.kind === 'seat' && owner.seat && !draft && !opinions.some(opinion => opinion.onHead)) {
+        return {role: 'author', kind: 'route-review', ids: [owner.seat]}
     }
 
     if (ci === 'green' && onHead('APPROVED') && mergeable === 'MERGEABLE' && !draft) {
-        return {role: 'operator', ids: []}
+        return {role: 'operator', kind: 'merge', ids: []}
     }
 
-    return {role: 'none', ids: []}
+    return {role: 'none', kind: null, ids: []}
 }
 
 export default holderOf;
