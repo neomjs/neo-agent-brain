@@ -1182,8 +1182,8 @@ class MemoryService extends Base {
      *
      * Backs the recency-hydration fallback: a just-written turn whose embed is still deferred (or
      * failing) has no Chroma document yet, but its full payload sits in the WAL. Recency reads are
-     * best-effort; callers deciding whether content is absent use strict mode so an unreadable WAL
-     * cannot authorize an archive.
+     * best-effort; strict mode propagates thrown WAL read errors. An absent directory still reads
+     * as empty, so absence decisions rely on shared placement (PlaneDataRootMount.spec.mjs).
      *
      * @param {String[]} ids Memory UUIDs to look up.
      * @param {Object} [options]
