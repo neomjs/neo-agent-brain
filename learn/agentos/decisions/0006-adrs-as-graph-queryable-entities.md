@@ -116,6 +116,16 @@ current authoritative population and refuses the duplicate. An exhausted four-di
 refuses explicitly rather than wrapping. This is no org-wide allocator, reservation service
 or additional operator registration ceremony.
 
+A move-out keeps its number reserved in the source repository's allocation population, and
+its old numbered path remains that repository's reserved alias, even when the canonical
+namespace is assigned elsewhere. Carry these reservations in the reviewed manifest; the
+allocation floor never decreases after an earlier extraction or a later custody move.
+The five FM move-outs alone retain an Engine floor of `0038`, despite its remaining files
+ending at `0031`. [Engine's earlier ADR 0040](https://github.com/neomjs/neo/blob/aeed7ee52c3e2baf40348023d3473e77ae638dea/learn/agentos/decisions/0040-agentos-extraction-topology.md)
+also keeps its reservation after the Brain extraction: that evidenced population allocates
+above `0040`, not `0032` or `0039`. Higher proved reservations raise the floor; current files
+alone never establish it.
+
 ### 2.7 Source authority, custody and aliases
 
 The admitted, source-backed ADR catalog owns the identity, the `ADR` type and its canonical
@@ -138,6 +148,8 @@ It must not silently elect whichever full copy was scanned last.
 
 Reserve admitted legacy aliases instead of repointing them on a move. Human-qualified references
 use `forge/organization/repository#adr-NNNN`; a bare `adr-NNNN` remains a legacy lookup.
+Resolve a human repository locator through the forge adapter to its stable repository ID
+before alias lookup; provider case rules do not rewrite the stored namespace or canonical key.
 Where alias evidence identifies more than one legitimate target, return those candidates
 and uncertainty. A locator conflicting with a reserved historical alias requires the canonical
 identity key. Never choose by current custodian, newest content or current URL occupancy.
