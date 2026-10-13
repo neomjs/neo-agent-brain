@@ -22,9 +22,9 @@
  * over it until it reads again.
  */
 
-import {OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL}                  from '../github-workflow/queries/openWorkQueries.mjs';
-import {normalizePullRequest, normalizeTerminal, reduceOpenWork} from './openWorkReducer.mjs';
-import {redactReadFailure}                                       from './redactReadFailure.mjs';
+import {OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL, openWorkQueryCost} from '../github-workflow/queries/openWorkQueries.mjs';
+import {normalizePullRequest, normalizeTerminal, reduceOpenWork}   from './openWorkReducer.mjs';
+import {redactReadFailure}                                         from './redactReadFailure.mjs';
 
 const
     /** @summary Search pages per read and pulse. */
@@ -64,10 +64,12 @@ const shift = (iso, ms) => new Date(Date.parse(iso) + ms).toISOString();
  * @param {String|null} apiBase The issuing endpoint, never a credential.
  * @param {Object|null} data The answer's or failure's retained viewer and rate-limit fields.
  * @param {Boolean} failed Whether this attempt failed transport or page validation.
+ * @param {String} queryHash Hash of the static query document, never its variables or credential.
+ * @param {String} attemptAt The start of the request; unknown windows use the whole attempt range.
  * @param {String} at The response observation time in ISO format.
  * @returns {void}
  */
-function recordQuota(tally, apiBase, data, failed, at) {
+function recordQuota(tally, apiBase, data, failed, queryHash, attemptAt, at) {
     const
         measured  = value => Number.isInteger(value) && value >= 0 ? value : null,
         rate      = data?.rateLimit,
@@ -75,7 +77,9 @@ function recordQuota(tally, apiBase, data, failed, at) {
         cost      = measured(rate?.cost),
         limit     = measured(rate?.limit) || null,
         resetAt   = typeof rate?.resetAt === 'string' && Number.isFinite(Date.parse(rate.resetAt)) ? new Date(rate.resetAt).toISOString() : null,
-        remaining = measured(rate?.remaining);
+        remaining = measured(rate?.remaining),
+        reported  = cost !== null,
+        ordinal   = ++tally.calls;
     let endpoint = null;
 
     try {
@@ -83,20 +87,26 @@ function recordQuota(tally, apiBase, data, failed, at) {
         if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash) endpoint = url.href.replace(/\/$/, '');
     } catch {}
 
-    let bucket = tally.quota.find(row => row.apiBase === endpoint && row.viewerId === viewerId && row.resetAt === resetAt && row.limit === limit);
+    let bucket = tally.quota.find(row => row.apiBase === endpoint && row.viewerId === viewerId && row.resetAt === resetAt &&
+        row.limit === limit && row.queryHash === queryHash && row.reported === reported && Boolean(row.failed) === failed);
 
     if (!bucket) {
-        tally.quota.push(bucket = {apiBase: endpoint, viewerId, resetAt, limit, cost: 0, calls: 0, failed: 0, unknown: false, firstAt: at, lastAt: at, remaining});
+        tally.quota.push(bucket = {apiBase: endpoint, viewerId, resetAt, limit, queryHash, reported,
+            cost          : 0, maxMeasuredCost: null, zeroCostFailedCalls: 0, calls: 0, failed: 0, unknown: false,
+            firstAttemptAt: attemptAt, firstAt: at, lastAt: at, firstOrdinal: ordinal, lastOrdinal: ordinal, remaining});
     }
     bucket.calls++;
     bucket.failed += Number(failed);
     bucket.lastAt = at;
+    bucket.lastOrdinal = ordinal;
     bucket.remaining = remaining;
+    bucket.zeroCostFailedCalls += Number(failed && cost === 0);
     bucket.unknown ||= !endpoint || !viewerId || !limit || !resetAt || cost === null;
     if (cost === null) {
         tally.costUnknown = true;
     } else {
         bucket.cost += cost;
+        bucket.maxMeasuredCost = Math.max(bucket.maxMeasuredCost ?? 0, cost);
         tally.cost += cost;
     }
 }
@@ -119,9 +129,10 @@ function recordQuota(tally, apiBase, data, failed, at) {
  * @private
  */
 async function readSearch({query, text, search, cursor = null, pageBudget, tally, apiBase, stamp, progress}) {
-    const nodes = [];
+    const nodes = [], metadata = openWorkQueryCost(text);
 
     for (let pages = 0; pages < pageBudget; pages++) {
+        const attemptAt = stamp();
         let data, failed = true;
         try {
             data = await query(text, {query: search, cursor});
@@ -138,7 +149,7 @@ async function readSearch({query, text, search, cursor = null, pageBudget, tally
             data ??= error?.quota;
             throw error;
         } finally {
-            recordQuota(tally, apiBase, data, failed, stamp());
+            recordQuota(tally, apiBase, data, failed, metadata?.queryHash ?? null, attemptAt, stamp());
         }
     }
 
@@ -264,7 +275,7 @@ export function createOpenWorkProducer({
 
         const
             scope         = slugs.map(slug => `repo:${slug}`).join(' '),
-            tally         = {cost: 0, pages: 0, costUnknown: false, quota: []},
+            tally         = {cost: 0, pages: 0, calls: 0, costUnknown: false, quota: []},
             seats         = await readers(),
             unread        = seats.filter(seat => !seat.query).map(seat => seat.seat),
             reads         = [],

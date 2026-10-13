@@ -568,6 +568,7 @@ async function boot() {
         // This entrypoint owns the one enable switch after the plane proved the sending viewer.
         wakeRound = AiConfig.fleet.openWorkWakes && planeClient ? wireFleetOpenWorkWakes({
             registry         : FleetRegistryService,
+            isEnabled        : () => AiConfig.fleet.openWorkWakes,
             sendMessage      : args => planeClient.addMessage(args),
             readUndeliverable: async () => (await readPresence())?.undeliverable ?? null
         }) : null;

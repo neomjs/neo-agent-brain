@@ -1,5 +1,7 @@
-import {expect, test}                  from '@playwright/test';
-import {planOpenWorkWakes, wakeGateOf} from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import {expect, test}                           from '@playwright/test';
+import {createHash}                             from 'node:crypto';
+import {planOpenWorkWakes, wakeGateOf}          from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import {OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const
     START   = Date.parse('2026-10-13T12:00:00.000Z'),
@@ -373,12 +375,97 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         },
         gate = observed => wakeGateOf(observed, {now: Date.parse(observed.pulses.at(-1).finishedAt) + 1000});
 
+    const snapshotHash = createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'),
+        terminalHash   = createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'),
+        classified     = (quota, overrides = {}) => ({...quota, queryHash: snapshotHash, reported: true,
+            maxMeasuredCost: quota.cost, zeroCostFailedCalls: 0, firstAttemptAt: quota.firstAt,
+            firstOrdinal   : 1, lastOrdinal: quota.calls, ...overrides});
+
+    test('operational accounting keeps measured, estimated and unattributed ledgers separate', () => {
+        const observed = history();
+        for (const index of [100, 101, 102]) {
+            const item = observed.pulses[index], original = item.quota[0];
+            item.seats[0] = {seat: ADA, benched: false, outcome: 'failed', authored: {complete: false, rows: 0}, held: null,
+                terminal: {required: true, complete: false, rows: 0}};
+            item.costUnknown = true;
+            item.quota = [classified({...original, viewerId: null, resetAt: null, limit: null, remaining: null,
+                cost: 0, calls: 1, failed: 1, unknown: true}, {reported: false, maxMeasuredCost: null})];
+        }
+        observed.pulses.splice(20, 11);
+        const result = gate(observed);
+        expect(result).toMatchObject({holds: true, certification: {version: 1, policy: 'open-work-operational-estimate-v1'}});
+        const bucket = result.certification.buckets.find(item => item.resetAt === iso(420));
+        expect(bucket).toMatchObject({measured: 36, estimated: 0, unattributed: 6, unattributedCalls: 3, decision: 'operational-estimate'});
+        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: snapshotHash, formulaCost: 2, reservePerCall: 2}));
+        observed.pulses.at(-1).seats[0].outcome = 'failed';
+        expect(gate(observed).holds).toBe(false);
+    });
+
+    test('query-specific reserves use formula and measured maximum, with no positive-cost double charge', () => {
+        const observed = history(), item = observed.pulses[100], base = item.quota[0];
+        item.quota = [
+            classified({...base, cost: 30}, {maxMeasuredCost: 11}),
+            classified({...base, cost: 0, calls: 1, failed: 1, unknown: true}, {reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4}),
+            classified({...base, cost: 0, calls: 1, failed: 1, unknown: true}, {queryHash: terminalHash, reported: false, maxMeasuredCost: null, firstOrdinal: 5, lastOrdinal: 5}),
+            classified({...base, cost: 5, calls: 1, failed: 1}, {firstOrdinal: 6, lastOrdinal: 6}),
+            classified({...base, cost: 0, calls: 1, failed: 1}, {zeroCostFailedCalls: 1, firstOrdinal: 7, lastOrdinal: 7})
+        ];
+        item.costUnknown = true;
+        const result = gate(observed), bucket = result.certification?.buckets.find(row => row.resetAt === base.resetAt);
+        expect(result.holds).toBe(true);
+        expect(bucket).toMatchObject({measured: 77, estimated: 23, estimatedCalls: 3, unattributed: 0});
+        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: terminalHash, formulaCost: 1, reservePerCall: 1}));
+        item.quota[1].queryHash = 'f'.repeat(64);
+        expect(gate(observed)).toMatchObject({holds: false, reason: expect.stringContaining('query')});
+    });
+
+    test('unattributed failures charge all intersecting endpoint windows and stay pending without one', () => {
+        const observed = history(), item = observed.pulses[15], base = item.quota[0];
+        item.at = iso(59); item.finishedAt = iso(61);
+        item.quota = [classified({...base, viewerId: null, resetAt: null, limit: null, remaining: null,
+            cost: 7, calls: 1, failed: 1, unknown: true, firstAt: iso(61), lastAt: iso(61)},
+            {firstAttemptAt: iso(59), firstOrdinal: 1, lastOrdinal: 1})];
+        item.seats[0] = {seat: ADA, benched: false, outcome: 'failed', authored: {complete: false, rows: 0}, held: null,
+            terminal: {required: true, complete: false, rows: 0}};
+        const result = gate(observed);
+        expect(result.holds).toBe(true);
+        for (const resetAt of [iso(60), iso(120)]) {
+            expect(result.certification.buckets.find(row => row.resetAt === resetAt)).toMatchObject({unattributed: 7, unattributedCalls: 1});
+        }
+        item.quota[0].apiBase = 'https://unknown.example/api';
+        expect(gate(observed)).toMatchObject({holds: false, reason: expect.stringContaining('unattributed')});
+        item.quota[0].apiBase = null;
+        expect(gate(observed).holds).toBe(false);
+    });
+
+    test('only a later successful same-window account total may override every charged attempt', () => {
+        const observed = history(), failed = observed.pulses[10], original = failed.quota[0];
+        failed.costUnknown = true;
+        failed.quota = [classified({...original, cost: 0, calls: 100, failed: 100, unknown: true},
+            {reported: false, maxMeasuredCost: null})];
+        // With no measured account total after all attempts, 200 reserved points exceed the share.
+        expect(gate(observed).holds).toBe(false);
+        const earlier = observed.pulses[5];
+        earlier.quota[0] = classified({...earlier.quota[0], remaining: 950});
+        expect(gate(observed).holds).toBe(false);
+        const later = observed.pulses[14];
+        later.quota[0] = classified({...later.quota[0], remaining: 920});
+        let result = gate(observed), bucket = result.certification?.buckets.find(row => row.resetAt === iso(60));
+        expect(result.holds).toBe(true);
+        expect(bucket).toMatchObject({estimated: 300, decision: 'reported-user-total', userTotal: {used: 80, remaining: 920}});
+        // Same-millisecond failure after that successful response defeats its claimed coverage.
+        later.costUnknown = true;
+        later.quota.push(classified({...later.quota[0], cost: 0, calls: 1, failed: 1, unknown: true},
+            {reported: false, maxMeasuredCost: null, firstOrdinal: 4, lastOrdinal: 4}));
+        expect(gate(observed).holds).toBe(false);
+    });
+
     test('exactly 24 elapsed hours with complete zero-row reads and full quota prefixes holds', () => {
-        expect(gate(history())).toEqual({holds: true, reason: null});
+        expect(gate(history())).toMatchObject({holds: true, reason: null});
         const partial = history();
         partial.coverage = 'partial';
         partial.pulses[100].coverage = 'partial';
-        expect(gate(partial)).toEqual({holds: true, reason: null})
+        expect(gate(partial)).toMatchObject({holds: true, reason: null})
     });
 
     test('1,440 burst observations are not an elapsed day', () => {
@@ -514,7 +601,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         expect(gate(observed)).toEqual({holds: false, reason: expect.stringContaining('20%')})
     });
 
-    test('every participating seat owes complete successful reads, including terminal catch-up', () => {
+    test('every current participating seat owes latest complete reads, including terminal catch-up', () => {
         const variants = [
             seat => seat.outcome = 'failed',
             seat => seat.outcome = 'credential-unread',
@@ -525,12 +612,12 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         ];
         for (const mutate of variants) {
             const observed = history();
-            mutate(observed.pulses[100].seats[0]);
+            mutate(observed.pulses.at(-1).seats[0]);
             expect(gate(observed)).toEqual({holds: false, reason: expect.stringContaining('owed read')})
         }
     });
 
-    test('a roster join owes its observed pulses, not a new 24-hour enrollment wait', () => {
+    test('a roster join owes current complete reads, not a new 24-hour enrollment wait', () => {
         const observed = history();
         observed.readers['neo-gpt'] = {};
         for (const item of observed.pulses.slice(300)) {
@@ -555,13 +642,53 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         expect(gate(malformed).holds).toBe(false)
     });
 
-    test('a long observation gap or a gap in the required quota prefix refuses the window', () => {
+    test('producer gaps owe no reads or costs, including gaps within the retained quota prefix', () => {
         const observed = history();
-        observed.pulses.splice(100, 1);
-        expect(gate(observed)).toEqual({holds: false, reason: expect.stringContaining('gap')});
+        observed.pulses.splice(100, 11);
+        expect(gate(observed)).toMatchObject({holds: true, reason: null});
         const prefixed = history({start: -32, phase: 30});
         prefixed.pulses = prefixed.pulses.filter(item => item.at === iso(-32) || Date.parse(item.at) >= at(0));
-        expect(gate(prefixed)).toEqual({holds: false, reason: expect.stringContaining('gap')})
+        expect(gate(prefixed)).toMatchObject({holds: true, reason: null})
+    });
+
+    test('known-cost failed history and transient unread seats certify after successful current reads', () => {
+        const observed = history();
+        for (const index of [100, 101, 102]) {
+            const item = observed.pulses[index];
+            item.seats[0] = {seat: ADA, benched: false, outcome: 'failed', authored: {complete: false, rows: 0},
+                held: null, terminal: {required: true, complete: false, rows: 0}};
+            item.quota[0].calls = item.quota[0].failed = 1;
+            item.quota[0].cost = 2;
+        }
+        const unread = observed.pulses[150];
+        unread.seats[0] = {seat: ADA, benched: false, outcome: 'credential-unread', authored: null, held: null, terminal: null};
+        unread.quota = [];
+        observed.pulses.splice(20, 11);
+        expect(gate(observed)).toMatchObject({holds: true, reason: null});
+        observed.pulses.find(item => item.at === iso(400)).quota[0].cost = 201;
+        expect(gate(observed)).toEqual({holds: false, reason: expect.stringContaining('20%')})
+    });
+
+    test('a current seat whose reads never succeed cannot certify', () => {
+        const observed = history();
+        for (const item of observed.pulses) {
+            item.seats[0] = {seat: ADA, benched: false, outcome: 'failed', authored: {complete: false, rows: 0},
+                held: null, terminal: {required: true, complete: false, rows: 0}};
+            item.quota[0].calls = item.quota[0].failed = 1;
+        }
+        expect(gate(observed)).toEqual({holds: false, reason: expect.stringContaining('owed read')})
+    });
+
+    test('a removed seat owes no current read but its historical issuer charges still count', () => {
+        const observed = history();
+        for (const item of observed.pulses.slice(0, -1)) {
+            item.seats.push({seat: GPT, benched: false, outcome: 'failed', authored: {complete: false, rows: 0},
+                held: null, terminal: {required: true, complete: false, rows: 0}});
+            item.quota.push({...item.quota[0], viewerId: 'U_REMOVED', calls: 1, failed: 1, cost: 2});
+        }
+        expect(gate(observed)).toMatchObject({holds: true, reason: null});
+        observed.pulses[0].quota[1].cost = 201;
+        expect(gate(observed)).toEqual({holds: false, reason: expect.stringContaining('20%')})
     });
 
     test('version-one receipts need an elapsed day after legacy telemetry, not a legacy sample count', () => {

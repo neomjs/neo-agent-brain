@@ -8,20 +8,21 @@ function bootSlice({enabled = true, plane = true, start}) {
     const begin = source.indexOf('        // Claim the transport before starting an observer'),
         end     = source.indexOf('        // AWAITED plane teardown', begin);
     if (begin < 0 || end < 0) throw new Error('Fleet boot statement anchors changed');
+    let wakeOptions;
     const events = [], round = () => {},
         seams    = {
             startFleetBridgeServer               : async options => { events.push('listen'); return start?.(options) ?? {close() {}} },
             AiConfig                             : {fleet: {openWorkWakes: enabled, bearerHandshake: false}},
             planeClient                          : plane ? {addMessage() { events.push('send') }} : null,
             FleetRegistryService                 : {}, RequestContextService: {run() {}},
-            wireFleetOpenWorkWakes               : () => { events.push('wake'); return round },
+            wireFleetOpenWorkWakes               : options => { wakeOptions = options; events.push('wake'); return round },
             wireFleetOpenWorkSource              : options => { events.push(['observe', options.onPulse]); return {} },
             readGithubToken                      : () => null, readPresence: async () => ({}),
             assertFleetViewerMcAuthorizationClass: () => null,
             console                              : {log() {}}, port: 1, bearerToken: 'fixture', viewer: {}, origins: []
         },
         run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork; ${source.slice(begin, end)} })()`);
-    return {events, round, run: () => run(...Object.values(seams))}
+    return {events, round, config: seams.AiConfig, wakeOptions: () => wakeOptions, run: () => run(...Object.values(seams))}
 }
 
 /** @summary Read the actual cleanup function so a refactor cannot leave one exit undrained. */
@@ -47,7 +48,12 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         for (const [enabled, plane, wakes] of [[false, true, false], [true, false, false], [true, true, true]]) {
             const h = bootSlice({enabled, plane});
             await h.run();
-            expect(h.events).toEqual(wakes ? ['listen', 'wake', ['observe', h.round]] : ['listen', ['observe', null]])
+            expect(h.events).toEqual(wakes ? ['listen', 'wake', ['observe', h.round]] : ['listen', ['observe', null]]);
+            if (wakes) {
+                expect(h.wakeOptions().isEnabled()).toBe(true);
+                h.config.fleet.openWorkWakes = false;
+                expect(h.wakeOptions().isEnabled()).toBe(false)
+            }
         }
     });
 

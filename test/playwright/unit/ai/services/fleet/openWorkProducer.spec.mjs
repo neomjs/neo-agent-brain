@@ -1,8 +1,10 @@
-import {expect, test}              from '@playwright/test';
-import fs                          from 'fs';
-import {createFleetOpenWorkSource} from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
-import {createOpenWorkProducer}    from '../../../../../../ai/services/fleet/openWorkProducer.mjs';
-import {planOpenWorkWakes}         from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import {expect, test}                           from '@playwright/test';
+import fs                                       from 'fs';
+import {createHash}                             from 'node:crypto';
+import {createFleetOpenWorkSource}              from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
+import {createOpenWorkProducer}                 from '../../../../../../ai/services/fleet/openWorkProducer.mjs';
+import {planOpenWorkWakes}                      from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import {OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const identities = {
     byLogin: login => ({'neo-opus-ada': '@neo-opus-ada', 'neo-gpt': '@neo-gpt'})[login] ?? null,
@@ -111,6 +113,26 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
         expect(Date.parse(pulse.quota[0].firstAt)).toBeLessThanOrEqual(Date.parse(pulse.quota[0].lastAt));
         expect(pulse.seats).toEqual(['ada', 'gpt'].map(login => ({seat: '@' + login, benched: false, outcome: 'complete',
             authored: {complete: true, rows: 0}, held: {complete: true, rows: 0}, terminal: {required: false, complete: true, rows: 0}})));
+    });
+
+    test('static query identity, reported-zero failures and attempt ordering survive compact capture', async () => {
+        let   failing = false, calls = 0;
+        const query   = async (text, variables) => {
+            calls++;
+            if (failing) throw Object.assign(new Error('failed with reported zero'), {quota: answer('issuer-1', '2026-10-14T11:00:00Z', 0)});
+            return answer();
+        };
+        const producer = createOpenWorkProducer(options(async () => [{seat: '@ada', login: 'ada', apiBase: 'https://api.github.com', query}]));
+        await producer.pulse();
+        const ordinary = (await producer.pulse()).pulses.at(-1);
+        expect(ordinary.quota.map(row => row.queryHash)).toEqual([OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL].map(text => createHash('sha256').update(text).digest('hex')));
+        expect(ordinary.quota[0]).toMatchObject({reported: true, maxMeasuredCost: 2, firstOrdinal: 1, lastOrdinal: 2, zeroCostFailedCalls: 0});
+        expect(ordinary.quota[1]).toMatchObject({firstOrdinal: 3, lastOrdinal: 3});
+        failing = true;
+        const failed = (await producer.pulse()).pulses.at(-1);
+        expect(failed).toMatchObject({cost: 0, costUnknown: false, quota: [{reported: true, calls: 1, failed: 1, zeroCostFailedCalls: 1}]});
+        expect(Date.parse(failed.quota[0].firstAttemptAt)).toBeLessThanOrEqual(Date.parse(failed.quota[0].firstAt));
+        expect(calls).toBe(6);
     });
 
     test('a reset within a pulse, missing quota fields and known error costs remain separate evidence', async () => {

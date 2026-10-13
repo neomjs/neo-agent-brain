@@ -59,6 +59,24 @@ function measuredState(minute, ci = 'pending') {
     return value
 }
 
+/** @summary Synthetic gate evidence keeps every cost ledger and its selected decision authority distinct. */
+function certification() {
+    return {
+        version  : 1, policy: 'open-work-operational-estimate-v1',
+        window   : {start: iso(-1440), end: iso(0), retainedFrom: iso(-1500)},
+        estimates: [{apiBase: 'https://api.github.com', queryHash: 'a'.repeat(64),
+            formulaCost: 1, maxMeasuredCost: null, reservePerCall: 6}],
+        buckets: [
+            {apiBase: 'https://api.github.com', viewerId: 'issuer-1', resetAt: iso(60), limit: 1000,
+                measured: 10, estimated: 12, unattributed: 6, estimatedCalls: 2, unattributedCalls: 1,
+                decision: 'operational-estimate', userTotal: {at: iso(0), used: 100, remaining: 900}},
+            {apiBase: 'https://api.github.com', viewerId: 'issuer-2', resetAt: iso(60), limit: 1000,
+                measured: 100, estimated: 120, unattributed: 60, estimatedCalls: 20, unattributedCalls: 10,
+                decision: 'reported-user-total', userTotal: {at: iso(0), used: 100, remaining: 900}}
+        ]
+    }
+}
+
 test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cadence (#761)', () => {
     test('default production gate accepts a measured day, baselines first and admits the next action', async () => {
         let   minute = 0;
@@ -68,6 +86,191 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         expect(await round(measuredState(1, 'green'))).toMatchObject({admitted: 1});
         expect(sends[0].task.kind).toBe('route-review');
         await round.stop()
+    });
+
+    test('a certification receipt is detached before storage and survives restart with all decision evidence', async () => {
+        let   minute  = 0;
+        const receipt = certification(), expected = structuredClone(receipt), store = memoryStore(), save = store.save,
+            options = {store, now: () => at(minute), gateOf: () => ({holds: true, reason: null, certification: receipt}),
+                sendMessage: async () => {}};
+        store.save = value => {
+            // Mutation at the persistence boundary must not rewrite the newly accepted receipt.
+            receipt.window.start = iso(-1);
+            receipt.estimates[0].reservePerCall = 999;
+            receipt.buckets[0].estimated = 999;
+            receipt.buckets[1].userTotal.used = 999;
+            save(value)
+        };
+        await createOpenWorkWakeRound(options)(state(0));
+        expect(store.read().activation.certification).toEqual(expected);
+        store.save = save; minute = 2000;
+        await createOpenWorkWakeRound({...options, gateOf: () => { throw new Error('must not fabricate new proof') }})
+            (state(2000, 'red', {pulses: [{at: iso(500)}, {at: iso(2000)}]}));
+        expect(store.read().activation.certification).toEqual(expected)
+    });
+
+    test('unknown or malformed present certification refuses new activation and preserves existing storage', async () => {
+        const mutations = [
+            () => null,
+            value => ({...value, version: 2}),
+            value => ({...value, policy: 'unknown-policy'}),
+            value => ({...value, window: {...value.window, start: iso(1)}}),
+            value => ({...value, window: {...value.window, retainedFrom: 'invalid'}}),
+            value => ({...value, estimates: [{...value.estimates[0], formulaCost: 0}]}),
+            value => ({...value, estimates: [{...value.estimates[0], maxMeasuredCost: -1}]}),
+            value => ({...value, buckets: [{...value.buckets[0], estimated: undefined}]}),
+            value => ({...value, buckets: [{...value.buckets[0], unattributedCalls: 1.5}]}),
+            value => ({...value, buckets: [{...value.buckets[1], userTotal: null}]}),
+            value => ({...value, buckets: [{...value.buckets[0], decision: 'unknown-authority'}]})
+        ];
+        for (const mutate of mutations) {
+            const receipt = mutate(certification()), store = memoryStore(), sends = [];
+            const round   = createOpenWorkWakeRound({store, now: () => at(0),
+                gateOf     : () => ({holds: true, reason: null, certification: receipt}),
+                sendMessage: async value => sends.push(value)});
+            await expect(round(state(0))).rejects.toThrow('Malformed open-work wake certification');
+            expect(store.read()).toBeNull(); expect(sends).toEqual([])
+        }
+    });
+
+    test('malformed persisted certification cannot be accepted as an activation or overwritten', async () => {
+        const seed = memoryStore();
+        await createOpenWorkWakeRound({store: seed, gateOf: openGate, now: () => at(0), sendMessage: async () => {}})(state(0));
+        for (const receipt of [null, {...certification(), policy: 'unknown-policy'},
+            {...certification(), buckets: [{...certification().buckets[0], measured: -1}]}]) {
+            const before = {...seed.read(), activation: {...seed.read().activation, certification: receipt}},
+                store    = memoryStore(before), sends = [], round = createOpenWorkWakeRound({
+                    store, gateOf: openGate, now: () => at(1), sendMessage: async value => sends.push(value)
+                });
+            await expect(round(state(1, 'red'))).rejects.toThrow('Malformed open-work wake ledger');
+            expect(store.read()).toEqual(before); expect(sends).toEqual([])
+        }
+    });
+
+    test('legacy activation or an explicit test gate without a receipt never gains invented certification evidence', async () => {
+        let   minute = 0;
+        const store  = memoryStore(), round = createOpenWorkWakeRound({store, gateOf: openGate,
+            now: () => at(minute), sendMessage: async () => {}});
+        await round(state(0));
+        expect(store.read().activation).not.toHaveProperty('certification');
+        minute = 1;
+        await createOpenWorkWakeRound({store, gateOf: () => { throw new Error('legacy latch does not recertify') },
+            now: () => at(minute), sendMessage: async () => {}})(state(1, 'red'));
+        expect(store.read().activation).not.toHaveProperty('certification')
+    });
+
+    test('activation latches once; later gate refusals still admit fresh actions', async () => {
+        let   minute = 0, gateCalls = 0;
+        const store  = memoryStore(), sends = [], round = createOpenWorkWakeRound({
+            store, now: () => at(minute), gateOf: () => {
+                gateCalls++;
+                return minute === 0 ? openGate() : {holds: false, reason: 'a pulse has unattributed or unknown query cost'}
+            }, sendMessage: async message => sends.push(message)
+        });
+        await round(state(0)); minute = 1;
+        expect(await round(state(1, 'red'))).toMatchObject({admitted: 1, quiet: false});
+        expect(sends.map(message => message.task.kind)).toEqual(['repair-ci']);
+        expect(store.read().activation).toEqual({version: 1, at: iso(0)});
+        expect(gateCalls).toBe(1)
+    });
+
+    test('activation survives restart and history rollover without losing pending merges', async () => {
+        let   minute = 0, routes = {[SEAT]: 'absent'};
+        const store  = memoryStore(), sends = [], options = {store, gateOf: openGate, now: () => at(minute),
+            readUndeliverable: async () => routes, sendMessage: async message => sends.push(message)};
+        const first = createOpenWorkWakeRound(options);
+        await first(state(0)); minute = 1;
+        await first(state(1, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: [merged(1)]}));
+        const pending = store.read().pendingMerges['merge-1'];
+        await first.stop(); routes = {}; minute = 2000;
+        const restarted = createOpenWorkWakeRound({...options, gateOf: () => {
+            throw new Error('an activated ledger must not recertify')
+        }});
+        await restarted(state(2000, 'pending', {snapshot: {rows: {}, closed: {}}, transitions: [],
+            pulses: [{at: iso(500)}, {at: iso(2000)}]}));
+        expect(sends).toHaveLength(1);
+        expect(sends[0].task.episode).toBe(pending.episode);
+        expect(store.read().activation).toEqual({version: 1, at: iso(0)});
+        expect(store.read().pendingMerges).toEqual({})
+    });
+
+    test('present malformed or unknown activation is never treated as a certified ledger', async () => {
+        const seed = memoryStore();
+        await createOpenWorkWakeRound({store: seed, gateOf: openGate, now: () => at(0), sendMessage: async () => {}})(state(0));
+        for (const activation of [null, true, {}, {version: 2, at: iso(0)}, {version: 1, at: 'invalid'}, {version: 1, at: iso(2)}]) {
+            const before = {...seed.read(), activation}, store = memoryStore(before), sends = [];
+            const round  = createOpenWorkWakeRound({store, gateOf: openGate, now: () => at(1), sendMessage: async value => sends.push(value)});
+            await expect(round(state(1, 'red'))).rejects.toThrow('Malformed open-work wake ledger');
+            expect(store.read()).toEqual(before); expect(sends).toEqual([])
+        }
+    });
+
+    test('disabled callbacks do not create or change the ledger, while re-enabling retains activation', async () => {
+        let   minute = 0, enabled = false;
+        const store  = memoryStore(), sends = [], round = createOpenWorkWakeRound({store, gateOf: openGate,
+            isEnabled: () => enabled, now: () => at(minute), sendMessage: async value => sends.push(value)});
+        expect(await round(state(0))).toMatchObject({admitted: 0, disabled: true});
+        expect(store.read()).toBeNull();
+        enabled = true; await round(state(0)); const activated = store.read();
+        enabled = false; minute = 1; await round(state(1, 'red'));
+        expect(store.read()).toEqual(activated); expect(sends).toEqual([]);
+        enabled = true; await round(state(1, 'red'));
+        expect(sends).toHaveLength(1); expect(store.read().activation).toEqual(activated.activation)
+    });
+
+    test('disabling during the route read prevents admission and preserves pending work', async () => {
+        let   minute = 0, enabled = true;
+        const store  = memoryStore(), entered = deferred(), release = deferred(), sends = [],
+            round = createOpenWorkWakeRound({store, gateOf: openGate, isEnabled: () => enabled, now: () => at(minute),
+                readUndeliverable: async () => { entered.resolve(); await release.promise; return null },
+                sendMessage      : async value => sends.push(value)});
+        await round(state(0)); const before = store.read(); minute = 1;
+        const running = round(state(1, 'red')); await entered.promise;
+        enabled = false; release.resolve();
+        expect(await running).toMatchObject({admitted: 0, disabled: true});
+        expect(store.read()).toEqual(before); expect(sends).toEqual([])
+    });
+
+    test('disabling during persistence or between sends stops effects without replaying reserved attempts', async () => {
+        let   minute = 0, enabled = true, pause = false;
+        const store  = memoryStore(), save = store.save, entered = deferred(), release = deferred(), sends = [];
+        store.save = async value => { save(value); if (pause) { entered.resolve(); await release.promise } };
+        const round = createOpenWorkWakeRound({store, gateOf: openGate, isEnabled: () => enabled, now: () => at(minute),
+            sendMessage: async value => sends.push(value)});
+        await round(state(0)); minute = 1; pause = true;
+        const running = round(state(1, 'red')); await entered.promise; enabled = false; release.resolve();
+        expect(await running).toMatchObject({admitted: 1, disabled: true});
+        expect(sends).toEqual([]); enabled = true; pause = false; minute = 2; await round(state(2, 'red'));
+        expect(sends).toEqual([]);
+
+        const otherStore = memoryStore(), laterSends = [], between = createOpenWorkWakeRound({
+            store      : otherStore, gateOf: openGate, isEnabled: () => enabled, now: () => at(minute),
+            sendMessage: async value => { laterSends.push(value); enabled = false }
+        });
+        minute = 3; await between(state(3)); minute = 4;
+        const observed = state(4, 'green'); observed.snapshot.rows['acme/app#7'].requested = [SEAT, '@neo-gpt'];
+        expect(await between(observed)).toMatchObject({admitted: 2, disabled: true});
+        expect(laterSends).toHaveLength(1);
+        expect(Object.values(otherStore.read().holding).map(entry => entry.status)).toEqual(['admitted', 'admitted'])
+    });
+
+    test('refusal changes and activation are logged once across restart with no raw reason data', async () => {
+        let   minute = 0, reason = 'less than 24 elapsed hours of version-one observations', active = false;
+        const store  = memoryStore(), messages = [], options = {store, now: () => at(minute),
+            gateOf     : () => active ? openGate() : {holds: false, reason},
+            sendMessage: async () => {}, log: {info: (...args) => messages.push(args)}};
+        const first = createOpenWorkWakeRound(options);
+        await first(state(0)); minute = 1; await first(state(1));
+        const restarted = createOpenWorkWakeRound(options); minute = 2; await restarted(state(2));
+        expect(messages).toHaveLength(1);
+        reason = 'an issuer exceeded 20% of its measured hourly GraphQL limit'; minute = 3; await restarted(state(3));
+        expect(messages).toHaveLength(2);
+        reason = 'private-token:' + 'x'.repeat(10000); minute = 4; await restarted(state(4));
+        expect(messages).toHaveLength(3); expect(JSON.stringify(messages)).not.toContain('private-token');
+        expect(JSON.stringify(messages).length).toBeLessThan(600);
+        active = true; minute = 5; await restarted(state(5)); minute = 6; await restarted(state(6));
+        expect(messages).toHaveLength(4);
+        expect(JSON.stringify(messages.at(-1))).toContain('activated')
     });
 
     test('the ledger save completes before the first sender effect', async () => {
@@ -109,7 +312,7 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         expect(result).toMatchObject({admitted: 0, expired: 1})
     });
 
-    test('the measured gate is recalculated after a route read even while the producer stays fresh', async () => {
+    test('an activation is not re-closed by a later gate refusal during a route read', async () => {
         let   minute = 0;
         const store  = memoryStore(), sends = [], entered = deferred(), release = deferred(), gateTimes = [],
             round = createOpenWorkWakeRound({store, now: () => at(minute),
@@ -118,9 +321,9 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
                 sendMessage      : async message => sends.push(message)});
         await round(state(0)); minute = 1; const running = round(state(1, 'red')); await entered.promise;
         minute = 2; release.resolve();
-        expect(await running).toMatchObject({admitted: 0, quiet: true, reason: 'gate closed'});
-        expect(gateTimes).toContain(at(2)); expect(sends).toEqual([]);
-        expect(Object.values(store.read().holding)[0].status).toBe('baseline')
+        expect(await running).toMatchObject({admitted: 1, quiet: false, reason: null});
+        expect(gateTimes).toEqual([at(0)]); expect(sends).toHaveLength(1);
+        expect(Object.values(store.read().holding)[0].status).toBe('admitted')
     });
 
     test('expiry during persistence skips open-row and merge sends but keeps their reservations', async () => {
@@ -273,13 +476,14 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         expect(await unmeasured(state(2, 'red'))).toMatchObject({admitted: 0, quiet: true})
     });
 
-    test('a ledger outside retained observation history is replaced only by a quiet baseline', async () => {
+    test('an activated ledger survives retained-history rollover and still admits a new fresh action', async () => {
         let   minute = 0;
         const store  = memoryStore(), sends = [], round = createOpenWorkWakeRound({store, gateOf: openGate,
             now: () => at(minute), sendMessage: async message => sends.push(message)});
         await round(state(0)); minute = 2000;
         await round(state(2000, 'red', {pulses: [{at: iso(500)}, {at: iso(2000)}]}));
-        expect(sends).toEqual([]); expect(Object.values(store.read().holding)[0].status).toBe('baseline')
+        expect(sends).toHaveLength(1); expect(Object.values(store.read().holding)[0].status).toBe('admitted');
+        expect(store.read().activation).toEqual({version: 1, at: iso(0)})
     });
 
     test('corrupt or unreadable stored history rejects without overwrite or send', async () => {

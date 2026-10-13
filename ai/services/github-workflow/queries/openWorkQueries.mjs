@@ -10,6 +10,7 @@
  *
  * Variables: `$query` (a search string with `is:pr` and the `repo:` qualifiers), `$cursor`.
  */
+import {createHash} from 'node:crypto';
 
 /**
  * The open half: per PR, what a holder change is computed from, and the title the cockpit names it by.
@@ -150,3 +151,24 @@ export const OPEN_WORK_TERMINAL = `
     }
   }
 `;
+
+/**
+ * @summary Published GraphQL formula estimates for these two static documents, not timeout-cost bounds.
+ * Snapshot has the search plus four connections for up to 50 PRs: round((1 + 50 * 4) / 100) = 2.
+ * Terminal has one connection; the published minimum is one. The gate also uses measured maxima.
+ * @see https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api
+ * @type {Object[]}
+ */
+export const OPEN_WORK_QUERY_COSTS = Object.freeze([
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 2}),
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1})
+]);
+
+/**
+ * @summary Identify one of the existing static documents without hashing variables or credentials.
+ * @param {String} query The exact static document.
+ * @returns {Object|null} Its declared operational estimate, or null for an unsupported document.
+ */
+export function openWorkQueryCost(query) {
+    return query === OPEN_WORK_SNAPSHOT ? OPEN_WORK_QUERY_COSTS[0] : query === OPEN_WORK_TERMINAL ? OPEN_WORK_QUERY_COSTS[1] : null
+}

@@ -13,8 +13,9 @@
  * transition leaves the producer's bounded history. Admitted merges need no permanent seen set: the
  * saved pulse excludes their original observations on the next round.
  */
-import {openWorkFreshness} from './fleetOpenWorkSource.mjs';
-import {holderOf}          from './openWorkHolder.mjs';
+import {openWorkFreshness}     from './fleetOpenWorkSource.mjs';
+import {holderOf}              from './openWorkHolder.mjs';
+import {OPEN_WORK_QUERY_COSTS} from '../github-workflow/queries/openWorkQueries.mjs';
 
 const REASONS = Object.freeze({
     'repair-ci'      : 'CI is red on your head',
@@ -179,13 +180,13 @@ const
     QUOTA_SHARE   = 0.2;
 
 /**
- * @summary Validate a retained seat receipt, then require its owed reads when it is in the observed day.
+ * @summary Validate every retained seat receipt, requiring successful reads for current participating seats.
  * @param {Object} seat
- * @param {Boolean} owesWindow
+ * @param {Boolean} latest Whether this receipt names the current roster and its latest read capability.
  * @returns {String|null} A refusal, or null.
  * @private
  */
-function seatReceiptFailure(seat, owesWindow) {
+function seatReceiptFailure(seat, latest) {
     const
         count = value => Number.isInteger(value) && value >= 0,
         read  = value => value === null || value && typeof value.complete === 'boolean' && count(value.rows);
@@ -197,7 +198,7 @@ function seatReceiptFailure(seat, owesWindow) {
         return 'a pulse has malformed seat coverage'
     }
 
-    if (owesWindow && !seat.benched && (seat.outcome !== 'complete' ||
+    if (latest && !seat.benched && (seat.outcome !== 'complete' ||
         seat.authored?.complete !== true || seat.held?.complete !== true ||
         !seat.terminal || seat.terminal.required && !seat.terminal.complete)) {
         return 'a participating seat has an incomplete or unsuccessful owed read'
@@ -207,19 +208,26 @@ function seatReceiptFailure(seat, owesWindow) {
 }
 
 /**
- * @summary Read one fully attributed quota receipt. Remaining is diagnostic; missing cost is not zero.
+ * @summary Validate one compact query receipt without inventing an issuer, reset window or missing cost.
  * @param {Object} quota
  * @param {Number} started
  * @param {Number} finished
+ * @param {Number} pulseIndex Order within the retained observation history.
  * @returns {Object|null} The validated quota window, or null.
  * @private
  */
-function quotaReceipt(quota, started, finished) {
+function quotaReceipt(quota, started, finished, pulseIndex) {
     const
-        natural = value => Number.isInteger(value) && value >= 0,
-        first   = Date.parse(quota?.firstAt),
-        last    = Date.parse(quota?.lastAt),
-        reset   = Date.parse(quota?.resetAt);
+        natural    = value => Number.isSafeInteger(value) && value >= 0,
+        first      = Date.parse(quota?.firstAt),
+        last       = Date.parse(quota?.lastAt),
+        attempt    = Date.parse(quota?.firstAttemptAt ?? quota?.firstAt),
+        reset      = quota?.resetAt === null ? null : Date.parse(quota?.resetAt),
+        legacy     = quota?.reported === undefined,
+        reported   = legacy || quota.reported,
+        attributed = typeof quota?.viewerId === 'string' && !!quota.viewerId &&
+            !/\s/.test(quota.viewerId) && Number.isFinite(reset) && natural(quota.limit) && quota.limit > 0,
+        zeroCostFailedCalls = quota?.zeroCostFailedCalls ?? (quota?.cost === 0 ? quota.failed : 0);
     let apiBase;
 
     try {
@@ -231,30 +239,64 @@ function quotaReceipt(quota, started, finished) {
         return null
     }
 
-    if (typeof quota.viewerId !== 'string' || !quota.viewerId || /\s/.test(quota.viewerId) ||
-        !natural(quota.limit) || quota.limit === 0 || !natural(quota.cost) ||
+    if (!natural(quota.cost) || typeof quota.unknown !== 'boolean' ||
         !natural(quota.calls) || quota.calls === 0 || !natural(quota.failed) || quota.failed > quota.calls ||
-        quota.unknown !== false || typeof quota.firstAt !== 'string' || typeof quota.lastAt !== 'string' ||
-        typeof quota.resetAt !== 'string' || !Number.isFinite(first) || !Number.isFinite(last) || !Number.isFinite(reset) ||
-        first < started || last > finished || last < first ||
-        quota.remaining != null && (!natural(quota.remaining) || quota.remaining > quota.limit)) return null;
+        typeof quota.firstAt !== 'string' || typeof quota.lastAt !== 'string' ||
+        !Number.isFinite(first) || !Number.isFinite(last) || !Number.isFinite(attempt) ||
+        attempt < started || first < attempt || last > finished || last < first ||
+        quota.resetAt !== null && (typeof quota.resetAt !== 'string' || !Number.isFinite(reset)) ||
+        quota.viewerId !== null && (typeof quota.viewerId !== 'string' || !quota.viewerId || /\s/.test(quota.viewerId)) ||
+        quota.limit !== null && (!natural(quota.limit) || quota.limit === 0) ||
+        quota.remaining != null && (!natural(quota.remaining) || attributed && quota.remaining > quota.limit) ||
+        !natural(zeroCostFailedCalls) || zeroCostFailedCalls > quota.failed) return null;
+
+    if (legacy) {
+        if (!attributed || quota.unknown !== false) return null;
+    } else if (typeof quota.reported !== 'boolean' || !/^[a-f\d]{64}$/.test(quota.queryHash ?? '') ||
+        !natural(quota.firstOrdinal) || quota.firstOrdinal < 1 || !natural(quota.lastOrdinal) ||
+        quota.lastOrdinal < quota.firstOrdinal || quota.lastOrdinal - quota.firstOrdinal + 1 < quota.calls ||
+        ![0, quota.calls].includes(quota.failed) || quota.unknown !== (!attributed || !reported) ||
+        reported && (!natural(quota.maxMeasuredCost) || quota.maxMeasuredCost > quota.cost || quota.maxMeasuredCost * quota.calls < quota.cost) ||
+        !reported && (quota.cost !== 0 || quota.maxMeasuredCost !== null || quota.failed !== quota.calls || zeroCostFailedCalls !== 0)) return null;
+
+    if (!attributed && quota.failed !== quota.calls) return null;
 
     return {
-        key  : JSON.stringify([apiBase, quota.viewerId, reset]),
-        start: reset - QUOTA_HOUR_MS, reset, last, limit: quota.limit, cost: quota.cost, calls: quota.calls
+        apiBase, viewerId: quota.viewerId, attributed, reported, queryHash: quota.queryHash ?? null,
+        key            : attributed ? JSON.stringify([apiBase, quota.viewerId, reset]) : null,
+        start          : reset === null ? null : reset - QUOTA_HOUR_MS, reset, first: attempt, last,
+        limit          : quota.limit, cost: quota.cost, calls: quota.calls, failed: quota.failed, zeroCostFailedCalls,
+        maxMeasuredCost: legacy ? null : quota.maxMeasuredCost,
+        order          : [pulseIndex, legacy ? null : quota.lastOrdinal],
+        userTotal      : !legacy && attributed && reported && !quota.failed && quota.remaining != null
+            ? {at: quota.lastAt, used: quota.limit - quota.remaining, remaining: quota.remaining, order: [pulseIndex, quota.lastOrdinal]} : null
     }
 }
 
+/** @summary Preserve uncertain within-pulse order for legacy aggregates; never let an older total cover a later call. */
+function latestOrder(left, right) {
+    if (!left || right[0] > left[0]) return right;
+    if (right[0] < left[0]) return left;
+    return [left[0], left[1] === null || right[1] === null ? null : Math.max(left[1], right[1])]
+}
+
+/** @summary A successful response covers its own call and every earlier ordered observer attempt. */
+function coversOrder(success, latest) {
+    return success[0] > latest[0] || success[0] === latest[0] && success[1] !== null && latest[1] !== null && success[1] >= latest[1]
+}
+
 /**
- * @summary Certify the measured observation day and each issuer's complete intersecting quota windows.
+ * @summary Certify one operational-estimate window, retaining measured, estimated and unattributed charges separately.
  * A sample count never stands in for elapsed time. Prefix costs before the day's cutoff still belong
  * to an intersecting quota window, so its coverage must begin at or before that window's start.
  * A delayed receipt in the day also selects its returned issuer window, even if that window has ended.
  * Older pre-telemetry pulses are not evidence; a fresh version-one tail must establish the whole day.
+ * Gaps owe no reads. The latest complete read proves each current participating seat's capability
+ * within that window; earlier unsuccessful reads do not erase it, but all recorded costs still count.
  * @param {Object} state The producer state with ordered version-one pulse receipts.
  * @param {Object} options
  * @param {Number} options.now Epoch milliseconds.
- * @returns {{holds: Boolean, reason: String|null}} This gate evaluates evidence only; it never enables wakes.
+ * @returns {{holds: Boolean, reason: String|null, certification?: Object}} A policy receipt, never a mathematical failed-cost bound or live enablement.
  */
 export function wakeGateOf(state, {now}) {
     const refuse = reason => ({holds: false, reason});
@@ -273,7 +315,7 @@ export function wakeGateOf(state, {now}) {
     if (!pulses.length || times.at(-1) !== end) return refuse('the latest telemetry does not represent the producer observation');
     if (!Number.isFinite(times[0]) || times[0] > start) return refuse('less than 24 elapsed hours of version-one observations');
 
-    const quotas = new Map();
+    const quotas = new Map(), attempts = [], estimates = new Map();
     let   anchor = start;
 
     for (let index = 0; index < pulses.length; index++) {
@@ -289,36 +331,78 @@ export function wakeGateOf(state, {now}) {
             !Array.isArray(pulse.quota) || !Array.isArray(pulse.seats) ||
             pulse.costUnknown != null && typeof pulse.costUnknown !== 'boolean') return refuse('malformed or unordered pulse telemetry');
 
-        if (pulse.costUnknown === true) return refuse('a pulse has unattributed or unknown query cost');
-
         const seen         = new Set();
-        let   minimumCalls = 0, calls = 0;
+        let   minimumCalls = 0, calls = 0, unpricedCalls = 0;
 
         for (const seat of pulse.seats) {
-            const error = seatReceiptFailure(seat, observed >= start);
+            const error = seatReceiptFailure(seat, index === pulses.length - 1);
             if (error) return refuse(error);
             if (seen.has(seat.seat)) return refuse('a pulse repeats a seat coverage identity');
             seen.add(seat.seat);
             minimumCalls += Math.max(
-                Number(seat.authored !== null) + Number(seat.held !== null) + Number(seat.terminal?.required === true),
+                Number(seat.authored !== null) + Number(seat.held !== null) +
+                    Number(seat.terminal?.required === true && (seat.terminal.complete || seat.terminal.rows > 0)),
                 Number(seat.outcome === 'failed')
             )
         }
 
         for (const receipt of pulse.quota) {
-            const quota = quotaReceipt(receipt, observed, finished);
+            const quota = quotaReceipt(receipt, observed, finished, index);
             if (!quota) return refuse('a query has missing, malformed or unknown quota evidence');
             calls += quota.calls;
+            unpricedCalls += quota.reported ? 0 : quota.calls;
+            attempts.push(quota);
+
+            const metadata = OPEN_WORK_QUERY_COSTS.find(item => item.queryHash === quota.queryHash);
+            if (metadata) {
+                const key    = JSON.stringify([quota.apiBase, quota.queryHash]),
+                    estimate = estimates.get(key) ?? {apiBase: quota.apiBase, ...metadata, maxMeasuredCost: null, reservePerCall: metadata.formulaCost};
+                if (quota.reported && quota.maxMeasuredCost !== null) estimate.maxMeasuredCost = Math.max(estimate.maxMeasuredCost ?? 0, quota.maxMeasuredCost);
+                estimate.reservePerCall = Math.max(1, estimate.formulaCost, estimate.maxMeasuredCost ?? 0);
+                estimates.set(key, estimate)
+            }
+
+            if (!quota.attributed) continue;
 
             const bucket = quotas.get(quota.key);
             if (bucket && bucket.limit !== quota.limit) return refuse('one issuer quota window reports conflicting measured limits');
-            quotas.set(quota.key, {
-                start   : quota.start, limit: quota.limit, cost: (bucket?.cost ?? 0) + quota.cost,
-                selected: bucket?.selected || quota.last >= start || quota.reset > start && quota.start <= end
-            })
+            const next = bucket ?? {apiBase: quota.apiBase, viewerId: quota.viewerId, reset: quota.reset,
+                start         : quota.start, limit: quota.limit, measured: 0, estimated: 0, unattributed: 0,
+                estimatedCalls: 0, unattributedCalls: 0, selected: false, latest: null, userTotal: null};
+            next.measured += quota.reported ? quota.cost : 0;
+            next.latest = latestOrder(next.latest, quota.order);
+            next.selected ||= quota.last >= start || quota.reset > start && quota.start <= end;
+            if (quota.userTotal && (!next.userTotal || coversOrder(quota.userTotal.order, next.userTotal.order))) next.userTotal = quota.userTotal;
+            quotas.set(quota.key, next)
         }
 
+        if (pulse.costUnknown != null && pulse.costUnknown !== (unpricedCalls > 0)) return refuse('a pulse has unknown query cost without classified attempts');
         if (calls < minimumCalls) return refuse('seat reads have no complete attributed query-cost receipts')
+    }
+
+    for (const attempt of attempts) {
+        const estimate = estimates.get(JSON.stringify([attempt.apiBase, attempt.queryHash]));
+        if (attempt.attributed) {
+            const count = attempt.reported ? attempt.zeroCostFailedCalls : attempt.calls;
+            if (!count) continue;
+            if (!estimate) return refuse('pending: a failed query has no declared operational estimate');
+            const bucket = quotas.get(attempt.key);
+            bucket.estimated += count * estimate.reservePerCall;
+            bucket.estimatedCalls += count;
+        } else {
+            const matches = [...quotas.values()].filter(bucket => bucket.apiBase === attempt.apiBase &&
+                bucket.start <= attempt.last && bucket.reset > attempt.first && (bucket.selected || attempt.last >= start));
+            if (!matches.length && attempt.last < start) continue;
+            if (!estimate || !matches.length) return refuse('pending: unattributed attempts have no known endpoint window or query estimate');
+            // A compact range may straddle a reset; charge its whole reserve to every intersecting window.
+            const reserve = Math.max(attempt.cost, attempt.calls * estimate.reservePerCall);
+            for (const bucket of matches) {
+                bucket.unattributed += reserve;
+                bucket.unattributedCalls += attempt.calls;
+                bucket.latest = latestOrder(bucket.latest, attempt.order);
+                bucket.selected = true;
+            }
+        }
     }
 
     const charged = [...quotas.values()].filter(bucket => bucket.selected);
@@ -333,19 +417,26 @@ export function wakeGateOf(state, {now}) {
     const first = times.findLastIndex(time => time <= anchor);
     if (first < 0) return refuse(`the issuer quota window prefix is not retained: required start ${new Date(anchor).toISOString()} precedes ${pulses[0].at}`);
 
-    for (let index = first + 1; index < times.length; index++) {
-        if (openWorkFreshness(pulses[index - 1].at, {now: times[index]}) !== 'ok') {
-            return refuse('the observation window contains a gap beyond the shared freshness bound')
-        }
-    }
-
     if (openWorkFreshness(pulses.at(-1).finishedAt, {now}) !== 'ok') return refuse('the retained observation window is no longer fresh');
 
-    for (const {cost, limit} of charged) {
-        if (cost > QUOTA_SHARE * limit) return refuse('an issuer exceeded 20% of its measured hourly GraphQL limit')
+    const certified = [];
+    for (const bucket of charged) {
+        const total         = bucket.measured + bucket.estimated + bucket.unattributed,
+            observedTotal   = bucket.userTotal && coversOrder(bucket.userTotal.order, bucket.latest) ? bucket.userTotal : null,
+            withinUserTotal = observedTotal && observedTotal.used <= QUOTA_SHARE * bucket.limit;
+        if (!withinUserTotal && total > QUOTA_SHARE * bucket.limit) return refuse('an issuer exceeded 20% under the declared operational-estimate policy');
+        certified.push({apiBase: bucket.apiBase, viewerId: bucket.viewerId, resetAt: new Date(bucket.reset).toISOString(), limit: bucket.limit,
+            measured      : bucket.measured, estimated: bucket.estimated, unattributed: bucket.unattributed,
+            estimatedCalls: bucket.estimatedCalls, unattributedCalls: bucket.unattributedCalls,
+            decision      : withinUserTotal ? 'reported-user-total' : 'operational-estimate',
+            userTotal     : observedTotal ? {at: observedTotal.at, used: observedTotal.used, remaining: observedTotal.remaining} : null})
     }
 
-    return {holds: true, reason: null}
+    return {holds: true, reason: null, certification: {
+        version  : 1, policy: 'open-work-operational-estimate-v1',
+        window   : {start: new Date(start).toISOString(), end: new Date(end).toISOString(), retainedFrom: pulses[0].at},
+        estimates: [...estimates.values()], buckets: certified
+    }}
 }
 
 export default planOpenWorkWakes;
