@@ -281,7 +281,7 @@ services:
       # shared-sqlite-data volume so pending segments survive container recreates.
       - NEO_MEMORY_WAL_IN_PROCESS_DRAIN=true
       - NEO_MEMORY_WAL_POLL_INTERVAL_MS=250
-      - NEO_MEMORY_WAL_DIR=/app/.neo-ai-data/sqlite/memory-wal
+      - &memory-wal-env NEO_MEMORY_WAL_DIR=/app/.neo-ai-data/sqlite/memory-wal
       # Mirror the memory WAL host mode for accepted A2A messages. Its directory derives from
       # NEO_MEMORY_WAL_DIR, so Compose does not restate that formula.
       - NEO_MESSAGE_WAL_IN_PROCESS_DRAIN=true
@@ -480,6 +480,8 @@ services:
       # `container-plane` this service owns, with nothing announcing the duplicate claim.
       - NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE=container-plane
       - *memory-db-env
+      # Backfill reads accepted payloads from MC's shared WAL; MC alone owns its embed drain.
+      - *memory-wal-env
       # Explicit container-target placement for `backupPath` (#16201). Required, not decorative:
       # the leaf is `planeMember: false`, so the boot member walk no longer places it, and its
       # default now resolves under the user's home — which inside a container is an unbound path
