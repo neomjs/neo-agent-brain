@@ -2,6 +2,7 @@ import {expect, test}              from '@playwright/test';
 import fs                          from 'fs';
 import {createFleetOpenWorkSource} from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
 import {createOpenWorkProducer}    from '../../../../../../ai/services/fleet/openWorkProducer.mjs';
+import {planOpenWorkWakes}         from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
 
 const identities = {
     byLogin: login => ({'neo-opus-ada': '@neo-opus-ada', 'neo-gpt': '@neo-gpt'})[login] ?? null,
@@ -15,17 +16,17 @@ const identities = {
  */
 const pr = ({number=7, verdict='REVIEW_REQUIRED', rollup='SUCCESS', partial=false, author='neo-opus-ada', name='Ada'}={}) => ({
     number,
-    headRefOid    : 'a1',
-    reviewDecision: verdict,
-    mergeable     : 'MERGEABLE',
-    isDraft       : false,
-    body          : `Authored by ${name} (Claude Opus 5, Claude Code).`,
-    author        : {login: author},
-    repository    : {nameWithOwner: 'acme/app'},
-    reviewRequests: {pageInfo: {hasNextPage: partial}, nodes: [{requestedReviewer: {__typename: 'User', login: 'neo-gpt'}}]},
-    latestReviews : {pageInfo: {hasNextPage: false}, nodes: []},
+    headRefOid              : 'a1',
+    reviewDecision          : verdict,
+    mergeable               : 'MERGEABLE',
+    isDraft                 : false,
+    body                    : `Authored by ${name} (Claude Opus 5, Claude Code).`,
+    author                  : {login: author},
+    repository              : {nameWithOwner: 'acme/app'},
+    reviewRequests          : {pageInfo: {hasNextPage: partial}, nodes: [{requestedReviewer: {__typename: 'User', login: 'neo-gpt'}}]},
+    latestReviews           : {pageInfo: {hasNextPage: false}, nodes: []},
     latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: []},
-    commits       : {nodes: [{commit: {oid: 'a1', statusCheckRollup: {state: rollup}}}]}
+    commits                 : {nodes: [{commit: {oid: 'a1', statusCheckRollup: {state: rollup}}}]}
 });
 
 /**
@@ -91,6 +92,116 @@ const memoryStore = () => {
 
     return Object.assign(store, {load: () => store.saved, save: state => { store.saves++; store.saved = JSON.parse(JSON.stringify(state)) }})
 };
+
+test.describe('openWorkProducer — compact measured quota evidence (#761)', () => {
+    const answer = (id = 'issuer-1', resetAt = '2026-10-14T11:00:00Z', cost = 2) => ({
+        viewer: {id}, rateLimit: {cost, limit: 1000, remaining: 900, resetAt},
+        search: {nodes: [], pageInfo: {hasNextPage: false}}
+    });
+    const options = readers => ({readers, repos: async () => ['acme/app'], identities, now: () => new Date('2026-10-14T10:00:00Z')});
+
+    test('shared issuer reads compact into one bucket while zero-row seat coverage stays explicit', async () => {
+        const producer = createOpenWorkProducer(options(async () => ['ada', 'gpt'].map(login => ({
+            seat: '@' + login, login, apiBase: 'https://api.github.com', query: async () => answer()
+        }))));
+        const pulse = (await producer.pulse()).pulses.at(-1);
+        expect(pulse).toMatchObject({telemetryVersion: 1, cost: 8, pages: 4, costUnknown: false});
+        expect(pulse.quota).toHaveLength(1);
+        expect(pulse.quota[0]).toMatchObject({apiBase: 'https://api.github.com', viewerId: 'issuer-1', resetAt: '2026-10-14T11:00:00.000Z', limit: 1000, cost: 8, calls: 4, failed: 0, unknown: false});
+        expect(Date.parse(pulse.quota[0].firstAt)).toBeLessThanOrEqual(Date.parse(pulse.quota[0].lastAt));
+        expect(pulse.seats).toEqual(['ada', 'gpt'].map(login => ({seat: '@' + login, benched: false, outcome: 'complete',
+            authored: {complete: true, rows: 0}, held: {complete: true, rows: 0}, terminal: {required: false, complete: true, rows: 0}})));
+    });
+
+    test('a reset within a pulse, missing quota fields and known error costs remain separate evidence', async () => {
+        let   calls = 0;
+        const query = async () => {
+            if (++calls === 2) throw Object.assign(new Error('GraphQL error'), {quota: answer('issuer-1', '2026-10-14T12:00:00Z', 3)});
+            return answer();
+        };
+        const pulse = (await createOpenWorkProducer(options(async () => [
+            {seat: '@ada', login: 'ada', apiBase: 'https://api.github.com', query},
+            {seat: '@gpt', login: 'gpt', apiBase: 'https://api.github.com', query: async () => ({search: {nodes: [], pageInfo: {hasNextPage: false}}})},
+            {seat: '@bench', login: 'bench', query: null, benched: true}
+        ])).pulse()).pulses.at(-1);
+        expect(pulse).toMatchObject({cost: 5, pages: 3, costUnknown: true});
+        expect(pulse.quota.map(({resetAt, cost, calls, failed, unknown}) => ({resetAt, cost, calls, failed, unknown}))).toEqual([
+            {resetAt: '2026-10-14T11:00:00.000Z', cost: 2, calls: 1, failed: 0, unknown: false},
+            {resetAt: '2026-10-14T12:00:00.000Z', cost: 3, calls: 1, failed: 1, unknown: false},
+            {resetAt: null, cost: 0, calls: 2, failed: 0, unknown: true}
+        ]);
+        expect(pulse.seats[0]).toMatchObject({outcome: 'failed', authored: {complete: true, rows: 0}, held: {complete: false, rows: 0}});
+        expect(pulse.seats[1]).toMatchObject({outcome: 'complete', authored: {complete: true, rows: 0}});
+        expect(pulse.seats[2]).toMatchObject({benched: true, outcome: 'credential-unread'});
+    });
+
+    test('invalid pages count their answered cost once and unknown issuer is not unknown cost', async () => {
+        const pulse = (await createOpenWorkProducer(options(async () => [{seat: '@ada', login: 'ada', apiBase: 'https://api.github.com',
+            query: async () => ({rateLimit: answer().rateLimit, search: {nodes: []}})}])).pulse()).pulses.at(-1);
+        expect(pulse).toMatchObject({cost: 2, pages: 1, costUnknown: false, quota: [{calls: 1, cost: 2, failed: 1, unknown: true}]});
+    });
+
+    test('default history retains a 25-hour predecessor and bounded explicit pulseWindow still truncates', async () => {
+        let   at       = Date.parse('2026-10-14T10:00:00Z');
+        const make     = pulseWindow => createOpenWorkProducer({...options(async () => []), repos: async () => [], now: () => new Date(at), ...(pulseWindow ? {pulseWindow} : {})});
+        const producer = make(), bounded = make(2);
+        for (let count = 0; count < 1503; count++, at += 60000) { await producer.pulse(); await bounded.pulse(); }
+        const pulses = producer.getState().pulses;
+        expect(pulses).toHaveLength(1502);
+        expect(Date.parse(pulses.at(-1).at) - Date.parse(pulses[0].at)).toBe(25 * 60 * 60 * 1000 + 60000);
+        expect(bounded.getState().pulses).toHaveLength(2);
+    });
+
+    test('remaining is diagnostic, endpoints stay distinct, and a failed page preserves its successful prefix', async () => {
+        let   calls = 0;
+        const query = async () => {
+            const result = answer();
+            delete result.rateLimit.remaining;
+            if (++calls === 2) throw new Error('network');
+            if (calls === 1) result.search = {nodes: [pr()], pageInfo: {hasNextPage: true, endCursor: 'next'}};
+            return result;
+        };
+        const pulse = (await createOpenWorkProducer(options(async () => [
+            {seat: '@ada', login: 'ada', apiBase: 'https://api.github.com', query},
+            {seat: '@gpt', login: 'gpt', apiBase: 'https://github.example/api', query}
+        ])).pulse()).pulses.at(-1);
+        expect(pulse.quota).toHaveLength(3);
+        expect(pulse.quota[0]).toMatchObject({remaining: null, unknown: false, calls: 1, cost: 2});
+        expect(pulse.quota[1]).toMatchObject({viewerId: null, unknown: true, failed: 1, calls: 1});
+        expect(pulse.quota[2]).toMatchObject({apiBase: 'https://github.example/api', viewerId: 'issuer-1', calls: 2});
+        expect(pulse.seats[0]).toMatchObject({outcome: 'failed', authored: {complete: false, rows: 1}, held: null});
+    });
+
+    test('search coverage stays complete beside a nested-partial row, and the other fresh row can wake', async () => {
+        let   red  = false;
+        const head = 'a'.repeat(40), query = async (text, {query: search}) => ({...answer(), search: {
+            pageInfo: {hasNextPage: false},
+            nodes   : kindOf(search) === 'open' ? [true, false].map((partial, index) => ({
+                ...pr({number: 7 + index, partial}), headRefOid: head,
+                commits: {nodes: [{commit: {oid: head, statusCheckRollup: {state: red ? 'FAILURE' : 'PENDING'}}}]}
+            })) : []
+        }});
+        const producer = createOpenWorkProducer({...options(async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', apiBase: 'https://api.github.com', query}]), now: clock('2026-10-14T10:00:00Z')});
+        const first    = await producer.pulse(), baseline = planOpenWorkWakes({state: first, ledger: null, now: Date.parse(first.observedAt)});
+        red = true;
+        const state = await producer.pulse();
+        expect(state.coverage).toBe('partial');
+        expect(state.pulses.at(-1).seats[0]).toMatchObject({outcome: 'complete', authored: {complete: true, rows: 2}, held: {complete: true, rows: 0}, terminal: {required: true, complete: true, rows: 0}});
+        expect(state.snapshot.rows['acme/app#7'].partial).toBe(true);
+        expect(state.snapshot.rows['acme/app#8']).toMatchObject({partial: false, observedAt: state.observedAt});
+        const planned = planOpenWorkWakes({state, ledger: baseline.ledger, now: Date.parse(state.observedAt)});
+        expect(planned.wakes).toHaveLength(1);
+        expect(planned.wakes[0]).toMatchObject({number: 8, kind: 'repair-ci', to: '@neo-opus-ada'});
+    });
+
+    test('a response received after its old reset boundary retains the measured charged window', async () => {
+        const pulse = (await createOpenWorkProducer(options(async () => [{seat: '@ada', login: 'ada', apiBase: 'https://api.github.com',
+            query: async () => answer('issuer-1', '2026-10-14T09:59:59Z')
+        }])).pulse()).pulses.at(-1);
+        expect(pulse).toMatchObject({cost: 4, costUnknown: false, quota: [{resetAt: '2026-10-14T09:59:59.000Z', cost: 4, calls: 2, unknown: false}]});
+        expect(Date.parse(pulse.quota[0].firstAt)).toBeGreaterThan(Date.parse(pulse.quota[0].resetAt));
+    });
+});
 
 test.describe('openWorkProducer — one producer observes, records, and wakes no one (#760)', () => {
     test('a pulse after the baseline records the verdict change, its cost and the seat it belongs to', async () => {
@@ -343,10 +454,10 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
             adaSeat    = asSeat({authored: [pr()]}),
             euclidSeat = asSeat({authored: [pr({number: 9, author: 'neo-gpt', name: 'Euclid'})], held: [pr()]}),
             producer   = createOpenWorkProducer({
-                readers   : async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', query: adaSeat.query}, {seat: '@neo-gpt', login: 'neo-gpt', query: euclidSeat.query}],
-                repos     : async () => ['acme/app'],
+                readers: async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', query: adaSeat.query}, {seat: '@neo-gpt', login: 'neo-gpt', query: euclidSeat.query}],
+                repos  : async () => ['acme/app'],
                 identities,
-                now       : clock('2026-10-02T10:00:00Z')
+                now    : clock('2026-10-02T10:00:00Z')
             }),
             state      = await producer.pulse();
 
@@ -381,10 +492,10 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
             euclidSeat = asSeat({authored: [pr({number: 9, author: 'neo-gpt', name: 'Euclid'})]}),
             euclid     = async (...args) => { if (failing) throw new Error('Bad credentials'); return euclidSeat.query(...args) },
             producer   = createOpenWorkProducer({
-                readers   : async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', query: adaSeat.query}, {seat: '@neo-gpt', login: 'neo-gpt', query: euclid}],
-                repos     : async () => ['acme/app'],
+                readers: async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', query: adaSeat.query}, {seat: '@neo-gpt', login: 'neo-gpt', query: euclid}],
+                repos  : async () => ['acme/app'],
                 identities,
-                now       : clock('2026-10-02T10:00:00Z')
+                now    : clock('2026-10-02T10:00:00Z')
             });
 
         await producer.pulse();
@@ -475,10 +586,10 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
 
     test('only a PAT GitHub refused (401) asks for a new token; any other failed read names the next pulse', async () => {
         const
-            refused  = async () => { throw Object.assign(new Error('GitHub GraphQL answered 401: Bad credentials'), {status: 401}) },
-            flaky    = async () => { throw Object.assign(new Error('GitHub GraphQL answered 502: no data'), {status: 502}) },
-            pulse    = readers => createOpenWorkProducer({readers: async () => readers, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')}).pulse(),
-            adaSeat  = {seat: '@neo-opus-ada', login: 'neo-opus-ada', query: asSeat({authored: [pr()]}).query};
+            refused = async () => { throw Object.assign(new Error('GitHub GraphQL answered 401: Bad credentials'), {status: 401}) },
+            flaky   = async () => { throw Object.assign(new Error('GitHub GraphQL answered 502: no data'), {status: 502}) },
+            pulse   = readers => createOpenWorkProducer({readers: async () => readers, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')}).pulse(),
+            adaSeat = {seat: '@neo-opus-ada', login: 'neo-opus-ada', query: asSeat({authored: [pr()]}).query};
 
         expect(await pulse([adaSeat, {seat: '@neo-gpt', login: 'neo-gpt', query: refused}]))
             .toMatchObject({coverage: 'partial', reason: 'GitHub refused the PAT of @neo-gpt: connect again with a current token for it'});
@@ -492,7 +603,7 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
         const store = memoryStore();
 
         store.saved = {
-            snapshot: {rows: {}, closed: {}, complete: true}, observedAt: '2026-10-02T10:00:00.000Z', coverage: 'complete',
+            snapshot : {rows: {}, closed: {}, complete: true}, observedAt: '2026-10-02T10:00:00.000Z', coverage: 'complete',
             watermark: '2026-10-02T09:50:00.000Z', window: null, reason: null, detail: null, transitions: [], pulses: []
         };
 

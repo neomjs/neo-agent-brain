@@ -1,6 +1,6 @@
-import {expect, test}              from '@playwright/test';
-import {createFleetOpenWorkSource} from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
-import {normalizePullRequest}      from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
+import {expect, test}                                 from '@playwright/test';
+import {createFleetOpenWorkSource, openWorkFreshness} from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
+import {normalizePullRequest}                         from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
 
 const
     OBSERVED = '2026-10-02T10:00:00.000Z',
@@ -87,8 +87,8 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
             approval   = {author: {login: 'neo-gpt'}, state: 'APPROVED', commit: {oid: 'h9'}},
             // the reviewer's latest review and latest opinion of the head; `more…` says a list went unread past its page
             node       = ({latest=approval, opinion=approval, moreReviews=false, moreOpinions=false}={}) => ({
-                number: 9, headRefOid: 'h9', reviewDecision: 'APPROVED', mergeable: 'MERGEABLE', isDraft: false,
-                body: 'Authored by Ada (Claude Opus 5.5, Claude Code).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'},
+                number                  : 9, headRefOid: 'h9', reviewDecision: 'APPROVED', mergeable: 'MERGEABLE', isDraft: false,
+                body                    : 'Authored by Ada (Claude Opus 5.5, Claude Code).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'},
                 reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []},
                 latestReviews           : {pageInfo: {hasNextPage: moreReviews}, nodes: [latest]},
                 latestOpinionatedReviews: {pageInfo: {hasNextPage: moreOpinions}, nodes: [opinion]},
@@ -133,6 +133,29 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         const carried = source(state({observedAt: '2026-10-02T10:10:00.000Z', coverage: 'partial'}, [row(8)]), 11).readOpenWork();
 
         expect(carried.seats['@neo-opus-ada'].authored.map(({number, stale}) => [number, stale])).toEqual([[8, true]])
+    });
+
+    test('the shared freshness classifier preserves the exact stale and unavailable boundaries', () => {
+        expect(openWorkFreshness(OBSERVED, {now: Date.parse(OBSERVED) + 5 * 60000})).toBe('ok');
+        expect(openWorkFreshness(OBSERVED, {now: Date.parse(OBSERVED) + 5 * 60000 + 1})).toBe('stale');
+        expect(openWorkFreshness(OBSERVED, {now: Date.parse(OBSERVED) + 60 * 60000})).toBe('stale');
+        expect(openWorkFreshness(OBSERVED, {now: Date.parse(OBSERVED) + 60 * 60000 + 1})).toBe('unavailable');
+        expect(openWorkFreshness(OBSERVED, {now: Date.parse(OBSERVED) + 11, staleAfterMs: 10, unavailableAfterMs: 20})).toBe('stale')
+    });
+
+    test('missing, invalid and future observation timestamps never become fresh evidence', () => {
+        for (const observedAt of [null, undefined, 'invalid', '2026-10-02T10:02:00.000Z']) {
+            expect(openWorkFreshness(observedAt, {now: at(1)()})).toBe('unavailable');
+            expect(source(state({observedAt})).readOpenWork()).toMatchObject({state: 'unavailable', seats: {}})
+        }
+    });
+
+    test('an invalid row timestamp is counted as unobserved without spoiling other fresh rows', () => {
+        const read = source(state({}, [row(7), row(8, 'invalid')])).readOpenWork();
+
+        expect(read.state).toBe('ok');
+        expect(read.unobserved).toBe(1);
+        expect(read.seats['@neo-opus-ada'].authored.map(({number}) => number)).toEqual([7])
     });
 
     test('a partial pulse is still answered, and says so', () => {

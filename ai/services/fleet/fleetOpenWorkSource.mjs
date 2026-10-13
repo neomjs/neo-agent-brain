@@ -24,6 +24,23 @@ const
     UNAVAILABLE_AFTER_MS = 60 * 60 * 1000;
 
 /**
+ * @summary Classify an observation with the projection's shared timestamp bounds.
+ * @param {String|null} observedAt
+ * @param {Object} options
+ * @param {Number} options.now Epoch milliseconds.
+ * @param {Number} [options.staleAfterMs]
+ * @param {Number} [options.unavailableAfterMs]
+ * @returns {'ok'|'stale'|'unavailable'} Missing, invalid or future observations are unavailable.
+ */
+export function openWorkFreshness(observedAt, {now, staleAfterMs = STALE_AFTER_MS, unavailableAfterMs = UNAVAILABLE_AFTER_MS}) {
+    const age = now - Date.parse(observedAt);
+
+    return !Number.isFinite(age) || age < 0 || age > unavailableAfterMs
+        ? 'unavailable'
+        : age > staleAfterMs ? 'stale' : 'ok'
+}
+
+/**
  * @summary The part of a row a holder acts on, with its title, when it was last observed and who holds
  * it. A row stored before the snapshot carried titles reads `null`.
  * @param {Object} row
@@ -49,27 +66,28 @@ function summaryOf(row, stale) {
  */
 export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unavailableAfterMs = UNAVAILABLE_AFTER_MS}) {
     const
-        ageOf         = at => at ? now() - Date.parse(at) : Infinity,
-        ageMs         = ageOf(state?.observedAt),
+        time          = now(),
+        freshnessOf   = observedAt => openWorkFreshness(observedAt, {now: time, staleAfterMs, unavailableAfterMs}),
+        freshness     = freshnessOf(state?.observedAt),
         seats         = {},
         awaitingMerge = [],
         seat          = id => seats[id] ??= {authored: [], reviewing: []};
 
-    if (ageMs > unavailableAfterMs) {
+    if (freshness === 'unavailable') {
         return {state: 'unavailable', observedAt: state?.observedAt ?? null, coverage: 'unavailable', reason: state?.reason ?? null, detail: state?.detail ?? null, unobserved: 0, seats, awaitingMerge}
     }
 
     let unobserved = 0;
 
     for (const row of Object.values(state.snapshot?.rows ?? {})) {
-        const rowAgeMs = ageOf(row.observedAt);
+        const rowFreshness = freshnessOf(row.observedAt);
 
-        if (rowAgeMs > unavailableAfterMs) {
+        if (rowFreshness === 'unavailable') {
             unobserved++;
             continue
         }
 
-        const summary = summaryOf(row, rowAgeMs > staleAfterMs);
+        const summary = summaryOf(row, rowFreshness === 'stale');
 
         row.owner?.seat && seat(row.owner.seat).authored.push(summary);
         row.requested.filter(id => id.startsWith('@')).forEach(id => seat(id).reviewing.push(summary));
@@ -77,7 +95,7 @@ export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unav
     }
 
     return {
-        state     : ageMs > staleAfterMs || state.coverage === 'stale' ? 'stale' : 'ok',
+        state     : freshness === 'stale' || state.coverage === 'stale' ? 'stale' : 'ok',
         observedAt: state.observedAt,
         coverage  : state.coverage,
         reason    : state.reason ?? null,

@@ -1,8 +1,8 @@
-import {test, expect} from '@playwright/test';
-import fs             from 'node:fs';
-import path           from 'node:path';
+import {test, expect}  from '@playwright/test';
+import fs              from 'node:fs';
+import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
-import Neo            from 'neo.mjs/src/Neo.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
 import 'neo.mjs/src/core/_export.mjs';
 import ConfigBase                from '../../../../ai/configBase.mjs';
 import {createConfigProxy, leaf} from '../../../../ai/ConfigProvider.mjs';
@@ -34,6 +34,29 @@ test.describe('ai/configBase — delta-only subclass overlays (overlay-drift roo
         const instance = Neo.create(cls);
         return {cls, instance, proxy: createConfigProxy(instance)};
     }
+
+    test('PR holder wakes stay off until the canonical enable leaf is explicitly set (#761)', () => {
+        const name = 'NEO_FLEET_OPEN_WORK_WAKES', original = process.env[name];
+        let fixture;
+
+        try {
+            delete process.env[name];
+            fixture = createOverlayFixture('Neo.ai.unittest.OpenWorkWakeEnableFixture', null);
+            expect(fixture.proxy.fleet.openWorkWakes).toBe(false);
+
+            process.env[name] = 'true';
+            fixture.instance.refreshEnv();
+            expect(fixture.proxy.fleet.openWorkWakes).toBe(true);
+
+            process.env[name] = 'false';
+            fixture.instance.refreshEnv();
+            expect(fixture.proxy.fleet.openWorkWakes).toBe(false);
+        } finally {
+            if (original === undefined) delete process.env[name];
+            else process.env[name] = original;
+            fixture?.instance?.destroy();
+        }
+    });
 
     /**
      * AC-F1 — the supervised-child heap ceiling's fail-closed parse, committed.

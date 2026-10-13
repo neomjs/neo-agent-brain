@@ -82,6 +82,7 @@ import {wireFleetGoldenPathSource}                                       from '.
 import {wireFleetGraphSceneSource}                                       from './wireFleetGraphSceneSource.mjs';
 import {wireFleetMemoriesSource}                                         from './wireFleetMemoriesSource.mjs';
 import {fileStore, wireFleetOpenWorkSource}                              from './wireFleetOpenWorkSource.mjs';
+import {wireFleetOpenWorkWakes}                                          from './wireFleetOpenWorkWakes.mjs';
 import {wireFleetRecentTurnsSource}                                      from './wireFleetRecentTurnsSource.mjs';
 import {wireFleetSessionMemoriesSource}                                  from './wireFleetSessionMemoriesSource.mjs';
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
@@ -126,7 +127,22 @@ async function boot() {
 
     let
         fleetWakeStreamConsumer = null,
+        openWork                = null,
+        wakeRound               = null,
+        server                  = null,
         viewer;
+
+    /** @summary Drain owned observation/sender work before closing its verified plane session. */
+    async function closeObservedWorkAndPlane() {
+        const stopped = await Promise.allSettled([
+            Promise.resolve().then(() => fleetWakeStreamConsumer?.stop()),
+            Promise.resolve().then(() => openWork?.stop()),
+            Promise.resolve().then(() => wakeRound?.stop())
+        ]);
+        await planeClient?.close();
+        const failed = stopped.find(result => result.status === 'rejected');
+        if (failed) throw failed.reason
+    }
 
     if (planeClient) {
         viewer = await resolveFleetViewerClaim();
@@ -530,14 +546,9 @@ async function boot() {
         }
     };
 
-    // Each seat's open work, observe-only: the producer reads GitHub and wakes no one. Each seat reads
-    // with its own PAT from the registry's credential store. A token in this process's environment is
-    // the explicit headless/dev override, a process secret no AiConfig leaf binds, so the entrypoint
-    // reads it. A seat without a readable PAT is named by each pulse: an optional reader never refuses the boot.
-    // A benched seat owes no coverage; its participation comes from the roster's presence read.
-    const openWork = wireFleetOpenWorkSource({token: readGithubToken(), registry: FleetRegistryService, readPresence});
-
-        const server = await startFleetBridgeServer({
+        // Claim the transport before starting an observer that can persist or send. A rejected
+        // second boot must never compete with the incumbent's ledger or automatic wake path.
+        server = await startFleetBridgeServer({
             port,
             bearerToken,
             viewerContext : viewer,
@@ -553,13 +564,24 @@ async function boot() {
             runInContext   : (context, fn) => RequestContextService.run(context, fn)
         });
 
+        // Each seat reads with its own PAT; a process token is the explicit headless/dev override.
+        // This entrypoint owns the one enable switch after the plane proved the sending viewer.
+        wakeRound = AiConfig.fleet.openWorkWakes && planeClient ? wireFleetOpenWorkWakes({
+            registry         : FleetRegistryService,
+            sendMessage      : args => planeClient.addMessage(args),
+            readUndeliverable: async () => (await readPresence())?.undeliverable ?? null
+        }) : null;
+        openWork = wireFleetOpenWorkSource({token: readGithubToken(), registry: FleetRegistryService, readPresence, onPulse: wakeRound});
+
+        AiConfig.fleet.openWorkWakes && console.log(wakeRound
+            ? '[fleet] open-work wakes wired; rounds stay quiet until measured admission holds'
+            : '[fleet] open-work wakes requested but unwired: a plane-verified viewer is required');
+
         // AWAITED plane teardown before every exit: an un-awaited close races process death, which
         // leaks the proven plane session (the server reaps it only on its own timeline).
         const cleanShutdown = async signal => {
             console.log(`[fleet] received ${signal}; stopping.`);
-            fleetWakeStreamConsumer?.stop();
-            openWork?.stop();
-            await planeClient?.close();
+            await closeObservedWorkAndPlane();
             server.close(() => process.exit(0))
         };
 
@@ -599,9 +621,13 @@ async function boot() {
         // probe failures, reuse, and refusal alike would otherwise orphan it on the plane. The
         // client's close() is a shared terminal barrier, so overlapping closers are safe. The
         // wake-stream consumer stops on the same paths: its reconnect loop must not outlive boot.
-        if (error?.code !== 'EADDRINUSE') {
-            fleetWakeStreamConsumer?.stop();
-            await planeClient?.close();
+        const ownedServer = server;
+        try {
+            await closeObservedWorkAndPlane();
+        } finally {
+            ownedServer?.close();
+        }
+        if (error?.code !== 'EADDRINUSE' || ownedServer) {
             throw error
         }
 
@@ -616,21 +642,15 @@ async function boot() {
                 agentIdentityNodeId: viewer.agentIdentityNodeId
             })
         } catch (probeError) {
-            fleetWakeStreamConsumer?.stop();
-            await planeClient?.close();
             throw probeError
         }
 
         if (probe.reusable) {
             console.log(`[fleet] healthy Fleet already listening on port ${port} (${probe.reason}; viewer: ${probe.viewer}, pid: ${probe.pid}) — reusing it.`);
-            fleetWakeStreamConsumer?.stop();
-            await planeClient?.close();
             process.exit(0)
         }
 
         console.error(`[fleet] port ${port} is occupied and NOT reusable: ${probe.reason}`);
-        fleetWakeStreamConsumer?.stop();
-        await planeClient?.close();
         process.exit(1)
     }
 }

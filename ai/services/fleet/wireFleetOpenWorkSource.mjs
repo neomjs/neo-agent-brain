@@ -26,7 +26,7 @@ import {createOpenWorkProducer}                    from './openWorkProducer.mjs'
 import {participationOf, presenceIdentityForAgent} from './fleetPresenceStateAdapter.mjs';
 import {writeFileAtomicSync}                       from '../shared/atomicFileWrite.mjs';
 
-/** @summary The pulse cadence: one search a minute stays far inside GitHub's GraphQL budget. */
+/** @summary The existing pulse cadence; measured quota evidence determines whether it fits each issuer. */
 const PULSE_MS = 60 * 1000;
 
 /**
@@ -84,11 +84,12 @@ export async function benchedIdentities(readPresence) {
  * @param {Function} options.listDefinitions   `() → Object[]`, the registry's definitions.
  * @param {Function} options.resolveCredential `(agentId) → String|null`, the seat's PAT.
  * @param {String|null} [options.override]     The headless/dev token every seat then reads with.
+ * @param {String} [options.apiBase] The endpoint represented by each reader's quota observations.
  * @param {Function} [options.createQuery]     `(token) → query`; the GitHub call by default.
  * @param {Function|null} [options.readPresence] The `who_is_online` read ({@link benchedIdentities}), each pulse.
- * @returns {Function} `() → Promise<{seat: String, login: String, query: Function|null, benched: Boolean}[]>`
+ * @returns {Function} `() → Promise<{seat: String, login: String, apiBase: String, query: Function|null, benched: Boolean}[]>`
  */
-export function seatReaders({listDefinitions, resolveCredential, override = null, createQuery = token => createGithubGraphqlQuery({token}), readPresence = null}) {
+export function seatReaders({listDefinitions, resolveCredential, override = null, apiBase = 'https://api.github.com', createQuery = token => createGithubGraphqlQuery({token, apiBase}), readPresence = null}) {
     return async () => {
         const benched = await benchedIdentities(readPresence);
 
@@ -99,7 +100,7 @@ export function seatReaders({listDefinitions, resolveCredential, override = null
                     login = String(definition.githubUsername).replace(/^@/, ''),
                     token = override || resolveCredential(definition.id);
 
-                return {seat: `@${login}`, login, query: token ? createQuery(token) : null, benched: benched.has(presenceIdentityForAgent(definition))}
+                return {seat: `@${login}`, login, apiBase, query: token ? createQuery(token) : null, benched: benched.has(presenceIdentityForAgent(definition))}
             })
     }
 }
@@ -129,7 +130,20 @@ export function createGithubGraphqlQuery({token, fetchImpl = globalThis.fetch, a
             payload  = await response.json().catch(() => null);
 
         if (!response.ok || payload?.errors?.length || !payload?.data) {
-            throw Object.assign(new Error(`GitHub GraphQL answered ${response.status}: ${payload?.errors?.[0]?.message ?? 'no data'}`), {status: response.status})
+            const
+                value = name => {
+                    const raw = response.headers?.get?.(name);
+                    return raw !== null && raw !== undefined && raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : null;
+                },
+                rate  = payload?.data?.rateLimit,
+                reset = value('x-ratelimit-reset'),
+                quota = {viewer: {id: payload?.data?.viewer?.id ?? null}, rateLimit: {
+                    cost     : Number.isFinite(rate?.cost) ? rate.cost : null,
+                    limit    : rate?.limit ?? value('x-ratelimit-limit'),
+                    remaining: rate?.remaining ?? value('x-ratelimit-remaining'),
+                    resetAt  : rate?.resetAt ?? (reset !== null && Number.isFinite(new Date(reset * 1000).getTime()) ? new Date(reset * 1000).toISOString() : null)
+                }};
+            throw Object.assign(new Error(`GitHub GraphQL answered ${response.status}: ${payload?.errors?.[0]?.message ?? 'no data'}`), {status: response.status, quota})
         }
 
         return payload.data
@@ -172,13 +186,16 @@ export function fileStore(filePath) {
  * @param {Function} [options.createQuery] `(token) → query`; replaces the GitHub call per token (tests).
  * @param {Function} [options.readPresence] The roster's `who_is_online` read; without it no seat is benched.
  * @param {Function} [options.now]
- * @returns {{producer: Object, source: Object, stop: Function}|null} null without a registry.
+ * @param {String} [options.apiBase] Existing query endpoint, recorded with quota evidence.
+ * @param {Function|null} [options.onPulse] Awaited after the existing pulse; concurrent rounds share it.
+ * @returns {{producer: Object, source: Object, pulse: Function, stop: Function}|null} null without a registry.
  */
-export function wireFleetOpenWorkSource({token = null, registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, createQuery, readPresence = null, now} = {}) {
+export function wireFleetOpenWorkSource({token = null, registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, createQuery, readPresence = null, now, apiBase = 'https://api.github.com', onPulse = null} = {}) {
     if (typeof registry?.listAgents !== 'function' || typeof registry.getDataDir !== 'function') {
         return null
     }
 
+    let running = null, stopped = false;
     const
         listDefinitions = () => registry.listAgents(),
         producer        = createOpenWorkProducer({
@@ -186,22 +203,34 @@ export function wireFleetOpenWorkSource({token = null, registry, pulseMs = PULSE
                 listDefinitions,
                 resolveCredential: id => query ? 'injected' : registry.resolveCredential?.(id) ?? null,
                 override         : token,
+                apiBase,
                 readPresence,
                 ...(query ? {createQuery: () => query} : createQuery ? {createQuery} : {})
             }),
             repos     : async () => githubSlugsOf(listDefinitions()),
             identities: seatIdentities(listDefinitions),
             store     : fileStore(path.join(registry.getDataDir(), 'open-work.json')),
+            intervalMs: pulseMs,
             ...(now ? {now} : {})
         }),
-        pulse           = () => producer.pulse().catch(error => console.error('[fleet] open-work pulse failed:', error)),
+        pulse           = () => stopped ? (running ?? Promise.resolve(producer.getState())) :
+            running ??= producer.pulse().then(async state => { await onPulse?.(state); return state })
+                .catch(error => console.error('[fleet] open-work pulse failed:', error)).finally(() => { running = null }),
         timer           = setInterval(pulse, pulseMs);
 
     timer.unref?.();
     bridge.openWorkSource = createFleetOpenWorkSource({producer});
     pulse();
 
-    return {producer, source: bridge.openWorkSource, stop: () => clearInterval(timer)}
+    return {
+        producer, source: bridge.openWorkSource, pulse,
+        /** @summary Stops admission and awaits the existing pulse and callback before its dependencies close. */
+        stop() {
+            stopped = true;
+            clearInterval(timer);
+            return running ?? Promise.resolve(producer.getState())
+        }
+    }
 }
 
 export default wireFleetOpenWorkSource;

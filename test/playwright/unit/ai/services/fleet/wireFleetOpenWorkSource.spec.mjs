@@ -26,6 +26,7 @@ import {
     seatReaders,
     wireFleetOpenWorkSource
 } from '../../../../../../ai/services/fleet/wireFleetOpenWorkSource.mjs';
+import {OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const definitions = [
     {id: 'ada',   githubUsername: 'neo-opus-ada', metadata: {repo: {repoSlug: 'acme/app', cloneUrl: 'https://github.com/acme/app.git'}, repos: [{repoSlug: 'acme/lib', cloneUrl: 'https://github.com/acme/lib.git'}]}},
@@ -34,6 +35,65 @@ const definitions = [
 ];
 
 test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet server (#760)', () => {
+    test('the existing queries observe issuer and measured quota without a second request (#761)', () => {
+        for (const query of [OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL]) {
+            expect(query).toMatch(/viewer\s*\{\s*id\s*\}/);
+            expect(query).toMatch(/rateLimit\s*\{\s*cost\s+limit\s+remaining\s+resetAt\s*\}/);
+        }
+    });
+
+    test('GraphQL errors retain measured cost and header quota but no token (#761)', async () => {
+        const query = createGithubGraphqlQuery({token: 'never-record-this', fetchImpl: async () => ({
+            ok  : true, status: 200, headers: new Headers({'x-ratelimit-limit': '1000', 'x-ratelimit-remaining': '998', 'x-ratelimit-reset': '1791975600'}),
+            json: async () => ({errors: [{message: 'one field failed'}], data: {viewer: {id: 'issuer-1'}, rateLimit: {cost: 2}}})
+        })});
+        const failure = await query('{x}', {}).catch(error => error);
+        expect(failure).toMatchObject({quota: {viewer: {id: 'issuer-1'}, rateLimit: {cost: 2, limit: 1000, remaining: 998, resetAt: '2026-10-14T11:00:00.000Z'}}});
+        expect(JSON.stringify(failure)).not.toContain('never-record-this');
+        const noCost = createGithubGraphqlQuery({token: 'x', fetchImpl: async () => ({ok: false, status: 502, json: async () => null})});
+        expect(await noCost('', {}).catch(error => error)).toMatchObject({quota: {rateLimit: {cost: null}}});
+    });
+
+    test('reader endpoint and the single-flight post-pulse hook use the same existing producer (#761)', async () => {
+        const read = await seatReaders({listDefinitions: () => [{id: 'one', githubUsername: 'one'}], resolveCredential: () => 'private', apiBase: 'https://github.example/api', createQuery: () => async () => ({})})();
+        expect(read[0].apiBase).toBe('https://github.example/api');
+        const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-hook-'));
+        let release, callbackStarted = false, hooks = 0;
+        const pending = new Promise(resolve => { release = resolve });
+        try {
+            const wired = wireFleetOpenWorkSource({registry: {listAgents: () => [], getDataDir: () => dataDir}, bridge: {}, pulseMs: 3600000,
+                onPulse: async () => { hooks++; callbackStarted = true; await pending }});
+            await expect.poll(() => callbackStarted).toBe(true);
+            const first = wired.pulse(), second = wired.pulse();
+            expect(first).toBe(second);
+            expect(hooks).toBe(1);
+            release();
+            await first;
+            wired.stop();
+            expect(hooks).toBe(1);
+        } finally { release(); fs.rmSync(dataDir, {recursive: true, force: true}); }
+    });
+
+    test('stop waits for its pending callback and refuses to start another wired pulse (#761)', async () => {
+        const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-stop-'));
+        let release, hooks = 0, reads = 0, stopped = false, wired;
+        const pending = new Promise(resolve => { release = resolve });
+        try {
+            wired = wireFleetOpenWorkSource({registry: {listAgents: () => { reads++; return [] }, getDataDir: () => dataDir},
+                bridge: {}, pulseMs: 3600000, onPulse: async () => { hooks++; await pending }});
+            await expect.poll(() => hooks).toBe(1);
+            const stopping = Promise.resolve(wired.stop()).then(() => { stopped = true });
+            await Promise.resolve();
+            expect(stopped).toBe(false);
+            const beforeReads = reads, refused = wired.pulse();
+            expect(reads).toBe(beforeReads);
+            release();
+            await stopping;
+            await refused;
+            await wired.pulse();
+            expect({stopped, hooks, reads}).toEqual({stopped: true, hooks: 1, reads: beforeReads});
+        } finally { release(); await wired?.stop(); fs.rmSync(dataDir, {recursive: true, force: true}); }
+    });
     test('the scope is every GitHub repository a seat works on; a GitLab one is not GitHub\'s to read', () => {
         expect(githubSlugsOf(definitions)).toEqual(['acme/app', 'acme/lib'])
     });
@@ -129,9 +189,9 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
             dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wire-')),
             tokens  = [],
             node    = {
-                number: 7, headRefOid: 'a1', reviewDecision: 'REVIEW_REQUIRED', mergeable: 'MERGEABLE', isDraft: false,
-                body: 'Authored by Ada (Claude).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'},
-                reviewRequests: {pageInfo: {hasNextPage: false}, nodes: []}, latestReviews: {pageInfo: {hasNextPage: false}, nodes: []},
+                number                  : 7, headRefOid: 'a1', reviewDecision: 'REVIEW_REQUIRED', mergeable: 'MERGEABLE', isDraft: false,
+                body                    : 'Authored by Ada (Claude).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'},
+                reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []}, latestReviews: {pageInfo: {hasNextPage: false}, nodes: []},
                 latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: []}, commits: {nodes: [{commit: {oid: 'a1', statusCheckRollup: {state: 'SUCCESS'}}}]}
             },
             createQuery = token => async (text, {query: search}) => {

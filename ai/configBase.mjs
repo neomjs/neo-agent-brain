@@ -461,6 +461,13 @@ class ConfigBase extends ConfigProvider {
                  */
                 bearerHandshake: leaf(false, 'NEO_FLEET_BEARER_HANDSHAKE', 'boolean'),
                 /**
+                 * Enables action-specific PR wakes from the plane-verified Fleet viewer. Default
+                 * off; enabling still requires the retained observe-only window to pass its
+                 * freshness, coverage and measured quota checks before a round may send.
+                 * @type {boolean}
+                 */
+                openWorkWakes  : leaf(false, 'NEO_FLEET_OPEN_WORK_WAKES', 'boolean'),
+                /**
                  * Exact origins the Fleet Manager cockpit may call browser-facing Agent OS HTTP
                  * transports from. The legacy local Fleet bridge and the composed KB/MC/Fleet CORS
                  * boundary consume the same resolved array. CSV-typed: the env form is a
@@ -900,9 +907,9 @@ class ConfigBase extends ConfigProvider {
                 // default provider's leaf, so a reader who changes one knows the other two are the
                 // same choice — and so a divergence reads as a decision rather than a typo. The MLX
                 // leaf records what an accidental divergence costs: two models resident at once.
-                model                  : leaf('google/gemma-4-26b-a4b', 'NEO_OPENAI_COMPATIBLE_MODEL', 'string'),
-                embeddingModel         : leaf('text-embedding-qwen3-embedding-8b', 'NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL', 'string'),
-                apiKey                 : leaf('', 'NEO_OPENAI_COMPATIBLE_API_KEY', 'string'),
+                model         : leaf('google/gemma-4-26b-a4b', 'NEO_OPENAI_COMPATIBLE_MODEL', 'string'),
+                embeddingModel: leaf('text-embedding-qwen3-embedding-8b', 'NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL', 'string'),
+                apiKey        : leaf('', 'NEO_OPENAI_COMPATIBLE_API_KEY', 'string'),
                 /**
                  * @summary File containing the OpenAI-compatible API key for secret-file-aware runtimes.
                  *
@@ -930,8 +937,8 @@ class ConfigBase extends ConfigProvider {
                  * request carrying it. Set it for a server that honours the extension.
                  * @type {Number|String|null}
                  */
-                keep_alive             : leaf(null, 'NEO_OPENAI_COMPATIBLE_KEEP_ALIVE', 'keepAlive'),
-                requireParallelModels  : leaf(2, 'NEO_OPENAI_COMPATIBLE_REQUIRE_PARALLEL_MODELS', 'number')
+                keep_alive           : leaf(null, 'NEO_OPENAI_COMPATIBLE_KEEP_ALIVE', 'keepAlive'),
+                requireParallelModels: leaf(2, 'NEO_OPENAI_COMPATIBLE_REQUIRE_PARALLEL_MODELS', 'number')
             },
             /**
              * @summary Local-model role-keyed context limits.

@@ -17,8 +17,12 @@
  */
 export const OPEN_WORK_SNAPSHOT = `
   query OpenWorkSnapshot($query: String!, $cursor: String) {
+    viewer { id }
     rateLimit {
       cost
+      limit
+      remaining
+      resetAt
     }
     search(query: $query, type: ISSUE, first: 50, after: $cursor) {
       pageInfo {
@@ -115,8 +119,12 @@ export const OPEN_WORK_SNAPSHOT = `
  */
 export const OPEN_WORK_TERMINAL = `
   query OpenWorkTerminal($query: String!, $cursor: String) {
+    viewer { id }
     rateLimit {
       cost
+      limit
+      remaining
+      resetAt
     }
     search(query: $query, type: ISSUE, first: 50, after: $cursor) {
       pageInfo {

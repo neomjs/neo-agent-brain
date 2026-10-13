@@ -31,8 +31,9 @@ const
     PAGE_BUDGET       = 4,
     /** @summary Transitions retained; a reader behind them reads a coverage gap. */
     TRANSITION_WINDOW = 500,
-    /** @summary Pulses retained: a day at a one-minute cadence, the observe-only day's record. */
-    PULSE_WINDOW      = 1440,
+    /** @summary A 25-hour quota prefix plus its predecessor at the standard one-minute cadence. */
+    PULSE_WINDOW      = 1502,
+    PULSE_HISTORY_MS  = 25 * 60 * 60 * 1000,
     /** @summary How far each terminal window reaches back past the previous one's end. */
     OVERLAP_MS        = 10 * 60 * 1000,
     /** @summary A producer that has never pulsed. */
@@ -58,6 +59,49 @@ const searchTime = iso => iso.replace(/\.\d+Z$/, 'Z');
 const shift = (iso, ms) => new Date(Date.parse(iso) + ms).toISOString();
 
 /**
+ * @summary Adds one attempted page to a compact issuer/window bucket; absent measurements stay unknown.
+ * @param {Object} tally Pulse totals and compact quota buckets, updated in place.
+ * @param {String|null} apiBase The issuing endpoint, never a credential.
+ * @param {Object|null} data The answer's or failure's retained viewer and rate-limit fields.
+ * @param {Boolean} failed Whether this attempt failed transport or page validation.
+ * @param {String} at The response observation time in ISO format.
+ * @returns {void}
+ */
+function recordQuota(tally, apiBase, data, failed, at) {
+    const
+        measured  = value => Number.isInteger(value) && value >= 0 ? value : null,
+        rate      = data?.rateLimit,
+        viewerId  = typeof data?.viewer?.id === 'string' && data.viewer.id.trim() ? data.viewer.id : null,
+        cost      = measured(rate?.cost),
+        limit     = measured(rate?.limit) || null,
+        resetAt   = typeof rate?.resetAt === 'string' && Number.isFinite(Date.parse(rate.resetAt)) ? new Date(rate.resetAt).toISOString() : null,
+        remaining = measured(rate?.remaining);
+    let endpoint = null;
+
+    try {
+        const url = new URL(apiBase);
+        if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash) endpoint = url.href.replace(/\/$/, '');
+    } catch {}
+
+    let bucket = tally.quota.find(row => row.apiBase === endpoint && row.viewerId === viewerId && row.resetAt === resetAt && row.limit === limit);
+
+    if (!bucket) {
+        tally.quota.push(bucket = {apiBase: endpoint, viewerId, resetAt, limit, cost: 0, calls: 0, failed: 0, unknown: false, firstAt: at, lastAt: at, remaining});
+    }
+    bucket.calls++;
+    bucket.failed += Number(failed);
+    bucket.lastAt = at;
+    bucket.remaining = remaining;
+    bucket.unknown ||= !endpoint || !viewerId || !limit || !resetAt || cost === null;
+    if (cost === null) {
+        tally.costUnknown = true;
+    } else {
+        bucket.cost += cost;
+        tally.cost += cost;
+    }
+}
+
+/**
  * @summary Read one search across its pages, from a cursor, up to the budget. Each answered request
  * adds its cost and page to `tally` before the next is sent, so a failed read still counts them.
  * @param {Object}   options
@@ -66,29 +110,36 @@ const shift = (iso, ms) => new Date(Date.parse(iso) + ms).toISOString();
  * @param {String}   options.search     The search string.
  * @param {String|null} [options.cursor] Where a previous pulse stopped.
  * @param {Number}   options.pageBudget
- * @param {{cost: Number, pages: Number}} options.tally
+ * @param {Object} options.tally Compact measured cost buckets and answered-page count.
+ * @param {String|null} options.apiBase The issuing endpoint, never a credential.
+ * @param {Function} options.stamp Response clock within this pulse.
+ * @param {Object} options.progress Seat read completion and answered row count, including failure prefixes.
  * @returns {Promise<{nodes: Object[], complete: Boolean, cursor: String|null}>}
  * @throws {Error} When an answer lacks its search page structure.
  * @private
  */
-async function readSearch({query, text, search, cursor = null, pageBudget, tally}) {
+async function readSearch({query, text, search, cursor = null, pageBudget, tally, apiBase, stamp, progress}) {
     const nodes = [];
 
     for (let pages = 0; pages < pageBudget; pages++) {
-        const {rateLimit, search: page} = await query(text, {query: search, cursor}) ?? {};
-
-        tally.pages++;
-        tally.cost += rateLimit?.cost ?? 0;
-
-        if (!Array.isArray(page?.nodes) || typeof page.pageInfo?.hasNextPage !== 'boolean') {
-            throw new Error('the search answered without its page structure')
+        let data, failed = true;
+        try {
+            data = await query(text, {query: search, cursor});
+            tally.pages++;
+            const page = data?.search;
+            if (!Array.isArray(page?.nodes) || typeof page.pageInfo?.hasNextPage !== 'boolean') throw new Error('the search answered without its page structure');
+            nodes.push(...page.nodes.filter(node => node?.number != null));
+            progress.rows = nodes.length;
+            progress.complete = !page.pageInfo.hasNextPage;
+            failed = false;
+            if (!page.pageInfo.hasNextPage) return {nodes, complete: true, cursor: null};
+            cursor = page.pageInfo.endCursor;
+        } catch (error) {
+            data ??= error?.quota;
+            throw error;
+        } finally {
+            recordQuota(tally, apiBase, data, failed, stamp());
         }
-
-        nodes.push(...page.nodes.filter(node => node?.number != null));
-
-        if (!page.pageInfo.hasNextPage) return {nodes, complete: true, cursor: null};
-
-        cursor = page.pageInfo.endCursor
     }
 
     return {nodes, complete: false, cursor}
@@ -150,7 +201,8 @@ function unreadReason(unread, failed = []) {
  *     `load` answers null for no saved state and throws for state it cannot read.
  * @param {Number}   [options.pageBudget]
  * @param {Number}   [options.transitionWindow]
- * @param {Number}   [options.pulseWindow]
+ * @param {Number|null} [options.pulseWindow] Explicit count-only history cap; otherwise retain the elapsed quota prefix.
+ * @param {Number} [options.intervalMs] The existing producer cadence, recorded for gap assessment.
  * @param {Number}   [options.overlapMs]
  * @returns {{pulse: Function, getState: Function}}
  */
@@ -162,7 +214,8 @@ export function createOpenWorkProducer({
     store            = null,
     pageBudget       = PAGE_BUDGET,
     transitionWindow = TRANSITION_WINDOW,
-    pulseWindow      = PULSE_WINDOW,
+    pulseWindow      = null,
+    intervalMs       = 60000,
     overlapMs        = OVERLAP_MS
 }) {
     let state = FRESH, loadFailure = null, running = null;
@@ -177,7 +230,14 @@ export function createOpenWorkProducer({
     };
 
     const commit = (next, pulse) => {
-        state = {...state, ...next, pulses: [...state.pulses, pulse].slice(-pulseWindow)};
+        let pulses = [...state.pulses, pulse];
+        if (pulseWindow === null) {
+            const
+                cutoff = Date.parse(pulse.at) - PULSE_HISTORY_MS,
+                first  = pulses.findIndex(row => Date.parse(row.at) >= cutoff);
+            if (first > 0) pulses = pulses.slice(first - 1);
+        }
+        state = {...state, ...next, pulses: pulses.slice(-(pulseWindow ?? PULSE_WINDOW))};
         store?.save?.(state);
         return state
     };
@@ -192,35 +252,41 @@ export function createOpenWorkProducer({
         }
 
         const
-            at    = now().toISOString(),
-            slugs = [...new Set(await repos())].sort();
+            at      = now().toISOString(),
+            started = performance.now(),
+            stamp   = () => new Date(Date.parse(at) + performance.now() - started).toISOString(),
+            finish  = (next, pulse) => commit(next, {telemetryVersion: 1, intervalMs, finishedAt: stamp(), quota: [], seats: [], costUnknown: false, ...pulse}),
+            slugs   = [...new Set(await repos())].sort();
 
         if (!slugs.length) {
-            return commit({coverage: state.snapshot ? 'stale' : 'unavailable', reason: 'no seat works on a GitHub repository', detail: null}, {at, failed: true, cost: 0, pages: 0})
+            return finish({coverage: state.snapshot ? 'stale' : 'unavailable', reason: 'no seat works on a GitHub repository', detail: null}, {at, failed: true, cost: 0, pages: 0})
         }
 
         const
-            scope  = slugs.map(slug => `repo:${slug}`).join(' '),
-            tally  = {cost: 0, pages: 0},
-            seats  = await readers(),
-            unread = seats.filter(seat => !seat.query).map(seat => seat.seat),
-            reads  = [];
+            scope         = slugs.map(slug => `repo:${slug}`).join(' '),
+            tally         = {cost: 0, pages: 0, costUnknown: false, quota: []},
+            seats         = await readers(),
+            unread        = seats.filter(seat => !seat.query).map(seat => seat.seat),
+            reads         = [],
+            coverageSeats = seats.map(({seat, query, benched}) => ({seat, benched: !!benched, outcome: query ? 'failed' : 'credential-unread', authored: null, held: null, terminal: null}));
 
-        for (const {seat, login, query} of seats.filter(seat => seat.query)) {
+        for (const {seat, login, query, apiBase} of seats.filter(seat => seat.query)) {
             // a seat's terminal window and watermark are its own; a saved single watermark seeds them
             const
-                mark   = state.readers?.[login] ?? {watermark: state.watermark ?? null, window: null},
-                resume = mark.window?.scope === scope && mark.window.since === mark.watermark,
-                window = state.snapshot && mark.watermark ? (resume ? mark.window : {scope, since: mark.watermark, until: at, cursor: null}) : null,
-                open   = search => readSearch({query, text: OPEN_WORK_SNAPSHOT, search: `is:pr is:open archived:false ${search} ${scope}`, pageBudget, tally});
+                mark         = state.readers?.[login] ?? {watermark: state.watermark ?? null, window: null},
+                resume       = mark.window?.scope === scope && mark.window.since === mark.watermark,
+                window       = state.snapshot && mark.watermark ? (resume ? mark.window : {scope, since: mark.watermark, until: at, cursor: null}) : null,
+                open         = (search, progress) => readSearch({query, text: OPEN_WORK_SNAPSHOT, search: `is:pr is:open archived:false ${search} ${scope}`, pageBudget, tally, apiBase, stamp, progress}),
+                coverageSeat = coverageSeats.find(row => row.seat === seat);
 
             try {
-                const
-                    authored = await open(`author:${login}`),
-                    held     = await open(`review-requested:${login}`),
-                    ended    = window
-                        ? await readSearch({query, text: OPEN_WORK_TERMINAL, search: `is:pr is:closed closed:${searchTime(window.since)}..${searchTime(window.until)} author:${login} ${scope}`, cursor: window.cursor, pageBudget, tally})
+                coverageSeat.terminal = {required: !!window, complete: !window, rows: 0};
+                const authored = await open(`author:${login}`, coverageSeat.authored = {complete: false, rows: 0});
+                const held     = await open(`review-requested:${login}`, coverageSeat.held = {complete: false, rows: 0});
+                const ended    = window
+                        ? await readSearch({query, text: OPEN_WORK_TERMINAL, search: `is:pr is:closed closed:${searchTime(window.since)}..${searchTime(window.until)} author:${login} ${scope}`, cursor: window.cursor, pageBudget, tally, apiBase, stamp, progress: coverageSeat.terminal})
                         : {nodes: [], complete: true, cursor: null};
+                coverageSeat.outcome = authored.complete && held.complete && ended.complete ? 'complete' : 'partial';
 
                 reads.push({seat, login, mark, window, nodes: [...authored.nodes, ...held.nodes], complete: authored.complete && held.complete, ended})
             } catch (error) {
@@ -234,11 +300,11 @@ export function createOpenWorkProducer({
             failed   = reads.filter(read => read.failure);
 
         if (!answered.length) {
-            return commit({
+            return finish({
                 coverage: state.snapshot ? 'stale' : 'unavailable',
                 reason  : unreadReason(unread, failed) ?? 'no seat has a GitHub login',
                 detail  : failed[0]?.failure ?? null
-            }, {at, failed: true, ...tally, ...(failed.length ? {costUnknown: true} : {})})
+            }, {at, failed: true, ...tally, seats: coverageSeats})
         }
 
         const
@@ -272,7 +338,7 @@ export function createOpenWorkProducer({
             next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed}, terminal, since: state.watermark ?? null, id: at}),
             coverage  = complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial';
 
-        return commit({
+        return finish({
             snapshot   : {rows: next.rows, closed: next.closed, complete: next.complete, missed: next.missed},
             observedAt : at,
             coverage,
@@ -282,7 +348,7 @@ export function createOpenWorkProducer({
             reason     : unreadReason(unread.filter(owes), failed.filter(read => owes(read.seat))),
             detail     : failed[0]?.failure ?? null,
             transitions: [...state.transitions, ...next.transitions].slice(-transitionWindow)
-        }, {at, ...tally, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished, ...(unread.length || failed.length ? {unread: [...unread, ...failed.map(read => read.seat)]} : {})})
+        }, {at, ...tally, seats: coverageSeats, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished, ...(unread.length || failed.length ? {unread: [...unread, ...failed.map(read => read.seat)]} : {})})
     }
 
     return {
