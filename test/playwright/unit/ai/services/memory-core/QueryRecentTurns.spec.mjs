@@ -13,16 +13,16 @@ setup({
     }
 });
 
-import {test, expect}                           from '@playwright/test';
-import Neo                                      from 'neo.mjs/src/Neo.mjs';
-import * as core                                from 'neo.mjs/src/core/_export.mjs';
-import {execFile}                               from 'node:child_process';
-import {promisify}                              from 'node:util';
-import {mkdtemp, rm}                            from 'node:fs/promises';
-import os                                       from 'node:os';
-import path                                     from 'node:path';
-import {appendWalMemory, readPendingWalRecords} from '../../../../../../ai/services/memory-core/helpers/memoryWalStore.mjs';
-import RequestContextService                    from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import {test, expect}                                                                                 from '@playwright/test';
+import Neo                                                                                            from 'neo.mjs/src/Neo.mjs';
+import * as core                                                                                      from 'neo.mjs/src/core/_export.mjs';
+import {execFile}                                                                                     from 'node:child_process';
+import {promisify}                                                                                    from 'node:util';
+import {mkdtemp, rm}                                                                                  from 'node:fs/promises';
+import os                                                                                             from 'node:os';
+import path                                                                                           from 'node:path';
+import {appendWalMemory, appendWalEmbedMarker, appendWalGraphProjectionMarker, readPendingWalRecords} from '../../../../../../ai/services/memory-core/helpers/memoryWalStore.mjs';
+import RequestContextService                                                                          from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 
 
 /**
@@ -288,6 +288,200 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         const oldRow  = GraphService.db.storage.db.prepare('SELECT data FROM Nodes WHERE id = ?').get('backfill-old');
         const oldData = JSON.parse(oldRow.data);
         expect(oldData.properties.miniSummary).toBeUndefined();
+    });
+
+    for (const crossing of [false, true]) test(`backfill preserves WAL content ${crossing ? 'when the embed marker advances during the read' : 'before embedding'}`, async () => {
+        const id         = `backfill-wal-${crossing ? 'crossing' : 'pending'}`,
+              properties = {agentIdentity: '@agent-a', userId: 'tenant-a', sessionId: id, timestamp: '2101-01-01T00:00:00.000Z'},
+              metadata   = {...properties, timestamp: Date.parse(properties.timestamp), prompt: 'pending durable prompt',
+                  response: 'pending durable response', thought: 'private fixture thought'},
+              originalCollection = StorageRouter.getMemoryCollection;
+        const {segmentKey} = await appendWalMemory({id, timestamp: metadata.timestamp, metadata,
+            document       : 'pending durable prompt and response', graphProjectionVersion: 1,
+            graphProjection: {requestIdentity: '@agent-a', memoryProperties: properties}}, {dir: testWalDir, planeId: testPlaneId});
+        await appendWalGraphProjectionMarker({id, segmentKey}, {dir: testWalDir});
+        GraphService.upsertNode({id, type: 'AGENT_MEMORY', name: id, properties});
+
+        try {
+            const before = await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'},
+                () => MemoryService.queryRecentTurns({limit: 1}));
+            expect(before.turns[0]).toMatchObject({id, summaryFallback: true});
+            expect(memStore.has(id)).toBe(false);
+            if (crossing) StorageRouter.getMemoryCollection = async () => ({get: async options => {
+                const snapshot = await (await originalCollection()).get(options);
+                memStore.set(id, metadata);
+                await appendWalEmbedMarker({id, segmentKey}, {dir: testWalDir});
+                expect(await readPendingWalRecords({dir: testWalDir, ids: [id]})).toEqual([]);
+                return snapshot
+            }});
+
+            const calls = [], result = await MemoryService.backfillMiniSummaries({limit: 1,
+                buildMiniSummary: async input => {calls.push(input); return 'summary from durable content'}});
+            expect(calls).toEqual([{prompt: metadata.prompt, response: metadata.response}]);
+            expect(result).toMatchObject({processed: 1, updated: 1, missingContent: 0, exhausted: 0});
+            const node = JSON.parse(GraphService.db.storage.db.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data);
+            expect(node.properties.archivedAt).toBeUndefined();
+            expect(node.properties.userId).toBe(properties.userId);
+
+            memStore.set(id, metadata);
+            await appendWalEmbedMarker({id, segmentKey}, {dir: testWalDir});
+            const after = await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'},
+                () => MemoryService.queryRecentTurns({limit: 1}));
+            expect(after.turns[0]).toMatchObject({id, summary: 'summary from durable content', summaryFallback: false});
+        } finally {
+            StorageRouter.getMemoryCollection = originalCollection;
+            await appendWalEmbedMarker({id, segmentKey}, {dir: testWalDir});
+            GraphService.db.storage.db.prepare('DELETE FROM Nodes WHERE id = ?').run(id);
+            GraphService.db.nodes.remove(id);
+            memStore.delete(id);
+        }
+    });
+
+    test('backfill defers without archiving when its WAL evidence cannot be read', async () => {
+        const id = 'backfill-wal-unreadable', originalRead = MemoryService._readWalMetadataByIds;
+        GraphService.upsertNode({id, type: 'AGENT_MEMORY', name: id, properties: {
+            agentIdentity: '@agent-a', userId: 'tenant-a', sessionId: id, timestamp: '2101-01-01T00:00:00.000Z'
+        }});
+        try {
+            MemoryService._readWalMetadataByIds = async (ids, options) => {
+                expect(ids).toContain(id);
+                expect(options.strict).toBe(true);
+                throw new Error('fixture WAL unavailable')
+            };
+            let   generated = false;
+            const result    = await MemoryService.backfillMiniSummaries({limit: 1,
+                buildMiniSummary: async () => {generated = true; return 'unexpected'}});
+            expect(generated).toBe(false);
+            expect(result).toMatchObject({updated: 0, deferred: 1, missingContent: 0, exhausted: 0});
+            const node = JSON.parse(GraphService.db.storage.db.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data);
+            expect(node.properties.archivedAt).toBeUndefined();
+            expect(node.properties.miniSummaryAttempts).toBeUndefined();
+        } finally {
+            MemoryService._readWalMetadataByIds = originalRead;
+            GraphService.db.storage.db.prepare('DELETE FROM Nodes WHERE id = ?').run(id);
+            GraphService.db.nodes.remove(id);
+        }
+    });
+
+    test('no-content reconciliation restores only positively witnessed own rows and is idempotent', async () => {
+        const ctx = {userId: 'repair-tenant', agentIdentityNodeId: '@repair-agent'},
+              ids = ['repair-chroma', 'repair-wal', 'repair-missing', 'repair-wrong-content-owner',
+                  'repair-content-archived', 'repair-generation-budget', 'repair-other-tenant', 'repair-other-agent'],
+              timestamp = '2102-01-01T00:00:00.000Z',
+              properties = {userId: ctx.userId, agentIdentity: ctx.agentIdentityNodeId, sessionId: 'repair-session', timestamp,
+                  archivedAt: '2102-01-02T00:00:00.000Z', archivedReason: 'no-content', miniSummaryAttempts: 2},
+              content = {...properties, timestamp: Date.parse(timestamp), prompt: 'retained repair prompt', response: 'retained repair response'};
+        delete content.archivedAt;
+        delete content.archivedReason;
+        for (const id of ids) GraphService.upsertNode({id, type: 'AGENT_MEMORY', name: id, properties: {
+            ...properties,
+            ...(id === 'repair-generation-budget' ? {archivedReason: 'generation-timeout'} : {}),
+            ...(id === 'repair-other-tenant' ? {userId: 'other-tenant'} : {}),
+            ...(id === 'repair-other-agent' ? {agentIdentity: '@other-agent'} : {})
+        }});
+        memStore.set('repair-chroma', {...content});
+        memStore.set('repair-wrong-content-owner', {...content, userId: 'other-tenant'});
+        memStore.set('repair-content-archived', {...content, archivedAt: properties.archivedAt});
+        const {segmentKey} = await appendWalMemory({id: 'repair-wal', timestamp: content.timestamp, metadata: content,
+            document: 'retained repair content'}, {dir: testWalDir, planeId: testPlaneId});
+        const read      = id => JSON.parse(GraphService.db.storage.db.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data).properties;
+        const snapshots = new Map(ids.map(id => [id, read(id)]));
+        const invoke    = apply => RequestContextService.run(ctx, () => MemoryService.reconcileNoContentArchives({ids, apply}));
+        try {
+            await expect(MemoryService.reconcileNoContentArchives({ids})).rejects.toThrow(/bound tenant/);
+            await expect(RequestContextService.run(ctx, () => MemoryService.reconcileNoContentArchives({ids: []})))
+                .rejects.toThrow(/exact memory ids/);
+            const dry = await invoke(false), statuses = Object.fromEntries(dry.results.map(row => [row.id, row.status]));
+            expect(dry.restored).toBe(0);
+            expect(statuses).toEqual({
+                'repair-chroma'             : 'eligible', 'repair-wal': 'eligible', 'repair-missing': 'no-positive-content',
+                'repair-wrong-content-owner': 'content-owner-mismatch', 'repair-content-archived': 'content-archived',
+                'repair-generation-budget'  : 'not-no-content-archive', 'repair-other-tenant': 'not-owned-or-missing',
+                'repair-other-agent'        : 'not-owned-or-missing'
+            });
+            for (const id of ids) expect(read(id).archivedAt).toBe(properties.archivedAt);
+            const applied = await invoke(true);
+            expect(applied.restored).toBe(2);
+            for (const id of ['repair-chroma', 'repair-wal']) {
+                const {archivedAt, archivedReason, ...retained} = snapshots.get(id);
+                expect(read(id)).toEqual(retained);
+            }
+            expect(memStore.get('repair-chroma')).toEqual(content);
+            for (const id of ids.slice(2)) expect(read(id).archivedAt).toBe(properties.archivedAt);
+            expect((await invoke(true)).restored).toBe(0);
+            const recent = await RequestContextService.run(ctx, () => MemoryService.queryRecentTurns({limit: 20}));
+            expect(recent.turns.map(row => row.id).sort()).toEqual(['repair-chroma', 'repair-wal']);
+        } finally {
+            await appendWalEmbedMarker({id: 'repair-wal', segmentKey}, {dir: testWalDir});
+            for (const id of ids) {
+                GraphService.db.storage.db.prepare('DELETE FROM Nodes WHERE id = ?').run(id);
+                GraphService.db.nodes.remove(id);
+                memStore.delete(id);
+            }
+        }
+    });
+
+    test('reconciliation observes late durable identity archives and changed rows, and accepts a positive source when another is unavailable', async () => {
+        const ctx                = {userId: 'repair-race-tenant', agentIdentityNodeId: '@repair-race-agent'},
+              id                 = 'repair-race', markerId = `ARCHIVED_AGENT_IDENTITY:${ctx.agentIdentityNodeId}`,
+              originalRead       = MemoryService._readWalMetadataByIds,
+              originalCollection = StorageRouter.getMemoryCollection,
+              properties         = {userId: ctx.userId, agentIdentity: ctx.agentIdentityNodeId, sessionId: 'repair-race-session',
+                  timestamp: '2102-01-01T00:00:00.000Z', archivedAt: '2102-01-02T00:00:00.000Z', archivedReason: 'no-content'},
+              payload = {userId: ctx.userId, agentIdentity: ctx.agentIdentityNodeId, prompt: 'positive raw content', response: 'kept'},
+              seed = () => GraphService.upsertNode({id, type: 'AGENT_MEMORY', name: id, properties: {...properties}}),
+              run = () => RequestContextService.run(ctx, () => MemoryService.reconcileNoContentArchives({ids: [id], apply: true}));
+        try {
+            seed();
+            StorageRouter.getMemoryCollection = async () => ({get: async () => {
+                GraphService.db.storage.db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(markerId,
+                    JSON.stringify({id: markerId, label: 'ARCHIVED_AGENT_IDENTITY', properties: {archivedAt: properties.archivedAt}}));
+                return {ids: [id], metadatas: [payload]}
+            }});
+            expect((await run()).results).toEqual([{id, status: 'identity-archived'}]);
+            GraphService.db.storage.db.prepare('DELETE FROM Nodes WHERE id = ?').run(markerId);
+
+            StorageRouter.getMemoryCollection = async () => ({get: async () => {
+                GraphService.db.storage.db.prepare("UPDATE Nodes SET data = json_set(data, '$.properties.archivedReason', 'operator') WHERE id = ?").run(id);
+                return {ids: [id], metadatas: [payload]}
+            }});
+            expect((await run()).results).toEqual([{id, status: 'changed'}]);
+
+            GraphService.db.storage.db.prepare("UPDATE Nodes SET data = json_set(data, '$.properties.archivedReason', 'no-content') WHERE id = ?").run(id);
+            StorageRouter.getMemoryCollection = async () => ({get: async () => ({ids: [id], metadatas: [payload]})});
+            MemoryService._readWalMetadataByIds = async () => {throw new Error('WAL unavailable')};
+            const positive = await run();
+            expect(positive.unavailableSources).toEqual(['wal']);
+            expect(positive.restored).toBe(1);
+        } finally {
+            StorageRouter.getMemoryCollection = originalCollection;
+            MemoryService._readWalMetadataByIds = originalRead;
+            for (const nodeId of [id, markerId]) {
+                GraphService.db.storage.db.prepare('DELETE FROM Nodes WHERE id = ?').run(nodeId);
+                GraphService.db.nodes.remove(nodeId);
+            }
+        }
+    });
+
+    test('the maintenance entry requires an explicit owner and defaults reconciliation to dry-run', async () => {
+        const {parseReconciliationArgs, runMemorySummaryTask} = await import('../../../../../../ai/scripts/lifecycle/backfill-memory-summaries.mjs'),
+              originalRepair                                  = MemoryService.reconcileNoContentArchives,
+              originalBackfill                                = MemoryService.backfillMiniSummaries;
+        expect(parseReconciliationArgs([])).toBeNull();
+        expect(() => parseReconciliationArgs(['--apply'])).toThrow(/requires/);
+        const options = parseReconciliationArgs(['--reconcile-no-content', 'one,two', '--user-id', 'tenant-cli', '--agent-identity', '@agent-cli']);
+        expect(options.apply).toBe(false);
+        try {
+            MemoryService.reconcileNoContentArchives = async input => ({...input, userId: RequestContextService.getUserId(),
+                agentIdentity: RequestContextService.getAgentIdentityNodeId()});
+            expect(await runMemorySummaryTask(options)).toEqual({ids: ['one', 'two'], apply: false,
+                userId: 'tenant-cli', agentIdentity: '@agent-cli'});
+            MemoryService.backfillMiniSummaries = async () => ({normal: true});
+            expect(await runMemorySummaryTask(null)).toEqual({normal: true});
+        } finally {
+            MemoryService.reconcileNoContentArchives = originalRepair;
+            MemoryService.backfillMiniSummaries = originalBackfill;
+        }
     });
 
     test('backfillMiniSummaries leaves provider failures retryable without aborting the batch', async () => {

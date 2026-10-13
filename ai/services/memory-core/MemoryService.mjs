@@ -1181,17 +1181,21 @@ class MemoryService extends Base {
      * @summary Reads WAL-pending payload metadata for specific memory ids (the pending-overlay).
      *
      * Backs the recency-hydration fallback: a just-written turn whose embed is still deferred (or
-     * failing) has no Chroma document yet, but its full payload sits in the WAL. Best-effort —
-     * any store error degrades to an empty map, never into the read path.
+     * failing) has no Chroma document yet, but its full payload sits in the WAL. Recency reads are
+     * best-effort; callers deciding whether content is absent use strict mode so an unreadable WAL
+     * cannot authorize an archive.
      *
      * @param {String[]} ids Memory UUIDs to look up.
+     * @param {Object} [options]
+     * @param {Boolean} [options.strict=false] Propagate WAL read failures instead of returning an empty map.
      * @returns {Promise<Map<String, Object>>} id → WAL `metadata` payload for pending records.
      */
-    async _readWalMetadataByIds(ids) {
+    async _readWalMetadataByIds(ids, {strict = false} = {}) {
         try {
             const records = await readPendingWalRecords({dir: aiConfig.memoryWal.dir, ids});
             return new Map(records.map(record => [record.id, record.metadata || {}]));
-        } catch {
+        } catch (error) {
+            if (strict) throw error;
             return new Map();
         }
     }
@@ -2215,6 +2219,102 @@ class MemoryService extends Base {
     }
 
     /**
+     * @summary Reconciles exact, owner-bound no-content archives against positive durable payload evidence.
+     *
+     * Operator maintenance only; this is not an MCP tool. Dry-run reports eligibility without clearing
+     * markers. Apply rechecks the persisted row and identity tombstone in one transaction, then clears
+     * only the graph archive fields. Raw content, ownership and summary-attempt counters are preserved.
+     * @param {Object} options
+     * @param {String[]} options.ids One to one hundred exact memory ids.
+     * @param {Boolean} [options.apply=false] Apply the eligible repairs instead of reporting them.
+     * @returns {Promise<Object>} Owner scope, per-id dispositions and repaired count; no raw content.
+     */
+    async reconcileNoContentArchives({ids, apply = false} = {}) {
+        if (!Array.isArray(ids) || ids.length < 1 || ids.length > 100 ||
+            ids.some(id => typeof id !== 'string' || !id.trim() || id !== id.trim()) || typeof apply !== 'boolean') {
+            throw new TypeError('Reconciliation requires 1–100 exact memory ids and a boolean apply flag');
+        }
+        const userId        = normalizeUserId(RequestContextService.getUserId()),
+              agentIdentity = normalizeAgentIdentityNodeId(RequestContextService.getAgentIdentityNodeId());
+        if (!userId || !agentIdentity) throw new Error('Reconciliation requires a bound tenant and agent identity');
+
+        const sqlite = GraphService.db?.storage?.db;
+        if (!sqlite) throw new Error('The graph reconciliation store is unavailable');
+        const selected  = [...new Set(ids.map(canonicalRawMemoryGraphId))],
+              readOwned = sqlite.prepare(`SELECT data FROM Nodes WHERE id = ?
+                  AND json_extract(data, '$.label') = 'AGENT_MEMORY'
+                  AND json_extract(data, '$.properties.userId') = ?
+                  AND json_extract(data, '$.properties.agentIdentity') = ?`),
+              readArchive = sqlite.prepare(`SELECT 1 FROM Nodes WHERE id = ?
+                  AND json_extract(data, '$.properties.archivedAt') IS NOT NULL
+                  AND json_extract(data, '$.properties.archivedAt') != ''`),
+              archiveId = `ARCHIVED_AGENT_IDENTITY:${agentIdentity}`,
+              results = selected.map(id => {
+                  const row = readOwned.get(id, userId, agentIdentity), properties = row && JSON.parse(row.data).properties;
+                  return {id, status: !row ? 'not-owned-or-missing' :
+                      properties.archivedAt && properties.archivedReason === 'no-content' ? 'candidate' : 'not-no-content-archive',
+                      ...(row ? {snapshot: row.data} : {})};
+              }),
+              candidates = results.filter(row => row.status === 'candidate');
+        let   walById            = new Map(), chromaById = new Map();
+        const unavailableSources = [];
+
+        if (candidates.length && !readArchive.get(archiveId)) {
+            const candidateIds = candidates.map(row => row.id);
+            try {
+                walById = await withTimeout(this._readWalMetadataByIds(candidateIds, {strict: true}),
+                    aiConfig.memoryService.chromaFetchTimeoutMs, 'no-content reconciliation WAL read');
+            } catch {
+                unavailableSources.push('wal');
+            }
+            try {
+                const collection = await withTimeout(StorageRouter.getMemoryCollection(), aiConfig.memoryService.chromaFetchTimeoutMs,
+                    'no-content reconciliation getMemoryCollection');
+                const fetched = await withTimeout(collection.get({ids: candidateIds, include: ['metadatas']}),
+                    aiConfig.memoryService.chromaFetchTimeoutMs, 'no-content reconciliation collection.get');
+                chromaById = new Map(fetched.ids.map((id, index) => [id, fetched.metadatas[index]]));
+            } catch {
+                unavailableSources.push('chroma');
+            }
+        }
+
+        const clear = sqlite.prepare(`UPDATE Nodes SET data = json_remove(data, '$.properties.archivedAt', '$.properties.archivedReason')
+            WHERE id = ? AND data = ?
+              AND json_extract(data, '$.label') = 'AGENT_MEMORY'
+              AND json_extract(data, '$.properties.userId') = ?
+              AND json_extract(data, '$.properties.agentIdentity') = ?
+              AND json_extract(data, '$.properties.archivedReason') = 'no-content'`);
+        sqlite.transaction(() => {
+            const identityArchived = Boolean(readArchive.get(archiveId));
+            for (const row of candidates) {
+                if (identityArchived) { row.status = 'identity-archived'; continue }
+                if (readOwned.get(row.id, userId, agentIdentity)?.data !== row.snapshot) { row.status = 'changed'; continue }
+                const evidence = [chromaById.get(row.id), walById.get(row.id)].filter(Boolean);
+                if (evidence.some(meta => meta.archivedAt)) { row.status = 'content-archived'; continue }
+                if (evidence.some(meta => meta.userId != null && normalizeUserId(meta.userId) !== userId ||
+                    meta.agentIdentity != null && normalizeAgentIdentityNodeId(meta.agentIdentity) !== agentIdentity)) {
+                    row.status = 'content-owner-mismatch'; continue
+                }
+                const positive = evidence.some(meta => normalizeUserId(meta.userId) === userId &&
+                    normalizeAgentIdentityNodeId(meta.agentIdentity) === agentIdentity &&
+                    [meta.prompt, meta.response].some(value => typeof value === 'string' && value.trim()));
+                if (!positive) { row.status = 'no-positive-content'; continue }
+                row.status = apply ? (clear.run(row.id, row.snapshot, userId, agentIdentity).changes ? 'restored' : 'changed') : 'eligible';
+            }
+        })();
+
+        for (const {id, status} of results) if (status === 'restored') {
+            const cached = GraphService.db.nodes.get(id);
+            if (cached?.properties) {
+                delete cached.properties.archivedAt;
+                delete cached.properties.archivedReason;
+            }
+        }
+        return {userId, agentIdentity, apply, unavailableSources, restored: results.filter(row => row.status === 'restored').length,
+            results: results.map(({id, status}) => ({id, status}))};
+    }
+
+    /**
      * @summary Backfills compact per-turn summaries for existing `AGENT_MEMORY` graph rows.
      *
      * Mirrors the inline {@link addMemory} enrichment path for pre-existing memories and for
@@ -2314,11 +2414,22 @@ class MemoryService extends Base {
 
         let byId;
         try {
+            // Snapshot before Chroma: an embed marker may retire the WAL fallback during the read.
+            const walById = await withTimeout(
+                this._readWalMetadataByIds(rows.map(row => row.id), {strict: true}),
+                aiConfig.memoryService.chromaFetchTimeoutMs,
+                'miniSummary backfill WAL read'
+            );
             const collection = await withTimeout(StorageRouter.getMemoryCollection(), aiConfig.memoryService.chromaFetchTimeoutMs, 'miniSummary backfill getMemoryCollection');
             const fetched    = await withTimeout(collection.get({ids: rows.map(row => row.id), include: ['metadatas']}), aiConfig.memoryService.chromaFetchTimeoutMs, 'miniSummary backfill collection.get');
             byId             = new Map((fetched.ids || []).map((id, index) => [id, fetched.metadatas?.[index] || {}]));
+
+            for (const [id, metadata] of walById) {
+                const stored = byId.get(id);
+                if (!stored?.prompt && !stored?.response) byId.set(id, metadata);
+            }
         } catch (error) {
-            logger.warn(`[MemoryService] miniSummary backfill deferred the whole batch (content store unreachable, fail-soft): ${error.message}`);
+            logger.warn(`[MemoryService] miniSummary backfill deferred the whole batch (durable content unavailable, fail-soft): ${error.message}`);
             // Both branch counters stay 0: the content store was unreachable, so no generation was
             // attempted. Attributing these rows to either branch would report generation timeouts that
             // never happened and steer an adaptive consumer toward widening a window that is not the fault.
