@@ -10,17 +10,19 @@ import {
     MODEL_OK,
     decideSeatModelGuard,
     modelFamily,
+    accountSharedWithAnotherSeat,
     readLastRunModel,
-    readSessionModel,
+    readSessionRecord,
     resolveUserDataDir,
     runSeatModelGuard
 } from '../../../../../../../ai/scripts/lifecycle/hooks/claude/seatModelGuardHook.mjs';
 
 /**
  * The Claude Desktop seat model guard (`seatModelGuardHook.mjs`): a prompt is blocked while the
- * session's model family differs from the family the seat last ran, `model-ok` runs it on purpose, and
- * every missing or unexpected input fails open. Records follow the app's session-record shape; ids are
- * synthetic.
+ * session's model family differs from the family the seat last ran, but only on an account another seat
+ * shares; `model-ok` runs it on purpose, and every missing or unexpected input fails open. Seats follow
+ * Fleet's `<agentsRoot>/<agentId>/harness/claude-desktop` layout, records the app's session-record
+ * shape; ids are synthetic.
  */
 
 const
@@ -31,18 +33,30 @@ const
     APP_VERSION = '2.37337.1';
 
 /**
- * @summary Builds a fake Desktop user-data dir holding one session record, and the env Desktop gives its CLI.
- * @param {Object} [record] The record's fields; `null` writes no record.
+ * @summary Builds a fake seat in Fleet's layout holding one session record, and the env Desktop gives its CLI.
+ * @param {Object|null} [record]  The record's fields; `null` writes no record.
+ * @param {Object}      [options]
+ * @param {String|null} [options.partnerAccount='account-uuid'] The account folder a second seat has
+ * sessions under; the default shares this seat's account, `null` adds no second seat.
+ * @param {Boolean}     [options.fleetLayout=true] `false` places the user-data dir outside Fleet's layout.
  * @returns {{userData: String, env: Object}}
  */
-function seat(record = {model: 'claude-fable-5-1', cliSessionId: SESSION_ID}) {
-    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-model-guard-'));
+function seat(record = {model: 'claude-fable-5-1', cliSessionId: SESSION_ID}, {partnerAccount = 'account-uuid', fleetLayout = true} = {}) {
+    const
+        agentsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-model-guard-')),
+        userData   = fleetLayout ? path.join(agentsRoot, 'neo-opus-a', 'harness', 'claude-desktop') : path.join(agentsRoot, 'profile');
+
+    fs.mkdirSync(userData, {recursive: true});
 
     if (record) {
         const dir = path.join(userData, 'claude-code-sessions', 'account-uuid', 'scope-uuid');
 
         fs.mkdirSync(dir, {recursive: true});
         fs.writeFileSync(path.join(dir, `${HOST_ID}.json`), JSON.stringify({sessionId: HOST_ID, title: 'x', ...record}))
+    }
+
+    if (partnerAccount) {
+        fs.mkdirSync(path.join(agentsRoot, 'neo-fable-b', 'harness', 'claude-desktop', 'claude-code-sessions', partnerAccount), {recursive: true})
     }
 
     return {
@@ -102,15 +116,39 @@ test('the user-data dir comes from the bundled CLI path; anything else fails ope
 test('the record counts only when its cliSessionId joins the hook session and its id is a host session id', () => {
     const {userData} = seat();
 
-    expect(readSessionModel(userData, HOST_ID, SESSION_ID)).toBe('claude-fable-5-1');
-    expect(readSessionModel(userData, HOST_ID, 'another-session')).toBeNull();
-    expect(readSessionModel(userData, '../../etc/passwd', SESSION_ID)).toBeNull();
-    expect(readSessionModel(userData, undefined, SESSION_ID)).toBeNull();
-    expect(readSessionModel(seat(null).userData, HOST_ID, SESSION_ID)).toBeNull();
+    expect(readSessionRecord(userData, HOST_ID, SESSION_ID)).toEqual({model: 'claude-fable-5-1', account: 'account-uuid'});
+    expect(readSessionRecord(userData, HOST_ID, 'another-session')).toBeNull();
+    expect(readSessionRecord(userData, '../../etc/passwd', SESSION_ID)).toBeNull();
+    expect(readSessionRecord(userData, undefined, SESSION_ID)).toBeNull();
+    expect(readSessionRecord(seat(null).userData, HOST_ID, SESSION_ID)).toBeNull();
 
     const broken = seat();
     fs.writeFileSync(path.join(broken.userData, 'claude-code-sessions', 'account-uuid', 'scope-uuid', `${HOST_ID}.json`), '{not json');
-    expect(readSessionModel(broken.userData, HOST_ID, SESSION_ID)).toBeNull()
+    expect(readSessionRecord(broken.userData, HOST_ID, SESSION_ID)).toBeNull()
+});
+
+test('an account no other seat uses never blocks: every family change there is a deliberate switch', () => {
+    const solo = seat(undefined, {partnerAccount: null});
+    lastRun(solo.userData, 'claude-opus-5-5');
+    expect(accountSharedWithAnotherSeat(solo.userData, 'account-uuid')).toBe(false);
+    expect(runSeatModelGuard('prompt', prompt('weekly switch to fable'), solo.env)).toBe(0);
+
+    const otherAccount = seat(undefined, {partnerAccount: 'another-account'});
+    lastRun(otherAccount.userData, 'claude-opus-5-5');
+    expect(runSeatModelGuard('prompt', prompt('partner is on another account'), otherAccount.env)).toBe(0);
+
+    const shared = seat();
+    lastRun(shared.userData, 'claude-opus-5-5');
+    expect(accountSharedWithAnotherSeat(shared.userData, 'account-uuid')).toBe(true);
+    expect(runSeatModelGuard('prompt', prompt('the partner picked fable'), shared.env)).toBe(2)
+});
+
+test('outside Fleet\'s seat layout the sharing check fails open', () => {
+    const {userData, env} = seat(undefined, {fleetLayout: false});
+    lastRun(userData, 'claude-opus-5-5');
+
+    expect(accountSharedWithAnotherSeat(userData, 'account-uuid')).toBe(false);
+    expect(runSeatModelGuard('prompt', prompt('unknown layout'), env)).toBe(0)
 });
 
 test('stop records the last real assistant model and skips synthetic ones', () => {
