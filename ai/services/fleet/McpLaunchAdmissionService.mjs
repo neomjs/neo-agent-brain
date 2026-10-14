@@ -10,12 +10,12 @@ import {
     LAUNCH_ADMISSION_STATES   as STATES,
     isLaunchAdmissionProofReason
 }                                 from '../../../src/fleet/contract/launchAdmission.mjs';
-import {mcpCatalogFor, resolveMcpMatrix}              from '../../../src/fleet/contract/mcpServers.mjs';
-import {launchRowEnvNames}                            from './managedAgentWorkspacePlan.mjs';
-import {openLaunchAdmissionJournal}                   from './launchAdmissionJournal.mjs';
-import {isRuntimeGenerationPin, runtimeGenerationPin} from './runtimeGeneration.mjs';
-import {isSeatRuntimeSnapshot}                        from './seatRuntimeRecord.mjs';
-import {isLaunchCredentialBinding}                    from './launchCredentialOwners.mjs';
+import {mcpCatalogFor, resolveMcpMatrix}                 from '../../../src/fleet/contract/mcpServers.mjs';
+import {launchRowEnvNames}                               from './managedAgentWorkspacePlan.mjs';
+import {openLaunchAdmissionJournal}                      from './launchAdmissionJournal.mjs';
+import {isRuntimeGenerationPin, runtimeGenerationPin}    from './runtimeGeneration.mjs';
+import {isSeatRuntimeSnapshot}                           from './seatRuntimeRecord.mjs';
+import {isLaunchCredentialBinding, isResidentMcpBinding} from './launchCredentialOwners.mjs';
 import {
     LAUNCH_ADMISSION_MAX_BYTES,
     LAUNCH_ADMISSION_PATH,
@@ -181,7 +181,7 @@ class McpLaunchAdmissionService extends Base {
         if (typeof readSeatStarts !== 'function') throw new TypeError('Seat Start projection must be a function.');
         this.readSeatStarts = readSeatStarts;
         this.journal = openLaunchAdmissionJournal({
-            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 5, generations: [], seats: []}
+            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 6, generations: [], seats: []}
         });
         return this.journal.previous
     }
@@ -194,7 +194,7 @@ class McpLaunchAdmissionService extends Base {
      */
     admissionSnapshot() {
         return {
-            version    : 5,
+            version    : 6,
             seats      : this.readSeatStarts ? this.readSeatStarts() : [],
             generations: [...this.generations.values()].map(generation => ({
                 id                : generation.id, agentId: generation.agentId, identity: generation.identity,
@@ -203,6 +203,7 @@ class McpLaunchAdmissionService extends Base {
                 definitionHash    : crypto.createHash('sha256').update(canonicalJson(generation.definition)).digest('hex'),
                 runtime           : generation.runtime ? {...generation.runtime} : null,
                 credentialBindings: structuredClone(generation.credentialBindings),
+                residentBindings  : structuredClone(generation.residentBindings),
                 servers           : [...generation.servers.values()].map(server => ({
                     key           : server.key, grantId: server.grantId, state: server.state, reason: server.reason,
                     capabilityHash: crypto.createHash('sha256').update(`${server.grantId}.${server.secret}`).digest('hex')
@@ -291,6 +292,8 @@ class McpLaunchAdmissionService extends Base {
                 servers           : new Map(),
                 owners            : {},
                 credentialBindings: {},
+                residentInputs    : {},
+                residentBindings  : {},
                 proofs            : new Map(),
                 probe             : null,
                 waiters           : new Set(),
@@ -308,7 +311,8 @@ class McpLaunchAdmissionService extends Base {
 
             const grant = mintLaunchGrant();
 
-            generation.servers.set(key, {key, grantId: grant.id, secret: grant.secret, state: STATES.RESERVED, reason: null, args: null, env: null, owned: []});
+            generation.servers.set(key, {key, grantId: grant.id, secret: grant.secret, state: STATES.RESERVED, reason: null,
+                args: null, env: null, owned: [], resident: [], required: []});
             this.grants.set(grant.id, {generation, key});
             grants[key] = grant.capability
         }
@@ -352,11 +356,12 @@ class McpLaunchAdmissionService extends Base {
      *     the name its value goes under: `{credential, resolve, prove}`, where `credential` is a
      *     `LAUNCH_ADMISSION_CREDENTIALS` value, `resolve()` returns what the owner holds now, and
      *     `prove(value, {signal})` answers `{verdict, reason}`. Legacy `{ok}` answers remain supported.
+     * @param {Object} [options.residentInputs] Original resolved-config owners keyed by resident server.
      * @param {Function} options.probe `() => 'live'|'gone'|'unknown'`, whether the launched process is still
      *     the seat: the lifecycle's own process proof.
      * @returns {Object} The seat's admission status ({@link statusOf}).
      */
-    activate({generation: id, agentId, plan, env, owners = {}, probe}) {
+    activate({generation: id, agentId, plan, env, owners = {}, residentInputs = {}, probe}) {
         const generation = this.generations.get(agentId);
 
         if (generation?.id !== id || generation.state !== STATES.RESERVED) return this.statusOf(agentId);
@@ -375,6 +380,16 @@ class McpLaunchAdmissionService extends Base {
                     throw new Error('Launch admission credential binding is invalid.');
                 }
                 credentialBindings[name] = structuredClone(owner.binding);
+            }
+        }
+
+        const residentBindings = {};
+        for (const [key, input] of Object.entries(residentInputs)) {
+            if (!plan.some(row => row.key === key && row.enabled && row.target === 'resident') ||
+                !isResidentMcpBinding(input.binding) || input.binding.server !== key ||
+                !Array.isArray(input.names) || new Set(input.names).size !== input.names.length ||
+                !input.names.every(isAdmissibleEnvName) || typeof input.read !== 'function' || typeof input.matches !== 'function') {
+                throw new Error('Launch admission resident input binding is invalid.');
             }
         }
 
@@ -399,7 +414,11 @@ class McpLaunchAdmissionService extends Base {
             }
 
             server.owned = owned;
-            server.env   = Object.fromEntries(held.map(name => [name, env[name]]));
+            const resident = row.target === 'resident' ? residentInputs[server.key] : null;
+            server.resident = resident ? held.filter(name => resident.names.includes(name)) : [];
+            server.required = names.required;
+            if (resident) residentBindings[server.key] = {binding: structuredClone(resident.binding), names: [...server.resident]};
+            server.env   = Object.fromEntries(held.filter(name => !server.resident.includes(name)).map(name => [name, env[name]]));
             server.args  = row.target === 'tenant'
                 ? [path.join(row.sourceRoot, BRIDGE_ENTRYPOINT), '--url', row.url, '--token-env', row.credentialEnvVar]
                 : [...row.args];
@@ -407,7 +426,7 @@ class McpLaunchAdmissionService extends Base {
         }
 
         Object.assign(generation, {state: STATES.ACTIVE, activatedAt: new Date().toISOString(), generationRoot,
-            credentialBindings, owners: {...owners}, probe});
+            credentialBindings, residentBindings, residentInputs: {...residentInputs}, owners: {...owners}, probe});
         this.persistAdmission();
         this.releaseStartSignal(generation);
         this.settle(generation);
@@ -436,7 +455,7 @@ class McpLaunchAdmissionService extends Base {
         if (!generation || (id && generation.id !== id) || generation.state === STATES.REVOKED) return false;
 
         this.releaseStartSignal(generation);
-        Object.assign(generation, {state: STATES.REVOKED, reason, revokedAt: new Date().toISOString(), probe: null, owners: {}});
+        Object.assign(generation, {state: STATES.REVOKED, reason, revokedAt: new Date().toISOString(), probe: null, owners: {}, residentInputs: {}});
         generation.proofs.clear();
         generation.servers.forEach(server => revokeServer(server, server.state === STATES.REVOKED ? server.reason : reason));
         this.persistAdmission();
@@ -583,6 +602,15 @@ class McpLaunchAdmissionService extends Base {
 
         if (revoked()) return refuse(REFUSALS.REVOKED, server.reason ?? generation.reason);
 
+        const resident         = generation.residentInputs[server.key];
+        const residentSnapshot = resident ? resident.read() : {};
+        if (residentSnapshot === null) return refuse(REFUSALS.CREDENTIAL_UNPROVEN);
+        if (server.resident.some(name => server.required.includes(name) && typeof residentSnapshot[name] !== 'string')) {
+            return refuse(REFUSALS.CREDENTIAL_MISSING);
+        }
+        const residentEnv = Object.fromEntries(server.resident.filter(name => typeof residentSnapshot[name] === 'string')
+            .map(name => [name, residentSnapshot[name]]));
+
         const
             owners      = server.owned.map(name => generation.owners[name]),
             credentials = server.owned.map((name, index) => readOwner(owners[index])),
@@ -593,6 +621,7 @@ class McpLaunchAdmissionService extends Base {
         const proofs = await Promise.all(server.owned.map((name, index) => this.prove(generation, name, credentials[index])));
         if (this.journalFailed) return refuse(REFUSALS.ISSUER_UNAVAILABLE, REASONS.DURABILITY_FAILED);
         if (revoked()) return refuse(REFUSALS.REVOKED, server.reason ?? generation.reason);
+        if (resident && !resident.matches()) return refuse(REFUSALS.CREDENTIAL_UNPROVEN);
 
         // A definite refusal wins over a concurrent unavailable proof; neither retires the generation.
         const failed  = proofs.findIndex(proof => proof.verdict === 'refused'),
@@ -621,7 +650,7 @@ class McpLaunchAdmissionService extends Base {
         return answer({
             outcome       : OUTCOMES.ADMITTED,
             generationRoot: generation.generationRoot,
-            env           : {...server.env, ...Object.fromEntries(server.owned.map((name, index) => [name, credentials[index]]))},
+            env           : {...server.env, ...residentEnv, ...Object.fromEntries(server.owned.map((name, index) => [name, credentials[index]]))},
             args          : [...server.args]
         })
     }
@@ -835,16 +864,20 @@ function isAdmissionSnapshot(value) {
     const unique    = (rows, key) => new Set(rows.map(row => row[key])).size === rows.length;
     const phase     = row => Object.values(STATES).includes(row.state) &&
         (row.reason === null || Object.values(REASONS).includes(row.reason));
-    return exact(value, ['version', 'generations', 'seats']) && value.version === 5 && Array.isArray(value.generations) &&
+    return exact(value, ['version', 'generations', 'seats']) && value.version === 6 && Array.isArray(value.generations) &&
         Array.isArray(value.seats) && value.seats.every(isSeatRuntimeSnapshot) &&
         new Set(value.seats.map(row => row.start.agentId)).size === value.seats.length &&
         value.generations.every(row => exact(row, [
-            'id', 'agentId', 'identity', 'state', 'reason', 'reservedAt', 'activatedAt', 'revokedAt', 'definitionHash', 'runtime', 'credentialBindings', 'servers'
+            'id', 'agentId', 'identity', 'state', 'reason', 'reservedAt', 'activatedAt', 'revokedAt', 'definitionHash', 'runtime', 'credentialBindings', 'residentBindings', 'servers'
         ]) && text(row.id) && text(row.agentId) && isLaunchIdentity(row.identity) && phase(row) && hash(row.definitionHash) &&
             (row.runtime === null || isRuntimeGenerationPin(row.runtime)) &&
             row.credentialBindings && typeof row.credentialBindings === 'object' && !Array.isArray(row.credentialBindings) &&
             Object.entries(row.credentialBindings).every(([name, binding]) => isAdmissibleEnvName(name) &&
                 isLaunchCredentialBinding(binding) && binding.agentId === row.agentId && binding.identity === row.identity) &&
+            row.residentBindings && typeof row.residentBindings === 'object' && !Array.isArray(row.residentBindings) &&
+            Object.entries(row.residentBindings).every(([key, source]) => exact(source, ['binding', 'names']) &&
+                isResidentMcpBinding(source.binding) && source.binding.server === key && Array.isArray(source.names) &&
+                source.names.every(isAdmissibleEnvName) && new Set(source.names).size === source.names.length) &&
             ['reservedAt', 'activatedAt', 'revokedAt'].every(key => timestamp(row[key])) && Array.isArray(row.servers) &&
             row.servers.every(server => exact(server, ['key', 'grantId', 'state', 'reason', 'capabilityHash']) &&
                 text(server.key) && text(server.grantId) && phase(server) && hash(server.capabilityHash)) &&

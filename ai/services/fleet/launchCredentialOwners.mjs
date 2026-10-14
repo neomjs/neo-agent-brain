@@ -1,7 +1,9 @@
 import fs                                            from 'node:fs';
 import path                                          from 'node:path';
 import {isDeepStrictEqual}                           from 'node:util';
-import {isLaunchIdentity}                            from './mcpLaunchAdmission.mjs';
+import {isAdmissibleEnvName, isLaunchIdentity}       from './mcpLaunchAdmission.mjs';
+import {MCP_SERVERS}                                 from '../../../src/fleet/contract/mcpServers.mjs';
+import {isOpaquePlaneId}                             from '../../planeConfig.mjs';
 import {proveSeatForgeAccount}                       from './seatGitIdentity.mjs';
 import {LAUNCH_ADMISSION_CREDENTIALS as CREDENTIALS} from '../../../src/fleet/contract/launchAdmission.mjs';
 
@@ -15,6 +17,44 @@ const exact = (value, keys) => value && typeof value === 'object' && !Array.isAr
     Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 const text  = value => typeof value === 'string' && value.length > 0 && value.length <= 4096 && !value.includes('\0');
 const plane = value => exact(value, ['id', 'dataRoot']) && text(value.id) && text(value.dataRoot);
+
+/** @summary Closed selection for an existing resolved server config; exported values never belong here. */
+export function isResidentMcpBinding(value) {
+    if (!(exact(value, ['version', 'kind', 'server', 'plane', 'providers']) && value.version === 1 &&
+        value.kind === 'resident-config' && MCP_SERVERS.some(row => row.key === value.server) && plane(value.plane) &&
+        isOpaquePlaneId(value.plane.id) && path.isAbsolute(value.plane.dataRoot) &&
+        exact(value.providers, ['model', 'embedding', 'ask']))) return false;
+    const usesProvider = ['memory-core', 'knowledge-base'].includes(value.server);
+    return Object.entries(value.providers).every(([key, provider]) =>
+        (key === 'ask' ? value.server === 'knowledge-base' : usesProvider)
+            ? ['gemini', 'openAiCompatible', 'ollama'].includes(provider) : provider === null);
+}
+
+/**
+ * @summary Bind current exports to the original server/plane/provider selection and slot inventory.
+ * The reader is the existing config owner. Values stay transient; newly present names are excluded.
+ * @param {Object} options
+ * @param {Object} options.binding Original classified metadata.
+ * @param {String[]} options.names Names present in the original export.
+ * @param {Function} options.read Returns `{binding, env}` from the resolved config export.
+ * @returns {Object} Non-secret metadata and live read/match callbacks.
+ */
+export function createResidentMcpInputOwner({binding, names, read}) {
+    if (!isResidentMcpBinding(binding) || !Array.isArray(names) || new Set(names).size !== names.length ||
+        !names.every(isAdmissibleEnvName) || typeof read !== 'function') throw new Error('Resident MCP input binding is invalid.');
+    const expected = structuredClone(binding), selected = [...names];
+    Object.freeze(expected.plane); Object.freeze(expected.providers); Object.freeze(expected); Object.freeze(selected);
+    const snapshot = () => {
+        try {
+            const current = read();
+            if (!isResidentMcpBinding(current?.binding) || !isDeepStrictEqual(current.binding, expected) ||
+                !current.env || typeof current.env !== 'object' || Array.isArray(current.env)) return null;
+            return Object.fromEntries(selected.filter(name => Object.hasOwn(current.env, name) &&
+                typeof current.env[name] === 'string').map(name => [name, current.env[name]]));
+        } catch { return null }
+    };
+    return {binding: expected, names: selected, read: snapshot, matches: () => snapshot() !== null};
+}
 
 /** @summary Validate a non-secret endpoint without accepting URL-embedded credentials or query tokens. */
 function endpoint(value) {

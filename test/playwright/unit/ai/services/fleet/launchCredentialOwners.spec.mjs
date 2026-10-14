@@ -3,7 +3,7 @@ import fs             from 'node:fs';
 import os             from 'node:os';
 import path           from 'node:path';
 import {createSeatPatOwner, createSeatPlaneOwner, createTenantBearerOwner, isLaunchCredentialBinding,
-    restoreLaunchCredentialOwner, servedPlaneBinding} from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
+    restoreLaunchCredentialOwner, servedPlaneBinding, createResidentMcpInputOwner, isResidentMcpBinding} from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
 
 let root;
 test.beforeEach(() => { root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'credential-owner-'))); });
@@ -95,4 +95,21 @@ test('incomplete or secret-bearing metadata never becomes recovery authority', (
     expect(isLaunchCredentialBinding({...owner.binding, endpoint: 'https://user:secret@plane.example.test'})).toBe(false);
     expect(servedPlaneBinding({resources: {'memory-core': {plane: state.plane}, 'knowledge-base': {plane: {...state.plane}}}})).toEqual(state.plane);
     expect(servedPlaneBinding({resources: {'memory-core': {plane: state.plane}, 'knowledge-base': {plane: {id: 'other', dataRoot: '/data'}}}})).toBeNull();
+});
+
+test('resident inputs rotate within the original config owner without gaining previously absent slots', () => {
+    const binding = {version: 1, kind: 'resident-config', server: 'memory-core', plane: {id: 'plane-a', dataRoot: root},
+        providers: {model: 'openAiCompatible', embedding: 'openAiCompatible', ask: null}};
+    const current = {binding: structuredClone(binding), env: {NEO_OPENAI_COMPATIBLE_API_KEY: 'original-key'}};
+    const owner   = createResidentMcpInputOwner({binding, names: Object.keys(current.env), read: () => current});
+    expect(owner.read()).toEqual(current.env);
+    current.env.NEO_OPENAI_COMPATIBLE_API_KEY = 'rotated-key';
+    current.env.GEMINI_API_KEY = 'newly-present-key';
+    expect(owner.read()).toEqual({NEO_OPENAI_COMPATIBLE_API_KEY: 'rotated-key'});
+    expect(JSON.stringify({binding: owner.binding, names: owner.names})).not.toMatch(/original-key|rotated-key/);
+    current.binding.providers.model = 'gemini';
+    expect(owner.read()).toBeNull();
+    current.binding = {...binding, plane: {...binding.plane, id: 'other-plane'}};
+    expect(owner.matches()).toBe(false);
+    expect(isResidentMcpBinding({...binding, env: current.env})).toBe(false);
 });

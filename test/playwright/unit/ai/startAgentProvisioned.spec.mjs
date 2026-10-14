@@ -119,10 +119,11 @@ function makeLifecycle({
             return {harnessType: args.agent.harnessType, inspected: true}
         },
         resolveResidentMcpEnvironment: () => ({}),
-        setRepoOutcomes              : (id, repos, launch) => { calls.repoOutcomes.push({id, repos, launch}); return true },
-        setPendingDependencies       : (id, signal, rows) => { calls.pendingDependencies.push({id, signal, rows}); return true },
-        setGitIdentity               : (id, gitIdentity) => { calls.gitIdentity.push({id, gitIdentity}); return true },
-        start                        : (id, opts) => { events?.push('start'); calls.start.push({id, opts}); return {id, running: true, state: 'running', cwd: opts?.cwd, pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}; }
+        captureResidentMcpInputs(agent, options) { return {environment: this.resolveResidentMcpEnvironment(agent, options), owners: {}}; },
+        setRepoOutcomes       : (id, repos, launch) => { calls.repoOutcomes.push({id, repos, launch}); return true },
+        setPendingDependencies: (id, signal, rows) => { calls.pendingDependencies.push({id, signal, rows}); return true },
+        setGitIdentity        : (id, gitIdentity) => { calls.gitIdentity.push({id, gitIdentity}); return true },
+        start                 : (id, opts) => { events?.push('start'); calls.start.push({id, opts}); return {id, running: true, state: 'running', cwd: opts?.cwd, pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}; }
     };
 }
 
@@ -1113,6 +1114,8 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             const lifecycle  = makeLifecycle({agents}), ensure = makeEnsureRepo(), prepare = makePrepareWorkspace();
             const generation = {runtimeRoot: '/generations/one/organism', executable: '/generations/one/host'};
             lifecycle.installedRuntime = {...generation, generation};
+            const inputOwners = {'neural-link': {binding: {kind: 'fixture'}, read: () => ({})}};
+            lifecycle.captureResidentMcpInputs = () => ({environment: {}, owners: inputOwners});
             const tenantService = makeTenantService({readiness: {ok: true, resources: {
                 'memory-core': {ok: true, identity: '@seat', plane}, 'knowledge-base': {ok: true, plane: kbPlane}
             }}});
@@ -1120,6 +1123,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                 managedRoot: '/managed', ensureRepo: ensure, prepareWorkspace: prepare});
             if (kbPlane?.id === plane.id) {
                 await start;
+                expect(lifecycle.calls.start[0].opts.launchAdmission.residentInputs).toBe(inputOwners);
                 expect(lifecycle.calls.start[0].opts.launchAdmission.owners.plane.binding).toMatchObject({
                     kind    : 'tenant-bearer', agentId: 'seat', identity: 'seat', tenantId: 'tenant-a',
                     endpoint: 'https://tenant.example.com', plane

@@ -26,11 +26,11 @@ import {fileURLToPath}                               from 'node:url';
 import Neo                                           from 'neo.mjs/src/Neo.mjs';
 import * as core                                     from 'neo.mjs/src/core/_export.mjs';
 
-import McpLaunchAdmissionService         from '../../../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
-import FleetTenantService                from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
-import {writeFileAtomicSync}             from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
-import {createSeatPatOwner}              from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
-import {createManagedAgentWorkspacePlan} from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
+import McpLaunchAdmissionService                         from '../../../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
+import FleetTenantService                                from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
+import {writeFileAtomicSync}                             from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
+import {createSeatPatOwner, createResidentMcpInputOwner} from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
+import {createManagedAgentWorkspacePlan}                 from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {
     LAUNCH_ADMISSION_PATH,
     createLaunchRequest,
@@ -119,10 +119,10 @@ function makeRegistry() {
 }
 
 /** @summary Reserve and activate a seat whose process the probe reports. */
-async function activeSeat({definition = seatDefinition(), registry = null, probe = () => 'live', plan = boundPlan(), env = START_ENV, owners = makeOwners().owners} = {}) {
+async function activeSeat({definition = seatDefinition(), registry = null, probe = () => 'live', plan = boundPlan(), env = START_ENV, owners = makeOwners().owners, residentInputs = {}} = {}) {
     const reservation = await service.reserve({agent: definition, registry});
 
-    service.activate({generation: reservation.generation, agentId: definition.id, plan, env, owners, probe});
+    service.activate({generation: reservation.generation, agentId: definition.id, plan, env, owners, residentInputs, probe});
 
     return reservation
 }
@@ -170,6 +170,40 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
             .toThrow(/snapshot-invalid/);
     });
 
+    test('resident redemption follows original config selection, current values and original absence without a held fallback', async () => {
+        service.openJournal({directory});
+        const binding = {version: 1, kind: 'resident-config', server: 'memory-core',
+            plane    : {id: 'original-plane', dataRoot: directory},
+            providers: {model: 'openAiCompatible', embedding: 'openAiCompatible', ask: null}};
+        const current = {binding: structuredClone(binding), env: {NEO_OPENAI_COMPATIBLE_API_KEY: 'current-fixture-key'}};
+        const input   = createResidentMcpInputOwner({binding, names: Object.keys(current.env), read: () => current});
+        const plan    = boundPlan().map(row => row.key === 'memory-core' ? {...row, target: 'resident', transport: 'stdio',
+            args              : [path.join(row.sourceRoot, row.entrypoint)],
+            requiredRuntimeEnv: [...row.requiredRuntimeEnv, 'NEO_OPENAI_COMPATIBLE_API_KEY']} : row);
+        const reservation = await activeSeat({plan, env: {...START_ENV, NEO_OPENAI_COMPATIBLE_API_KEY: 'old-fixture-key'},
+            residentInputs: {'memory-core': input}});
+        current.env.NEO_OPENAI_COMPATIBLE_API_KEY = 'rotated-fixture-key';
+        current.env.GEMINI_API_KEY = 'newly-present-fixture-key';
+        const answer = await redeem(reservation.grants['memory-core'], {server: 'memory-core'});
+        expect(answer).toMatchObject({outcome: 'admitted', env: {NEO_OPENAI_COMPATIBLE_API_KEY: 'rotated-fixture-key'}});
+        expect(answer.env).not.toHaveProperty('GEMINI_API_KEY');
+        expect(service.generations.get('seat').servers.get('memory-core').env).not.toHaveProperty('NEO_OPENAI_COMPATIBLE_API_KEY');
+        const file = path.join(directory, 'issuer.json'), snapshot = fs.readJsonSync(file).snapshot;
+        expect(snapshot.generations[0].residentBindings['memory-core']).toEqual({binding, names: ['NEO_OPENAI_COMPATIBLE_API_KEY']});
+        expect(fs.readFileSync(file, 'utf8')).not.toContain('fixture-key');
+        delete current.env.NEO_OPENAI_COMPATIBLE_API_KEY;
+        expect(await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).toMatchObject({code: 'credential-missing'});
+        current.env.NEO_OPENAI_COMPATIBLE_API_KEY = 'restored-fixture-key';
+        const pending = redeem(reservation.grants['memory-core'], {server: 'memory-core'});
+        current.binding.providers.model = 'gemini';
+        expect(await pending).toMatchObject({code: 'credential-unproven'});
+        service.revoke('seat', 'stop-requested');
+        expect(service.generations.get('seat').residentInputs).toEqual({});
+        expect(fs.readJsonSync(file).snapshot.generations[0].residentBindings).toEqual(snapshot.generations[0].residentBindings);
+        snapshot.generations[0].residentBindings['memory-core'].binding.env = {GEMINI_API_KEY: 'secret'};
+        expect(() => service.journal.write(snapshot)).toThrow(/snapshot-invalid/);
+    });
+
     test('original credential ownership survives revocation without persisting credential values', async () => {
         service.openJournal({directory});
         const agent = seatDefinition(), registry = {getDataDir: () => directory,
@@ -211,7 +245,7 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
             expect(service.statusOf(letter).recent.at(-1).generationRoot).toBe(runtime.runtimeRoot);
         }
         const snapshot = fs.readJsonSync(path.join(directory, 'issuer.json')).snapshot;
-        expect(snapshot.version).toBe(5);
+        expect(snapshot.version).toBe(6);
         expect(snapshot.generations.map(row => row.runtime.id)).toEqual(['a'.repeat(64), 'b'.repeat(64)]);
         expect(snapshot.generations.every(row => row.state === 'active')).toBe(true);
         const extraSecret = structuredClone(snapshot);

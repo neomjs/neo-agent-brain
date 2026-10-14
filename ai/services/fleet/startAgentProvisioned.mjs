@@ -354,7 +354,8 @@ async function provisionAgent({
 
     // Resolve the resident child envelope and seat PAT before any checkout/config mutation.
     // The same resolved envelope names the rendered slots and supplies the eventual spawn.
-    const resolvedResidentMcpEnv = lifecycleService.resolveResidentMcpEnvironment(agent, {remote});
+    const residentInputs         = installedRuntime && desktopRows ? lifecycleService.captureResidentMcpInputs(agent, {remote}) : null;
+    const resolvedResidentMcpEnv = residentInputs?.environment ?? lifecycleService.resolveResidentMcpEnvironment(agent, {remote});
     const patOwner               = desktopRows ? createSeatPatOwner({registry, agent, proveForgeAccount}) : null;
     const resolvedCredential     = registry.resolveCredential(agentId);
 
@@ -692,6 +693,7 @@ async function provisionAgent({
                     generation: reservation.generation,
                     plan      : prepared.mcpPlan,
                     ...(prepared.launchAdmissionBinding ? {profile: prepared.launchAdmissionBinding} : {}),
+                    ...(residentInputs ? {residentInputs: residentInputs.owners} : {}),
                     owners    : {
                         pat: patOwner,
                         ...(planeOwner ? {plane: planeOwner} : {})

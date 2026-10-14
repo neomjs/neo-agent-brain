@@ -30,6 +30,8 @@ import {runtimeGenerationPin}                                                   
 import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot} from './seatRuntimeRecord.mjs';
 import {writeFileAtomicSync}                                                    from '../shared/atomicFileWrite.mjs';
 
+import {createResidentMcpInputOwner} from './launchCredentialOwners.mjs';
+
 // Reserve the Neural Link policy slot against credential collisions and launch-metadata overrides.
 // Fleet does not impose a projection; explicitly restricted NL servers own their own ceiling.
 const TOOL_PROJECTION_MODE_ENV_VAR = 'NEO_NL_TOOL_PROJECTION_MODE';
@@ -1092,12 +1094,13 @@ class FleetLifecycleService extends Base {
             // Activation follows the lease and original process/runtime binding publication.
             if (survivesFleetExit && opts.launchAdmission) {
                 this.getLaunchAdmission().activate({
-                    generation: opts.launchAdmission.generation,
-                    agentId   : id,
-                    plan      : opts.launchAdmission.plan,
-                    env       : Object.fromEntries(Object.entries(env).filter(([name]) => !Object.hasOwn(slots, name))),
-                    owners    : Object.fromEntries(Object.entries(slots).filter(([, owner]) => owner)),
-                    probe     : () => this.probeSeat(record)
+                    generation    : opts.launchAdmission.generation,
+                    agentId       : id,
+                    plan          : opts.launchAdmission.plan,
+                    env           : Object.fromEntries(Object.entries(env).filter(([name]) => !Object.hasOwn(slots, name))),
+                    owners        : Object.fromEntries(Object.entries(slots).filter(([, owner]) => owner)),
+                    residentInputs: opts.launchAdmission.residentInputs ?? {},
+                    probe         : () => this.probeSeat(record)
                 })
             }
         } catch (error) {
@@ -2454,35 +2457,61 @@ class FleetLifecycleService extends Base {
      *     it; omitted, only a tenant row does.
      * @returns {Object<String,Object<String,String>>} Per-server child environment, not an artifact.
      */
-    resolveResidentMcpEnvironment(agent, {remote = agent.mcpTarget?.kind === 'tenant'} = {}) {
-        if (agent.metadata?.launch) return {};
-        const matrix = resolveMcpMatrix(agent.mcpServers, mcpCatalogFor(agent.forge)), result = {};
+    resolveResidentMcpEnvironment(agent, options) {
+        return this.captureResidentMcpInputs(agent, {...options, bind: false}).environment;
+    }
+
+    /**
+     * @summary Capture the export used by preparation and optionally bind later reads to that same source.
+     * @param {Object} agent Original Fleet definition.
+     * @param {Object} [options]
+     * @param {Boolean} [options.remote] Existing placement choice for this Start.
+     * @param {Boolean} [options.bind=true] False retains the ordinary transient-export API.
+     * @returns {Object} Transient `{environment,owners}`; owners retain only metadata and callbacks.
+     */
+    captureResidentMcpInputs(agent, {remote = agent.mcpTarget?.kind === 'tenant', bind = true} = {}) {
+        const environment = {}, owners = {};
+        if (agent.metadata?.launch) return {environment, owners};
+        const matrix = resolveMcpMatrix(agent.mcpServers, mcpCatalogFor(agent.forge));
         for (const {key} of MCP_SERVERS) {
             if (!matrix[key] || (remote && REMOTE_MCP_SERVER_KEYS.has(key))) continue;
-            const descriptor    = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key];
-            const providerSlots = descriptor.providerCredentialEnv || {};
-            const envNames      = descriptor.runtimeEnv.filter(name =>
-                !SEAT_ENV.has(name) && !Object.values(providerSlots).includes(name));
-            if (descriptor.providerCredentialEnv) {
-                for (const provider of [AiConfig.modelProvider, AiConfig.embeddingProvider]) {
-                    if (providerSlots[provider]) envNames.push(providerSlots[provider]);
-                }
+            const current = this.readResidentMcpInput(key);
+            environment[key] = current.env;
+            if (bind) {
+                owners[key] = createResidentMcpInputOwner({binding: current.binding, names: Object.keys(current.env),
+                    read: () => this.readResidentMcpInput(key)});
             }
-            const values = this.residentMcpEnvSource ? this.residentMcpEnvSource(key) : ({
-                'memory-core'    : memoryCoreConfig, 'knowledge-base': knowledgeBaseConfig,
-                'neural-link'    : neuralLinkConfig, 'github-workflow': githubWorkflowConfig,
-                'gitlab-workflow': gitlabWorkflowConfig
-            })[key].exportEnv({
-                envNames,
-                includePlaneMembers: true
-            });
-            if (!values || typeof values !== 'object' || Array.isArray(values) ||
-                !path.isAbsolute(values.NEO_PLANE_DATA_ROOT || '')) {
-                throw new Error(`FleetLifecycleService: '${key}' has no placed resident MCP environment.`)
-            }
-            result[key] = {...values}
         }
-        return result
+        return {environment, owners};
+    }
+
+    /**
+     * @summary Read the existing resolved config export and classify its server, plane and provider owners.
+     * @param {String} key Fixed MCP catalog key.
+     * @returns {Object} `{env,binding}`; only binding may enter durable custody.
+     */
+    readResidentMcpInput(key) {
+        const descriptor    = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key];
+        const providerSlots = descriptor.providerCredentialEnv || {};
+        const envNames      = descriptor.runtimeEnv.filter(name => !SEAT_ENV.has(name) && !Object.values(providerSlots).includes(name));
+        if (descriptor.providerCredentialEnv) {
+            for (const provider of [AiConfig.modelProvider, AiConfig.embeddingProvider]) {
+                if (providerSlots[provider]) envNames.push(providerSlots[provider]);
+            }
+        }
+        const config = {
+            'memory-core'    : memoryCoreConfig, 'knowledge-base': knowledgeBaseConfig, 'neural-link': neuralLinkConfig,
+            'github-workflow': githubWorkflowConfig, 'gitlab-workflow': gitlabWorkflowConfig
+        }[key];
+        const values = this.residentMcpEnvSource ? this.residentMcpEnvSource(key) : config.exportEnv({envNames, includePlaneMembers: true});
+        if (!values || typeof values !== 'object' || Array.isArray(values) || !path.isAbsolute(values.NEO_PLANE_DATA_ROOT || '')) {
+            throw new Error(`FleetLifecycleService: '${key}' has no placed resident MCP environment.`);
+        }
+        return {env: {...values}, binding: {version: 1, kind: 'resident-config', server: key,
+            plane    : {id: values.NEO_PLANE_ID, dataRoot: values.NEO_PLANE_DATA_ROOT},
+            providers: {model: descriptor.providerCredentialEnv ? config.modelProvider : null,
+                embedding: descriptor.providerCredentialEnv ? config.embeddingProvider : null,
+                ask      : key === 'knowledge-base' ? config.askSynthesis.provider : null}}};
     }
 
     /**

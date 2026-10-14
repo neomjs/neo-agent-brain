@@ -1453,6 +1453,27 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         expect(Object.values(records).every(values => !Object.keys(values).some(key => ['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY'].includes(key)))).toBe(true);
     });
 
+    test('packaged input capture reads one resolved export and keeps only its original config binding', () => {
+        install();
+        let key = 'original-provider-key', plane = 'original-plane', reads = 0;
+        FleetLifecycleService.residentMcpEnvSource = () => {
+            reads++;
+            return {NEO_PLANE_ID: plane, NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane'), NEO_OPENAI_COMPATIBLE_API_KEY: key};
+        };
+        const captured = FleetLifecycleService.captureResidentMcpInputs({id: 'a', harnessType: 'claude-desktop',
+            mcpServers: {'memory-core': true, 'knowledge-base': false, 'neural-link': false, 'github-workflow': false, 'gitlab-workflow': false}});
+        expect(reads).toBe(1);
+        const input = captured.owners['memory-core'];
+        expect(input.binding).toMatchObject({kind: 'resident-config', server: 'memory-core', plane: {id: plane},
+            providers: {model: AiConfig.modelProvider, embedding: AiConfig.embeddingProvider, ask: null}});
+        expect(JSON.stringify(input.binding)).not.toContain(key);
+        key = 'rotated-provider-key';
+        expect(input.read().NEO_OPENAI_COMPATIBLE_API_KEY).toBe(key);
+        expect(captured.environment['memory-core'].NEO_OPENAI_COMPATIBLE_API_KEY).toBe('original-provider-key');
+        plane = 'different-plane';
+        expect(input.read()).toBeNull();
+    });
+
     test('a seat the start placed on a remote plane gets no resident Memory Core or Knowledge Base envelope, tenant row or not', () => {
         install();
         FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane')});
