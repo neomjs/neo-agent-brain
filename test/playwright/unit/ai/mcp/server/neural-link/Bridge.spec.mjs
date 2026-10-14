@@ -87,12 +87,39 @@ test.describe('Bridge.handleConnection — agent handshake auth (#13172)', () =>
         expect(ws.closed).toBe(null);
     });
 
+    test('test-role connections cannot replace an authenticated agent without a valid token', () => {
+        const existing = makeWs(), app = makeWs();
+        Bridge.agents.set('agent-a', existing);
+        Bridge.apps.set('app-1', app);
+        for (const token of [null, 'malformed', sign('agent-a', Date.now() - 1), sign('agent-a').slice(0, -4) + 'AAAA']) {
+            const ws = makeWs();
+            Bridge.handleConnection(ws, makeReq(`role=test&id=agent-a${token === null ? '' : `&token=${token}`}`));
+            expect(ws.closed?.code).toBe(1008);
+            expect(Bridge.agents.get('agent-a')).toBe(existing);
+            expect(Bridge.agents.size).toBe(1);
+            expect(Bridge.apps.get('app-1')).toBe(app);
+            expect(app.sent).toEqual([]);
+            expect(ws.handlers).toEqual({});
+            expect(ws.sessionId).toBeUndefined();
+        }
+    });
+
+    test('a valid test-role token binds the signed identity instead of the query claim', () => {
+        const ws = makeWs();
+        Bridge.handleConnection(ws, makeReq(`role=test&id=impostor&token=${sign('agent-a')}`));
+        expect(Bridge.agents.get('agent-a')).toBe(ws);
+        expect(Bridge.agents.has('impostor')).toBe(false);
+        expect(ws.closed).toBeNull();
+    });
+
     test('no configured key → legacy unauthenticated path registers the ?id= claim (no-FM dev)', () => {
         Bridge.bridgePublicKey = null;
-        const ws = makeWs();
-        Bridge.handleConnection(ws, makeReq('role=agent&id=legacy-agent'));
-        expect(Bridge.agents.has('legacy-agent')).toBe(true);
-        expect(ws.closed).toBe(null);
+        for (const role of ['agent', 'test']) {
+            const ws = makeWs();
+            Bridge.handleConnection(ws, makeReq(`role=${role}&id=legacy-agent`));
+            expect(Bridge.agents.get('legacy-agent')).toBe(ws);
+            expect(ws.closed).toBe(null);
+        }
     });
 });
 
@@ -113,6 +140,7 @@ test.describe('Bridge protocol freshness stamp (#13299)', () => {
         expect(isBridgeInfoPayloadFresh(payload)).toBe(true);
         expect(isBridgeInfoPayloadFresh({...payload, protocolVersion: 0})).toBe(false);
         expect(isBridgeInfoPayloadFresh({...payload, features: []})).toBe(false);
+        expect(isBridgeInfoPayloadFresh({...payload, features: ['agent-message-sidecar']})).toBe(false);
     });
 
     test('registerAgent sends bridge_info before ordinary agent notifications', () => {

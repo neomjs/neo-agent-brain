@@ -190,10 +190,11 @@ class Bridge extends Base {
                 return;
             }
 
-            if (role === 'agent') {
+            if (role === 'agent' || role === 'test') {
                 // Authenticate the agent when a verify key is provisioned (fleet mode): the identity
                 // is the agentId SIGNED into the token, never the untrusted `?id=` query claim (the
-                // spoofing hole this closes). With no key configured (no-FM dev), fall back to the
+                // spoofing hole this closes). Both roles enter the same agent map and require the
+                // same proof. With no key configured (no-FM dev), fall back to the
                 // legacy unauthenticated path — auth and multi-writer enforcement are a matched pair.
                 if (this.getBridgePublicKey()) {
                     const verifiedId = this.verifyAgentToken(token);
@@ -206,9 +207,6 @@ class Bridge extends Base {
                 } else {
                     this.registerAgent(id, ws);
                 }
-            } else if (role === 'test') {
-                logger.info(`Bridge: Test client connected [${id}]`);
-                this.registerAgent(id, ws);
             } else {
                 // Default to app if no role specified (backward compatibility)
                 this.registerApp(id, ws, appName);
