@@ -2019,6 +2019,8 @@ test.describe('prepareManagedAgentWorkspace', () => {
             nl  = JSON.parse(raw).mcpServers['neo-mjs-neural-link'];
 
         expect(nl.args.slice(1)).toEqual(['--server', 'neural-link']);
+        expect(result.launchAdmissionBinding).toMatchObject({version: 1, identity: opts.launchAdmission.identity, issuer: opts.launchAdmission.issuer});
+        expect(JSON.stringify(result.launchAdmissionBinding)).not.toContain(nl.env.NEO_FLEET_LAUNCH_GRANT);
         expect(Object.keys(nl.env).sort()).toEqual(['NEO_AGENT_IDENTITY', 'NEO_FLEET_LAUNCH_GRANT', 'NEO_FLEET_LAUNCH_ISSUER', 'NEO_PLANE_DATA_ROOT']);
         expect(raw).not.toContain('secret-token-value');
         expect(raw).not.toContain('NEO_FLEET_BRIDGE_TOKEN');

@@ -11,6 +11,12 @@ import {hydrateCurrentWorktree}                       from '../../scripts/migrat
 import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
 import {applyCodexSeatSettings, parseTomlTableHeader} from './codexConfigToml.mjs';
 import {deriveNodeRuntimeEnv}                         from './deriveNodeRuntimeEnv.mjs';
+import {
+    DESKTOP_PROFILE_RECEIPT,
+    createDesktopLaunchBinding,
+    desktopProfileProjection as claudeJsonOwnedProjection,
+    recoverDesktopLaunchGrants
+} from './desktopLaunchProfile.mjs';
 import {KIMI_SEAT_SERVERS, generateKimiSeatConfig}    from './generateKimiSeatConfig.mjs';
 import {
     deriveAgentInstanceHome,
@@ -40,8 +46,7 @@ const
     CLAUDE_MEMORY_SETTING    = 'autoMemoryDirectory',
     // What a Claude Desktop profile row runs, and what a tenant row's launcher hands to.
     LAUNCHER_ENTRYPOINT      = 'ai/mcp/client/fleetMcpLauncher.mjs',
-    BRIDGE_ENTRYPOINT        = 'ai/mcp/client/stdioToStreamableHttp.mjs',
-    DESKTOP_PROFILE_RECEIPT  = '.neo-fleet-claude-desktop-profile.json';
+    BRIDGE_ENTRYPOINT        = 'ai/mcp/client/stdioToStreamableHttp.mjs';
 
 /**
  * @summary Convergence states for Fleet-owned workspace artifacts. `DIVERGENT` is emitted on the
@@ -430,6 +435,16 @@ async function applyManagedAgentWorkspacePlanUnchecked({
 
     seatInstructions.artifact && artifacts.push(seatInstructions.artifact);
 
+    const launchAdmissionBinding = agent.harnessType === 'claude-desktop' ? createDesktopLaunchBinding({
+        rows    : renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission}),
+        identity: launchAdmission.identity, issuer: launchAdmission.issuer
+    }) : null;
+    if (launchAdmissionBinding) {
+        await recoverDesktopLaunchGrants({
+            managedRoot: canonicalInstanceRoot, instanceHome, binding: launchAdmissionBinding, fileSystem
+        });
+    }
+
     return {
         agentosRuntimeRoot: canonicalAgentosRuntimeRoot,
         targetRepoRoot    : canonicalTargetRepoRoot,
@@ -446,6 +461,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         hydration,
         artifacts,
         seatInstructions  : seatInstructions.observation,
+        ...(launchAdmissionBinding ? {launchAdmissionBinding} : {}),
         ...(trust.records.length ? {repoTrust: trust.records} : {})
     }
 }
@@ -2553,22 +2569,6 @@ function readCodexProjectTrust(source, repoPath, filePath) {
     } catch {
         throw transportDivergence(filePath, 'projects.<managed-repo>.trust_level', 'invalid Codex home TOML')
     }
-}
-
-/** @private */
-function claudeJsonOwnedProjection(source) {
-    let parsed;
-    try {
-        parsed = JSON.parse(source);
-    } catch {
-        return {__invalidJson: true};
-    }
-
-    const result = {};
-    for (const [name, definition] of Object.entries(parsed?.mcpServers || {})) {
-        if (name.startsWith(NEO_MCP_NAME_PREFIX)) result[name] = definition;
-    }
-    return canonicalize(result);
 }
 
 const TRANSPORT_SERVER_NAMES = Object.freeze([

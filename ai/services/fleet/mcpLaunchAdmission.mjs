@@ -197,9 +197,9 @@ function safeEqual(expected, actual) {
  * left out, as `JSON.stringify` leaves it out of the body the other end parses.
  * @param {*} value
  * @returns {String}
- * @private
+ * @summary Canonical JSON for signed responses and owned-profile binding digests.
  */
-function canonicalJson(value) {
+export function canonicalJson(value) {
     if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
     if (value && typeof value === 'object') {
         return `{${Object.keys(value).filter(key => value[key] !== undefined).sort()
