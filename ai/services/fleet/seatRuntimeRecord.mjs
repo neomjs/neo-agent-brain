@@ -151,7 +151,7 @@ export function createSeatRuntimeRecord({record, identity, plan, env = {}, owner
  */
 export function seatRuntimeSnapshot(record) {
     return {start: structuredClone(record.runtimeStart), state: record.state,
-        ownershipUnresolved: Boolean(record.ownershipUnresolved), cleanupUnresolved: Boolean(record.cleanupUnresolved)}
+        ownershipUnresolved: Boolean(record.ownershipUnresolved || record.runtimeUnresolved), cleanupUnresolved: Boolean(record.cleanupUnresolved)}
 }
 
 /** @summary Validates the closed mutable retention envelope around an immutable Start binding. */

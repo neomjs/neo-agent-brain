@@ -17,6 +17,9 @@ import {EventEmitter}                  from 'events';
 import fs                              from 'fs';
 import os                              from 'os';
 import path                            from 'path';
+import {WebSocketServer}               from 'ws';
+import {once}                          from 'node:events';
+import {createBridgeVerifierPayload}   from '../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
 
 import Neo                               from 'neo.mjs/src/Neo.mjs';
 import * as core                         from 'neo.mjs/src/core/_export.mjs';
@@ -2017,6 +2020,82 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         return {spawn, home, profile: harnessType === 'codex-desktop' ? path.join(home, 'electron-profile') : home}
     }
 
+    for (const control of ['success', 'birth', 'profile', 'runtime', 'protocol']) {
+        test(`original runtime recovery corroborates the lease, profile and input owners: ${control}`, async () => {
+            const {spawn, home: initialHome} = installSeat('claude-desktop'), service = McpLaunchAdmissionService;
+            const root                       = fs.realpathSync(FleetLifecycleService.instanceRoot), home = fs.realpathSync(initialHome), directory = path.join(root, 'custody');
+            FleetLifecycleService.instanceRoot = root;
+            if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+            service.httpServer = service.listening = service.issuerOrigin = null;
+            service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready';
+            const id         = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
+            const generation = {id, directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
+                runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
+            const server = new WebSocketServer({host: '127.0.0.1', port: 0});
+            server.on('connection', socket => { socket.send(JSON.stringify(createBridgeVerifierPayload('e'.repeat(64)))); socket.close(); });
+            await once(server, 'listening');
+            const agent = FleetLifecycleService.registry.getDefinition('seat');
+            agent.mcpServers = {'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': false, 'gitlab-workflow': false};
+            const plan = createManagedAgentWorkspacePlan({agent: {id: 'seat', harnessType: 'claude-desktop'}, mcpMatrix: agent.mcpServers}).mcpServers.map(row => ({...row,
+                sourceRoot: generation.runtimeRoot, command: generation.executable,
+                args      : [path.join(generation.runtimeRoot, row.entrypoint), ...(row.key === 'neural-link' ? ['--cwd', generation.runtimeRoot] : [])]}));
+            FleetLifecycleService.installedRuntime = {...generation, generation};
+            FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_ID: 'fixture-plane', NEO_PLANE_DATA_ROOT: path.join(root, 'plane'), NEO_NL_PORT: String(server.address().port)});
+            const captured = FleetLifecycleService.captureResidentMcpInputs(agent);
+            try {
+                FleetLifecycleService.openRuntimeCustody({directory});
+                const reserved = await service.reserve({agent, runtimeGeneration: generation});
+                const rows     = {'neo-mjs-neural-link': {command: generation.executable, env: {
+                    NEO_AGENT_IDENTITY: 'seat', NEO_FLEET_LAUNCH_ISSUER: reserved.issuer, NEO_FLEET_LAUNCH_GRANT: reserved.grants['neural-link']}}};
+                const profile = createDesktopLaunchBinding({identity: 'seat', issuer: reserved.issuer, rows});
+                fs.writeFileSync(path.join(home, 'claude_desktop_config.json'), JSON.stringify({mcpServers: rows}), {mode: 0o600});
+                fs.writeFileSync(path.join(home, '.neo-fleet-claude-desktop-profile.json'), JSON.stringify({version: 2,
+                    artifact: 'claude_desktop_config.json', sha256: profile.projectionSha256}), {mode: 0o600});
+                FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: plan,
+                    resolvedResidentMcpEnv: captured.environment,
+                    launchAdmission       : {generation: reserved.generation, plan, profile, residentInputs: captured.owners}});
+                const original = FleetLifecycleService.processes.get('seat');
+                FleetLifecycleService.registry.getBridgeSigningAuthority = () => original.bridgeAuthority;
+                FleetLifecycleService.registry.renewBridgeToken = () => ({token: 'renewed-fixture-token'});
+                FleetLifecycleService.processInspectFn = () => ({startedAt: original.pidStartedAt + (control === 'birth' ? '-other' : ''),
+                    command: [spawn.calls[0].command, ...spawn.calls[0].args].join(' ')});
+                FleetLifecycleService.processSignalFn = () => {};
+                await new Promise(resolve => service.httpServer.close(resolve));
+                service.httpServer = service.listening = service.issuerOrigin = null;
+                service.journal.handoff(service.admissionSnapshot(), reserved.issuer);
+                service.journal = null; service.generations.clear(); service.grants.clear();
+                FleetLifecycleService.processes.clear(); FleetLifecycleService.leasesAdopted = false;
+                if (control === 'profile') fs.writeFileSync(path.join(home, 'claude_desktop_config.json'), JSON.stringify({mcpServers: {}}));
+                FleetLifecycleService.openRuntimeCustody({directory});
+                const result = await FleetLifecycleService.recoverRuntimeCustody({verifyRuntime: async () => control === 'runtime' ? null : ({...generation,
+                    compatibility: {launchProtocol: control === 'protocol' ? 'unsupported' : 'neo-fleet-mcp-launch/v1'}})});
+                expect(result[0].state).toBe(control === 'success' ? 'active' : 'stale');
+                expect(spawn.calls).toHaveLength(1); // Recovery never starts or rewrites a surviving harness.
+                if (control === 'success') {
+                    const grant   = parseLaunchCapability(reserved.grants['neural-link']);
+                    const request = createLaunchRequest({grant, identity: 'seat', server: 'neural-link'});
+                    expect(verifyLaunchResponse(grant.secret, request, await service.redeem(request))).toMatchObject({outcome: 'admitted',
+                        env: {NEO_NL_PORT: String(server.address().port), NEO_FLEET_BRIDGE_TOKEN: 'renewed-fixture-token'}});
+                    expect(FleetLifecycleService.status('seat').runtimeGeneration.pin).toBe('held');
+                    expect(JSON.parse(fs.readFileSync(path.join(home, 'claude_desktop_config.json'), 'utf8')).mcpServers).toEqual(rows);
+                } else {
+                    expect(service.grants.size).toBe(0);
+                    if (control !== 'birth') expect(FleetLifecycleService.status('seat').state).toBe('running');
+                    if (['runtime', 'protocol'].includes(control)) expect(FleetLifecycleService.status('seat').runtimeGeneration.pin).toBe('unknown');
+                }
+            } finally {
+                service.journal?.close(); service.journal = null; service.journalFailed = false; service.readSeatStarts = null;
+                service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready';
+                if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+                service.httpServer = service.listening = service.issuerOrigin = null;
+                FleetLifecycleService.processes.clear();
+                server.clients.forEach(socket => socket.terminate());
+                await new Promise(resolve => server.close(resolve));
+                fs.rmSync(root, {recursive: true, force: true});
+            }
+        });
+    }
+
     test('Desktop activation commits its exact process/profile binding before admission; an exit write failure still completes physical cleanup', async () => {
         const {spawn}    = installSeat('claude-desktop'), service = McpLaunchAdmissionService;
         const root       = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody');
@@ -2868,10 +2947,11 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
         FleetLifecycleService.processInspectFn   = () => table.alive ? {startedAt: table.startedAt, command: `${process.execPath} --user-data-dir=${home}`} : null;
         FleetLifecycleService.processSignalFn    = (pid, signal) => { if (!table.alive) throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) };
         FleetLifecycleService.launchAdmission    = {
-            activate: options => { events.push('activate'); calls.activate.push(options) },
-            revoke  : (id, reason, options = {}) => { events.push(`revoke ${reason}`); calls.revoke.push({id, reason, ...options}); return true },
-            holds   : () => false,
-            statusOf: () => null
+            continuityPhase: 'ready',
+            activate       : options => { events.push('activate'); calls.activate.push(options) },
+            revoke         : (id, reason, options = {}) => { events.push(`revoke ${reason}`); calls.revoke.push({id, reason, ...options}); return true },
+            holds          : () => false,
+            statusOf       : () => null
         };
 
         return {spawn, home, events, calls, table}
@@ -3144,8 +3224,9 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
             spawn       = install({agents: {seat: agentDef('seat')}}),
             revocations = [],
             admission   = {
-                generation: 'generation-a',
-                holds     : () => false,
+                continuityPhase: 'ready',
+                generation     : 'generation-a',
+                holds          : () => false,
                 revoke(id, reason, {generation = null} = {}) {
                     revocations.push({id, reason, ...(generation ? {generation} : {})});
                     if (!generation || generation === this.generation) this.generation = null;

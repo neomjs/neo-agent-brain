@@ -56,6 +56,8 @@ export const LAUNCH_ADMISSION_REASONS = Object.freeze({
     REPLACED          : 'replaced',
     /** This Fleet did not start the running seat, so it holds no generation for it. */
     ISSUER_REPLACED   : 'issuer-replaced',
+    /** Original Start or clean issuer succession could not be proved; existing children may still work. */
+    RECOVERY_UNVERIFIED: 'recovery-unverified',
     /** A required durable transition failed; this issuer can neither admit nor hand off authority. */
     DURABILITY_FAILED : 'durability-failed',
     /** The Start held no value for one of the server's required inputs. */

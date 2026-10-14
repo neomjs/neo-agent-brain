@@ -33,6 +33,9 @@ export const LAUNCH_GRANT_ENV_VAR = 'NEO_FLEET_LAUNCH_GRANT';
  */
 export const LAUNCH_ADMISSION_PATH = '/fleet/mcp-launch/v1';
 
+/** @summary HMAC protocol identity advertised by a copied runtime's compatibility probe. */
+export const LAUNCH_ADMISSION_PROTOCOL = 'neo-fleet-mcp-launch/v1';
+
 /**
  * @summary Upper bound for a request or an answer body, in bytes.
  * @type {Number}
@@ -50,7 +53,7 @@ export function httpProofVerdict(ok, status) {
 }
 
 const
-    PROTOCOL       = 'neo-fleet-mcp-launch/v1',
+    PROTOCOL       = LAUNCH_ADMISSION_PROTOCOL,
     TOKEN_PATTERN  = /^[A-Za-z0-9_-]{22,128}$/,
     SERVER_PATTERN = /^[a-z][a-z0-9-]{0,63}$/,
     LOGIN_PATTERN  = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$/,

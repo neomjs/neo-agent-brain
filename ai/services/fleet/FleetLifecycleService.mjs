@@ -26,11 +26,13 @@ import {LAUNCH_ADMISSION_REASONS}                                               
 import {isOnInstance}                                                           from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities}             from './manageCodexDesktopRuntime.mjs';
 import {GIT_IDENTITY_ENV, gitIdentityEnv}                                       from './seatGitIdentity.mjs';
-import {runtimeGenerationPin}                                                   from './runtimeGeneration.mjs';
+import {runtimeGenerationPin, readRuntimeGeneration}                            from './runtimeGeneration.mjs';
 import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot} from './seatRuntimeRecord.mjs';
 import {writeFileAtomicSync}                                                    from '../shared/atomicFileWrite.mjs';
 
-import {createResidentMcpInputOwner, createBridgeTokenOwner} from './launchCredentialOwners.mjs';
+import {createResidentMcpInputOwner, createBridgeTokenOwner, restoreLaunchCredentialOwner} from './launchCredentialOwners.mjs';
+import {recoverDesktopLaunchGrants}                                                        from './desktopLaunchProfile.mjs';
+import {LAUNCH_ADMISSION_PROTOCOL}                                                         from './mcpLaunchAdmission.mjs';
 
 // Reserve the Neural Link policy slot against credential collisions and launch-metadata overrides.
 // Fleet does not impose a projection; explicitly restricted NL servers own their own ceiling.
@@ -675,6 +677,7 @@ class FleetLifecycleService extends Base {
      */
     start(id, opts = {}) {
         if (opts.startSignal?.aborted) return this.canceledStart(id);
+        if (this.getLaunchAdmission().continuityPhase !== 'ready') throw new Error('Fleet Start refused: launch continuity is not ready.');
         if (this.isRunning(id)) return this.status(id);
         if (this.getLaunchAdmission().journalFailed) throw new Error('Fleet Start refused: runtime custody is frozen.');
 
@@ -1328,7 +1331,7 @@ class FleetLifecycleService extends Base {
      * @private
      */
     runtimeGenerationOf(record) {
-        const pin = this.getLaunchAdmission().journalFailed || record.ownershipUnresolved || record.cleanupUnresolved ? 'unknown' :
+        const pin = this.getLaunchAdmission().journalFailed || record.runtimeUnresolved || record.ownershipUnresolved || record.cleanupUnresolved ? 'unknown' :
             ['stopped', 'exited'].includes(record.state) ? 'released' :
                 ['running', 'stopping'].includes(record.state) ? 'held' : 'unknown';
         return record.runtimeGeneration ? {...runtimeGenerationPin(record.runtimeGeneration), pin} :
@@ -1919,6 +1922,85 @@ class FleetLifecycleService extends Base {
         if (this.processes.size) throw new Error('Runtime custody must be opened before lifecycle adoption or Start.');
         return this.getLaunchAdmission().openJournal({...options,
             readSeatStarts: () => [...this.processes.values()].filter(record => record.runtimeStart).map(seatRuntimeSnapshot)});
+    }
+
+    /**
+     * @summary Re-attach original runtime pins and reconstruct native admission without preparing a profile.
+     * Lease adoption remains the process owner. A different or unobserved process retains an unknown pin;
+     * it cannot inherit the old Start's grants. Runtime verification uses this process's trusted reader.
+     * @param {Object} options
+     * @param {Object} options.tenantService Original plane/tenant credential owner.
+     * @param {Function} [options.verifyRuntime=readRuntimeGeneration] Isolated-test seam for payload verification.
+     * @param {Function} [options.readGrants=recoverDesktopLaunchGrants] Isolated-test seam for profile custody.
+     * @returns {Promise<Object[]>} Admission dispositions without credentials or capabilities.
+     */
+    async recoverRuntimeCustody({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverDesktopLaunchGrants} = {}) {
+        const admission = this.getLaunchAdmission();
+        if (!admission.journal) throw new Error('Runtime custody must be attached before recovery.');
+        const previous = admission.journal.previous, registry = this.getRegistry(), verified = new Map();
+        this.adoptLeasedSeats();
+        for (const saved of previous?.snapshot.seats ?? []) {
+            const start  = saved.start;
+            let   record = this.processes.get(start.agentId);
+            if (!record) {
+                record = {id: start.agentId, child: null, adopted: false, pid: start.pid, startedAt: start.startedAt,
+                    state              : 'failed', harnessType: start.harnessType, instanceHome: start.instanceHome,
+                    ownershipUnresolved: true, failureReason: 'the original runtime seat could not be re-adopted'};
+                this.processes.set(start.agentId, record);
+            }
+            Object.assign(record, {runtimeStart: structuredClone(start), runtimeGeneration: {...start.runtime},
+                runtimeUnresolved: true, admissionGeneration: start.admissionGeneration,
+                cleanupUnresolved: Boolean(record.cleanupUnresolved || saved.cleanupUnresolved)});
+            if (!record.adopted && this.probeSeat(start) === 'gone' && !record.cleanupUnresolved) {
+                Object.assign(record, {state: 'exited', ownershipUnresolved: false, runtimeUnresolved: false});
+            }
+        }
+
+        /** @summary Verify a retained pin without importing its code or replacing its lifecycle record. */
+        const verifyPin = async start => {
+            const record = this.processes.get(start.agentId);
+            if (!record || !this.matchesRuntimeStart(record, start)) return false;
+            const key = JSON.stringify(start.runtime);
+            if (!verified.has(key)) verified.set(key, Promise.resolve().then(() => verifyRuntime({directory: start.runtime.directory})));
+            try {
+                const runtime = await verified.get(key);
+                record.runtimeUnresolved = !runtime || !isDeepStrictEqual(runtimeGenerationPin(runtime), start.runtime) ||
+                    runtime.compatibility?.launchProtocol !== LAUNCH_ADMISSION_PROTOCOL ||
+                    this.processes.get(start.agentId) !== record || !this.matchesRuntimeStart(record, start) || this.probeSeat(record) !== 'live';
+            } catch {}
+            return !record.runtimeUnresolved;
+        };
+        const dispositions = await admission.recover({registry, restoreSeat: async (start, saved) => {
+            if (!await verifyPin(start)) throw Error();
+            const record       = this.processes.get(start.agentId);
+            const capabilities = await readGrants({managedRoot: fs.realpathSync(this.getInstanceRoot()),
+                instanceHome: record.instanceHome, binding: start.profile});
+            const owners = Object.fromEntries(Object.entries(saved.credentialBindings).map(([name, binding]) =>
+                [name, restoreLaunchCredentialOwner(binding, {registry, tenantService})]));
+            const residentInputs = Object.fromEntries(Object.entries(saved.residentBindings).map(([key, source]) =>
+                [key, createResidentMcpInputOwner({binding: source.binding, names: source.names, read: () => this.readResidentMcpInput(key)})]));
+            const probe = () => this.matchesRuntimeStart(record, start) && !record.runtimeUnresolved ? this.probeSeat(record) : 'unknown';
+            return {capabilities, owners, residentInputs, probe};
+        }});
+        for (const {start} of previous?.snapshot.seats ?? []) await verifyPin(start);
+        admission.persistAdmission();
+        return dispositions;
+    }
+
+    /**
+     * @summary Corroborates the immutable Start against the lease-derived record and current registry identity.
+     * @param {Object} record Record adopted through the existing lifecycle owner.
+     * @param {Object} start Original durable Start, never derived from a writable lease.
+     * @returns {Boolean}
+     * @private
+     */
+    matchesRuntimeStart(record, start) {
+        const agent = this.getRegistry().getDefinition(start.agentId);
+        return !!agent && !agent.metadata?.launch && start.leaseRequired && record.adopted && record.state === 'running' &&
+            !record.ownershipUnresolved && !record.cleanupUnresolved &&
+            agent.harnessType === start.harnessType && agent.githubUsername?.trim().replace(/^@/, '') === start.identity &&
+            ['pid', 'pidStartedAt', 'startedAt', 'cwd', 'instanceHome', 'launchCommand', 'launchInterpreter', 'profileArg', 'harnessType']
+                .every(key => (record[key] ?? null) === start[key]);
     }
 
     /**

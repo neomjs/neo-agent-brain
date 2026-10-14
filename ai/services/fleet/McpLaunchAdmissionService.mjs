@@ -24,6 +24,7 @@ import {
     isLaunchIdentity,
     launchRefusal,
     mintLaunchGrant,
+    parseLaunchCapability,
     parseLaunchRequest,
     signLaunchResponse,
     verifyLaunchRequest
@@ -56,16 +57,16 @@ const BRIDGE_ENTRYPOINT = 'ai/mcp/client/stdioToStreamableHttp.mjs';
  * **Revocation is sticky.** Stop intent, a failed Start or lease, the process's exit and a newer Start
  * end the generation. The registry's `definitionChange` ends it when the seat's harness, MCP target, launch
  * owner or launch override changes, and ends one server's grant when that server is switched off.
- * Nothing re-enables a grant: a server switched back on waits for a managed restart. A new Fleet process
- * holds no generation, so a seat it adopts reads `stale` until it is restarted.
+ * Nothing re-enables a grant: a server switched back on waits for a managed restart. A successor restores
+ * only the positively proved original Start after a consumed clean handoff; every other survivor is stale.
  *
  * **Custody.** A seat credential stays with its owner: the registry holds the PAT; the explicit tenant
  * or the plane binding holds the plane credential. Each redemption resolves it from the owner Start
  * selected, proves that value, and hands over exactly the proved bytes. A missing or unproved value
  * refuses the child and never falls back to another credential class, so a changed registry PAT never
- * stands in for a plane credential. The issuer holds only what Start itself or the Fleet's configuration
- * produced, such as the Bridge token, for the generation's lifetime, and drops it at revocation. No new
- * credential is persisted.
+ * stands in for a plane credential. Packaged generations renew Bridge tokens under the original signer
+ * and read resident inputs from their original config owners. Unclassified Start-held values cannot be
+ * recovered. No new credential is persisted.
  *
  * **Audit.** Each redemption whose proof holds is recorded against its seat, server and generation. A
  * request that proves nothing is recorded without attribution, whatever it claims.
@@ -166,6 +167,9 @@ class McpLaunchAdmissionService extends Base {
     /** @member {String|null} issuerOrigin The origin actually bound by this issuer. @private */
     issuerOrigin = null
 
+    /** @member {String} continuityPhase Boot recovery excludes new Starts until its evidence is settled. @private */
+    continuityPhase = 'ready'
+
     /** @member {Function|null} readSeatStarts Projection supplied by the existing lifecycle owner. @private */
     readSeatStarts = null
 
@@ -187,6 +191,136 @@ class McpLaunchAdmissionService extends Base {
     }
 
     /**
+     * @summary Restore only original active generations after the lifecycle proves their surviving seats.
+     * Every previous generation is retained as non-authoritative evidence first. The callback owns process,
+     * runtime and profile custody; this issuer checks the original bindings, tombstones and capabilities.
+     * A failed seat stays stale. A conflict on the original endpoint blocks the issuer without a fallback.
+     * @param {Object} options
+     * @param {Object} options.registry Existing definition owner.
+     * @param {Function} options.restoreSeat `(start, saved) => {capabilities, owners, residentInputs, probe}`.
+     * @returns {Promise<Object[]>} Per-seat admission disposition, without capabilities or owner values.
+     */
+    async recover({registry, restoreSeat}) {
+        if (!this.journal || this.generations.size || this.listening || this.continuityPhase !== 'ready' ||
+            typeof restoreSeat !== 'function') throw new Error('Launch recovery must precede admission and Start.');
+        const previous = this.journal.previous;
+        if (!previous) return [];
+        this.continuityPhase = 'recovering';
+        this.observeRegistry(registry);
+        for (const saved of previous.snapshot.generations) {
+            const agent      = registry.getDefinition(saved.agentId), current = agent ? projectDefinition(agent) : null;
+            const definition = current && crypto.createHash('sha256').update(canonicalJson(current)).digest('hex') === saved.definitionHash
+                ? current : null;
+            this.generations.set(saved.agentId, {
+                ...structuredClone(saved), definition, generationRoot: saved.runtime?.runtimeRoot ?? null,
+                state  : saved.state === STATES.REVOKED ? STATES.REVOKED : STATES.STALE,
+                reason : saved.state === STATES.REVOKED ? saved.reason : REASONS.RECOVERY_UNVERIFIED,
+                servers: new Map(saved.servers.map(row => [row.key, {...row, secret: null,
+                    state : row.state === STATES.REVOKED ? STATES.REVOKED : STATES.STALE,
+                    reason: row.state === STATES.REVOKED ? row.reason : REASONS.RECOVERY_UNVERIFIED,
+                    args  : null, env: null, owned: [], resident: [], required: []}])),
+                owners: {}, residentInputs: {}, proofs: new Map(), probe: null, waiters: new Set(), audit: []
+            });
+        }
+        try {
+            if (previous.handoffProved) {
+                for (const saved of previous.snapshot.generations) {
+                    const generation = this.generations.get(saved.agentId);
+                    if (saved.state !== STATES.ACTIVE) continue;
+                    const seat = previous.snapshot.seats.find(row => row.start.agentId === saved.agentId);
+                    try {
+                        if (!seat || seat.state !== 'running' || seat.ownershipUnresolved || seat.cleanupUnresolved ||
+                            seat.start.admissionGeneration !== saved.id || seat.start.identity !== saved.identity ||
+                            seat.start.profile?.issuer !== previous.origin || !isDeepStrictEqual(seat.start.runtime, saved.runtime)) throw Error();
+                        const recovered = await restoreSeat(seat.start, saved);
+                        if (generation.state === STATES.REVOKED) continue;
+                        const agent      = registry.getDefinition(saved.agentId);
+                        const definition = agent && projectDefinition(agent);
+                        if (!definition || loginOf(agent) !== saved.identity ||
+                            crypto.createHash('sha256').update(canonicalJson(definition)).digest('hex') !== saved.definitionHash ||
+                            observeProcess(recovered.probe) !== 'live') throw Error();
+                        const effective = {...saved, servers: saved.servers.map(row => generation.servers.get(row.key).state === STATES.REVOKED
+                            ? {...row, state: STATES.REVOKED, reason: generation.servers.get(row.key).reason} : row)};
+                        const servers = this.recoverServers({saved: effective, start: seat.start, recovered});
+                        Object.assign(generation, {definition, servers, state: STATES.ACTIVE, reason: null,
+                            owners: recovered.owners, residentInputs: recovered.residentInputs, probe: recovered.probe});
+                    } catch {
+                        // One unproved survivor cannot authorize itself or discard another seat's evidence.
+                    }
+                }
+                await this.listen({origin: previous.origin});
+            }
+            this.journal.assertOwner();
+            for (const generation of this.generations.values()) {
+                if (generation.state !== STATES.ACTIVE) continue;
+                if (observeProcess(generation.probe) !== 'live') {
+                    Object.assign(generation, {state: STATES.STALE, reason: REASONS.RECOVERY_UNVERIFIED,
+                        owners: {}, residentInputs: {}, probe: null});
+                    generation.servers.forEach(server => { server.secret = null; });
+                    continue;
+                }
+                generation.servers.forEach(server => this.grants.set(server.grantId, {generation, key: server.key}));
+            }
+            this.persistAdmission();
+            this.continuityPhase = 'ready';
+            return [...this.generations.values()].map(row => ({agentId: row.agentId, state: row.state, reason: row.reason}));
+        } catch (error) {
+            this.continuityPhase = 'unavailable';
+            this.grants.clear();
+            for (const generation of this.generations.values()) {
+                if (generation.state === STATES.REVOKED) continue;
+                Object.assign(generation, {state: STATES.STALE, reason: REASONS.RECOVERY_UNVERIFIED, owners: {}, residentInputs: {}, probe: null});
+                generation.servers.forEach(server => { server.secret = null; });
+            }
+            try {
+                this.persistAdmission();
+            } finally {
+                if (this.httpServer) {
+                    const server = this.httpServer;
+                    this.httpServer = this.listening = this.issuerOrigin = null;
+                    await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
+                }
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * @summary Rebuild fixed server targets from original classified metadata, never a fresh plan or ambient env.
+     * @param {Object} options Original journal row, Start record and the lifecycle's custody-checked inputs.
+     * @returns {Map} Recovered server states; disabled grants stay revoked.
+     * @protected
+     */
+    recoverServers({saved, start, recovered}) {
+        const {capabilities, owners, residentInputs} = recovered;
+        if (canonicalJson(Object.keys(capabilities).sort()) !== canonicalJson(saved.servers.map(row => row.key).sort()) ||
+            canonicalJson(Object.keys(start.profile.grants).sort()) !== canonicalJson(saved.servers.map(row => row.key).sort()) ||
+            canonicalJson(start.targets.map(row => row.key).sort()) !== canonicalJson(saved.servers.map(row => row.key).sort())) throw Error();
+        for (const [name, owner] of Object.entries(owners)) {
+            if (!isDeepStrictEqual(owner.binding, saved.credentialBindings[name]) || !owner.matches()) throw Error();
+        }
+        for (const [key, input] of Object.entries(residentInputs)) {
+            if (!isDeepStrictEqual({binding: input.binding, names: input.names}, saved.residentBindings[key]) || !input.matches()) throw Error();
+        }
+        return new Map(saved.servers.map(row => {
+            const capability = capabilities[row.key], grant = parseLaunchCapability(capability), expected = start.profile.grants[row.key];
+            if (!grant || grant.id !== row.grantId || expected.id !== row.grantId || expected.sha256 !== row.capabilityHash ||
+                crypto.createHash('sha256').update(capability).digest('hex') !== row.capabilityHash) throw Error();
+            const target = start.targets.find(target => target.key === row.key);
+            const owned  = [], resident = [], required = target.slots.filter(slot => slot.required).map(slot => slot.name);
+            if (row.state !== STATES.REVOKED) {
+                if (row.state !== STATES.ACTIVE) throw Error();
+                for (const slot of target.slots) {
+                    if (slot.state === 'owner' && owners[slot.name]) owned.push(slot.name);
+                    else if (slot.state === 'held' && residentInputs[row.key]?.names.includes(slot.name)) resident.push(slot.name);
+                    else if (slot.state !== 'absent' || slot.required) throw Error();
+                }
+            }
+            return [row.key, {...row, secret: grant.secret, args: [...target.args], env: {}, owned, resident, required}];
+        }));
+    }
+
+    /**
      * @summary Projects lifecycle facts and capability hashes, never held environments or owner callbacks.
      * This initial record cannot authorize recovery until the original-Start bindings are attached.
      * @returns {Object} Closed, non-secret journal snapshot.
@@ -200,13 +334,13 @@ class McpLaunchAdmissionService extends Base {
                 id                : generation.id, agentId: generation.agentId, identity: generation.identity,
                 state             : generation.state, reason: generation.reason,
                 reservedAt        : generation.reservedAt, activatedAt: generation.activatedAt, revokedAt: generation.revokedAt,
-                definitionHash    : crypto.createHash('sha256').update(canonicalJson(generation.definition)).digest('hex'),
+                definitionHash    : generation.definition ? crypto.createHash('sha256').update(canonicalJson(generation.definition)).digest('hex') : generation.definitionHash,
                 runtime           : generation.runtime ? {...generation.runtime} : null,
                 credentialBindings: structuredClone(generation.credentialBindings),
                 residentBindings  : structuredClone(generation.residentBindings),
                 servers           : [...generation.servers.values()].map(server => ({
                     key           : server.key, grantId: server.grantId, state: server.state, reason: server.reason,
-                    capabilityHash: crypto.createHash('sha256').update(`${server.grantId}.${server.secret}`).digest('hex')
+                    capabilityHash: server.capabilityHash
                 }))
             }))
         }
@@ -256,6 +390,7 @@ class McpLaunchAdmissionService extends Base {
      *     validated login the rows must name.
      */
     async reserve({agent, registry = null, since = null, startSignal = null, runtimeGeneration = null}) {
+        if (this.continuityPhase !== 'ready') throw new Error('Fleet launch continuity is not ready.');
         if (this.journalFailed) throw new Error('Launch admission issuer is frozen after a failed durable transition.');
         if (startSignal && (
             typeof startSignal.aborted !== 'boolean' ||
@@ -311,8 +446,9 @@ class McpLaunchAdmissionService extends Base {
 
             const grant = mintLaunchGrant();
 
-            generation.servers.set(key, {key, grantId: grant.id, secret: grant.secret, state: STATES.RESERVED, reason: null,
-                args: null, env: null, owned: [], resident: [], required: []});
+            generation.servers.set(key, {key, grantId: grant.id, secret: grant.secret,
+                capabilityHash: crypto.createHash('sha256').update(grant.capability).digest('hex'), state: STATES.RESERVED, reason: null,
+                args          : null, env: null, owned: [], resident: [], required: []});
             this.grants.set(grant.id, {generation, key});
             grants[key] = grant.capability
         }
@@ -363,6 +499,7 @@ class McpLaunchAdmissionService extends Base {
      * @returns {Object} The seat's admission status ({@link statusOf}).
      */
     activate({generation: id, agentId, plan, env, owners = {}, residentInputs = {}, probe}) {
+        if (this.continuityPhase !== 'ready') throw new Error('Fleet launch continuity is not ready.');
         const generation = this.generations.get(agentId);
 
         if (generation?.id !== id || generation.state !== STATES.RESERVED) return this.statusOf(agentId);
@@ -593,6 +730,7 @@ class McpLaunchAdmissionService extends Base {
 
         if (request.server   !== server.key)          return refuse(REFUSALS.SERVER_MISMATCH);
         if (request.identity !== generation.identity) return refuse(REFUSALS.IDENTITY_MISMATCH);
+        if (this.continuityPhase !== 'ready') return refuse(REFUSALS.ISSUER_UNAVAILABLE, REASONS.RECOVERY_UNVERIFIED);
         if (this.journalFailed) return refuse(REFUSALS.ISSUER_UNAVAILABLE, REASONS.DURABILITY_FAILED);
 
         if (server.state === STATES.RESERVED && generation.state === STATES.RESERVED && !await this.waitForSettlement(generation)) {
@@ -626,6 +764,7 @@ class McpLaunchAdmissionService extends Base {
         const proofs = await Promise.all(server.owned.map((name, index) => this.prove(generation, name, credentials[index], port)));
         if (this.journalFailed) return refuse(REFUSALS.ISSUER_UNAVAILABLE, REASONS.DURABILITY_FAILED);
         if (revoked()) return refuse(REFUSALS.REVOKED, server.reason ?? generation.reason);
+        if (this.continuityPhase !== 'ready') return refuse(REFUSALS.ISSUER_UNAVAILABLE, REASONS.RECOVERY_UNVERIFIED);
         if (resident && !resident.matches()) return refuse(REFUSALS.CREDENTIAL_UNPROVEN);
 
         // A definite refusal wins over a concurrent unavailable proof; neither retires the generation.
@@ -709,16 +848,22 @@ class McpLaunchAdmissionService extends Base {
     }
 
     /**
-     * @summary Start the loopback listener once, on an ephemeral port. A new Fleet process gets a new port,
-     * so a row written by an earlier one reaches no issuer.
+     * @summary Bind a new issuer on an ephemeral port, or a proved successor on the exact original origin.
+     * A recovery bind conflict never retries on another port or adopts the process holding the endpoint.
+     * @param {Object} [options]
+     * @param {String|null} [options.origin=null] Original custody-proved loopback origin for recovery only.
      * @returns {Promise<String>} The origin profile rows name.
      */
-    listen() {
+    listen({origin = null} = {}) {
+        if (origin !== null && (!/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(origin) ||
+            Number(origin.split(':').at(-1)) > 65535)) throw new Error('Original launch issuer origin is invalid.');
         return this.listening ??= new Promise((resolve, reject) => {
             const server = http.createServer((req, res) => void this.handle(req, res));
 
-            server.once('error', reject);
-            server.listen(0, '127.0.0.1', () => {
+            server.once('error', () => reject(new Error(origin
+                ? 'Original launch issuer endpoint could not be acquired; no alternate port selected.'
+                : 'Launch issuer endpoint could not be acquired.')));
+            server.listen(origin === null ? 0 : Number(origin.split(':').at(-1)), '127.0.0.1', () => {
                 server.unref();
                 this.httpServer = server;
                 this.issuerOrigin = `http://127.0.0.1:${server.address().port}`;
@@ -766,6 +911,8 @@ class McpLaunchAdmissionService extends Base {
         if (!next) return void this.revoke(id, REASONS.AGENT_REMOVED);
 
         const before = generation.definition, after = projectDefinition(next);
+
+        if (!before) return void this.revoke(id, REASONS.PLAN_CHANGED);
 
         if (after.harnessType !== before.harnessType || after.launchOwner !== before.launchOwner ||
             after.rawLaunch !== before.rawLaunch || !isDeepStrictEqual(after.mcpTarget, before.mcpTarget)) {

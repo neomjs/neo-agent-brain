@@ -208,7 +208,7 @@ export function createRuntimeGenerationRecord({identity, payload, runtimeRelativ
         runtimeRelativePath, executableRelativePath, createdAt
     };
     if (compatibility) record.compatibility = Object.fromEntries(
-        ['platform', 'arch', 'electronVersion', 'nodeVersion', 'moduleAbi'].map(key => [key, compatibility[key]])
+        ['platform', 'arch', 'electronVersion', 'nodeVersion', 'moduleAbi', 'launchProtocol'].map(key => [key, compatibility[key]])
     );
     return record
 }

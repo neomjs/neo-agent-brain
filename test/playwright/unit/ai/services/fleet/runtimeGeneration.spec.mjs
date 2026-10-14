@@ -54,8 +54,9 @@ async function fixture() {
         executableRelativePath: path.relative(payloadRoot, executable), createdAt: '2026-10-14T00:00:00.000Z'
     });
     const record = completeRuntimeGenerationRecord(draft, {
-        platform    : process.platform, arch: process.arch, electronVersion: '43.5.0', nodeVersion: '24.19.0', moduleAbi: '148',
-        unclassified: 'not part of the format'
+        platform      : process.platform, arch: process.arch, electronVersion: '43.5.0', nodeVersion: '24.19.0', moduleAbi: '148',
+        launchProtocol: 'neo-fleet-mcp-launch/v1',
+        unclassified  : 'not part of the format'
     });
     await fs.writeFile(path.join(directory, RUNTIME_GENERATION_RECORD), JSON.stringify(record), {mode: 0o400});
     await fs.chmod(directory, 0o500);
@@ -66,7 +67,7 @@ test('the producer and reader share one format and preserve the distinct runtime
     const input = await fixture();
     expect(await readRuntimeGeneration({directory: input.directory})).toMatchObject({
         id           : path.basename(input.directory), runtimeRoot: input.runtimeRoot, executable: input.executable,
-        payloadDigest: input.record.payloadDigest, compatibility: {nodeVersion: '24.19.0', moduleAbi: '148'}
+        payloadDigest: input.record.payloadDigest, compatibility: {nodeVersion: '24.19.0', moduleAbi: '148', launchProtocol: 'neo-fleet-mcp-launch/v1'}
     });
     expect(input.record.compatibility).not.toHaveProperty('unclassified');
     const pin = runtimeGenerationPin(await readRuntimeGeneration({directory: input.directory}));
@@ -105,9 +106,9 @@ test('an escaping executable binding cannot be made valid by retaining the paylo
 });
 
 test('Fleet binds the exact running generation and a packaged process cannot omit it', async () => {
-    const input = await fixture();
+    const input      = await fixture();
     const generation = await readRuntimeGeneration({directory: input.directory});
-    const options = {runtimeRoot: input.runtimeRoot, executable: input.executable};
+    const options    = {runtimeRoot: input.runtimeRoot, executable: input.executable};
     await expect(bindCurrentRuntime({...options, args: runtimeGenerationArguments(generation)}))
         .resolves.toEqual({...options, generation});
     await expect(bindCurrentRuntime({...options, args: []})).rejects.toMatchObject({code: 'runtime-generation-required'});

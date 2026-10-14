@@ -31,6 +31,8 @@ import FleetTenantService                                from '../../../../../..
 import {writeFileAtomicSync}                             from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
 import {createSeatPatOwner, createResidentMcpInputOwner} from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
 import {createManagedAgentWorkspacePlan}                 from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
+import {createSeatRuntimeRecord}                         from '../../../../../../ai/services/fleet/seatRuntimeRecord.mjs';
+import {createDesktopLaunchBinding}                      from '../../../../../../ai/services/fleet/desktopLaunchProfile.mjs';
 import {
     LAUNCH_ADMISSION_PATH,
     createLaunchRequest,
@@ -134,6 +136,171 @@ test.beforeEach(() => {
     service.unattributed.length = 0;
     service.pendingTimeoutMs = 30000;
     service.proofTimeoutMs   = 10000
+    service.continuityPhase = 'ready';
+});
+
+test.describe('McpLaunchAdmissionService — original generation recovery', () => {
+    let directory;
+    /** @summary Simulates the predecessor releasing its actual listener before a journal transition. */
+    async function closeListener() {
+        if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+        service.httpServer = service.listening = service.issuerOrigin = null;
+    }
+    test.beforeEach(async () => {
+        await closeListener();
+        directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'admission-recovery-')));
+    });
+    test.afterEach(async () => {
+        await closeListener();
+        service.journal?.close();
+        service.journal = null;
+        service.journalFailed = false;
+        service.continuityPhase = 'ready';
+        service.readSeatStarts = null;
+        fs.removeSync(directory);
+    });
+
+    /** @summary Produces original records through reserve/activate, then opens a real fenced successor journal. */
+    async function predecessor({clean = true, revoke = false} = {}) {
+        const matrix           = {'memory-core': false, 'knowledge-base': false, 'neural-link': false, 'github-workflow': true, 'gitlab-workflow': false};
+        const agent            = seatDefinition({mcpServers: matrix});
+        const state            = {agent, credential: PAT, observed: 'live', seats: []};
+        const registry         = {getDataDir: () => directory, getDefinition: () => state.agent, resolveCredential: () => state.credential};
+        const owner            = createSeatPatOwner({registry, agent, proveForgeAccount: async () => ({verdict: 'proved'})});
+        const runtimeDirectory = path.join(directory, 'a'.repeat(64));
+        const runtime          = {id: 'a'.repeat(64), directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
+            runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
+        const plan    = boundPlan({root: runtime.runtimeRoot, matrix}).map(row => ({...row, command: runtime.executable}));
+        const custody = path.join(directory, 'custody');
+        service.openJournal({directory: custody, readSeatStarts: () => state.seats});
+        const reservation = await service.reserve({agent, registry, runtimeGeneration: runtime});
+        const profile     = createDesktopLaunchBinding({identity: LOGIN, issuer: reservation.issuer, rows: {
+            'neo-mjs-github-workflow': {env: {NEO_AGENT_IDENTITY: LOGIN, NEO_FLEET_LAUNCH_ISSUER: reservation.issuer,
+                NEO_FLEET_LAUNCH_GRANT: reservation.grants['github-workflow']}}
+        }});
+        const start = createSeatRuntimeRecord({record: {id: 'seat', harnessType: 'claude-desktop', pid: 42,
+            pidStartedAt       : 'Wed Oct 14 10:00:00 2026', startedAt: '2026-10-14T10:00:00Z', cwd: '/managed/repo',
+            instanceHome       : '/managed/seat', launchCommand: '/vendor/Claude', profileArg: '--user-data-dir=/managed/seat',
+            admissionGeneration: reservation.generation, runtimeGeneration: runtime,
+            bridgeAuthority    : {version: 1, source: 'registry-file', registryRoot: directory, publicKeySha256: 'c'.repeat(64)}},
+            identity           : LOGIN, plan, profile, leaseRequired: true, owners: {GH_TOKEN: owner}, env: START_ENV});
+        state.seats = [{start, state: 'running', ownershipUnresolved: false, cleanupUnresolved: false}];
+        service.activate({generation: reservation.generation, agentId: 'seat', plan, env: START_ENV,
+            owners: {GH_TOKEN: owner}, probe: () => state.observed});
+        if (revoke) service.revoke('seat', 'stop-requested');
+        await closeListener();
+        if (clean) service.journal.handoff(service.admissionSnapshot(), reservation.issuer);
+        else service.journal.close();
+        service.journal = null;
+        service.generations.clear(); service.grants.clear();
+        const previous    = service.openJournal({directory: custody, readSeatStarts: () => state.seats});
+        const restoreSeat = async () => ({capabilities: reservation.grants, owners: {GH_TOKEN: owner}, residentInputs: {}, probe: () => state.observed});
+        return {state, registry, reservation, previous, restoreSeat, custody};
+    }
+
+    test('a clean successor rebinds the original origin and redeems the same capability with current owner bytes', async () => {
+        const f = await predecessor();
+        f.state.credential = 'rotated-fixture-pat';
+        expect(await service.recover(f)).toEqual([{agentId: 'seat', state: 'active', reason: null}]);
+        expect(service.issuerOrigin).toBe(f.reservation.issuer);
+        expect(await redeem(f.reservation.grants['github-workflow'], {server: 'github-workflow'}))
+            .toMatchObject({outcome: 'admitted', env: {GH_TOKEN: 'rotated-fixture-pat'}, generationRoot: f.state.seats[0].start.runtime.runtimeRoot});
+        const raw = fs.readFileSync(path.join(f.custody, 'issuer.json'), 'utf8');
+        expect(raw).not.toContain('rotated-fixture-pat');
+        expect(raw).not.toContain(f.reservation.grants['github-workflow']);
+    });
+
+    test('an unclean predecessor preserves hashes and pins but restores no capability or endpoint', async () => {
+        const f     = await predecessor({clean: false});
+        let   calls = 0;
+        expect(await service.recover({...f, restoreSeat: async () => { calls++; return f.restoreSeat(); }}))
+            .toEqual([{agentId: 'seat', state: 'stale', reason: 'recovery-unverified'}]);
+        expect(calls).toBe(0);
+        expect(service.httpServer).toBeNull();
+        expect(service.grants.size).toBe(0);
+        expect(service.admissionSnapshot().seats).toEqual(f.state.seats);
+        expect(service.admissionSnapshot().generations[0].servers[0].capabilityHash)
+            .toBe(f.previous.snapshot.generations[0].servers[0].capabilityHash);
+    });
+
+    test('a bind conflict refuses the original origin without moving to another port', async () => {
+        const f       = await predecessor();
+        const blocker = http.createServer();
+        await new Promise(resolve => blocker.listen(Number(f.reservation.issuer.split(':').at(-1)), '127.0.0.1', resolve));
+        try {
+            await expect(service.recover(f)).rejects.toThrow('no alternate port selected');
+            expect(service.grants.size).toBe(0);
+            expect(service.httpServer).toBeNull();
+            expect(service.continuityPhase).toBe('unavailable');
+            await expect(service.reserve({agent: f.state.agent})).rejects.toThrow('continuity is not ready');
+        } finally { await new Promise(resolve => blocker.close(resolve)); }
+    });
+
+    test('revocation before handoff and Stop during asynchronous custody checks cannot be recovered', async () => {
+        const f        = await predecessor();
+        const entered  = deferred(), finish = deferred();
+        const recovery = service.recover({...f, restoreSeat: async () => { entered.resolve(); await finish.promise; return f.restoreSeat(); }});
+        await entered.promise;
+        service.revoke('seat', 'stop-requested');
+        finish.resolve();
+        expect(await recovery).toEqual([{agentId: 'seat', state: 'revoked', reason: 'stop-requested'}]);
+        expect(service.grants.size).toBe(0);
+        expect(service.admissionSnapshot().generations[0].state).toBe('revoked');
+    });
+
+    test('a predecessor tombstone is preserved without reading a profile', async () => {
+        const f    = await predecessor({revoke: true});
+        let   read = false;
+        expect(await service.recover({...f, restoreSeat: async () => { read = true; return f.restoreSeat(); }}))
+            .toEqual([{agentId: 'seat', state: 'revoked', reason: 'stop-requested'}]);
+        expect(read).toBe(false);
+    });
+
+    test('a failed recovery write releases its newly bound listener and leaves no admitted grants', async () => {
+        const f = await predecessor();
+        service.journal.write = () => { throw Error('fixture lost recovery write'); };
+        await expect(service.recover(f)).rejects.toThrow('fixture lost recovery write');
+        expect(service.journalFailed).toBe(true);
+        expect(service.grants.size).toBe(0);
+        expect(service.httpServer).toBeNull();
+        const probe = http.createServer();
+        await new Promise((resolve, reject) => {
+            probe.once('error', reject);
+            probe.listen(Number(f.reservation.issuer.split(':').at(-1)), '127.0.0.1', resolve);
+        });
+        await new Promise(resolve => probe.close(resolve));
+    });
+
+    test('off then on during recovery cannot resurrect an individual grant', async () => {
+        const f           = await predecessor();
+        const restoreSeat = async () => {
+            const original = f.state.agent;
+            f.state.agent = {...original, mcpServers: {...original.mcpServers, 'github-workflow': false}};
+            service.onDefinitionChange({id: 'seat', next: f.state.agent});
+            f.state.agent = original;
+            service.onDefinitionChange({id: 'seat', next: original});
+            return f.restoreSeat();
+        };
+        expect((await service.recover({...f, restoreSeat}))[0].state).toBe('active');
+        expect(await redeem(f.reservation.grants['github-workflow'], {server: 'github-workflow'}))
+            .toMatchObject({outcome: 'refused', code: 'revoked', reason: 'server-disabled'});
+    });
+
+    for (const failure of ['capability', 'owner', 'process', 'definition']) {
+        test(`recovery refuses changed ${failure} evidence without minting grants`, async () => {
+            const f           = await predecessor();
+            const restoreSeat = async () => {
+                const result = await f.restoreSeat();
+                if (failure === 'capability') result.capabilities = {'github-workflow': 'a'.repeat(22) + '.' + 'b'.repeat(43)};
+                if (failure === 'owner') result.owners = {};
+                if (failure === 'process') f.state.observed = 'unknown';
+                if (failure === 'definition') f.state.agent = {...f.state.agent, launchOwner: 'external'};
+                return result;
+            };
+            expect(await service.recover({...f, restoreSeat})).toEqual([{agentId: 'seat', state: 'stale', reason: 'recovery-unverified'}]);
+            expect(service.grants.size).toBe(0);
+        });
+    }
 });
 
 test.describe('McpLaunchAdmissionService — durable phase transitions', () => {

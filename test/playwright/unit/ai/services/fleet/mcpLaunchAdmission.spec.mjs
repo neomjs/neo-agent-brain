@@ -119,7 +119,7 @@ test.describe('launchRowEnvNames: one name is literal or redeemed, never both', 
         expect(mc.redeemed).toContain('GEMINI_API_KEY');
         expect(mc.required).toEqual(['GEMINI_API_KEY']);
         expect(gw).toEqual({placement: ['NEO_PLANE_DATA_ROOT', 'NEO_MEMORY_WAL_DIR'], redeemed: ['GH_TOKEN', 'GITHUB_TOKEN'], required: ['GH_TOKEN']});
-        expect(nl.redeemed).toEqual(['NEO_FLEET_BRIDGE_TOKEN']);
+        expect(nl.redeemed).toEqual(['NEO_NL_PORT', 'NEO_FLEET_BRIDGE_TOKEN']);
 
         for (const names of [mc, gw, nl]) {
             expect(names.redeemed).not.toContain('NEO_AGENT_IDENTITY');
