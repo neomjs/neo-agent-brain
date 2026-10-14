@@ -1705,12 +1705,18 @@ class MemoryService extends Base {
                 throw new TypeError('memorySharing must name private, team or legacy.');
             }
 
-            // Default recovery remains tenant-scoped. Only an explicit request consults sharing.
-            const sharing = memorySharing === undefined ? null : resolveSharingPolicy({
-                configuredDefault: aiConfig.memorySharing.defaultPolicy,
-                requested        : memorySharing
-            });
-            const policy = sharing?.policy ?? 'private';
+            const callerIdentity    = normalizeAgentIdentityNodeId(RequestContextService.getAgentIdentityNodeId());
+            const selfRead          = !agentIdentity || agentIdentity === '@me';
+            const identity          = selfRead ? callerIdentity : normalizeAgentIdentityNodeId(agentIdentity);
+            const configuredDefault = aiConfig.memorySharing.defaultPolicy;
+
+            // Recovery of one's own identity stays tenant-scoped. On a `team` deployment, a public-summary read of
+            // another identity takes the team policy that already entitles any caller to it; elsewhere it stays private.
+            const requested = memorySharing ?? (!selfRead && identity !== callerIdentity && projection === 'public' && detail === 'summary' && configuredDefault === 'team'
+                ? 'team'
+                : undefined);
+            const sharing = requested === undefined ? null : resolveSharingPolicy({configuredDefault, requested});
+            const policy  = sharing?.policy ?? 'private';
             if (!['private', 'team', 'legacy'].includes(policy)) {
                 throw new TypeError('The configured memory sharing policy is unavailable.');
             }
@@ -1720,16 +1726,8 @@ class MemoryService extends Base {
             if (!sqlite) {
                 throw new Error('The graph recency reader is unavailable.');
             }
-
-            const callerIdentity = normalizeAgentIdentityNodeId(RequestContextService.getAgentIdentityNodeId());
-            let   identity       = agentIdentity;
-            if (!identity || identity === '@me') {
-                identity = callerIdentity;
-                if (!identity) {
-                    return {_channelSeparation: channelSeparation, count: 0, turns: [], nextCursor: null, scope: 'fail-closed: no resolvable agent identity'};
-                }
-            } else {
-                identity = normalizeAgentIdentityNodeId(identity);
+            if (selfRead && !identity) {
+                return {_channelSeparation: channelSeparation, count: 0, turns: [], nextCursor: null, scope: 'fail-closed: no resolvable agent identity'};
             }
 
             // Private content still requires both the default tenant scope and author identity.
@@ -1787,7 +1785,7 @@ class MemoryService extends Base {
             // page must not read as "this identity has no turns". A hint, never a `scope` refusal.
             const hint = turns.length === 0 && identity !== callerIdentity && policy !== 'team'
                 ? `${policy} reads only rows owned by this caller${policy === 'legacy' ? ' or shared' : ''}; ${identity} may have turns outside it, ` +
-                  (sharing?.clamped ? 'which this deployment\'s sharing default keeps unreadable' : 'readable with memorySharing \'team\' (public summaries)')
+                  (configuredDefault === 'team' ? 'readable with memorySharing \'team\' (public summaries)' : 'which this deployment\'s sharing default keeps unreadable')
                 : null;
 
             return {
