@@ -15,10 +15,12 @@ import {launchRowEnvNames}                            from './managedAgentWorksp
 import {openLaunchAdmissionJournal}                   from './launchAdmissionJournal.mjs';
 import {isRuntimeGenerationPin, runtimeGenerationPin} from './runtimeGeneration.mjs';
 import {isSeatRuntimeSnapshot}                        from './seatRuntimeRecord.mjs';
+import {isLaunchCredentialBinding}                    from './launchCredentialOwners.mjs';
 import {
     LAUNCH_ADMISSION_MAX_BYTES,
     LAUNCH_ADMISSION_PATH,
     canonicalJson,
+    isAdmissibleEnvName,
     isLaunchIdentity,
     launchRefusal,
     mintLaunchGrant,
@@ -179,7 +181,7 @@ class McpLaunchAdmissionService extends Base {
         if (typeof readSeatStarts !== 'function') throw new TypeError('Seat Start projection must be a function.');
         this.readSeatStarts = readSeatStarts;
         this.journal = openLaunchAdmissionJournal({
-            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 3, generations: [], seats: []}
+            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 4, generations: [], seats: []}
         });
         return this.journal.previous
     }
@@ -192,15 +194,16 @@ class McpLaunchAdmissionService extends Base {
      */
     admissionSnapshot() {
         return {
-            version    : 3,
+            version    : 4,
             seats      : this.readSeatStarts ? this.readSeatStarts() : [],
             generations: [...this.generations.values()].map(generation => ({
-                id            : generation.id, agentId: generation.agentId, identity: generation.identity,
-                state         : generation.state, reason: generation.reason,
-                reservedAt    : generation.reservedAt, activatedAt: generation.activatedAt, revokedAt: generation.revokedAt,
-                definitionHash: crypto.createHash('sha256').update(canonicalJson(generation.definition)).digest('hex'),
-                runtime       : generation.runtime ? {...generation.runtime} : null,
-                servers       : [...generation.servers.values()].map(server => ({
+                id                : generation.id, agentId: generation.agentId, identity: generation.identity,
+                state             : generation.state, reason: generation.reason,
+                reservedAt        : generation.reservedAt, activatedAt: generation.activatedAt, revokedAt: generation.revokedAt,
+                definitionHash    : crypto.createHash('sha256').update(canonicalJson(generation.definition)).digest('hex'),
+                runtime           : generation.runtime ? {...generation.runtime} : null,
+                credentialBindings: structuredClone(generation.credentialBindings),
+                servers           : [...generation.servers.values()].map(server => ({
                     key           : server.key, grantId: server.grantId, state: server.state, reason: server.reason,
                     capabilityHash: crypto.createHash('sha256').update(`${server.grantId}.${server.secret}`).digest('hex')
                 }))
@@ -274,23 +277,24 @@ class McpLaunchAdmissionService extends Base {
             previous   = this.generations.get(agent.id),
             definition = projectDefinition(agent),
             generation = {
-                id            : crypto.randomUUID(),
-                agentId       : agent.id,
+                id                : crypto.randomUUID(),
+                agentId           : agent.id,
                 identity,
-                state         : STATES.RESERVED,
-                reason        : null,
-                reservedAt    : new Date().toISOString(),
-                activatedAt   : null,
-                revokedAt     : null,
+                state             : STATES.RESERVED,
+                reason            : null,
+                reservedAt        : new Date().toISOString(),
+                activatedAt       : null,
+                revokedAt         : null,
                 definition,
                 runtime,
-                generationRoot: null,
-                servers       : new Map(),
-                owners        : {},
-                proofs        : new Map(),
-                probe         : null,
-                waiters       : new Set(),
-                audit         : []
+                generationRoot    : null,
+                servers           : new Map(),
+                owners            : {},
+                credentialBindings: {},
+                proofs            : new Map(),
+                probe             : null,
+                waiters           : new Set(),
+                audit             : []
             },
             grants     = {};
 
@@ -363,6 +367,16 @@ class McpLaunchAdmissionService extends Base {
             generation.runtime && plan.some(row => row.sourceRoot !== generationRoot || row.command !== generation.runtime.executable)) {
             throw new Error('Launch admission targets do not bind the reserved runtime.')
         }
+        const credentialBindings = {};
+        for (const [name, owner] of Object.entries(owners)) {
+            if (owner.binding !== undefined) {
+                if (!isAdmissibleEnvName(name) || !isLaunchCredentialBinding(owner.binding) ||
+                    owner.binding.agentId !== agentId || owner.binding.identity !== generation.identity) {
+                    throw new Error('Launch admission credential binding is invalid.');
+                }
+                credentialBindings[name] = structuredClone(owner.binding);
+            }
+        }
 
         for (const server of generation.servers.values()) {
             const row = plan.find(entry => entry.key === server.key);
@@ -392,7 +406,8 @@ class McpLaunchAdmissionService extends Base {
             server.state = STATES.ACTIVE
         }
 
-        Object.assign(generation, {state: STATES.ACTIVE, activatedAt: new Date().toISOString(), generationRoot, owners: {...owners}, probe});
+        Object.assign(generation, {state: STATES.ACTIVE, activatedAt: new Date().toISOString(), generationRoot,
+            credentialBindings, owners: {...owners}, probe});
         this.persistAdmission();
         this.releaseStartSignal(generation);
         this.settle(generation);
@@ -820,13 +835,16 @@ function isAdmissionSnapshot(value) {
     const unique    = (rows, key) => new Set(rows.map(row => row[key])).size === rows.length;
     const phase     = row => Object.values(STATES).includes(row.state) &&
         (row.reason === null || Object.values(REASONS).includes(row.reason));
-    return exact(value, ['version', 'generations', 'seats']) && value.version === 3 && Array.isArray(value.generations) &&
+    return exact(value, ['version', 'generations', 'seats']) && value.version === 4 && Array.isArray(value.generations) &&
         Array.isArray(value.seats) && value.seats.every(isSeatRuntimeSnapshot) &&
         new Set(value.seats.map(row => row.start.agentId)).size === value.seats.length &&
         value.generations.every(row => exact(row, [
-            'id', 'agentId', 'identity', 'state', 'reason', 'reservedAt', 'activatedAt', 'revokedAt', 'definitionHash', 'runtime', 'servers'
+            'id', 'agentId', 'identity', 'state', 'reason', 'reservedAt', 'activatedAt', 'revokedAt', 'definitionHash', 'runtime', 'credentialBindings', 'servers'
         ]) && text(row.id) && text(row.agentId) && isLaunchIdentity(row.identity) && phase(row) && hash(row.definitionHash) &&
             (row.runtime === null || isRuntimeGenerationPin(row.runtime)) &&
+            row.credentialBindings && typeof row.credentialBindings === 'object' && !Array.isArray(row.credentialBindings) &&
+            Object.entries(row.credentialBindings).every(([name, binding]) => isAdmissibleEnvName(name) &&
+                isLaunchCredentialBinding(binding) && binding.agentId === row.agentId && binding.identity === row.identity) &&
             ['reservedAt', 'activatedAt', 'revokedAt'].every(key => timestamp(row[key])) && Array.isArray(row.servers) &&
             row.servers.every(server => exact(server, ['key', 'grantId', 'state', 'reason', 'capabilityHash']) &&
                 text(server.key) && text(server.grantId) && phase(server) && hash(server.capabilityHash)) &&

@@ -29,6 +29,7 @@ import * as core                                     from 'neo.mjs/src/core/_exp
 import McpLaunchAdmissionService         from '../../../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
 import FleetTenantService                from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
 import {writeFileAtomicSync}             from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
+import {createSeatPatOwner}              from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
 import {createManagedAgentWorkspacePlan} from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {
     LAUNCH_ADMISSION_PATH,
@@ -169,15 +170,37 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
             .toThrow(/snapshot-invalid/);
     });
 
+    test('original credential ownership survives revocation without persisting credential values', async () => {
+        service.openJournal({directory});
+        const agent = seatDefinition(), registry = {getDataDir: () => directory,
+            getDefinition: () => agent, resolveCredential: () => PAT};
+        const owner       = createSeatPatOwner({registry, agent, proveForgeAccount: async () => ({verdict: 'proved'})});
+        const reservation = await activeSeat({owners: {...makeOwners().owners, GH_TOKEN: owner}});
+        const file        = path.join(directory, 'issuer.json');
+        expect(fs.readJsonSync(file).snapshot.generations[0].credentialBindings).toEqual({GH_TOKEN: owner.binding});
+        service.revoke('seat', 'stop-requested');
+        const snapshot = fs.readJsonSync(file).snapshot;
+        expect(snapshot.generations[0]).toMatchObject({state: 'revoked', credentialBindings: {GH_TOKEN: owner.binding}});
+        expect(service.generations.get('seat').owners).toEqual({});
+        for (const secret of [PAT, BEARER, ...Object.values(reservation.grants)]) {
+            expect(fs.readFileSync(file, 'utf8')).not.toContain(secret);
+        }
+        for (const change of [{credential: PAT}, {agentId: 'another-seat'}, {identity: 'another-login'}]) {
+            const invalid = structuredClone(snapshot);
+            Object.assign(invalid.generations[0].credentialBindings.GH_TOKEN, change);
+            expect(() => service.journal.write(invalid)).toThrow(/snapshot-invalid/);
+        }
+    });
+
     test('old and new Starts keep distinct durable runtimes and signed admission roots', async () => {
         service.openJournal({directory});
         for (const letter of ['a', 'b']) {
-            const id = letter.repeat(64), runtimeDirectory = path.join(directory, id);
+            const id      = letter.repeat(64), runtimeDirectory = path.join(directory, id);
             const runtime = {id, directory: runtimeDirectory, payloadDigest: 'c'.repeat(64),
                 runtimeRoot: path.join(runtimeDirectory, 'host.runtime/organism'),
-                executable: path.join(runtimeDirectory, 'host.runtime/node')};
+                executable : path.join(runtimeDirectory, 'host.runtime/node')};
             const reservation = await service.reserve({agent: seatDefinition({id: letter}), runtimeGeneration: runtime});
-            const plan = boundPlan({root: runtime.runtimeRoot}).map(row => ({...row, command: runtime.executable}));
+            const plan        = boundPlan({root: runtime.runtimeRoot}).map(row => ({...row, command: runtime.executable}));
             expect(() => service.activate({generation: reservation.generation, agentId: letter,
                 plan: plan.map(row => ({...row, command: process.execPath})), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'}))
                 .toThrow(/do not bind the reserved runtime/);
@@ -188,7 +211,7 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
             expect(service.statusOf(letter).recent.at(-1).generationRoot).toBe(runtime.runtimeRoot);
         }
         const snapshot = fs.readJsonSync(path.join(directory, 'issuer.json')).snapshot;
-        expect(snapshot.version).toBe(3);
+        expect(snapshot.version).toBe(4);
         expect(snapshot.generations.map(row => row.runtime.id)).toEqual(['a'.repeat(64), 'b'.repeat(64)]);
         expect(snapshot.generations.every(row => row.state === 'active')).toBe(true);
         const extraSecret = structuredClone(snapshot);
@@ -278,22 +301,22 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
         const mc = await redeem(reservation.grants['memory-core'], {server: 'memory-core'});
 
         expect(mc).toEqual({
-            outcome: 'admitted',
+            outcome       : 'admitted',
             generationRoot: '/installed/neo',
-            env    : {NEO_MCP_REMOTE_TOKEN: BEARER},
-            args   : ['/installed/neo/ai/mcp/client/stdioToStreamableHttp.mjs', '--url', 'https://plane.example.test/mc/mcp', '--token-env', 'NEO_MCP_REMOTE_TOKEN']
+            env           : {NEO_MCP_REMOTE_TOKEN: BEARER},
+            args          : ['/installed/neo/ai/mcp/client/stdioToStreamableHttp.mjs', '--url', 'https://plane.example.test/mc/mcp', '--token-env', 'NEO_MCP_REMOTE_TOKEN']
         });
         expect(await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'})).toEqual({
-            outcome: 'admitted',
+            outcome       : 'admitted',
             generationRoot: '/installed/neo',
-            env    : {GH_TOKEN: PAT},
-            args   : ['/installed/neo/ai/mcp/server/github-workflow/mcp-server.mjs']
+            env           : {GH_TOKEN: PAT},
+            args          : ['/installed/neo/ai/mcp/server/github-workflow/mcp-server.mjs']
         });
         expect(await redeem(reservation.grants['neural-link'], {server: 'neural-link'})).toEqual({
-            outcome: 'admitted',
+            outcome       : 'admitted',
             generationRoot: '/installed/neo',
-            env    : {NEO_FLEET_BRIDGE_TOKEN: 'bridge-fixture-token'},
-            args   : ['/installed/neo/ai/mcp/server/neural-link/mcp-server.mjs', '--cwd', '/installed/neo']
+            env           : {NEO_FLEET_BRIDGE_TOKEN: 'bridge-fixture-token'},
+            args          : ['/installed/neo/ai/mcp/server/neural-link/mcp-server.mjs', '--cwd', '/installed/neo']
         })
     });
 

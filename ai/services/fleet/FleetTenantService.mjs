@@ -272,9 +272,10 @@ class FleetTenantService extends Base {
      * @param {String} options.expectedIdentity Canonical seat identity the provider credential must
      *     resolve to. A valid credential for a different provider subject fails closed.
      * @param {AbortSignal} [options.signal] Issuer's overall proof budget.
+     * @param {Boolean} [options.servedPlane=false] Include authenticated plane identities for original-Start custody.
      * @returns {Promise<Object>} Bounded `{ok,status,verdict,resources}`; never remote prose or a token.
      */
-    async probeSeatCredential({tenantId, credential, expectedIdentity, signal}={}) {
+    async probeSeatCredential({tenantId, credential, expectedIdentity, signal, servedPlane = false}={}) {
         const
             resolved          = this.resolveMcpResources(tenantId),
             canonicalIdentity = normalizeAgentIdentity(expectedIdentity);
@@ -291,6 +292,7 @@ class FleetTenantService extends Base {
                 endpoint        : resolved.endpoint,
                 credential,
                 expectedIdentity: canonicalIdentity,
+                ...(servedPlane ? {servedPlane: true} : {}),
                 signal
             });
 

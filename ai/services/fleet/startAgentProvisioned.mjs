@@ -1,11 +1,13 @@
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                          from './mcpServers.mjs';
-import {ensureAgentRepo, ensureAgentRepos}                      from './ensureAgentRepo.mjs';
-import {installSeatDependencies}                                from './installAgentRepoDependencies.mjs';
-import {LAUNCH_ADMISSION_CREDENTIALS, LAUNCH_ADMISSION_REASONS} from '../../../src/fleet/contract/launchAdmission.mjs';
-import {launchRefusalOf}                                        from '../../../src/fleet/contract/launchAuthority.mjs';
-import {prepareManagedAgentWorkspace}                           from './prepareManagedAgentWorkspace.mjs';
-import {resolveSeatPlaneTarget}                                 from './resolveSeatPlaneTarget.mjs';
-import {importSeatMemory, MEMORY_IMPORT_NONE}                   from './seatMemoryImport.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR}     from './mcpServers.mjs';
+import {ensureAgentRepo, ensureAgentRepos} from './ensureAgentRepo.mjs';
+import {installSeatDependencies}           from './installAgentRepoDependencies.mjs';
+import {LAUNCH_ADMISSION_REASONS}          from '../../../src/fleet/contract/launchAdmission.mjs';
+import {createSeatPatOwner, createSeatPlaneOwner, createTenantBearerOwner, servedPlaneBinding, tenantProvesSeat}
+    from './launchCredentialOwners.mjs';
+import {launchRefusalOf}                      from '../../../src/fleet/contract/launchAuthority.mjs';
+import {prepareManagedAgentWorkspace}         from './prepareManagedAgentWorkspace.mjs';
+import {resolveSeatPlaneTarget}               from './resolveSeatPlaneTarget.mjs';
+import {importSeatMemory, MEMORY_IMPORT_NONE} from './seatMemoryImport.mjs';
 import {
     convergeSeatGitIdentity,
     proveSeatForgeAccount,
@@ -35,21 +37,6 @@ function expectedAgentIdentity(agent) {
     }
 
     return `@${login}`
-}
-
-/**
- * @summary Whether a tenant's readiness proves the seat's plane credential: both of its resources answer, and
- * the Memory Core names the seat.
- * @param {Object|null} readiness What `FleetTenantService.probeSeatCredential` answered.
- * @param {String} expectedIdentity The seat's canonical `@login`.
- * @returns {Boolean}
- * @private
- */
-function tenantProvesSeat(readiness, expectedIdentity) {
-    return Boolean(readiness?.ok &&
-        readiness.resources?.['memory-core']?.ok &&
-        readiness.resources['memory-core'].identity === expectedIdentity &&
-        readiness.resources?.['knowledge-base']?.ok)
 }
 
 /**
@@ -368,6 +355,7 @@ async function provisionAgent({
     // Resolve the resident child envelope and seat PAT before any checkout/config mutation.
     // The same resolved envelope names the rendered slots and supplies the eventual spawn.
     const resolvedResidentMcpEnv = lifecycleService.resolveResidentMcpEnvironment(agent, {remote});
+    const patOwner               = desktopRows ? createSeatPatOwner({registry, agent, proveForgeAccount}) : null;
     const resolvedCredential     = registry.resolveCredential(agentId);
 
     // the creation test, applied to what is stored: a blank value written before the requirement
@@ -481,7 +469,8 @@ async function provisionAgent({
         const readiness        = await activeTenantService.probeSeatCredential({
             tenantId  : target.tenantId,
             credential: resolvedMcpCredential,
-            expectedIdentity
+            expectedIdentity,
+            ...(installedRuntime && desktopRows ? {servedPlane: true} : {})
         });
         startSignal.throwIfAborted();
 
@@ -489,17 +478,10 @@ async function provisionAgent({
             throw new Error(`startAgentProvisioned: remote MCP credential readiness failed for agent '${agentId}'.`)
         }
 
-        planeOwner = {
-            credential: LAUNCH_ADMISSION_CREDENTIALS.PLANE_BEARER,
-            resolve   : () => activeTenantService.resolveMcpCredential(target.tenantId),
-            prove     : async (credential, {signal} = {}) => {
-                const proof = await activeTenantService.probeSeatCredential({tenantId: target.tenantId, credential, expectedIdentity, signal});
-                return {
-                    verdict: proof?.verdict === 'unanswered' ? 'unanswered'
-                        : tenantProvesSeat(proof, expectedIdentity) ? 'proved' : 'refused'
-                }
-            }
-        }
+        const provenPlane = servedPlaneBinding(readiness);
+        if (installedRuntime && desktopRows && !provenPlane) throw new Error('startAgentProvisioned: the tenant did not prove one original plane for runtime recovery.');
+        if (desktopRows) planeOwner = createTenantBearerOwner({tenantService: activeTenantService, agentId, tenantId: target.tenantId,
+            endpoint: remotePlan.endpoint, expectedIdentity, provenPlane});
     } else if (placement?.kind === 'plane') {
         const
             expectedIdentity = expectedAgentIdentity(agent),
@@ -551,11 +533,8 @@ async function provisionAgent({
         // proved against the plane this Start met, so a binding moved to another plane does not carry over
         const provenPlane = stored.plane;
 
-        planeOwner = {
-            credential: LAUNCH_ADMISSION_CREDENTIALS.PLANE_BEARER,
-            resolve   : () => activeTenantService.resolveSeatPlaneCredential(storedArgs)?.credential ?? null,
-            prove     : (credential, {signal} = {}) => activeTenantService.probeSeatPlaneCredential({planeBase: placement.endpoint, credential, expectedIdentity, expectedPlane: provenPlane, signal})
-        }
+        if (desktopRows) planeOwner = createSeatPlaneOwner({tenantService: activeTenantService, agentId,
+            planeBase: placement.endpoint, expectedIdentity, provenPlane});
     }
 
     // Ensure the checkout exists (clone-or-reuse, never clobber). A throw here propagates: the harness
@@ -714,11 +693,7 @@ async function provisionAgent({
                     plan      : prepared.mcpPlan,
                     ...(prepared.launchAdmissionBinding ? {profile: prepared.launchAdmissionBinding} : {}),
                     owners    : {
-                        pat: {
-                            credential: LAUNCH_ADMISSION_CREDENTIALS.SEAT_PAT,
-                            resolve   : () => registry.resolveCredential(agentId),
-                            prove     : (credential, {signal} = {}) => proveForgeAccount({agent, credential, signal})
-                        },
+                        pat: patOwner,
                         ...(planeOwner ? {plane: planeOwner} : {})
                     }
                 }} : {})

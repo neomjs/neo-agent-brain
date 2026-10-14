@@ -83,6 +83,7 @@ function makeLifecycle({
         isRunning          : id => !!running[id],
         status             : id => { calls.status.push(id); return {id, running: !!running[id], state: running[id] ? 'running' : 'stopped'}; },
         getRegistry        : () => ({
+            getDataDir       : () => os.tmpdir(),
             getAgent         : id => agents[id] || null,
             getDefinition    : id => definitions[id] || null,
             resolveCredential: id => {
@@ -226,6 +227,7 @@ function makeTenantService({
 
     return {
         calls,
+        getDataDir: () => os.tmpdir(),
         resolveMcpResources(tenantId) {
             events?.push('resolve-tenant');
             calls.resolve.push(tenantId);
@@ -260,7 +262,7 @@ function makeTenantService({
 
 test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning)', () => {
     test('packaged preparation uses the verified executable and records only a prepared runtime', async () => {
-        const lifecycle = makeLifecycle({agents: repoAgent('a')}), prepare = makePrepareWorkspace();
+        const lifecycle  = makeLifecycle({agents: repoAgent('a')}), prepare = makePrepareWorkspace();
         const generation = {directory: '/generations/one', runtimeRoot: '/generations/one/organism', executable: '/generations/one/host'};
         lifecycle.installedRuntime = {...generation, generation};
         const options = {lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed',
@@ -1103,6 +1105,33 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         }
     });
 
+    test('a packaged tenant Start requires matching served-plane facts before preparation and binds their owner', async () => {
+        const plane = {id: 'original-plane', dataRoot: '/tenant/data'};
+        for (const kbPlane of [null, {...plane, id: 'other-plane'}, {...plane}]) {
+            const agents = remoteRepoAgent('seat');
+            agents.seat.harnessType = 'claude-desktop';
+            const lifecycle  = makeLifecycle({agents}), ensure = makeEnsureRepo(), prepare = makePrepareWorkspace();
+            const generation = {runtimeRoot: '/generations/one/organism', executable: '/generations/one/host'};
+            lifecycle.installedRuntime = {...generation, generation};
+            const tenantService = makeTenantService({readiness: {ok: true, resources: {
+                'memory-core': {ok: true, identity: '@seat', plane}, 'knowledge-base': {ok: true, plane: kbPlane}
+            }}});
+            const start = startAgentProvisioned({lifecycleService: lifecycle, tenantService, agentId: 'seat',
+                managedRoot: '/managed', ensureRepo: ensure, prepareWorkspace: prepare});
+            if (kbPlane?.id === plane.id) {
+                await start;
+                expect(lifecycle.calls.start[0].opts.launchAdmission.owners.plane.binding).toMatchObject({
+                    kind    : 'tenant-bearer', agentId: 'seat', identity: 'seat', tenantId: 'tenant-a',
+                    endpoint: 'https://tenant.example.com', plane
+                });
+            } else {
+                await expect(start).rejects.toThrow(/did not prove one original plane/);
+                expect([ensure.calls.length, prepare.calls.length, lifecycle.calls.start.length]).toEqual([0, 0, 0]);
+            }
+            expect(tenantService.calls.probe[0].servedPlane).toBe(true);
+        }
+    });
+
     test('a Claude Desktop profile another process holds, or a process table that cannot be read, refuses before anything is cloned', async () => {
         for (const profileInUse of [true, null]) {
             const
@@ -1673,6 +1702,7 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
 
         return {
             calls,
+            getDataDir: () => os.tmpdir(),
             resolveSeatPlaneCredential(args) {
                 events?.push('plane-credential');
                 calls.resolve.push(args);

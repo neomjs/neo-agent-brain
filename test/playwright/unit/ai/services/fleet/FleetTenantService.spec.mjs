@@ -949,6 +949,29 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — connectTenant
         expect(FleetTenantService.resolveMcpCredential('missing')).toBeNull()
     })
 
+    test('runtime custody requests authenticated served-plane facts through the existing tenant probe', async () => {
+        FleetTenantService.probeFn = async () => ({ok: true});
+        const connected = await FleetTenantService.connectTenant({
+            tenantUrl: 'https://tenant.example.com', credential: 'tenant-connection-pat'
+        });
+        const plane = {id: 'original-plane', dataRoot: '/tenant/data'}, calls = [];
+        FleetTenantService.probeFn = async args => {
+            calls.push(args);
+            return {ok: true, resources: {
+                'memory-core'   : {ok: true, identity: '@neo-gpt', plane},
+                'knowledge-base': {ok: true, plane: {...plane}}
+            }};
+        };
+        const readiness = await FleetTenantService.probeSeatCredential({
+            tenantId: connected.id, credential: PAT, expectedIdentity: '@neo-gpt', servedPlane: true
+        });
+        expect(calls).toEqual([{endpoint: 'https://tenant.example.com', credential: PAT,
+            expectedIdentity: '@neo-gpt', servedPlane: true}]);
+        expect(readiness.resources['memory-core'].plane).toEqual(plane);
+        expect(readiness.resources['knowledge-base'].plane).toEqual(plane);
+        expect(JSON.stringify(readiness)).not.toContain(PAT);
+    });
+
     test('seat readiness proves the exact canonical identity and rejects empty or mismatched inputs', async () => {
         FleetTenantService.probeFn = async () => ({ok: true})
 

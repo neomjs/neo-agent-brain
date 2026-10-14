@@ -87,7 +87,8 @@ const DESKTOP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-desktop-instan
 /** A minimal registry stub so lifecycle specs never touch the real on-disk credential store. */
 function makeRegistry(agents, creds) {
     return {
-        getAgent         : id => agents[id] || null,
+        getDataDir: () => DESKTOP_ROOT,
+        getAgent  : id => agents[id] || null,
         // The spawn path reads the RAW definition (launch visible) — the public getAgent
         // projection redacts metadata.launch, so the service consumes this surface instead.
         getDefinition    : id => agents[id] || null,
@@ -1992,16 +1993,16 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
     }
 
     test('Desktop activation commits its exact process/profile binding before admission; an exit write failure still completes physical cleanup', async () => {
-        const {spawn} = installSeat('claude-desktop'), service = McpLaunchAdmissionService;
-        const root = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody');
-        const id = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
+        const {spawn}    = installSeat('claude-desktop'), service = McpLaunchAdmissionService;
+        const root       = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody');
+        const id         = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
         const generation = {id, directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
             runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
         const agent = FleetLifecycleService.registry.getDefinition('seat');
         agent.mcpServers = {'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': false, 'gitlab-workflow': false};
         const plan = createManagedAgentWorkspacePlan({agent: {id: agent.id, harnessType: agent.harnessType}, mcpMatrix: agent.mcpServers}).mcpServers.map(row => ({...row,
             sourceRoot: generation.runtimeRoot, command: generation.executable,
-            args: [path.join(generation.runtimeRoot, row.entrypoint), ...(row.key === 'neural-link' ? ['--cwd', generation.runtimeRoot] : [])]}));
+            args      : [path.join(generation.runtimeRoot, row.entrypoint), ...(row.key === 'neural-link' ? ['--cwd', generation.runtimeRoot] : [])]}));
         FleetLifecycleService.installedRuntime = {...generation, generation};
         let fail = false;
         try {
@@ -2010,7 +2011,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 return writeFileAtomicSync(file, content, options);
             }});
             const reserved = await service.reserve({agent, runtimeGeneration: generation});
-            const profile = createDesktopLaunchBinding({identity: 'seat', issuer: reserved.issuer, rows: {
+            const profile  = createDesktopLaunchBinding({identity: 'seat', issuer: reserved.issuer, rows: {
                 'neo-mjs-neural-link': {env: {NEO_AGENT_IDENTITY: 'seat', NEO_FLEET_LAUNCH_ISSUER: reserved.issuer,
                     NEO_FLEET_LAUNCH_GRANT: reserved.grants['neural-link']}}
             }});
@@ -2036,9 +2037,9 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
     });
 
     test('a seat without admission grants publishes its original runtime in the same journal, and a lost exit write retains uncertainty', async () => {
-        const {spawn} = installSeat('codex-desktop'), service = McpLaunchAdmissionService;
-        const root = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody');
-        const id = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
+        const {spawn}    = installSeat('codex-desktop'), service = McpLaunchAdmissionService;
+        const root       = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody');
+        const id         = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
         const generation = {id, directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
             runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
         FleetLifecycleService.installedRuntime = {...generation, generation};
@@ -2049,8 +2050,8 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 if (fail) throw Error('fixture lost exit write');
                 return writeFileAtomicSync(file, content, options);
             }});
-            const status = FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []});
-            const file = path.join(directory, 'issuer.json');
+            const status   = FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []});
+            const file     = path.join(directory, 'issuer.json');
             const snapshot = JSON.parse(fs.readFileSync(file, 'utf8')).snapshot;
             expect(snapshot.generations).toEqual([]);
             expect(snapshot.seats).toHaveLength(1);
@@ -2072,9 +2073,9 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
     });
 
     test('a failed original-Start publication stops the new child and never reports a successful Start', async () => {
-        const {spawn} = installSeat('codex-desktop'), service = McpLaunchAdmissionService;
-        const root = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody');
-        const id = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
+        const {spawn}    = installSeat('codex-desktop'), service = McpLaunchAdmissionService;
+        const root       = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody');
+        const id         = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
         const generation = {id, directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
             runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
         FleetLifecycleService.installedRuntime = {...generation, generation};
@@ -2201,8 +2202,8 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             expect(fs.existsSync(path.join(home, LEASE_FILE)), name).toBe(false);
             // The fleet view: an observed stop with that reason, never "outside fleet supervision".
             expect(FleetManager.fleetRuntimeStatus(), name).toEqual([{
-                agentId      : 'seat', state: 'stopped', running: false, confidence: 'observed', source: 'fleet:runtimeStatus',
-                failureReason: 'the seat exited while no Fleet server supervised it',
+                agentId          : 'seat', state: 'stopped', running: false, confidence: 'observed', source: 'fleet:runtimeStatus',
+                failureReason    : 'the seat exited while no Fleet server supervised it',
                 runtimeGeneration: {id: null, directory: null, runtimeRoot: null, executable: null, payloadDigest: null, pin: 'unknown'}
             }])
         }
