@@ -18,7 +18,9 @@ import {createMcpExpressApp}                         from '@modelcontextprotocol
 import {McpServer}                                   from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StreamableHTTPServerTransport}               from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import crypto                                        from 'node:crypto';
+import fs                                            from 'fs-extra';
 import http                                          from 'node:http';
+import os                                            from 'node:os';
 import path                                          from 'node:path';
 import {fileURLToPath}                               from 'node:url';
 import Neo                                           from 'neo.mjs/src/Neo.mjs';
@@ -26,6 +28,7 @@ import * as core                                     from 'neo.mjs/src/core/_exp
 
 import McpLaunchAdmissionService         from '../../../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
 import FleetTenantService                from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
+import {writeFileAtomicSync}             from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
 import {createManagedAgentWorkspacePlan} from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {
     LAUNCH_ADMISSION_PATH,
@@ -130,6 +133,100 @@ test.beforeEach(() => {
     service.unattributed.length = 0;
     service.pendingTimeoutMs = 30000;
     service.proofTimeoutMs   = 10000
+});
+
+test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
+    let directory;
+    test.beforeEach(() => {
+        directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'admission-phase-')));
+        fs.chmodSync(directory, 0o700);
+    });
+    test.afterEach(() => {
+        service.journal?.close();
+        service.journal = null;
+        service.journalFailed = false;
+        fs.removeSync(directory);
+    });
+
+    test('reservation, activation and revocation are durable before they return, with hashes instead of secrets', async () => {
+        service.openJournal({directory});
+        const reservation = await service.reserve({agent: seatDefinition()});
+        const file        = path.join(directory, 'issuer.json');
+        expect(fs.readJsonSync(file).snapshot.generations[0].state).toBe('reserved');
+        service.activate({generation: reservation.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
+        expect(fs.readJsonSync(file).snapshot.generations[0].state).toBe('active');
+        service.revoke('seat', 'stop-requested');
+        expect(fs.readJsonSync(file).snapshot.generations[0]).toMatchObject({state: 'revoked', reason: 'stop-requested'});
+        const raw = fs.readFileSync(file, 'utf8');
+        for (const secret of [PAT, BEARER, START_ENV.NEO_FLEET_BRIDGE_TOKEN, ...Object.values(reservation.grants)]) {
+            expect(raw).not.toContain(secret);
+        }
+        expect(raw).not.toContain('"env"');
+        expect(raw).not.toContain('"owners"');
+        const snapshot = service.admissionSnapshot();
+        expect(() => service.journal.write({...snapshot, env: {GH_TOKEN: PAT}})).toThrow(/snapshot-invalid/);
+        expect(() => service.journal.write({...snapshot, generations: [...snapshot.generations, snapshot.generations[0]]}))
+            .toThrow(/snapshot-invalid/);
+    });
+
+    test('a lost revocation write freezes admission and makes clean handoff impossible', async () => {
+        let fail = false;
+        service.openJournal({directory, writeAtomic: (file, source, options) => {
+            if (fail) throw Error('fixture lost write');
+            return writeFileAtomicSync(file, source, options);
+        }});
+        const reservation = await activeSeat();
+        fail = true;
+        expect(() => service.revoke('seat', 'stop-requested')).toThrow(/durability-failed/);
+        expect(await redeem(reservation.grants['memory-core'], {server: 'memory-core'}))
+            .toMatchObject({outcome: 'refused', code: 'issuer-unavailable', reason: 'durability-failed'});
+        expect(() => service.journal.handoff(service.admissionSnapshot(), reservation.issuer)).toThrow(/durability-failed/);
+        expect(fs.readJsonSync(path.join(directory, 'issuer.json')).snapshot.generations[0].state).toBe('active');
+    });
+
+    test('a failed activation cannot publish a successful Start or admit a waiting child', async () => {
+        let fail = false;
+        service.openJournal({directory, writeAtomic: (file, source, options) => {
+            if (fail) throw Error('fixture activation failure');
+            return writeFileAtomicSync(file, source, options);
+        }});
+        const reservation = await service.reserve({agent: seatDefinition()});
+        const pending     = redeem(reservation.grants['memory-core'], {server: 'memory-core'});
+        await expect.poll(() => service.generations.get('seat').waiters.size).toBe(1);
+        fail = true;
+        expect(() => service.activate({generation: reservation.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'}))
+            .toThrow(/durability-failed/);
+        expect(await pending).toMatchObject({outcome: 'refused'});
+        expect(service.statusOf('seat')).toMatchObject({state: 'stale', reason: 'durability-failed'});
+        expect(fs.readJsonSync(path.join(directory, 'issuer.json')).snapshot.generations[0].state).toBe('reserved');
+    });
+
+    test('a durability loss during credential proof cannot be overtaken by the proof completing', async () => {
+        let fail = false;
+        service.openJournal({directory, writeAtomic: (file, source, options) => {
+            if (fail) throw Error('fixture proof race');
+            return writeFileAtomicSync(file, source, options);
+        }});
+        const entered     = deferred(), finish = deferred();
+        const owners      = makeOwners({proves: () => { entered.resolve(); return finish.promise; }});
+        const reservation = await activeSeat({owners: owners.owners});
+        const pending     = redeem(reservation.grants['memory-core'], {server: 'memory-core'});
+        await entered.promise;
+        fail = true;
+        expect(() => service.revoke('seat', 'stop-requested')).toThrow(/durability-failed/);
+        finish.resolve(true);
+        expect(await pending).toMatchObject({outcome: 'refused', code: 'issuer-unavailable'});
+    });
+
+    test('loss of journal ownership refuses before the final signed admission', async () => {
+        service.openJournal({directory});
+        const reservation = await activeSeat();
+        const file        = path.join(directory, 'issuer.lock'), lock = fs.readJsonSync(file);
+        fs.writeJsonSync(file, {...lock, ownerToken: crypto.randomUUID()});
+        expect(await redeem(reservation.grants['memory-core'], {server: 'memory-core'}))
+            .toMatchObject({outcome: 'refused', code: 'issuer-unavailable'});
+        expect(service.statusOf('seat')).toMatchObject({state: 'stale', reason: 'durability-failed'});
+    });
 });
 
 test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {

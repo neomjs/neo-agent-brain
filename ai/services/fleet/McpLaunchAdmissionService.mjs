@@ -12,6 +12,7 @@ import {
 }                                 from '../../../src/fleet/contract/launchAdmission.mjs';
 import {mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
 import {launchRowEnvNames}               from './managedAgentWorkspacePlan.mjs';
+import {openLaunchAdmissionJournal}      from './launchAdmissionJournal.mjs';
 import {
     LAUNCH_ADMISSION_MAX_BYTES,
     LAUNCH_ADMISSION_PATH,
@@ -151,6 +152,75 @@ class McpLaunchAdmissionService extends Base {
      */
     listening = null
 
+    /** @member {Object|null} journal Durable custody, attached by the lifecycle before managed Starts. @private */
+    journal = null
+
+    /** @member {Boolean} journalFailed A failed transition permanently freezes this issuer. @private */
+    journalFailed = false
+
+    /** @member {String|null} issuerOrigin The origin actually bound by this issuer. @private */
+    issuerOrigin = null
+
+    /**
+     * @summary Attaches exclusive durable custody before this issuer has minted any generations.
+     * Previous records are evidence only; the lifecycle must separately validate clean succession.
+     * @param {Object} options Explicit custody directory and injectable filesystem/durable primitives.
+     * @returns {Object|null} Previous snapshot with its clean-handoff disposition.
+     */
+    openJournal(options) {
+        if (this.journal || this.generations.size) throw new Error('Launch admission custody must be attached before Start.');
+        this.journal = openLaunchAdmissionJournal({
+            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 1, generations: []}
+        });
+        return this.journal.previous
+    }
+
+    /**
+     * @summary Projects lifecycle facts and capability hashes, never held environments or owner callbacks.
+     * This initial record cannot authorize recovery until the original-Start bindings are attached.
+     * @returns {Object} Closed, non-secret journal snapshot.
+     * @protected
+     */
+    admissionSnapshot() {
+        return {
+            version    : 1,
+            generations: [...this.generations.values()].map(generation => ({
+                id            : generation.id, agentId: generation.agentId, identity: generation.identity,
+                state         : generation.state, reason: generation.reason,
+                reservedAt    : generation.reservedAt, activatedAt: generation.activatedAt, revokedAt: generation.revokedAt,
+                definitionHash: crypto.createHash('sha256').update(JSON.stringify(generation.definition)).digest('hex'),
+                servers       : [...generation.servers.values()].map(server => ({
+                    key           : server.key, grantId: server.grantId, state: server.state, reason: server.reason,
+                    capabilityHash: crypto.createHash('sha256').update(`${server.grantId}.${server.secret}`).digest('hex')
+                }))
+            }))
+        }
+    }
+
+    /** @summary Publishes before a successful phase transition can escape to its caller. @protected */
+    persistAdmission() {
+        if (!this.journal) return;
+        try {
+            this.journal.write(this.admissionSnapshot(), this.issuerOrigin)
+        } catch (error) {
+            this.freezeAdmission();
+            throw error
+        }
+    }
+
+    /** @summary Fails every pending or active admission closed after a durability or ownership loss. @protected */
+    freezeAdmission() {
+        this.journalFailed = true;
+        for (const generation of this.generations.values()) {
+            if (generation.state !== STATES.REVOKED) {
+                generation.state = STATES.STALE;
+                generation.reason = REASONS.DURABILITY_FAILED;
+            }
+            this.releaseStartSignal(generation);
+            this.settle(generation);
+        }
+    }
+
     /**
      * @summary Mint one grant per enabled server for a seat's next Start, ending the seat's previous
      * generation. The registry the definition came from is followed from here on.
@@ -170,6 +240,7 @@ class McpLaunchAdmissionService extends Base {
      *     validated login the rows must name.
      */
     async reserve({agent, registry = null, since = null, startSignal = null}) {
+        if (this.journalFailed) throw new Error('Launch admission issuer is frozen after a failed durable transition.');
         if (startSignal && (
             typeof startSignal.aborted !== 'boolean' ||
             typeof startSignal.addEventListener !== 'function' ||
@@ -236,7 +307,8 @@ class McpLaunchAdmissionService extends Base {
             }
 
             registry?.getDefinition && this.onDefinitionChange({id: agent.id, next: registry.getDefinition(agent.id)});
-            issuer = await this.listen()
+            issuer = await this.listen();
+            this.persistAdmission()
         } catch (error) {
             this.revoke(agent.id, REASONS.START_FAILED, {generation: generation.id});
             throw error
@@ -299,6 +371,7 @@ class McpLaunchAdmissionService extends Base {
         }
 
         Object.assign(generation, {state: STATES.ACTIVE, activatedAt: new Date().toISOString(), owners: {...owners}, probe});
+        this.persistAdmission();
         this.releaseStartSignal(generation);
         this.settle(generation);
 
@@ -329,6 +402,7 @@ class McpLaunchAdmissionService extends Base {
         Object.assign(generation, {state: STATES.REVOKED, reason, revokedAt: new Date().toISOString(), probe: null, owners: {}});
         generation.proofs.clear();
         generation.servers.forEach(server => revokeServer(server, server.state === STATES.REVOKED ? server.reason : reason));
+        this.persistAdmission();
         this.settle(generation);
 
         return true
@@ -462,6 +536,7 @@ class McpLaunchAdmissionService extends Base {
 
         if (request.server   !== server.key)          return refuse(REFUSALS.SERVER_MISMATCH);
         if (request.identity !== generation.identity) return refuse(REFUSALS.IDENTITY_MISMATCH);
+        if (this.journalFailed) return refuse(REFUSALS.ISSUER_UNAVAILABLE, REASONS.DURABILITY_FAILED);
 
         if (server.state === STATES.RESERVED && generation.state === STATES.RESERVED && !await this.waitForSettlement(generation)) {
             return refuse(REFUSALS.PENDING_TIMEOUT)
@@ -479,6 +554,7 @@ class McpLaunchAdmissionService extends Base {
         if (missing > -1) return refuse(REFUSALS.CREDENTIAL_MISSING, ownerCredentialKind(owners[missing]));
 
         const proofs = await Promise.all(server.owned.map((name, index) => this.prove(generation, name, credentials[index])));
+        if (this.journalFailed) return refuse(REFUSALS.ISSUER_UNAVAILABLE, REASONS.DURABILITY_FAILED);
         if (revoked()) return refuse(REFUSALS.REVOKED, server.reason ?? generation.reason);
 
         // A definite refusal wins over a concurrent unavailable proof; neither retires the generation.
@@ -499,6 +575,11 @@ class McpLaunchAdmissionService extends Base {
         }
 
         if (observed !== 'live') return refuse(REFUSALS.PROCESS_UNKNOWN);
+
+        try { this.journal?.assertOwner() } catch {
+            this.freezeAdmission();
+            return refuse(REFUSALS.ISSUER_UNAVAILABLE, REASONS.DURABILITY_FAILED)
+        }
 
         return answer({
             outcome: OUTCOMES.ADMITTED,
@@ -565,7 +646,8 @@ class McpLaunchAdmissionService extends Base {
             server.listen(0, '127.0.0.1', () => {
                 server.unref();
                 this.httpServer = server;
-                resolve(`http://127.0.0.1:${server.address().port}`)
+                this.issuerOrigin = `http://127.0.0.1:${server.address().port}`;
+                resolve(this.issuerOrigin)
             })
         })
     }
@@ -574,10 +656,13 @@ class McpLaunchAdmissionService extends Base {
      * @summary Close the listener and drop every grant, then destroy the instance.
      */
     destroy() {
-        this.generations.forEach(generation => this.revoke(generation.agentId, REASONS.REPLACED));
-        this.httpServer?.close();
-
-        super.destroy()
+        try {
+            this.generations.forEach(generation => this.revoke(generation.agentId, REASONS.REPLACED))
+        } finally {
+            this.httpServer?.close();
+            this.journal?.close();
+            super.destroy()
+        }
     }
 
     /**
@@ -616,7 +701,8 @@ class McpLaunchAdmissionService extends Base {
             if (!after.matrix[server.key] && server.state !== STATES.REVOKED) revokeServer(server, REASONS.SERVER_DISABLED)
         });
 
-        generation.definition = after
+        generation.definition = after;
+        this.persistAdmission()
     }
 
     /**
@@ -698,6 +784,27 @@ class McpLaunchAdmissionService extends Base {
     settle(generation) {
         [...generation.waiters].forEach(done => done(true))
     }
+}
+
+/** @summary Validates the complete non-secret lifecycle snapshot without accepting extra fields. */
+function isAdmissionSnapshot(value) {
+    const exact = (row, keys) => row && typeof row === 'object' && !Array.isArray(row) &&
+        Object.keys(row).sort().join(',') === [...keys].sort().join(',');
+    const hash      = text => typeof text === 'string' && /^[a-f0-9]{64}$/.test(text);
+    const text      = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
+    const timestamp = value => value === null || typeof value === 'string' && Number.isFinite(Date.parse(value));
+    const unique    = (rows, key) => new Set(rows.map(row => row[key])).size === rows.length;
+    const phase     = row => Object.values(STATES).includes(row.state) &&
+        (row.reason === null || Object.values(REASONS).includes(row.reason));
+    return exact(value, ['version', 'generations']) && value.version === 1 && Array.isArray(value.generations) &&
+        value.generations.every(row => exact(row, [
+            'id', 'agentId', 'identity', 'state', 'reason', 'reservedAt', 'activatedAt', 'revokedAt', 'definitionHash', 'servers'
+        ]) && text(row.id) && text(row.agentId) && isLaunchIdentity(row.identity) && phase(row) && hash(row.definitionHash) &&
+            ['reservedAt', 'activatedAt', 'revokedAt'].every(key => timestamp(row[key])) && Array.isArray(row.servers) &&
+            row.servers.every(server => exact(server, ['key', 'grantId', 'state', 'reason', 'capabilityHash']) &&
+                text(server.key) && text(server.grantId) && phase(server) && hash(server.capabilityHash)) &&
+            unique(row.servers, 'key') && unique(row.servers, 'grantId')) &&
+        unique(value.generations, 'id') && unique(value.generations, 'agentId')
 }
 
 /**
