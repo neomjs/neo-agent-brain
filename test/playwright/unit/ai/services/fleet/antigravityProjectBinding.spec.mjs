@@ -60,7 +60,10 @@ class FakeWebSocket extends EventEmitter {
                 result = {product: this.behavior.product ?? PRODUCT};
                 break;
             case 'Target.getTargets':
-                result = {targetInfos: this.behavior.targets ?? [{targetId: 'page-a', type: 'page', url: this.currentUrl}]};
+                this.behavior.targetReadCount = (this.behavior.targetReadCount ?? 0) + 1;
+                result = {targetInfos: this.behavior.targetReadCount <= (this.behavior.rendererUnpublishedReads ?? 0)
+                    ? []
+                    : this.behavior.targets ?? [{targetId: 'page-a', type: 'page', url: this.currentUrl}]};
                 break;
             case 'Target.attachToTarget':
                 result = {sessionId: 'session-a'};
@@ -117,19 +120,27 @@ class FakeWebSocket extends EventEmitter {
 /** @summary Bind fake profile/filesystem inputs to the same strict proof callback shape as Start. */
 function harness(options = {}) {
     const behavior = {sockets: [], ...options.behavior};
+    const observed = {portStatReads:0, portReads:0, listenerChecks:0, listenerOwners:[]};
     const fileSystem = {
         lstat: async file => file === PROFILE
             ? {isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false}
             : file === PROJECT.root
                 ? {isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false}
             : file === PORTFILE
-                ? {isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false}
-                : Object.assign(new Error('missing fixture'), {code: 'ENOENT'}),
+                ? (() => {
+                    observed.portStatReads++;
+                    if (observed.portStatReads <= (options.portFileMissingReads ?? 0)) {
+                        options.abortOnPortStat?.abort();
+                        throw Object.assign(new Error('not ready'), {code:'ENOENT'})
+                    }
+                    return {isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false}
+                })()
+            : Object.assign(new Error('missing fixture'), {code: 'ENOENT'}),
         realpath: async file => file === PROFILE || file === PROJECT.root
             ? file
             : Object.assign(new Error('missing fixture'), {code: 'ENOENT'}),
         readFile: async file => file === PORTFILE
-            ? (options.activePortText ?? `9222\n${BROWSER}\n`)
+            ? (observed.portReads++, options.activePortText ?? `9222\n${BROWSER}\n`)
             : Object.assign(new Error('missing fixture'), {code: 'ENOENT'})
     };
     const readRegisteredProject = options.readRegisteredProject ?? (async input => {
@@ -137,15 +148,21 @@ function harness(options = {}) {
         expect(input.projectId).toBe(PROJECT.id);
         return projectRecord
     });
-    const verifyProfileListener = options.verifyProfileListener ?? (async input => ({
-        verified           : true,
-        processTreeVerified: true,
-        profileDirectory   : input.profileDirectory,
-        port               : input.port,
-        browserPath         : input.browserPath,
-        pid                 : input.expectedProcess.pid,
-        startedAt           : input.expectedProcess.startedAt
-    }));
+    const verifyProfileListener = options.verifyProfileListener ?? (async input => {
+        observed.listenerChecks++;
+        observed.listenerOwners.push(input.expectedProcess);
+        return observed.listenerChecks <= (options.listenerUnreadyReads ?? 0)
+            ? {verified:false}
+            : {
+                verified           : true,
+                processTreeVerified: true,
+                profileDirectory   : input.profileDirectory,
+                port               : input.port,
+                browserPath         : input.browserPath,
+                pid                 : input.expectedProcess.pid,
+                startedAt           : input.expectedProcess.startedAt
+            }
+    });
     const verifyNativeCapability = options.verifyNativeCapability ?? (async input => ({
         verified          : true,
         projectId         : input.project.id,
@@ -157,6 +174,7 @@ function harness(options = {}) {
 
     return {
         behavior,
+        observed,
         run: overrides => bindAntigravityProject({
             profileDirectory: PROFILE,
             project: PROJECT,
@@ -210,6 +228,42 @@ test.describe('bindAntigravityProject', () => {
         const fixture = harness({activePortText: 'not-a-port\n/devtools/page/not-a-browser\n'});
 
         await expect(fixture.run()).rejects.toMatchObject({code: 'stale-endpoint'});
+        expect(fixture.behavior.sockets).toHaveLength(0)
+    });
+
+    test('waits for the profile endpoint, its original Start listener, and the unique app renderer', async () => {
+        const fixture = harness({
+            portFileMissingReads:2,
+            listenerUnreadyReads:2,
+            readRegisteredProject:async () => projectRecord,
+            behavior:{rendererUnpublishedReads:3}
+        });
+
+        const result = await fixture.run({timeoutMs:2500});
+
+        expect(result.projectId).toBe(PROJECT.id);
+        expect(fixture.observed.portStatReads).toBeGreaterThan(2);
+        expect(fixture.observed.portReads).toBeGreaterThan(0);
+        expect(fixture.observed.listenerChecks).toBe(3);
+        expect(fixture.observed.listenerOwners.length).toBe(3);
+        expect(fixture.observed.listenerOwners.every(owner => owner.pid === OWNER.pid && owner.startedAt === OWNER.startedAt)).toBe(true);
+        expect(fixture.behavior.targetReadCount).toBe(4)
+    });
+
+    test('keeps a missing profile endpoint within the bounded Start timeout', async () => {
+        const fixture = harness({portFileMissingReads:100});
+
+        await expect(fixture.run({timeoutMs:180})).rejects.toMatchObject({code:'stale-endpoint'});
+        expect(fixture.observed.listenerChecks).toBe(0);
+        expect(fixture.behavior.sockets).toHaveLength(0)
+    });
+
+    test('Start cancellation during profile readiness stops polling before a socket is opened', async () => {
+        const controller = new AbortController(),
+              fixture = harness({portFileMissingReads:10, abortOnPortStat:controller});
+
+        await expect(fixture.run({signal:controller.signal, timeoutMs:1000})).rejects.toMatchObject({code:'canceled'});
+        expect(fixture.observed.portStatReads).toBe(1);
         expect(fixture.behavior.sockets).toHaveLength(0)
     });
 

@@ -47,11 +47,11 @@ test.describe('excludeManagedWorkspaceFiles', () => {
 
         expect(result).toMatchObject({
             repoRoot: repo,
-            paths: ['.agents/mcp_config.json'],
+            paths: ['.agents/mcp_config.json', 'GEMINI.md'],
             verified: true,
             excludeFile: path.join(repo, '.git/info/exclude'),
         });
-        expect(MANAGED_WORKSPACE_EXCLUDE_TARGETS).toEqual(['.agents/mcp_config.json']);
+        expect(MANAGED_WORKSPACE_EXCLUDE_TARGETS).toEqual(['.agents/mcp_config.json', 'GEMINI.md']);
         expect(Object.isFrozen(MANAGED_WORKSPACE_EXCLUDE_TARGETS)).toBe(true);
         expect(fs.existsSync(path.join(repo, '.agents/mcp_config.json'))).toBe(false);
 
@@ -82,6 +82,12 @@ test.describe('excludeManagedWorkspaceFiles', () => {
 
         expect(() => excludeManagedWorkspaceFiles({targetRepoRoot: repo})).toThrow(/refusing tracked workspace artifact/);
         expect(fs.readFileSync(excludeFile, 'utf8')).toBe(before);
+        const memoryRepo = initRepo('tracked-memory-loader'), memoryFile = path.join(memoryRepo, 'GEMINI.md'),
+              memoryExclude = path.join(memoryRepo, '.git/info/exclude'), memoryBefore = fs.readFileSync(memoryExclude, 'utf8');
+        fs.writeFileSync(memoryFile, '# Authored loader\n');
+        execFileSync('git', ['-C', memoryRepo, 'add', '--', 'GEMINI.md'], {env: GIT_ENV});
+        expect(() => excludeManagedWorkspaceFiles({targetRepoRoot: memoryRepo})).toThrow(/refusing tracked workspace artifact/);
+        expect(fs.readFileSync(memoryExclude, 'utf8')).toBe(memoryBefore);
     });
 
     test('empty-template init creates missing info only after proving the workspace target untracked', () => {

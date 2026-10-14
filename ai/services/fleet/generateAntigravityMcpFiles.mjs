@@ -6,11 +6,13 @@ import {LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR, isLaunchIdentity, parseLaun
 export const ANTIGRAVITY_MCP_DIRECTORY = '.neo-fleet-mcp';
 /** @type {String} Native, checkout-local neutral MCP declaration. */
 export const ANTIGRAVITY_MCP_WORKSPACE_FILE = '.agents/mcp_config.json';
+/** @type {String} Native workspace entry for the canonical seat memory layer. */
+export const ANTIGRAVITY_MEMORY_FILE = 'GEMINI.md';
 
 const
     HEADER = '# Neo Fleet Antigravity MCP invoker v1',
     SERVER_KEYS = new Set(MCP_SERVERS.map(({key}) => key)),
-    PROCESS_ENV = new Set(['HOME', 'PATH', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL']),
+    PROCESS_ENV = new Set(['HOME', 'PATH', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL', 'SHELL', 'TERM']),
     REFUSAL = 'Neo MCP is unavailable for this Antigravity profile; start the seat from Fleet Manager.';
 
 /**

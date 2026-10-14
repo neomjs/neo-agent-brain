@@ -2,9 +2,9 @@ import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {writeLocalExclude} from '../../scripts/lifecycle/hooks/projectSeatHooks.mjs';
-import {ANTIGRAVITY_MCP_WORKSPACE_FILE} from './generateAntigravityMcpFiles.mjs';
+import {ANTIGRAVITY_MEMORY_FILE, ANTIGRAVITY_MCP_WORKSPACE_FILE} from './generateAntigravityMcpFiles.mjs';
 
-export const MANAGED_WORKSPACE_EXCLUDE_TARGETS = Object.freeze([ANTIGRAVITY_MCP_WORKSPACE_FILE]);
+export const MANAGED_WORKSPACE_EXCLUDE_TARGETS = Object.freeze([ANTIGRAVITY_MCP_WORKSPACE_FILE, ANTIGRAVITY_MEMORY_FILE]);
 
 const
     EXCLUDE_BLOCK_OWNER = 'fleetAntigravityWorkspace',

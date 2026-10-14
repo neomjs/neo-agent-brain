@@ -154,6 +154,7 @@ function install({agents = {}, creds = {}} = {}) {
     FleetLifecycleService.instanceRoot       = null;
     FleetLifecycleService.harnessBinaryPaths = null;
     FleetLifecycleService.codexDesktopCapabilityProbeFn = null;
+    FleetLifecycleService.antigravityRuntimeProbeFn      = null;
     FleetLifecycleService.codexDesktopCleanupFn         = null;
     // Seat-lease seams: no spec reads or signals a host process unless it opts in. Every stub child
     // reads as born at one fixed time, so an app-bundle start can lease it.
@@ -1367,6 +1368,133 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
 });
 
 test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capability admission', () => {
+    test('Antigravity Start context snapshots only benign env and reuses its measured runtime proof', async () => {
+        const
+            root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-antigravity-context-')),
+            binDir = path.join(root, 'bin'),
+            binary = path.join(binDir, 'antigravity'),
+            home = path.join(root, 'seat-home'),
+            envKeys = ['HOME', 'LANG', 'LC_ALL', 'LOGNAME', 'PATH', 'SHELL', 'TERM', 'TMPDIR', 'USER'],
+            priorEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]])),
+            secretKey = 'NEO_TEST_ANTIGRAVITY_CONTEXT_SECRET',
+            priorSecret = process.env[secretKey],
+            spawn = install({agents: {seat: agentDef('seat', {harnessType:'antigravity', metadata:{}})}}),
+            probeCalls = [];
+        let runtime = {available:true, reason:null, fingerprints:{buildVersion:'measured-fixture'}};
+
+        fs.mkdirSync(binDir, {recursive:true});
+        fs.symlinkSync(process.execPath, binary);
+        for (const key of envKeys) delete process.env[key];
+        process.env.HOME = home;
+        process.env.PATH = binDir;
+        process.env[secretKey] = 'never-snapshotted';
+        FleetLifecycleService.harnessBinaryPaths = {antigravity:'antigravity'};
+        FleetLifecycleService.antigravityRuntimeProbeFn = async options => { probeCalls.push(options); return runtime };
+
+        try {
+            const agent = FleetLifecycleService.getRegistry().getDefinition('seat');
+            const context = await FleetLifecycleService.resolveAntigravityStartContext(agent);
+
+            expect(context).toMatchObject({
+                capability:{harnessType:'antigravity', binaryPath:binary, launchBinaryPath:binary, nativeRuntime:runtime},
+                processEnvironment:{HOME:home, PATH:binDir},
+                registryDirectory:path.join(home, '.gemini', 'config', 'projects')
+            });
+            expect(Object.keys(context.processEnvironment).sort()).toEqual(['HOME', 'PATH']);
+            expect(context.processEnvironment[secretKey]).toBeUndefined();
+            expect(probeCalls).toEqual([{selectedBinaryPath:binary}]);
+            expect(fs.existsSync(path.join(root, 'instances'))).toBe(false);
+
+            await expect(FleetLifecycleService.assertRemoteMcpCapability(agent, {
+                antigravityStartContext:context
+            })).resolves.toBe(context.capability);
+            expect(probeCalls).toHaveLength(1);
+
+            runtime = {available:false, reason:'unsupported-app-version'};
+            await expect(FleetLifecycleService.resolveAntigravityStartContext(agent))
+                .rejects.toThrow(/unsupported-app-version/);
+            expect(spawn.calls).toHaveLength(0)
+        } finally {
+            for (const [key, value] of Object.entries(priorEnv)) {
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+            }
+            if (priorSecret === undefined) delete process.env[secretKey];
+            else process.env[secretKey] = priorSecret;
+            fs.rmSync(root, {recursive:true, force:true})
+        }
+    });
+
+    test('Antigravity context refuses a missing absolute HOME before probing the selected binary', async () => {
+        const
+            root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-antigravity-home-')),
+            binDir = path.join(root, 'bin'),
+            binary = path.join(binDir, 'antigravity'),
+            priorHome = process.env.HOME,
+            priorPath = process.env.PATH,
+            agent = agentDef('seat', {harnessType:'antigravity', metadata:{}}),
+            spawn = install({agents: {seat:agent}});
+
+        fs.mkdirSync(binDir, {recursive:true});
+        fs.symlinkSync(process.execPath, binary);
+        delete process.env.HOME;
+        process.env.PATH = binDir;
+        FleetLifecycleService.harnessBinaryPaths = {antigravity:'antigravity'};
+        let probes = 0;
+        FleetLifecycleService.antigravityRuntimeProbeFn = async () => { probes++; return {available:true} };
+
+        try {
+            await expect(FleetLifecycleService.resolveAntigravityStartContext(agent))
+                .rejects.toThrow(/absolute HOME is required/);
+            expect(probes).toBe(0);
+            expect(spawn.calls).toHaveLength(0)
+        } finally {
+            if (priorHome === undefined) delete process.env.HOME;
+            else process.env.HOME = priorHome;
+            if (priorPath === undefined) delete process.env.PATH;
+            else process.env.PATH = priorPath;
+            fs.rmSync(root, {recursive:true, force:true})
+        }
+    });
+
+    test('Start uses a validated resolved process environment while default launches still snapshot the parent', async () => {
+        const
+            root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-resolved-process-env-')),
+            spawn = install({agents: {seat:agentDef('seat')}, creds:{seat:'fixture-pat'}}),
+            priorHome = process.env.HOME,
+            priorPath = process.env.PATH;
+
+        process.env.HOME = path.join(root, 'parent-home');
+        process.env.PATH = '/parent/path';
+        FleetLifecycleService.harnessBinaryPaths = {codex:process.execPath};
+
+        try {
+            FleetLifecycleService.start('seat', {resolvedProcessEnvironment:{HOME:path.join(root, 'resolved-home'), PATH:'/resolved/path', LANG:'C'}});
+            expect(spawn.calls[0].opts.env).toMatchObject({HOME:path.join(root, 'resolved-home'), PATH:'/resolved/path', LANG:'C'});
+            expect(spawn.calls[0].opts.env.GH_TOKEN).toBe('fixture-pat');
+            await FleetLifecycleService.stop('seat');
+
+            FleetLifecycleService.start('seat');
+            expect(spawn.calls[1].opts.env).toMatchObject({HOME:path.join(root, 'parent-home'), PATH:'/parent/path'});
+            await FleetLifecycleService.stop('seat');
+
+            for (const invalid of [
+                {HOME:'/seat/home', GH_TOKEN:'forbidden'},
+                {HOME:'/seat/home', PATH:42}
+            ]) {
+                expect(() => FleetLifecycleService.start('seat', {resolvedProcessEnvironment:invalid}))
+                    .toThrow(/resolvedProcessEnvironment contains an invalid/)
+            }
+            expect(spawn.calls).toHaveLength(2)
+        } finally {
+            if (priorHome === undefined) delete process.env.HOME;
+            else process.env.HOME = priorHome;
+            if (priorPath === undefined) delete process.env.PATH;
+            else process.env.PATH = priorPath;
+            fs.rmSync(root, {recursive:true, force:true})
+        }
+    });
+
     test('Claude Desktop native Code-tab transport needs no command bridge', async () => {
         install();
         FleetLifecycleService.harnessBinaryPaths = {'claude-desktop': process.execPath};

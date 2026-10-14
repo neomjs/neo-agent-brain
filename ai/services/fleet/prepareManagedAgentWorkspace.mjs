@@ -12,7 +12,9 @@ import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/c
 import {applyCodexSeatSettings, parseTomlTableHeader} from './codexConfigToml.mjs';
 import {deriveNodeRuntimeEnv}                         from './deriveNodeRuntimeEnv.mjs';
 import {KIMI_SEAT_SERVERS, generateKimiSeatConfig}    from './generateKimiSeatConfig.mjs';
-import {ANTIGRAVITY_MCP_WORKSPACE_FILE, generateAntigravityMcpFiles} from './generateAntigravityMcpFiles.mjs';
+import {ANTIGRAVITY_MEMORY_FILE, ANTIGRAVITY_MCP_WORKSPACE_FILE, generateAntigravityMcpFiles} from './generateAntigravityMcpFiles.mjs';
+import {registerAntigravityProject}                    from './antigravityProjectRegistry.mjs';
+import {classifyAntigravityRuntimeFingerprint}         from './probeAntigravityRuntime.mjs';
 import {
     deriveAgentInstanceHome,
     deriveAgentMemoryDir
@@ -280,6 +282,7 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
  * @param {Object} [options.launchAdmission] `{issuer, identity, grants}`: a Claude Desktop seat's reserved
  *     launch admission ({@link Neo.ai.services.fleet.McpLaunchAdmissionService#reserve}), which its profile
  *     rows carry. Required for that harness only.
+ * @param {Object} [options.antigravityStart] Original native capability, benign environment, project registry and Git exclusion proof.
  * @param {Function} [options.hydrateWorkspace] Import-safe checkout hydration seam.
  * @param {Function} [options.deriveInstanceHome] Per-agent home derivation seam.
  * @param {Object} [options.fileSystem] Promise filesystem seam.
@@ -323,6 +326,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
     residentMcpEnv = {},
     remoteMcpCapability = null,
     launchAdmission = null,
+    antigravityStart = null,
     hydrateWorkspace = hydrateCurrentWorktree,
     deriveInstanceHome = deriveAgentInstanceHome,
     fileSystem = fs,
@@ -361,6 +365,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         });
 
     assertAbsolutePath(instanceHome, 'instanceHome');
+    if (agent.harnessType === 'antigravity') assertAntigravityStart(antigravityStart);
     if (agent.harnessType === 'claude-desktop') assertAbsolutePath(claudeConfigRoot, 'claudeConfigRoot');
     for (const server of plan.filter(row => row.enabled && row.transport === 'stdio')) {
         if (!path.isAbsolute(residentMcpEnv[server.key]?.NEO_PLANE_DATA_ROOT || '')) {
@@ -397,7 +402,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         fileSystem
     });
 
-    const artifacts = await prepareHarnessArtifacts({
+    const {artifacts, antigravityProject} = await prepareHarnessArtifacts({
         agent,
         targetRepoRoot    : canonicalTargetRepoRoot,
         instanceRoot      : canonicalInstanceRoot,
@@ -409,6 +414,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         claudeConfigRoot,
         residentMcpEnv,
         launchAdmission,
+        antigravityStart,
         fileSystem
     });
 
@@ -447,6 +453,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         })),
         hydration,
         artifacts,
+        ...(antigravityProject ? {antigravityProject} : {}),
         seatInstructions  : seatInstructions.observation,
         ...(trust.records.length ? {repoTrust: trust.records} : {})
     }
@@ -490,6 +497,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
  * @param {String}  [options.claudeConfigRoot]    Claude Desktop's shared Code-tab config root.
  * @param {Object}  [options.residentMcpEnv]      Per-server resolved child environment supplied at Start.
  * @param {Object}  [options.launchAdmission]     A Claude Desktop seat's reserved launch admission.
+ * @param {Object}  [options.antigravityStart]    Original native capability, benign environment, project registry and Git exclusion proof.
  * @param {Object[]} [options.assignedRepos=[]] Successfully prepared `{repoSlug, cloneUrl, repoPath}` entries;
  *                                              only current assignments with independently verified roots may gain trust.
  * @param {Object}  [options.fileSystem]          Promise filesystem seam.
@@ -517,6 +525,7 @@ export async function prepareManagedAgentWorkspace({
     mcpTarget = null,
     remoteMcpCapability = null,
     launchAdmission = null,
+    antigravityStart = null,
     assignedRepos = [],
     fileSystem = fs,
     log = () => {}
@@ -580,6 +589,7 @@ export async function prepareManagedAgentWorkspace({
         residentMcpEnv,
         remoteMcpCapability,
         launchAdmission,
+        antigravityStart,
         hydrateWorkspace,
         deriveInstanceHome,
         fileSystem,
@@ -745,7 +755,11 @@ async function assertNoSymlinkSegments({rootPath, targetPath, fileSystem, label}
     }
 }
 
-/** @summary Converge the selected harness's owned workspace and MCP carrier. @private */
+/**
+ * @summary Converge the selected harness's owned workspace and MCP carrier.
+ * @returns {Promise<{artifacts: Object[], antigravityProject?: Object}>} Artifacts and optional native project binding.
+ * @private
+ */
 async function prepareHarnessArtifacts({
     agent,
     targetRepoRoot,
@@ -758,18 +772,19 @@ async function prepareHarnessArtifacts({
     claudeConfigRoot,
     residentMcpEnv,
     launchAdmission,
+    antigravityStart,
     fileSystem
 }) {
     switch (agent.harnessType) {
         case 'codex':
         case 'codex-desktop':
-            return prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
+            return {artifacts: await prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem})};
         case 'kimi-code':
-            return prepareKimiArtifacts({agent, instanceRoot, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
+            return {artifacts: await prepareKimiArtifacts({agent, instanceRoot, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem})};
         case 'opencode':
-            return prepareOpenCodeArtifacts({agent, instanceRoot, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
+            return {artifacts: await prepareOpenCodeArtifacts({agent, instanceRoot, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem})};
         case 'claude-code':
-            return prepareClaudeJsonArtifact({
+            return {artifacts: await prepareClaudeJsonArtifact({
                 agent,
                 filePath      : path.join(instanceHome, 'mcp-config.json'),
                 trustedRoot   : instanceHome,
@@ -777,11 +792,54 @@ async function prepareHarnessArtifacts({
                 remoteMcpCapability,
                 fileSystem,
                 interpolateEnv: true
-            });
+            })};
         case 'claude-desktop':
-            return prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, residentMcpEnv, launchAdmission, fileSystem});
+            return {artifacts: await prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, residentMcpEnv, launchAdmission, fileSystem})};
+        case 'antigravity': {
+            const generated = await prepareAntigravityArtifacts({
+                agent, instanceHome, plan, residentMcpEnv, launchAdmission, fileSystem,
+                processEnvironment: antigravityStart.processEnvironment
+            });
+            if (generated.residuals.length) throw unsupported('Antigravity profile contains unowned invokers; resolve them before Start');
+            const workspace = await convergeAntigravityWorkspaceMcp({
+                targetRepoRoot, instanceHome, mcpServers: generated.mcpServers,
+                exclusion: antigravityStart.exclusion, fileSystem
+            });
+            const memoryDir = deriveAgentMemoryDir({instanceRoot, agentId: agent.id}),
+                  memoryLoader = await convergeTextArtifact({
+                filePath: path.join(targetRepoRoot, ANTIGRAVITY_MEMORY_FILE),
+                desiredContent: '# Fleet seat memory\n\n' +
+                    `Operational identity for this managed workspace: @${launchAdmission.identity}.\n` +
+                    'Use the current Fleet-issued identity and loaded seat memory when legacy global harness notes differ.\n\n' +
+                    `@[Seat memory](${path.join(memoryDir, 'MEMORY.md')})\n` +
+                    `@[Bearer identity](${path.join(memoryDir, 'identity.md')})\n`,
+                ownedProjection: wholeFileOwnedProjection, ownedLabel: 'Antigravity memory loader',
+                trustedRoot: targetRepoRoot, fileSystem
+            });
+            const project = await registerAntigravityProject({
+                registryDirectory: antigravityStart.registryDirectory,
+                profileDirectory: instanceHome, projectRoot: targetRepoRoot, name: agent.id,
+                projectMcpAllowRules: generated.projectMcpAllowRules, fileSystem,
+                writeAtomic: (file, content, options) => writeFileAtomic(file, content, {...options, fsModule: fileSystem})
+            });
+            return {
+                artifacts: [...generated.artifacts, ...workspace, memoryLoader],
+                antigravityProject: {id: project.projectId, name: project.projectName, root: project.projectRoot}
+            }
+        }
         default:
             throw unsupported(`harness '${agent.harnessType}' has no workspace adapter`);
+    }
+}
+
+/** @summary Require the original Start's exact native build and explicit host bindings before hydration. @private */
+function assertAntigravityStart(context) {
+    const capability = context?.capability;
+    if (capability?.harnessType !== 'antigravity' || capability.nativeRuntime?.available !== true ||
+        !classifyAntigravityRuntimeFingerprint(capability.nativeRuntime.fingerprints).available ||
+        !path.isAbsolute(capability.binaryPath || '') || capability.binaryPath !== capability.launchBinaryPath ||
+        !path.isAbsolute(context.registryDirectory || '') || !path.isAbsolute(context.processEnvironment?.HOME || '')) {
+        throw unsupported('Antigravity requires a supported installed build and the original Start host context')
     }
 }
 
@@ -892,7 +950,7 @@ async function retireSeatInstructions({filePath, receiptPath, trustedRoot, fileS
 }
 
 /**
- * @summary Creates the seat-owned memory folder and fills only missing Codex birth files. Claude's
+ * @summary Creates the seat-owned memory folder and fills only missing Codex/Antigravity birth files. Claude's
  * `autoMemoryDirectory` pins the same folder; Kimi and OpenCode scaffold through their generators.
  * Imported and bearer-authored files stay untouched. A relocated Claude pin follows the seat.
  * @param {Object}      options
@@ -932,7 +990,7 @@ async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, previous
             trustedRoot  : targetRepoRoot,
             fileSystem
         }));
-    } else if (agent.harnessType === 'codex' || agent.harnessType === 'codex-desktop') {
+    } else if (agent.harnessType === 'codex' || agent.harnessType === 'codex-desktop' || agent.harnessType === 'antigravity') {
         for (const [name, content] of [
             ['MEMORY.md', renderMemoryIndexMd({harness: agent.harnessType})],
             ['identity.md', renderIdentityMd()],
@@ -1555,7 +1613,7 @@ export async function convergeAntigravityWorkspaceMcp({targetRepoRoot, instanceH
     const relativePath = ANTIGRAVITY_MCP_WORKSPACE_FILE;
     if (!path.isAbsolute(targetRepoRoot || '') || !path.isAbsolute(instanceHome || '') ||
         exclusion?.verified !== true || exclusion.repoRoot !== path.resolve(targetRepoRoot) ||
-        !isDeepStrictEqual(exclusion.paths, [relativePath])) {
+        !isDeepStrictEqual(exclusion.paths, [relativePath, ANTIGRAVITY_MEMORY_FILE])) {
         throw unsupported('Antigravity workspace MCP needs an exact host Git exclusion proof before writing')
     }
 

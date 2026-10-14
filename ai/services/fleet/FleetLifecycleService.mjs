@@ -25,6 +25,7 @@ import McpLaunchAdmissionService                                    from './McpL
 import {LAUNCH_ADMISSION_REASONS}                                   from '../../../src/fleet/contract/launchAdmission.mjs';
 import {isOnInstance}                                               from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities} from './manageCodexDesktopRuntime.mjs';
+import {probeAntigravityRuntime}                                   from './probeAntigravityRuntime.mjs';
 import {GIT_IDENTITY_ENV, gitIdentityEnv}                           from './seatGitIdentity.mjs';
 
 // Reserve the Neural Link policy slot against credential collisions and launch-metadata overrides.
@@ -111,6 +112,7 @@ const HARNESS_BINARY_LEAF_KEYS = {
 const AMBIENT_ENV_ALLOWLIST = Object.freeze([
     'HOME', 'LANG', 'LC_ALL', 'LOGNAME', 'PATH', 'SHELL', 'TERM', 'TMPDIR', 'USER'
 ]);
+const AMBIENT_ENV_KEYS = new Set(AMBIENT_ENV_ALLOWLIST);
 
 // Env keys that would mutate the merge target's prototype chain instead of (or in addition to)
 // defining an own property — a registry-authored `{"__proto__": …}` must be rejected, never
@@ -463,6 +465,13 @@ class FleetLifecycleService extends Base {
     codexDesktopCapabilityProbeFn = null
 
     /**
+     * Installed-bundle capability probe for curated Antigravity. Defaults to the measured,
+     * read-only runtime fingerprint probe; injectable so lifecycle specs need no installed app.
+     * @member {Function|null} antigravityRuntimeProbeFn=null
+     */
+    antigravityRuntimeProbeFn = null
+
+    /**
      * Exact-profile Crashpad cleanup after a Codex Desktop main exit. Defaults to the bounded
      * process-ownership helper; injectable so unit specs never inspect or signal host processes.
      * @member {Function|null} codexDesktopCleanupFn=null
@@ -689,6 +698,10 @@ class FleetLifecycleService extends Base {
         const agent = this.getRegistry().getDefinition(id);
         if (!agent) throw new Error(`FleetLifecycleService.start: unknown agent '${id}'.`);
 
+        const resolvedProcessEnvironment = Object.hasOwn(opts, 'resolvedProcessEnvironment')
+            ? this.validateResolvedProcessEnvironment(opts.resolvedProcessEnvironment)
+            : this.snapshotAmbientProcessEnvironment();
+
         if (bindAntigravityProject) {
             const
                 signal = opts.startSignal,
@@ -726,6 +739,7 @@ class FleetLifecycleService extends Base {
             launchOptions   = {...opts};
 
         delete launchOptions.bindAntigravityProject;
+        delete launchOptions.resolvedProcessEnvironment;
 
         const launch = this.resolveLaunch(agent, {...launchOptions, cwd, serverPassword}),
               {command, args, env: launchEnv} = launch;
@@ -788,10 +802,7 @@ class FleetLifecycleService extends Base {
         // isolation home var, plus any Brain-set compat extras) merges BEFORE the reserved
         // injections so the reserved keys always win, then the agent's own PAT lands under
         // credentialEnvVar; an agent without one is refused below, before the spawn.
-        const env = {};
-        for (const key of AMBIENT_ENV_ALLOWLIST) {
-            if (process.env[key] !== undefined) env[key] = process.env[key];
-        }
+        const env = {...resolvedProcessEnvironment};
         for (const [key, value] of Object.entries(launchEnv)) {
             env[key] = value;
         }
@@ -1448,7 +1459,7 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * @summary Whether a Claude Desktop seat's profile rows can start new MCP children
+     * @summary Whether a Claude Desktop or Antigravity seat's profile rows can start new MCP children
      * ({@link Neo.ai.services.fleet.McpLaunchAdmissionService#statusOf}): its generation's state, or `stale`
      * for a running seat this Fleet holds none for. `null` for every other family, for a raw launch, and for
      * a stopped seat with nothing to say.
@@ -2030,11 +2041,11 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * @summary Whether a process runs a Claude Desktop seat's profile: the seat's launch binary with the
-     * seat's own `--user-data-dir` as a whole word, the proof the lease uses ({@link probeSeat}). Helpers
-     * carry the argument too, but not the binary, so they do not count. Start rewrites the profile's MCP rows
+     * @summary Whether a process runs a Claude Desktop or Antigravity seat's profile: the seat's launch
+     * binary with its own `--user-data-dir` as a whole word, the proof the lease uses ({@link probeSeat}).
+     * Helpers carry the argument too, but not the binary, so they do not count. Start rewrites the profile's MCP rows
      * only when this answers `false`.
-     * @param {Object} agent Raw registry definition of a `claude-desktop` seat.
+     * @param {Object} agent Raw registry definition of a Desktop seat.
      * @returns {Boolean|null} `null` when the process table cannot be read.
      */
     desktopProfileInUse(agent) {
@@ -2186,6 +2197,11 @@ class FleetLifecycleService extends Base {
     /** @returns {Function} installed-bundle capability probe. @private */
     getCodexDesktopCapabilityProbe() {
         return this.codexDesktopCapabilityProbeFn || probeCodexDesktopCapabilities;
+    }
+
+    /** @returns {Function} installed Antigravity fingerprint probe. @private */
+    getAntigravityRuntimeProbeFn() {
+        return this.antigravityRuntimeProbeFn || probeAntigravityRuntime;
     }
 
     /** @returns {Function} exact-profile post-exit cleanup. @private */
@@ -2595,7 +2611,15 @@ class FleetLifecycleService extends Base {
      *     Codex Desktop, `binaryPath` is the bundled Codex config consumer and
      *     `launchBinaryPath` is the desktop harness executable; other families use one path for both.
      */
-    async assertRemoteMcpCapability(agent) {
+    async assertRemoteMcpCapability(agent, {antigravityStartContext} = {}) {
+        if (agent?.harnessType === 'antigravity') {
+            const context = antigravityStartContext ?? await this.resolveAntigravityStartContext(agent);
+
+            this.validateAntigravityStartContext(agent, context);
+
+            return context.capability
+        }
+
         const
             {harnessType, id} = agent,
             binaryFamily      = harnessType === 'codex-desktop' ? 'codex' : harnessType,
@@ -2647,6 +2671,118 @@ class FleetLifecycleService extends Base {
         }
 
         return {harnessType, binaryPath, launchBinaryPath}
+    }
+
+    /**
+     * @summary Resolve one curated Antigravity Start against a copied benign environment and the
+     * installed-runtime fingerprint that has native workspace-MCP evidence. No path, profile, or
+     * global config is written here; unsupported or unidentifiable builds refuse before Start.
+     * @param {Object} agent Raw registry definition.
+     * @returns {Promise<Object>} `{capability, processEnvironment, registryDirectory}` with no credentials.
+     */
+    async resolveAntigravityStartContext(agent) {
+        if (agent?.harnessType !== 'antigravity' || agent.metadata?.launch ||
+            !SURVIVING_HARNESS_TYPES.has(agent.harnessType)) {
+            throw new Error(`FleetLifecycleService.resolveAntigravityStartContext: agent '${agent?.id || 'unknown'}' is not a curated Antigravity seat.`)
+        }
+
+        const processEnvironment = this.snapshotAmbientProcessEnvironment();
+
+        if (!path.isAbsolute(processEnvironment.HOME || '')) {
+            throw new Error('FleetLifecycleService.resolveAntigravityStartContext: an absolute HOME is required for the Antigravity profile context.')
+        }
+
+        const
+            configuredBinary = this.getHarnessBinaryPath('antigravity'),
+            launchBinaryPath = configuredBinary && this.resolveExecutable(configuredBinary, processEnvironment.PATH);
+
+        if (!launchBinaryPath) {
+            throw new Error(`FleetLifecycleService.resolveAntigravityStartContext: configured Antigravity binary '${configuredBinary || 'unavailable'}' is unavailable.`)
+        }
+
+        const nativeRuntime = await this.getAntigravityRuntimeProbeFn()({selectedBinaryPath:launchBinaryPath});
+
+        if (!nativeRuntime?.available) {
+            throw new Error(`FleetLifecycleService.resolveAntigravityStartContext: selected Antigravity runtime is unsupported (${nativeRuntime?.reason || 'runtime-unproven'}).`)
+        }
+
+        const capability = {
+            harnessType: 'antigravity',
+            binaryPath: launchBinaryPath,
+            launchBinaryPath,
+            nativeRuntime
+        };
+
+        return {
+            capability,
+            processEnvironment,
+            registryDirectory: path.join(processEnvironment.HOME, '.gemini', 'config', 'projects')
+        }
+    }
+
+    /**
+     * @summary Validate that a reused Antigravity start context names the currently selected binary,
+     * a supported runtime probe, and the matching per-home project registry. This accepts the exact
+     * proof from {@link resolveAntigravityStartContext} without repeating its file hashing.
+     * @param {Object} agent Raw registry definition.
+     * @param {Object} context Context returned by {@link resolveAntigravityStartContext}.
+     * @returns {void}
+     * @private
+     */
+    validateAntigravityStartContext(agent, context) {
+        const environment = this.validateResolvedProcessEnvironment(context?.processEnvironment);
+
+        if (agent?.harnessType !== 'antigravity' || agent.metadata?.launch ||
+            !SURVIVING_HARNESS_TYPES.has(agent.harnessType) || !path.isAbsolute(environment.HOME || '')) {
+            throw new Error('FleetLifecycleService.assertRemoteMcpCapability: the Antigravity start context is invalid.')
+        }
+
+        const
+            configuredBinary = this.getHarnessBinaryPath('antigravity'),
+            selectedBinary = configuredBinary && this.resolveExecutable(configuredBinary, environment.PATH),
+            capability = context.capability;
+
+        if (!selectedBinary || capability?.harnessType !== 'antigravity' ||
+            capability.binaryPath !== selectedBinary || capability.launchBinaryPath !== selectedBinary ||
+            capability.nativeRuntime?.available !== true ||
+            context.registryDirectory !== path.join(environment.HOME, '.gemini', 'config', 'projects')) {
+            throw new Error('FleetLifecycleService.assertRemoteMcpCapability: the Antigravity runtime proof does not match its selected binary and profile context.')
+        }
+    }
+
+    /** @returns {Object} A fresh copy of only the benign parent environment allowlist. */
+    snapshotAmbientProcessEnvironment() {
+        const environment = {};
+
+        for (const key of AMBIENT_ENV_ALLOWLIST) {
+            if (typeof process.env[key] === 'string') environment[key] = process.env[key];
+        }
+
+        return environment
+    }
+
+    /**
+     * @summary Validate and copy the optional resolved process environment; credentials and arbitrary
+     * launch settings cannot be introduced through this allowlisted snapshot.
+     * @param {*} environment
+     * @returns {Object}
+     * @private
+     */
+    validateResolvedProcessEnvironment(environment) {
+        if (!environment || typeof environment !== 'object' || Array.isArray(environment)) {
+            throw new Error('FleetLifecycleService.start: resolvedProcessEnvironment must be an object of allowlisted string values.')
+        }
+
+        const copy = {};
+
+        for (const [key, value] of Object.entries(environment)) {
+            if (!AMBIENT_ENV_KEYS.has(key) || typeof value !== 'string') {
+                throw new Error('FleetLifecycleService.start: resolvedProcessEnvironment contains an invalid or non-allowlisted entry.')
+            }
+            copy[key] = value;
+        }
+
+        return copy
     }
 
     /**

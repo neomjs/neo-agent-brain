@@ -12,6 +12,9 @@ import {
     resolveSeatGitIdentity
 }                                                        from './seatGitIdentity.mjs';
 import {readSeatModelCatalog, unofferedDeclaration} from './seatModelCatalog.mjs';
+import {bindAntigravityProject} from './antigravityProjectBinding.mjs';
+import {probeAntigravityRuntime, verifyAntigravityProfileListener} from './probeAntigravityRuntime.mjs';
+import {excludeManagedWorkspaceFiles} from './excludeManagedWorkspaceFiles.mjs';
 import path                                         from 'node:path';
 import {fileURLToPath}                              from 'node:url';
 
@@ -50,6 +53,21 @@ function tenantProvesSeat(readiness, expectedIdentity) {
         readiness.resources?.['memory-core']?.ok &&
         readiness.resources['memory-core'].identity === expectedIdentity &&
         readiness.resources?.['knowledge-base']?.ok)
+}
+
+/** @summary Admit only the exact selected Antigravity profile/runtime context returned by the lifecycle. @private */
+function validAntigravityStartContext(context) {
+    const capability = context?.capability;
+
+    if (capability?.harnessType !== 'antigravity' || capability.nativeRuntime?.available !== true ||
+        typeof capability.nativeRuntime?.fingerprints?.appAsarSha256 !== 'string' ||
+        !path.isAbsolute(capability.binaryPath || '') || capability.binaryPath !== capability.launchBinaryPath ||
+        !context?.processEnvironment || typeof context.processEnvironment !== 'object' || Array.isArray(context.processEnvironment) ||
+        !path.isAbsolute(context.processEnvironment.HOME || '') || !path.isAbsolute(context.registryDirectory || '')) {
+        throw new Error('startAgentProvisioned: Antigravity requires a supported installed runtime and the original profile/process context.')
+    }
+
+    return context
 }
 
 /**
@@ -186,6 +204,9 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * @param {Function} [options.readParticipation]   `() => Promise<Object|null>`, the seat's participation as its
  *                                                 identity node records it, re-read before the spawn; absent, the
  *                                                 spawn checks the registry alone.
+ * @param {Function} [options.excludeWorkspaceFiles] Local Git exclusion writer for Antigravity artifacts; test seam.
+ * @param {Function} [options.bindProject] Curated Antigravity project binder; test seam.
+ * @param {Function} [options.probeAntigravityRuntimeFn] Re-probe seam for the selected Antigravity binary.
  * @param {Object}   [options.tenantService]     Remote tenant authority. Lazily imports the real
  *                                              singleton only for an opted-in remote seat.
  * @param {Number}   [options.admissionMark]    The non-Stop admission revocation mark, read where the managed
@@ -263,6 +284,9 @@ async function provisionAgent({
     convergeGitIdentity = convergeSeatGitIdentity,
     proveForgeAccount = proveSeatForgeAccount,
     readModelCatalog = readSeatModelCatalog,
+    excludeWorkspaceFiles = excludeManagedWorkspaceFiles,
+    bindProject = bindAntigravityProject,
+    probeAntigravityRuntimeFn = probeAntigravityRuntime,
     readParticipation = null,
     tenantService = null,
     admissionMark = null,
@@ -346,9 +370,24 @@ async function provisionAgent({
         throw new Error(`startAgentProvisioned: 'agentosRuntimeRoot' must be an absolute path for agent '${agentId}'.`)
     }
 
+    // Resolve Antigravity's selected native build, profile environment, and registry before credential reads or
+    // checkout effects. The profile probe remains a closed-seat gate below, before any managed file is touched.
+    let antigravityStartContext = null;
+
+    if (repo && agent.harnessType === 'antigravity') {
+        if (typeof lifecycleService.resolveAntigravityStartContext !== 'function') {
+            throw new Error('startAgentProvisioned: Antigravity has no trusted lifecycle context resolver.')
+        }
+
+        antigravityStartContext = validAntigravityStartContext(
+            await lifecycleService.resolveAntigravityStartContext(agent)
+        );
+        startSignal.throwIfAborted()
+    }
+
     // Non-Stop admission invalidations retain their mark; Stop is owned by the lifecycle signal.
     const
-        desktopRows    = Boolean(repo) && agent.harnessType === 'claude-desktop',
+        desktopRows    = Boolean(repo) && ['claude-desktop', 'antigravity'].includes(agent.harnessType),
         admission      = desktopRows ? lifecycleService.getLaunchAdmission() : null,
         admissionSince = admission ? admissionMark ?? admission.revocationMark(agentId) : null;
 
@@ -419,15 +458,16 @@ async function provisionAgent({
     // read after the identity check, so its refusals stay true that nothing was changed
     await readOffered();
 
-    // A Claude Desktop seat's profile is rewritten below, which only a closed Desktop tolerates. The Fleet's
-    // own record says it is not running; a Desktop someone else opened on the profile is checked here.
+    // App-bundle profile files are rewritten below, which only a closed application tolerates. The lifecycle's
+    // own record says the seat is not running; an outside process holding this exact profile refuses the Start.
     if (desktopRows) {
         const inUse = lifecycleService.desktopProfileInUse(agent);
 
         if (inUse !== false) {
+            const application = agent.harnessType === 'antigravity' ? 'Antigravity' : 'Claude Desktop';
             throw Object.assign(new Error(`startAgentProvisioned: agent '${agentId}' cannot start: ${inUse
-                ? 'its Claude Desktop profile is open in a process this Fleet does not supervise. Quit that Claude Desktop, then start the seat again'
-                : 'the process table could not be read to confirm its Claude Desktop is closed'}. Nothing was cloned or configured.`), {code: 'FLEET_SEAT_PROFILE_IN_USE'})
+                ? `its ${application} profile is open in a process this Fleet does not supervise. Quit that ${application}, then start the seat again`
+                : `the process table could not be read to confirm its ${application} is closed`}. Nothing was cloned or configured.`), {code: 'FLEET_SEAT_PROFILE_IN_USE'})
         }
     }
 
@@ -439,7 +479,7 @@ async function provisionAgent({
     let
         remotePlan                   = null,
         resolvedMcpCredential,
-        remoteCapability,
+        remoteCapability             = antigravityStartContext?.capability ?? null,
         planeOwner                   = null;
 
     const activeTenantService = remote ? tenantService ?? (await import('./FleetTenantService.mjs')).default : null;
@@ -458,7 +498,7 @@ async function provisionAgent({
             throw new Error(`startAgentProvisioned: MCP tenant '${target.tenantId}' has no plane credential for agent '${agentId}'.`)
         }
 
-        remoteCapability = await lifecycleService.assertRemoteMcpCapability(agent, {
+        remoteCapability ??= await lifecycleService.assertRemoteMcpCapability(agent, {
             mainCheckout: agentosRuntimeRoot,
             nodePath
         });
@@ -495,7 +535,7 @@ async function provisionAgent({
         let stored = activeTenantService.resolveSeatPlaneCredential(storedArgs);
 
         remotePlan            = placement;
-        remoteCapability      = await lifecycleService.assertRemoteMcpCapability(agent, {
+        remoteCapability      ??= await lifecycleService.assertRemoteMcpCapability(agent, {
             mainCheckout: agentosRuntimeRoot,
             nodePath
         });
@@ -562,6 +602,11 @@ async function provisionAgent({
             credentialOrigin,
             cloneRepo
         });
+    startSignal.throwIfAborted();
+
+    const antigravityExclusion = antigravityStartContext
+        ? excludeWorkspaceFiles({targetRepoRoot})
+        : null;
     startSignal.throwIfAborted();
 
     // Additional repositories use the same ordered preparation as the live-seat operation. The
@@ -643,6 +688,12 @@ async function provisionAgent({
             nodePath,
             residentMcpEnv     : resolvedResidentMcpEnv,
             remoteMcpCapability: remoteCapability,
+            ...(antigravityStartContext ? {antigravityStart: {
+                capability: antigravityStartContext.capability,
+                processEnvironment: antigravityStartContext.processEnvironment,
+                registryDirectory: antigravityStartContext.registryDirectory,
+                exclusion: antigravityExclusion
+            }} : {}),
             // the plan's remote kind, whether a connected tenant or the Fleet's plane serves MC and KB
             mcpTarget          : remotePlan && {
                 kind            : 'tenant',
@@ -658,6 +709,12 @@ async function provisionAgent({
             prepared.targetRepoRoot !== targetRepoRoot ||
             prepared.agentosRuntimeRoot !== path.resolve(agentosRuntimeRoot)) {
             throw new Error(`startAgentProvisioned: preparation did not return the exact AgentOS runtime and target repo roots for agent '${agentId}'.`);
+        }
+
+        if (antigravityStartContext && (prepared.antigravityProject?.name !== agent.id ||
+            prepared.antigravityProject.root !== targetRepoRoot || typeof prepared.antigravityProject.id !== 'string' ||
+            !prepared.antigravityProject.id)) {
+            throw new Error(`startAgentProvisioned: Antigravity preparation did not return the receipt-owned project for agent '${agentId}'.`)
         }
 
         if (remote) {
@@ -676,6 +733,53 @@ async function provisionAgent({
             startSignal.throwIfAborted();
         }
 
+        const bindProjectCallback = antigravityStartContext && (async descriptor => {
+            if (descriptor?.id !== agentId || descriptor.instanceHome !== prepared.instanceHome ||
+                descriptor.cwd !== targetRepoRoot || descriptor.signal !== startSignal ||
+                !Number.isSafeInteger(descriptor.pid) || descriptor.pid <= 0 ||
+                typeof descriptor.pidStartedAt !== 'string' || !descriptor.pidStartedAt) {
+                throw new Error(`startAgentProvisioned: Antigravity received a mismatched original Start descriptor for agent '${agentId}'.`)
+            }
+
+            const capability = antigravityStartContext.capability,
+                  project = prepared.antigravityProject;
+
+            return bindProject({
+                profileDirectory: descriptor.instanceHome,
+                expectedProcess: {pid: descriptor.pid, startedAt: descriptor.pidStartedAt},
+                project,
+                registryDirectory: antigravityStartContext.registryDirectory,
+                signal: startSignal,
+                verifyProfileListener: verifyAntigravityProfileListener,
+                verifyNativeCapability: async ({profileDirectory, project: selected, registeredProjectProof, browserProduct}) => {
+                    const current = await probeAntigravityRuntimeFn({selectedBinaryPath: capability.binaryPath});
+
+                    if (!current?.available || current.binaryPath !== capability.binaryPath ||
+                        typeof current.fingerprints?.appAsarSha256 !== 'string' ||
+                        JSON.stringify(current.fingerprints) !== JSON.stringify(capability.nativeRuntime.fingerprints)) {
+                        return {verified: false, reason: 'unsupported-app-version'}
+                    }
+                    if (profileDirectory !== descriptor.instanceHome || selected.id !== project.id ||
+                        selected.name !== project.name || selected.root !== project.root ||
+                        registeredProjectProof?.verified !== true ||
+                        registeredProjectProof.profileDirectory !== descriptor.instanceHome ||
+                        registeredProjectProof.projectId !== project.id || registeredProjectProof.projectName !== project.name ||
+                        registeredProjectProof.projectRoot !== project.root || typeof browserProduct !== 'string' || !browserProduct) {
+                        return {verified: false}
+                    }
+
+                    return {
+                        verified: true,
+                        projectId: project.id,
+                        projectName: project.name,
+                        projectRoot: project.root,
+                        browserProduct,
+                        capabilityVersion: `${current.fingerprints.shortVersion}:${current.fingerprints.appAsarSha256}`
+                    }
+                }
+            })
+        });
+
         status = await spawnPermitted({
             lifecycleService,
             registry,
@@ -689,7 +793,9 @@ async function provisionAgent({
                 gitIdentity: commitIdentity,
                 ...(remote
                     ? {resolvedMcpCredential, resolvedMcpEndpoint: remotePlan.endpoint, remoteMcpCapability: remoteCapability}
-                    : {}),
+                    : antigravityStartContext ? {remoteMcpCapability: remoteCapability} : {}),
+                ...(antigravityStartContext ? {resolvedProcessEnvironment: antigravityStartContext.processEnvironment} : {}),
+                ...(bindProjectCallback ? {bindAntigravityProject: bindProjectCallback} : {}),
                 ...(reservation ? {launchAdmission: {
                     generation: reservation.generation,
                     plan      : prepared.mcpPlan,
@@ -705,7 +811,7 @@ async function provisionAgent({
             }
         })
     } catch (error) {
-        reservation && admission.revoke(agentId, LAUNCH_ADMISSION_REASONS.START_FAILED, {generation: reservation.generation});
+        reservation && admission.revoke(agentId, startSignal.aborted ? LAUNCH_ADMISSION_REASONS.STOP_REQUESTED : LAUNCH_ADMISSION_REASONS.START_FAILED, {generation: reservation.generation});
         throw error
     }
 

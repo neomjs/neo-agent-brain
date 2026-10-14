@@ -14,8 +14,8 @@ const
     BROWSER_PATH     = /^\/devtools\/browser\/[A-Za-z0-9_-]+$/,
     MAX_PORT_FILE    = 512,
     MAX_WS_MESSAGE   = 4 * 1024 * 1024,
-    DEFAULT_TIMEOUT  = 8000,
-    MAX_TIMEOUT      = 15000,
+    DEFAULT_TIMEOUT  = 60000,
+    MAX_TIMEOUT      = 120000,
     POLL_INTERVAL    = 100;
 
 /**
@@ -47,7 +47,7 @@ export class AntigravityProjectBindingRefusal extends Error {
  * @param {Object} [options.fileSystem=fs] Filesystem seam for deterministic tests.
  * @param {Function} [options.WebSocketCtor=WebSocket] RFC6455 client seam.
  * @param {AbortSignal} [options.signal] Start-owned cancellation signal.
- * @param {Number} [options.timeoutMs=8000] Total budget, capped at 15000 ms.
+ * @param {Number} [options.timeoutMs=60000] Total budget, capped at 120000 ms.
  * @returns {Promise<Object>} Project proof and observed renderer route/version.
  * @throws {AntigravityProjectBindingRefusal} On absent proof, ambiguity, timeout or cancellation.
  */
@@ -84,7 +84,7 @@ export async function bindAntigravityProject({
 
     checkAbort(signal);
 
-    const registeredProjectProof = await proveRegisteredProject({
+    const registeredProjectProof = await within(Promise.resolve().then(() => proveRegisteredProject({
         profileDirectory: profile,
         projectId: projectProof.id,
         projectName: projectProof.name,
@@ -92,42 +92,23 @@ export async function bindAntigravityProject({
         readRegisteredProject: projectReader,
         registryDirectory,
         fileSystem,
-        timeoutMs: Math.max(100, remaining(deadline)),
+        timeoutMs: Math.max(100, Math.min(2000, remaining(deadline))),
         signal
-    }).catch(error => {
+    })), deadline, signal).catch(error => {
         if (error instanceof AntigravityProjectRegistryRefusal) throw refuse(error.code);
         throw preserveRefusal(error, 'project-registry-unproven')
     });
 
     const activePortPath = path.join(profile, ACTIVE_PORT_FILE);
-
-    try {
-        const
-            profileStat = await within(Promise.resolve().then(() => fileSystem.lstat(profile)), deadline, signal),
-            portStat    = await within(Promise.resolve().then(() => fileSystem.lstat(activePortPath)), deadline, signal);
-
-        if (!profileStat.isDirectory() || profileStat.isSymbolicLink() ||
-            !portStat.isFile() || portStat.isSymbolicLink()) {
-            throw refuse('stale-endpoint')
-        }
-    } catch (error) {
-        if (error instanceof AntigravityProjectBindingRefusal) throw error;
-        throw refuse('stale-endpoint')
-    }
-
-    const activePortText = await within(Promise.resolve().then(() => fileSystem.readFile(activePortPath, 'utf8')), deadline, signal)
-            .catch(error => { throw preserveRefusal(error, 'stale-endpoint') }),
-          endpoint       = parseActivePort(activePortText),
-          listenerProof  = await within(Promise.resolve().then(() => verifyProfileListener({
-            profileDirectory: profile,
-            port            : endpoint.port,
-            browserPath     : endpoint.browserPath,
-            expectedProcess : owner,
-            signal
-        })), deadline, signal).catch(error => { throw preserveRefusal(error, 'listener-unproven') });
-
-    const listenerFailure = listenerRefusal(listenerProof, {profileDirectory: profile, endpoint, owner});
-    if (listenerFailure) throw refuse(listenerFailure);
+    const {endpoint, listenerProof} = await waitForOwnedProfileEndpoint({
+        profile,
+        activePortPath,
+        fileSystem,
+        verifyProfileListener,
+        owner,
+        deadline,
+        signal
+    });
 
     checkAbort(signal);
 
@@ -150,12 +131,7 @@ export async function bindAntigravityProject({
 
         if (typeof version?.product !== 'string' || !version.product) throw refuse('browser-unavailable');
 
-        const targets = await cdp.call('Target.getTargets', {}, null, deadline, signal)
-            .catch(error => { throw preserveRefusal(error, 'browser-unavailable') });
-        const renderers = (Array.isArray(targets?.targetInfos) ? targets.targetInfos : [])
-            .filter(target => target.type === 'page' && rendererOrigin(target.url));
-
-        if (renderers.length !== 1) throw refuse(renderers.length ? 'renderer-ambiguous' : 'renderer-unproven');
+        const renderers = await waitForUniqueRenderer({cdp, deadline, signal});
 
         const renderer = renderers[0], rendererUrl = canonicalRendererUrl(renderer.url), capabilityProof =
             await within(Promise.resolve().then(() => verifyNativeCapability({
@@ -275,6 +251,71 @@ function parseActivePort(value) {
     if (port < 1 || port > 65535) throw refuse('stale-endpoint');
 
     return {port, browserPath: lines[1]}
+}
+
+/** @summary Wait only on the supplied profile until its endpoint is owned by the original Start. @private */
+async function waitForOwnedProfileEndpoint({profile, activePortPath, fileSystem, verifyProfileListener, owner, deadline, signal}) {
+    let lastRefusal = 'stale-endpoint';
+
+    while (remaining(deadline) > 0) {
+        checkAbort(signal);
+
+        try {
+            const
+                profileStat = await within(Promise.resolve().then(() => fileSystem.lstat(profile)), deadline, signal),
+                portStat    = await within(Promise.resolve().then(() => fileSystem.lstat(activePortPath)), deadline, signal);
+
+            if (!profileStat.isDirectory() || profileStat.isSymbolicLink() ||
+                !portStat.isFile() || portStat.isSymbolicLink()) {
+                throw refuse('stale-endpoint')
+            }
+
+            const activePortText = await within(Promise.resolve().then(() => fileSystem.readFile(activePortPath, 'utf8')), deadline, signal),
+                  endpoint = parseActivePort(activePortText),
+                  listenerProof = await within(Promise.resolve().then(() => verifyProfileListener({
+                      profileDirectory: profile,
+                      port: endpoint.port,
+                      browserPath: endpoint.browserPath,
+                      expectedProcess: owner,
+                      signal
+                  })), deadline, signal).catch(error => { throw preserveRefusal(error, 'listener-unproven') }),
+                  refusalCode = listenerRefusal(listenerProof, {profileDirectory: profile, endpoint, owner});
+
+            if (!refusalCode) return {endpoint, listenerProof};
+            if (refusalCode !== 'stale-endpoint' && refusalCode !== 'listener-unproven') throw refuse(refusalCode);
+            lastRefusal = refusalCode
+        } catch (error) {
+            if (error instanceof AntigravityProjectBindingRefusal) {
+                if (error.code !== 'stale-endpoint' && error.code !== 'listener-unproven') throw error;
+                lastRefusal = error.code
+            } else if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') {
+                if (error?.code === 'canceled' || error?.code === 'timeout') throw error;
+                lastRefusal = 'stale-endpoint'
+            }
+        }
+
+        await within(new Promise(resolve => setTimeout(resolve, Math.min(POLL_INTERVAL, remaining(deadline)))), deadline, signal)
+    }
+
+    throw refuse(lastRefusal)
+}
+
+/** @summary Wait for the first unique Antigravity renderer without selecting an ambiguous page. @private */
+async function waitForUniqueRenderer({cdp, deadline, signal}) {
+    while (remaining(deadline) > 0) {
+        checkAbort(signal);
+        const targets = await cdp.call('Target.getTargets', {}, null, deadline, signal)
+            .catch(error => { throw preserveRefusal(error, 'browser-unavailable') });
+        const renderers = (Array.isArray(targets?.targetInfos) ? targets.targetInfos : [])
+            .filter(target => target.type === 'page' && rendererOrigin(target.url));
+
+        if (renderers.length > 1) throw refuse('renderer-ambiguous');
+        if (renderers.length === 1) return renderers;
+
+        await within(new Promise(resolve => setTimeout(resolve, Math.min(POLL_INTERVAL, remaining(deadline)))), deadline, signal)
+    }
+
+    throw refuse('renderer-unproven')
 }
 
 /** @summary Classify the injected profile listener receipt without accepting PID or endpoint drift. @private */
