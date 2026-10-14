@@ -290,10 +290,10 @@ test.describe('bindAntigravityProject', () => {
         expect(fixture.behavior.sockets).toHaveLength(0)
     });
 
-    test('rejects an unsupported app version before attaching or navigating', async () => {
-        const fixture = harness({verifyNativeCapability: async () => ({verified: false, reason: 'unsupported-app-version'})});
+    test('rejects a runtime that changed during Start before attaching or navigating', async () => {
+        const fixture = harness({verifyNativeCapability: async () => ({verified: false, reason: 'runtime-changed-during-start'})});
 
-        await expect(fixture.run()).rejects.toMatchObject({code: 'unsupported-version'});
+        await expect(fixture.run()).rejects.toMatchObject({code: 'runtime-changed-during-start'});
         expect(fixture.behavior.sockets[0].commands.some(({method}) => method === 'Target.attachToTarget' || method === 'Page.navigate')).toBe(false)
     });
 

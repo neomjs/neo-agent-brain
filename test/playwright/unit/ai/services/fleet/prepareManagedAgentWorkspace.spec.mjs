@@ -26,7 +26,6 @@ import {importSeatMemory}                               from '../../../../../../
 import {startAgentProvisioned}                          from '../../../../../../ai/services/fleet/startAgentProvisioned.mjs';
 import {excludeManagedWorkspaceFiles}                  from '../../../../../../ai/services/fleet/excludeManagedWorkspaceFiles.mjs';
 import {registerAntigravityProject}                     from '../../../../../../ai/services/fleet/antigravityProjectRegistry.mjs';
-import {ANTIGRAVITY_RUNTIME_FINGERPRINT}                from '../../../../../../ai/services/fleet/probeAntigravityRuntime.mjs';
 
 // Temp-filesystem contract tests: the real artifact writer runs, while checkout hydration is an
 // injected recorder. `hydrateCurrentWorktree` has its own real temp-checkout suite; this spec proves
@@ -35,6 +34,11 @@ import {ANTIGRAVITY_RUNTIME_FINGERPRINT}                from '../../../../../../
 
 const NODE_PATH    = process.execPath;
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..');
+const ANTIGRAVITY_RUNTIME_FIXTURE = Object.freeze({
+    platform: 'darwin', architecture: 'arm64', bundleId: 'com.google.antigravity',
+    shortVersion: '2.24.1', buildVersion: '2.24.1',
+    appAsarSha256: 'a'.repeat(64), languageServerSha256: 'b'.repeat(64)
+});
 
 const MCP_ENTRYPOINTS = [
     'ai/mcp/server/memory-core/mcp-server.mjs',
@@ -2385,7 +2389,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
         await fs.writeFile(path.join(memoryDir, 'MEMORY.md'), '# Bearer notes\nKeep these exact bytes.\n');
         await fs.writeFile(path.join(memoryDir, 'identity.md'), '# Bearer self-story\nUntouched.\n');
         const capability = {harnessType: 'antigravity', binaryPath, launchBinaryPath: binaryPath,
-            nativeRuntime: {available: true, fingerprints: ANTIGRAVITY_RUNTIME_FINGERPRINT}};
+            nativeRuntime: {available: true, fingerprints: ANTIGRAVITY_RUNTIME_FIXTURE}};
         const antigravityStart = {capability, registryDirectory,
             processEnvironment: {HOME: root, PATH: '/usr/bin:/bin'},
             exclusion: excludeManagedWorkspaceFiles({targetRepoRoot: opts.targetRepoRoot})};

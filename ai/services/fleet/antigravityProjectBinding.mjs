@@ -43,7 +43,7 @@ export class AntigravityProjectBindingRefusal extends Error {
  * @param {Function} [options.readRegisteredProject] Read-only native registry adapter.
  * @param {String} [options.registryDirectory] Explicit native `config/projects` directory.
  * @param {Function} options.verifyProfileListener Proves this exact profile endpoint and process tree.
- * @param {Function} options.verifyNativeCapability Proves app version, route capability and project tuple.
+ * @param {Function} options.verifyNativeCapability Proves measured runtime continuity and the project tuple.
  * @param {Object} [options.fileSystem=fs] Filesystem seam for deterministic tests.
  * @param {Function} [options.WebSocketCtor=WebSocket] RFC6455 client seam.
  * @param {AbortSignal} [options.signal] Start-owned cancellation signal.
@@ -145,7 +145,7 @@ export async function bindAntigravityProject({
             })), deadline, signal).catch(error => { throw preserveRefusal(error, 'native-capability-unproven') });
 
         if (!capabilityMatches(capabilityProof, projectProof, version.product)) {
-            throw refuse(capabilityProof?.reason === 'unsupported-app-version' ? 'unsupported-version' : 'native-capability-unproven')
+            throw refuse(capabilityProof?.reason === 'runtime-changed-during-start' ? 'runtime-changed-during-start' : 'native-capability-unproven')
         }
 
         const routeUrl = projectRoute(rendererUrl, projectProof.id),

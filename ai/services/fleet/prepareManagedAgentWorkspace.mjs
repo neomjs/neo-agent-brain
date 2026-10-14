@@ -832,14 +832,14 @@ async function prepareHarnessArtifacts({
     }
 }
 
-/** @summary Require the original Start's exact native build and explicit host bindings before hydration. @private */
+/** @summary Require the original Start's measured app identity and explicit host bindings before hydration. @private */
 function assertAntigravityStart(context) {
     const capability = context?.capability;
     if (capability?.harnessType !== 'antigravity' || capability.nativeRuntime?.available !== true ||
         !classifyAntigravityRuntimeFingerprint(capability.nativeRuntime.fingerprints).available ||
         !path.isAbsolute(capability.binaryPath || '') || capability.binaryPath !== capability.launchBinaryPath ||
         !path.isAbsolute(context.registryDirectory || '') || !path.isAbsolute(context.processEnvironment?.HOME || '')) {
-        throw unsupported('Antigravity requires a supported installed build and the original Start host context')
+        throw unsupported('Antigravity requires a measured installed app and the original Start host context')
     }
 }
 

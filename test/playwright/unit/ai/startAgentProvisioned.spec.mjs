@@ -10,11 +10,15 @@ import {readCodexModelCatalog}                     from '../../../../ai/services
 import {createManagedAgentWorkspacePlan}           from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {startAgentProvisioned as startProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
 import {resolveSeatGitIdentity}                    from '../../../../ai/services/fleet/seatGitIdentity.mjs';
-import {ANTIGRAVITY_RUNTIME_FINGERPRINT}            from '../../../../ai/services/fleet/probeAntigravityRuntime.mjs';
 import {supportsTenantMcpTarget}                   from '../../../../src/fleet/contract/harnessTypes.mjs';
 
 /** The Git identity a fixture seat resolves to unless a case says otherwise. */
 const SEAT_GIT_IDENTITY = {state: 'derived', source: 'verified-primary', name: 'Seat Agent', email: 'seat@example.test'};
+const ANTIGRAVITY_RUNTIME_FIXTURE = Object.freeze({
+    platform: 'darwin', architecture: 'arm64', bundleId: 'com.google.antigravity',
+    shortVersion: '2.24.1', buildVersion: '2.24.1',
+    appAsarSha256: 'a'.repeat(64), languageServerSha256: 'b'.repeat(64)
+});
 
 /**
  * Every repo-bearing start resolves and converges the seat's Git identity and installs its checkouts' dependencies.
@@ -105,7 +109,7 @@ function makeLifecycle({
                     harnessType: 'antigravity',
                     binaryPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity',
                     launchBinaryPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity',
-                    nativeRuntime: {available: true, binaryPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity', fingerprints: ANTIGRAVITY_RUNTIME_FINGERPRINT}
+                    nativeRuntime: {available: true, binaryPath: '/Applications/Antigravity.app/Contents/MacOS/Antigravity', fingerprints: ANTIGRAVITY_RUNTIME_FIXTURE}
                 },
                 processEnvironment: {HOME: '/instances/seat', PATH: '/usr/bin'},
                 registryDirectory: '/native/config/projects'
@@ -1046,7 +1050,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             context = {
                 capability: {
                     harnessType: 'antigravity', binaryPath, launchBinaryPath: binaryPath,
-                    nativeRuntime: {available: true, binaryPath, fingerprints: ANTIGRAVITY_RUNTIME_FINGERPRINT}
+                    nativeRuntime: {available: true, binaryPath, fingerprints: ANTIGRAVITY_RUNTIME_FIXTURE}
                 },
                 processEnvironment,
                 registryDirectory: '/native/config/projects'
@@ -1088,7 +1092,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                   },
                   probeAntigravityRuntimeFn: async args => {
                       probeCalls.push(args);
-                      return {available: true, binaryPath, fingerprints: ANTIGRAVITY_RUNTIME_FINGERPRINT}
+                      return {available: true, binaryPath, fingerprints: ANTIGRAVITY_RUNTIME_FIXTURE}
                   }
               });
 
@@ -1118,6 +1122,62 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         });
         expect(typeof bindCalls[0].verifyProfileListener).toBe('function');
         expect(probeCalls).toEqual([{selectedBinaryPath: binaryPath}])
+    });
+
+    test('Antigravity refuses project binding when the selected runtime fingerprint changes during the same Start', async () => {
+        const
+            agents = repoAgent('seat'), targetRepoRoot = '/managed/seat/neomjs-neo',
+            project = {id: '154e7ad7-ab8c-4445-bd6b-9ac6bdddcd0f', name: 'seat', root: targetRepoRoot},
+            binaryPath = '/Applications/Antigravity.app/Contents/MacOS/Antigravity',
+            context = {
+                capability: {
+                    harnessType: 'antigravity', binaryPath, launchBinaryPath: binaryPath,
+                    nativeRuntime: {available: true, binaryPath, fingerprints: ANTIGRAVITY_RUNTIME_FIXTURE}
+                },
+                processEnvironment: {HOME: '/instances/seat', PATH: '/usr/bin'},
+                registryDirectory: '/native/config/projects'
+            },
+            changedFingerprint = {...ANTIGRAVITY_RUNTIME_FIXTURE, appAsarSha256: 'c'.repeat(64)},
+            bindCalls = [], lifecycle = makeLifecycle({
+                agents,
+                antigravityContext: context,
+                startHandler: async (id, opts) => ({
+                    id, running: true, state: 'running', cwd: opts.cwd, pid: 4242,
+                    binding: await opts.bindAntigravityProject({
+                        id, pid: 4242, pidStartedAt: 'pid-birth-4242', instanceHome: '/instances/seat',
+                        cwd: targetRepoRoot, signal: opts.startSignal
+                    })
+                })
+            });
+
+        agents.seat.harnessType = 'antigravity';
+
+        const status = await startAgentProvisioned({
+            lifecycleService: lifecycle,
+            agentId: 'seat',
+            managedRoot: '/managed',
+            ensureRepo: makeEnsureRepo(targetRepoRoot),
+            prepareWorkspace: makePrepareWorkspace([], {antigravityProject: project}),
+            agentosRuntimeRoot: '/installed/neo',
+            excludeWorkspaceFiles: () => ({repoRoot: targetRepoRoot, verified: true}),
+            bindProject: async args => {
+                bindCalls.push(args);
+                return args.verifyNativeCapability({
+                    profileDirectory: '/instances/seat',
+                    project: args.project,
+                    registeredProjectProof: {
+                        verified: true, profileDirectory: '/instances/seat',
+                        projectId: project.id, projectName: project.name, projectRoot: project.root
+                    },
+                    browserProduct: 'Chrome/128.0.0.0'
+                })
+            },
+            probeAntigravityRuntimeFn: async () => ({available: true, binaryPath, fingerprints: changedFingerprint})
+        });
+
+        expect(status.binding).toMatchObject({verified: false, reason: 'runtime-changed-during-start'});
+        expect(bindCalls).toHaveLength(1);
+        expect(lifecycle.calls.start).toHaveLength(1)
     });
 
     test('Antigravity Stop during preparation revokes its reservation without invoking project binding or Start', async () => {

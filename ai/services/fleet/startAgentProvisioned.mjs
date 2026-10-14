@@ -757,7 +757,7 @@ async function provisionAgent({
                     if (!current?.available || current.binaryPath !== capability.binaryPath ||
                         typeof current.fingerprints?.appAsarSha256 !== 'string' ||
                         JSON.stringify(current.fingerprints) !== JSON.stringify(capability.nativeRuntime.fingerprints)) {
-                        return {verified: false, reason: 'unsupported-app-version'}
+                        return {verified: false, reason: 'runtime-changed-during-start'}
                     }
                     if (profileDirectory !== descriptor.instanceHome || selected.id !== project.id ||
                         selected.name !== project.name || selected.root !== project.root ||

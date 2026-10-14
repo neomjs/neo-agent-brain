@@ -3,13 +3,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-    ANTIGRAVITY_RUNTIME_FINGERPRINT,
     classifyAntigravityRuntimeFingerprint,
     probeAntigravityRuntime,
     verifyAntigravityProfileListener
 } from '../../../../../../ai/services/fleet/probeAntigravityRuntime.mjs';
 
 const
+    RUNTIME_FIXTURE = Object.freeze({
+        platform: 'darwin',
+        architecture: 'arm64',
+        bundleId: 'com.google.antigravity',
+        shortVersion: '2.24.1',
+        buildVersion: '2.24.1',
+        appAsarSha256: 'a'.repeat(64),
+        languageServerSha256: 'b'.repeat(64)
+    }),
     OWNER = {pid:100, startedAt:'Wed Oct 14 14:00:00 2026'},
     PROFILE_PORT = 9222,
     PROFILE_BROWSER_PATH = '/devtools/browser/profile-browser-id';
@@ -33,9 +41,9 @@ function makeBundle(root) {
 
 function supportedMetadata() {
     return {
-        bundleId:ANTIGRAVITY_RUNTIME_FINGERPRINT.bundleId,
-        shortVersion:ANTIGRAVITY_RUNTIME_FINGERPRINT.shortVersion,
-        buildVersion:ANTIGRAVITY_RUNTIME_FINGERPRINT.buildVersion
+        bundleId:RUNTIME_FIXTURE.bundleId,
+        shortVersion:RUNTIME_FIXTURE.shortVersion,
+        buildVersion:RUNTIME_FIXTURE.buildVersion
     }
 }
 
@@ -71,7 +79,7 @@ test.describe('probeAntigravityRuntime', () => {
     test.beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-runtime-probe-')) });
     test.afterEach(() => fs.rmSync(root, {recursive:true, force:true}));
 
-    test('measures the selected bundle files and admits only the exact native-proven fingerprint', async () => {
+    test('measures the selected bundle files and admits a future runtime identity with well-formed hashes', async () => {
         const fixture = makeBundle(root), hashedPaths = [], metadataPaths = [];
         const result = await probeAntigravityRuntime({
             selectedBinaryPath:fixture.binary,
@@ -82,8 +90,8 @@ test.describe('probeAntigravityRuntime', () => {
             hashFile:async file => {
                 hashedPaths.push(file);
                 return file === fs.realpathSync(fixture.appAsar)
-                    ? ANTIGRAVITY_RUNTIME_FINGERPRINT.appAsarSha256
-                    : ANTIGRAVITY_RUNTIME_FINGERPRINT.languageServerSha256
+                    ? RUNTIME_FIXTURE.appAsarSha256
+                    : RUNTIME_FIXTURE.languageServerSha256
             }
         });
 
@@ -91,24 +99,27 @@ test.describe('probeAntigravityRuntime', () => {
             binaryPath:fs.realpathSync(fixture.binary), appBundle:fs.realpathSync(fixture.appBundle)});
         expect(result.appAsar).toBe(fs.realpathSync(fixture.appAsar));
         expect(result.languageServer).toBe(fs.realpathSync(fixture.languageServer));
+        expect(result.fingerprints).toMatchObject(RUNTIME_FIXTURE);
         expect(metadataPaths).toEqual([fs.realpathSync(fixture.infoPlist)]);
         expect(hashedPaths).toEqual([fs.realpathSync(fixture.appAsar), fs.realpathSync(fixture.languageServer)]);
     });
 
-    test('a changed language-server hash refuses the selected bundle', async () => {
+    test('a newer version with changed app and language-server hashes remains eligible', async () => {
         const fixture = makeBundle(root);
         const result = await probeAntigravityRuntime({
             selectedBinaryPath:fixture.binary,
             fsImpl:fs,
             platform:'darwin',
             architecture:'arm64',
-            readBundleMetadata:supportedMetadata,
+            readBundleMetadata:() => ({bundleId: RUNTIME_FIXTURE.bundleId, shortVersion: '8.4.2', buildVersion: '8.4.2'}),
             hashFile:async file => file === fs.realpathSync(fixture.appAsar)
-                ? ANTIGRAVITY_RUNTIME_FINGERPRINT.appAsarSha256
-                : '0'.repeat(64)
+                ? 'c'.repeat(64)
+                : 'd'.repeat(64)
         });
 
-        expect(result).toMatchObject({available:false, reason:'language-server-fingerprint-mismatch'});
+        expect(result).toMatchObject({available: true, reason: null, fingerprints: {
+            shortVersion: '8.4.2', buildVersion: '8.4.2', appAsarSha256: 'c'.repeat(64), languageServerSha256: 'd'.repeat(64)
+        }});
     });
 
     test('missing packaged runtime resource refuses before any capability claim', async () => {
@@ -121,25 +132,20 @@ test.describe('probeAntigravityRuntime', () => {
             platform:'darwin',
             architecture:'arm64',
             readBundleMetadata:supportedMetadata,
-            hashFile:async () => ANTIGRAVITY_RUNTIME_FINGERPRINT.appAsarSha256
+            hashFile:async () => RUNTIME_FIXTURE.appAsarSha256
         });
 
         expect(result).toMatchObject({available:false, reason:'required-app-resource-or-fingerprint-unavailable'});
     });
 
-    test('unknown app identity, version, build, platform and architecture all fail closed', () => {
-        const base = {
-            ...ANTIGRAVITY_RUNTIME_FINGERPRINT,
-            bundleId:ANTIGRAVITY_RUNTIME_FINGERPRINT.bundleId,
-            shortVersion:ANTIGRAVITY_RUNTIME_FINGERPRINT.shortVersion,
-            buildVersion:ANTIGRAVITY_RUNTIME_FINGERPRINT.buildVersion
-        };
-
-        expect(classifyAntigravityRuntimeFingerprint({...base, bundleId:'com.example.other'}).reason).toBe('unsupported-bundle-identity');
-        expect(classifyAntigravityRuntimeFingerprint({...base, shortVersion:'2.24.0'}).reason).toBe('unsupported-app-version');
-        expect(classifyAntigravityRuntimeFingerprint({...base, buildVersion:'2.23.1'}).reason).toBe('unsupported-app-version');
-        expect(classifyAntigravityRuntimeFingerprint({...base, platform:'linux'}).reason).toBe('unsupported-platform-or-architecture');
-        expect(classifyAntigravityRuntimeFingerprint({...base, architecture:'x64'}).reason).toBe('unsupported-platform-or-architecture');
+    test('accepts changed versions/hashes but still rejects wrong app identity and platform', () => {
+        expect(classifyAntigravityRuntimeFingerprint({...RUNTIME_FIXTURE, shortVersion: '99.1.0', buildVersion: 'future-build', appAsarSha256: 'e'.repeat(64), languageServerSha256: 'f'.repeat(64)}))
+            .toEqual({available: true, reason: null});
+        expect(classifyAntigravityRuntimeFingerprint({...RUNTIME_FIXTURE, bundleId:'com.example.other'}).reason).toBe('unsupported-bundle-identity');
+        expect(classifyAntigravityRuntimeFingerprint({...RUNTIME_FIXTURE, platform:'linux'}).reason).toBe('unsupported-platform-or-architecture');
+        expect(classifyAntigravityRuntimeFingerprint({...RUNTIME_FIXTURE, architecture:'x64'}).reason).toBe('unsupported-platform-or-architecture');
+        expect(classifyAntigravityRuntimeFingerprint({...RUNTIME_FIXTURE, shortVersion: ''}).reason).toBe('runtime-metadata-invalid');
+        expect(classifyAntigravityRuntimeFingerprint({...RUNTIME_FIXTURE, appAsarSha256: 'not-a-sha256'}).reason).toBe('runtime-metadata-invalid')
     });
 
     test('an alternate executable path cannot borrow the selected bundle fingerprint', async () => {

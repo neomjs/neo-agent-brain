@@ -17,49 +17,25 @@ const
     MAX_HASH_BYTES = 512 * 1024 * 1024;
 
 /**
- * @summary The measured Antigravity build whose profile anchor and workspace MCP loading were witnessed natively.
- * Every field is required: version text alone does not establish the private launch contracts.
- * Re-measure and review this tuple after an Antigravity update before admitting another build.
- * @type {Readonly<Object>}
- */
-export const ANTIGRAVITY_RUNTIME_FINGERPRINT = Object.freeze({
-    platform: 'darwin',
-    architecture: 'arm64',
-    bundleId: 'com.google.antigravity',
-    shortVersion: '2.23.0',
-    buildVersion: '2.23.0',
-    appAsarSha256: '4e99093662d797ecba823e92823d352413e3bf2ca721257df4a255c045df1598',
-    languageServerSha256: 'c1dd0c9940f712adf2185e756470752d5f5afee15441e32879e4a0f127e18273'
-});
-
-/**
- * @summary Compare measured bundle identity and physical content to the one native-proven build.
- * The function is pure so unknown platform, app identity, version, or changed bytes fail closed
- * without requiring Electron, an installed app, credentials, a process launch, or a network call.
+ * @summary Validate the selected app identity and measurements without freezing vendor updates.
+ * Versions and hashes describe this Start's bundle; they are not a compatibility allowlist.
+ * Native process/profile ownership and project selection are verified after launch, before
+ * admission activation. Actual MCP and instruction consumption require recipient evidence.
  * @param {Object} actual Fingerprint fields collected from the selected installed bundle.
  * @returns {{available: Boolean, reason: String|null}}
  */
 export function classifyAntigravityRuntimeFingerprint(actual = {}) {
-    if (actual.platform !== ANTIGRAVITY_RUNTIME_FINGERPRINT.platform ||
-        actual.architecture !== ANTIGRAVITY_RUNTIME_FINGERPRINT.architecture) {
+    if (actual.platform !== 'darwin' || actual.architecture !== 'arm64') {
         return unavailable('unsupported-platform-or-architecture')
     }
 
-    if (actual.bundleId !== ANTIGRAVITY_RUNTIME_FINGERPRINT.bundleId) {
+    if (actual.bundleId !== 'com.google.antigravity') {
         return unavailable('unsupported-bundle-identity')
     }
 
-    if (actual.shortVersion !== ANTIGRAVITY_RUNTIME_FINGERPRINT.shortVersion ||
-        actual.buildVersion !== ANTIGRAVITY_RUNTIME_FINGERPRINT.buildVersion) {
-        return unavailable('unsupported-app-version')
-    }
-
-    if (actual.appAsarSha256 !== ANTIGRAVITY_RUNTIME_FINGERPRINT.appAsarSha256) {
-        return unavailable('app-asar-fingerprint-mismatch')
-    }
-
-    if (actual.languageServerSha256 !== ANTIGRAVITY_RUNTIME_FINGERPRINT.languageServerSha256) {
-        return unavailable('language-server-fingerprint-mismatch')
+    if (![actual.shortVersion, actual.buildVersion].every(value => typeof value === 'string' && value.trim()) ||
+        ![actual.appAsarSha256, actual.languageServerSha256].every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value))) {
+        return unavailable('runtime-metadata-invalid')
     }
 
     return {available: true, reason: null}
@@ -67,11 +43,10 @@ export function classifyAntigravityRuntimeFingerprint(actual = {}) {
 
 /**
  * @summary Probe the config-selected Antigravity main binary and stream-hash its app code and MCP runtime.
- * A positive result is scoped to the measured macOS arm64 2.23.0 bundle above; an update, unknown
- * build, missing file, alternate path shape, or hash mismatch refuses. Native receipts establish
- * this build's profile anchor and workspace MCP loading. This fingerprint does not prove the
- * candidate CDP route or listener behavior, Fleet admission, hooks, wake delivery, or a usable
- * managed session.
+ * Missing resources, alternate path shapes or malformed observations refuse. New versions and
+ * hashes may proceed to the live project-binding checks; hashes also detect replacement during
+ * one Start. This structural probe does not prove MCP loading, instruction consumption, hooks,
+ * wake delivery or a usable managed session.
  * @param {Object} options
  * @param {String} options.selectedBinaryPath Explicit binary already resolved by the caller's harness selection.
  * @param {Object} [options.fsImpl] Physical fs reader; defaults to Electron `original-fs` or Node fs.
@@ -93,8 +68,7 @@ export async function probeAntigravityRuntime({
         return unavailable('selected-binary-path-must-be-absolute')
     }
 
-    if (platform !== ANTIGRAVITY_RUNTIME_FINGERPRINT.platform ||
-        architecture !== ANTIGRAVITY_RUNTIME_FINGERPRINT.architecture) {
+    if (platform !== 'darwin' || architecture !== 'arm64') {
         return unavailable('unsupported-platform-or-architecture')
     }
 
