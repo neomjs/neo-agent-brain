@@ -22,7 +22,8 @@ export const BRIDGE_PROTOCOL_VERSION = 1;
  * @type {String[]}
  */
 export const BRIDGE_PROTOCOL_FEATURES = Object.freeze([
-    'agent-message-sidecar'
+    'agent-message-sidecar',
+    'fleet-test-role-auth'
 ]);
 
 /**
