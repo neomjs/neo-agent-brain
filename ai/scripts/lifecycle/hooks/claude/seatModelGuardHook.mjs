@@ -48,19 +48,21 @@ export const GUARD_DIR = 'neo-seat-guard';
  */
 export const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 
-const HOST_SESSION_ID = /^local_[0-9a-f-]{8,}$/i;
+const
+    HOST_SESSION_ID = /^local_[0-9a-f-]{8,}$/i,
+    // A bare alias or `claude-<family>-<version>`, each optionally `[1m]`. Anything else is unknown, so an
+    // id that merely contains a family name never gains the authority to block.
+    MODEL_ID        = new RegExp(`^(?:claude-)?(${MODEL_FAMILIES.join('|')})(?:-\\d[0-9a-z.-]*)?(?:\\[1m\\])?$`, 'i');
 
 /**
  * @summary Maps a model id or alias to its family: `claude-opus-5-5[1m]` and `opus` are both `opus`.
  * @param {*} model
- * @returns {String|null} `null` for anything that names no known family.
+ * @returns {String|null} `null` for anything that is not a supported id or alias.
  */
 export function modelFamily(model) {
     if (typeof model !== 'string') return null;
 
-    const lower = model.toLowerCase();
-
-    return MODEL_FAMILIES.find(family => lower.includes(family)) ?? null
+    return MODEL_ID.exec(model.trim())?.[1].toLowerCase() ?? null
 }
 
 /**
@@ -81,17 +83,17 @@ export function resolveUserDataDir(execPath) {
  * @param {Object} options
  * @param {String|null} options.currentModel  The session record's `model`.
  * @param {String|null} options.expectedModel The seat's last-run model.
- * @param {String}      [options.prompt]      The submitted prompt.
+ * @param {*}           options.prompt        The submitted prompt; anything but a string never blocks.
  * @returns {{block: Boolean, reason?: String, expected?: String, current?: String}}
  */
-export function decideSeatModelGuard({currentModel, expectedModel, prompt = ''}) {
+export function decideSeatModelGuard({currentModel, expectedModel, prompt}) {
     const
         current  = modelFamily(currentModel),
         expected = modelFamily(expectedModel);
 
-    if (!current || !expected || current === expected) return {block: false};
+    if (typeof prompt !== 'string' || !current || !expected || current === expected) return {block: false};
 
-    if (typeof prompt === 'string' && prompt.trimStart().toLowerCase().startsWith(MODEL_OK)) return {block: false};
+    if (prompt.trimStart().toLowerCase().startsWith(MODEL_OK)) return {block: false};
 
     return {
         block : true,

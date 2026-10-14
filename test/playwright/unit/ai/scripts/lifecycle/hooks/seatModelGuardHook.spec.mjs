@@ -176,6 +176,26 @@ test('as a process: a malformed payload exits 0 and a mismatch exits 2 with the 
     expect(blocked.stderr).toContain('This seat expects opus; this session runs fable')
 });
 
+test('a joined session whose prompt is missing or not a string fails open and logs nothing', () => {
+    const {userData, env} = seat();
+    lastRun(userData, 'claude-opus-5-5');
+
+    [{session_id: SESSION_ID}, {session_id: SESSION_ID, prompt: null}, {session_id: SESSION_ID, prompt: 42}, {session_id: SESSION_ID, prompt: {text: 'hi'}}]
+        .forEach(payload => expect(runSeatModelGuard('prompt', payload, env)).toBe(0));
+
+    expect(fs.existsSync(path.join(userData, GUARD_DIR, 'model.log'))).toBe(false);
+    expect(runSeatModelGuard('prompt', prompt('a string prompt still blocks'), env)).toBe(2)
+});
+
+test('an id that merely contains a family name is unknown, as current and as expected model', () => {
+    expect(['not-a-claude-opus-model', 'mystery-fable-opus', 'claude-opus-fable', 'xopus', 'opus-latest-maybe'].map(modelFamily))
+        .toEqual([null, null, null, null, null]);
+    expect(['claude-haiku-4-5-20251001', 'opus[1m]', ' claude-sonnet-5 '].map(modelFamily)).toEqual(['haiku', 'opus', 'sonnet']);
+
+    expect(decideSeatModelGuard({currentModel: 'not-a-claude-opus-model', expectedModel: 'claude-fable-5-1', prompt: 'x'}).block).toBe(false);
+    expect(decideSeatModelGuard({currentModel: 'claude-fable-5-1', expectedModel: 'mystery-fable-opus', prompt: 'x'}).block).toBe(false)
+});
+
 test('the manifest projects both arms with bounded timeouts', () => {
     const
         events  = JSON.parse(fs.readFileSync(MANIFEST, 'utf8')).events,
