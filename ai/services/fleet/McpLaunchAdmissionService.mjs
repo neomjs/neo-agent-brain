@@ -14,6 +14,7 @@ import {mcpCatalogFor, resolveMcpMatrix}              from '../../../src/fleet/c
 import {launchRowEnvNames}                            from './managedAgentWorkspacePlan.mjs';
 import {openLaunchAdmissionJournal}                   from './launchAdmissionJournal.mjs';
 import {isRuntimeGenerationPin, runtimeGenerationPin} from './runtimeGeneration.mjs';
+import {isSeatRuntimeSnapshot}                        from './seatRuntimeRecord.mjs';
 import {
     LAUNCH_ADMISSION_MAX_BYTES,
     LAUNCH_ADMISSION_PATH,
@@ -163,16 +164,22 @@ class McpLaunchAdmissionService extends Base {
     /** @member {String|null} issuerOrigin The origin actually bound by this issuer. @private */
     issuerOrigin = null
 
+    /** @member {Function|null} readSeatStarts Projection supplied by the existing lifecycle owner. @private */
+    readSeatStarts = null
+
     /**
      * @summary Attaches exclusive durable custody before this issuer has minted any generations.
      * Previous records are evidence only; the lifecycle must separately validate clean succession.
      * @param {Object} options Explicit custody directory and injectable filesystem/durable primitives.
+     * @param {Function} [options.readSeatStarts] Existing lifecycle's closed Start/retention projection.
      * @returns {Object|null} Previous snapshot with its clean-handoff disposition.
      */
-    openJournal(options) {
+    openJournal({readSeatStarts = () => [], ...options}) {
         if (this.journal || this.generations.size) throw new Error('Launch admission custody must be attached before Start.');
+        if (typeof readSeatStarts !== 'function') throw new TypeError('Seat Start projection must be a function.');
+        this.readSeatStarts = readSeatStarts;
         this.journal = openLaunchAdmissionJournal({
-            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 2, generations: []}
+            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 3, generations: [], seats: []}
         });
         return this.journal.previous
     }
@@ -185,7 +192,8 @@ class McpLaunchAdmissionService extends Base {
      */
     admissionSnapshot() {
         return {
-            version    : 2,
+            version    : 3,
+            seats      : this.readSeatStarts ? this.readSeatStarts() : [],
             generations: [...this.generations.values()].map(generation => ({
                 id            : generation.id, agentId: generation.agentId, identity: generation.identity,
                 state         : generation.state, reason: generation.reason,
@@ -812,7 +820,9 @@ function isAdmissionSnapshot(value) {
     const unique    = (rows, key) => new Set(rows.map(row => row[key])).size === rows.length;
     const phase     = row => Object.values(STATES).includes(row.state) &&
         (row.reason === null || Object.values(REASONS).includes(row.reason));
-    return exact(value, ['version', 'generations']) && value.version === 2 && Array.isArray(value.generations) &&
+    return exact(value, ['version', 'generations', 'seats']) && value.version === 3 && Array.isArray(value.generations) &&
+        Array.isArray(value.seats) && value.seats.every(isSeatRuntimeSnapshot) &&
+        new Set(value.seats.map(row => row.start.agentId)).size === value.seats.length &&
         value.generations.every(row => exact(row, [
             'id', 'agentId', 'identity', 'state', 'reason', 'reservedAt', 'activatedAt', 'revokedAt', 'definitionHash', 'runtime', 'servers'
         ]) && text(row.id) && text(row.agentId) && isLaunchIdentity(row.identity) && phase(row) && hash(row.definitionHash) &&

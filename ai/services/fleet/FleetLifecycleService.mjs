@@ -27,6 +27,8 @@ import {isOnInstance}                                               from './prov
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities} from './manageCodexDesktopRuntime.mjs';
 import {GIT_IDENTITY_ENV, gitIdentityEnv}                           from './seatGitIdentity.mjs';
 import {runtimeGenerationPin}                                       from './runtimeGeneration.mjs';
+import {createSeatRuntimeRecord, seatRuntimeSnapshot}               from './seatRuntimeRecord.mjs';
+import {writeFileAtomicSync}                                        from '../shared/atomicFileWrite.mjs';
 
 // Reserve the Neural Link policy slot against credential collisions and launch-metadata overrides.
 // Fleet does not impose a projection; explicitly restricted NL servers own their own ceiling.
@@ -661,6 +663,7 @@ class FleetLifecycleService extends Base {
      * @param {AbortSignal} [opts.startSignal] The pending managed attempt's lifecycle-owned Stop fence.
      * @param {Object} [opts.runtimeGeneration] The boot descriptor used by this prepared Start's MCP
      *     commands. Raw launches and adopted records have no inferred generation.
+     * @param {Object[]} [opts.runtimePlan] The exact plan prepared for that runtime; its digest binds custody.
      * @param {Object} [opts.launchAdmission] `{generation, plan, owners}`: a Claude Desktop seat's reserved
      *     launch admission, its bound MCP plan, and `owners.pat` / `owners.plane`, the owners Start selected for
      *     the seat's PAT and plane credential. Once the seat is launched and leased, the generation is activated
@@ -671,9 +674,13 @@ class FleetLifecycleService extends Base {
     start(id, opts = {}) {
         if (opts.startSignal?.aborted) return this.canceledStart(id);
         if (this.isRunning(id)) return this.status(id);
+        if (this.getLaunchAdmission().journalFailed) throw new Error('Fleet Start refused: runtime custody is frozen.');
 
         if (opts.runtimeGeneration && opts.runtimeGeneration !== this.installedRuntime?.generation) {
             throw new Error('FleetLifecycleService.start: prepared runtime does not match this Fleet boot.')
+        }
+        if (opts.runtimeGeneration && !this.getLaunchAdmission().journal) {
+            throw new Error('Fleet Start refused: packaged runtime custody is not attached.');
         }
 
         const priorRecord = this.processes.get(id);
@@ -1023,7 +1030,7 @@ class FleetLifecycleService extends Base {
             record.failureReason = 'tracked harness process emitted an error';
             record.exitedAt      = new Date().toISOString();
 
-            record.admissionGeneration && this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.PROCESS_EXITED, {generation: record.admissionGeneration});
+            this.revokeProcessAdmission(record);
 
             if (record.electronProfile && record.pid != null) {
                 // A successfully spawned Desktop main can emit `error` without proving process exit.
@@ -1034,6 +1041,7 @@ class FleetLifecycleService extends Base {
             } else {
                 record.child = null;
             }
+            this.persistRuntimeState(record);
         });
 
         if (opts.startSignal?.aborted) {
@@ -1057,9 +1065,19 @@ class FleetLifecycleService extends Base {
                 void this.stop(id, {cancelPending: false});
                 throw new Error(`FleetLifecycleService.start: ${record.failureReason} — agent '${id}'.`)
             }
+        }
 
-            // the seat now runs and is leased: its profile rows' grants may admit its MCP children
-            if (opts.launchAdmission) {
+        try {
+            if (survivesFleetExit && opts.launchAdmission) record.admissionGeneration = opts.launchAdmission.generation;
+            if (record.runtimeGeneration) {
+                record.pidStartedAt ??= this.getProcessInspectFn()(record.pid)?.startedAt ?? null;
+                record.runtimeStart = createSeatRuntimeRecord({record, identity: agentIdentity,
+                    plan: opts.runtimePlan, profile: opts.launchAdmission?.profile ?? null, leaseRequired: survivesFleetExit});
+                this.getLaunchAdmission().persistAdmission();
+            }
+
+            // Activation follows the lease and original process/runtime binding publication.
+            if (survivesFleetExit && opts.launchAdmission) {
                 const
                     owners = opts.launchAdmission.owners ?? {},
                     slots  = {
@@ -1067,7 +1085,6 @@ class FleetLifecycleService extends Base {
                         [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                      : owners.plane
                     };
 
-                record.admissionGeneration = opts.launchAdmission.generation;
                 this.getLaunchAdmission().activate({
                     generation: opts.launchAdmission.generation,
                     agentId   : id,
@@ -1077,6 +1094,10 @@ class FleetLifecycleService extends Base {
                     probe     : () => this.probeSeat(record)
                 })
             }
+        } catch (error) {
+            record.failureReason = 'the original Start could not be committed; the new seat is being stopped';
+            void this.stop(id, {cancelPending: false});
+            throw error
         }
 
         return this.status(id);
@@ -1295,7 +1316,7 @@ class FleetLifecycleService extends Base {
      * @private
      */
     runtimeGenerationOf(record) {
-        const pin = record.ownershipUnresolved || record.cleanupUnresolved ? 'unknown' :
+        const pin = this.getLaunchAdmission().journalFailed || record.ownershipUnresolved || record.cleanupUnresolved ? 'unknown' :
             ['stopped', 'exited'].includes(record.state) ? 'released' :
                 ['running', 'stopping'].includes(record.state) ? 'held' : 'unknown';
         return record.runtimeGeneration ? {...runtimeGenerationPin(record.runtimeGeneration), pin} :
@@ -1714,13 +1735,10 @@ class FleetLifecycleService extends Base {
 
         if (!pidStartedAt) return 'its start time could not be read';
 
-        const
-            leasePath = path.join(record.instanceHome, SEAT_LEASE_FILE),
-            tmpPath   = `${leasePath}.${process.pid}.tmp`;
+        const leasePath = path.join(record.instanceHome, SEAT_LEASE_FILE);
 
         try {
-            fs.mkdirSync(record.instanceHome, {recursive: true});
-            fs.writeFileSync(tmpPath, JSON.stringify({
+            writeFileAtomicSync(leasePath, JSON.stringify({
                 version    : 1,
                 agentId    : record.id,
                 harnessType: record.harnessType,
@@ -1728,13 +1746,10 @@ class FleetLifecycleService extends Base {
                 pidStartedAt,
                 startedAt  : record.startedAt,
                 cwd        : record.cwd
-            }, null, 4), {mode: 0o600});
-            fs.renameSync(tmpPath, leasePath);
+            }, null, 4), {mode: 0o600, fsync: true});
             record.pidStartedAt = pidStartedAt;
             return null
         } catch (error) {
-            try { fs.rmSync(tmpPath, {force: true}) } catch {}
-
             const words = failureWords(error, `the lease of agent '${record.id}' could not be written`);
 
             return words ? `its lease could not be written: ${words}` : 'its lease could not be written; the Fleet log names the cause'
@@ -1883,6 +1898,49 @@ class FleetLifecycleService extends Base {
     }
 
     /**
+     * @summary Attaches the one Fleet journal before any lifecycle record is created or adopted.
+     * Previous records are returned for recovery checks, never automatically adopted as authority.
+     * @param {Object} options Journal custody and durable-write seams.
+     * @returns {Object|null} Previous evidence and its issuer-handoff disposition.
+     */
+    openRuntimeCustody(options) {
+        if (this.processes.size) throw new Error('Runtime custody must be opened before lifecycle adoption or Start.');
+        return this.getLaunchAdmission().openJournal({...options,
+            readSeatStarts: () => [...this.processes.values()].filter(record => record.runtimeStart).map(seatRuntimeSnapshot)});
+    }
+
+    /**
+     * @summary Publishes an observed terminal/error state from a process callback. Durability loss freezes
+     * the issuer and leaves retention unknown; a callback cannot throw an unhandled process exception.
+     * @param {Object} record
+     * @returns {Boolean} Whether its observation was durably published, or needed no runtime record.
+     * @private
+     */
+    persistRuntimeState(record) {
+        if (!record.runtimeStart) return true;
+        if (!this.getLaunchAdmission().journal) return false;
+        try {
+            this.getLaunchAdmission().persistAdmission();
+            return true
+        } catch {
+            record.failureReason = 'Fleet runtime custody could not be updated; launch admission is frozen';
+            return false
+        }
+    }
+
+    /** @summary Revokes from a process callback while preserving cleanup after a failed durable write. */
+    revokeProcessAdmission(record) {
+        if (!record.admissionGeneration) return;
+        const admission = this.getLaunchAdmission();
+        try {
+            admission.revoke(record.id, LAUNCH_ADMISSION_REASONS.PROCESS_EXITED, {generation: record.admissionGeneration});
+        } catch {
+            admission.freezeAdmission();
+            record.failureReason = 'Fleet admission revocation could not be committed; the issuer is frozen';
+        }
+    }
+
+    /**
      * @summary Whether a process runs a Claude Desktop seat's profile: the seat's launch binary with the
      * seat's own `--user-data-dir` as a whole word, the proof the lease uses ({@link probeSeat}). Helpers
      * carry the argument too, but not the binary, so they do not count. Start rewrites the profile's MCP rows
@@ -1983,11 +2041,12 @@ class FleetLifecycleService extends Base {
         record.exitedAt = new Date().toISOString();
         record.child    = null;
 
-        record.admissionGeneration && this.getLaunchAdmission().revoke(record.id, LAUNCH_ADMISSION_REASONS.PROCESS_EXITED, {generation: record.admissionGeneration});
+        this.revokeProcessAdmission(record);
         this.removeSeatLease(record);
 
         if (!record.electronProfile) {
             record.state           = 'stopped';
+            this.persistRuntimeState(record);
             record.finalizePromise = Promise.resolve();
             return record.finalizePromise;
         }
@@ -1998,6 +2057,7 @@ class FleetLifecycleService extends Base {
             record.state             = 'failed';
             record.cleanupUnresolved = true;
             record.failureReason     = 'Codex Desktop helper cleanup cannot be proven: the installed bundle no longer names its Crashpad helper';
+            this.persistRuntimeState(record);
             record.finalizePromise   = Promise.resolve();
             return record.finalizePromise;
         }
@@ -2031,7 +2091,7 @@ class FleetLifecycleService extends Base {
                 record.state             = 'failed';
                 record.failureReason     = words ? `Codex Desktop helper cleanup failed: ${words}` : 'Codex Desktop helper cleanup failed; the Fleet log names the cause';
                 record.cleanupUnresolved = true;
-            });
+            }).then(() => { this.persistRuntimeState(record) });
 
         return record.finalizePromise;
     }

@@ -46,7 +46,10 @@ test('clean handoff is durably consumed before the successor receives the origin
     expect(after.epoch).toBe(before.epoch + 1);
     expect(after.issuer).not.toBe(before.issuer);
     expect(fs.readJsonSync(path.join(root, 'issuer.json')).phase).toBe('active');
+    expect(fs.readJsonSync(path.join(root, 'issuer.json')).snapshot).toEqual(snapshot);
     expect(() => first.write(snapshot)).toThrow(/issuer-closed/);
+    second.close();
+    expect(open().previous).toMatchObject({handoffProved: false, reason: 'unclean-issuer-exit', snapshot});
 });
 
 test('an active record after an unclean exit carries evidence but no recovery authority', () => {

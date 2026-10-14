@@ -141,8 +141,10 @@ export function openLaunchAdmissionJournal({
         if (!Number.isSafeInteger(epoch)) throw refused('epoch-exhausted');
         state = {
             version: VERSION, issuer: randomUUID(), epoch, phase: 'active', handoff: null,
-            origin : recovery ? previous.origin : null, snapshot: emptySnapshot
+            origin : recovery ? previous.origin : null, snapshot: previous?.snapshot ?? emptySnapshot
         };
+        // Keep retention and revocation evidence across a crash during recovery. The consumed fence
+        // and active phase deny authority; retaining these bytes does not make the next exit clean.
         // Consume the predecessor's proof FIRST. A crash before the state write leaves a mismatch,
         // so a later issuer cannot treat the older handoff as still unconsumed.
         publish(fencePath, {version: VERSION, issuer: state.issuer, epoch});

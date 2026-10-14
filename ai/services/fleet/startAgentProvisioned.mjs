@@ -705,13 +705,14 @@ async function provisionAgent({
                 resolvedCredential,
                 resolvedResidentMcpEnv,
                 gitIdentity: commitIdentity,
-                ...(installedRuntime ? {runtimeGeneration: installedRuntime.generation} : {}),
+                ...(installedRuntime ? {runtimeGeneration: installedRuntime.generation, runtimePlan: prepared.mcpPlan} : {}),
                 ...(remote
                     ? {resolvedMcpCredential, resolvedMcpEndpoint: remotePlan.endpoint, remoteMcpCapability: remoteCapability}
                     : {}),
                 ...(reservation ? {launchAdmission: {
                     generation: reservation.generation,
                     plan      : prepared.mcpPlan,
+                    ...(prepared.launchAdmissionBinding ? {profile: prepared.launchAdmissionBinding} : {}),
                     owners    : {
                         pat: {
                             credential: LAUNCH_ADMISSION_CREDENTIALS.SEAT_PAT,

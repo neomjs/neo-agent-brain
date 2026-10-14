@@ -30,6 +30,8 @@ import {dispatchFleetRequest}            from '../../../../ai/services/fleet/dis
 import {generateOpenCodeSeatConfig}      from '../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
 import {createManagedAgentWorkspacePlan} from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {startAgentProvisioned}           from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {writeFileAtomicSync}             from '../../../../ai/services/shared/atomicFileWrite.mjs';
+import {createDesktopLaunchBinding}      from '../../../../ai/services/fleet/desktopLaunchProfile.mjs';
 import {
     createLaunchRequest,
     parseLaunchCapability,
@@ -202,6 +204,8 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService', () => {
         FleetLifecycleService.installedRuntime = {generation: {id: 'current'}};
         expect(() => FleetLifecycleService.start('a', {runtimeGeneration: {id: 'other'}}))
             .toThrow(/prepared runtime does not match/);
+        expect(() => FleetLifecycleService.start('a', {runtimeGeneration: FleetLifecycleService.installedRuntime.generation}))
+            .toThrow(/runtime custody is not attached/);
         expect(spawn.calls).toHaveLength(0);
         FleetLifecycleService.start('a');
         expect(FleetLifecycleService.processes.get('a').runtimeGeneration).toBeNull();
@@ -1986,6 +1990,114 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
 
         return {spawn, home, profile: harnessType === 'codex-desktop' ? path.join(home, 'electron-profile') : home}
     }
+
+    test('Desktop activation commits its exact process/profile binding before admission; an exit write failure still completes physical cleanup', async () => {
+        const {spawn} = installSeat('claude-desktop'), service = McpLaunchAdmissionService;
+        const root = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody');
+        const id = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
+        const generation = {id, directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
+            runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
+        const agent = FleetLifecycleService.registry.getDefinition('seat');
+        agent.mcpServers = {'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': false, 'gitlab-workflow': false};
+        const plan = createManagedAgentWorkspacePlan({agent: {id: agent.id, harnessType: agent.harnessType}, mcpMatrix: agent.mcpServers}).mcpServers.map(row => ({...row,
+            sourceRoot: generation.runtimeRoot, command: generation.executable,
+            args: [path.join(generation.runtimeRoot, row.entrypoint), ...(row.key === 'neural-link' ? ['--cwd', generation.runtimeRoot] : [])]}));
+        FleetLifecycleService.installedRuntime = {...generation, generation};
+        let fail = false;
+        try {
+            FleetLifecycleService.openRuntimeCustody({directory, writeAtomic(file, content, options) {
+                if (fail) throw Error('fixture lost revocation write');
+                return writeFileAtomicSync(file, content, options);
+            }});
+            const reserved = await service.reserve({agent, runtimeGeneration: generation});
+            const profile = createDesktopLaunchBinding({identity: 'seat', issuer: reserved.issuer, rows: {
+                'neo-mjs-neural-link': {env: {NEO_AGENT_IDENTITY: 'seat', NEO_FLEET_LAUNCH_ISSUER: reserved.issuer,
+                    NEO_FLEET_LAUNCH_GRANT: reserved.grants['neural-link']}}
+            }});
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: plan,
+                launchAdmission: {generation: reserved.generation, plan, profile}});
+            const snapshot = JSON.parse(fs.readFileSync(path.join(directory, 'issuer.json'), 'utf8')).snapshot;
+            expect(snapshot.generations[0]).toMatchObject({id: reserved.generation, state: 'active', runtime: generation});
+            expect(snapshot.seats[0].start).toMatchObject({admissionGeneration: reserved.generation, profile, leaseRequired: true});
+            expect(JSON.stringify(snapshot)).not.toContain(reserved.grants['neural-link']);
+            fail = true;
+            spawn.calls[0].child.emit('exit', 0, null);
+            expect(FleetLifecycleService.status('seat')).toMatchObject({state: 'stopped', runtimeGeneration: {pin: 'unknown'}});
+            expect(service.journalFailed).toBe(true);
+            expect(() => service.journal.handoff(service.admissionSnapshot(), reserved.issuer)).toThrow(/durability-failed/);
+        } finally {
+            service.journal?.close(); service.journal = null; service.journalFailed = false; service.readSeatStarts = null;
+            service.generations.clear(); service.grants.clear();
+            if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+            service.httpServer = null; service.listening = null; service.issuerOrigin = null;
+            FleetLifecycleService.processes.clear();
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
+
+    test('a seat without admission grants publishes its original runtime in the same journal, and a lost exit write retains uncertainty', async () => {
+        const {spawn} = installSeat('codex-desktop'), service = McpLaunchAdmissionService;
+        const root = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody');
+        const id = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
+        const generation = {id, directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
+            runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
+        FleetLifecycleService.installedRuntime = {...generation, generation};
+        FleetLifecycleService.codexDesktopCleanupFn = async () => {};
+        let fail = false;
+        try {
+            FleetLifecycleService.openRuntimeCustody({directory, writeAtomic(file, content, options) {
+                if (fail) throw Error('fixture lost exit write');
+                return writeFileAtomicSync(file, content, options);
+            }});
+            const status = FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []});
+            const file = path.join(directory, 'issuer.json');
+            const snapshot = JSON.parse(fs.readFileSync(file, 'utf8')).snapshot;
+            expect(snapshot.generations).toEqual([]);
+            expect(snapshot.seats).toHaveLength(1);
+            expect(snapshot.seats[0]).toMatchObject({state: 'running', start: {
+                agentId: 'seat', identity: 'seat', pid: status.pid, runtime: generation, leaseRequired: true, profile: null
+            }});
+            expect(JSON.stringify(snapshot)).not.toContain('bridge_seat_token');
+            fail = true;
+            await FleetLifecycleService.stop('seat');
+            expect(spawn.calls[0].child.signals).toContain('SIGTERM');
+            expect(service.journalFailed).toBe(true);
+            expect(FleetLifecycleService.status('seat').runtimeGeneration.pin).toBe('unknown');
+            expect(JSON.parse(fs.readFileSync(file, 'utf8')).snapshot.seats[0].state).toBe('running');
+        } finally {
+            service.journal?.close(); service.journal = null; service.journalFailed = false; service.readSeatStarts = null;
+            FleetLifecycleService.processes.clear();
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
+
+    test('a failed original-Start publication stops the new child and never reports a successful Start', async () => {
+        const {spawn} = installSeat('codex-desktop'), service = McpLaunchAdmissionService;
+        const root = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody');
+        const id = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
+        const generation = {id, directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
+            runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
+        FleetLifecycleService.installedRuntime = {...generation, generation};
+        FleetLifecycleService.codexDesktopCleanupFn = async () => {};
+        let fail = false;
+        try {
+            FleetLifecycleService.openRuntimeCustody({directory, writeAtomic(file, content, options) {
+                if (fail) throw Error('fixture lost Start write');
+                return writeFileAtomicSync(file, content, options);
+            }});
+            fail = true;
+            expect(() => FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []}))
+                .toThrow(/durability-failed/);
+            await expect.poll(() => FleetLifecycleService.processes.get('seat')?.state).toBe('stopped');
+            expect(spawn.calls[0].child.signals).toContain('SIGTERM');
+            expect(JSON.parse(fs.readFileSync(path.join(directory, 'issuer.json'), 'utf8')).snapshot.seats).toEqual([]);
+            expect(() => FleetLifecycleService.start('seat')).toThrow(/runtime custody is frozen/);
+        } finally {
+            service.journal?.close(); service.journal = null; service.journalFailed = false; service.readSeatStarts = null;
+            FleetLifecycleService.processes.clear();
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
 
     /** The lease a previous Fleet server left behind. */
     function writeLease(home, extra = {}) {
