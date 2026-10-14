@@ -87,8 +87,9 @@ import {wireFleetRecentTurnsSource}                                      from '.
 import {wireFleetSessionMemoriesSource}                                  from './wireFleetSessionMemoriesSource.mjs';
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
 import {wireOperatorComposeWriter}                                       from './wireOperatorComposeWriter.mjs';
+import {bindCurrentRuntime}                                              from './runtimeGeneration.mjs';
 import path                                                              from 'node:path';
-import {pathToFileURL}                                                   from 'node:url';
+import {fileURLToPath, pathToFileURL}                                    from 'node:url';
 
 /**
  * @summary Composes the launch contract and starts the authenticated Fleet transport.
@@ -96,6 +97,13 @@ import {pathToFileURL}                                                   from 'n
  * @private
  */
 async function boot() {
+    const runtime = await bindCurrentRuntime({
+        args       : process.argv.slice(2),
+        runtimeRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
+        executable : process.execPath
+    });
+    FleetManager.getLifecycleService().installedRuntime = runtime.generation ? runtime : null;
+
     // Resolved HERE, at the use site, not captured at module scope: an overlay applied after
     // import must still be honoured. `cockpitOrigins` is csv-typed, so the split/trim the caller
     // used to do belongs to the leaf machinery instead.

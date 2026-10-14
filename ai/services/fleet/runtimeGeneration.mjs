@@ -11,6 +11,7 @@ import path               from 'node:path';
  */
 export const RUNTIME_GENERATION_RECORD = 'generation.json';
 export const RUNTIME_GENERATION_PAYLOAD = 'host.runtime';
+const RUNTIME_ARGUMENT = '--neo-runtime-generation=';
 
 const RECORD = RUNTIME_GENERATION_RECORD, PAYLOAD = RUNTIME_GENERATION_PAYLOAD;
 
@@ -196,4 +197,54 @@ export function completeRuntimeGenerationRecord(record, compatibility) {
         runtimeRelativePath: record.runtimeRelativePath, executableRelativePath: record.executableRelativePath,
         createdAt          : record.createdAt, compatibility
     })
+}
+
+/**
+ * @summary Carries a verified generation into the Fleet child as a non-secret process argument.
+ * @param {Object} generation The host's verified descriptor.
+ * @returns {String[]}
+ */
+export function runtimeGenerationArguments(generation) {
+    if (!generation || !path.isAbsolute(generation.directory || '')) {
+        throw refusal('runtime-binding-invalid', 'a verified generation directory is required')
+    }
+    return [RUNTIME_ARGUMENT + generation.directory]
+}
+
+/**
+ * @summary Binds Fleet boot to the runtime it actually executes, refusing a missing packaged binding.
+ * A checkout without a package receipt remains explicit checkout mode. No ancestor search or bundle
+ * fallback discovers authority; the host supplies exactly one directory and the verifier checks it.
+ * @param {Object} options
+ * @param {String[]} options.args Script arguments, after Node's own options.
+ * @param {String} options.runtimeRoot This entrypoint's own code root.
+ * @param {String} options.executable The actual process executable.
+ * @returns {Promise<{runtimeRoot:String, executable:String, generation:Object|null}>}
+ */
+export async function bindCurrentRuntime({args, runtimeRoot, executable}) {
+    if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string') ||
+        !path.isAbsolute(runtimeRoot || '') || !path.isAbsolute(executable || '')) {
+        throw refusal('runtime-binding-invalid', 'explicit arguments, code root and executable are required')
+    }
+    const roots = args.filter(arg => arg.startsWith(RUNTIME_ARGUMENT));
+    if (roots.length > 1) throw refusal('runtime-binding-invalid', 'only one runtime generation may bind this process');
+    const root = await fs.realpath(runtimeRoot), binary = await fs.realpath(executable);
+    let receipt;
+    try {
+        receipt = JSON.parse(await fs.readFile(path.join(root, 'organism-build-info.json'), 'utf8'));
+        runtimeGenerationIdentity(receipt);
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw refusal('runtime-receipt-invalid', 'the current package receipt is unreadable or invalid');
+    }
+    if (!roots.length) {
+        if (receipt) throw refusal('runtime-generation-required', 'a packaged Fleet must carry its verified generation');
+        return {runtimeRoot: root, executable: binary, generation: null}
+    }
+    const directory = roots[0].slice(RUNTIME_ARGUMENT.length);
+    if (!path.isAbsolute(directory)) throw refusal('runtime-binding-invalid', 'the generation directory must be absolute');
+    const generation = await readRuntimeGeneration({directory});
+    if (!generation || generation.runtimeRoot !== root || generation.executable !== binary) {
+        throw refusal('runtime-binding-invalid', 'the generation does not bind this code root and executable')
+    }
+    return {runtimeRoot: root, executable: binary, generation}
 }

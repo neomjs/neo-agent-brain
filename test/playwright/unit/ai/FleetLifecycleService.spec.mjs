@@ -136,6 +136,7 @@ function install({agents = {}, creds = {}} = {}) {
         clearTimeout(record.openCodeBootstrapTimer);
     }
     FleetLifecycleService.processes.clear();
+    FleetLifecycleService.installedRuntime = null;
     FleetLifecycleService.spawnFn         = spawnStub;
     // Stub the version probe by default so no spec spawns a real auxiliary subprocess; the
     // env-boundary test injects its own recorder.
@@ -171,6 +172,16 @@ function install({agents = {}, creds = {}} = {}) {
 test.describe.configure({mode: 'serial'});
 
 test.describe('Neo.ai.services.fleet.FleetLifecycleService', () => {
+    test('a packaged Fleet does not infer a runtime for raw starts or accept a foreign prepared generation', () => {
+        const spawn = install({agents: {a: agentDef('a')}, creds: {a: 'ghp_x'}});
+        FleetLifecycleService.installedRuntime = {generation: {id: 'current'}};
+        expect(() => FleetLifecycleService.start('a', {runtimeGeneration: {id: 'other'}}))
+            .toThrow(/prepared runtime does not match/);
+        expect(spawn.calls).toHaveLength(0);
+        FleetLifecycleService.start('a');
+        expect(FleetLifecycleService.processes.get('a').runtimeGeneration).toBeNull();
+    });
+
     test('start spawns the launch command and reports running', () => {
         const spawn  = install({agents: {a: agentDef('a')}, creds: {a: 'ghp_x'}}),
               status = FleetLifecycleService.start('a');

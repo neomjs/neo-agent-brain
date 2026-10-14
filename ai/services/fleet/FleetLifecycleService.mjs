@@ -519,6 +519,13 @@ class FleetLifecycleService extends Base {
     processes = new Map()
 
     /**
+     * Verified packaged runtime observed by the Fleet entrypoint, or null in checkout mode.
+     * This is a boot fact, never a user setting or evidence of an adopted seat's original runtime.
+     * @member {Object|null} installedRuntime=null
+     */
+    installedRuntime = null
+
+    /**
      * Starts still preparing or arming, including those queued for a seat's home, keyed by each attempt's Stop signal.
      * Every attempt owns two fences: Stop aborts its `stop` controller synchronously, and the operator's Skip its `skip`
      * controller ({@link skipDependencies}). Finishing one attempt cannot remove another attempt's cancellation.
@@ -651,6 +658,8 @@ class FleetLifecycleService extends Base {
      * @param {Object} [opts.gitIdentity] `{name, email}` the seat commits as, injected as author and committer
      *     under the four reserved `GIT_AUTHOR_*` / `GIT_COMMITTER_*` slots.
      * @param {AbortSignal} [opts.startSignal] The pending managed attempt's lifecycle-owned Stop fence.
+     * @param {Object} [opts.runtimeGeneration] The boot descriptor used by this prepared Start's MCP
+     *     commands. Raw launches and adopted records have no inferred generation.
      * @param {Object} [opts.launchAdmission] `{generation, plan, owners}`: a Claude Desktop seat's reserved
      *     launch admission, its bound MCP plan, and `owners.pat` / `owners.plane`, the owners Start selected for
      *     the seat's PAT and plane credential. Once the seat is launched and leased, the generation is activated
@@ -661,6 +670,10 @@ class FleetLifecycleService extends Base {
     start(id, opts = {}) {
         if (opts.startSignal?.aborted) return this.canceledStart(id);
         if (this.isRunning(id)) return this.status(id);
+
+        if (opts.runtimeGeneration && opts.runtimeGeneration !== this.installedRuntime?.generation) {
+            throw new Error('FleetLifecycleService.start: prepared runtime does not match this Fleet boot.')
+        }
 
         const priorRecord = this.processes.get(id);
 
@@ -958,7 +971,8 @@ class FleetLifecycleService extends Base {
             // what proves later that the leased pid still runs this seat ({@link probeSeat})
             launchInterpreter  : survivesFleetExit ? readShebangLine(resolvedCommand) : null,
             profileArg         : survivesFleetExit ? args.find(arg => arg.startsWith('--user-data-dir=')) ?? null : null,
-            admissionGeneration: null
+            admissionGeneration: null,
+            runtimeGeneration  : opts.runtimeGeneration ?? null
         };
         this.processes.set(id, record);
 

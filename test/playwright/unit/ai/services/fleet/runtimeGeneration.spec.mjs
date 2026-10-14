@@ -5,11 +5,13 @@ import path           from 'node:path';
 import {
     RUNTIME_GENERATION_PAYLOAD,
     RUNTIME_GENERATION_RECORD,
+    bindCurrentRuntime,
     completeRuntimeGenerationRecord,
     createRuntimeGenerationRecord,
     inventoryRuntimePayload,
     readRuntimeGeneration,
-    runtimeGenerationIdentity
+    runtimeGenerationIdentity,
+    runtimeGenerationArguments
 } from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
 
 let root;
@@ -94,4 +96,24 @@ test('an escaping executable binding cannot be made valid by retaining the paylo
     await fs.writeFile(file, JSON.stringify({...input.record, executableRelativePath: '../../outside'}));
     await fs.chmod(file, 0o400);
     await expect(readRuntimeGeneration({directory: input.directory})).rejects.toMatchObject({code: 'runtime-binding-invalid'});
+});
+
+test('Fleet binds the exact running generation and a packaged process cannot omit it', async () => {
+    const input = await fixture();
+    const generation = await readRuntimeGeneration({directory: input.directory});
+    const options = {runtimeRoot: input.runtimeRoot, executable: input.executable};
+    await expect(bindCurrentRuntime({...options, args: runtimeGenerationArguments(generation)}))
+        .resolves.toEqual({...options, generation});
+    await expect(bindCurrentRuntime({...options, args: []})).rejects.toMatchObject({code: 'runtime-generation-required'});
+    await expect(bindCurrentRuntime({...options, args: runtimeGenerationArguments(generation), executable: process.execPath}))
+        .rejects.toMatchObject({code: 'runtime-binding-invalid'});
+    await expect(bindCurrentRuntime({...options, args: [...runtimeGenerationArguments(generation), ...runtimeGenerationArguments(generation)]}))
+        .rejects.toMatchObject({code: 'runtime-binding-invalid'});
+});
+
+test('a real checkout stays explicit and an invalid package marker never becomes checkout mode', async () => {
+    const options = {runtimeRoot: root, executable: await fs.realpath(process.execPath), args: []};
+    await expect(bindCurrentRuntime(options)).resolves.toEqual({runtimeRoot: root, executable: options.executable, generation: null});
+    await fs.writeFile(path.join(root, 'organism-build-info.json'), '{broken');
+    await expect(bindCurrentRuntime(options)).rejects.toMatchObject({code: 'runtime-receipt-invalid'});
 });

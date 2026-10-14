@@ -197,7 +197,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                              service's config-resolved `getInstanceRoot()` value.
  * @param {String}   [options.agentosRuntimeRoot] Installed AgentOS runtime root; defaults to the
  *                                                package root containing this composer.
- * @param {String}   [options.nodePath]         Node executable override for generated MCP definitions.
+ * @param {String}   [options.nodePath]         Node executable override in checkout mode. Packaged
+ *     preparation uses the verified Fleet boot runtime; disagreeing root or executable overrides refuse.
  * @returns {Promise<Object>} the agent's lifecycle status (see `FleetLifecycleService.status`). A prepared
  *   seat's status also carries `seatInstructions`, the preparer's decision about its instructions file,
  *   so whoever starts the seat sees why it got, kept or lost one, and an adopted seat `memoryImport`
@@ -268,7 +269,7 @@ async function provisionAgent({
     admissionMark = null,
     startSignal,
     instanceRoot,
-    agentosRuntimeRoot = DEFAULT_AGENTOS_RUNTIME_ROOT,
+    agentosRuntimeRoot,
     nodePath
 } = {}) {
     if (!lifecycleService) throw new Error("startAgentProvisioned: 'lifecycleService' is required.");
@@ -278,6 +279,18 @@ async function provisionAgent({
     // idempotent while running, but provisioning ahead of it would be a pointless git inspection on an
     // agent that is already up.
     if (lifecycleService.isRunning(agentId)) return lifecycleService.status(agentId);
+
+    const installedRuntime = lifecycleService.installedRuntime;
+    if (installedRuntime) {
+        if ((agentosRuntimeRoot !== undefined && agentosRuntimeRoot !== installedRuntime.runtimeRoot) ||
+            (nodePath !== undefined && nodePath !== installedRuntime.executable)) {
+            throw new Error('startAgentProvisioned: packaged runtime overrides disagree with the verified Fleet boot runtime.')
+        }
+        agentosRuntimeRoot = installedRuntime.runtimeRoot;
+        nodePath           = installedRuntime.executable;
+    } else {
+        if (agentosRuntimeRoot === undefined) agentosRuntimeRoot = DEFAULT_AGENTOS_RUNTIME_ROOT;
+    }
 
     const registry = lifecycleService.getRegistry(),
           agent    = registry.getDefinition?.(agentId) ?? registry.getAgent(agentId);
@@ -659,6 +672,10 @@ async function provisionAgent({
             prepared.agentosRuntimeRoot !== path.resolve(agentosRuntimeRoot)) {
             throw new Error(`startAgentProvisioned: preparation did not return the exact AgentOS runtime and target repo roots for agent '${agentId}'.`);
         }
+        if (installedRuntime && (!Array.isArray(prepared.mcpPlan) || prepared.mcpPlan.some(row =>
+            row.command !== nodePath || row.sourceRoot !== agentosRuntimeRoot))) {
+            throw new Error('startAgentProvisioned: prepared MCP commands do not bind the verified Fleet boot runtime.')
+        }
 
         if (remote) {
             await lifecycleService.inspectPreparedRemoteMcpAdapter({
@@ -687,6 +704,7 @@ async function provisionAgent({
                 resolvedCredential,
                 resolvedResidentMcpEnv,
                 gitIdentity: commitIdentity,
+                ...(installedRuntime ? {runtimeGeneration: installedRuntime.generation} : {}),
                 ...(remote
                     ? {resolvedMcpCredential, resolvedMcpEndpoint: remotePlan.endpoint, remoteMcpCapability: remoteCapability}
                     : {}),

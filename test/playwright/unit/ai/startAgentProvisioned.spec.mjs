@@ -145,7 +145,7 @@ function buildPreparedMcpPlan(args, mcpMatrix) {
             transport       : resource ? 'streamable-http' : 'stdio',
             url             : resource?.url || null,
             credentialEnvVar: resource ? 'NEO_MCP_REMOTE_TOKEN' : null,
-            command         : '/usr/bin/node',
+            command         : args.nodePath ?? '/usr/bin/node',
             sourceRoot      : args.agentosRuntimeRoot,
             args            : [
                 `${args.agentosRuntimeRoot}/ai/mcp/server/${key}/mcp-server.mjs`,
@@ -259,6 +259,30 @@ function makeTenantService({
 }
 
 test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning)', () => {
+    test('packaged preparation uses the verified executable and records only a prepared runtime', async () => {
+        const lifecycle = makeLifecycle({agents: repoAgent('a')}), prepare = makePrepareWorkspace();
+        const generation = {directory: '/generations/one', runtimeRoot: '/generations/one/organism', executable: '/generations/one/host'};
+        lifecycle.installedRuntime = {...generation, generation};
+        const options = {lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed',
+            ensureRepo: makeEnsureRepo(), prepareWorkspace: prepare};
+        await startAgentProvisioned(options);
+        expect(prepare.calls[0]).toMatchObject({agentosRuntimeRoot: generation.runtimeRoot, nodePath: generation.executable});
+        expect(lifecycle.calls.start[0].opts.runtimeGeneration).toBe(generation);
+
+        for (const override of [{agentosRuntimeRoot: '/other/runtime'}, {nodePath: '/usr/bin/node'}]) {
+            await expect(startAgentProvisioned({...options, ...override})).rejects.toThrow(/packaged runtime overrides disagree/);
+        }
+        expect(prepare.calls).toHaveLength(1);
+        expect(lifecycle.calls.start).toHaveLength(1);
+
+        await expect(startAgentProvisioned({...options, prepareWorkspace: async args => {
+            const prepared = await prepare(args);
+            prepared.mcpPlan[0].command = '/other/node';
+            return prepared;
+        }})).rejects.toThrow(/prepared MCP commands do not bind/);
+        expect(lifecycle.calls.start).toHaveLength(1);
+    });
+
     test('provisions the target, binds AgentOS runtime, then launches from the target root', async () => {
         const events           = [],
               lifecycle        = makeLifecycle({agents: repoAgent('a'), events}),
