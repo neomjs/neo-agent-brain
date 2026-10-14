@@ -19,11 +19,13 @@ const
  * cannot compete with the existing launcher's authenticated admission. The caller owns capability
  * probing, atomic writes, divergence checks and removal of retired invokers. Every canonical server
  * is declared: an absent enabled row becomes an explicit disabled entry, so a global row cannot fill it.
+ * The returned allow rules belong only to the managed project's permission grants. They neither enable
+ * a disabled server nor replace admission, and must never be installed as a global MCP wildcard.
  * @param {Object} options
  * @param {String} options.profileHome Validated absolute Electron profile directory.
  * @param {Object} options.rows Existing per-server admission rows: {command, args, env}.
  * @param {Object} options.processEnvironment Original Start's selected benign process-runtime values.
- * @returns {{files: Object[], mcpServers: Object}} No filesystem or environment is read here.
+ * @returns {{files: Object[], mcpServers: Object, projectMcpAllowRules: String[]}} Pure projection.
  */
 export function generateAntigravityMcpFiles({profileHome, rows, processEnvironment}) {
     if (typeof profileHome !== 'string' || !path.isAbsolute(profileHome) || profileHome.includes('\0')) {
@@ -65,7 +67,11 @@ export function generateAntigravityMcpFiles({profileHome, rows, processEnvironme
         }
     }
 
-    return {files, mcpServers}
+    return {
+        files,
+        mcpServers,
+        projectMcpAllowRules: MCP_SERVERS.map(({key}) => `mcp(neo-mjs-${key}/*)`)
+    }
 }
 
 /** @summary Quote one literal POSIX argument, including shell metacharacters and newlines. @param {String} value @returns {String} */

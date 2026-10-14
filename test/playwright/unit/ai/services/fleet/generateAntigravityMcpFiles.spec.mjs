@@ -115,6 +115,10 @@ test.describe('Antigravity profile MCP carrier', () => {
         for (const row of Object.values(empty.mcpServers)) expect(row).toEqual({command: '/usr/bin/false', disabled: true});
         expect(f.generated.mcpServers[SERVER].disabled).toBeUndefined();
         expect(f.generated.mcpServers['neo-mjs-github-workflow'].disabled).toBe(true);
+        expect(empty.projectMcpAllowRules).toEqual([
+            'mcp(neo-mjs-memory-core/*)', 'mcp(neo-mjs-knowledge-base/*)', 'mcp(neo-mjs-neural-link/*)',
+            'mcp(neo-mjs-github-workflow/*)', 'mcp(neo-mjs-gitlab-workflow/*)'
+        ]);
         expect(run(f, {AGY_BROWSER_ACTIVE_PORT_FILE: path.join(root, 'seat-disabled', 'DevToolsActivePort')}).status).toBe(78);
     });
 
