@@ -8,6 +8,7 @@ import {
     proveRegisteredAntigravityProject,
     readAntigravityProjectRecord
 } from '../../../../../../ai/services/fleet/antigravityProjectBinding.mjs';
+import {classifyAntigravityRuntimeFingerprint} from '../../../../../../ai/services/fleet/probeAntigravityRuntime.mjs';
 
 const
     PROFILE  = '/private/tmp/antigravity-project-binding/profile',
@@ -375,9 +376,19 @@ test.describe('bindAntigravityProject', () => {
         await expect(fixture.run()).rejects.toMatchObject({code: 'route-mismatch'});
     });
 
-    test('refuses route mismatch and a missing project-selector marker', async () => {
-        const wrongRoute = harness({behavior: {observedUrl: 'https://127.0.0.1:4567/?section=other'}}),
-              wrongMarker = harness({behavior: {marker: 'Select project, current: Another Project'}});
+    test('an accepted future build still refuses route mismatch and a missing project-selector marker', async () => {
+        const runtime = classifyAntigravityRuntimeFingerprint({
+            platform: 'darwin', architecture: 'arm64', bundleId: 'com.google.antigravity',
+            shortVersion: '9.0.0', buildVersion: 'future-build',
+            appAsarSha256: 'c'.repeat(64), languageServerSha256: 'd'.repeat(64)
+        });
+        expect(runtime).toEqual({available: true, reason: null});
+
+        const verifyNativeCapability = async ({registeredProjectProof, browserProduct}) => ({
+                  ...registeredProjectProof, verified: runtime.available, browserProduct, capabilityVersion: '9.0.0'
+              }),
+              wrongRoute = harness({verifyNativeCapability, behavior: {observedUrl: 'https://127.0.0.1:4567/?section=other'}}),
+              wrongMarker = harness({verifyNativeCapability, behavior: {marker: 'Select project, current: Another Project'}});
 
         await expect(wrongRoute.run()).rejects.toMatchObject({code: 'route-mismatch'});
         await expect(wrongMarker.run({timeoutMs: 150})).rejects.toMatchObject({code: 'marker-mismatch'});
