@@ -1048,10 +1048,13 @@ class FleetRegistryService extends Base {
      * @param {String}  id          The agent id the token is minted for (signed into the payload).
      * @param {Object} [opts]
      * @param {Number} [opts.ttlMs] Token lifetime in ms; defaults to {@link bridgeTokenTtlMs}.
-     * @returns {Object} `{token, expiresAt}` — the signed token (caller keeps it; nothing persisted) + its epoch-ms expiry.
+     * @param {Boolean} [opts.withAuthority=false] Capture original-Start authority from the same selected key.
+     * @returns {Object} `{token, expiresAt, authority?}`; authority contains no secret and does not prove the live Bridge verifier.
      */
-    mintBridgeToken(id, {ttlMs}={}) {
-        return this.signBridgeToken(id, this.getSigningKey(), ttlMs ?? this.bridgeTokenTtlMs);
+    mintBridgeToken(id, {ttlMs, withAuthority = false}={}) {
+        const key       = this.getSigningKey();
+        const authority = withAuthority ? this.bridgeSigningAuthorityFor(key) : null;
+        return {...this.signBridgeToken(id, key, ttlMs ?? this.bridgeTokenTtlMs), ...(authority ? {authority} : {})};
     }
 
     /**

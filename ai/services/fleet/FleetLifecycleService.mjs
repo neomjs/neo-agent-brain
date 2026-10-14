@@ -1,34 +1,34 @@
-import {execFile, execFileSync, spawn}                              from 'child_process';
-import fs                                                           from 'fs';
-import path                                                         from 'path';
-import {isDeepStrictEqual}                                          from 'node:util';
-import AiConfig                                                     from '../../config.mjs';
-import {generateLocalBearerToken}                                   from '../../mcp/server/shared/helpers/localBearer.mjs';
-import Base                                                         from 'neo.mjs/src/core/Base.mjs';
-import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}               from '../../../src/fleet/contract/mcpServers.mjs';
-import {listHarnessTypes, resolveHarnessSeatSettings}               from '../../../src/fleet/contract/harnessTypes.mjs';
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}     from './mcpServers.mjs';
-import {deriveAgentInstanceHome}                                    from './deriveAgentInstanceHome.mjs';
-import {deriveCodexHome, deriveHarnessLaunchSpec}                   from './deriveHarnessLaunchSpec.mjs';
-import {readCodexSeatSettings}                                      from './codexConfigToml.mjs';
-import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                     from './deriveNodeRuntimeEnv.mjs';
-import FleetRegistryService                                         from './FleetRegistryService.mjs';
-import {readSeatEnvOperatorKeys, SEAT_ENV_NOT_REGULAR}              from './seatEnvFile.mjs';
-import {readSeatSessionFolder}                                      from './seatSessionFolder.mjs';
-import memoryCoreConfig                                             from '../../mcp/server/memory-core/config.mjs';
-import knowledgeBaseConfig                                          from '../../mcp/server/knowledge-base/config.mjs';
-import neuralLinkConfig                                             from '../../mcp/server/neural-link/config.mjs';
-import githubWorkflowConfig                                         from '../../mcp/server/github-workflow/config.mjs';
-import gitlabWorkflowConfig                                         from '../../mcp/server/gitlab-workflow/config.mjs';
-import {MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS}                   from './managedAgentWorkspacePlan.mjs';
-import McpLaunchAdmissionService                                    from './McpLaunchAdmissionService.mjs';
-import {LAUNCH_ADMISSION_REASONS}                                   from '../../../src/fleet/contract/launchAdmission.mjs';
-import {isOnInstance}                                               from './provisionAgentRepo.mjs';
-import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities} from './manageCodexDesktopRuntime.mjs';
-import {GIT_IDENTITY_ENV, gitIdentityEnv}                           from './seatGitIdentity.mjs';
-import {runtimeGenerationPin}                                       from './runtimeGeneration.mjs';
-import {createSeatRuntimeRecord, seatRuntimeSnapshot}               from './seatRuntimeRecord.mjs';
-import {writeFileAtomicSync}                                        from '../shared/atomicFileWrite.mjs';
+import {execFile, execFileSync, spawn}                                          from 'child_process';
+import fs                                                                       from 'fs';
+import path                                                                     from 'path';
+import {isDeepStrictEqual}                                                      from 'node:util';
+import AiConfig                                                                 from '../../config.mjs';
+import {generateLocalBearerToken}                                               from '../../mcp/server/shared/helpers/localBearer.mjs';
+import Base                                                                     from 'neo.mjs/src/core/Base.mjs';
+import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}                           from '../../../src/fleet/contract/mcpServers.mjs';
+import {listHarnessTypes, resolveHarnessSeatSettings}                           from '../../../src/fleet/contract/harnessTypes.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}                 from './mcpServers.mjs';
+import {deriveAgentInstanceHome}                                                from './deriveAgentInstanceHome.mjs';
+import {deriveCodexHome, deriveHarnessLaunchSpec}                               from './deriveHarnessLaunchSpec.mjs';
+import {readCodexSeatSettings}                                                  from './codexConfigToml.mjs';
+import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                                 from './deriveNodeRuntimeEnv.mjs';
+import FleetRegistryService                                                     from './FleetRegistryService.mjs';
+import {readSeatEnvOperatorKeys, SEAT_ENV_NOT_REGULAR}                          from './seatEnvFile.mjs';
+import {readSeatSessionFolder}                                                  from './seatSessionFolder.mjs';
+import memoryCoreConfig                                                         from '../../mcp/server/memory-core/config.mjs';
+import knowledgeBaseConfig                                                      from '../../mcp/server/knowledge-base/config.mjs';
+import neuralLinkConfig                                                         from '../../mcp/server/neural-link/config.mjs';
+import githubWorkflowConfig                                                     from '../../mcp/server/github-workflow/config.mjs';
+import gitlabWorkflowConfig                                                     from '../../mcp/server/gitlab-workflow/config.mjs';
+import {MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS}                               from './managedAgentWorkspacePlan.mjs';
+import McpLaunchAdmissionService                                                from './McpLaunchAdmissionService.mjs';
+import {LAUNCH_ADMISSION_REASONS}                                               from '../../../src/fleet/contract/launchAdmission.mjs';
+import {isOnInstance}                                                           from './provisionAgentRepo.mjs';
+import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities}             from './manageCodexDesktopRuntime.mjs';
+import {GIT_IDENTITY_ENV, gitIdentityEnv}                                       from './seatGitIdentity.mjs';
+import {runtimeGenerationPin}                                                   from './runtimeGeneration.mjs';
+import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot} from './seatRuntimeRecord.mjs';
+import {writeFileAtomicSync}                                                    from '../shared/atomicFileWrite.mjs';
 
 // Reserve the Neural Link policy slot against credential collisions and launch-metadata overrides.
 // Fleet does not impose a projection; explicitly restricted NL servers own their own ceiling.
@@ -877,7 +877,13 @@ class FleetLifecycleService extends Base {
         // bridgeTokenEnvVar (never credentialEnvVar). The raw token enters the child env only — the
         // tracked process record never carries it (mirrors the PAT secret posture); the Bridge
         // handshake verifies it and fails closed on absence/mismatch.
-        env[this.bridgeTokenEnvVar] = this.getRegistry().mintBridgeToken(id).token;
+        const bridgeToken = opts.runtimeGeneration
+            ? this.getRegistry().mintBridgeToken(id, {withAuthority: true})
+            : this.getRegistry().mintBridgeToken(id);
+        if (opts.runtimeGeneration && !isBridgeSigningAuthority(bridgeToken.authority)) {
+            throw new Error('FleetLifecycleService.start: original Bridge signing authority was not captured.');
+        }
+        env[this.bridgeTokenEnvVar] = bridgeToken.token;
 
         // Agent identity: every FM-spawned harness carries the definition's canonical GitHub login
         // under the FIXED NEO_AGENT_IDENTITY var (a cross-process contract — the MCP identity
@@ -948,14 +954,15 @@ class FleetLifecycleService extends Base {
 
         const record = {
             id, child,
-            cwd        : cwd ?? null,
-            pid        : child.pid ?? null,
-            state      : 'running',
-            startedAt  : new Date().toISOString(),
-            exitCode   : null,
-            signal     : null,
-            exitedAt   : null,
-            stderrBytes: 0,
+            bridgeAuthority: opts.runtimeGeneration ? structuredClone(bridgeToken.authority) : null,
+            cwd            : cwd ?? null,
+            pid            : child.pid ?? null,
+            state          : 'running',
+            startedAt      : new Date().toISOString(),
+            exitCode       : null,
+            signal         : null,
+            exitedAt       : null,
+            stderrBytes    : 0,
             // Curated-launch observability: the family + isolated home let `status` compute the live
             // per-home `authRequired` heuristic; null for raw-launch agents (unknown layout).
             harnessType             : launch.instanceHome ? agent.harnessType : null,
@@ -1068,23 +1075,22 @@ class FleetLifecycleService extends Base {
         }
 
         try {
+            const owners = opts.launchAdmission?.owners ?? {};
+            const slots  = {
+                [agent.forge === 'gitlab' ? 'NEO_GITLAB_PAT' : this.credentialEnvVar]: owners.pat,
+                [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                      : owners.plane
+            };
             if (survivesFleetExit && opts.launchAdmission) record.admissionGeneration = opts.launchAdmission.generation;
             if (record.runtimeGeneration) {
                 record.pidStartedAt ??= this.getProcessInspectFn()(record.pid)?.startedAt ?? null;
                 record.runtimeStart = createSeatRuntimeRecord({record, identity: agentIdentity,
-                    plan: opts.runtimePlan, profile: opts.launchAdmission?.profile ?? null, leaseRequired: survivesFleetExit});
+                    plan   : opts.runtimePlan, env, owners: slots,
+                    profile: opts.launchAdmission?.profile ?? null, leaseRequired: survivesFleetExit});
                 this.getLaunchAdmission().persistAdmission();
             }
 
             // Activation follows the lease and original process/runtime binding publication.
             if (survivesFleetExit && opts.launchAdmission) {
-                const
-                    owners = opts.launchAdmission.owners ?? {},
-                    slots  = {
-                        [agent.forge === 'gitlab' ? 'NEO_GITLAB_PAT' : this.credentialEnvVar]: owners.pat,
-                        [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                      : owners.plane
-                    };
-
                 this.getLaunchAdmission().activate({
                     generation: opts.launchAdmission.generation,
                     agentId   : id,

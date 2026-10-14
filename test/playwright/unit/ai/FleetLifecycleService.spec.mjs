@@ -96,7 +96,9 @@ function makeRegistry(agents, creds) {
         resolveCredential: id => (Object.hasOwn(creds, id) ? creds[id] : (agents[id] ? FIXTURE_PAT : null)),
         // Stub the Bridge-token mint with a deterministic per-id token, so spawn-injection specs can
         // assert env carriage without touching the real registry's crypto store.
-        mintBridgeToken  : id => ({token: `bridge_${id}_token`, expiresAt: Date.now() + 3_600_000})
+        mintBridgeToken  : (id, {withAuthority = false} = {}) => ({token: `bridge_${id}_token`, expiresAt: Date.now() + 3_600_000,
+            ...(withAuthority ? {authority: {version: 1, source: 'registry-file', registryRoot: fs.realpathSync(DESKTOP_ROOT),
+                publicKeySha256: 'e'.repeat(64)}} : {})})
     };
 }
 
@@ -2019,7 +2021,11 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 launchAdmission: {generation: reserved.generation, plan, profile}});
             const snapshot = JSON.parse(fs.readFileSync(path.join(directory, 'issuer.json'), 'utf8')).snapshot;
             expect(snapshot.generations[0]).toMatchObject({id: reserved.generation, state: 'active', runtime: generation});
-            expect(snapshot.seats[0].start).toMatchObject({admissionGeneration: reserved.generation, profile, leaseRequired: true});
+            expect(snapshot.seats[0].start).toMatchObject({admissionGeneration: reserved.generation, profile, leaseRequired: true,
+                bridgeAuthority: {source: 'registry-file', publicKeySha256: 'e'.repeat(64)},
+                targets        : [{key: 'neural-link', target: 'resident', args: plan.find(row => row.key === 'neural-link').args,
+                    slots: [{name: 'NEO_FLEET_BRIDGE_TOKEN', required: true, state: 'held'}]}]});
+            expect(JSON.stringify(snapshot)).not.toContain('bridge_seat_token');
             expect(JSON.stringify(snapshot)).not.toContain(reserved.grants['neural-link']);
             fail = true;
             spawn.calls[0].child.emit('exit', 0, null);
@@ -2050,6 +2056,12 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 if (fail) throw Error('fixture lost exit write');
                 return writeFileAtomicSync(file, content, options);
             }});
+            const mint = FleetLifecycleService.registry.mintBridgeToken;
+            FleetLifecycleService.registry.mintBridgeToken = () => ({token: 'unbound-fixture-token'});
+            expect(() => FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []}))
+                .toThrow(/original Bridge signing authority was not captured/);
+            expect(spawn.calls).toHaveLength(0);
+            FleetLifecycleService.registry.mintBridgeToken = mint;
             const status   = FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []});
             const file     = path.join(directory, 'issuer.json');
             const snapshot = JSON.parse(fs.readFileSync(file, 'utf8')).snapshot;

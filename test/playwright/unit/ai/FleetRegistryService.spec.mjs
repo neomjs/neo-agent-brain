@@ -11,12 +11,12 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import fs             from 'fs';
-import os             from 'os';
-import path           from 'path';
-import crypto         from 'crypto';
-import {execFileSync} from 'node:child_process';
+import {test, expect}  from '@playwright/test';
+import fs              from 'fs';
+import os              from 'os';
+import path            from 'path';
+import crypto          from 'crypto';
+import {execFileSync}  from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
 import Neo                  from 'neo.mjs/src/Neo.mjs';
@@ -388,6 +388,34 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService', () => {
     // Ed25519 signature over `{agentId, expiresAt}`. The network-facing Bridge verifies with only the
     // PUBLIC key (getBridgePublicKey), holding no secret + no store. Inherits the freshDataDir hooks.
     test.describe('Bridge session token credential class (#13172 — asymmetric-signed)', () => {
+        test('Start captures authority from the token key snapshot even if the key file rotates immediately afterward', () => {
+            const service     = FleetRegistryService, original = service.getSigningKey;
+            const replacement = crypto.generateKeyPairSync('ed25519').privateKey;
+            let   reads       = 0, selectedPublic;
+            service.getSigningKey = function(options) {
+                const selected = original.call(this, options);
+                reads++;
+                if (reads === 1) {
+                    selectedPublic = crypto.createPublicKey(selected);
+                    fs.writeFileSync(this.signingKeyPath(), replacement.export({type: 'pkcs8', format: 'pem'}));
+                }
+                return selected;
+            };
+            try {
+                const minted = service.mintBridgeToken('original-seat', {withAuthority: true});
+                expect(reads).toBe(1);
+                expect(minted.authority).toEqual({version: 1, source: 'registry-file', registryRoot: fs.realpathSync(service.dataDir),
+                    publicKeySha256: crypto.createHash('sha256').update(selectedPublic.export({type: 'spki', format: 'der'})).digest('hex')});
+                const [payload, signature] = minted.token.split('.').map(value => Buffer.from(value, 'base64url'));
+                expect(crypto.verify(null, payload, selectedPublic, signature)).toBe(true);
+                expect(JSON.parse(payload).agentId).toBe('original-seat');
+                expect(service.mintBridgeToken('ordinary-seat')).not.toHaveProperty('authority');
+                expect(() => service.renewBridgeToken('original-seat', minted.authority)).toThrow(/authority changed/);
+            } finally {
+                service.getSigningKey = original;
+            }
+        });
+
         test('reconnect requires the original existing signer and uses a fresh normal TTL', () => {
             const service = FleetRegistryService, dir = service.dataDir, file = path.join(dir, 'signing.key');
             expect(() => service.getBridgeSigningAuthority()).toThrow(/authority is missing/);
@@ -402,7 +430,7 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService', () => {
             expect(verifyWithPublicKey(renewed.token)).toMatchObject({agentId: 'seat', expiresAt: renewed.expiresAt});
 
             const original = fs.readFileSync(file);
-            const other = crypto.generateKeyPairSync('ed25519').privateKey.export({type: 'pkcs8', format: 'pem'});
+            const other    = crypto.generateKeyPairSync('ed25519').privateKey.export({type: 'pkcs8', format: 'pem'});
             fs.writeFileSync(file, other);
             expect(() => service.renewBridgeToken('seat', authority)).toThrow(/authority changed/);
             expect(fs.readFileSync(file, 'utf8')).toBe(other);
@@ -421,8 +449,8 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService', () => {
 
         test('configured signing authority resolves through the leaf and creates no key file or child-env export', () => {
             const {privateKey, publicKey} = crypto.generateKeyPairSync('ed25519');
-            const directory = fs.realpathSync(FleetRegistryService.dataDir);
-            const script = `
+            const directory               = fs.realpathSync(FleetRegistryService.dataDir);
+            const script                  = `
                 await import('neo.mjs/src/Neo.mjs');
                 await import('neo.mjs/src/core/_export.mjs');
                 const {default: config} = await import('./ai/config.template.mjs');

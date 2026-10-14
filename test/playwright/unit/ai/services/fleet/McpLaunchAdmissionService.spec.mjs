@@ -211,7 +211,7 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
             expect(service.statusOf(letter).recent.at(-1).generationRoot).toBe(runtime.runtimeRoot);
         }
         const snapshot = fs.readJsonSync(path.join(directory, 'issuer.json')).snapshot;
-        expect(snapshot.version).toBe(4);
+        expect(snapshot.version).toBe(5);
         expect(snapshot.generations.map(row => row.runtime.id)).toEqual(['a'.repeat(64), 'b'.repeat(64)]);
         expect(snapshot.generations.every(row => row.state === 'active')).toBe(true);
         const extraSecret = structuredClone(snapshot);

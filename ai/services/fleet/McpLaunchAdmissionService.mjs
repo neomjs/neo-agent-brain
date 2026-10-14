@@ -181,7 +181,7 @@ class McpLaunchAdmissionService extends Base {
         if (typeof readSeatStarts !== 'function') throw new TypeError('Seat Start projection must be a function.');
         this.readSeatStarts = readSeatStarts;
         this.journal = openLaunchAdmissionJournal({
-            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 4, generations: [], seats: []}
+            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 5, generations: [], seats: []}
         });
         return this.journal.previous
     }
@@ -194,7 +194,7 @@ class McpLaunchAdmissionService extends Base {
      */
     admissionSnapshot() {
         return {
-            version    : 4,
+            version    : 5,
             seats      : this.readSeatStarts ? this.readSeatStarts() : [],
             generations: [...this.generations.values()].map(generation => ({
                 id                : generation.id, agentId: generation.agentId, identity: generation.identity,
@@ -835,7 +835,7 @@ function isAdmissionSnapshot(value) {
     const unique    = (rows, key) => new Set(rows.map(row => row[key])).size === rows.length;
     const phase     = row => Object.values(STATES).includes(row.state) &&
         (row.reason === null || Object.values(REASONS).includes(row.reason));
-    return exact(value, ['version', 'generations', 'seats']) && value.version === 4 && Array.isArray(value.generations) &&
+    return exact(value, ['version', 'generations', 'seats']) && value.version === 5 && Array.isArray(value.generations) &&
         Array.isArray(value.seats) && value.seats.every(isSeatRuntimeSnapshot) &&
         new Set(value.seats.map(row => row.start.agentId)).size === value.seats.length &&
         value.generations.every(row => exact(row, [
