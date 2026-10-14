@@ -2,7 +2,7 @@ import path from 'node:path';
 import {MCP_SERVERS} from '../../../src/fleet/contract/mcpServers.mjs';
 import {LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR, isLaunchIdentity, parseLaunchCapability} from './mcpLaunchAdmission.mjs';
 
-/** @type {String} Profile-local carrier; the shared declaration contains no seat path. */
+/** @type {String} Profile-local carrier; the workspace declaration contains no seat path. */
 export const ANTIGRAVITY_MCP_DIRECTORY = '.neo-fleet-mcp';
 
 const
@@ -12,12 +12,13 @@ const
     REFUSAL = 'Neo MCP is unavailable for this Antigravity profile; start the seat from Fleet Manager.';
 
 /**
- * @summary Compile resolved admission rows into owner-only profile invokers and neutral shared MCP rows.
+ * @summary Compile resolved admission rows into owner-only profile invokers and neutral workspace MCP rows.
  * Antigravity assigns AGY_BROWSER_ACTIVE_PORT_FILE from Electron userData after its login-shell overlay.
- * The shared command uses that version-probed anchor; identity, grants and the original runtime remain
+ * The workspace command uses that version-probed anchor; identity, grants and the original runtime remain
  * inside the profile. Each invoker starts with an empty environment, so shell credentials and aliases
  * cannot compete with the existing launcher's authenticated admission. The caller owns capability
- * probing, consent, atomic writes, divergence checks and removal of retired invokers.
+ * probing, atomic writes, divergence checks and removal of retired invokers. Every canonical server
+ * is declared: an absent enabled row becomes an explicit disabled entry, so a global row cannot fill it.
  * @param {Object} options
  * @param {String} options.profileHome Validated absolute Electron profile directory.
  * @param {Object} options.rows Existing per-server admission rows: {command, args, env}.
@@ -30,7 +31,9 @@ export function generateAntigravityMcpFiles({profileHome, rows, processEnvironme
     }
     assertEnvironment(processEnvironment, name => PROCESS_ENV.has(name));
 
-    const files = [], mcpServers = {};
+    const files = [], mcpServers = Object.fromEntries(MCP_SERVERS.map(({key}) => [
+        `neo-mjs-${key}`, {command: '/usr/bin/false', disabled: true}
+    ]));
 
     for (const [name, row] of Object.entries(rows)) {
         const key = name.startsWith('neo-mjs-') ? name.slice(8) : '';
@@ -82,7 +85,7 @@ function assertEnvironment(values, allows) {
 }
 
 /**
- * @summary The identical shared entry for this server, with no identity, capability or runtime path.
+ * @summary The identical workspace entry for this server, with no identity, capability or runtime path.
  * Both shells use privileged mode to ignore imported functions and startup/tracing options before
  * the secret-bearing invoker runs; clearing the environment only on its final exec would be too late.
  * @private

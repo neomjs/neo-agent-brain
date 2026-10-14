@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {generateAntigravityMcpFiles} from '../../../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
+import {MCP_SERVERS} from '../../../../../../src/fleet/contract/mcpServers.mjs';
 import {mintLaunchGrant, signLaunchResponse, verifyLaunchRequest} from '../../../../../../ai/services/fleet/mcpLaunchAdmission.mjs';
 
 const SERVER = 'neo-mjs-memory-core';
@@ -47,7 +48,7 @@ test.describe('Antigravity profile MCP carrier', () => {
     test.beforeEach(() => { root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'neo-antigravity-carrier-'))) });
     test.afterEach(() => { fs.rmSync(root, {recursive: true, force: true}) });
 
-    test('one shared declaration reaches distinct profile runtimes and grants', () => {
+    test('one neutral workspace declaration reaches distinct profile runtimes and grants', () => {
         const a = fixture(root, "seat-a's profile"), b = fixture(root, 'seat-b');
         expect(a.generated.mcpServers).toEqual(b.generated.mcpServers);
         expect(JSON.stringify(a.generated.mcpServers)).not.toContain(root);
@@ -109,7 +110,11 @@ test.describe('Antigravity profile MCP carrier', () => {
     test('a server without a profile invoker stays refused even if another seat declares it', () => {
         const f = fixture(root, 'seat-a');
         const empty = generateAntigravityMcpFiles({profileHome: path.join(root, 'seat-disabled'), rows: {}, processEnvironment: {}});
-        expect(empty).toEqual({files: [], mcpServers: {}});
+        expect(empty.files).toEqual([]);
+        expect(Object.keys(empty.mcpServers).sort()).toEqual(MCP_SERVERS.map(({key}) => `neo-mjs-${key}`).sort());
+        for (const row of Object.values(empty.mcpServers)) expect(row).toEqual({command: '/usr/bin/false', disabled: true});
+        expect(f.generated.mcpServers[SERVER].disabled).toBeUndefined();
+        expect(f.generated.mcpServers['neo-mjs-github-workflow'].disabled).toBe(true);
         expect(run(f, {AGY_BROWSER_ACTIVE_PORT_FILE: path.join(root, 'seat-disabled', 'DevToolsActivePort')}).status).toBe(78);
     });
 
