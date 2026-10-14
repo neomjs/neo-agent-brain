@@ -12,6 +12,8 @@ import {
     WORKSPACE_ARTIFACT_STATES,
     applyManagedAgentWorkspacePlan,
     createManagedAgentWorkspacePlan,
+    mergeAntigravityWorkspaceMcpConfig,
+    prepareAntigravityArtifacts,
     prepareManagedAgentWorkspace
 } from '../../../../../../ai/services/fleet/prepareManagedAgentWorkspace.mjs';
 import {mcpDeclarationRefusal}                          from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
@@ -2231,6 +2233,69 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
         expect(hydrationCalls).toHaveLength(0);
         await expect(fs.stat(path.join(repoRoot, 'agent-a', '.gemini', 'settings.json'))).rejects.toMatchObject({code: 'ENOENT'});
+    });
+
+    test('Antigravity profile invokers converge through receipts and refuse resident edits', async () => {
+        const
+            agent = makeAgent('antigravity'),
+            plan = MCP_SERVERS.map(({key}) => ({
+                key,
+                name      : `neo-mjs-${key}`,
+                enabled   : key === 'memory-core' || key === 'knowledge-base',
+                command   : NODE_PATH,
+                sourceRoot: agentosRuntimeRoot,
+                environment: {},
+                runtimeEnv: [],
+                requiredRuntimeEnv: [],
+                secretEnv: []
+            })),
+            launchAdmission = {
+                issuer : 'http://127.0.0.1:12345',
+                identity: 'shared-login',
+                grants : Object.fromEntries(['memory-core', 'knowledge-base'].map(key => [key, mintLaunchGrant().capability]))
+            },
+            options = {agent, instanceHome: path.join(instanceRoot, agent.id, 'harness', 'antigravity'), plan,
+                residentMcpEnv: {}, launchAdmission, processEnvironment: {HOME: root, PATH: '/usr/bin:/bin'}, fileSystem: fs};
+
+        await fs.mkdir(options.instanceHome, {recursive: true});
+        const first = await prepareAntigravityArtifacts(options);
+        expect(first.artifacts.map(({status}) => status)).toEqual([WORKSPACE_ARTIFACT_STATES.CREATED, WORKSPACE_ARTIFACT_STATES.CREATED]);
+        expect(Object.keys(first.mcpServers).sort()).toEqual(MCP_SERVERS.map(({key}) => `neo-mjs-${key}`).sort());
+        expect(first.projectMcpAllowRules).toHaveLength(MCP_SERVERS.length);
+        for (const artifact of first.artifacts) expect((await fs.stat(artifact.path)).mode & 0o777).toBe(0o600);
+
+        const second = await prepareAntigravityArtifacts(options);
+        expect(second.artifacts.map(({status}) => status)).toEqual([WORKSPACE_ARTIFACT_STATES.MATCH, WORKSPACE_ARTIFACT_STATES.MATCH]);
+
+        const
+            disabled = await prepareAntigravityArtifacts({...options, plan: plan.map(server => ({...server, enabled: false}))});
+        expect(disabled.artifacts.map(({status}) => status)).toEqual([WORKSPACE_ARTIFACT_STATES.UPDATED, WORKSPACE_ARTIFACT_STATES.UPDATED]);
+        for (const artifact of first.artifacts) await expect(fs.stat(artifact.path)).rejects.toMatchObject({code: 'ENOENT'});
+
+        await prepareAntigravityArtifacts(options);
+
+        await fs.writeFile(first.artifacts[0].path, '# resident edit\n');
+        await expect(prepareAntigravityArtifacts(options)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+    });
+
+    test('Antigravity workspace merge preserves resident entries and refuses unreceipted Neo divergence', () => {
+        const
+            desired = Object.fromEntries(MCP_SERVERS.map(({key}) => [`neo-mjs-${key}`, {command: '/usr/bin/false', disabled: true}])),
+            initial = JSON.parse(mergeAntigravityWorkspaceMcpConfig(null, desired)),
+            existing = {name: 'resident', mcpServers: {...initial.mcpServers, 'other-tool': {command: 'tool'},
+                'neo-mjs-local-helper': {command: 'custom'}}};
+
+        existing.mcpServers['neo-mjs-memory-core'] = {command: '/resident/override'};
+        expect(() => mergeAntigravityWorkspaceMcpConfig(JSON.stringify(existing), desired)).toThrow(/divergent Neo rows/);
+
+        const updated = JSON.parse(mergeAntigravityWorkspaceMcpConfig(
+            JSON.stringify(existing), desired, {...initial.mcpServers, 'neo-mjs-memory-core': {command: '/resident/override'}}
+        ));
+        expect(updated.name).toBe('resident');
+        expect(updated.mcpServers['other-tool']).toEqual({command: 'tool'});
+        expect(updated.mcpServers['neo-mjs-local-helper']).toEqual({command: 'custom'});
+        expect(Object.keys(updated.mcpServers).filter(name => name.startsWith('neo-mjs-')).sort())
+            .toEqual([...Object.keys(desired), 'neo-mjs-local-helper'].sort());
     });
 
     test('required arguments fail loud before any hydration', async () => {

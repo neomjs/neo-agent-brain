@@ -12,6 +12,7 @@ import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/c
 import {applyCodexSeatSettings, parseTomlTableHeader} from './codexConfigToml.mjs';
 import {deriveNodeRuntimeEnv}                         from './deriveNodeRuntimeEnv.mjs';
 import {KIMI_SEAT_SERVERS, generateKimiSeatConfig}    from './generateKimiSeatConfig.mjs';
+import {generateAntigravityMcpFiles}                   from './generateAntigravityMcpFiles.mjs';
 import {
     deriveAgentInstanceHome,
     deriveAgentMemoryDir
@@ -31,6 +32,7 @@ export {createManagedAgentWorkspacePlan} from './managedAgentWorkspacePlan.mjs';
 
 const
     NEO_MCP_NAME_PREFIX      = 'neo-mjs-',
+    ANTIGRAVITY_MCP_NAMES    = new Set(MCP_SERVERS.map(({key}) => `${NEO_MCP_NAME_PREFIX}${key}`)),
     CODEX_REMOTE_TRUST_BEGIN = '# Fleet-managed remote MCP project trust begin',
     CODEX_REMOTE_TRUST_END   = '# Fleet-managed remote MCP project trust end',
     CODEX_PROJECT_HEADER     = '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; `enabled = false` marks a server the Fleet switches off, the others follow the seat\'s own switch.',
@@ -1410,6 +1412,137 @@ function renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission})
     }
 
     return canonicalize(rows)
+}
+
+/**
+ * @summary Prepare Antigravity's contained profile invokers without enabling the workspace adapter.
+ * The caller must establish a contained workspace-config exclusion/tracked-file proof before writing
+ * `.agents/mcp_config.json`; this preparer deliberately has no Git subprocess boundary.
+ * @param {Object} options
+ * @param {Object} options.agent
+ * @param {String} options.instanceHome Antigravity's isolated Electron user-data directory.
+ * @param {Object[]} options.plan Bound canonical MCP rows.
+ * @param {Object} options.residentMcpEnv Resolved resident child environments.
+ * @param {Object} options.launchAdmission Reserved, per-server launch grants.
+ * @param {Object} options.processEnvironment Explicit benign Start-selected process environment.
+ * @param {Object} options.fileSystem Promise filesystem seam.
+ * @returns {Promise<Object>} Profile invokers, complete workspace rows, permission rules, and residual files.
+ * @private
+ */
+export async function prepareAntigravityArtifacts({agent, instanceHome, plan, residentMcpEnv, launchAdmission, fileSystem,
+    processEnvironment}) {
+    const
+        rows = renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission}),
+        generated = generateAntigravityMcpFiles({profileHome: instanceHome, rows, processEnvironment}),
+        artifacts = [],
+        residuals = [],
+        generatedNames = new Set(Object.keys(generated.mcpServers).filter(name => !generated.mcpServers[name].disabled));
+
+    await ensureDirectoryArtifact(path.join(instanceHome, '.neo-fleet-mcp'), instanceHome, fileSystem, {mode: 0o700});
+
+    for (const name of ANTIGRAVITY_MCP_NAMES) {
+        if (generatedNames.has(name)) continue;
+
+        const key = name.slice(NEO_MCP_NAME_PREFIX.length), retired = await retireAntigravityInvoker({
+            filePath   : path.join(instanceHome, '.neo-fleet-mcp', `${key}.sh`),
+            receiptPath: path.join(instanceHome, `.neo-fleet-antigravity-${key}.json`),
+            trustedRoot: instanceHome,
+            fileSystem
+        });
+
+        retired.artifact && artifacts.push(retired.artifact);
+        retired.residual && residuals.push(retired.residual)
+    }
+
+    for (const file of generated.files) {
+        const key = path.basename(file.path, '.sh');
+        const observation = await convergeTextArtifact({
+            filePath       : file.path,
+            desiredContent : file.content,
+            ownedProjection: wholeFileOwnedProjection,
+            ownedLabel     : `Antigravity profile invoker ${key}`,
+            trustedRoot    : instanceHome,
+            fileSystem,
+            receiptPath    : path.join(instanceHome, `.neo-fleet-antigravity-${key}.json`)
+        });
+
+        await fileSystem.chmod(file.path, 0o600);
+        artifacts.push(observation)
+    }
+
+    return {artifacts, mcpServers: generated.mcpServers, projectMcpAllowRules: generated.projectMcpAllowRules, residuals}
+}
+
+/** @summary Retire only unchanged invokers whose content remains bound to Fleet's receipt. @private */
+async function retireAntigravityInvoker({filePath, receiptPath, trustedRoot, fileSystem}) {
+    await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: 'Antigravity profile invoker'});
+
+    let existing;
+    try {
+        existing = await fileSystem.readFile(filePath, 'utf8')
+    } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        await removeContentReceipt({receiptPath, trustedRoot, fileSystem});
+        return {artifact: null, residual: null}
+    }
+
+    const recorded = await readContentReceipt({receiptPath, filePath, trustedRoot, fileSystem});
+    if (recorded === null) return {artifact: null, residual: {path: filePath, reason: 'kept: no Fleet receipt'}};
+    if (recorded !== hashContent(existing)) {
+        throw divergentArtifact(filePath, 'Antigravity profile invoker', 'edited after Fleet wrote it, and server is now disabled')
+    }
+
+    await fileSystem.unlink(filePath);
+    await removeContentReceipt({receiptPath, trustedRoot, fileSystem});
+    return {artifact: {path: filePath, status: WORKSPACE_ARTIFACT_STATES.UPDATED, ownedKeys: 'Antigravity profile invoker retired'}, residual: null}
+}
+
+/**
+ * @summary Merge canonical Antigravity MCP rows while retaining every non-Neo workspace setting.
+ * Existing Neo rows may be replaced only when they match the requested rows or the supplied last-write
+ * receipt projection; malformed configuration and unreceipted divergence fail closed.
+ * @param {String|null} source Existing workspace JSON, or null when absent.
+ * @param {Object} desiredServers Complete canonical `neo-mjs-*` server map.
+ * @param {Object} [recordedServers] Exact Neo server projection from Fleet's last-write receipt.
+ * @returns {String} Merged JSON with a trailing newline.
+ */
+export function mergeAntigravityWorkspaceMcpConfig(source, desiredServers, recordedServers = {}) {
+    let parsed;
+
+    try {
+        parsed = source === null ? {} : JSON.parse(source);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+            parsed.mcpServers !== undefined && (!parsed.mcpServers || typeof parsed.mcpServers !== 'object' || Array.isArray(parsed.mcpServers))) {
+            throw new TypeError()
+        }
+    } catch {
+        throw new TypeError('Antigravity workspace MCP config is not a JSON object.')
+    }
+
+    const
+        existing = parsed.mcpServers || {},
+        expectedNames = [...ANTIGRAVITY_MCP_NAMES].sort(),
+        desiredNames = desiredServers && typeof desiredServers === 'object' && !Array.isArray(desiredServers)
+            ? Object.keys(desiredServers).sort()
+            : [],
+        owned = Object.fromEntries(Object.entries(existing).filter(([name]) => ANTIGRAVITY_MCP_NAMES.has(name))),
+        recordedOwned = Object.fromEntries(Object.entries(recordedServers || {}).filter(([name]) => ANTIGRAVITY_MCP_NAMES.has(name))),
+        desired = desiredServers;
+
+    if (!isDeepStrictEqual(desiredNames, expectedNames)) {
+        throw new TypeError('Antigravity workspace MCP config requires every canonical Neo server row.')
+    }
+
+    if (Object.keys(owned).length && !isDeepStrictEqual(canonicalize(owned), canonicalize(desired)) &&
+        !isDeepStrictEqual(canonicalize(owned), canonicalize(recordedOwned))) {
+        throw new TypeError('Antigravity workspace MCP config has divergent Neo rows.')
+    }
+
+    parsed.mcpServers = {...existing};
+    for (const name of ANTIGRAVITY_MCP_NAMES) delete parsed.mcpServers[name];
+    Object.assign(parsed.mcpServers, desired);
+
+    return JSON.stringify(parsed, null, 2) + '\n'
 }
 
 /**
