@@ -96,8 +96,10 @@ export function readLaunchAdmissionJournal({directory, validateSnapshot = isAdmi
     const finalFence = readOwnedRecord(fencePath, fileSystem, uid), after = readDirectoryCustody(directory, fileSystem, uid);
     if (before.dev !== after.dev || before.ino !== after.ino || before.mode !== after.mode ||
         JSON.stringify(fence) !== JSON.stringify(finalFence)) throw refused('record-changed');
-    const validFence = fence && fence.version === VERSION && isId(fence.issuer) && Number.isSafeInteger(fence.epoch) && fence.epoch > 0;
-    const validState = state && state.version === VERSION && isId(state.issuer) &&
+    const validFence = fence && Object.keys(fence).sort().join(',') === 'epoch,issuer,version' &&
+        fence.version === VERSION && isId(fence.issuer) && Number.isSafeInteger(fence.epoch) && fence.epoch > 0;
+    const validState = state && Object.keys(state).sort().join(',') === 'epoch,handoff,issuer,origin,phase,snapshot,version' &&
+        state.version === VERSION && isId(state.issuer) &&
         Number.isSafeInteger(state.epoch) && state.epoch > 0 &&
         ['active', 'handoff'].includes(state.phase) && validateSnapshot(state.snapshot) === true &&
         (state.origin === null || isOrigin(state.origin)) &&
@@ -142,6 +144,65 @@ export function isAdmissionSnapshot(value) {
                 text(server.key) && text(server.grantId) && phase(server) && hash(server.capabilityHash)) &&
             unique(row.servers, 'key') && unique(row.servers, 'grantId')) &&
         unique(value.generations, 'id') && unique(value.generations, 'agentId')
+}
+
+/**
+ * @summary Holds an already sealed handoff against successor acquisition while the host updates its package.
+ * This uses the issuer's existing exclusion lease, without consuming the fence or modifying admission
+ * records. Release it before starting the successor. Ordinary Quit never acquires this update guard.
+ * @param {Object} options
+ * @param {String} options.directory Canonical admission custody directory.
+ * @param {{issuer:String, epoch:Number}|null} [options.expected=null] Issuer observed before the host asked Quit.
+ * @param {Function} [options.validateSnapshot=isAdmissionSnapshot] Closed snapshot codec.
+ * @param {Object} [options.fileSystem=fs] Synchronous filesystem seam.
+ * @param {Function} [options.acquireLease=acquireFileLease] Existing exclusion primitive.
+ * @param {Number} [options.uid=process.getuid()] Expected host owner.
+ * @returns {{evidence:Object, assertCurrent:Function, release:Function}} The host releases in a finally block.
+ */
+export function holdLaunchAdmissionHandoff({
+    directory, expected = null, validateSnapshot = isAdmissionSnapshot, fileSystem = fs,
+    acquireLease = acquireFileLease, uid = process.getuid?.()
+}) {
+    if (expected !== null && (!expected || typeof expected !== 'object' || Array.isArray(expected) ||
+        Object.keys(expected).sort().join(',') !== 'epoch,issuer' ||
+        !isId(expected.issuer) || !Number.isSafeInteger(expected.epoch) || expected.epoch <= 0)) throw refused('invalid-binding');
+    const options  = {directory, validateSnapshot, fileSystem, uid};
+    const observed = readLaunchAdmissionJournal(options);
+    if (!observed?.handoffProved) throw refused('handoff-incomplete');
+    if (expected && (observed.state.issuer !== expected.issuer || observed.state.epoch !== expected.epoch)) {
+        throw refused('issuer-changed')
+    }
+    const directoryStat = readDirectoryCustody(directory, fileSystem, uid);
+    const fingerprint   = JSON.stringify(observed.state);
+    const lease         = acquireLease({dir: directory, filename: 'issuer.lock', owner: 'fleet-launch-admission',
+        fs: fileSystem, isHeldFresh, onCorrupt: 'refuse'});
+    let closed = false;
+
+    /** @summary Rechecks the same custody and proof under exclusion immediately before each host mutation. */
+    function assertCurrent() {
+        if (closed) throw refused('update-guard-closed');
+        const stat = readDirectoryCustody(directory, fileSystem, uid);
+        if (stat.dev !== directoryStat.dev || stat.ino !== directoryStat.ino || !lease.pulse().held) {
+            throw refused('ownership-unproved')
+        }
+        const current = readLaunchAdmissionJournal(options);
+        if (!current?.handoffProved || JSON.stringify(current.state) !== fingerprint) throw refused('handoff-changed');
+    }
+
+    /** @summary Releases only this guard's lease; the successor still owns consuming the handoff. */
+    function release() {
+        if (!closed) {
+            closed = true;
+            lease.release();
+        }
+    }
+    try {
+        assertCurrent();
+        return {evidence: structuredClone(observed), assertCurrent, release};
+    } catch (error) {
+        release();
+        throw error;
+    }
 }
 
 /**

@@ -1,9 +1,10 @@
-import {expect, test}                                                                from '@playwright/test';
-import fs                                                                            from 'fs-extra';
-import os                                                                            from 'node:os';
-import path                                                                          from 'node:path';
-import {isAdmissionSnapshot, openLaunchAdmissionJournal, readLaunchAdmissionJournal} from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
-import {writeFileAtomicSync}                                                         from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
+import {expect, test}                                                                                            from '@playwright/test';
+import fs                                                                                                        from 'fs-extra';
+import os                                                                                                        from 'node:os';
+import path                                                                                                      from 'node:path';
+import {holdLaunchAdmissionHandoff, isAdmissionSnapshot, openLaunchAdmissionJournal, readLaunchAdmissionJournal} from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
+import {writeFileAtomicSync}                                                                                     from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
+import {acquireFileLease}                                                                                        from '../../../../../../ai/daemons/shared/fileLease.mjs';
 
 let root, journals;
 const emptySnapshot = {version: 1, generations: []};
@@ -220,6 +221,8 @@ test('the read-only package entry uses the production snapshot codec without an 
     const file = path.join(root, 'issuer.json'), state = fs.readJsonSync(file);
     fs.writeJsonSync(file, {...state, snapshot: {...production, env: {GH_TOKEN: 'fixture-secret'}}});
     expect(() => reader.readLaunchAdmissionJournal({directory: root})).toThrow(/record-invalid/);
+    fs.writeJsonSync(file, {...state, env: {GH_TOKEN: 'fixture-secret'}});
+    expect(() => reader.readLaunchAdmissionJournal({directory: root})).toThrow(/record-invalid/);
 });
 
 test('inspection refuses a successor fence published between its record reads', () => {
@@ -255,4 +258,61 @@ test('inspection refuses a replaced custody directory even when its record bytes
             }
         }})).toThrow(/record-changed/);
     } finally { fs.removeSync(parked); }
+});
+
+test('the update guard excludes a successor without consuming the handoff it must recover', () => {
+    const first = open();
+    first.write(snapshot, origin);
+    const {state} = readLaunchAdmissionJournal({directory: root, validateSnapshot});
+    first.handoff(snapshot, origin);
+    const before = custody();
+    const guard  = holdLaunchAdmissionHandoff({directory: root, validateSnapshot,
+        expected: {issuer: state.issuer, epoch: state.epoch}});
+    try {
+        expect(guard.evidence.handoffProved).toBe(true);
+        expect(() => open()).toThrow(/refuses to start a duplicate/);
+        guard.assertCurrent();
+        expect(custody().filter(row => row.name !== 'issuer.lock')).toEqual(before);
+        // A caller may inspect its detached evidence without changing the guard's comparison.
+        guard.evidence.state.phase = 'active';
+        guard.assertCurrent();
+    } finally { guard.release(); }
+    expect(() => guard.assertCurrent()).toThrow(/update-guard-closed/);
+    guard.release();
+    expect(open().previous).toMatchObject({handoffProved: true, snapshot});
+});
+
+test('missing, active and changed-issuer records cannot acquire the update guard', () => {
+    expect(() => holdLaunchAdmissionHandoff({directory: path.join(root, 'missing'), validateSnapshot})).toThrow(/handoff-incomplete/);
+    expect(fs.readdirSync(root)).toEqual([]);
+    const first       = open();
+    const activeBytes = custody();
+    expect(() => holdLaunchAdmissionHandoff({directory: root, validateSnapshot})).toThrow(/handoff-incomplete/);
+    expect(custody()).toEqual(activeBytes);
+    first.handoff(snapshot, origin);
+    const {state} = readLaunchAdmissionJournal({directory: root, validateSnapshot});
+    expect(() => holdLaunchAdmissionHandoff({directory: root, validateSnapshot,
+        expected: {issuer: state.issuer, epoch: state.epoch + 1}})).toThrow(/issuer-changed/);
+    expect(open().previous.handoffProved).toBe(true);
+});
+
+test('changed handoff bytes refuse under the update lease and failure cleanup releases exclusion', () => {
+    open().handoff(snapshot, origin);
+    const guard = holdLaunchAdmissionHandoff({directory: root, validateSnapshot});
+    try {
+        const file = path.join(root, 'issuer.json'), state = fs.readJsonSync(file);
+        fs.writeJsonSync(file, {...state, snapshot: {version: 1, generations: []}});
+        expect(() => guard.assertCurrent()).toThrow(/handoff-changed/);
+    } finally { guard.release(); }
+    expect(open().previous.handoffProved).toBe(true);
+});
+
+test('a successor between inspection and lease acquisition invalidates the guard and releases its lease', () => {
+    open().handoff(snapshot, origin);
+    expect(() => holdLaunchAdmissionHandoff({directory: root, validateSnapshot, acquireLease: options => {
+        open().close();
+        return acquireFileLease(options);
+    }})).toThrow(/handoff-changed/);
+    expect(fs.existsSync(path.join(root, 'issuer.lock'))).toBe(false);
+    expect(open().previous).toMatchObject({handoffProved: false, reason: 'unclean-issuer-exit'});
 });
