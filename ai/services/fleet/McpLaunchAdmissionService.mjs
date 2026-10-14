@@ -343,8 +343,9 @@ class McpLaunchAdmissionService extends Base {
     /**
      * @summary Bind a reserved generation to the Start that launched and leased its seat. Each server
      * redeems its row's values ({@link Neo.ai.services.fleet.managedAgentWorkspacePlan.launchRowEnvNames}):
-     * a seat credential from its owner at each redemption, every other value from the environment Start
-     * injected. It also gets the argv of its fixed target. A server whose required value has neither is
+     * seat credentials and bound resident inputs from their original owners at each redemption,
+     * other held values from the environment Start injected. It also gets the argv of its fixed target.
+     * A server whose required value has neither is
      * revoked with `credential-missing`. A generation revoked or replaced meanwhile stays as it is.
      * @param {Object} options
      * @param {String} options.generation The id {@link reserve} returned.

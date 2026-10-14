@@ -9,8 +9,8 @@ import {LAUNCH_ADMISSION_CREDENTIALS as CREDENTIALS} from '../../../src/fleet/co
 
 /**
  * @module ai/services/fleet/launchCredentialOwners
- * @summary The same selected credential owners for a fresh Start and a recovered admission.
- * Bindings contain only owner coordinates and identity. Values are read from their original stores,
+ * @summary Credential and resident-input owners shared by Start and admission recovery.
+ * Bindings contain only source selection and identity. Values are read from their original stores,
  * and changed selection refuses redemption, including changes during an asynchronous proof.
  */
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
