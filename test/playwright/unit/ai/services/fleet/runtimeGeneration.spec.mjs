@@ -9,9 +9,11 @@ import {
     completeRuntimeGenerationRecord,
     createRuntimeGenerationRecord,
     inventoryRuntimePayload,
+    isRuntimeGenerationPin,
     readRuntimeGeneration,
     runtimeGenerationIdentity,
-    runtimeGenerationArguments
+    runtimeGenerationArguments,
+    runtimeGenerationPin
 } from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
 
 let root;
@@ -67,6 +69,10 @@ test('the producer and reader share one format and preserve the distinct runtime
         payloadDigest: input.record.payloadDigest, compatibility: {nodeVersion: '24.19.0', moduleAbi: '148'}
     });
     expect(input.record.compatibility).not.toHaveProperty('unclassified');
+    const pin = runtimeGenerationPin(await readRuntimeGeneration({directory: input.directory}));
+    expect(isRuntimeGenerationPin(pin)).toBe(true);
+    expect(isRuntimeGenerationPin({...pin, env: {secret: 'not permitted'}})).toBe(false);
+    expect(() => runtimeGenerationPin({...pin, executable: '/outside/node'})).toThrow(/runtime-binding-invalid/);
 });
 
 test('a tampered retained verifier cannot approve another changed payload byte', async () => {

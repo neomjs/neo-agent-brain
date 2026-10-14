@@ -26,6 +26,7 @@ import {LAUNCH_ADMISSION_REASONS}                                   from '../../
 import {isOnInstance}                                               from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities} from './manageCodexDesktopRuntime.mjs';
 import {GIT_IDENTITY_ENV, gitIdentityEnv}                           from './seatGitIdentity.mjs';
+import {runtimeGenerationPin}                                       from './runtimeGeneration.mjs';
 
 // Reserve the Neural Link policy slot against credential collisions and launch-metadata overrides.
 // Fleet does not impose a projection; explicitly restricted NL servers own their own ceiling.
@@ -1233,6 +1234,8 @@ class FleetLifecycleService extends Base {
      *     `gitIdentity` is the identity the seat's last provisioned start resolved ({@link setGitIdentity}), also
      *     after a start it refused; `null` before the first. `seatModel` is what that start found of the seat's
      *     declared model in its harness's catalog ({@link setSeatModel}); `null` before a start read one.
+     *     `runtimeGeneration` carries the original Start's runtime and retention pin; missing original
+     *     bindings are explicitly unknown, even when this Fleet has a newer installed runtime.
      */
     status(id) {
         this.adoptLeasedSeats();
@@ -1274,13 +1277,29 @@ class FleetLifecycleService extends Base {
                 instanceAddress: record.wakeRoute.instanceAddress ?? null,
                 subscriptionId : record.wakeRoute.subscriptionId ?? null
             } : null,
-            repos          : record.repos ? record.repos.map(repo => ({...repo})) : null,
-            dependencies   : this.dependenciesOf(id),
-            sessionFolder  : this.sessionFolderFor(record),
-            gitIdentity    : this.gitIdentityOf(id),
-            seatModel      : this.seatModelOf(id),
-            launchAdmission: this.launchAdmissionOf(id, record)
+            repos            : record.repos ? record.repos.map(repo => ({...repo})) : null,
+            dependencies     : this.dependenciesOf(id),
+            sessionFolder    : this.sessionFolderFor(record),
+            gitIdentity      : this.gitIdentityOf(id),
+            seatModel        : this.seatModelOf(id),
+            launchAdmission  : this.launchAdmissionOf(id, record),
+            runtimeGeneration: this.runtimeGenerationOf(record)
         };
+    }
+
+    /**
+     * @summary Projects this Start's runtime for retention and display, independent of MCP-child activity.
+     * Only proved terminal lifecycle states release a pin; unresolved cleanup or ownership retains it.
+     * @param {Object} record Existing lifecycle record.
+     * @returns {Object} Runtime facts plus `pin: held|released|unknown`.
+     * @private
+     */
+    runtimeGenerationOf(record) {
+        const pin = record.ownershipUnresolved || record.cleanupUnresolved ? 'unknown' :
+            ['stopped', 'exited'].includes(record.state) ? 'released' :
+                ['running', 'stopping'].includes(record.state) ? 'held' : 'unknown';
+        return record.runtimeGeneration ? {...runtimeGenerationPin(record.runtimeGeneration), pin} :
+            {id: null, directory: null, runtimeRoot: null, executable: null, payloadDigest: null, pin: 'unknown'}
     }
 
     /**

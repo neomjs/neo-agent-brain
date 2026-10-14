@@ -129,6 +129,35 @@ export function runtimeGenerationDescriptor(directory, record) {
 }
 
 /**
+ * @summary Projects only the verified runtime facts an original Start may persist.
+ * This projection does not verify a payload or establish authority to recover a Start.
+ * @param {Object} generation Descriptor returned by the trusted verifier.
+ * @returns {Object} Closed non-secret runtime pin.
+ */
+export function runtimeGenerationPin(generation) {
+    const pin = Object.fromEntries(['id', 'directory', 'runtimeRoot', 'executable', 'payloadDigest']
+        .map(key => [key, generation?.[key]]));
+    if (!isRuntimeGenerationPin(pin)) throw refusal('runtime-binding-invalid', 'a complete verified runtime pin is required');
+    return Object.freeze(pin)
+}
+
+/**
+ * @summary Checks the closed persisted pin shape and canonical containment, without importing code.
+ * @param {*} pin
+ * @returns {Boolean}
+ */
+export function isRuntimeGenerationPin(pin) {
+    if (!pin || typeof pin !== 'object' || Array.isArray(pin) ||
+        Object.keys(pin).sort().join(',') !== 'directory,executable,id,payloadDigest,runtimeRoot' ||
+        ![pin.id, pin.payloadDigest].every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)) ||
+        ![pin.directory, pin.runtimeRoot, pin.executable].every(value =>
+            typeof value === 'string' && !value.includes('\0') && path.isAbsolute(value) && path.resolve(value) === value)) return false;
+    const payload = path.join(pin.directory, PAYLOAD);
+    return path.basename(pin.directory) === pin.id && pin.runtimeRoot !== payload && pin.executable !== payload &&
+        inside(payload, pin.runtimeRoot) && inside(payload, pin.executable)
+}
+
+/**
  * @summary Verifies a published generation before returning any executable binding.
  * @param {Object} options
  * @param {String} options.directory Generation directory, whose basename is its identity.

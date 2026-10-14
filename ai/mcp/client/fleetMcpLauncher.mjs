@@ -142,7 +142,7 @@ export function composeTargetEnv(env, admitted) {
  * @param {Function} [options.request=postAdmission] `(origin, body, {timeoutMs}) => Promise<parsed answer>`.
  * @param {Function} [options.now=performance.now] Monotonic clock seam for deadline controls.
  * @param {Function} [options.sleep] Backoff seam; production waits with a timer.
- * @returns {Promise<{args: String[], env: Object}>}
+ * @returns {Promise<{args: String[], env: Object, generationRoot: String}>}
  * @throws {LaunchRefusal}
  */
 export async function admitLaunch({argv, env, root = INSTALL_ROOT, request = postAdmission, now = () => performance.now(), sleep = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
@@ -175,7 +175,15 @@ export async function admitLaunch({argv, env, root = INSTALL_ROOT, request = pos
                     REFUSAL_REASONS.has(payload.reason) || isLaunchAdmissionProofReason(payload.reason) ? payload.reason : null)
             }
 
-            return {args: resolveTarget(payload.args, root), env: composeTargetEnv(env, payload.env)}
+            let generationRoot;
+            try {
+                if (typeof payload.generationRoot !== 'string' || !path.isAbsolute(payload.generationRoot)) throw Error();
+                generationRoot = fs.realpathSync(payload.generationRoot);
+                if (generationRoot !== fs.realpathSync(root)) throw Error();
+            } catch {
+                throw new LaunchRefusal(REFUSALS.TARGET_INVALID)
+            }
+            return {args: resolveTarget(payload.args, root), env: composeTargetEnv(env, payload.env), generationRoot}
         } catch (error) {
             if (!(error instanceof LaunchRefusal) || !TRANSIENT_CODES.has(error.code)) throw error;
             last = error
@@ -283,7 +291,10 @@ export function postAdmission(origin, body, {timeoutMs}) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     admitLaunch({argv: process.argv.slice(2), env: process.env})
-        .then(runTarget)
+        .then(launch => {
+            process.stderr.write(`NEO_MCP_LAUNCH_ADMITTED ${JSON.stringify({generationRoot: launch.generationRoot})}\n`);
+            return runTarget(launch)
+        })
         .then(({code, signal}) => {
             if (signal) process.kill(process.pid, signal);
             else process.exitCode = code ?? 1

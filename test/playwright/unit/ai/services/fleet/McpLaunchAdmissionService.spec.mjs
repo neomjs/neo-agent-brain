@@ -169,6 +169,33 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
             .toThrow(/snapshot-invalid/);
     });
 
+    test('old and new Starts keep distinct durable runtimes and signed admission roots', async () => {
+        service.openJournal({directory});
+        for (const letter of ['a', 'b']) {
+            const id = letter.repeat(64), runtimeDirectory = path.join(directory, id);
+            const runtime = {id, directory: runtimeDirectory, payloadDigest: 'c'.repeat(64),
+                runtimeRoot: path.join(runtimeDirectory, 'host.runtime/organism'),
+                executable: path.join(runtimeDirectory, 'host.runtime/node')};
+            const reservation = await service.reserve({agent: seatDefinition({id: letter}), runtimeGeneration: runtime});
+            const plan = boundPlan({root: runtime.runtimeRoot}).map(row => ({...row, command: runtime.executable}));
+            expect(() => service.activate({generation: reservation.generation, agentId: letter,
+                plan: plan.map(row => ({...row, command: process.execPath})), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'}))
+                .toThrow(/do not bind the reserved runtime/);
+            service.activate({generation: reservation.generation, agentId: letter, plan,
+                env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
+            const answer = await redeem(reservation.grants['memory-core'], {server: 'memory-core'});
+            expect(answer).toMatchObject({outcome: 'admitted', generationRoot: runtime.runtimeRoot});
+            expect(service.statusOf(letter).recent.at(-1).generationRoot).toBe(runtime.runtimeRoot);
+        }
+        const snapshot = fs.readJsonSync(path.join(directory, 'issuer.json')).snapshot;
+        expect(snapshot.version).toBe(2);
+        expect(snapshot.generations.map(row => row.runtime.id)).toEqual(['a'.repeat(64), 'b'.repeat(64)]);
+        expect(snapshot.generations.every(row => row.state === 'active')).toBe(true);
+        const extraSecret = structuredClone(snapshot);
+        extraSecret.generations[0].runtime.env = {GH_TOKEN: PAT};
+        expect(() => service.journal.write(extraSecret)).toThrow(/snapshot-invalid/);
+    });
+
     test('a lost revocation write freezes admission and makes clean handoff impossible', async () => {
         let fail = false;
         service.openJournal({directory, writeAtomic: (file, source, options) => {
@@ -252,16 +279,19 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
 
         expect(mc).toEqual({
             outcome: 'admitted',
+            generationRoot: '/installed/neo',
             env    : {NEO_MCP_REMOTE_TOKEN: BEARER},
             args   : ['/installed/neo/ai/mcp/client/stdioToStreamableHttp.mjs', '--url', 'https://plane.example.test/mc/mcp', '--token-env', 'NEO_MCP_REMOTE_TOKEN']
         });
         expect(await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'})).toEqual({
             outcome: 'admitted',
+            generationRoot: '/installed/neo',
             env    : {GH_TOKEN: PAT},
             args   : ['/installed/neo/ai/mcp/server/github-workflow/mcp-server.mjs']
         });
         expect(await redeem(reservation.grants['neural-link'], {server: 'neural-link'})).toEqual({
             outcome: 'admitted',
+            generationRoot: '/installed/neo',
             env    : {NEO_FLEET_BRIDGE_TOKEN: 'bridge-fixture-token'},
             args   : ['/installed/neo/ai/mcp/server/neural-link/mcp-server.mjs', '--cwd', '/installed/neo']
         })
@@ -296,7 +326,7 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
 
         expect(recent).toHaveLength(service.auditLimit);
         expect(recent.every(entry => entry.server === 'neural-link')).toBe(true);
-        expect(Object.keys(recent[0]).sort()).toEqual(['at', 'code', 'outcome', 'reason', 'server']);
+        expect(Object.keys(recent[0]).sort()).toEqual(['at', 'code', 'generationRoot', 'outcome', 'reason', 'server']);
         expect(JSON.stringify(recent)).not.toContain('bridge-fixture-token')
     });
 

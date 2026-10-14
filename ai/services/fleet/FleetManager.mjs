@@ -591,6 +591,8 @@ class FleetManager extends Base {
      *     provisioned start carries the `gitIdentity` that start resolved, a refused start's included, and the
      *     `seatModel` it found of the declared model in the harness's catalog, and a Codex seat carries the
      *     `harnessSettings` its config is set to now ({@link FleetLifecycleService#harnessSettingsFor}).
+     *     `runtimeGeneration` preserves the actual Start's runtime and retention pin; unknown bindings
+     *     remain unknown across installed-runtime changes.
      */
     fleetRuntimeStatus() {
         const lifecycle = this.getLifecycleService();
@@ -625,6 +627,7 @@ class FleetManager extends Base {
             if (status.gitIdentity != null)   row.gitIdentity     = status.gitIdentity;
             if (status.seatModel != null)     row.seatModel       = status.seatModel;
             if (status.launchAdmission != null) row.launchAdmission = status.launchAdmission;
+            if (status.runtimeGeneration != null) row.runtimeGeneration = status.runtimeGeneration;
             if (harnessSettings != null)      row.harnessSettings = harnessSettings;
 
             return row;

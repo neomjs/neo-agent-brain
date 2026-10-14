@@ -51,7 +51,7 @@ function issuer(grant, answer) {
     return request
 }
 
-const admitted = (request, grant) => signLaunchResponse(grant.secret, request, {outcome: 'admitted', env: {GH_TOKEN: 'ghp_fixture'}, args: [TARGET]});
+const admitted = (request, grant) => signLaunchResponse(grant.secret, request, {outcome: 'admitted', generationRoot: REPO_ROOT, env: {GH_TOKEN: 'ghp_fixture'}, args: [TARGET]});
 
 test.describe('fleetMcpLauncher', () => {
     test('#964 a streaming partial response cannot extend the request deadline', async () => {
@@ -83,7 +83,7 @@ test.describe('fleetMcpLauncher', () => {
                 clock += 500;
                 return signLaunchResponse(grant.secret, parseLaunchRequest(body), calls.length < 3
                     ? {outcome: 'refused', code: 'proof-unavailable', reason: 'proof-timeout'}
-                    : {outcome: 'admitted', env: {}, args: [TARGET]})
+                    : {outcome: 'admitted', generationRoot: REPO_ROOT, env: {}, args: [TARGET]})
             }
         });
         expect(launch.args).toEqual([TARGET]);
@@ -104,7 +104,7 @@ test.describe('fleetMcpLauncher', () => {
                 clock += timeoutMs;
                 return signLaunchResponse(grant.secret, parseLaunchRequest(body), bounds.length === 1
                     ? {outcome: 'refused', code: 'pending-timeout'}
-                    : {outcome: 'admitted', env: {}, args: [TARGET]})
+                    : {outcome: 'admitted', generationRoot: REPO_ROOT, env: {}, args: [TARGET]})
             }
         })).rejects.toMatchObject({code: 'pending-timeout'});
         expect(bounds).toEqual([45000, 14000]);
@@ -140,10 +140,60 @@ test.describe('fleetMcpLauncher', () => {
             launch  = await admitLaunch({argv: ['--server', 'github-workflow'], env: rowEnv(grant), request});
 
         expect(launch.args).toEqual([TARGET]);
+        expect(launch.generationRoot).toBe(await fs.realpath(REPO_ROOT));
         expect(launch.env).toEqual({HOME: '/Users/seat', PATH: '/usr/bin:/bin', NEO_AGENT_IDENTITY: 'neo-opus-ada', NEO_PLANE_DATA_ROOT: '/plane', GH_TOKEN: 'ghp_fixture'});
         expect(request.calls[0].origin).toBe('http://127.0.0.1:47123');
         expect(request.calls[0].body).toMatchObject({server: 'github-workflow', identity: 'neo-opus-ada'});
         expect(JSON.stringify(request.calls)).not.toContain(grant.secret)
+    });
+
+    test('a signed answer must name this launcher runtime, including an explicit checkout root', async () => {
+        const grant = mintLaunchGrant();
+        for (const generationRoot of [undefined, '/a/different/generation', 'relative']) {
+            await expect(admitLaunch({argv: ['--server', 'github-workflow'], env: rowEnv(grant),
+                request: issuer(grant, (body, owned) => signLaunchResponse(owned.secret, body,
+                    {outcome: 'admitted', generationRoot, env: {}, args: [TARGET]}))}))
+                .rejects.toMatchObject({code: 'target-invalid'});
+        }
+    });
+
+    test('the real launcher audits the verified root on stderr without polluting target stdio or exposing inputs', async () => {
+        const base = path.join(REPO_ROOT, 'test/playwright/test-results');
+        await fs.mkdir(base, {recursive: true});
+        const directory = await fs.mkdtemp(path.join(base, 'launcher-audit-'));
+        const target = path.join(directory, 'target.mjs'), grant = mintLaunchGrant();
+        await fs.writeFile(target, 'process.stdout.write("target-ready");');
+        const server = http.createServer(async (req, res) => {
+            const chunks = [];
+            for await (const chunk of req) chunks.push(chunk);
+            const body = parseLaunchRequest(JSON.parse(Buffer.concat(chunks).toString()));
+            res.end(JSON.stringify(signLaunchResponse(grant.secret, body, {
+                outcome: 'admitted', generationRoot: REPO_ROOT, args: [target], env: {GH_TOKEN: 'audit-secret-fixture'}
+            })));
+        });
+        let child;
+        try {
+            await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+            child = spawn(process.execPath, [path.join(REPO_ROOT, 'ai/mcp/client/fleetMcpLauncher.mjs'), '--server', 'github-workflow'], {
+                env: rowEnv(grant, {NEO_FLEET_LAUNCH_ISSUER: `http://127.0.0.1:${server.address().port}`,
+                    ...(process.versions.electron ? {ELECTRON_RUN_AS_NODE: '1'} : {})}),
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+            let stdout = '', stderr = '';
+            child.stdout.on('data', data => stdout += data);
+            child.stderr.on('data', data => stderr += data);
+            const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+            expect(code).toBe(0);
+            expect(stdout).toBe('target-ready');
+            expect(stderr.trim()).toBe(`NEO_MCP_LAUNCH_ADMITTED ${JSON.stringify({generationRoot: await fs.realpath(REPO_ROOT)})}`);
+            expect(stderr).not.toContain('audit-secret-fixture');
+            expect(stderr).not.toContain(grant.secret);
+        } finally {
+            child?.kill();
+            server.closeAllConnections();
+            await new Promise(resolve => server.close(resolve));
+            await fs.rm(directory, {recursive: true, force: true});
+        }
     });
 
     test('nothing unsigned admits: a forged or unsigned admission is refused, an unsigned refusal is believed', async () => {

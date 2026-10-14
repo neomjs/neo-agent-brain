@@ -10,12 +10,14 @@ import {
     LAUNCH_ADMISSION_STATES   as STATES,
     isLaunchAdmissionProofReason
 }                                 from '../../../src/fleet/contract/launchAdmission.mjs';
-import {mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
-import {launchRowEnvNames}               from './managedAgentWorkspacePlan.mjs';
-import {openLaunchAdmissionJournal}      from './launchAdmissionJournal.mjs';
+import {mcpCatalogFor, resolveMcpMatrix}              from '../../../src/fleet/contract/mcpServers.mjs';
+import {launchRowEnvNames}                            from './managedAgentWorkspacePlan.mjs';
+import {openLaunchAdmissionJournal}                   from './launchAdmissionJournal.mjs';
+import {isRuntimeGenerationPin, runtimeGenerationPin} from './runtimeGeneration.mjs';
 import {
     LAUNCH_ADMISSION_MAX_BYTES,
     LAUNCH_ADMISSION_PATH,
+    canonicalJson,
     isLaunchIdentity,
     launchRefusal,
     mintLaunchGrant,
@@ -170,7 +172,7 @@ class McpLaunchAdmissionService extends Base {
     openJournal(options) {
         if (this.journal || this.generations.size) throw new Error('Launch admission custody must be attached before Start.');
         this.journal = openLaunchAdmissionJournal({
-            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 1, generations: []}
+            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 2, generations: []}
         });
         return this.journal.previous
     }
@@ -183,12 +185,13 @@ class McpLaunchAdmissionService extends Base {
      */
     admissionSnapshot() {
         return {
-            version    : 1,
+            version    : 2,
             generations: [...this.generations.values()].map(generation => ({
                 id            : generation.id, agentId: generation.agentId, identity: generation.identity,
                 state         : generation.state, reason: generation.reason,
                 reservedAt    : generation.reservedAt, activatedAt: generation.activatedAt, revokedAt: generation.revokedAt,
-                definitionHash: crypto.createHash('sha256').update(JSON.stringify(generation.definition)).digest('hex'),
+                definitionHash: crypto.createHash('sha256').update(canonicalJson(generation.definition)).digest('hex'),
+                runtime       : generation.runtime ? {...generation.runtime} : null,
                 servers       : [...generation.servers.values()].map(server => ({
                     key           : server.key, grantId: server.grantId, state: server.state, reason: server.reason,
                     capabilityHash: crypto.createHash('sha256').update(`${server.grantId}.${server.secret}`).digest('hex')
@@ -235,11 +238,12 @@ class McpLaunchAdmissionService extends Base {
      *     raw definitions through `getDefinition`.
      * @param {Number} [options.since] The {@link revocationMark} the Start read as it began.
      * @param {AbortSignal} [options.startSignal] The owning managed Start's cancellation signal.
+     * @param {Object|null} [options.runtimeGeneration] The verified packaged runtime selected for this Start.
      * @returns {Promise<{generation: String, issuer: String, identity: String, grants: Object<String, String>}>}
      *     `grants` maps each enabled server to the capability its profile row carries; `identity` is the
      *     validated login the rows must name.
      */
-    async reserve({agent, registry = null, since = null, startSignal = null}) {
+    async reserve({agent, registry = null, since = null, startSignal = null, runtimeGeneration = null}) {
         if (this.journalFailed) throw new Error('Launch admission issuer is frozen after a failed durable transition.');
         if (startSignal && (
             typeof startSignal.aborted !== 'boolean' ||
@@ -255,27 +259,30 @@ class McpLaunchAdmissionService extends Base {
             throw new Error(`McpLaunchAdmissionService.reserve: agent '${agent?.id}' has no valid githubUsername identity.`)
         }
 
+        const runtime = runtimeGeneration === null ? null : runtimeGenerationPin(runtimeGeneration);
         this.observeRegistry(registry);
 
         const
             previous   = this.generations.get(agent.id),
             definition = projectDefinition(agent),
             generation = {
-                id         : crypto.randomUUID(),
-                agentId    : agent.id,
+                id            : crypto.randomUUID(),
+                agentId       : agent.id,
                 identity,
-                state      : STATES.RESERVED,
-                reason     : null,
-                reservedAt : new Date().toISOString(),
-                activatedAt: null,
-                revokedAt  : null,
+                state         : STATES.RESERVED,
+                reason        : null,
+                reservedAt    : new Date().toISOString(),
+                activatedAt   : null,
+                revokedAt     : null,
                 definition,
-                servers    : new Map(),
-                owners     : {},
-                proofs     : new Map(),
-                probe      : null,
-                waiters    : new Set(),
-                audit      : []
+                runtime,
+                generationRoot: null,
+                servers       : new Map(),
+                owners        : {},
+                proofs        : new Map(),
+                probe         : null,
+                waiters       : new Set(),
+                audit         : []
             },
             grants     = {};
 
@@ -342,6 +349,13 @@ class McpLaunchAdmissionService extends Base {
 
         if (generation?.id !== id || generation.state !== STATES.RESERVED) return this.statusOf(agentId);
 
+        const roots          = [...new Set(plan.filter(row => row.enabled).map(row => row.sourceRoot))];
+        const generationRoot = generation.runtime?.runtimeRoot ?? roots[0] ?? null;
+        if (roots.length > 1 || roots.some(root => !path.isAbsolute(root || '')) ||
+            generation.runtime && plan.some(row => row.sourceRoot !== generationRoot || row.command !== generation.runtime.executable)) {
+            throw new Error('Launch admission targets do not bind the reserved runtime.')
+        }
+
         for (const server of generation.servers.values()) {
             const row = plan.find(entry => entry.key === server.key);
 
@@ -370,7 +384,7 @@ class McpLaunchAdmissionService extends Base {
             server.state = STATES.ACTIVE
         }
 
-        Object.assign(generation, {state: STATES.ACTIVE, activatedAt: new Date().toISOString(), owners: {...owners}, probe});
+        Object.assign(generation, {state: STATES.ACTIVE, activatedAt: new Date().toISOString(), generationRoot, owners: {...owners}, probe});
         this.persistAdmission();
         this.releaseStartSignal(generation);
         this.settle(generation);
@@ -582,9 +596,10 @@ class McpLaunchAdmissionService extends Base {
         }
 
         return answer({
-            outcome: OUTCOMES.ADMITTED,
-            env    : {...server.env, ...Object.fromEntries(server.owned.map((name, index) => [name, credentials[index]]))},
-            args   : [...server.args]
+            outcome       : OUTCOMES.ADMITTED,
+            generationRoot: generation.generationRoot,
+            env           : {...server.env, ...Object.fromEntries(server.owned.map((name, index) => [name, credentials[index]]))},
+            args          : [...server.args]
         })
     }
 
@@ -741,7 +756,8 @@ class McpLaunchAdmissionService extends Base {
      * @protected
      */
     answer(generation, server, request, payload) {
-        record(generation.audit, {at: new Date().toISOString(), server: server.key, outcome: payload.outcome, code: payload.code ?? null, reason: payload.reason ?? null}, this.auditLimit);
+        record(generation.audit, {at: new Date().toISOString(), server: server.key, outcome: payload.outcome, code: payload.code ?? null,
+            reason: payload.reason ?? null, generationRoot: generation.generationRoot}, this.auditLimit);
 
         return signLaunchResponse(server.secret, request, payload)
     }
@@ -796,10 +812,11 @@ function isAdmissionSnapshot(value) {
     const unique    = (rows, key) => new Set(rows.map(row => row[key])).size === rows.length;
     const phase     = row => Object.values(STATES).includes(row.state) &&
         (row.reason === null || Object.values(REASONS).includes(row.reason));
-    return exact(value, ['version', 'generations']) && value.version === 1 && Array.isArray(value.generations) &&
+    return exact(value, ['version', 'generations']) && value.version === 2 && Array.isArray(value.generations) &&
         value.generations.every(row => exact(row, [
-            'id', 'agentId', 'identity', 'state', 'reason', 'reservedAt', 'activatedAt', 'revokedAt', 'definitionHash', 'servers'
+            'id', 'agentId', 'identity', 'state', 'reason', 'reservedAt', 'activatedAt', 'revokedAt', 'definitionHash', 'runtime', 'servers'
         ]) && text(row.id) && text(row.agentId) && isLaunchIdentity(row.identity) && phase(row) && hash(row.definitionHash) &&
+            (row.runtime === null || isRuntimeGenerationPin(row.runtime)) &&
             ['reservedAt', 'activatedAt', 'revokedAt'].every(key => timestamp(row[key])) && Array.isArray(row.servers) &&
             row.servers.every(server => exact(server, ['key', 'grantId', 'state', 'reason', 'capabilityHash']) &&
                 text(server.key) && text(server.grantId) && phase(server) && hash(server.capabilityHash)) &&

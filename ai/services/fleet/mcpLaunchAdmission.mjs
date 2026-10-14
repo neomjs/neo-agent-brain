@@ -9,6 +9,9 @@ import {LAUNCH_ADMISSION_OUTCOMES} from '../../../src/fleet/contract/launchAdmis
  * the same secret. A process that binds a dead issuer's port can therefore neither learn the grant nor
  * hand the launcher an environment. Pure: only `node:crypto` and the Body-safe vocabulary, so the
  * launcher loads nothing else before its target starts.
+ * An admitted v1 answer contains `{outcome, generationRoot, args, env, mac}`. `generationRoot` is the
+ * original Start's fixed code root (an explicit checkout in dev); the launcher requires it to match
+ * its own root before executing the target. The native hop is separate from the MCP server APIs.
  */
 
 /**
@@ -197,7 +200,6 @@ function safeEqual(expected, actual) {
  * left out, as `JSON.stringify` leaves it out of the body the other end parses.
  * @param {*} value
  * @returns {String}
- * @summary Canonical JSON for signed responses and owned-profile binding digests.
  */
 export function canonicalJson(value) {
     if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;

@@ -172,6 +172,31 @@ function install({agents = {}, creds = {}} = {}) {
 test.describe.configure({mode: 'serial'});
 
 test.describe('Neo.ai.services.fleet.FleetLifecycleService', () => {
+    test('idle old and new runtime pins survive installed changes; unknown ownership retains its generation', () => {
+        install();
+        FleetLifecycleService.leasesAdopted = true;
+        const generations = ['a', 'b'].map(letter => {
+            const id = letter.repeat(64), directory = `/runtime/${id}`;
+            return {id, directory, runtimeRoot: `${directory}/host.runtime/organism`,
+                executable: `${directory}/host.runtime/node`, payloadDigest: 'c'.repeat(64)};
+        });
+        for (const [index, runtimeGeneration] of generations.entries()) {
+            FleetLifecycleService.processes.set(String(index), {id: String(index), state: 'running',
+                runtimeGeneration, pid: 100 + index, startedAt: '2026-10-14T00:00:00Z'});
+        }
+        FleetLifecycleService.installedRuntime = {generation: generations[1]};
+        expect(FleetLifecycleService.status('0').runtimeGeneration).toEqual({...generations[0], pin: 'held'});
+        expect(FleetLifecycleService.status('1').runtimeGeneration).toEqual({...generations[1], pin: 'held'});
+        const old = FleetLifecycleService.processes.get('0');
+        old.ownershipUnresolved = true;
+        expect(FleetLifecycleService.status('0').runtimeGeneration).toEqual({...generations[0], pin: 'unknown'});
+        old.ownershipUnresolved = false;
+        old.state = 'exited';
+        expect(FleetLifecycleService.status('0').runtimeGeneration.pin).toBe('released');
+        delete old.runtimeGeneration;
+        expect(FleetLifecycleService.status('0').runtimeGeneration).toMatchObject({id: null, pin: 'unknown'});
+    });
+
     test('a packaged Fleet does not infer a runtime for raw starts or accept a foreign prepared generation', () => {
         const spawn = install({agents: {a: agentDef('a')}, creds: {a: 'ghp_x'}});
         FleetLifecycleService.installedRuntime = {generation: {id: 'current'}};
@@ -2065,7 +2090,8 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             // The fleet view: an observed stop with that reason, never "outside fleet supervision".
             expect(FleetManager.fleetRuntimeStatus(), name).toEqual([{
                 agentId      : 'seat', state: 'stopped', running: false, confidence: 'observed', source: 'fleet:runtimeStatus',
-                failureReason: 'the seat exited while no Fleet server supervised it'
+                failureReason: 'the seat exited while no Fleet server supervised it',
+                runtimeGeneration: {id: null, directory: null, runtimeRoot: null, executable: null, payloadDigest: null, pin: 'unknown'}
             }])
         }
     });

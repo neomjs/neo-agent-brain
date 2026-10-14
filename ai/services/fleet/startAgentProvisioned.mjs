@@ -636,7 +636,8 @@ async function provisionAgent({
     // A Claude Desktop seat's profile rows carry one launch grant per enabled server, reserved before the rows
     // are written. The lifecycle activates them once the seat runs and is leased; a Start that fails before
     // that revokes them, so a row written here never admits a child of a seat this Start did not launch.
-    const reservation = admission && await admission.reserve({agent, registry, since: admissionSince, startSignal});
+    const reservation = admission && await admission.reserve({agent, registry, since: admissionSince, startSignal,
+        runtimeGeneration: installedRuntime?.generation ?? null});
 
     let prepared, memory, status;
 
