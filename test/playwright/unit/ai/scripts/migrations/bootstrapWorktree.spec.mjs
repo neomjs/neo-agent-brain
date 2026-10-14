@@ -1546,10 +1546,10 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
 
             const expected = enumerateProjection(path.resolve(process.cwd())).map(entry => entry.target).sort();
 
-            // The whole declared projection, not a sample: the nine executables projectSeatHooks.spec
+            // The whole declared projection, not a sample: the ten executables projectSeatHooks.spec
             // pins and both config artifacts, written with the provenance receipt that describes them.
             // A partial placement is the half-wired seat this test exists to end.
-            expect(expected.length).toBe(11);
+            expect(expected.length).toBe(12);
             expect(result.seatHooks.written.sort()).toEqual([...expected, PROVENANCE_RECEIPT].sort());
 
             for (const target of expected) {
