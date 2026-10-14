@@ -4,6 +4,8 @@ import {LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR, isLaunchIdentity, parseLaun
 
 /** @type {String} Profile-local carrier; the workspace declaration contains no seat path. */
 export const ANTIGRAVITY_MCP_DIRECTORY = '.neo-fleet-mcp';
+/** @type {String} Native, checkout-local neutral MCP declaration. */
+export const ANTIGRAVITY_MCP_WORKSPACE_FILE = '.agents/mcp_config.json';
 
 const
     HEADER = '# Neo Fleet Antigravity MCP invoker v1',

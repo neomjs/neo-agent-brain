@@ -18,7 +18,7 @@
  * silently dead hook is the exact failure this projection exists to end, so the transport that
  * produces one is unavailable regardless of how convenient it is.
  *
- * Two roots, never conflated (ADR 0040 §2.5): `agentosRuntimeRoot` is where the sources live and
+ * Two roots, never conflated: `agentosRuntimeRoot` is where the sources live and
  * what rewritten specifiers point at; `targetRepoRoot` is the destination only. Neither defaults to
  * `process.cwd()` — an absent binding fails loud rather than silently projecting into whatever
  * directory the process happened to start in.
@@ -52,7 +52,7 @@ const
     /**
      * The census's **deleted config artifacts**, enumerated one by one rather than swept.
      *
-     * #250 classifies the leaf-6 removal into three kinds, and they take three dispositions:
+     * Projected artifacts take three dispositions:
      * executables move and have their imports rewritten, deleted config artifacts are regenerated
      * by this projector, and the target's active `.claude/settings.json` is reconciled in place.
      * These are the second kind. Without them the Codex seat declares nothing at all — leaf 6 took
@@ -60,8 +60,8 @@ const
      * no surface naming them.
      *
      * Each target is written out rather than derived from {@link HARNESS_TARGETS}, because they do
-     * not follow it: Codex's config sits *beside* its hooks directory, not inside it. ADR 0040 §2.7
-     * wants a disposition stated for every file, and a mapping rule that happens to be wrong for
+     * not follow it: Codex's config sits *beside* its hooks directory, not inside it. The ownership census
+     * needs a disposition for every file, and a mapping rule that happens to be wrong for
      * half its entries is not a census.
      *
      * Claude is deliberately absent, and not for want of permission: we do reconcile the target's
@@ -119,12 +119,12 @@ const
      * Every other hook resolves through `$(git rev-parse --show-toplevel)` — the TARGET root — which
      * is right for anything that ships into the seat. It is wrong for a verifier: a checker copied
      * into the seat is subject to the staleness it reports, and, decisively, **cannot detect its own
-     * absence**. A peer seat audited on neomjs/neo-agent-brain#317 came back with all nine hook files
-     * gone; a verifier shipped as a tenth would have been gone with them and reported nothing.
+     * absence**. If every projected hook is gone, a verifier shipped beside them would also be gone
+     * and report nothing.
      *
      * So these run from the runtime root, and the placeholder exists because that path is per-host:
-     * the manifest is a committed file and cannot hard-code it. ADR 0040 §2.5 independently mandates
-     * the same direction — seat hooks resolve Brain substrate only through `agentosRuntimeRoot`.
+     * the manifest is a committed file and cannot hard-code it. Seat hooks resolve Brain substrate
+     * only through `agentosRuntimeRoot`.
      *
      * The census is closed on purpose. It is the ownership key for these entries
      * ({@link isProjectorOwnedCommand}), and a predicate matching a directory rather than a name
@@ -247,7 +247,6 @@ export function enumerateProjection(runtimeRoot) {
  * no harness the manifest declares (a partial or renamed tree), and a population can only be counted
  * once there is a directory to count it in.
  *
- * Found by @neo-gpt-emmy reviewing #250, whose swapped-root probe drove both arms green.
  * @param {String} runtimeRoot Absolute AgentOS runtime root.
  * @throws {Error} If the root is not a hook source, or declares no projectable artifact at all.
  */
@@ -311,8 +310,8 @@ const ESM_SPECIFIER = /(\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(['"])(\.\.?\/[^'
  *   file. Rewritten, every seat was handed the Brain's copy.
  *
  * Both hooks projected, both ran, neither reported a problem — the failure mode was a *wrong* answer
- * rather than a missing one, which no presence check can see. Found by @neo-gpt-emmy reviewing #250,
- * rendering the real corpus rather than the spec's authored fixtures.
+ * rather than a missing one, which no presence check can see. Render the real corpus to validate
+ * these paths rather than relying only on authored fixtures.
  * @param {String} contents Source text.
  * @param {String} sourceFile Absolute path of the source module.
  * @param {String} runtimeRoot Absolute AgentOS runtime root.
@@ -370,11 +369,10 @@ function readTargetManifest(targetRepoRoot) {
  * `node_modules`. The specifier is not wrong and the rewriter is not at fault; the projector simply
  * had no notion of the one target where §2.3's dependency direction degenerates into self-reference.
  *
- * Measured on `neomjs/neo-agent-brain#79`: all three Claude hooks threw
- * `Cannot find package 'neo.mjs'` in the Engine seat and **exited 0**, so the fleet's only
- * wake-arming path had been dead since 2026-08-24 with every surface green. Brain- and
- * institution-resident seats carry `node_modules/neo.mjs` and were never affected — one `ls`
- * discriminates, which is why this is target-aware rather than a change to the rule.
+ * An Engine checkout without this mapping makes Claude hooks throw
+ * `Cannot find package 'neo.mjs'`. Hooks can still exit 0 after that failure, so a successful
+ * process exit does not prove wake arming. Brain- and institution-resident seats carry
+ * `node_modules/neo.mjs`; only the Engine target needs this self-reference mapping.
  *
  * **Why the `exports` refusal.** Without an `exports` map a subpath specifier *is* a file path
  * beneath the package root, so `<name>/src/Neo.mjs` → `<targetRoot>/src/Neo.mjs` is the identical
@@ -426,7 +424,7 @@ export function rewriteSelfPackageSpecifiers(contents, targetRepoRoot) {
  * structurally cannot see.
  *
  * Tracked files are never orphans: an authored file that happens to sit in a projection directory
- * (the Engine-only `rgReplaceGuardHook.mjs` carve-out of ADR 0040 §2.7 is exactly this) is
+ * (such as the Engine-only `rgReplaceGuardHook.mjs`) is
  * somebody's content, not our leftover.
  * @param {String} runtimeRoot Absolute AgentOS runtime root.
  * @param {String} targetRepoRoot Absolute target repository root.
@@ -475,7 +473,7 @@ export function findOrphans(runtimeRoot, targetRepoRoot) {
  *
  * This runs the acceptance direction the rest of the projector cannot: every other condition starts
  * from a source and asks where it landed. This one starts from what the *harness will actually
- * execute* and asks whether anything placed it. That is the failure #250 was filed for — a seat
+ * execute* and asks whether anything placed it. The failure this catches is a seat
  * config naming `.kimi-code/hooks/turnPresenceHook.mjs` while no repository contained the file, and
  * the harness reporting nothing at all when it silently ran none of it.
  *
@@ -538,7 +536,7 @@ export function declaredHookCommands(runtimeRoot, targetRepoRoot) {
  * @summary Compares what is projected against what should be, without writing anything.
  *
  * Reports five independent conditions, because they need different answers and different repairs.
- * Each maps to one #250 acceptance mutant:
+ * Each has a distinct acceptance control:
  *
  * | field | AC mutant | meaning |
  * |---|---|---|
@@ -1120,14 +1118,13 @@ export function reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot, wri
 /**
  * @summary Writes the projected paths into the target's `.git/info/exclude`, inside a managed block.
  *
- * ADR 0040 §2.7 gives the Engine's tracked ignore rules authority over these paths, and a companion
- * leaf (neomjs/neo#17892) adds them there. This is the *general* case underneath that: a target may
+ * The Engine's tracked ignore rules cover its projected paths. This is the *general* case: a target may
  * be any tenant repository whose `.gitignore` we have no right to edit. `.git/info/exclude` is
  * per-checkout and untracked, so the projector can own it outright.
  *
  * **Untracked is not ignored.** Without these patterns `git status` reports every projection in
  * every seat forever, and a permanently dirty tree trains people to stop reading it — which is how
- * a real stray file goes unnoticed. Acceptance for #250 is a clean `git status`, not merely
+ * a real stray file goes unnoticed. Acceptance is a clean `git status`, not merely
  * untracked artifacts.
  *
  * Exact paths, not directory globs: a glob would also hide a genuinely new authored file dropped
@@ -1137,24 +1134,77 @@ export function reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot, wri
  * @param {Object} options
  * @param {String[]} options.targets Repository-relative projected paths.
  * @param {String} options.targetRepoRoot Absolute target repository root.
+ * @param {String} [options.blockOwner='projectSeatHooks'] Distinct managed block owner.
+ * @param {String} [options.blockLabel] Managed block description.
+ * @param {String} [options.resolvedGitDir] Prevalidated ordinary-clone Git directory.
  * @returns {String} Absolute path of the exclude file written.
  */
-export function writeLocalExclude({targetRepoRoot, targets}) {
+export function writeLocalExclude({targetRepoRoot, targets, blockOwner = 'projectSeatHooks',
+    blockLabel = 'generated seat hooks, do not edit inside this block', resolvedGitDir}) {
+    if (typeof blockOwner !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(blockOwner) ||
+        typeof blockLabel !== 'string' || /[\r\n]/.test(blockLabel)) {
+        throw new Error('writeLocalExclude: invalid managed-block identity')
+    }
+
+    const gitDir = resolvedGitDir
+        ? validateResolvedGitDir(targetRepoRoot, resolvedGitDir)
+        : execFileSync('git', ['rev-parse', '--absolute-git-dir'], {cwd: targetRepoRoot, encoding: 'utf8'}).trim();
+
     const
-        gitDir      = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {cwd: targetRepoRoot, encoding: 'utf8'}).trim(),
         excludeFile = path.join(gitDir, 'info', 'exclude'),
-        begin       = '# BEGIN projectSeatHooks — generated seat hooks, do not edit inside this block',
-        end         = '# END projectSeatHooks',
+        begin       = `# BEGIN ${blockOwner} — ${blockLabel}`,
+        end         = `# END ${blockOwner}`,
         block       = [begin, ...[...targets].sort().map(target => `/${target}`), end].join('\n'),
         existing    = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '',
-        pattern     = new RegExp(`\\n?${begin}[\\s\\S]*?${end}\\n?`),
-        stripped    = existing.replace(pattern, '\n'),
-        next        = `${stripped.replace(/\n+$/, '')}\n\n${block}\n`;
+        lines       = existing.split(/\r?\n/),
+        beginLines  = lines.filter(line => line === `# BEGIN ${blockOwner}` || line.startsWith(`# BEGIN ${blockOwner} `) ||
+            line.startsWith(`# BEGIN ${blockOwner}—`) || line.startsWith(`# BEGIN ${blockOwner}:`)),
+        endLines    = lines.filter(line => line === end || line.startsWith(`${end} `) || line.startsWith(`${end}—`) || line.startsWith(`${end}:`));
+
+    if (beginLines.length !== endLines.length || beginLines.length > 1 ||
+        beginLines.length === 1 && (beginLines[0] !== begin || endLines[0] !== end)) {
+        throw new Error(`writeLocalExclude: refusing malformed managed block '${blockOwner}'`)
+    }
+
+    let stripped = existing;
+    if (beginLines.length === 1) {
+        const
+            start = existing.indexOf(begin),
+            endStart = existing.indexOf(end, start + begin.length),
+            endAfter = endStart + end.length;
+
+        if (start < 0 || endStart < 0) throw new Error(`writeLocalExclude: refusing malformed managed block '${blockOwner}'`);
+
+        const
+            removeStart = start > 0 && existing[start - 1] === '\n' ? start - 1 : start,
+            removeEnd = existing[endAfter] === '\r' && existing[endAfter + 1] === '\n' ? endAfter + 2
+                : existing[endAfter] === '\n' ? endAfter + 1
+                    : endAfter;
+
+        stripped = existing.slice(0, removeStart) + '\n' + existing.slice(removeEnd)
+    }
+
+    const next = `${stripped.replace(/\n+$/, '')}\n\n${block}\n`;
 
     fs.mkdirSync(path.dirname(excludeFile), {recursive: true});
     fs.writeFileSync(excludeFile, next.replace(/^\n+/, ''), 'utf8');
 
     return excludeFile
+}
+
+/** @summary Validate the projector's optional pre-resolved Git directory against the ordinary target clone. @private */
+function validateResolvedGitDir(targetRepoRoot, resolvedGitDir) {
+    const
+        root = fs.realpathSync(targetRepoRoot),
+        expected = path.join(root, '.git'),
+        candidate = path.resolve(resolvedGitDir),
+        stat = fs.lstatSync(candidate);
+
+    if (candidate !== expected || !stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error('writeLocalExclude: refusing an unbound or symlinked Git directory')
+    }
+
+    return candidate
 }
 
 /**
@@ -1216,8 +1266,7 @@ export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
     // Preflighted as a dry run rather than discovered after the writes, so the projection stays
     // all-or-nothing. An absent manifest is not a failure and passes here untouched.
     //
-    // Found by @neo-gpt-emmy reviewing #250: the write arm returned normally and `main()` exited 0
-    // after printing "NOT reconciled", so a failed seat wiring was indistinguishable from a good one
+    // Returning normally after printing "NOT reconciled" makes a failed seat wiring indistinguishable from a good one
     // to any caller that checks an exit code.
     const preflight = reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot, write: false});
 
@@ -1287,7 +1336,7 @@ export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
 /**
  * @summary Resolves one required root binding, failing loud when it is absent.
  *
- * ADR 0040 §2.5 forbids `process.cwd()` as a fallback for either root. A projector that defaulted
+ * Neither root may default to `process.cwd()`. A projector that defaulted
  * would write a full set of hooks into whatever directory it happened to start in, and report
  * success doing it.
  * @param {String[]} argv

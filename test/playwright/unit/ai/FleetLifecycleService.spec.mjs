@@ -2685,7 +2685,59 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
             statusOf: () => null
         };
 
-        return {spawn, home, events, calls, table}
+        return {root, spawn, home, events, calls, table}
+    }
+
+    /** A curated Antigravity seat whose reserved admission and process birth are directly observable. */
+    function installAntigravitySeat({rawLaunch = false, admissionState = 'reserved'} = {}) {
+        const
+            root   = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-antigravity-binding-')),
+            spawn  = install({agents: {seat: {
+                id: 'seat', githubUsername: 'neo-opus-ada', harnessType: 'antigravity',
+                metadata: rawLaunch ? {launch: LAUNCH} : {}
+            }}}),
+            home   = path.join(root, 'seat', 'harness', 'antigravity'),
+            events = [],
+            calls  = {activate: [], revoke: []},
+            table  = {alive: true, startedAt: STARTED_AT, admissionState, generation: ADMISSION.generation};
+
+        fs.mkdirSync(home, {recursive:true});
+        const spawnProcess = (...args) => {
+            const child = spawn(...args), kill = child.kill.bind(child);
+            child.kill = signal => {
+                events.push(`signal ${signal}`);
+                return kill(signal)
+            };
+            return child
+        };
+        spawnProcess.calls = spawn.calls;
+        FleetLifecycleService.spawnFn = spawnProcess;
+        FleetLifecycleService.instanceRoot = root;
+        FleetLifecycleService.harnessBinaryPaths = {antigravity: process.execPath};
+        FleetLifecycleService.processInspectFn = () => table.alive
+            ? {startedAt: table.startedAt, command: `${process.execPath} --user-data-dir=${home}`}
+            : null;
+        FleetLifecycleService.processSignalFn = (pid, signal) => {
+            if (!table.alive) throw Object.assign(new Error('no such process'), {code: 'ESRCH'})
+        };
+        FleetLifecycleService.launchAdmission = {
+            activate(options) {
+                events.push('activate');
+                calls.activate.push(options);
+                table.admissionState = 'active';
+                return this.statusOf('seat')
+            },
+            revoke(id, reason, options = {}) {
+                events.push(`revoke ${reason}`);
+                calls.revoke.push({id, reason, ...options});
+                if (!options.generation || options.generation === table.generation) table.admissionState = 'revoked';
+                return true
+            },
+            statusOf() { return {state: table.admissionState, generation: table.generation} },
+            holds() { return true }
+        };
+
+        return {root, spawn: spawnProcess, home, events, calls, table}
     }
 
     const ADMISSION = {generation: 'generation-1', plan: [{key: 'memory-core', enabled: true}]};
@@ -2832,6 +2884,264 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
         expect(spawn.calls).toHaveLength(1);
         expect(await github(grants[1]['github-workflow'])).toMatchObject({outcome: 'admitted', env: {GH_TOKEN: FIXTURE_PAT}});
         await FleetLifecycleService.stop('seat')
+    });
+
+    test('Antigravity binding rejects non-curated seats and missing or mismatched reserved generations before spawn', () => {
+        const cases = [
+            {setup: installDesktopSeat, admission: ADMISSION, reason: /curated Antigravity/},
+            {setup: () => installAntigravitySeat({rawLaunch: true}), admission: ADMISSION, reason: /curated Antigravity/},
+            {setup: () => installAntigravitySeat({admissionState: 'none'}), admission: ADMISSION, reason: /reserved launch generation/},
+            {setup: installAntigravitySeat, admission: null, reason: /reserved launch generation/}
+        ];
+
+        for (const {setup, admission, reason} of cases) {
+            const fixture = setup(), signal = FleetLifecycleService.beginStart('seat');
+
+            try {
+                expect(() => FleetLifecycleService.start('seat', {
+                    bindAntigravityProject: () => {},
+                    launchAdmission: admission,
+                    startSignal: signal
+                })).toThrow(reason);
+                expect(fixture.spawn.calls).toEqual([]);
+            } finally {
+                FleetLifecycleService.finishStart('seat', signal);
+                fixture.root && fs.rmSync(fixture.root, {recursive:true, force:true})
+            }
+        }
+    });
+
+    test('a curated Antigravity binding gets an immutable original lease descriptor before activation', async () => {
+        const fixture = installAntigravitySeat(), signal = FleetLifecycleService.beginStart('seat');
+        let descriptor;
+
+        try {
+            const result = await FleetLifecycleService.start('seat', {
+                cwd:'/srv/checkouts/antigravity',
+                startSignal:signal,
+                launchAdmission:ADMISSION,
+                bindAntigravityProject: async original => {
+                    descriptor = original;
+                    fixture.events.push('bind');
+                    expect(Object.isFrozen(original)).toBe(true);
+                    expect(Object.keys(original).sort()).toEqual(['cwd', 'id', 'instanceHome', 'pid', 'pidStartedAt', 'signal']);
+                    expect(original).toMatchObject({id:'seat', pid:fixture.spawn.calls[0].child.pid, cwd:'/srv/checkouts/antigravity', signal});
+                    expect(original.pidStartedAt).toBe(STARTED_AT);
+                    expect(fs.existsSync(path.join(original.instanceHome, '.neo-fleet-seat-lease.json'))).toBe(true);
+                    expect(fixture.table.admissionState, 'the generation remains reserved during binding').toBe('reserved');
+                    expect(fixture.calls.activate).toEqual([])
+                }
+            });
+
+            expect(descriptor).toBeDefined();
+            expect(fixture.events).toEqual(['bind', 'activate']);
+            expect(fixture.calls.activate).toHaveLength(1);
+            expect(result).toMatchObject({id:'seat', state:'running', pid:descriptor.pid});
+        } finally {
+            FleetLifecycleService.finishStart('seat', signal);
+            await FleetLifecycleService.stop('seat');
+            fs.rmSync(fixture.root, {recursive:true, force:true})
+        }
+    });
+
+    test('a failed binding revokes before stopping and does not expose callback error text', async () => {
+        const fixture = installAntigravitySeat(), signal = FleetLifecycleService.beginStart('seat');
+        let failure;
+
+        try {
+            try {
+                await FleetLifecycleService.start('seat', {
+                    startSignal:signal,
+                    launchAdmission:ADMISSION,
+                    bindAntigravityProject:async () => {
+                        fixture.events.push('bind');
+                        throw new Error('private endpoint and credential diagnostic')
+                    }
+                });
+            } catch (error) {
+                failure = error
+            }
+
+            expect(failure?.message).toMatch(/Antigravity project binding failed/);
+            expect(failure?.message).not.toContain('private endpoint');
+            expect(failure?.cause?.message).toBe('private endpoint and credential diagnostic');
+            expect(fixture.events.slice(0, 3)).toEqual(['bind', 'revoke start-failed', 'signal SIGTERM']);
+            expect(fixture.calls.activate).toEqual([]);
+            expect(fs.existsSync(path.join(fixture.home, '.neo-fleet-seat-lease.json'))).toBe(false)
+        } finally {
+            FleetLifecycleService.finishStart('seat', signal);
+            await FleetLifecycleService.stop('seat');
+            fs.rmSync(fixture.root, {recursive:true, force:true})
+        }
+    });
+
+    test('binding cleanup failure still cannot activate the reserved generation', async () => {
+        const fixture = installAntigravitySeat(), signal = FleetLifecycleService.beginStart('seat'),
+              ordinaryStop = FleetLifecycleService.stop;
+
+        FleetLifecycleService.stop = async id => {
+            fixture.events.push('stop unresolved');
+            return {success:false, id, state:'running', cleanupUnresolved:true}
+        };
+
+        try {
+            await expect(FleetLifecycleService.start('seat', {
+                startSignal:signal,
+                launchAdmission:ADMISSION,
+                bindAntigravityProject:async () => { throw new Error('binding refused') }
+            })).rejects.toThrow(/cleanup .* unresolved/);
+            expect(fixture.events).toEqual(['revoke start-failed', 'stop unresolved']);
+            expect(fixture.calls.activate).toEqual([])
+        } finally {
+            FleetLifecycleService.stop = ordinaryStop;
+            FleetLifecycleService.finishStart('seat', signal);
+            await FleetLifecycleService.stop('seat');
+            fs.rmSync(fixture.root, {recursive:true, force:true})
+        }
+    });
+
+    test('Stop during Antigravity binding revokes before ordinary cleanup and never activates', async () => {
+        const
+            fixture = installAntigravitySeat(),
+            signal = FleetLifecycleService.beginStart('seat'),
+            entered = Promise.withResolvers(),
+            gate = Promise.withResolvers();
+        let start;
+
+        try {
+            start = FleetLifecycleService.start('seat', {
+                startSignal:signal,
+                launchAdmission:ADMISSION,
+                bindAntigravityProject: async descriptor => {
+                    fixture.events.push('bind');
+                    expect(Object.isFrozen(descriptor)).toBe(true);
+                    entered.resolve();
+                    await gate.promise
+                }
+            });
+            await entered.promise;
+
+            const stopped = await FleetLifecycleService.stop('seat');
+            expect(stopped.success).toBe(true);
+            expect(fixture.events.slice(0, 3)).toEqual(['bind', 'revoke stop-requested', 'signal SIGTERM']);
+
+            gate.resolve();
+            expect(await start).toMatchObject({id:'seat', state:'stopped', canceled:true, pid:null});
+            expect(fixture.calls.activate).toEqual([]);
+        } finally {
+            gate.resolve();
+            FleetLifecycleService.finishStart('seat', signal);
+            await FleetLifecycleService.stop('seat');
+            fs.rmSync(fixture.root, {recursive:true, force:true})
+        }
+    });
+
+    test('a reused process birth after Antigravity binding revokes admission without signaling the new process', async () => {
+        const
+            fixture = installAntigravitySeat(),
+            signal = FleetLifecycleService.beginStart('seat'),
+            entered = Promise.withResolvers(),
+            gate = Promise.withResolvers();
+
+        try {
+            const start = FleetLifecycleService.start('seat', {
+                startSignal:signal,
+                launchAdmission:ADMISSION,
+                bindAntigravityProject: async () => { entered.resolve(); await gate.promise }
+            });
+            await entered.promise;
+            const originalChild = FleetLifecycleService.processes.get('seat').child;
+            fixture.table.startedAt = 'Thu Oct  1 10:00:00 2026';
+            gate.resolve();
+
+            await expect(start).rejects.toThrow(/Antigravity project binding failed/);
+            expect(fixture.events).toEqual(['revoke process-exited']);
+            expect(originalChild.signals).toEqual([]);
+            expect(fixture.calls.activate).toEqual([]);
+            expect(fs.existsSync(path.join(fixture.home, '.neo-fleet-seat-lease.json'))).toBe(false)
+        } finally {
+            gate.resolve();
+            FleetLifecycleService.finishStart('seat', signal);
+            await FleetLifecycleService.stop('seat');
+            fs.rmSync(fixture.root, {recursive:true, force:true})
+        }
+    });
+
+    test('an unidentifiable Antigravity PID is held and never signaled', async () => {
+        const
+            fixture = installAntigravitySeat(),
+            signal = FleetLifecycleService.beginStart('seat'),
+            entered = Promise.withResolvers(),
+            gate = Promise.withResolvers();
+        let record;
+
+        try {
+            const start = FleetLifecycleService.start('seat', {
+                startSignal:signal,
+                launchAdmission:ADMISSION,
+                bindAntigravityProject:async () => { entered.resolve(); await gate.promise }
+            });
+            await entered.promise;
+            record = FleetLifecycleService.processes.get('seat');
+            FleetLifecycleService.processInspectFn = () => null;
+            gate.resolve();
+
+            await expect(start).rejects.toMatchObject({code:'ANTIGRAVITY_BINDING_FAILED'});
+            expect(fixture.events).toEqual(['revoke start-failed']);
+            expect(record.child.signals).toEqual([]);
+            expect(record).toMatchObject({state:'failed', ownershipUnresolved:true});
+            expect(FleetLifecycleService.processes.get('seat')).toBe(record);
+            expect(() => FleetLifecycleService.start('seat')).toThrow(/cannot be identified/);
+            expect(fixture.calls.activate).toEqual([]);
+            fixture.table.alive = false;
+            FleetLifecycleService.refreshAdoptedSeat(record);
+            await record.finalizePromise;
+            expect(record.ownershipUnresolved).toBe(false);
+            expect(record.state).toBe('stopped');
+            expect(record.child).toBeNull()
+        } finally {
+            gate.resolve();
+            FleetLifecycleService.finishStart('seat', signal);
+            if (record) {
+                fixture.table.alive = false;
+                await FleetLifecycleService.finalizeExitedProcess(record, {code:null, signal:null})
+            }
+            fs.rmSync(fixture.root, {recursive:true, force:true})
+        }
+    });
+
+    test('a replaced lifecycle record never makes failure cleanup stop the newer record', async () => {
+        const
+            fixture = installAntigravitySeat(),
+            signal = FleetLifecycleService.beginStart('seat'),
+            entered = Promise.withResolvers(),
+            gate = Promise.withResolvers();
+        let originalRecord;
+        const replacement = {id:'seat', state:'running', pid:99999, child:{signals:[]}};
+
+        try {
+            const start = FleetLifecycleService.start('seat', {
+                startSignal:signal,
+                launchAdmission:ADMISSION,
+                bindAntigravityProject:async () => { entered.resolve(); await gate.promise }
+            });
+            await entered.promise;
+            originalRecord = FleetLifecycleService.processes.get('seat');
+            FleetLifecycleService.processes.set('seat', replacement);
+            gate.resolve();
+
+            await expect(start).rejects.toMatchObject({code:'ANTIGRAVITY_BINDING_FAILED'});
+            expect(fixture.events).toEqual(['revoke start-failed']);
+            expect(replacement.state).toBe('running');
+            expect(originalRecord.child.signals).toEqual([]);
+            expect(fixture.calls.activate).toEqual([])
+        } finally {
+            gate.resolve();
+            if (originalRecord) FleetLifecycleService.processes.set('seat', originalRecord);
+            FleetLifecycleService.finishStart('seat', signal);
+            await FleetLifecycleService.stop('seat');
+            fs.rmSync(fixture.root, {recursive:true, force:true})
+        }
     });
 
     test('the seat-home queue cancels only its own non-Desktop Start before preparation or wake arming', async () => {

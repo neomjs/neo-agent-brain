@@ -12,6 +12,7 @@ import {
     WORKSPACE_ARTIFACT_STATES,
     applyManagedAgentWorkspacePlan,
     createManagedAgentWorkspacePlan,
+    convergeAntigravityWorkspaceMcp,
     mergeAntigravityWorkspaceMcpConfig,
     prepareAntigravityArtifacts,
     prepareManagedAgentWorkspace
@@ -23,6 +24,8 @@ import {isUnmodifiedGeneration, stampWakeEnvelopePlant} from '../../../../../../
 import {deriveNodeRuntimeEnv}                           from '../../../../../../ai/services/fleet/deriveNodeRuntimeEnv.mjs';
 import {importSeatMemory}                               from '../../../../../../ai/services/fleet/seatMemoryImport.mjs';
 import {startAgentProvisioned}                          from '../../../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {excludeManagedWorkspaceFiles}                  from '../../../../../../ai/services/fleet/excludeManagedWorkspaceFiles.mjs';
+import {registerAntigravityProject}                     from '../../../../../../ai/services/fleet/antigravityProjectRegistry.mjs';
 
 // Temp-filesystem contract tests: the real artifact writer runs, while checkout hydration is an
 // injected recorder. `hydrateCurrentWorktree` has its own real temp-checkout suite; this spec proves
@@ -2264,6 +2267,26 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect(first.projectMcpAllowRules).toHaveLength(MCP_SERVERS.length);
         for (const artifact of first.artifacts) expect((await fs.stat(artifact.path)).mode & 0o777).toBe(0o600);
 
+        const checkout = path.join(root, 'native-checkout'), registryDirectory = path.join(root, 'native-projects');
+        await fs.mkdir(checkout);
+        await fs.mkdir(registryDirectory);
+        const gitEnv = {PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null'};
+        expect(spawnSync('git', ['-c', 'init.templateDir=', 'init', '-q', checkout], {env: gitEnv}).status).toBe(0);
+        const exclusion = excludeManagedWorkspaceFiles({targetRepoRoot: checkout});
+        await convergeAntigravityWorkspaceMcp({targetRepoRoot: checkout, instanceHome: options.instanceHome,
+            mcpServers: first.mcpServers, exclusion});
+        const registration = {registryDirectory, profileDirectory: options.instanceHome, projectRoot: checkout,
+            name: 'managed fixture', projectMcpAllowRules: first.projectMcpAllowRules};
+        const project = await registerAntigravityProject(registration);
+        expect((await registerAntigravityProject(registration)).projectId).toBe(project.projectId);
+        expect(JSON.parse(await read(path.join(checkout, '.agents/mcp_config.json'))).mcpServers).toEqual(first.mcpServers);
+        const status = spawnSync('git', ['-C', checkout, 'status', '--short', '--untracked-files=all'], {env: gitEnv, encoding: 'utf8'});
+        expect(status.status).toBe(0);
+        expect(status.stdout).toBe('');
+        const projectText = await read(path.join(registryDirectory, `${project.projectId}.json`));
+        for (const grant of Object.values(launchAdmission.grants)) expect(projectText).not.toContain(grant);
+        expect(projectText).not.toContain(launchAdmission.identity);
+
         const second = await prepareAntigravityArtifacts(options);
         expect(second.artifacts.map(({status}) => status)).toEqual([WORKSPACE_ARTIFACT_STATES.MATCH, WORKSPACE_ARTIFACT_STATES.MATCH]);
 
@@ -2296,6 +2319,59 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect(updated.mcpServers['neo-mjs-local-helper']).toEqual({command: 'custom'});
         expect(Object.keys(updated.mcpServers).filter(name => name.startsWith('neo-mjs-')).sort())
             .toEqual([...Object.keys(desired), 'neo-mjs-local-helper'].sort());
+    });
+
+    test('Antigravity workspace publication requires exclusion before effects and preserves resident changes', async () => {
+        const targetRepoRoot = path.join(root, 'antigravity-checkout'),
+              instanceHome = path.join(instanceRoot, 'antigravity-profile'),
+              file = path.join(targetRepoRoot, '.agents/mcp_config.json'),
+              servers = Object.fromEntries(MCP_SERVERS.map(({key}) => [`neo-mjs-${key}`, {command: '/usr/bin/false', disabled: true}])),
+              opts = {targetRepoRoot, instanceHome, mcpServers: servers};
+        await expect(convergeAntigravityWorkspaceMcp(opts)).rejects.toThrow(/exclusion proof/);
+        await expect(fs.stat(targetRepoRoot)).rejects.toMatchObject({code: 'ENOENT'});
+        await fs.mkdir(targetRepoRoot);
+        await fs.mkdir(instanceHome, {recursive: true});
+        const exclusion = {repoRoot: targetRepoRoot, paths: ['.agents/mcp_config.json'], verified: true};
+        await expect(convergeAntigravityWorkspaceMcp({...opts, exclusion: {...exclusion, repoRoot: root}}))
+            .rejects.toThrow(/exclusion proof/);
+
+        const created = await convergeAntigravityWorkspaceMcp({...opts, exclusion});
+        expect(created[0].status).toBe(WORKSPACE_ARTIFACT_STATES.CREATED);
+        const resident = {...JSON.parse(await read(file)), note: 'resident-owned'};
+        resident.mcpServers['neo-mjs-custom'] = {command: 'custom'};
+        const residentText = JSON.stringify(resident);
+        await fs.writeFile(file, residentText);
+        const matched = await convergeAntigravityWorkspaceMcp({...opts, exclusion});
+        expect(matched[0].status).toBe(WORKSPACE_ARTIFACT_STATES.MATCH);
+        expect(await read(file)).toBe(residentText);
+
+        const next = {...servers, 'neo-mjs-memory-core': {command: '/bin/sh', args: ['-p', '-c', 'exit 78']}};
+        const updated = await convergeAntigravityWorkspaceMcp({...opts, exclusion, mcpServers: next});
+        expect(updated[0].status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+        const actual = JSON.parse(await read(file));
+        expect(actual.note).toBe('resident-owned');
+        expect(actual.mcpServers['neo-mjs-custom']).toEqual({command: 'custom'});
+        actual.mcpServers['neo-mjs-memory-core'] = {command: '/resident/override'};
+        const divergence = JSON.stringify(actual);
+        await fs.writeFile(file, divergence);
+        await expect(convergeAntigravityWorkspaceMcp({...opts, exclusion})).rejects.toThrow(/divergent Neo rows/);
+        expect(await read(file)).toBe(divergence);
+    });
+
+    test('Antigravity workspace publication refuses symlinked receipt without touching its target', async () => {
+        const targetRepoRoot = path.join(root, 'antigravity-checkout'),
+              instanceHome = path.join(instanceRoot, 'antigravity-profile'),
+              foreign = path.join(root, 'foreign.json'),
+              mcpServers = Object.fromEntries(MCP_SERVERS.map(({key}) => [`neo-mjs-${key}`, {disabled: true}]));
+        await fs.mkdir(targetRepoRoot);
+        await fs.mkdir(instanceHome, {recursive: true});
+        await fs.writeFile(foreign, 'preserve');
+        await fs.symlink(foreign, path.join(instanceHome, '.neo-fleet-antigravity-workspace.json'));
+        await expect(convergeAntigravityWorkspaceMcp({targetRepoRoot, instanceHome, mcpServers,
+            exclusion: {verified: true, repoRoot: targetRepoRoot, paths: ['.agents/mcp_config.json']}}))
+            .rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+        expect(await read(foreign)).toBe('preserve');
+        await expect(fs.stat(path.join(targetRepoRoot, '.agents'))).rejects.toMatchObject({code: 'ENOENT'});
     });
 
     test('required arguments fail loud before any hydration', async () => {

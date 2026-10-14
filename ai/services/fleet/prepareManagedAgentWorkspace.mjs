@@ -12,7 +12,7 @@ import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/c
 import {applyCodexSeatSettings, parseTomlTableHeader} from './codexConfigToml.mjs';
 import {deriveNodeRuntimeEnv}                         from './deriveNodeRuntimeEnv.mjs';
 import {KIMI_SEAT_SERVERS, generateKimiSeatConfig}    from './generateKimiSeatConfig.mjs';
-import {generateAntigravityMcpFiles}                   from './generateAntigravityMcpFiles.mjs';
+import {ANTIGRAVITY_MCP_WORKSPACE_FILE, generateAntigravityMcpFiles} from './generateAntigravityMcpFiles.mjs';
 import {
     deriveAgentInstanceHome,
     deriveAgentMemoryDir
@@ -1543,6 +1543,61 @@ export function mergeAntigravityWorkspaceMcpConfig(source, desiredServers, recor
     Object.assign(parsed.mcpServers, desired);
 
     return JSON.stringify(parsed, null, 2) + '\n'
+}
+
+/**
+ * @summary Publish neutral MCP rows only after the host's exact checkout exclusion/tracked-file proof.
+ * The receipt owns the canonical row projection, so unrelated workspace customizations remain editable.
+ * @param {Object} options Explicit checkout/profile, generated rows, and host exclusion receipt.
+ * @returns {Promise<Object[]>} Workspace and optional projection-receipt observations.
+ */
+export async function convergeAntigravityWorkspaceMcp({targetRepoRoot, instanceHome, mcpServers, exclusion, fileSystem = fs}) {
+    const relativePath = ANTIGRAVITY_MCP_WORKSPACE_FILE;
+    if (!path.isAbsolute(targetRepoRoot || '') || !path.isAbsolute(instanceHome || '') ||
+        exclusion?.verified !== true || exclusion.repoRoot !== path.resolve(targetRepoRoot) ||
+        !isDeepStrictEqual(exclusion.paths, [relativePath])) {
+        throw unsupported('Antigravity workspace MCP needs an exact host Git exclusion proof before writing')
+    }
+
+    const filePath = path.join(targetRepoRoot, relativePath),
+          receiptPath = path.join(instanceHome, '.neo-fleet-antigravity-workspace.json'),
+          adapter = 'antigravity';
+    await assertNoSymlinkSegments({rootPath: targetRepoRoot, targetPath: filePath, fileSystem, label: 'Antigravity workspace MCP'});
+    await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: receiptPath, fileSystem, label: 'Antigravity workspace receipt'});
+    const existing = await fileSystem.readFile(filePath, 'utf8').catch(error => {
+        if (error?.code === 'ENOENT') return null;
+        throw error
+    });
+    let owned = {};
+    if (existing !== null) {
+        try {
+            const bag = JSON.parse(existing).mcpServers;
+            owned = Object.fromEntries(Object.entries(bag || {}).filter(([name]) => ANTIGRAVITY_MCP_NAMES.has(name)))
+        } catch {
+            throw transportDivergence(filePath, 'Antigravity workspace MCP', 'invalid JSON')
+        }
+    }
+    const receipt = await readTransportReceipt({receiptPath, adapter, filePath, fileSystem}),
+          recorded = receipt?.projectionSha256 === hashProjection(owned) ? owned : {},
+          desired = mergeAntigravityWorkspaceMcpConfig(existing, mcpServers, recorded),
+          status = existing === null ? WORKSPACE_ARTIFACT_STATES.CREATED
+              : isDeepStrictEqual(canonicalize(owned), canonicalize(mcpServers))
+                  ? WORKSPACE_ARTIFACT_STATES.MATCH : WORKSPACE_ARTIFACT_STATES.UPDATED,
+          artifacts = [{path: filePath, status, ownedKeys: 'canonical Antigravity MCP rows'}];
+
+    if (status !== WORKSPACE_ARTIFACT_STATES.MATCH) {
+        await fileSystem.mkdir(path.dirname(filePath), {recursive: true});
+        await assertNoSymlinkSegments({rootPath: targetRepoRoot, targetPath: filePath, fileSystem, label: 'Antigravity workspace MCP'});
+        if (existing === null) {
+            await fileSystem.writeFile(filePath, desired, {encoding: 'utf8', flag: 'wx', mode: 0o600})
+        } else {
+            await publishTextAtomically({filePath, content: desired, fileSystem})
+        }
+        artifacts.push(await convergeTransportReceipt({
+            receiptPath, adapter, filePath, projectionSha256: hashProjection(mcpServers), fileSystem, instanceHome
+        }))
+    }
+    return artifacts
 }
 
 /**

@@ -651,16 +651,27 @@ class FleetLifecycleService extends Base {
      * @param {Object} [opts.gitIdentity] `{name, email}` the seat commits as, injected as author and committer
      *     under the four reserved `GIT_AUTHOR_*` / `GIT_COMMITTER_*` slots.
      * @param {AbortSignal} [opts.startSignal] The pending managed attempt's lifecycle-owned Stop fence.
-     * @param {Object} [opts.launchAdmission] `{generation, plan, owners}`: a Claude Desktop seat's reserved
-     *     launch admission, its bound MCP plan, and `owners.pat` / `owners.plane`, the owners Start selected for
-     *     the seat's PAT and plane credential. Once the seat is launched and leased, the generation is activated
-     *     and bound to the launched process. The credentials reach its children only through those owners,
-     *     never from the environment injected here; a lease that fails revokes it.
-     * @returns {Object} status (see {@link status}).
+     * @param {Function} [opts.bindAntigravityProject] Trusted, curated Antigravity-only Start callback. When present,
+     *     it runs after the app-bundle process is leased and before its reserved MCP generation activates; this
+     *     callback path returns a Promise while every other harness keeps the synchronous status shape.
+     * @param {Object} [opts.launchAdmission] `{generation, plan, owners}`: a reserved app-bundle seat's launch
+     *     admission, its bound MCP plan, and `owners.pat` / `owners.plane`, the owners Start selected for the
+     *     seat's credentials. The generation activates only after the seat is leased; Antigravity may first
+     *     await its trusted project-binding callback. Credentials reach children only through those owners,
+     *     never from the environment injected here; a failed Start revokes the exact generation.
+     * @returns {Object|Promise<Object>} status (see {@link status}); the trusted Antigravity binding path is async.
      */
     start(id, opts = {}) {
+        const bindAntigravityProject = opts.bindAntigravityProject ?? null;
+        if (bindAntigravityProject !== null && typeof bindAntigravityProject !== 'function') {
+            throw new Error('FleetLifecycleService.start: Antigravity project binding callback is invalid.')
+        }
+
         if (opts.startSignal?.aborted) return this.canceledStart(id);
-        if (this.isRunning(id)) return this.status(id);
+        if (this.isRunning(id)) {
+            if (bindAntigravityProject) throw new Error('FleetLifecycleService.start: Antigravity project binding requires a new Start.');
+            return this.status(id)
+        }
 
         const priorRecord = this.processes.get(id);
 
@@ -678,6 +689,26 @@ class FleetLifecycleService extends Base {
         const agent = this.getRegistry().getDefinition(id);
         if (!agent) throw new Error(`FleetLifecycleService.start: unknown agent '${id}'.`);
 
+        if (bindAntigravityProject) {
+            const
+                signal = opts.startSignal,
+                generation = opts.launchAdmission?.generation,
+                admission = this.getLaunchAdmission().statusOf?.(id);
+
+            if (agent.harnessType !== 'antigravity' || agent.metadata?.launch ||
+                !SURVIVING_HARNESS_TYPES.has(agent.harnessType)) {
+                throw new Error('FleetLifecycleService.start: project binding is only available to curated Antigravity seats.')
+            }
+            if (!signal || typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function' ||
+                typeof signal.removeEventListener !== 'function' || !this.pendingStarts.get(id)?.has(signal)) {
+                throw new Error('FleetLifecycleService.start: Antigravity project binding requires its registered managed Start signal.')
+            }
+            if (typeof generation !== 'string' || !generation.trim() || !Array.isArray(opts.launchAdmission?.plan) ||
+                admission?.state !== 'reserved' || admission.generation !== generation) {
+                throw new Error('FleetLifecycleService.start: Antigravity project binding requires the matching reserved launch generation.')
+            }
+        }
+
         const agentIdentity = typeof agent.githubUsername === 'string'
             ? agent.githubUsername.trim().replace(/^@/, '')
             : '';
@@ -692,8 +723,16 @@ class FleetLifecycleService extends Base {
                 ? this.resolveOpenCodeOwnerDirectory(opts.cwd, id)
                 : opts.cwd,
             serverPassword  = curatedOpenCode ? generateLocalBearerToken() : undefined,
-            launch          = this.resolveLaunch(agent, {...opts, cwd, serverPassword}),
+            launchOptions   = {...opts};
+
+        delete launchOptions.bindAntigravityProject;
+
+        const launch = this.resolveLaunch(agent, {...launchOptions, cwd, serverPassword}),
               {command, args, env: launchEnv} = launch;
+
+        if (bindAntigravityProject && !launch.instanceHome) {
+            throw new Error('FleetLifecycleService.start: curated Antigravity has no isolated profile home for project binding.')
+        }
 
         // Env-key contract guard (fail-fast): each reserved class occupies a DISTINCT child-env slot.
         // The PAT + Bridge-token keys are configurable, so a misconfiguration that collides two (e.g.
@@ -1044,27 +1083,166 @@ class FleetLifecycleService extends Base {
             }
 
             // the seat now runs and is leased: its profile rows' grants may admit its MCP children
-            if (opts.launchAdmission) {
-                const
-                    owners = opts.launchAdmission.owners ?? {},
-                    slots  = {
-                        [agent.forge === 'gitlab' ? 'NEO_GITLAB_PAT' : this.credentialEnvVar]: owners.pat,
-                        [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                      : owners.plane
-                    };
-
-                record.admissionGeneration = opts.launchAdmission.generation;
-                this.getLaunchAdmission().activate({
-                    generation: opts.launchAdmission.generation,
-                    agentId   : id,
-                    plan      : opts.launchAdmission.plan,
-                    env       : Object.fromEntries(Object.entries(env).filter(([name]) => !Object.hasOwn(slots, name))),
-                    owners    : Object.fromEntries(Object.entries(slots).filter(([, owner]) => owner)),
-                    probe     : () => this.probeSeat(record)
-                })
+            if (bindAntigravityProject) {
+                return this.finishAntigravityStart({id, agent, record, env, opts, callback: bindAntigravityProject})
             }
+
+            this.activateLaunchAdmission({id, agent, record, env, launchAdmission: opts.launchAdmission});
         }
 
         return this.status(id);
+    }
+
+    /** @summary Activate a reserved generation only after its surviving process has passed Start gates. */
+    activateLaunchAdmission({id, agent, record, env, launchAdmission}) {
+        if (!launchAdmission) return;
+
+        const
+            owners = launchAdmission.owners ?? {},
+            slots  = {
+                [agent.forge === 'gitlab' ? 'NEO_GITLAB_PAT' : this.credentialEnvVar]: owners.pat,
+                [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                      : owners.plane
+            };
+
+        record.admissionGeneration = launchAdmission.generation;
+        this.getLaunchAdmission().activate({
+            generation: launchAdmission.generation,
+            agentId   : id,
+            plan      : launchAdmission.plan,
+            env       : Object.fromEntries(Object.entries(env).filter(([name]) => !Object.hasOwn(slots, name))),
+            owners    : Object.fromEntries(Object.entries(slots).filter(([, owner]) => owner)),
+            probe     : () => this.probeSeat(record)
+        })
+    }
+
+    /**
+     * @summary Finish a curated Antigravity Start only after its trusted project binding succeeds.
+     * The reservation remains reserved across the await. Failure or Stop revokes that exact generation
+     * before ordinary process cleanup; successful activation requires the same tracked live PID/birth.
+     * @param {Object} options
+     * @returns {Promise<Object>} Running status after binding, or a finite canceled Start result.
+     * @private
+     */
+    async finishAntigravityStart({id, agent, record, env, opts, callback}) {
+        const
+            launchAdmission = opts.launchAdmission,
+            generation = launchAdmission.generation,
+            signal = opts.startSignal,
+            descriptor = Object.freeze({
+                id,
+                pid: record.pid,
+                pidStartedAt: record.pidStartedAt,
+                instanceHome: record.instanceHome,
+                cwd: record.cwd,
+                signal
+            });
+        let failureReason = null, failureCause = null;
+
+        try {
+            if (signal.aborted) {
+                failureReason = LAUNCH_ADMISSION_REASONS.STOP_REQUESTED
+            } else {
+                await callback(descriptor);
+
+                if (signal.aborted) {
+                    failureReason = LAUNCH_ADMISSION_REASONS.STOP_REQUESTED
+                } else if (this.processes.get(id) !== record || record.pid !== descriptor.pid ||
+                    record.pidStartedAt !== descriptor.pidStartedAt) {
+                    failureReason = LAUNCH_ADMISSION_REASONS.START_FAILED
+                } else {
+                    const live = this.probeSeat(record);
+
+                    if (live !== 'live') {
+                        failureReason = live === 'gone' ? LAUNCH_ADMISSION_REASONS.PROCESS_EXITED : LAUNCH_ADMISSION_REASONS.START_FAILED
+                    } else if (record.state !== 'running') {
+                        failureReason = LAUNCH_ADMISSION_REASONS.START_FAILED
+                    } else {
+                        const reservation = this.getLaunchAdmission().statusOf(id);
+
+                        if (reservation?.state !== 'reserved' || reservation.generation !== generation) {
+                            failureReason = LAUNCH_ADMISSION_REASONS.PLAN_CHANGED
+                        } else {
+                            this.activateLaunchAdmission({id, agent, record, env, launchAdmission});
+                            return this.status(id)
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            failureCause = error;
+            failureReason = signal.aborted ? LAUNCH_ADMISSION_REASONS.STOP_REQUESTED : LAUNCH_ADMISSION_REASONS.START_FAILED
+        }
+
+        failureReason ??= LAUNCH_ADMISSION_REASONS.START_FAILED;
+        let revokeFailed = false;
+
+        try {
+            this.getLaunchAdmission().revoke(id, failureReason, {generation})
+        } catch (error) {
+            failureCause ??= error;
+            revokeFailed = true
+        }
+
+        let stopResult = null, cleanupUnresolved = false, cleanupFailed = false;
+
+        if (this.processes.get(id) === record && record.state !== 'stopped') {
+            const ownership = this.probeSeat(record);
+
+            if (ownership === 'gone') {
+                // `gone` includes a PID now owned by a process born later. Finalize our record and
+                // lease without delivering a signal to that unrelated process.
+                try {
+                    await this.finalizeExitedProcess(record, {code: null, signal: null})
+                } catch (error) {
+                    failureCause ??= error;
+                    cleanupFailed = true
+                }
+            } else if (ownership === 'unknown') {
+                // An answering but unidentifiable PID is not safe to signal or call stopped. Hold
+                // this exact record so a later Start cannot replace it while ownership is unclear.
+                this.holdUnidentifiedSeat(record);
+                cleanupUnresolved = true
+            } else {
+                try {
+                    stopResult = await this.stop(id, {cancelPending: false})
+                } catch (error) {
+                    failureCause ??= error;
+                    cleanupFailed = true;
+                    // The refusal below is intentionally bounded; the raw cleanup error is not a UI/status value.
+                }
+            }
+        } else if (record.finalizePromise) {
+            try { await record.finalizePromise } catch (error) {
+                failureCause ??= error
+                cleanupFailed = true
+            }
+        }
+
+        if (record.ownershipUnresolved) {
+            cleanupUnresolved = true
+        } else if (record.state === 'stopped') {
+            cleanupUnresolved = Boolean(record.cleanupUnresolved || stopResult?.cleanupUnresolved)
+        } else {
+            const originalSeat = this.probeSeat(record);
+            cleanupUnresolved = originalSeat !== 'gone' || Boolean(record.cleanupUnresolved || stopResult?.cleanupUnresolved);
+            if (originalSeat === 'live') failureCause ??= new Error('the original Antigravity process is still live after its lifecycle record changed')
+        }
+
+        cleanupUnresolved ||= revokeFailed || cleanupFailed;
+
+        if (cleanupUnresolved) {
+            const error = new Error(`FleetLifecycleService.start: Antigravity project binding failed; cleanup for agent '${id}' is unresolved.`,
+                failureCause ? {cause: failureCause} : undefined);
+            error.code = 'ANTIGRAVITY_BINDING_FAILED';
+            throw error
+        }
+
+        if (signal.aborted) return this.canceledStart(id);
+
+        const error = new Error('FleetLifecycleService.start: Antigravity project binding failed; the seat was stopped before admission activation.',
+            failureCause ? {cause: failureCause} : undefined);
+        error.code = 'ANTIGRAVITY_BINDING_FAILED';
+        throw error
     }
 
     /**
@@ -1724,12 +1902,14 @@ class FleetLifecycleService extends Base {
     /**
      * @summary Re-prove an adopted seat on each read: there is no child `exit` event to announce it. A
      * seat proven gone is finalized; one that answers but cannot be identified is held (see
-     * {@link holdUnidentifiedSeat}); a held seat identified again runs as before.
+     * {@link holdUnidentifiedSeat}); a held seat identified again runs as before. This also rechecks
+     * an owned process held by a failed native Start, so its unresolved ownership can later clear.
      * @param {Object|undefined} record
      * @private
      */
     refreshAdoptedSeat(record) {
-        if (!record?.adopted || record.adoptedStop || (record.state !== 'running' && !record.ownershipUnresolved)) return;
+        if (!record || (!record.adopted && !record.ownershipUnresolved) || record.adoptedStop ||
+            (record.state !== 'running' && !record.ownershipUnresolved)) return;
 
         const seat = this.probeSeat(record);
 
