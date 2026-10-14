@@ -1,7 +1,7 @@
 import {randomUUID}                                                             from 'node:crypto';
 import fs                                                                       from 'fs-extra';
 import path                                                                     from 'node:path';
-import {acquireFileLease}                                                       from '../../daemons/shared/fileLease.mjs';
+import {acquireFileLease, readFileLeaseHolder}                                  from '../../daemons/shared/fileLease.mjs';
 import {writeFileAtomicSync}                                                    from '../shared/atomicFileWrite.mjs';
 import {LAUNCH_ADMISSION_REASONS as REASONS, LAUNCH_ADMISSION_STATES as STATES} from '../../../src/fleet/contract/launchAdmission.mjs';
 import {isRuntimeGenerationPin}                                                 from './runtimeGeneration.mjs';
@@ -176,7 +176,7 @@ export function holdLaunchAdmissionHandoff({
     const fingerprint   = JSON.stringify(observed.state);
     const lease         = acquireLease({dir: directory, filename: 'issuer.lock', owner: 'fleet-launch-admission',
         fs: fileSystem, isHeldFresh, onCorrupt: 'refuse'});
-    let closed = false;
+    let closed = false, released = false;
 
     /** @summary Rechecks the same custody and proof under exclusion immediately before each host mutation. */
     function assertCurrent() {
@@ -189,12 +189,31 @@ export function holdLaunchAdmissionHandoff({
         if (!current?.handoffProved || JSON.stringify(current.state) !== fingerprint) throw refused('handoff-changed');
     }
 
-    /** @summary Releases only this guard's lease; the successor still owns consuming the handoff. */
+    /**
+     * @summary Confirms this guard's lease is gone before the host starts its successor.
+     * The shared release is best-effort and bounded. Contention or unreadable ownership refuses;
+     * the caller must not open the app. After this installer exits, normal stale-owner acquisition
+     * can recover its leftover lease without deleting another owner's lock.
+     * @returns {Boolean} True only after this owner's lease is observed absent or replaced.
+     */
     function release() {
-        if (!closed) {
-            closed = true;
-            lease.release();
+        if (released) return true;
+        closed = true;
+        lease.release();
+        try {
+            const before = fileSystem.lstatSync(lease.lockPath, {bigint: true});
+            if (!before.isFile() || before.uid !== BigInt(uid) || before.mode & 0o022n) throw refused('update-release-unproved');
+            const holder = readFileLeaseHolder(lease.lockPath, fileSystem);
+            const after  = fileSystem.lstatSync(lease.lockPath, {bigint: true});
+            if (!holder || holder.ownerToken === lease.ownerToken ||
+                ['dev', 'ino', 'uid', 'mode', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key] !== after[key])) {
+                throw refused('update-release-unproved');
+            }
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw refused('update-release-unproved');
         }
+        released = true;
+        return true;
     }
     try {
         assertCurrent();

@@ -2,6 +2,8 @@ import {expect, test}                                                           
 import fs                                                                                                        from 'fs-extra';
 import os                                                                                                        from 'node:os';
 import path                                                                                                      from 'node:path';
+import {spawn}                                                                                                   from 'node:child_process';
+import {once}                                                                                                    from 'node:events';
 import {holdLaunchAdmissionHandoff, isAdmissionSnapshot, openLaunchAdmissionJournal, readLaunchAdmissionJournal} from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
 import {writeFileAtomicSync}                                                                                     from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
 import {acquireFileLease}                                                                                        from '../../../../../../ai/daemons/shared/fileLease.mjs';
@@ -315,4 +317,55 @@ test('a successor between inspection and lease acquisition invalidates the guard
     }})).toThrow(/handoff-changed/);
     expect(fs.existsSync(path.join(root, 'issuer.lock'))).toBe(false);
     expect(open().previous).toMatchObject({handoffProved: false, reason: 'unclean-issuer-exit'});
+});
+
+test('contended update release refuses before open and a later process can recover after the installer exits', async () => {
+    const script = `
+        const {openLaunchAdmissionJournal,holdLaunchAdmissionHandoff,isAdmissionSnapshot} = await import('neo-agent-brain/launch-admission-journal');
+        const directory=process.argv[1], snapshot={version:6,generations:[],seats:[]};
+        openLaunchAdmissionJournal({directory,validateSnapshot:isAdmissionSnapshot,emptySnapshot:snapshot}).handoff(snapshot);
+        const guard=holdLaunchAdmissionHandoff({directory});
+        process.send({state:'held'});
+        process.once('message',()=>{
+            let result;
+            try {guard.release();result={state:'released'};}
+            catch(error) {result={state:'refused',reason:error.reason};}
+            process.send(result,()=>process.exit(0));
+        });
+    `;
+    const child    = spawn(process.execPath, ['--input-type=module', '-e', script, root], {stdio: ['ignore', 'pipe', 'pipe', 'ipc']});
+    const exited   = once(child, 'exit');
+    const guardDir = path.join(root, 'issuer.lock.lifecycle-guard');
+    try {
+        expect((await once(child, 'message'))[0]).toEqual({state: 'held'});
+        fs.mkdirSync(guardDir);
+        fs.writeFileSync(path.join(guardDir, 'owner-test-transition'), '');
+        const reply = once(child, 'message');
+        child.send('release');
+        expect((await reply)[0]).toEqual({state: 'refused', reason: 'update-release-unproved'});
+        expect(await exited).toEqual([0, null]);
+        expect(fs.existsSync(path.join(root, 'issuer.lock'))).toBe(true);
+        fs.removeSync(guardDir);
+        const successor = open({validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 6, generations: [], seats: []}});
+        expect(successor.previous.handoffProved).toBe(true);
+    } finally {
+        fs.removeSync(guardDir);
+        if (child.exitCode === null) { child.kill(); await exited; }
+    }
+});
+
+test('update release leaves a different owner untouched and refuses an unreadable lease', () => {
+    open().handoff(snapshot, origin);
+    const guard = holdLaunchAdmissionHandoff({directory: root, validateSnapshot});
+    const file  = path.join(root, 'issuer.lock'), original = fs.readJsonSync(file);
+    fs.writeJsonSync(file, {...original, ownerToken: 'different-fixture-owner'});
+    expect(guard.release()).toBe(true);
+    expect(fs.readJsonSync(file).ownerToken).toBe('different-fixture-owner');
+    fs.removeSync(file);
+    const next = holdLaunchAdmissionHandoff({directory: root, validateSnapshot});
+    fs.writeFileSync(file, '{broken');
+    expect(() => next.release()).toThrow(/update-release-unproved/);
+    expect(() => next.release()).toThrow(/update-release-unproved/);
+    fs.removeSync(file);
+    expect(next.release()).toBe(true);
 });
