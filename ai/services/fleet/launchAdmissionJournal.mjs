@@ -164,9 +164,10 @@ export function openLaunchAdmissionJournal({
             /**
              * @summary Publishes a clean handoff only after the caller awaited endpoint release and
              * froze all authority mutations. No write is permitted after this terminal transition.
+             * A null origin carries no endpoint; the admission consumer refuses active authority without one.
              */
             handoff(snapshot, origin = state.origin) {
-                if (!isOrigin(origin) || validateSnapshot(snapshot) !== true) throw refused('handoff-incomplete');
+                if (origin !== null && !isOrigin(origin) || validateSnapshot(snapshot) !== true) throw refused('handoff-incomplete');
                 const next = {...state, snapshot, origin, phase: 'handoff', handoff: randomUUID()};
                 publish(statePath, next);
                 state = next;

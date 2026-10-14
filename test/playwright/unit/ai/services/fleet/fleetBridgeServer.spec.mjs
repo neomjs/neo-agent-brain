@@ -76,6 +76,44 @@ test.describe('fleetBridgeServer — the authenticated Fleet ingress', () => {
         server = null
     });
 
+    test('shutdown drain waits for dispatched work even after its client disconnects', async () => {
+        let enter, finish;
+        const entered = new Promise(resolve => enter = resolve);
+        const waiting = new Promise(resolve => finish = resolve);
+        await startServer({dispatch: () => { enter(); return waiting; }});
+        const req = http.request(`${url}/fleet`, {method: 'POST', headers: authHeaders()});
+        req.on('error', () => {});
+        req.end('{}');
+        await entered;
+        req.destroy();
+        let   done  = false;
+        const drain = server.drainFleetRequests(1000).then(() => { done = true; });
+        await new Promise(resolve => setImmediate(resolve));
+        expect(done).toBe(false);
+        finish(createFleetWireResponse(FLEET_WIRE_RESPONSE_STATES.ok, {result: true}));
+        await drain;
+        expect(server.listening).toBe(false);
+    });
+
+    test('a body completed after the drain starts never reaches dispatch', async () => {
+        await startServer();
+        const accepted = new Promise(resolve => server.once('request', resolve));
+        const answer   = new Promise((resolve, reject) => {
+            const req = http.request(`${url}/fleet`, {method: 'POST', headers: authHeaders()}, res => {
+                res.resume(); res.on('end', () => resolve(res.statusCode));
+            });
+            req.on('error', reject);
+            req.write('{"method":');
+            accepted.then(() => {
+                server.drainFleetRequests(1000).catch(reject);
+                req.end('"listAgents"}');
+            });
+        });
+        expect(await answer).toBe(503);
+        await server.drainFleetRequests(1000);
+        expect(seen).toEqual([]);
+    });
+
     test('startup fails closed: no bearer, malformed bearer, unbound viewer, or missing context runner never construct', () => {
         // The refusal is a SYNCHRONOUS throw — no server object, no listener, no promise exists
         // for a misconfigured ingress. That is the fail-closed startup contract itself.

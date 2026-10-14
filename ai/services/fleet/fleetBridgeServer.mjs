@@ -132,6 +132,13 @@ export function startFleetBridgeServer({
         res.end(JSON.stringify(payload))
     };
 
+    const pending   = new Set();
+    let   accepting = true, drain;
+    const draining  = (req, res, origin) => {
+        res.setHeader('Connection', 'close');
+        respond(res, 503, createFleetWireResponse(FLEET_WIRE_RESPONSE_STATES.refused, {error: 'fleet: shutting down'}), origin);
+        req.resume();
+    };
     const server = http.createServer((req, res) => {
         const decision = admit(req);
 
@@ -149,6 +156,8 @@ export function startFleetBridgeServer({
             );
             return req.resume()
         }
+
+        if (!accepting) return draining(req, res, decision.corsOrigin);
 
         if (decision.preflight) {
             const headers = {
@@ -214,6 +223,7 @@ export function startFleetBridgeServer({
         });
 
         req.on('end', async () => {
+            if (!accepting) return draining(req, res, decision.corsOrigin);
             let request;
 
             try {
@@ -233,19 +243,48 @@ export function startFleetBridgeServer({
             // dispatch never throws (it returns a fail-closed envelope), but guard the transport
             // anyway — and never leak a raw error / stack to the client.
             let envelope;
+            const work = Promise.resolve().then(() => runInContext({...viewerContext, source: 'fleet-ingress'}, () => dispatch(request)));
+            pending.add(work);
 
             try {
-                envelope = await runInContext({...viewerContext, source: 'fleet-ingress'}, () => dispatch(request))
+                envelope = await work
             } catch (error) {
                 console.error('[fleet] request dispatch threw:', error);
                 envelope = createFleetWireResponse(FLEET_WIRE_RESPONSE_STATES.operationFailed, {
                     error: 'fleet: request failed'
                 })
+            } finally {
+                pending.delete(work);
             }
 
             respond(res, 200, envelope, decision.corsOrigin)
         })
     });
+
+    /**
+     * @summary Stop accepting control operations and await started dispatches, even if their clients disconnected.
+     * A deadline closes only this owned transport and rejects; it never certifies a clean handoff.
+     * @param {Number} timeoutMs Owner-supplied positive drain budget.
+     * @returns {Promise<void>}
+     */
+    server.drainFleetRequests = timeoutMs => {
+        if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new TypeError('Fleet drain requires a positive timeout.');
+        if (drain) return drain;
+        accepting = false;
+        drain = new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                server.closeAllConnections();
+                reject(new Error('Fleet control requests did not drain before the deadline.'));
+            }, timeoutMs);
+            const closed = new Promise(done => server.close(done));
+            server.closeIdleConnections();
+            Promise.all([closed, Promise.allSettled([...pending])]).then(() => {
+                clearTimeout(timer);
+                resolve();
+            });
+        });
+        return drain;
+    };
 
     return new Promise((resolve, reject) => {
         server.on('error', reject);

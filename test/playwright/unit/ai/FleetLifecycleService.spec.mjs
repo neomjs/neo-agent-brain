@@ -146,6 +146,8 @@ function install({agents = {}, creds = {}} = {}) {
     }
     FleetLifecycleService.processes.clear();
     FleetLifecycleService.installedRuntime = null;
+    McpLaunchAdmissionService.handoffPromise = null;
+    McpLaunchAdmissionService.continuityPhase = 'ready';
     FleetLifecycleService.spawnFn         = spawnStub;
     // Stub the version probe by default so no spec spawns a real auxiliary subprocess; the
     // env-boundary test injects its own recorder.
@@ -2057,14 +2059,17 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 const original = FleetLifecycleService.processes.get('seat');
                 FleetLifecycleService.registry.getBridgeSigningAuthority = () => original.bridgeAuthority;
                 FleetLifecycleService.registry.renewBridgeToken = () => ({token: 'renewed-fixture-token'});
-                FleetLifecycleService.processInspectFn = () => ({startedAt: original.pidStartedAt + (control === 'birth' ? '-other' : ''),
+                FleetLifecycleService.processInspectFn = () => ({startedAt: original.pidStartedAt,
                     command: [spawn.calls[0].command, ...spawn.calls[0].args].join(' ')});
                 FleetLifecycleService.processSignalFn = () => {};
-                await new Promise(resolve => service.httpServer.close(resolve));
-                service.httpServer = service.listening = service.issuerOrigin = null;
-                service.journal.handoff(service.admissionSnapshot(), reserved.issuer);
+                expect(await FleetLifecycleService.handoffRuntimeCustody({verifyRuntime: async () => ({...generation,
+                    compatibility: {launchProtocol: 'neo-fleet-mcp-launch/v1'}})})).toEqual({state: 'handed-off'});
+                service.issuerOrigin = null;
+                service.continuityPhase = 'ready'; service.handoffPromise = null;
                 service.journal = null; service.generations.clear(); service.grants.clear();
                 FleetLifecycleService.processes.clear(); FleetLifecycleService.leasesAdopted = false;
+                if (control === 'birth') FleetLifecycleService.processInspectFn = () => ({startedAt: original.pidStartedAt + '-other',
+                    command: [spawn.calls[0].command, ...spawn.calls[0].args].join(' ')});
                 if (control === 'profile') fs.writeFileSync(path.join(home, 'claude_desktop_config.json'), JSON.stringify({mcpServers: {}}));
                 FleetLifecycleService.openRuntimeCustody({directory});
                 const result = await FleetLifecycleService.recoverRuntimeCustody({verifyRuntime: async () => control === 'runtime' ? null : ({...generation,

@@ -135,8 +135,9 @@ test.beforeEach(() => {
     service.revocations.clear();
     service.unattributed.length = 0;
     service.pendingTimeoutMs = 30000;
-    service.proofTimeoutMs   = 10000
+    service.proofTimeoutMs   = 10000;
     service.continuityPhase = 'ready';
+    service.handoffPromise = null;
 });
 
 test.describe('McpLaunchAdmissionService — original generation recovery', () => {
@@ -188,11 +189,12 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
         service.activate({generation: reservation.generation, agentId: 'seat', plan, env: START_ENV,
             owners: {GH_TOKEN: owner}, probe: () => state.observed});
         if (revoke) service.revoke('seat', 'stop-requested');
-        await closeListener();
-        if (clean) service.journal.handoff(service.admissionSnapshot(), reservation.issuer);
-        else service.journal.close();
+        if (clean) await service.handoff({verifySeats: async () => {}});
+        else { await closeListener(); service.journal.close(); }
+        service.httpServer = service.listening = service.issuerOrigin = null;
         service.journal = null;
         service.generations.clear(); service.grants.clear();
+        service.continuityPhase = 'ready'; service.handoffPromise = null;
         const previous    = service.openJournal({directory: custody, readSeatStarts: () => state.seats});
         const restoreSeat = async () => ({capabilities: reservation.grants, owners: {GH_TOKEN: owner}, residentInputs: {}, probe: () => state.observed});
         return {state, registry, reservation, previous, restoreSeat, custody};
@@ -315,6 +317,67 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
         service.journalFailed = false;
         fs.removeSync(directory);
     });
+
+    test('clean handoff awaits in-flight proofs and endpoint release; the draining request receives no env', async () => {
+        service.openJournal({directory});
+        const started = deferred(), finish = deferred(), owners = makeOwners();
+        owners.owners.GH_TOKEN.prove = () => { started.resolve(); return finish.promise; };
+        const reservation = await activeSeat({owners: owners.owners});
+        const grant       = parseLaunchCapability(reservation.grants['github-workflow']);
+        const request     = createLaunchRequest({grant, server: 'github-workflow', identity: LOGIN});
+        const response    = fetch(reservation.issuer + LAUNCH_ADMISSION_PATH, {method: 'POST',
+            headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)}).then(result => result.json());
+        await started.promise;
+        const handoff = service.handoff({verifySeats: async () => {}});
+        expect(service.handoff({verifySeats: () => { throw Error('must not run twice'); }})).toBe(handoff);
+        await new Promise(resolve => setImmediate(resolve));
+        expect(fs.readJsonSync(path.join(directory, 'issuer.json')).phase).toBe('active');
+        finish.resolve({verdict: 'proved'});
+        expect(verifyLaunchResponse(grant.secret, request, await response)).toMatchObject({outcome: 'refused', code: 'issuer-unavailable'});
+        expect(await handoff).toEqual({state: 'handed-off'});
+        expect(service.httpServer).toBeNull();
+        expect(fs.readJsonSync(path.join(directory, 'issuer.json')).phase).toBe('handoff');
+    });
+
+    test('an empty issuer hands off without inventing an endpoint or any grant', async () => {
+        if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+        service.httpServer = service.listening = service.issuerOrigin = null;
+        service.openJournal({directory});
+        await service.handoff({verifySeats: async () => {}});
+        expect(fs.readJsonSync(path.join(directory, 'issuer.json'))).toMatchObject({phase: 'handoff', origin: null});
+        service.journal = null; service.continuityPhase = 'ready'; service.handoffPromise = null;
+        service.openJournal({directory});
+        expect(await service.recover({registry: {}, restoreSeat: () => { throw Error('no seat exists'); }})).toEqual([]);
+        expect(service.httpServer).toBeNull();
+        expect(service.grants.size).toBe(0);
+    });
+
+    test('a lost terminal handoff write never publishes a clean transition', async () => {
+        service.openJournal({directory, writeAtomic(file, content, options) {
+            if (path.basename(file) === 'issuer.json' && JSON.parse(content).phase === 'handoff') throw Error('lost terminal write');
+            return writeFileAtomicSync(file, content, options);
+        }});
+        await activeSeat();
+        await expect(service.handoff({verifySeats: async () => {}})).rejects.toThrow('durable-handoff');
+        expect(fs.readJsonSync(path.join(directory, 'issuer.json')).phase).toBe('active');
+        expect(service.httpServer).toBeNull();
+        await service.closeUnclean();
+    });
+
+    for (const failure of ['pending', 'input-owner', 'deadline']) {
+        test(`failed handoff preserves unclean evidence and remains quittable: ${failure}`, async () => {
+            service.openJournal({directory});
+            if (failure === 'pending') await service.reserve({agent: seatDefinition()});
+            else await activeSeat();
+            service.proofTimeoutMs = 30;
+            const verifySeats = failure === 'deadline' ? () => new Promise(() => {}) : async () => { throw Error('fixture owner unavailable'); };
+            await expect(service.handoff({verifySeats})).rejects.toThrow('Fleet continuity refused');
+            expect(service.continuityPhase).toBe('unavailable');
+            expect(service.httpServer).toBeNull();
+            expect(fs.readJsonSync(path.join(directory, 'issuer.json')).phase).toBe('active');
+            await expect(service.closeUnclean()).resolves.toBeUndefined();
+        });
+    }
 
     test('reservation, activation and revocation are durable before they return, with hashes instead of secrets', async () => {
         service.openJournal({directory});

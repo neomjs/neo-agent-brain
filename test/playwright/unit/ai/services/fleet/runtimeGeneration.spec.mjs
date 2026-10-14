@@ -76,6 +76,17 @@ test('the producer and reader share one format and preserve the distinct runtime
     expect(() => runtimeGenerationPin({...pin, executable: '/outside/node'})).toThrow(/runtime-binding-invalid/);
 });
 
+test('missing or incompatible launcher protocol refuses a sealed generation', async () => {
+    const input = await fixture(), file = path.join(input.directory, RUNTIME_GENERATION_RECORD);
+    await fs.chmod(file, 0o600);
+    for (const protocol of [undefined, 'unsupported']) {
+        const record = structuredClone(input.record);
+        record.compatibility.launchProtocol = protocol;
+        await fs.writeFile(file, JSON.stringify(record));
+        await expect(readRuntimeGeneration({directory: input.directory})).rejects.toMatchObject({code: 'runtime-compatibility-failed'});
+    }
+});
+
 test('a tampered retained verifier cannot approve another changed payload byte', async () => {
     const input = await fixture();
     await fs.chmod(input.retainedVerifier, 0o644);

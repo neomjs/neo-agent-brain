@@ -1409,6 +1409,9 @@ class FleetRegistryService extends Base {
     /** @returns {String} @private */
     registryPath() { return path.join(this.getDataDir(), 'registry.json'); }
 
+    /** @summary Durable launch custody beside the registry that owns its seat definitions and signing key. */
+    admissionDirectory() { return path.join(this.getDataDir(), 'launch-admission'); }
+
     /** @returns {String} @private */
     credentialsPath() { return path.join(this.getDataDir(), 'credentials.enc'); }
 

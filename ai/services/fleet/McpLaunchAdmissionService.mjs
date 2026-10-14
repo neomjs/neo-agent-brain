@@ -170,6 +170,9 @@ class McpLaunchAdmissionService extends Base {
     /** @member {String} continuityPhase Boot recovery excludes new Starts until its evidence is settled. @private */
     continuityPhase = 'ready'
 
+    /** @member {Promise|null} handoffPromise One terminal handoff attempt per issuer. @private */
+    handoffPromise = null
+
     /** @member {Function|null} readSeatStarts Projection supplied by the existing lifecycle owner. @private */
     readSeatStarts = null
 
@@ -224,6 +227,9 @@ class McpLaunchAdmissionService extends Base {
         }
         try {
             if (previous.handoffProved) {
+                if (previous.origin === null && previous.snapshot.generations.some(row => row.state === STATES.ACTIVE)) {
+                    throw new Error('Active launch authority has no original issuer origin.');
+                }
                 for (const saved of previous.snapshot.generations) {
                     const generation = this.generations.get(saved.agentId);
                     if (saved.state !== STATES.ACTIVE) continue;
@@ -248,7 +254,7 @@ class McpLaunchAdmissionService extends Base {
                         // One unproved survivor cannot authorize itself or discard another seat's evidence.
                     }
                 }
-                await this.listen({origin: previous.origin});
+                if (previous.origin !== null) await this.listen({origin: previous.origin});
             }
             this.journal.assertOwner();
             for (const generation of this.generations.values()) {
@@ -318,6 +324,75 @@ class McpLaunchAdmissionService extends Base {
             }
             return [row.key, {...row, secret: grant.secret, args: [...target.args], env: {}, owned, resident, required}];
         }));
+    }
+
+    /**
+     * @summary Seal clean succession only after survivor/input checks, in-flight proofs and endpoint release.
+     * The process owner must stop accepting control mutations before calling. A failed attempt closes
+     * custody without a handoff; ordinary process Quit remains the caller's choice, never blocked here.
+     * @param {Object} options
+     * @param {Function} options.verifySeats Validates every surviving seat against its original Start.
+     * @returns {Promise<Object>} Coalesced terminal disposition, without grants or input values.
+     */
+    handoff({verifySeats}) {
+        return this.handoffPromise ??= this.performHandoff(verifySeats);
+    }
+
+    /** @summary One bounded terminal transition; only the owner-facing handoff method starts it. @private */
+    async performHandoff(verifySeats) {
+        if (!this.journal || this.journalFailed || this.continuityPhase !== 'ready' || typeof verifySeats !== 'function') {
+            throw new Error('Fleet continuity refused: custody-unavailable.');
+        }
+        this.continuityPhase = 'draining';
+        let timer, stage = 'survivor-validation';
+        const deadline = new Promise((resolve, reject) => {
+            timer = setTimeout(() => reject(new Error('Fleet continuity refused: deadline.')), this.proofTimeoutMs);
+        });
+        const bounded = work => Promise.race([work, deadline]);
+        const release = () => new Promise((resolve, reject) => {
+            if (!this.httpServer) return resolve();
+            const server = this.httpServer;
+            server.close(error => {
+                if (error) return reject(error);
+                this.httpServer = this.listening = null;
+                resolve();
+            });
+            server.closeIdleConnections();
+        });
+        try {
+            if ([...this.generations.values()].some(row => row.state === STATES.RESERVED)) {
+                stage = 'pending-start';
+                throw new Error('Fleet continuity refused: pending-start.');
+            }
+            if ([...this.generations.values()].some(row => row.state === STATES.ACTIVE) &&
+                (!this.httpServer?.address() || this.issuerOrigin !== `http://127.0.0.1:${this.httpServer.address().port}`)) {
+                stage = 'endpoint-binding';
+                throw new Error('Fleet continuity refused: endpoint-binding.');
+            }
+            await bounded(Promise.resolve().then(verifySeats));
+            stage = 'proof-drain';
+            await bounded(Promise.all([...this.generations.values()].flatMap(row => [...row.proofs.values()])));
+            this.persistAdmission();
+            stage = 'endpoint-release';
+            await bounded(release());
+            stage = 'durable-handoff';
+            this.journal.handoff(this.admissionSnapshot(), this.issuerOrigin);
+            this.continuityPhase = 'handed-off';
+            return {state: 'handed-off'};
+        } catch {
+            this.continuityPhase = 'unavailable';
+            this.grants.clear();
+            this.journal.close();
+            if (this.httpServer) {
+                const server = this.httpServer;
+                this.httpServer = this.listening = null;
+                server.closeAllConnections();
+                await new Promise(resolve => server.close(resolve));
+            }
+            throw new Error(`Fleet continuity refused: ${stage}.`);
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     /**
@@ -877,11 +952,26 @@ class McpLaunchAdmissionService extends Base {
      */
     destroy() {
         try {
-            this.generations.forEach(generation => this.revoke(generation.agentId, REASONS.REPLACED))
+            if (this.continuityPhase !== 'handed-off') {
+                this.generations.forEach(generation => this.revoke(generation.agentId, REASONS.REPLACED))
+            }
         } finally {
             this.httpServer?.close();
             this.journal?.close();
             super.destroy()
+        }
+    }
+
+    /** @summary Release this process's endpoint and lease without claiming a clean transition. */
+    async closeUnclean() {
+        if (this.continuityPhase === 'handed-off') return;
+        this.continuityPhase = 'unavailable';
+        this.grants.clear();
+        this.journal?.close();
+        if (this.httpServer) {
+            const server = this.httpServer;
+            this.httpServer = this.listening = null;
+            await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
         }
     }
 

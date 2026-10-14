@@ -1972,15 +1972,7 @@ class FleetLifecycleService extends Base {
         };
         const dispositions = await admission.recover({registry, restoreSeat: async (start, saved) => {
             if (!await verifyPin(start)) throw Error();
-            const record       = this.processes.get(start.agentId);
-            const capabilities = await readGrants({managedRoot: fs.realpathSync(this.getInstanceRoot()),
-                instanceHome: record.instanceHome, binding: start.profile});
-            const owners = Object.fromEntries(Object.entries(saved.credentialBindings).map(([name, binding]) =>
-                [name, restoreLaunchCredentialOwner(binding, {registry, tenantService})]));
-            const residentInputs = Object.fromEntries(Object.entries(saved.residentBindings).map(([key, source]) =>
-                [key, createResidentMcpInputOwner({binding: source.binding, names: source.names, read: () => this.readResidentMcpInput(key)})]));
-            const probe = () => this.matchesRuntimeStart(record, start) && !record.runtimeUnresolved ? this.probeSeat(record) : 'unknown';
-            return {capabilities, owners, residentInputs, probe};
+            return this.readOriginalRuntimeInputs(start, saved, {tenantService, readGrants});
         }});
         for (const {start} of previous?.snapshot.seats ?? []) await verifyPin(start);
         admission.persistAdmission();
@@ -1988,15 +1980,83 @@ class FleetLifecycleService extends Base {
     }
 
     /**
+     * @summary Read the original profile and reconstruct its input owners for either handoff or recovery.
+     * @param {Object} start Immutable Start record.
+     * @param {Object} saved Admission metadata from the same Start.
+     * @param {Object} options Existing tenant service and optional custody reader; fresh Starts may be checked at handoff.
+     * @returns {Promise<Object>} Transient capabilities and callbacks, never persistable credentials.
+     * @private
+     */
+    async readOriginalRuntimeInputs(start, saved, {tenantService, readGrants = recoverDesktopLaunchGrants, adopted = true} = {}) {
+        const record = this.processes.get(start.agentId), registry = this.getRegistry();
+        if (!record || !this.matchesRuntimeStart(record, start, {adopted})) throw Error();
+        const capabilities = await readGrants({managedRoot: fs.realpathSync(this.getInstanceRoot()),
+            instanceHome: record.instanceHome, binding: start.profile});
+        const owners = Object.fromEntries(Object.entries(saved.credentialBindings).map(([name, binding]) =>
+            [name, restoreLaunchCredentialOwner(binding, {registry, tenantService})]));
+        const residentInputs = Object.fromEntries(Object.entries(saved.residentBindings).map(([key, source]) =>
+            [key, createResidentMcpInputOwner({binding: source.binding, names: source.names, read: () => this.readResidentMcpInput(key)})]));
+        const probe = () => this.processes.get(start.agentId) === record && this.matchesRuntimeStart(record, start, {adopted}) &&
+            !record.runtimeUnresolved ? this.probeSeat(record) : 'unknown';
+        return {capabilities, owners, residentInputs, probe};
+    }
+
+    /**
+     * @summary Verify surviving runtime pins and current original-owner inputs before the issuer seals succession.
+     * Pending Starts, legacy seats and unproved inputs refuse handoff without preventing ordinary Quit.
+     * @param {Object} options Existing tenant owner, with isolated-test seams for runtime/profile reads.
+     * @returns {Promise<Object>} The admission owner's terminal handoff disposition.
+     */
+    handoffRuntimeCustody({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverDesktopLaunchGrants} = {}) {
+        const admission = this.getLaunchAdmission();
+        return admission.handoff({verifySeats: async () => {
+            if (this.pendingStarts.size) throw Error();
+            this.adoptLeasedSeats();
+            const verified = new Map();
+            for (const record of this.processes.values()) {
+                if (['stopped', 'exited'].includes(record.state) && !record.ownershipUnresolved && !record.cleanupUnresolved) continue;
+                const start = record.runtimeStart;
+                if (!start || record.runtimeUnresolved || !this.matchesRuntimeStart(record, start, {adopted: false}) || this.probeSeat(record) !== 'live') throw Error();
+                const key = JSON.stringify(start.runtime);
+                if (!verified.has(key)) verified.set(key, Promise.resolve().then(() => verifyRuntime({directory: start.runtime.directory})));
+                const runtime = await verified.get(key);
+                if (!runtime || !isDeepStrictEqual(runtimeGenerationPin(runtime), start.runtime) ||
+                    runtime.compatibility?.launchProtocol !== LAUNCH_ADMISSION_PROTOCOL) throw Error();
+                if (start.admissionGeneration) {
+                    const saved = admission.admissionSnapshot().generations.find(row => row.id === start.admissionGeneration);
+                    if (!saved || !['active', 'revoked'].includes(saved.state)) throw Error();
+                    if (saved.state === 'revoked') continue;
+                    const recovered = await this.readOriginalRuntimeInputs(start, saved, {tenantService, readGrants, adopted: false});
+                    const servers   = admission.recoverServers({saved, start, recovered});
+                    for (const server of servers.values()) {
+                        if (server.state === 'revoked') continue;
+                        const resident = recovered.residentInputs[server.key], env = resident ? resident.read() : {};
+                        if (env === null || server.resident.some(name => server.required.includes(name) && typeof env[name] !== 'string')) throw Error();
+                        const values = server.owned.map(name => recovered.owners[name].resolve());
+                        if (values.some(value => typeof value !== 'string' || !value.trim())) throw Error();
+                        const port       = typeof env.NEO_NL_PORT === 'string' && /^[1-9][0-9]{0,4}$/.test(env.NEO_NL_PORT) ? Number(env.NEO_NL_PORT) : null;
+                        const generation = admission.generations.get(start.agentId);
+                        const proofs     = await Promise.all(server.owned.map((name, index) => admission.prove(generation, name, values[index], port)));
+                        if (proofs.some(row => row.verdict !== 'proved') || resident && !resident.matches()) throw Error();
+                    }
+                    if (recovered.probe() !== 'live') throw Error();
+                }
+            }
+        }});
+    }
+
+    /**
      * @summary Corroborates the immutable Start against the lease-derived record and current registry identity.
      * @param {Object} record Record adopted through the existing lifecycle owner.
      * @param {Object} start Original durable Start, never derived from a writable lease.
+     * @param {Object} [options]
+     * @param {Boolean} [options.adopted=true] Recovery requires adoption; handoff may inspect the original child.
      * @returns {Boolean}
      * @private
      */
-    matchesRuntimeStart(record, start) {
+    matchesRuntimeStart(record, start, {adopted = true} = {}) {
         const agent = this.getRegistry().getDefinition(start.agentId);
-        return !!agent && !agent.metadata?.launch && start.leaseRequired && record.adopted && record.state === 'running' &&
+        return !!agent && !agent.metadata?.launch && start.leaseRequired && (record.adopted || !adopted && record.child) && record.state === 'running' &&
             !record.ownershipUnresolved && !record.cleanupUnresolved &&
             agent.harnessType === start.harnessType && agent.githubUsername?.trim().replace(/^@/, '') === start.identity &&
             ['pid', 'pidStartedAt', 'startedAt', 'cwd', 'instanceHome', 'launchCommand', 'launchInterpreter', 'profileArg', 'harnessType']

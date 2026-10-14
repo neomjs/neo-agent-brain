@@ -1,7 +1,10 @@
-import {createHash}       from 'node:crypto';
-import {createReadStream} from 'node:fs';
-import fs                 from 'node:fs/promises';
-import path               from 'node:path';
+import {createHash}                from 'node:crypto';
+import {createReadStream}          from 'node:fs';
+import fs                          from 'node:fs/promises';
+import path                        from 'node:path';
+import {LAUNCH_ADMISSION_PROTOCOL} from './mcpLaunchAdmission.mjs';
+
+export {LAUNCH_ADMISSION_PROTOCOL};
 
 /**
  * @module ai/services/fleet/runtimeGeneration
@@ -178,8 +181,9 @@ export async function readRuntimeGeneration({directory, platform = process.platf
         throw refusal('runtime-record-invalid', 'generation identity or manifest header is inconsistent')
     }
     if (record.compatibility?.platform !== platform || record.compatibility?.arch !== arch ||
-        record.compatibility?.electronVersion !== record.identity[3]) {
-        throw refusal('runtime-compatibility-failed', 'generation is not verified for this host and Electron version')
+        record.compatibility?.electronVersion !== record.identity[3] ||
+        record.compatibility?.launchProtocol !== LAUNCH_ADMISSION_PROTOCOL) {
+        throw refusal('runtime-compatibility-failed', 'generation is not verified for this host, Electron version and launch protocol')
     }
     const result  = runtimeGenerationDescriptor(directory, record);
     const payload = await inventoryRuntimePayload(path.join(directory, PAYLOAD));
