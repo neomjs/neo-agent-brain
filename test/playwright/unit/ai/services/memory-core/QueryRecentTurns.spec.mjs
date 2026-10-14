@@ -1182,7 +1182,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
 
             const foreignLegacy = await read({agentIdentity: identity, memorySharing: 'legacy'});
             expect(foreignLegacy.count).toBe(0);
-            expect(foreignLegacy.hint).toContain('legacy reads only rows owned by this caller or shared;');
+            expect(foreignLegacy.hint).toContain('legacy reads only rows owned by this caller, shared or untagged;');
 
             const foreignTeam = await read({agentIdentity: identity, memorySharing: 'team'});
             expect(foreignTeam.turns.map(turn => turn.id)).toEqual([id]);
@@ -1398,16 +1398,19 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         expect((await read(tombstoned)).turns).toEqual([]);
     });
 
-    test('explicit graph unavailability is an error, while default recovery keeps its empty fallback', async () => {
+    test('graph unavailability fails a shared read, explicit or implicit, while default recovery keeps its empty fallback', async () => {
         const db = GraphService.db;
         try {
             GraphService.db = null;
             const read = options => RequestContextService.run({userId: 'sharing-caller', agentIdentityNodeId: '@sharing-caller'}, () =>
-                MemoryService.queryRecentTurns({agentIdentity: '@sharing-peer', ...options}));
+                MemoryService.queryRecentTurns(options));
             expect(await read({})).toMatchObject({count: 0, turns: [], nextCursor: null});
-            const explicit = await read({memorySharing: 'team'});
-            expect(explicit).toMatchObject({code: 'RECENT_TURNS_ERROR'});
-            expect(explicit.message).toContain('unavailable');
+            // Another identity's summaries are a shared read on this team deployment, with or without the parameter.
+            for (const options of [{agentIdentity: '@sharing-peer', memorySharing: 'team'}, {agentIdentity: '@sharing-peer'}]) {
+                const shared = await read(options);
+                expect(shared).toMatchObject({code: 'RECENT_TURNS_ERROR'});
+                expect(shared.message).toContain('unavailable');
+            }
         } finally {
             GraphService.db = db;
         }
