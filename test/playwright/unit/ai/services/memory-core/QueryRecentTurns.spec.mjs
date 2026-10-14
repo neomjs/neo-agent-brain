@@ -1153,6 +1153,42 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         expect(shared.turns.every(turn => turn.prompt === undefined && turn.response === undefined && turn.thought === undefined)).toBe(true);
     });
 
+    test('an empty owner-scoped page for another identity carries a hint, never a scope refusal (#1019)', async () => {
+        const id   = 'hint-peer-1019', sharedId = 'hint-tenant-mate-1019', identity = '@hint-peer-1019';
+        const seed = (nodeId, agentIdentity, userId) => GraphService.upsertNode({id: nodeId, type: 'AGENT_MEMORY', name: nodeId, description: nodeId,
+            semanticVectorId: nodeId, properties: {agentIdentity, userId, sessionId: 'hint-1019', timestamp: '2032-01-01T00:00:00.000Z', miniSummary: nodeId}});
+        seed(id, identity, 'hint-peer-tenant');
+        seed(sharedId, '@hint-tenant-mate-1019', 'hint-caller-tenant');
+        const read = options => RequestContextService.run({userId: 'hint-caller-tenant', agentIdentityNodeId: '@hint-caller-1019'}, () =>
+            MemoryService.queryRecentTurns({limit: 5, ...options}));
+        try {
+            const foreignPrivate = await read({agentIdentity: identity});
+            expect(foreignPrivate.count).toBe(0);
+            expect(foreignPrivate.scope).toBeUndefined();
+            expect(foreignPrivate.hint).toContain('private reads only rows owned by this caller;');
+            expect(foreignPrivate.hint).toContain("memorySharing 'team'");
+
+            const foreignLegacy = await read({agentIdentity: identity, memorySharing: 'legacy'});
+            expect(foreignLegacy.count).toBe(0);
+            expect(foreignLegacy.hint).toContain('legacy reads only rows owned by this caller or shared;');
+
+            const foreignTeam = await read({agentIdentity: identity, memorySharing: 'team'});
+            expect(foreignTeam.turns.map(turn => turn.id)).toEqual([id]);
+            expect(foreignTeam.hint).toBeUndefined();
+
+            // A tenant-mate's rows share the caller's userId, so the private page is real and needs no hint.
+            const tenantMate = await read({agentIdentity: '@hint-tenant-mate-1019'});
+            expect(tenantMate.turns.map(turn => turn.id)).toEqual([sharedId]);
+            expect(tenantMate.hint).toBeUndefined();
+
+            const own = await read({});
+            expect(own.count).toBe(0);
+            expect(own.hint).toBeUndefined();
+        } finally {
+            for (const nodeId of [id, sharedId]) GraphService.db.storage.db.prepare('DELETE FROM Nodes WHERE id = ?').run(nodeId);
+        }
+    });
+
     test('a widened full/private request refuses before SQL, WAL or content reads', async () => {
         const sqlite  = GraphService.db.storage.db, prepare = sqlite.prepare;
         const pending = MemoryService._readPendingWalRecencyRows, hydrate = MemoryService._hydrateRecentTurnSummaries;
