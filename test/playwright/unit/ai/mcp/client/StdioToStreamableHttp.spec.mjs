@@ -2,6 +2,7 @@ import {expect, test}     from '@playwright/test';
 import {spawn, spawnSync} from 'node:child_process';
 import {once}             from 'node:events';
 import {createServer}     from 'node:http';
+import {createInterface} from 'node:readline';
 import {fileURLToPath}    from 'node:url';
 import {
     bridgeTransports,
@@ -41,6 +42,29 @@ class FakeTransport {
 
     async terminateSession() {
         this.terminated++
+    }
+}
+
+/** @summary Read one bridge protocol response while surfacing premature child exit and bounding hangs. */
+async function readBridgeMessage(lines, child) {
+    let timeout;
+
+    try {
+        return await Promise.race([
+            lines.next().then(({done, value}) => {
+                if (done) throw new Error('Bridge closed stdout before the expected response.');
+
+                return JSON.parse(value)
+            }),
+            once(child, 'close').then(([code]) => {
+                throw new Error(`Bridge exited (${code}) before the expected response.`)
+            }),
+            new Promise((_, reject) => {
+                timeout = setTimeout(() => reject(new Error('Timed out waiting for a bridge response.')), 3000)
+            })
+        ])
+    } finally {
+        clearTimeout(timeout)
     }
 }
 
@@ -171,6 +195,38 @@ test.describe('stdioToStreamableHttp', () => {
         expect(remote.terminated).toBe(1);
         expect(local.closed).toBe(1);
         expect(remote.closed).toBe(1)
+    });
+
+    test('answers discovery locally before initialize and forwards it after a successful initialize', async () => {
+        const
+            errors  = [],
+            local   = new FakeTransport(),
+            remote  = new FakeTransport(),
+            bridge  = await bridgeTransports({localTransport: local, remoteTransport: remote, onError: error => errors.push(error)}),
+            discoverBeforeInitialize = {jsonrpc: '2.0', id: 0, method: 'server/discover', params: {}},
+            initialize = {jsonrpc: '2.0', id: 1, method: 'initialize', params: {}},
+            discoverAfterInitialize = {jsonrpc: '2.0', id: 2, method: 'server/discover', params: {}};
+
+        local.onmessage(discoverBeforeInitialize);
+        await Promise.resolve();
+
+        expect(local.messages).toEqual([{jsonrpc: '2.0', id: 0, error: {code: -32601, message: 'Method not found'}}]);
+        expect(remote.messages).toEqual([]);
+        expect([local.closed, remote.closed]).toEqual([0, 0]);
+
+        local.onmessage(initialize);
+        await Promise.resolve();
+        remote.onmessage({jsonrpc: '2.0', id: 1, result: {protocolVersion: '2025-11-25'}});
+        await Promise.resolve();
+        local.onmessage(discoverAfterInitialize);
+        await Promise.resolve();
+
+        expect(remote.messages).toEqual([initialize, discoverAfterInitialize]);
+        expect(remote.protocolVersion).toBe('2025-11-25');
+        expect(errors).toEqual([]);
+        expect([local.closed, remote.closed]).toEqual([0, 0]);
+
+        await bridge.close()
     });
 
     test('an initialize error consumes the marker before a reused response id', async () => {
@@ -401,6 +457,139 @@ test.describe('stdioToStreamableHttp', () => {
             expect(stderr).not.toContain('remote body echoed');
             expect(stderr.match(/Neo MCP bridge transport failed\./g)).toHaveLength(1)
         } finally {
+            await new Promise(resolve => server.close(resolve))
+        }
+    })
+
+    test('the executable rejects pre-initialize discovery locally then completes an HTTP handshake', async () => {
+        const
+            token = 'inert-loopback-fixture-token',
+            requests = [],
+            server = createServer(async (request, response) => {
+                if (request.method === 'GET') {
+                    response.writeHead(405);
+                    response.end();
+                    return
+                }
+                if (request.method === 'DELETE') {
+                    response.writeHead(200);
+                    response.end();
+                    return
+                }
+                if (request.method !== 'POST') {
+                    response.writeHead(405);
+                    response.end();
+                    return
+                }
+
+                const chunks = [];
+
+                for await (const chunk of request) chunks.push(chunk);
+
+                const message = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : null,
+                      method  = message?.method,
+                      session = request.headers['mcp-session-id'];
+
+                requests.push({method, id: message?.id, session});
+
+                const sendJson = (status, body, headers = {}) => {
+                    response.writeHead(status, {'content-type': 'application/json', ...headers});
+                    response.end(JSON.stringify(body))
+                };
+
+                if (request.headers.authorization !== `Bearer ${token}`) {
+                    sendJson(401, {jsonrpc: '2.0', id: message?.id ?? null, error: {code: -32000, message: 'Unauthorized'}});
+                    return
+                }
+
+                if (method === 'initialize') {
+                    sendJson(200, {
+                        jsonrpc: '2.0', id: message.id,
+                        result: {protocolVersion: '2025-11-25', capabilities: {tools: {}}, serverInfo: {name: 'loopback-fixture', version: '1.0.0'}}
+                    }, {'mcp-session-id': 'inert-session'});
+                    return
+                }
+
+                if (session !== 'inert-session') {
+                    sendJson(400, {jsonrpc: '2.0', id: message?.id ?? null, error: {code: -32000, message: 'Session required'}});
+                    return
+                }
+
+                if (method === 'notifications/initialized') {
+                    response.writeHead(202);
+                    response.end();
+                    return
+                }
+
+                if (method === 'tools/list') {
+                    sendJson(200, {jsonrpc: '2.0', id: message.id, result: {tools: [{name: 'fixture_tool', description: 'Inert loopback tool', inputSchema: {type: 'object', properties: {}}}]}});
+                    return
+                }
+
+                // Model a real Streamable HTTP server that refuses discovery without initialization.
+                sendJson(400, {jsonrpc: '2.0', id: message?.id ?? null, error: {code: -32601, message: 'Method not found'}})
+            });
+
+        await new Promise((resolve, reject) => {
+            server.listen(0, '127.0.0.1', resolve);
+            server.once('error', reject)
+        });
+
+        const
+            endpoint = `http://127.0.0.1:${server.address().port}/mcp`,
+            child = spawn(process.execPath, [BRIDGE_ENTRYPOINT, '--url', endpoint, '--token-env', 'NEO_LOOPBACK_FIXTURE_TOKEN'], {
+                env: {
+                    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !['FORCE_COLOR', 'NO_COLOR'].includes(key))),
+                    NEO_LOOPBACK_FIXTURE_TOKEN: token
+                },
+                stdio: ['pipe', 'pipe', 'pipe']
+            }),
+            stdout = createInterface({input: child.stdout}),
+            lines = stdout[Symbol.asyncIterator]();
+        let stderr = '';
+
+        child.stderr.on('data', chunk => { stderr += chunk });
+
+        try {
+            child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 1, method: 'server/discover', params: {}})}\n`);
+            expect(await readBridgeMessage(lines, child)).toEqual({jsonrpc: '2.0', id: 1, error: {code: -32601, message: 'Method not found'}});
+
+            child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 2, method: 'initialize', params: {protocolVersion: '2025-11-25', capabilities: {}, clientInfo: {name: 'fixture-client', version: '1.0.0'}}})}\n`);
+            expect(await readBridgeMessage(lines, child)).toMatchObject({jsonrpc: '2.0', id: 2, result: {protocolVersion: '2025-11-25'}});
+
+            child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', method: 'notifications/initialized'})}\n`);
+            child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/list', params: {}})}\n`);
+            expect(await readBridgeMessage(lines, child)).toEqual({jsonrpc: '2.0', id: 3, result: {tools: [{name: 'fixture_tool', description: 'Inert loopback tool', inputSchema: {type: 'object', properties: {}}}]}});
+
+            expect(requests.map(({method}) => method)).toEqual(['initialize', 'notifications/initialized', 'tools/list']);
+            expect(requests[0].session).toBeUndefined();
+            expect(requests.slice(1).every(({session}) => session === 'inert-session')).toBe(true);
+            expect(stderr).toBe('');
+
+            child.stdin.end();
+            const [exitCode] = await once(child, 'close');
+            expect(exitCode).toBe(0)
+        } finally {
+            if (child.exitCode === null && child.signalCode === null) {
+                child.stdin.end();
+                let childClosed = false, killTimer;
+                const closed = once(child, 'close').then(() => { childClosed = true });
+
+                await Promise.race([
+                    closed,
+                    new Promise(resolve => {
+                        killTimer = setTimeout(resolve, 1000)
+                    })
+                ]);
+                clearTimeout(killTimer);
+
+                if (!childClosed) {
+                    child.kill('SIGTERM');
+                    await closed
+                }
+            }
+
+            stdout.close();
             await new Promise(resolve => server.close(resolve))
         }
     })
