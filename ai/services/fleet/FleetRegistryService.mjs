@@ -1,6 +1,7 @@
 import crypto                                                   from 'crypto';
 import fs                                                       from 'fs';
 import path                                                     from 'path';
+import {isDeepStrictEqual}                                      from 'node:util';
 import aiConfig                                                 from '../../config.mjs';
 import Base                                                     from 'neo.mjs/src/core/Base.mjs';
 import Observable                                               from 'neo.mjs/src/core/Observable.mjs';
@@ -1050,11 +1051,39 @@ class FleetRegistryService extends Base {
      * @returns {Object} `{token, expiresAt}` — the signed token (caller keeps it; nothing persisted) + its epoch-ms expiry.
      */
     mintBridgeToken(id, {ttlMs}={}) {
+        return this.signBridgeToken(id, this.getSigningKey(), ttlMs ?? this.bridgeTokenTtlMs);
+    }
+
+    /**
+     * @summary Mint a fresh normal-TTL token under the original Start's existing signing authority.
+     * Missing or replaced keys refuse; this path never generates a replacement. The recovery owner
+     * must separately prove that the live Bridge uses this verifier before delivering the token.
+     * @param {String} id The admitted seat id.
+     * @param {Object} authority Original non-secret {@link getBridgeSigningAuthority} descriptor.
+     * @returns {Object} A fresh `{token, expiresAt}`; no token or key is persisted here.
+     */
+    renewBridgeToken(id, authority) {
+        const key = this.getSigningKey({create: false});
+        if (!isDeepStrictEqual(authority, this.bridgeSigningAuthorityFor(key))) {
+            throw new Error('Fleet Bridge signing authority changed; reconnect token refused.');
+        }
+        return this.signBridgeToken(id, key, this.bridgeTokenTtlMs);
+    }
+
+    /**
+     * @summary Sign with the exact key snapshot already selected by the caller.
+     * @param {String} id
+     * @param {Object} key Ed25519 private KeyObject.
+     * @param {Number} ttlMs
+     * @returns {Object}
+     * @private
+     */
+    signBridgeToken(id, key, ttlMs) {
         const
             now       = Date.now(),
-            expiresAt = now + (ttlMs ?? this.bridgeTokenTtlMs),
+            expiresAt = now + ttlMs,
             payload   = Buffer.from(JSON.stringify({agentId: id, expiresAt})),
-            signature = crypto.sign(null, payload, this.getSigningKey()),
+            signature = crypto.sign(null, payload, key),
             token     = `${payload.toString('base64url')}.${signature.toString('base64url')}`;
 
         return {token, expiresAt};
@@ -1303,20 +1332,42 @@ class FleetRegistryService extends Base {
      * {@link getKey} (the AES master key) — this private key never decrypts the PAT/token stores, and
      * only its PUBLIC half ({@link getBridgePublicKey}) is provisioned to the network-facing Bridge.
      * Production SHOULD set the env key. Returns a {@link crypto.KeyObject}.
+     * @param {Object} [options]
+     * @param {Boolean} [options.create=true] False forbids creation when the selected file is absent.
      * @returns {Object}
      * @private
      */
-    getSigningKey() {
-        const envKey = process.env.NEO_FLEET_SIGNING_KEY;
-        if (envKey) return crypto.createPrivateKey(envKey);
+    getSigningKey({create = true} = {}) {
+        if (aiConfig.fleet.signingKey) return crypto.createPrivateKey(aiConfig.fleet.signingKey);
 
         const file = this.signingKeyPath();
         if (fs.existsSync(file)) return crypto.createPrivateKey(fs.readFileSync(file, 'utf8'));
+        if (!create) throw new Error('Fleet Bridge signing authority is missing; no replacement was created.');
 
         this.ensureDataDir();
         const {privateKey} = crypto.generateKeyPairSync('ed25519');
         fs.writeFileSync(file, privateKey.export({type: 'pkcs8', format: 'pem'}), {mode: 0o600});
         return privateKey;
+    }
+
+    /**
+     * @summary Describe the existing signer without creating key material or exposing private bytes.
+     * @returns {Object} Closed source, canonical registry location and public-key fingerprint.
+     */
+    getBridgeSigningAuthority() {
+        return this.bridgeSigningAuthorityFor(this.getSigningKey({create: false}));
+    }
+
+    /** @summary Bind a key snapshot to its resolved owner; this is not a live Bridge verifier proof. @private */
+    bridgeSigningAuthorityFor(key) {
+        if (key.asymmetricKeyType !== 'ed25519') throw new Error('Fleet Bridge signing authority must be Ed25519.');
+        return {
+            version        : 1,
+            source         : aiConfig.fleet.signingKey ? 'config' : 'registry-file',
+            registryRoot   : fs.realpathSync(this.getDataDir()),
+            publicKeySha256: crypto.createHash('sha256')
+                .update(crypto.createPublicKey(key).export({type: 'spki', format: 'der'})).digest('hex')
+        };
     }
 
     /**

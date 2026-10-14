@@ -16,6 +16,8 @@ import fs             from 'fs';
 import os             from 'os';
 import path           from 'path';
 import crypto         from 'crypto';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 
 import Neo                  from 'neo.mjs/src/Neo.mjs';
 import * as core            from 'neo.mjs/src/core/_export.mjs';
@@ -386,6 +388,66 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService', () => {
     // Ed25519 signature over `{agentId, expiresAt}`. The network-facing Bridge verifies with only the
     // PUBLIC key (getBridgePublicKey), holding no secret + no store. Inherits the freshDataDir hooks.
     test.describe('Bridge session token credential class (#13172 — asymmetric-signed)', () => {
+        test('reconnect requires the original existing signer and uses a fresh normal TTL', () => {
+            const service = FleetRegistryService, dir = service.dataDir, file = path.join(dir, 'signing.key');
+            expect(() => service.getBridgeSigningAuthority()).toThrow(/authority is missing/);
+            expect(fs.existsSync(file)).toBe(false);
+            service.mintBridgeToken('seat', {ttlMs: -1});
+            const authority = service.getBridgeSigningAuthority(), before = Date.now();
+            expect(authority).toMatchObject({version: 1, source: 'registry-file', registryRoot: fs.realpathSync(dir)});
+            expect(authority.publicKeySha256).toMatch(/^[a-f0-9]{64}$/);
+            const renewed = service.renewBridgeToken('seat', authority);
+            expect(renewed.expiresAt).toBeGreaterThanOrEqual(before + service.bridgeTokenTtlMs);
+            expect(renewed.expiresAt).toBeLessThanOrEqual(Date.now() + service.bridgeTokenTtlMs);
+            expect(verifyWithPublicKey(renewed.token)).toMatchObject({agentId: 'seat', expiresAt: renewed.expiresAt});
+
+            const original = fs.readFileSync(file);
+            const other = crypto.generateKeyPairSync('ed25519').privateKey.export({type: 'pkcs8', format: 'pem'});
+            fs.writeFileSync(file, other);
+            expect(() => service.renewBridgeToken('seat', authority)).toThrow(/authority changed/);
+            expect(fs.readFileSync(file, 'utf8')).toBe(other);
+            fs.writeFileSync(file, original);
+            expect(() => service.renewBridgeToken('seat', {...authority, source: 'config'})).toThrow(/authority changed/);
+
+            const otherDir = makeDir();
+            fs.copyFileSync(file, path.join(otherDir, 'signing.key'));
+            service.dataDir = otherDir;
+            expect(() => service.renewBridgeToken('seat', authority)).toThrow(/authority changed/);
+            service.dataDir = dir;
+            fs.unlinkSync(file);
+            expect(() => service.renewBridgeToken('seat', authority)).toThrow(/authority is missing/);
+            expect(fs.existsSync(file)).toBe(false);
+        });
+
+        test('configured signing authority resolves through the leaf and creates no key file or child-env export', () => {
+            const {privateKey, publicKey} = crypto.generateKeyPairSync('ed25519');
+            const directory = fs.realpathSync(FleetRegistryService.dataDir);
+            const script = `
+                await import('neo.mjs/src/Neo.mjs');
+                await import('neo.mjs/src/core/_export.mjs');
+                const {default: config} = await import('./ai/config.template.mjs');
+                const {default: registry} = await import('./ai/services/fleet/FleetRegistryService.mjs');
+                const fs = await import('node:fs');
+                const authority = registry.getBridgeSigningAuthority();
+                const renewed = registry.renewBridgeToken('configured-seat', authority);
+                process.stdout.write(JSON.stringify({authority, renewed,
+                    fileCreated: fs.existsSync(registry.signingKeyPath()),
+                    exported: Object.hasOwn(config.exportEnv({includePlaneMembers: true}), 'NEO_FLEET_SIGNING_KEY')}));
+            `;
+            const result = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+                cwd: fileURLToPath(new URL('../../../../', import.meta.url)), encoding: 'utf8',
+                env: {...process.env, UNIT_TEST_MODE: 'true', NEO_FLEET_DATA_DIR: directory,
+                    NEO_FLEET_SIGNING_KEY: privateKey.export({type: 'pkcs8', format: 'pem'})}
+            }));
+            expect(result.authority).toEqual({version: 1, source: 'config', registryRoot: directory,
+                publicKeySha256: crypto.createHash('sha256').update(publicKey.export({type: 'spki', format: 'der'})).digest('hex')});
+            const [payload, signature] = result.renewed.token.split('.').map(value => Buffer.from(value, 'base64url'));
+            expect(crypto.verify(null, payload, publicKey, signature)).toBe(true);
+            expect(JSON.parse(payload)).toMatchObject({agentId: 'configured-seat'});
+            expect(result.fileCreated).toBe(false);
+            expect(result.exported).toBe(false);
+        });
+
         // Verify a minted token the way the Bridge does: Ed25519 over the exact signed payload bytes
         // with the public key, then decode the claims. Returns `{agentId, expiresAt}` or null.
         const verifyWithPublicKey = token => {

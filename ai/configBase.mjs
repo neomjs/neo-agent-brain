@@ -449,6 +449,13 @@ class ConfigBase extends ConfigProvider {
                  */
                 bearer         : leaf('', 'NEO_FLEET_BEARER', 'string'),
                 /**
+                 * @summary Optional Ed25519 private signing authority for Fleet-to-Bridge tokens.
+                 * Empty selects the existing registry-owned signing.key file. This secret is not
+                 * a plane member or part of a seat's exported environment.
+                 * @type {string}
+                 */
+                signingKey     : leaf('', 'NEO_FLEET_SIGNING_KEY', 'string'),
+                /**
                  * Arms the transport's browser bearer-handshake redemption (`GET /fleet/handshake`):
                  * while armed, an exact-allowlisted cockpit ORIGIN may fetch the process bearer once
                  * per page boot, which is how the Agent Institution launcher hands the secret to a
