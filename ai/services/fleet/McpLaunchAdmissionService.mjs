@@ -12,9 +12,8 @@ import {
 }                                 from '../../../src/fleet/contract/launchAdmission.mjs';
 import {mcpCatalogFor, resolveMcpMatrix}                 from '../../../src/fleet/contract/mcpServers.mjs';
 import {launchRowEnvNames}                               from './managedAgentWorkspacePlan.mjs';
-import {openLaunchAdmissionJournal}                      from './launchAdmissionJournal.mjs';
-import {isRuntimeGenerationPin, runtimeGenerationPin}    from './runtimeGeneration.mjs';
-import {isSeatRuntimeSnapshot}                           from './seatRuntimeRecord.mjs';
+import {isAdmissionSnapshot, openLaunchAdmissionJournal} from './launchAdmissionJournal.mjs';
+import {runtimeGenerationPin}                            from './runtimeGeneration.mjs';
 import {isLaunchCredentialBinding, isResidentMcpBinding} from './launchCredentialOwners.mjs';
 import {
     LAUNCH_ADMISSION_MAX_BYTES,
@@ -1097,37 +1096,6 @@ class McpLaunchAdmissionService extends Base {
     settle(generation) {
         [...generation.waiters].forEach(done => done(true))
     }
-}
-
-/** @summary Validates the complete non-secret lifecycle snapshot without accepting extra fields. */
-function isAdmissionSnapshot(value) {
-    const exact = (row, keys) => row && typeof row === 'object' && !Array.isArray(row) &&
-        Object.keys(row).sort().join(',') === [...keys].sort().join(',');
-    const hash      = text => typeof text === 'string' && /^[a-f0-9]{64}$/.test(text);
-    const text      = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
-    const timestamp = value => value === null || typeof value === 'string' && Number.isFinite(Date.parse(value));
-    const unique    = (rows, key) => new Set(rows.map(row => row[key])).size === rows.length;
-    const phase     = row => Object.values(STATES).includes(row.state) &&
-        (row.reason === null || Object.values(REASONS).includes(row.reason));
-    return exact(value, ['version', 'generations', 'seats']) && value.version === 6 && Array.isArray(value.generations) &&
-        Array.isArray(value.seats) && value.seats.every(isSeatRuntimeSnapshot) &&
-        new Set(value.seats.map(row => row.start.agentId)).size === value.seats.length &&
-        value.generations.every(row => exact(row, [
-            'id', 'agentId', 'identity', 'state', 'reason', 'reservedAt', 'activatedAt', 'revokedAt', 'definitionHash', 'runtime', 'credentialBindings', 'residentBindings', 'servers'
-        ]) && text(row.id) && text(row.agentId) && isLaunchIdentity(row.identity) && phase(row) && hash(row.definitionHash) &&
-            (row.runtime === null || isRuntimeGenerationPin(row.runtime)) &&
-            row.credentialBindings && typeof row.credentialBindings === 'object' && !Array.isArray(row.credentialBindings) &&
-            Object.entries(row.credentialBindings).every(([name, binding]) => isAdmissibleEnvName(name) &&
-                isLaunchCredentialBinding(binding) && binding.agentId === row.agentId && binding.identity === row.identity) &&
-            row.residentBindings && typeof row.residentBindings === 'object' && !Array.isArray(row.residentBindings) &&
-            Object.entries(row.residentBindings).every(([key, source]) => exact(source, ['binding', 'names']) &&
-                isResidentMcpBinding(source.binding) && source.binding.server === key && Array.isArray(source.names) &&
-                source.names.every(isAdmissibleEnvName) && new Set(source.names).size === source.names.length) &&
-            ['reservedAt', 'activatedAt', 'revokedAt'].every(key => timestamp(row[key])) && Array.isArray(row.servers) &&
-            row.servers.every(server => exact(server, ['key', 'grantId', 'state', 'reason', 'capabilityHash']) &&
-                text(server.key) && text(server.grantId) && phase(server) && hash(server.capabilityHash)) &&
-            unique(row.servers, 'key') && unique(row.servers, 'grantId')) &&
-        unique(value.generations, 'id') && unique(value.generations, 'agentId')
 }
 
 /**

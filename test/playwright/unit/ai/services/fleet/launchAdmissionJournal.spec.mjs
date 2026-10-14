@@ -1,9 +1,9 @@
-import {expect, test}               from '@playwright/test';
-import fs                           from 'fs-extra';
-import os                           from 'node:os';
-import path                         from 'node:path';
-import {openLaunchAdmissionJournal} from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
-import {writeFileAtomicSync}        from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
+import {expect, test}                                                                from '@playwright/test';
+import fs                                                                            from 'fs-extra';
+import os                                                                            from 'node:os';
+import path                                                                          from 'node:path';
+import {isAdmissionSnapshot, openLaunchAdmissionJournal, readLaunchAdmissionJournal} from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
+import {writeFileAtomicSync}                                                         from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
 
 let root, journals;
 const emptySnapshot = {version: 1, generations: []};
@@ -121,7 +121,7 @@ test('strict file and directory syncs are requested for every transition', () =>
 });
 
 test('first-run custody creation flushes every newly created directory entry before publication', () => {
-    const names = new Map(), flushed = [];
+    const names     = new Map(), flushed = [];
     const directory = path.join(root, 'new-parent', 'admission');
     open({directory, fileSystem: {
         ...fs,
@@ -164,4 +164,95 @@ test('symlinked or widened record custody refuses', () => {
     fs.renameSync(file, file + '.copy');
     fs.symlinkSync(file + '.copy', file);
     expect(() => open()).toThrow(/record-unreadable/);
+});
+
+/** @summary Captures durable state and lease identity while excluding ordinary read-access timestamps. */
+function custody() {
+    return fs.readdirSync(root).sort().map(name => {
+        const file = path.join(root, name), stat = fs.statSync(file, {bigint: true});
+        return {name, source: fs.readFileSync(file).toString('base64'),
+            metadata: ['dev', 'ino', 'uid', 'mode', 'size', 'mtimeNs', 'ctimeNs'].map(key => String(stat[key]))};
+    });
+}
+
+test('inspection creates nothing and neither takes the live lease nor consumes a clean handoff', () => {
+    const missing = path.join(root, 'never-created');
+    expect(readLaunchAdmissionJournal({directory: missing, validateSnapshot})).toBeNull();
+    expect(fs.existsSync(missing)).toBe(false);
+    expect(readLaunchAdmissionJournal({directory: root, validateSnapshot})).toBeNull();
+    expect(fs.readdirSync(root)).toEqual([]);
+
+    const first = open();
+    first.write(snapshot, origin);
+    const activeBytes = custody();
+    const active      = readLaunchAdmissionJournal({directory: root, validateSnapshot});
+    expect(active).toMatchObject({handoffProved: false, reason: 'handoff-not-completed', state: {phase: 'active', snapshot}});
+    expect(custody()).toEqual(activeBytes);
+    first.handoff(snapshot, origin);
+    const sealedBytes = custody();
+    const sealed      = readLaunchAdmissionJournal({directory: root, validateSnapshot});
+    expect(sealed).toMatchObject({handoffProved: true, reason: null, state: {issuer: active.state.issuer, epoch: active.state.epoch, snapshot}});
+    expect(custody()).toEqual(sealedBytes);
+    expect(open().previous).toMatchObject({handoffProved: true, snapshot});
+    expect(readLaunchAdmissionJournal({directory: root, validateSnapshot})).toMatchObject({handoffProved: false});
+});
+
+test('inspection never promotes replayed, malformed or widened-custody evidence', () => {
+    open().handoff(snapshot, origin);
+    const file = path.join(root, 'issuer.json'), old = fs.readFileSync(file);
+    open().close();
+    fs.writeFileSync(file, old);
+    expect(readLaunchAdmissionJournal({directory: root, validateSnapshot})).toMatchObject({handoffProved: false, reason: 'handoff-replayed'});
+    fs.chmodSync(file, 0o644);
+    expect(() => readLaunchAdmissionJournal({directory: root, validateSnapshot})).toThrow(/record-custody/);
+    fs.chmodSync(file, 0o600);
+    fs.writeFileSync(file, '{broken');
+    expect(() => readLaunchAdmissionJournal({directory: root, validateSnapshot})).toThrow(/record-unreadable/);
+    fs.removeSync(file);
+    expect(() => readLaunchAdmissionJournal({directory: root, validateSnapshot})).toThrow(/record-invalid/);
+});
+
+test('the read-only package entry uses the production snapshot codec without an issuer instance', async () => {
+    const reader     = await import('neo-agent-brain/launch-admission-journal');
+    const production = {version: 6, generations: [], seats: []};
+    open({emptySnapshot: production, validateSnapshot: isAdmissionSnapshot}).handoff(production);
+    expect(reader.readLaunchAdmissionJournal({directory: root})).toMatchObject({handoffProved: true});
+    const file = path.join(root, 'issuer.json'), state = fs.readJsonSync(file);
+    fs.writeJsonSync(file, {...state, snapshot: {...production, env: {GH_TOKEN: 'fixture-secret'}}});
+    expect(() => reader.readLaunchAdmissionJournal({directory: root})).toThrow(/record-invalid/);
+});
+
+test('inspection refuses a successor fence published between its record reads', () => {
+    open().handoff(snapshot, origin);
+    const file       = path.join(root, 'fence.json');
+    let   fenceReads = 0;
+    expect(() => readLaunchAdmissionJournal({directory: root, validateSnapshot, fileSystem: {
+        ...fs,
+        openSync(name, ...args) {
+            if (name === file && ++fenceReads === 2) {
+                const fence = fs.readJsonSync(file);
+                writeFileAtomicSync(file, JSON.stringify({...fence, epoch: fence.epoch + 1}), {mode: 0o600, fsync: true});
+            }
+            return fs.openSync(name, ...args);
+        }
+    }})).toThrow(/record-changed/);
+});
+
+test('inspection refuses a replaced custody directory even when its record bytes match', () => {
+    open().handoff(snapshot, origin);
+    const parked     = root + '.parked', fenceFile = path.join(root, 'fence.json');
+    let   fenceReads = 0;
+    try {
+        expect(() => readLaunchAdmissionJournal({directory: root, validateSnapshot, fileSystem: {
+            ...fs,
+            openSync(name, ...args) {
+                if (name === fenceFile && ++fenceReads === 2) {
+                    fs.renameSync(root, parked);
+                    fs.mkdirSync(root, {mode: 0o700});
+                    for (const file of ['issuer.json', 'fence.json']) fs.copyFileSync(path.join(parked, file), path.join(root, file));
+                }
+                return fs.openSync(name, ...args);
+            }
+        }})).toThrow(/record-changed/);
+    } finally { fs.removeSync(parked); }
 });

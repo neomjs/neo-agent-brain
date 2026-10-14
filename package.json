@@ -130,6 +130,7 @@
     "exports": {
         "./fleet-contract": "./src/fleet/contract/index.mjs",
         "./runtime-generation": "./ai/services/fleet/runtimeGeneration.mjs",
+        "./launch-admission-journal": "./ai/services/fleet/launchAdmissionJournal.mjs",
         "./package.json": "./package.json"
     }
 }

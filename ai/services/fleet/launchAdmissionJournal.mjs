@@ -1,15 +1,21 @@
-import {randomUUID}          from 'node:crypto';
-import fs                    from 'fs-extra';
-import path                  from 'node:path';
-import {acquireFileLease}    from '../../daemons/shared/fileLease.mjs';
-import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
+import {randomUUID}                                                             from 'node:crypto';
+import fs                                                                       from 'fs-extra';
+import path                                                                     from 'node:path';
+import {acquireFileLease}                                                       from '../../daemons/shared/fileLease.mjs';
+import {writeFileAtomicSync}                                                    from '../shared/atomicFileWrite.mjs';
+import {LAUNCH_ADMISSION_REASONS as REASONS, LAUNCH_ADMISSION_STATES as STATES} from '../../../src/fleet/contract/launchAdmission.mjs';
+import {isRuntimeGenerationPin}                                                 from './runtimeGeneration.mjs';
+import {isSeatRuntimeSnapshot}                                                  from './seatRuntimeRecord.mjs';
+import {isLaunchCredentialBinding, isResidentMcpBinding}                        from './launchCredentialOwners.mjs';
+import {isAdmissibleEnvName, isLaunchIdentity}                                  from './mcpLaunchAdmission.mjs';
 
 /**
  * @module ai/services/fleet/launchAdmissionJournal
  * @summary Serializes durable issuer transitions under the existing exclusive file lease.
  * The separate fence consumes a clean handoff before the next issuer can mutate authority.
  * An active record after a crash, or an older record replayed against a newer fence, recovers nothing.
- * The issuer supplies the closed non-secret snapshot schema; this module owns publication, not grants.
+ * The closed non-secret snapshot format is shared by the issuer and read-only consumers; this module
+ * owns publication and inspection, never the grants or their recovery.
  */
 const VERSION  = 1, MAX_BYTES = 8 * 1024 * 1024;
 const isId     = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
@@ -25,6 +31,117 @@ function refused(reason) {
 /** @summary Treats every process observation except a definite absent PID as held. */
 function isHeldFresh({holder}) {
     try { process.kill(holder.pid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
+}
+
+/** @summary Reads one owner-only record without following a substituted symlink. */
+function readOwnedRecord(file, fileSystem, uid) {
+    let descriptor;
+    try {
+        descriptor = fileSystem.openSync(file, fileSystem.constants.O_RDONLY | fileSystem.constants.O_NOFOLLOW);
+        const before = fileSystem.fstatSync(descriptor, {bigint: true});
+        if (!before.isFile() || before.uid !== BigInt(uid) || (before.mode & 0o7777n) !== 0o600n ||
+            before.size > BigInt(MAX_BYTES)) throw refused('record-custody');
+        const buffer = Buffer.alloc(Number(before.size) + 1);
+        let   offset = 0;
+        while (offset < buffer.length) {
+            const count = fileSystem.readSync(descriptor, buffer, offset, buffer.length - offset, offset);
+            if (!count) break;
+            offset += count;
+        }
+        if (offset !== Number(before.size)) throw refused('record-changed');
+        const source = buffer.subarray(0, offset).toString('utf8');
+        const after  = fileSystem.fstatSync(descriptor, {bigint: true}), named = fileSystem.lstatSync(file, {bigint: true});
+        for (const key of ['dev', 'ino', 'uid', 'mode', 'size', 'mtimeNs', 'ctimeNs']) {
+            if (before[key] !== after[key] || after[key] !== named[key]) throw refused('record-changed');
+        }
+        return JSON.parse(source)
+    } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error.code === 'FLEET_ADMISSION_JOURNAL_REFUSED' ? error : refused('record-unreadable')
+    } finally {
+        if (descriptor !== undefined) fileSystem.closeSync(descriptor)
+    }
+}
+
+/** @summary Verifies the canonical directory without creating it or changing its permissions. */
+function readDirectoryCustody(directory, fileSystem, uid) {
+    const stat = fileSystem.lstatSync(directory);
+    if (!stat.isDirectory() || stat.uid !== uid || stat.mode & 0o022 ||
+        fileSystem.realpathSync(directory) !== path.resolve(directory)) throw refused('directory-custody');
+    return stat
+}
+
+/**
+ * @summary Inspects the existing journal through its format owner, without acquiring or consuming authority.
+ * A matched clean handoff is a point-in-time observation, not proof of surviving processes, runtime
+ * integrity or current input owners. The lifecycle still proves those before issuing a new child.
+ * @param {Object} options
+ * @param {String} options.directory Canonical Fleet-owned custody directory.
+ * @param {Function} [options.validateSnapshot=isAdmissionSnapshot] The issuer's closed non-secret snapshot codec.
+ * @param {Object} [options.fileSystem=fs] Synchronous filesystem seam.
+ * @param {Number} [options.uid=process.getuid()] Expected host owner.
+ * @returns {Object|null} Validated state, fence and handoff observation; null only for absent records.
+ */
+export function readLaunchAdmissionJournal({directory, validateSnapshot = isAdmissionSnapshot, fileSystem = fs, uid = process.getuid?.()}) {
+    if (!path.isAbsolute(directory || '') || !Number.isInteger(uid) || typeof validateSnapshot !== 'function') {
+        throw refused('invalid-binding')
+    }
+    let before;
+    try { before = readDirectoryCustody(directory, fileSystem, uid) } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error
+    }
+    const statePath  = path.join(directory, 'issuer.json'), fencePath = path.join(directory, 'fence.json');
+    const fence      = readOwnedRecord(fencePath, fileSystem, uid), state = readOwnedRecord(statePath, fileSystem, uid);
+    const finalFence = readOwnedRecord(fencePath, fileSystem, uid), after = readDirectoryCustody(directory, fileSystem, uid);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.mode !== after.mode ||
+        JSON.stringify(fence) !== JSON.stringify(finalFence)) throw refused('record-changed');
+    const validFence = fence && fence.version === VERSION && isId(fence.issuer) && Number.isSafeInteger(fence.epoch) && fence.epoch > 0;
+    const validState = state && state.version === VERSION && isId(state.issuer) &&
+        Number.isSafeInteger(state.epoch) && state.epoch > 0 &&
+        ['active', 'handoff'].includes(state.phase) && validateSnapshot(state.snapshot) === true &&
+        (state.origin === null || isOrigin(state.origin)) &&
+        (state.phase === 'active' ? state.handoff === null : isId(state.handoff));
+    if ((state && !validState) || (fence && !validFence) || Boolean(state) !== Boolean(fence)) throw refused('record-invalid');
+    if (!state) return null;
+    const sameEpoch     = state.issuer === fence.issuer && state.epoch === fence.epoch;
+    const handoffProved = sameEpoch && state.phase === 'handoff';
+    return {state, fence, handoffProved, reason: handoffProved ? null : sameEpoch ? 'handoff-not-completed' : 'handoff-replayed'}
+}
+
+/**
+ * @summary Validates the complete non-secret lifecycle snapshot without accepting extra fields.
+ * @param {*} value Persisted snapshot from the journal; unknown versions and unclassified fields refuse.
+ * @returns {Boolean} Whether the snapshot uses the issuer's current closed format.
+ */
+export function isAdmissionSnapshot(value) {
+    const exact = (row, keys) => row && typeof row === 'object' && !Array.isArray(row) &&
+        Object.keys(row).sort().join(',') === [...keys].sort().join(',');
+    const hash      = text => typeof text === 'string' && /^[a-f0-9]{64}$/.test(text);
+    const text      = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
+    const timestamp = value => value === null || typeof value === 'string' && Number.isFinite(Date.parse(value));
+    const unique    = (rows, key) => new Set(rows.map(row => row[key])).size === rows.length;
+    const phase     = row => Object.values(STATES).includes(row.state) &&
+        (row.reason === null || Object.values(REASONS).includes(row.reason));
+    return exact(value, ['version', 'generations', 'seats']) && value.version === 6 && Array.isArray(value.generations) &&
+        Array.isArray(value.seats) && value.seats.every(isSeatRuntimeSnapshot) &&
+        new Set(value.seats.map(row => row.start.agentId)).size === value.seats.length &&
+        value.generations.every(row => exact(row, [
+            'id', 'agentId', 'identity', 'state', 'reason', 'reservedAt', 'activatedAt', 'revokedAt', 'definitionHash', 'runtime', 'credentialBindings', 'residentBindings', 'servers'
+        ]) && text(row.id) && text(row.agentId) && isLaunchIdentity(row.identity) && phase(row) && hash(row.definitionHash) &&
+            (row.runtime === null || isRuntimeGenerationPin(row.runtime)) &&
+            row.credentialBindings && typeof row.credentialBindings === 'object' && !Array.isArray(row.credentialBindings) &&
+            Object.entries(row.credentialBindings).every(([name, binding]) => isAdmissibleEnvName(name) &&
+                isLaunchCredentialBinding(binding) && binding.agentId === row.agentId && binding.identity === row.identity) &&
+            row.residentBindings && typeof row.residentBindings === 'object' && !Array.isArray(row.residentBindings) &&
+            Object.entries(row.residentBindings).every(([key, source]) => exact(source, ['binding', 'names']) &&
+                isResidentMcpBinding(source.binding) && source.binding.server === key && Array.isArray(source.names) &&
+                source.names.every(isAdmissibleEnvName) && new Set(source.names).size === source.names.length) &&
+            ['reservedAt', 'activatedAt', 'revokedAt'].every(key => timestamp(row[key])) && Array.isArray(row.servers) &&
+            row.servers.every(server => exact(server, ['key', 'grantId', 'state', 'reason', 'capabilityHash']) &&
+                text(server.key) && text(server.grantId) && phase(server) && hash(server.capabilityHash)) &&
+            unique(row.servers, 'key') && unique(row.servers, 'grantId')) &&
+        unique(value.generations, 'id') && unique(value.generations, 'agentId')
 }
 
 /**
@@ -58,9 +175,7 @@ export function openLaunchAdmissionJournal({
             if (current === last) break;
         }
     }
-    if (fileSystem.realpathSync(directory) !== path.resolve(directory)) throw refused('directory-custody');
-    const directoryStat = fileSystem.lstatSync(directory);
-    if (!directoryStat.isDirectory() || directoryStat.uid !== uid || directoryStat.mode & 0o022) throw refused('directory-custody');
+    const directoryStat = readDirectoryCustody(directory, fileSystem, uid);
 
     const lease = acquireLease({
         dir: directory, filename: 'issuer.lock', owner: 'fleet-launch-admission',
@@ -68,36 +183,6 @@ export function openLaunchAdmissionJournal({
     });
     const statePath = path.join(directory, 'issuer.json'), fencePath = path.join(directory, 'fence.json');
     let   closed    = false, failed = false, state;
-
-    /** @summary Reads one owner-only record without following a substituted symlink. */
-    function read(file) {
-        let descriptor;
-        try {
-            descriptor = fileSystem.openSync(file, fileSystem.constants.O_RDONLY | fileSystem.constants.O_NOFOLLOW);
-            const before = fileSystem.fstatSync(descriptor, {bigint: true});
-            if (!before.isFile() || before.uid !== BigInt(uid) || (before.mode & 0o7777n) !== 0o600n ||
-                before.size > BigInt(MAX_BYTES)) throw refused('record-custody');
-            const buffer = Buffer.alloc(Number(before.size) + 1);
-            let   offset = 0;
-            while (offset < buffer.length) {
-                const read = fileSystem.readSync(descriptor, buffer, offset, buffer.length - offset, offset);
-                if (!read) break;
-                offset += read;
-            }
-            if (offset !== Number(before.size)) throw refused('record-changed');
-            const source = buffer.subarray(0, offset).toString('utf8');
-            const after  = fileSystem.fstatSync(descriptor, {bigint: true}), named = fileSystem.lstatSync(file, {bigint: true});
-            for (const key of ['dev', 'ino', 'uid', 'mode', 'size', 'mtimeNs', 'ctimeNs']) {
-                if (before[key] !== after[key] || after[key] !== named[key]) throw refused('record-changed');
-            }
-            return JSON.parse(source)
-        } catch (error) {
-            if (error.code === 'ENOENT') return null;
-            throw error.code === 'FLEET_ADMISSION_JOURNAL_REFUSED' ? error : refused('record-unreadable')
-        } finally {
-            if (descriptor !== undefined) fileSystem.closeSync(descriptor)
-        }
-    }
 
     /** @summary Revalidates exclusion and the custody directory before every synchronous transition. */
     function assertOwner() {
@@ -126,18 +211,10 @@ export function openLaunchAdmissionJournal({
     }
 
     try {
-        const previous   = read(statePath), fence = read(fencePath);
-        const validFence = fence && fence.version === VERSION && isId(fence.issuer) && Number.isSafeInteger(fence.epoch) && fence.epoch > 0;
-        const validState = previous && previous.version === VERSION && isId(previous.issuer) &&
-            Number.isSafeInteger(previous.epoch) && previous.epoch > 0 &&
-            ['active', 'handoff'].includes(previous.phase) && validateSnapshot(previous.snapshot) === true &&
-            (previous.origin === null || isOrigin(previous.origin)) &&
-            (previous.phase === 'active' ? previous.handoff === null : isId(previous.handoff));
-        if ((previous && !validState) || (fence && !validFence) || Boolean(previous) !== Boolean(fence)) throw refused('record-invalid');
-
-        const sameEpoch = validState && validFence && previous.issuer === fence.issuer && previous.epoch === fence.epoch;
-        const recovery  = sameEpoch && previous.phase === 'handoff';
-        const epoch     = Math.max(previous?.epoch ?? 0, fence?.epoch ?? 0) + 1;
+        const observed = readLaunchAdmissionJournal({directory, validateSnapshot, fileSystem, uid});
+        const previous = observed?.state ?? null, fence = observed?.fence ?? null;
+        const recovery = observed?.handoffProved === true;
+        const epoch    = Math.max(previous?.epoch ?? 0, fence?.epoch ?? 0) + 1;
         if (!Number.isSafeInteger(epoch)) throw refused('epoch-exhausted');
         state = {
             version: VERSION, issuer: randomUUID(), epoch, phase: 'active', handoff: null,
@@ -151,7 +228,9 @@ export function openLaunchAdmissionJournal({
         publish(statePath, state);
 
         return {
-            previous: previous ? {handoffProved: Boolean(recovery), reason: recovery ? null : sameEpoch ? 'unclean-issuer-exit' : 'handoff-replayed', origin: previous.origin, snapshot: previous.snapshot} : null,
+            previous: previous ? {handoffProved: recovery,
+                reason: observed.reason === 'handoff-not-completed' ? 'unclean-issuer-exit' : observed.reason,
+                origin: previous.origin, snapshot: previous.snapshot} : null,
             assertOwner,
             /** @summary Durably publishes the issuer's validated non-secret snapshot. */
             write(snapshot, origin = state.origin) {
