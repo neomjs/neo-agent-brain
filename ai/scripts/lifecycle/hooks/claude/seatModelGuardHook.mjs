@@ -139,8 +139,9 @@ export function readSessionRecord(userDataDir, hostSessionId, sessionId) {
 }
 
 /**
- * @summary Whether another seat under the same agents root has sessions under this account. Reads
- * directory names only.
+ * @summary Whether another seat under the same agents root has sessions under this account. Only a real
+ * directory entry in a readable listing counts: a file, a symbolic link or a listing that fails is no
+ * evidence of sharing, so the guard fails open. Reads directory listings only, never a file.
  * @param {String} userDataDir The seat's `<agentsRoot>/<agentId>/harness/claude-desktop`.
  * @param {String} account     The account folder of this session's record.
  * @returns {Boolean} `false` for an unrecognized layout, so the guard fails open.
@@ -154,8 +155,22 @@ export function accountSharedWithAnotherSeat(userDataDir, account) {
         seatDir    = path.dirname(harnessDir),
         agentsRoot = path.dirname(seatDir);
 
-    return safeReaddir(agentsRoot).some(seat => seat !== path.basename(seatDir) &&
-        fs.existsSync(path.join(agentsRoot, seat, 'harness', 'claude-desktop', 'claude-code-sessions', account)))
+    return realDirectories(agentsRoot).some(seat => seat !== path.basename(seatDir) &&
+        realDirectories(path.join(agentsRoot, seat, 'harness', 'claude-desktop', 'claude-code-sessions')).includes(account))
+}
+
+/**
+ * @summary The names of a directory's real subdirectories; `Dirent.isDirectory()` is false for a symbolic
+ * link, and an unreadable listing yields none.
+ * @param {String} dir
+ * @returns {String[]}
+ */
+function realDirectories(dir) {
+    try {
+        return fs.readdirSync(dir, {withFileTypes: true}).filter(entry => entry.isDirectory()).map(entry => entry.name)
+    } catch {
+        return []
+    }
 }
 
 /**

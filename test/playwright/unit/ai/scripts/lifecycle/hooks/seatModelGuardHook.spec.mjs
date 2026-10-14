@@ -151,6 +151,54 @@ test('outside Fleet\'s seat layout the sharing check fails open', () => {
     expect(runSeatModelGuard('prompt', prompt('unknown layout'), env)).toBe(0)
 });
 
+/**
+ * @summary A solo seat that last ran Opus, plus one sibling seat whose account entry `place` builds.
+ * @param {Function} place Receives the sibling's `claude-code-sessions` path and creates its entry.
+ * @returns {{userData: String, env: Object, sessions: String}}
+ */
+function soloWithSibling(place) {
+    const fixture  = seat(undefined, {partnerAccount: null}),
+          sessions = path.join(fixture.userData, '..', '..', '..', 'neo-fable-b', 'harness', 'claude-desktop', 'claude-code-sessions');
+
+    fs.mkdirSync(sessions, {recursive: true});
+    place(sessions);
+    lastRun(fixture.userData, 'claude-opus-5-5');
+
+    return {...fixture, sessions}
+}
+
+test('a regular file named like the account in a sibling seat is no sharing evidence', () => {
+    const {userData, env} = soloWithSibling(sessions => fs.writeFileSync(path.join(sessions, 'account-uuid'), 'not a directory'));
+
+    expect(accountSharedWithAnotherSeat(userData, 'account-uuid')).toBe(false);
+    expect(runSeatModelGuard('prompt', prompt('a file is not a seat'), env)).toBe(0)
+});
+
+test('a symbolic link named like the account in a sibling seat is no sharing evidence', () => {
+    const {userData, env} = soloWithSibling(sessions =>
+        fs.symlinkSync(fs.mkdtempSync(path.join(os.tmpdir(), 'unrelated-')), path.join(sessions, 'account-uuid')));
+
+    expect(accountSharedWithAnotherSeat(userData, 'account-uuid')).toBe(false);
+    expect(runSeatModelGuard('prompt', prompt('a link is not a seat'), env)).toBe(0)
+});
+
+test('a sibling listing that cannot be read fails open, even when the account directory is there', () => {
+    // Root ignores permission bits, so the listing would succeed and the control would prove nothing.
+    test.skip(process.getuid?.() === 0, 'permission bits do not bind root');
+
+    const {userData, env, sessions} = soloWithSibling(sessions => fs.mkdirSync(path.join(sessions, 'account-uuid')));
+
+    // Searchable but not listable: the account directory still stats, its listing refuses.
+    fs.chmodSync(sessions, 0o311);
+
+    try {
+        expect(accountSharedWithAnotherSeat(userData, 'account-uuid')).toBe(false);
+        expect(runSeatModelGuard('prompt', prompt('no listing, no evidence'), env)).toBe(0)
+    } finally {
+        fs.chmodSync(sessions, 0o755)
+    }
+});
+
 test('stop records the last real assistant model and skips synthetic ones', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-model-transcript-'));
 
