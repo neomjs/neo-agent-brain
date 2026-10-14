@@ -38,23 +38,24 @@ const KNOWLEDGE_RUNTIME_ENV_BEFORE_PLACEMENT = Object.freeze([
  */
 export const MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS = Object.freeze({
     'memory-core': Object.freeze({
-        entrypoint: 'ai/mcp/server/memory-core/mcp-server.mjs',
-        runtimeEnv: Object.freeze([...MEMORY_RUNTIME_ENV_BEFORE_PLACEMENT, ...PLANE_CLIENT_RUNTIME_ENV, 'GEMINI_API_KEY']),
-        legacyRuntimeEnv: MEMORY_RUNTIME_ENV_BEFORE_PLACEMENT,
+        entrypoint           : 'ai/mcp/server/memory-core/mcp-server.mjs',
+        runtimeEnv           : Object.freeze([...MEMORY_RUNTIME_ENV_BEFORE_PLACEMENT, ...PLANE_CLIENT_RUNTIME_ENV, 'GEMINI_API_KEY']),
+        legacyRuntimeEnv     : MEMORY_RUNTIME_ENV_BEFORE_PLACEMENT,
         providerCredentialEnv: PROVIDER_CREDENTIAL_ENV,
-        requiredRuntimeEnv: Object.freeze(['NEO_AGENT_IDENTITY'])
+        requiredRuntimeEnv   : Object.freeze(['NEO_AGENT_IDENTITY'])
     }),
     'knowledge-base': Object.freeze({
-        entrypoint: 'ai/mcp/server/knowledge-base/mcp-server.mjs',
-        runtimeEnv: Object.freeze([...KNOWLEDGE_RUNTIME_ENV_BEFORE_PLACEMENT, ...PLANE_CLIENT_RUNTIME_ENV, 'GEMINI_API_KEY']),
-        legacyRuntimeEnv: KNOWLEDGE_RUNTIME_ENV_BEFORE_PLACEMENT,
+        entrypoint           : 'ai/mcp/server/knowledge-base/mcp-server.mjs',
+        runtimeEnv           : Object.freeze([...KNOWLEDGE_RUNTIME_ENV_BEFORE_PLACEMENT, ...PLANE_CLIENT_RUNTIME_ENV, 'GEMINI_API_KEY']),
+        legacyRuntimeEnv     : KNOWLEDGE_RUNTIME_ENV_BEFORE_PLACEMENT,
         providerCredentialEnv: PROVIDER_CREDENTIAL_ENV,
-        requiredRuntimeEnv: Object.freeze(['NEO_AGENT_IDENTITY'])
+        requiredRuntimeEnv   : Object.freeze(['NEO_AGENT_IDENTITY'])
     }),
     'neural-link': Object.freeze({
         entrypoint: 'ai/mcp/server/neural-link/mcp-server.mjs',
         runtimeEnv: Object.freeze([
             'NEO_AGENT_IDENTITY',
+            'NEO_NL_PORT',
             'NEO_FLEET_BRIDGE_TOKEN'
         ]),
         requiredRuntimeEnv: Object.freeze(['NEO_AGENT_IDENTITY']),

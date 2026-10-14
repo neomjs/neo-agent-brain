@@ -9,6 +9,9 @@
  */
 export const BRIDGE_INFO_TYPE = 'bridge_info';
 
+/** @summary Read-only verifier response; never an agent registration or a server-authentication proof. */
+export const BRIDGE_VERIFIER_TYPE = 'bridge_verifier';
+
 /**
  * @summary Monotonic Bridge protocol version for agent-side freshness checks.
  * Bump this or `BRIDGE_PROTOCOL_FEATURES` whenever the Bridge's agent-facing
@@ -42,6 +45,36 @@ export function createBridgeInfoPayload() {
         protocolVersion: BRIDGE_PROTOCOL_VERSION,
         features       : [...BRIDGE_PROTOCOL_FEATURES]
     };
+}
+
+/**
+ * @summary Describes the cached verifier used by the running Bridge's token gate.
+ * @param {String|null} publicKeySha256 SHA-256 of SPKI DER, or null for legacy unauthenticated mode.
+ * @returns {Object}
+ */
+export function createBridgeVerifierPayload(publicKeySha256) {
+    return {
+        ...createBridgeInfoPayload(),
+        type    : BRIDGE_VERIFIER_TYPE,
+        authMode: publicKeySha256 === null ? 'legacy' : 'ed25519',
+        publicKeySha256
+    }
+}
+
+/**
+ * @summary Checks the closed verifier response against the original signing authority.
+ * This detects drift under loopback/same-UID custody; an unsigned response cannot authenticate a server.
+ * @param {Object} payload Parsed, bounded JSON response.
+ * @param {String} publicKeySha256 Original SPKI DER fingerprint.
+ * @returns {Boolean}
+ */
+export function isBridgeVerifierPayloadFresh(payload, publicKeySha256) {
+    return !!payload && Object.getPrototypeOf(payload) === Object.prototype &&
+        Object.keys(payload).sort().join(',') === 'authMode,features,protocolVersion,publicKeySha256,type' &&
+        payload.type === BRIDGE_VERIFIER_TYPE && payload.authMode === 'ed25519' &&
+        typeof publicKeySha256 === 'string' && /^[a-f0-9]{64}$/.test(publicKeySha256) &&
+        payload.publicKeySha256 === publicKeySha256 &&
+        isBridgeInfoPayloadFresh({...payload, type: BRIDGE_INFO_TYPE})
 }
 
 /**

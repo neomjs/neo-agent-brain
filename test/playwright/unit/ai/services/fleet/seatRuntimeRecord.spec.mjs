@@ -77,7 +77,10 @@ test('fixed target capture preserves required and absent optional slots without 
     expect(value.targets[2].slots).toEqual([
         {name: 'GH_TOKEN', required: true, state: 'owner'}, {name: 'GITHUB_TOKEN', required: false, state: 'absent'}
     ]);
-    expect(value.targets[1].slots).toEqual([{name: 'NEO_FLEET_BRIDGE_TOKEN', required: true, state: 'held'}]);
+    expect(value.targets[1].slots).toEqual([
+        {name: 'NEO_NL_PORT', required: false, state: 'absent'},
+        {name: 'NEO_FLEET_BRIDGE_TOKEN', required: true, state: 'held'}
+    ]);
     expect(JSON.stringify(value)).not.toMatch(/fixture-(?:secret|pat|token)/);
     options.env.GITHUB_TOKEN = 'a-later-ambient-alias';
     expect(value.targets[2].slots[1].state).toBe('absent');

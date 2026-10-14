@@ -30,7 +30,7 @@ import {runtimeGenerationPin}                                                   
 import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot} from './seatRuntimeRecord.mjs';
 import {writeFileAtomicSync}                                                    from '../shared/atomicFileWrite.mjs';
 
-import {createResidentMcpInputOwner} from './launchCredentialOwners.mjs';
+import {createResidentMcpInputOwner, createBridgeTokenOwner} from './launchCredentialOwners.mjs';
 
 // Reserve the Neural Link policy slot against credential collisions and launch-metadata overrides.
 // Fleet does not impose a projection; explicitly restricted NL servers own their own ceiling.
@@ -1082,6 +1082,9 @@ class FleetLifecycleService extends Base {
                 [agent.forge === 'gitlab' ? 'NEO_GITLAB_PAT' : this.credentialEnvVar]: owners.pat,
                 [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                      : owners.plane
             };
+            if (record.runtimeGeneration && opts.launchAdmission?.plan.some(row => row.key === 'neural-link' && row.enabled)) {
+                slots[this.bridgeTokenEnvVar] = createBridgeTokenOwner({registry: this.registry, agent, authority: record.bridgeAuthority});
+            }
             if (survivesFleetExit && opts.launchAdmission) record.admissionGeneration = opts.launchAdmission.generation;
             if (record.runtimeGeneration) {
                 record.pidStartedAt ??= this.getProcessInspectFn()(record.pid)?.startedAt ?? null;

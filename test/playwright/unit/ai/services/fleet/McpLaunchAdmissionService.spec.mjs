@@ -204,6 +204,32 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
         expect(() => service.journal.write(snapshot)).toThrow(/snapshot-invalid/);
     });
 
+    test('concurrent Bridge redemptions prove their own captured port and never share a proof across ports', async () => {
+        const binding = {version: 1, kind: 'resident-config', server: 'neural-link',
+            plane: {id: 'original-plane', dataRoot: directory}, providers: {model: null, embedding: null, ask: null}};
+        const current  = {binding, env: {NEO_NL_PORT: '12345'}};
+        const input    = createResidentMcpInputOwner({binding, names: ['NEO_NL_PORT'], read: () => current});
+        const enteredA = deferred(), enteredB = deferred(), finishA = deferred(), finishB = deferred(), ports = [];
+        const bridge   = {credential: 'bridge-token', resolve: () => 'same-fresh-token', prove: (value, {port}) => {
+            ports.push(port);
+            if (port === 12345) { enteredA.resolve(); return finishA.promise; }
+            enteredB.resolve(); return finishB.promise;
+        }};
+        const reservation = await activeSeat({env: {...START_ENV, NEO_NL_PORT: '12345'},
+            owners: {NEO_FLEET_BRIDGE_TOKEN: bridge}, residentInputs: {'neural-link': input}});
+        const a = redeem(reservation.grants['neural-link'], {server: 'neural-link'});
+        await enteredA.promise;
+        current.env.NEO_NL_PORT = '23456';
+        const b = redeem(reservation.grants['neural-link'], {server: 'neural-link'});
+        await enteredB.promise;
+        finishA.resolve({verdict: 'proved'});
+        finishB.resolve({verdict: 'refused'});
+        expect(await a).toMatchObject({outcome: 'admitted', env: {NEO_NL_PORT: '12345', NEO_FLEET_BRIDGE_TOKEN: 'same-fresh-token'}});
+        expect(await b).toMatchObject({outcome: 'refused', code: 'credential-unproven', reason: 'bridge-token'});
+        expect(ports).toEqual([12345, 23456]);
+        expect(service.generations.get('seat').servers.get('neural-link').env).not.toHaveProperty('NEO_FLEET_BRIDGE_TOKEN');
+    });
+
     test('original credential ownership survives revocation without persisting credential values', async () => {
         service.openJournal({directory});
         const agent = seatDefinition(), registry = {getDataDir: () => directory,

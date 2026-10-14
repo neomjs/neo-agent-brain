@@ -21,6 +21,7 @@ import path                            from 'path';
 import Neo                               from 'neo.mjs/src/Neo.mjs';
 import * as core                         from 'neo.mjs/src/core/_export.mjs';
 import AiConfig                          from '../../../../ai/config.template.mjs';
+import neuralLinkConfig                  from '../../../../ai/mcp/server/neural-link/config.template.mjs';
 import FleetControlBridge                from '../../../../ai/services/fleet/FleetControlBridge.mjs';
 import FleetLifecycleService             from '../../../../ai/services/fleet/FleetLifecycleService.mjs';
 import FleetManager                      from '../../../../ai/services/fleet/FleetManager.mjs';
@@ -1450,6 +1451,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         expect(Object.keys(records['memory-core'])).toContain('NEO_MEMORY_WAL_DIR');
         expect(Object.keys(records['knowledge-base'])).toContain('NEO_KB_LOG_PATH');
         expect(Object.keys(records['neural-link'])).toContain('NEO_NL_LOG_PATH');
+        expect(records['neural-link'].NEO_NL_PORT).toBe(String(neuralLinkConfig.port));
         expect(Object.values(records).every(values => !Object.keys(values).some(key => ['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY'].includes(key)))).toBe(true);
     });
 
@@ -2045,7 +2047,11 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             expect(snapshot.seats[0].start).toMatchObject({admissionGeneration: reserved.generation, profile, leaseRequired: true,
                 bridgeAuthority: {source: 'registry-file', publicKeySha256: 'e'.repeat(64)},
                 targets        : [{key: 'neural-link', target: 'resident', args: plan.find(row => row.key === 'neural-link').args,
-                    slots: [{name: 'NEO_FLEET_BRIDGE_TOKEN', required: true, state: 'held'}]}]});
+                    slots: [{name: 'NEO_NL_PORT', required: false, state: 'absent'},
+                        {name: 'NEO_FLEET_BRIDGE_TOKEN', required: true, state: 'owner'}]}]});
+            expect(snapshot.generations[0].credentialBindings.NEO_FLEET_BRIDGE_TOKEN).toMatchObject({
+                kind: 'bridge-token', agentId: 'seat', authority: snapshot.seats[0].start.bridgeAuthority});
+            expect(service.generations.get('seat').servers.get('neural-link').env).not.toHaveProperty('NEO_FLEET_BRIDGE_TOKEN');
             expect(JSON.stringify(snapshot)).not.toContain('bridge_seat_token');
             expect(JSON.stringify(snapshot)).not.toContain(reserved.grants['neural-link']);
             fail = true;

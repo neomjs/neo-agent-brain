@@ -11,8 +11,11 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import crypto         from 'crypto';
+import {test, expect}        from '@playwright/test';
+import crypto                from 'crypto';
+import {WebSocketServer}     from 'ws';
+import {once}                from 'node:events';
+import {probeBridgeVerifier} from '../../../../../../../ai/services/fleet/probeBridgeVerifier.mjs';
 
 import Neo       from 'neo.mjs/src/Neo.mjs';
 import * as core from 'neo.mjs/src/core/_export.mjs';
@@ -22,6 +25,8 @@ import {
     BRIDGE_PROTOCOL_FEATURES,
     BRIDGE_PROTOCOL_VERSION,
     createBridgeInfoPayload,
+    createBridgeVerifierPayload,
+    isBridgeVerifierPayloadFresh,
     isBridgeInfoPayloadFresh
 } from '../../../../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
 
@@ -151,6 +156,65 @@ test.describe('Bridge protocol freshness stamp (#13299)', () => {
 
         expect(isBridgeInfoPayloadFresh(firstFrame)).toBe(true);
         expect(JSON.parse(ws.sent[1]).type).toBe('agent_connected');
+    });
+});
+
+test.describe('Bridge read-only verifier (#980)', () => {
+    test('the actual handler and probe agree over a disposable socket without touching active maps', async () => {
+        Bridge.bridgePublicKey = publicKey;
+        const existing = makeWs();
+        Bridge.agents = new Map([['existing', existing]]);
+        Bridge.apps = new Map();
+        const server = new WebSocketServer({host: '127.0.0.1', port: 0});
+        server.on('connection', (socket, request) => Bridge.handleConnection(socket, request));
+        await once(server, 'listening');
+        try {
+            const publicKeySha256 = crypto.createHash('sha256').update(publicKey.export({format: 'der', type: 'spki'})).digest('hex');
+            expect(await probeBridgeVerifier({port: server.address().port, publicKeySha256, timeoutMs: 1000}))
+                .toEqual({verdict: 'proved'});
+            expect(Bridge.agents).toEqual(new Map([['existing', existing]]));
+            expect(Bridge.apps.size).toBe(0);
+            expect(existing.sent).toEqual([]);
+        } finally {
+            server.clients.forEach(socket => socket.terminate());
+            await new Promise(resolve => server.close(resolve));
+        }
+    });
+
+    test('reports the cached token gate without registration, replay or session creation', () => {
+        const existing = makeWs(), app = makeWs(), probe = makeWs();
+        Bridge.agents = new Map([['agent-a', existing]]);
+        Bridge.apps = new Map([['app-a', app]]);
+        Bridge.bridgePublicKey = publicKey;
+        const fingerprint = crypto.createHash('sha256').update(publicKey.export({format: 'der', type: 'spki'})).digest('hex');
+        Bridge.handleConnection(probe, makeReq('role=verifier'));
+        expect(probe.sent.map(JSON.parse)).toEqual([createBridgeVerifierPayload(fingerprint)]);
+        expect(isBridgeVerifierPayloadFresh(JSON.parse(probe.sent[0]), fingerprint)).toBe(true);
+        expect(Bridge.verifyAgentToken(sign('agent-a'))).toBe('agent-a');
+        expect(probe.closed.code).toBe(1000);
+        expect(probe.sessionId).toBeUndefined();
+        expect(probe.handlers).toEqual({});
+        expect(Bridge.agents).toEqual(new Map([['agent-a', existing]]));
+        expect(Bridge.apps).toEqual(new Map([['app-a', app]]));
+        expect(existing.sent).toEqual([]);
+        expect(app.sent).toEqual([]);
+    });
+
+    test('legacy mode is explicit and extra request parameters cannot enter a registration path', () => {
+        Bridge.bridgePublicKey = null;
+        Bridge.agents = new Map();
+        Bridge.apps = new Map();
+        const legacy = makeWs();
+        Bridge.handleConnection(legacy, makeReq('role=verifier'));
+        expect(legacy.sent.map(JSON.parse)).toEqual([createBridgeVerifierPayload(null)]);
+        for (const extra of ['id=seat', 'token=secret', 'role=agent', 'appWorkerId=app']) {
+            const probe = makeWs();
+            Bridge.handleConnection(probe, makeReq(`role=verifier&${extra}`));
+            expect(probe.closed.code).toBe(1008);
+            expect(probe.sent).toEqual([]);
+        }
+        expect(Bridge.agents.size).toBe(0);
+        expect(Bridge.apps.size).toBe(0);
     });
 });
 

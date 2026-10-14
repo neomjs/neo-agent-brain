@@ -3,7 +3,7 @@ import fs             from 'node:fs';
 import os             from 'node:os';
 import path           from 'node:path';
 import {createSeatPatOwner, createSeatPlaneOwner, createTenantBearerOwner, isLaunchCredentialBinding,
-    restoreLaunchCredentialOwner, servedPlaneBinding, createResidentMcpInputOwner, isResidentMcpBinding} from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
+    restoreLaunchCredentialOwner, servedPlaneBinding, createResidentMcpInputOwner, isResidentMcpBinding, createBridgeTokenOwner} from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
 
 let root;
 test.beforeEach(() => { root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'credential-owner-'))); });
@@ -49,6 +49,46 @@ test('a credential proof cannot overtake an owner change', async () => {
     const owner   = createSeatPatOwner({registry: state.registry, agent: state.agent, proveForgeAccount: () => waiting});
     const proof   = owner.prove(state.pat);
     state.agent = {...state.agent, githubUsername: 'different'};
+    finish({verdict: 'proved'});
+    expect(await proof).toEqual({verdict: 'refused'});
+});
+
+test('Bridge renewal keeps its original signer and re-proves the captured port without retaining a token', async () => {
+    const state = fixture();
+    state.authority = {version: 1, source: 'registry-file', registryRoot: root, publicKeySha256: 'a'.repeat(64)};
+    const original = structuredClone(state.authority), renewals = [], probes = [];
+    state.registry.getBridgeSigningAuthority = () => state.authority;
+    state.registry.renewBridgeToken = (id, authority) => {
+        renewals.push({id, authority});
+        return {token: `fresh-token-${renewals.length}`};
+    };
+    const probeVerifier = async options => { probes.push(options); return {verdict: 'proved'}; };
+    const owner         = createBridgeTokenOwner({registry: state.registry, agent: state.agent, authority: original, probeVerifier});
+    const restored      = restoreLaunchCredentialOwner(owner.binding, {registry: state.registry, probeVerifier});
+    expect(restored.resolve()).toBe('fresh-token-1');
+    expect(restored.resolve()).toBe('fresh-token-2');
+    expect(renewals).toEqual([{id: 'seat', authority: original}, {id: 'seat', authority: original}]);
+    expect(await restored.prove('fresh-token-2', {port: 12345, timeoutMs: 1000})).toEqual({verdict: 'proved'});
+    expect(probes[0]).toMatchObject({port: 12345, publicKeySha256: original.publicKeySha256, timeoutMs: 1000});
+    expect(JSON.stringify(restored.binding)).not.toContain('fresh-token');
+    expect(isLaunchCredentialBinding({...restored.binding, token: 'forbidden'})).toBe(false);
+    state.authority = {...state.authority, publicKeySha256: 'b'.repeat(64)};
+    expect(restored.resolve()).toBeNull();
+    expect(await restored.prove('fresh-token-2', {port: 12345})).toEqual({verdict: 'refused'});
+    expect(renewals).toHaveLength(2);
+    expect(probes).toHaveLength(1);
+    expect(() => restoreLaunchCredentialOwner(owner.binding, {registry: state.registry, probeVerifier})).toThrow(/changed or is unavailable/);
+});
+
+test('a live Bridge proof cannot overtake a signer-source change', async () => {
+    const state = fixture();
+    state.authority = {version: 1, source: 'registry-file', registryRoot: root, publicKeySha256: 'a'.repeat(64)};
+    state.registry.getBridgeSigningAuthority = () => state.authority;
+    let finish;
+    const owner = createBridgeTokenOwner({registry: state.registry, agent: state.agent, authority: state.authority,
+        probeVerifier: () => new Promise(resolve => finish = resolve)});
+    const proof = owner.prove('fixture-token', {port: 12345, timeoutMs: 1000});
+    state.authority = {...state.authority, source: 'config'};
     finish({verdict: 'proved'});
     expect(await proof).toEqual({verdict: 'refused'});
 });

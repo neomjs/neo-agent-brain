@@ -5,6 +5,8 @@ import {isAdmissibleEnvName, isLaunchIdentity}       from './mcpLaunchAdmission.
 import {MCP_SERVERS}                                 from '../../../src/fleet/contract/mcpServers.mjs';
 import {isOpaquePlaneId}                             from '../../planeConfig.mjs';
 import {proveSeatForgeAccount}                       from './seatGitIdentity.mjs';
+import {isBridgeSigningAuthority}                    from './seatRuntimeRecord.mjs';
+import {probeBridgeVerifier}                         from './probeBridgeVerifier.mjs';
 import {LAUNCH_ADMISSION_CREDENTIALS as CREDENTIALS} from '../../../src/fleet/contract/launchAdmission.mjs';
 
 /**
@@ -69,6 +71,10 @@ export function isLaunchCredentialBinding(value) {
     if (!value || value.version !== 1 || !text(value.storeRoot) || !path.isAbsolute(value.storeRoot) ||
         path.resolve(value.storeRoot) !== value.storeRoot || !text(value.agentId) || !isLaunchIdentity(value.identity)) return false;
     const common = ['version', 'kind', 'storeRoot', 'agentId', 'identity'];
+    if (value.kind === 'bridge-token') {
+        return exact(value, [...common, 'authority']) && isBridgeSigningAuthority(value.authority) &&
+            value.authority.registryRoot === value.storeRoot;
+    }
     if (value.kind === 'seat-pat') {
         return exact(value, [...common, 'forge', 'forgeHost']) && ['github', 'gitlab'].includes(value.forge) &&
             (value.forge === 'github' ? value.forgeHost === null : endpoint(value.forgeHost) &&
@@ -87,6 +93,7 @@ function storeRoot(service) { return fs.realpathSync(service.getDataDir()) }
 function freezeBinding(binding) {
     const value = structuredClone(binding);
     if (value.plane) Object.freeze(value.plane);
+    if (value.authority) Object.freeze(value.authority);
     return Object.freeze(value);
 }
 
@@ -128,6 +135,33 @@ export function createSeatPatOwner({registry, agent, proveForgeAccount: prove = 
         current   : () => patBinding(registry, registry.getDefinition?.(original.id) ?? registry.getAgent(original.id)),
         resolve   : () => registry.resolveCredential(original.id),
         prove     : (credential, {signal} = {}) => prove({agent: original, credential, signal})
+    });
+}
+
+/**
+ * @summary Renew a Bridge token only under the original Start's signer, then inspect the live verifier.
+ * The admission edge supplies the port from its immutable child-input snapshot on every proof.
+ * @param {Object} options
+ * @param {Object} options.registry Original registry owner.
+ * @param {Object} options.agent Original seat definition.
+ * @param {Object} options.authority Public signer captured atomically at Start.
+ * @param {Function} [options.probeVerifier] Bounded read-only verifier seam.
+ * @returns {Object} Credential owner; no token is retained by the callbacks or binding.
+ */
+export function createBridgeTokenOwner({registry, agent, authority, probeVerifier = probeBridgeVerifier}) {
+    if (!agent || !isBridgeSigningAuthority(authority)) throw new Error('Original Bridge signing authority is invalid.');
+    const binding = {version: 1, kind: 'bridge-token', storeRoot: authority.registryRoot, agentId: agent.id,
+        identity: agent.githubUsername?.trim().replace(/^@/, ''), authority: structuredClone(authority)};
+    return owner({
+        credential: CREDENTIALS.BRIDGE_TOKEN, binding,
+        current   : () => {
+            const current = registry.getDefinition(binding.agentId);
+            return {...binding, storeRoot: storeRoot(registry), agentId: current?.id, identity: current?.githubUsername?.trim().replace(/^@/, ''),
+                authority: registry.getBridgeSigningAuthority()};
+        },
+        resolve: () => registry.renewBridgeToken(binding.agentId, binding.authority).token,
+        prove  : (value, {port, timeoutMs, signal} = {}) => probeVerifier({port, timeoutMs, signal,
+            publicKeySha256: binding.authority.publicKeySha256})
     });
 }
 
@@ -194,12 +228,14 @@ export function createSeatPlaneOwner({tenantService, agentId, planeBase, expecte
  * @param {Object} services Existing registry/tenant services and optional account-proof seam.
  * @returns {Object} The same owner interface used at Start.
  */
-export function restoreLaunchCredentialOwner(binding, {registry, tenantService, proveForgeAccount} = {}) {
-    if (!isLaunchCredentialBinding(binding) || binding.kind !== 'seat-pat' && !binding.plane) {
+export function restoreLaunchCredentialOwner(binding, {registry, tenantService, proveForgeAccount, probeVerifier} = {}) {
+    if (!isLaunchCredentialBinding(binding) || !['seat-pat', 'bridge-token'].includes(binding.kind) && !binding.plane) {
         throw new Error('Original launch credential owner is incomplete.');
     }
     try {
-        const restored = binding.kind === 'seat-pat'
+        const restored = binding.kind === 'bridge-token'
+            ? createBridgeTokenOwner({registry, agent: registry.getDefinition(binding.agentId), authority: binding.authority, probeVerifier})
+            : binding.kind === 'seat-pat'
             ? createSeatPatOwner({registry, agent: registry.getDefinition(binding.agentId), proveForgeAccount})
             : binding.kind === 'tenant-bearer'
                 ? createTenantBearerOwner({tenantService, agentId: binding.agentId, tenantId: binding.tenantId,

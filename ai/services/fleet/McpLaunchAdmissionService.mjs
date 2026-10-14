@@ -619,7 +619,11 @@ class McpLaunchAdmissionService extends Base {
 
         if (missing > -1) return refuse(REFUSALS.CREDENTIAL_MISSING, ownerCredentialKind(owners[missing]));
 
-        const proofs = await Promise.all(server.owned.map((name, index) => this.prove(generation, name, credentials[index])));
+        // This exact snapshot also becomes the child's env. Never re-read the port after proving it.
+        const childEnv = {...server.env, ...residentEnv};
+        const port     = typeof childEnv.NEO_NL_PORT === 'string' && /^[1-9][0-9]{0,4}$/.test(childEnv.NEO_NL_PORT)
+            ? Number(childEnv.NEO_NL_PORT) : null;
+        const proofs = await Promise.all(server.owned.map((name, index) => this.prove(generation, name, credentials[index], port)));
         if (this.journalFailed) return refuse(REFUSALS.ISSUER_UNAVAILABLE, REASONS.DURABILITY_FAILED);
         if (revoked()) return refuse(REFUSALS.REVOKED, server.reason ?? generation.reason);
         if (resident && !resident.matches()) return refuse(REFUSALS.CREDENTIAL_UNPROVEN);
@@ -651,7 +655,7 @@ class McpLaunchAdmissionService extends Base {
         return answer({
             outcome       : OUTCOMES.ADMITTED,
             generationRoot: generation.generationRoot,
-            env           : {...server.env, ...residentEnv, ...Object.fromEntries(server.owned.map((name, index) => [name, credentials[index]]))},
+            env           : {...childEnv, ...Object.fromEntries(server.owned.map((name, index) => [name, credentials[index]]))},
             args          : [...server.args]
         })
     }
@@ -663,20 +667,23 @@ class McpLaunchAdmissionService extends Base {
      * @param {Object} generation
      * @param {String} name The name the value goes under.
      * @param {String} value
+     * @param {Number|null} port Port captured for this child, relevant only to the Bridge token owner.
      * @returns {Promise<{verdict: String, reason?: String}>}
      * @protected
      */
-    prove(generation, name, value) {
+    prove(generation, name, value, port = null) {
         const
             {owners, proofs} = generation,
-            key              = `${name}\0${crypto.createHash('sha256').update(value).digest('base64url')}`;
+            bridge           = ownerCredentialKind(owners[name]) === 'bridge-token',
+            key              = `${name}\0${crypto.createHash('sha256').update(value).digest('base64url')}\0${bridge ? port : ''}`;
 
         if (!proofs.has(key)) {
             let timer;
             const controller = new AbortController();
 
             const proof = Promise.race([
-                Promise.resolve().then(() => owners[name].prove(value, {signal: controller.signal})),
+                Promise.resolve().then(() => owners[name].prove(value, {signal: controller.signal,
+                    ...(bridge ? {port, timeoutMs: this.proofTimeoutMs} : {})})),
                 new Promise(resolve => {
                     timer = setTimeout(() => {
                         resolve({verdict: 'unanswered', reason: 'proof-timeout'});
@@ -931,7 +938,8 @@ function readOwner(owner) {
 /** @summary Return a fixed credential-type label, never an owner-supplied value. @param {Object} owner @returns {String|undefined} */
 function ownerCredentialKind(owner) {
     if (owner.credential === 'seat-pat') return 'seat-pat';
-    if (owner.credential === 'plane-bearer') return 'plane-bearer'
+    if (owner.credential === 'plane-bearer') return 'plane-bearer';
+    if (owner.credential === 'bridge-token') return 'bridge-token'
 }
 
 /**

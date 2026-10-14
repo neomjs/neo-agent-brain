@@ -1,9 +1,9 @@
-import {WebSocketServer}         from 'ws';
-import crypto                    from 'crypto';
-import Base                      from 'neo.mjs/src/core/Base.mjs';
-import logger                    from './logger.mjs';
-import {createBridgeInfoPayload} from './BridgeProtocol.mjs';
-import {verifyBridgeToken}       from './verifyBridgeToken.mjs';
+import {WebSocketServer}                                      from 'ws';
+import crypto                                                 from 'crypto';
+import Base                                                   from 'neo.mjs/src/core/Base.mjs';
+import logger                                                 from './logger.mjs';
+import {createBridgeInfoPayload, createBridgeVerifierPayload} from './BridgeProtocol.mjs';
+import {verifyBridgeToken}                                    from './verifyBridgeToken.mjs';
 
 /**
  * @summary The central WebSocket Hub (Bridge) for Neural Link.
@@ -183,6 +183,24 @@ class Bridge extends Base {
             const id      = url.searchParams.get('id') || url.searchParams.get('appWorkerId'); // Support legacy param
             const appName = url.searchParams.get('appName');
             const token   = url.searchParams.get('token');
+
+            if (role === 'verifier') {
+                // Deliberately id-less: an older Bridge refuses this before its registration paths.
+                if (url.pathname !== '/' || url.searchParams.size !== 1) {
+                    ws.close(1008, 'Verifier request must contain only its role');
+                    return;
+                }
+                const key = this.getBridgePublicKey();
+                if (key && key.asymmetricKeyType !== 'ed25519') {
+                    ws.close(1011, 'Unsupported verifier key');
+                    return;
+                }
+                const fingerprint = key ? crypto.createHash('sha256')
+                    .update(key.export({type: 'spki', format: 'der'})).digest('hex') : null;
+                ws.send(JSON.stringify(createBridgeVerifierPayload(fingerprint)));
+                ws.close(1000, 'Verifier response complete');
+                return;
+            }
 
             if (!id) {
                 logger.warn('Bridge: Connection rejected. No ID provided.');
