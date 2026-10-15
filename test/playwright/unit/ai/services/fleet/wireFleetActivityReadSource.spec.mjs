@@ -306,27 +306,34 @@ test.describe('Fleet Activity — explicit mailbox observation', () => {
         })
     }
 
+    // the lane read is an observer read, the path MailboxService.spec proves stamps no receipt
     for (const observerFinishesFirst of [true, false]) {
-        test(`explicit observer never displaces ordinary held mail or lane claims (observer first: ${observerFinishesFirst})`, async () => {
+        test(`only the composer's own team observation feeds the lanes, asked once by concurrent reads (observer first: ${observerFinishesFirst})`, async () => {
             const waits = [], saves = [],
                   read  = source(args => new Promise(resolve => waits.push({args, resolve})), {
                       resolveViewerIdentity: () => '@viewer',
                       laneClaimSource      : 'test-mailbox',
                       laneClaimStore       : {load: () => null, save: value => saves.push(value)}
-                  });
-            const ordinary       = read.readActivitySnapshot({limit: 2}),
-                  observed       = read.readActivitySnapshot({observer, limit: 2}),
-                  ordinaryResult = page([message('own', '[lane-claim] own lane')]),
-                  observedResult = page([message('foreign', '[lane-claim] foreign lane')]);
+                  }),
+                  kind     = args => args.observer?.memorySharing === 'team' ? 'lanes' : args.observer ? 'observed' : 'ordinary',
+                  answers  = {
+                      lanes   : page([message('broadcast', '[lane-claim] broadcast lane')], {limit: 50}),
+                      observed: page([message('foreign', '[lane-claim] the caller\'s observer')]),
+                      ordinary: page([message('own', '[lane-claim] the caller\'s page')])
+                  },
+                  settle   = name => waits.filter(wait => kind(wait.args) === name).forEach(wait => wait.resolve(answers[name])),
+                  ordinary = read.readActivitySnapshot({limit: 2}),
+                  observed = read.readActivitySnapshot({observer, limit: 2});
 
-            const first = observerFinishesFirst ? 1 : 0, second = 1 - first;
-            waits[first].resolve(first === 0 ? ordinaryResult : observedResult);
-            await (first === 0 ? ordinary : observed);
-            waits[second].resolve(second === 0 ? ordinaryResult : observedResult);
+            expect(waits.map(wait => kind(wait.args)).sort()).toEqual(['lanes', 'observed', 'ordinary']);
+            expect(waits.find(wait => kind(wait.args) === 'lanes').args).toEqual({box: 'all', status: 'all', limit: 50, observer: {memorySharing: 'team', scope: 'all'}});
+
+            for (const name of observerFinishesFirst ? ['observed', 'lanes', 'ordinary'] : ['ordinary', 'lanes', 'observed']) {
+                settle(name)
+            }
             await Promise.all([ordinary, observed]);
-            expect(waits[0].args.observer).toBeUndefined();
-            expect(read.readHeldA2ASnapshot().events[0].payload.messageId).toBe('MESSAGE:own');
-            expect(read.readHeldA2ASnapshot().laneClaims.map(row => row.payload.subject)).toEqual(['[lane-claim] own lane']);
+
+            expect(read.readHeldLaneSnapshot().a2a.entries.map(entry => entry.subject)).toEqual(['[lane-claim] broadcast lane']);
             expect(saves).toHaveLength(1)
         })
     }

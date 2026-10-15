@@ -33,11 +33,11 @@ function githubAvatarUrl(githubUsername) {
  * @param {Object[]} options.fleetStatus   Repo-status entries from `registryBridge.fleetStatus()`.
  * @param {Object[]} options.runtimeStatus Optional per-agent process entries from
  *     `registryBridge.fleetRuntimeStatus()` — rows carry an observed `lifecycle` when present.
- * @param {Object}   [options.laneStatus] Held A2A contribution `{capability, events, scanned, laneClaims}`
- *     from the activity read admitted for this viewer. `laneClaims`, the composer's per-seat record,
- *     is each seat's lane when present; a bare page folds its `events`. Sender logins are already
- *     normalized by the A2A producer and join only to `githubUsername`, never the registry key.
- *     Capture time and scanned mailbox rows bound the observation window.
+ * @param {Object}   [options.laneStatus] The activity source's held lanes for this viewer,
+ *     `{a2a: {capability, entries}, forge: {assignments, capability, claims}|null}`. A seat's lane is its newest
+ *     explicit claim across the A2A record and its forge's open issues, unless a newer A2A release ended it; with
+ *     no standing claim, the open issue assigned to it fills the line as `inferred`, without a claim time. Logins
+ *     join only to `githubUsername`, never the registry key, and a GitLab seat reads no GitHub forge facts.
  * @param {Object[]} options.events        Optional already-normalized cockpit events.
  * @param {Object}   options.capabilities  Optional source-capability overrides from wired adapters.
  * @returns {Object} serializable cockpit DTO `{sources, capabilities, rows, events}`.
@@ -65,42 +65,13 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
         presenceStatus.map(entry => [entry.agentId || entry.id, sanitizePayload(entry)])
     )
 
-    const laneSource      = laneStatus?.capability,
-          validLaneSource = ['wired', 'degraded', 'not-wired'].includes(laneSource?.state),
-          laneCapability  = laneStatus == null
-              ? {...createNotWiredCapability(FLEET_COCKPIT_SOURCES.a2a, 'no activity page held in this process yet'), capturedAt: null, scanned: null}
-              : {
-                  source    : FLEET_COCKPIT_SOURCES.a2a,
-                  state     : validLaneSource ? laneSource.state : 'degraded',
-                  confidence: validLaneSource ? (laneSource.confidence ?? 'none') : 'none',
-                  reason    : boundReason(laneSource?.reason) ?? (validLaneSource ? null : 'held A2A activity page has no valid capability'),
-                  capturedAt: laneSource?.capturedAt ?? null,
-                  scanned   : Number.isInteger(laneStatus.scanned) && laneStatus.scanned >= 0 ? laneStatus.scanned : null
-              },
-          laneByLogin  = new Map();
-
-    // Fold the admitted claims once, before joining rows. A degraded page cannot lend its retained
-    // claims to a current observation; malformed claims cannot displace a valid one.
-    if (laneCapability.state === 'wired') {
-        const claims = Array.isArray(laneStatus.laneClaims) ? laneStatus.laneClaims : laneStatus.events;
-
-        for (const event of Array.isArray(claims) ? claims : []) {
-            const {agentId, occurredAt, payload, source, type} = event || {},
-                  claimedAt                                    = typeof occurredAt === 'string' ? Date.parse(occurredAt) : NaN;
-
-            if (type !== 'lane-claim' || source !== FLEET_COCKPIT_SOURCES.a2a ||
-                typeof agentId !== 'string' || !agentId.trim() || agentId.startsWith('@') ||
-                !Number.isFinite(claimedAt) || typeof payload?.subject !== 'string' || !payload.subject.trim()) {
-                continue
-            }
-
-            const previous = laneByLogin.get(agentId);
-
-            if (!previous || claimedAt > previous.claimedAt) {
-                laneByLogin.set(agentId, {laneLine: payload.subject, laneClaimedAt: occurredAt, claimedAt});
-            }
-        }
-    }
+    const laneCapability = laneStatus == null
+              ? {...createNotWiredCapability(FLEET_COCKPIT_SOURCES.a2a, 'no lane observation held in this process yet'), capturedAt: null, policy: null, scanned: null}
+              : heldLaneCapability(laneStatus.a2a?.capability, FLEET_COCKPIT_SOURCES.a2a),
+          forgeCapability = laneStatus?.forge == null
+              ? {...createNotWiredCapability(FLEET_COCKPIT_SOURCES.commentLane, 'no PR/lane read held in this process yet'), capturedAt: null}
+              : heldLaneCapability(laneStatus.forge.capability, FLEET_COCKPIT_SOURCES.commentLane),
+          laneByLogin     = foldLanes(laneStatus);
 
     // The newest ATTRIBUTABLE activity instant per agent, folded from the supplied normalized
     // events (their `occurredAt`) — one pass, so the per-row stamp below is a lookup. Only events
@@ -138,7 +109,10 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
             // presence-fresh ≠ wake-route-healthy ≠ identity-bound. Not-wired is the honest
             // default until the assembler passes a snapshot; a band is never guessed.
             presence: suppliedCapabilities.presence || createNotWiredCapability(FLEET_COCKPIT_SOURCES.presence, 'presence producer not wired'),
-            lane    : laneCapability
+            // The lane sources the active sharing mode admitted: the A2A observation, `wired` only at team
+            // breadth, and the forge's issues, which every mode reads
+            lane     : laneCapability,
+            forgeLane: forgeCapability
         },
         rows: agents.map(agent => {
             const publicAgent = sanitizePayload(agent),
@@ -156,8 +130,9 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                   wake        = wakeByAgentId.get(agentId) || null,
                   throttle    = throttleByAgentId.get(agentId) || null,
                   presence    = presenceByAgentId.get(agentId) || null,
+                  gitlab      = publicAgent.forge === 'gitlab',
                   lane        = typeof publicAgent.githubUsername === 'string' && publicAgent.githubUsername
-                      ? laneByLogin.get(publicAgent.githubUsername) ?? null
+                      ? laneOf(laneByLogin.get(publicAgent.githubUsername), {githubForge: !gitlab})
                       : null
 
             return {
@@ -177,6 +152,8 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 openLaneCount: publicAgent.openLaneCount ?? null,
                 laneLine     : lane?.laneLine ?? null,
                 laneClaimedAt: lane?.laneClaimedAt ?? null,
+                // the source that answered the line, `{source, confidence}`; null without a line
+                laneSource   : lane?.laneSource ?? null,
                 // The newest attributable per-agent activity instant, stamped HERE from what this
                 // assembler already holds: the activity-event fold above merged with the presence
                 // producer's own `lastSeenAt` recency. Tri-state honest like its siblings — null =
@@ -348,6 +325,14 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                         confidence: laneCapability.confidence,
                         reason    : laneCapability.reason
                     },
+                    forgeLane: gitlab
+                        ? createNotWiredCapability(FLEET_COCKPIT_SOURCES.commentLane, 'no GitLab lane reader yet')
+                        : {
+                            source    : forgeCapability.source,
+                            state     : forgeCapability.state,
+                            confidence: forgeCapability.confidence,
+                            reason    : forgeCapability.reason
+                        },
                     presence: {
                         source    : FLEET_COCKPIT_SOURCES.presence,
                         state     : presence ? 'wired' : 'not-wired',
@@ -431,6 +416,104 @@ export function createNotWiredCapability(source, reason) {
  */
 export function boundReason(value) {
     return typeof value === 'string' && value.trim() ? value.trim().slice(0, 200) : null
+}
+
+/**
+ * @summary One held lane source's capability, bounded at this producer. A held source without a valid state reads
+ * `degraded`, and {@link foldLanes} takes none of its facts.
+ * @param {*} capability The held source's capability.
+ * @param {String} source The lane source literal.
+ * @returns {Object} `{source, state, confidence, reason, capturedAt}`, plus `policy` and `scanned` for the A2A source.
+ * @private
+ */
+function heldLaneCapability(capability, source) {
+    const valid = ['wired', 'degraded', 'not-wired'].includes(capability?.state)
+
+    return {
+        source,
+        state     : valid ? capability.state : 'degraded',
+        confidence: valid ? (capability.confidence ?? 'none') : 'none',
+        reason    : boundReason(capability?.reason) ?? (valid ? null : 'held lane source has no valid capability'),
+        capturedAt: capability?.capturedAt ?? null,
+        ...(source === FLEET_COCKPIT_SOURCES.a2a && {
+            policy : typeof capability?.policy === 'string' ? capability.policy : null,
+            scanned: Number.isInteger(capability?.scanned) && capability.scanned >= 0 ? capability.scanned : null
+        })
+    }
+}
+
+/**
+ * @summary Each login's lane candidates across the held lane sources, folded once before the rows join: its newest
+ * A2A entry (a claim or a release), its newest forge claim and its newest open assignment. A source lends its facts
+ * only while its held capability answered, and a malformed fact never displaces a valid one.
+ * @param {Object|null} laneStatus
+ * @returns {Map<String, Object>} login → `{a2a, claim, assignment}`, each `{claimedAt, laneClaimedAt, laneLine, laneSource}`.
+ * @private
+ */
+function foldLanes(laneStatus) {
+    const
+        byLogin  = new Map(),
+        answered = capability => capability?.state === 'wired' || capability?.state === 'degraded',
+        facts    = value => (Array.isArray(value) ? value : []).filter(Boolean),
+        isLine   = value => typeof value === 'string' && Boolean(value.trim()),
+        keep     = (kind, agentId, occurredAt, fact) => {
+            const claimedAt = typeof occurredAt === 'string' ? Date.parse(occurredAt) : NaN
+
+            if (typeof agentId !== 'string' || !agentId.trim() || agentId.startsWith('@') || !Number.isFinite(claimedAt)) {
+                return
+            }
+
+            const candidates = byLogin.get(agentId) ?? {}
+
+            if (!candidates[kind] || claimedAt > candidates[kind].claimedAt) {
+                byLogin.set(agentId, {...candidates, [kind]: {...fact, claimedAt}})
+            }
+        }
+
+    if (answered(laneStatus?.a2a?.capability)) {
+        for (const {agentId, collisionTag, occurredAt, subject} of facts(laneStatus.a2a.entries)) {
+            if (collisionTag === 'claim-corrected') {
+                keep('a2a', agentId, occurredAt, {laneClaimedAt: occurredAt, laneLine: null, laneSource: null})
+            } else if (collisionTag === 'lane-claim' && isLine(subject)) {
+                keep('a2a', agentId, occurredAt, {laneClaimedAt: occurredAt, laneLine: subject, laneSource: {source: FLEET_COCKPIT_SOURCES.a2a, confidence: 'observed'}})
+            }
+        }
+    }
+
+    if (answered(laneStatus?.forge?.capability)) {
+        for (const {agentId, line, occurredAt} of facts(laneStatus.forge.claims)) {
+            isLine(line) && keep('claim', agentId, occurredAt, {laneClaimedAt: occurredAt, laneLine: line, laneSource: {source: FLEET_COCKPIT_SOURCES.commentLane, confidence: 'observed'}})
+        }
+
+        // an assignment carries the issue's last change, never a claim time
+        for (const {agentId, line, occurredAt} of facts(laneStatus.forge.assignments)) {
+            isLine(line) && keep('assignment', agentId, occurredAt, {laneClaimedAt: null, laneLine: line, laneSource: {source: FLEET_COCKPIT_SOURCES.githubIssue, confidence: 'inferred'}})
+        }
+    }
+
+    return byLogin
+}
+
+/**
+ * @summary One seat's lane from its {@link foldLanes} candidates: the newer explicit entry of its A2A record and its
+ * forge claims, unless that entry is a release; with no standing claim, its open assignment.
+ * @param {Object|undefined} candidates
+ * @param {Object} options
+ * @param {Boolean} options.githubForge Whether the seat's forge is the GitHub one its forge facts were read from.
+ * @returns {Object|null} `{laneClaimedAt, laneLine, laneSource}`
+ * @private
+ */
+function laneOf(candidates, {githubForge}) {
+    const
+        {a2a, assignment, claim} = candidates ?? {},
+        forgeClaim               = githubForge ? claim : null,
+        explicit                 = a2a && forgeClaim ? (forgeClaim.claimedAt > a2a.claimedAt ? forgeClaim : a2a) : a2a ?? forgeClaim
+
+    if (explicit?.laneLine) {
+        return explicit
+    }
+
+    return githubForge ? assignment ?? null : null
 }
 
 function sanitizePayload(value) {

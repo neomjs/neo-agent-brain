@@ -20,10 +20,11 @@ import * as core      from 'neo.mjs/src/core/_export.mjs'
 import {
     createFleetPrLaneActivitySnapshot,
     createIssueActivityEvents,
+    createIssueLaneFacts,
     createPrActivityEvents,
     createStallActivityEvents
 } from '../../../../../../ai/services/fleet/fleetPrLaneActivityAdapter.mjs'
-import {qualifyOriginId} from '../../../../../../ai/services/graph/corpusProjectionContract.mjs'
+import {qualifyOriginId}       from '../../../../../../ai/services/graph/corpusProjectionContract.mjs'
 import {FLEET_COCKPIT_SOURCES} from '../../../../../../src/fleet/contract/cockpit.mjs';
 
 test.describe('fleetPrLaneActivityAdapter - PR/lane activity mapping', () => {
@@ -360,5 +361,66 @@ test.describe('fleetPrLaneActivityAdapter - corpus origins', () => {
         expect(full.events.map(event => event.type)).toEqual(['pr-activity', 'pr-activity'])
         expect(lean.events.map(event => event.type)).toEqual(['issue-activity', 'work-stall'])
         expect(lean.capability).toEqual(full.capability)
+    })
+})
+
+// The roster's forge lane, read from every issue and never from the bounded event window
+test.describe('fleetPrLaneActivityAdapter - forge lane facts', () => {
+    const
+        comment = (login, at, body) => `### @${login} - ${at}\n\n${body}\n`,
+        issue   = (number, {assignees = [], comments = [], state = 'OPEN', updatedAt = '2026-10-15T10:00:00Z'} = {}) => ({
+            repoSlug: 'neo-agent-brain', number,
+            meta    : {id: number, title: `ticket ${number}`, state, assignees, createdAt: '2026-10-15T08:00:00Z', updatedAt},
+            content : `# ticket ${number}\n\n${comments.join('\n')}`
+        }),
+        fact    = (agentId, number, occurredAt) => ({agentId, issue: `neo-agent-brain#${number}`, line: `neo-agent-brain#${number} ticket ${number}`, occurredAt})
+
+    test('each login\'s newest claim comment and newest assignment among the open issues, whatever outranks them in the window', () => {
+        const snapshot = createFleetPrLaneActivitySnapshot({
+            capturedAt: '2026-10-15T12:00:00Z',
+            limit     : 1,
+            prs       : [{number: 9, title: 'newer', author: {login: 'neo-gpt'}, updatedAt: '2026-10-15T11:00:00Z'}],
+            issues    : [
+                issue(1, {assignees: ['neo-gpt'], updatedAt: '2026-10-15T09:30:00Z', comments: [comment('neo-gpt', '2026-10-15T09:00:00Z', '[lane-claim] taking it')]}),
+                issue(2, {assignees: ['neo-opus-ada', 'neo-gpt'], updatedAt: '2026-10-15T09:40:00Z', comments: [
+                    comment('neo-gpt', '2026-10-15T09:10:00Z', 'lane-state: next-lane'),
+                    comment('neo-opus-ada', '2026-10-15T09:20:00Z', 'a review, no claim')
+                ]}),
+                // closed: its claim and its assignment ended with it
+                issue(3, {state: 'CLOSED', assignees: ['neo-gpt'], updatedAt: '2026-10-15T09:55:00Z', comments: [comment('neo-gpt', '2026-10-15T09:50:00Z', '[lane-claim] done since')]})
+            ]
+        })
+
+        expect(snapshot.events.map(event => event.type), 'the window holds one pull-request event').toEqual(['pr-activity'])
+        expect(snapshot.lanes).toEqual({
+            state      : 'wired',
+            reason     : null,
+            claims     : [fact('neo-gpt', 2, '2026-10-15T09:10:00.000Z')],
+            assignments: [fact('neo-gpt', 2, '2026-10-15T09:40:00.000Z'), fact('neo-opus-ada', 2, '2026-10-15T09:40:00.000Z')]
+        })
+    })
+
+    test('an API-shaped issue lends its claim too, with or without a comment id', () => {
+        const facts = createIssueLaneFacts([{
+            number  : 4, repoSlug: 'neo', title: 'api', state: 'OPEN', assignees: [{login: 'neo-gpt'}], updatedAt: '2026-10-15T09:00:00Z',
+            comments: {nodes: [{author: {login: 'neo-opus-ada'}, body: 'claiming #4', createdAt: '2026-10-15T08:30:00Z'}]}
+        }])
+
+        expect(facts).toEqual({
+            assignments: [{agentId: 'neo-gpt', issue: 'neo#4', line: 'neo#4 api', occurredAt: '2026-10-15T09:00:00.000Z'}],
+            claims     : [{agentId: 'neo-opus-ada', issue: 'neo#4', line: 'neo#4 api', occurredAt: '2026-10-15T08:30:00.000Z'}]
+        })
+    })
+
+    test('a partial read keeps the facts it could read and names the origins it could not; a failed read has none', () => {
+        const partial = createFleetPrLaneActivitySnapshot({
+                  capturedAt     : '2026-10-15T12:00:00Z',
+                  issues         : [issue(1, {assignees: ['neo-gpt']})],
+                  partialFailures: ['devindex: tree unreadable']
+              }),
+              failed  = createFleetPrLaneActivitySnapshot({capturedAt: '2026-10-15T12:00:00Z', error: new Error('no tree')})
+
+        expect(partial.lanes).toMatchObject({state: 'degraded', reason: expect.stringContaining('devindex'), assignments: [{agentId: 'neo-gpt'}]})
+        expect(failed.lanes).toBeUndefined()
     })
 })

@@ -597,6 +597,54 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         }
     });
 
+    // A plane-attached Fleet lists through the MCP tool, the one path whose ordinary list stamps `seenAt`
+    for (const [binding, listMessages] of [
+        ['the host service',             args => MailboxService.listMessages(args)],
+        ['the MCP tool a plane serves', args => callMemoryCoreTool('list_messages', args)]
+    ]) test(`#1046: the Fleet's lane observation through ${binding} finds a broadcast a human viewer never receives, and stamps nothing (AC-1, AC-4)`, async () => {
+        const [{wireFleetActivityReadSource}, {createFleetCockpitStatus}] = await Promise.all([
+                  import('../../../../../../ai/services/fleet/wireFleetActivityReadSource.mjs'),
+                  import('../../../../../../ai/services/fleet/fleetCockpitStatus.mjs')
+              ]),
+              team = mailboxAiConfig.memorySharing.defaultPolicy === 'team';
+
+        GraphService.upsertNode({id: '@operator', type: 'AgentIdentity', name: 'Operator', properties: {accountType: 'human'}});
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'}));
+        await RequestContextService.run({agentIdentityNodeId: '@alice'}, () =>
+            MailboxService.addMessage({to: 'AGENT:*', subject: '[lane-claim] Brain #1046', body: 'taking the roster lanes'}));
+
+        const sqlite   = GraphService.db.storage.db,
+              snapshot = () => JSON.stringify({
+                  nodes   : sqlite.prepare('SELECT * FROM Nodes ORDER BY id').all(),
+                  edges   : sqlite.prepare('SELECT * FROM Edges ORDER BY id').all(),
+                  graphLog: sqlite.prepare('SELECT * FROM GraphLog ORDER BY log_id').all()
+              }),
+              source   = wireFleetActivityReadSource({
+                  bridge               : {},
+                  listMessages,
+                  readPrLane           : async () => ({capability: {state: 'wired'}, events: []}),
+                  resolveViewerIdentity: () => '@operator'
+              }),
+              before   = snapshot();
+
+        await RequestContextService.run({agentIdentityNodeId: '@operator'}, async () => {
+            expect((await MailboxService.listMessages({box: 'all', status: 'all', observer: {scope: 'own'}})).totalCount, 'the operator receives no broadcast').toBe(0);
+            // the caller's own read is an observer read too, so nothing this turn may stamp
+            await source.readActivitySnapshot({observer: {scope: 'own'}, limit: 10})
+        });
+
+        expect(snapshot(), 'the lane observation stamps no read, seen or receipt state').toBe(before);
+
+        const row = createFleetCockpitStatus({agents: [{id: 'alice-seat', githubUsername: 'alice'}], laneStatus: source.readHeldLaneSnapshot()}).rows[0];
+
+        expect(row.laneLine).toBe(team ? '[lane-claim] Brain #1046' : null);
+        expect(row.sources.lane.state).toBe(team ? 'wired' : 'degraded');
+
+        // the control: the tool's ordinary list by a recipient does stamp, so the snapshot can see it
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => callMemoryCoreTool('list_messages', {box: 'inbox', status: 'all'}));
+        expect(snapshot()).not.toBe(before);
+    });
+
     test('#921: detail shares scope admission; retraction never exposes retained old text or full Task inputs', async () => {
         const id = 'MESSAGE:observer-retracted';
         seedObserverMessage(id, {retracted: true, bodyText: 'old text must stay hidden'});

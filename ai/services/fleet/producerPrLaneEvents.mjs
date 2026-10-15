@@ -64,8 +64,8 @@ export function createPrTransitionEvents(transitions = [], {kinds = PR_LANE_TRAN
                 confidence: 'observed',
                 occurredAt: new Date(transition.pulse).toISOString(),
                 payload   : {
-                    kind          : 'pull-request',
-                    number        : transition.number,
+                    kind  : 'pull-request',
+                    number: transition.number,
                     repo,
                     // the cockpit keys origins by the repository's own name, as the corpus does
                     repoSlug      : repo ? repo.split('/').pop() : null,
@@ -115,8 +115,9 @@ export function describeRetainedWindow(state, {transitionWindow = TRANSITION_WIN
  * so a replaced corpus PR displaces no surviving event. A failed base read is contained: the slot
  * degrades naming it and still carries the producer's events. A producer that has not pulsed, whose
  * last pulse is stale or whose coverage is not complete degrades the slot naming the producer; its
- * freshness is the producer's `observedAt`, never this read's clock.
- * @param {Function|null} readBase `async params => {capability, counts, events}`, or null when this
+ * freshness is the producer's `observedAt`, never this read's clock. The base's lane facts pass through as the
+ * base answered them, since the producer has no say over the issues they are read from.
+ * @param {Function|null} readBase `async params => {capability, counts, events, lanes}`, or null when this
  *     process has neither a corpus nor a plane to read.
  * @param {Object}   options
  * @param {Object|Function} options.producer `{getState}`, or a function answering it at read time
@@ -124,7 +125,7 @@ export function describeRetainedWindow(state, {transitionWindow = TRANSITION_WIN
  * @param {Function} [options.now] `() → epoch ms`.
  * @param {Number}   [options.transitionWindow=TRANSITION_WINDOW]
  * @param {Number}   [options.baseBound=FLEET_ACTIVITY_BOUND_MAX] The bound the base is asked for.
- * @returns {Function} `async params => {capability, counts, events}`
+ * @returns {Function} `async params => {capability, counts, events, lanes}`
  */
 export function withProducerPrLane(readBase, {producer, now = () => Date.now(), transitionWindow = TRANSITION_WINDOW, baseBound = FLEET_ACTIVITY_BOUND_MAX} = {}) {
     return async (params = {}) => {
@@ -188,9 +189,9 @@ export function withProducerPrLane(readBase, {producer, now = () => Date.now(), 
                 capturedAt: base?.capability?.capturedAt ?? capturedAt,
                 reason    : reasons.length ? reasons.join(' · ').slice(0, REASON_MAX) : null,
                 producer  : {
-                    state      : projection?.state ?? 'unavailable',
-                    observedAt : state?.observedAt ?? null,
-                    coverage   : state?.coverage ?? 'unavailable',
+                    state     : projection?.state ?? 'unavailable',
+                    observedAt: state?.observedAt ?? null,
+                    coverage  : state?.coverage ?? 'unavailable',
                     retained,
                     coverageGap
                 }
@@ -199,7 +200,8 @@ export function withProducerPrLane(readBase, {producer, now = () => Date.now(), 
             events: events
                 .filter(event => !since || Date.parse(event.occurredAt) >= Date.parse(since))
                 .sort((a, b) => Date.parse(b.occurredAt || 0) - Date.parse(a.occurredAt || 0))
-                .slice(0, Math.max(0, limit))
+                .slice(0, Math.max(0, limit)),
+            ...(base?.lanes ? {lanes: base.lanes} : {})
         }
     }
 }

@@ -57,6 +57,21 @@ export const FLEET_ACTIVITY_REASON_MAX = 200;
 export const FLEET_ACTIVITY_BOUND_MAX = 200;
 
 /**
+ * @summary The observer selector the lane record reads with: the team breadth, which a deployment that holds a
+ * narrower sharing policy answers clamped. Every lane claim is an `AGENT:*` broadcast, whose cohort is agents only,
+ * so a human viewer's own mailbox never holds one. The observer read admits them and changes no receipt.
+ * @type {Object}
+ */
+export const FLEET_LANE_OBSERVER = Object.freeze({memorySharing: 'team', scope: 'all'});
+
+/**
+ * @summary How long one lane observation stands before a live read asks for the next. A mailbox page costs about a
+ * second on a team plane and a lane lives for hours, so lanes refresh once a minute instead of on every poll.
+ * @type {Number}
+ */
+export const FLEET_LANE_OBSERVATION_INTERVAL = 60000;
+
+/**
  * @summary Resolves the event bound, refusing values that would silently unbound the read.
  *
  * `params.limit ?? limit` accepted `-1`, `NaN`, `0` and `'50'` — a caller-supplied bound reaches the
@@ -198,7 +213,8 @@ async function readSlot(read, slot, params, capturedAt) {
         scanned   : Number.isInteger(snapshot.scanned) && snapshot.scanned >= 0 ? snapshot.scanned : null,
         counts    : Array.isArray(snapshot.counts) ? snapshot.counts : [],
         events    : Array.isArray(snapshot.events) ? snapshot.events : [],
-        ...(slot === FLEET_ACTIVITY_SLOTS.a2a && snapshot.a2a ? {a2a: structuredClone(snapshot.a2a)} : {})
+        ...(slot === FLEET_ACTIVITY_SLOTS.a2a && snapshot.a2a ? {a2a: structuredClone(snapshot.a2a)} : {}),
+        ...(slot === FLEET_ACTIVITY_SLOTS.prLane && snapshot.lanes ? {lanes: structuredClone(snapshot.lanes)} : {})
     }
 }
 
@@ -333,8 +349,64 @@ function composeCapability(capabilities, capturedAt) {
 }
 
 /**
+ * @summary The A2A lane source as one lane observation shows it. It is `wired` only at the team breadth
+ * {@link FLEET_LANE_OBSERVER} asks for. A narrower policy still answers the viewer's own mail and its granted
+ * inboxes', so those claims fold, but a seat without one there may hold a lane, and the reason says why.
+ * @param {Object} observed The lane observation's slot contribution.
+ * @param {String} capturedAt ISO capture stamp.
+ * @returns {Object} `{source, state, confidence, reason, capturedAt, scanned, policy}`; `policy` is null when the
+ *     read did not answer.
+ * @private
+ */
+function laneObservationCapability({a2a, capability, scanned}, capturedAt) {
+    const
+        policy = capability.state === 'wired' ? a2a?.observation?.policy ?? null : null,
+        base   = {source: FLEET_COCKPIT_SOURCES.a2a, capturedAt: capability.capturedAt ?? capturedAt, policy, scanned: scanned ?? null};
+
+    if (!policy) {
+        return {...base, state: 'degraded', confidence: 'none', reason: capText(`the lane observer read failed: ${redactReason(capability.reason ?? capability.state)}`, FLEET_ACTIVITY_REASON_MAX)}
+    }
+
+    return policy === 'team'
+        ? {...base, state: 'wired', confidence: 'observed', reason: null}
+        : {...base, state: 'degraded', confidence: 'none', reason: `the '${policy}' sharing policy shows other seats' broadcasts only through inbox grants`}
+}
+
+/**
+ * @summary The forge lane source as one PR/lane read answered it: the lane facts read over every issue, under
+ * their own state, which a stale open-work producer does not touch. A read that answered no lane facts (it failed,
+ * or a plane predates them) is degraded and lends none.
+ * @param {Object} read The PR/lane slot contribution.
+ * @param {String} capturedAt ISO capture stamp.
+ * @returns {{assignments: Object[], capability: Object, claims: Object[]}}
+ * @private
+ */
+function forgeLaneState({capability, lanes}, capturedAt) {
+    const
+        valid = (lanes?.state === 'wired' || lanes?.state === 'degraded') && Array.isArray(lanes.claims) && Array.isArray(lanes.assignments),
+        base  = {source: FLEET_COCKPIT_SOURCES.commentLane, capturedAt: capability.capturedAt ?? capturedAt};
+
+    if (!valid) {
+        return {
+            assignments: [],
+            capability : {...base, state: 'degraded', confidence: 'none', reason: capability.state === 'wired'
+                ? 'the PR/lane read answered no lane facts'
+                : capText(`the PR/lane read is ${capability.state}: ${redactReason(capability.reason ?? capability.state)}`, FLEET_ACTIVITY_REASON_MAX)},
+            claims     : []
+        }
+    }
+
+    return {
+        assignments: lanes.assignments,
+        capability : {...base, state: lanes.state, confidence: lanes.state === 'wired' ? 'observed' : 'none',
+            reason: lanes.state === 'wired' ? null : redactReason(lanes.reason ?? 'partial read')},
+        claims     : lanes.claims
+    }
+}
+
+/**
  * @summary A seat's lane outlives the page it was read from: each seat's newest claim or release
- * (`claim-corrected`), folded forward from every admitted first page for one viewer. A claim leaves
+ * (`claim-corrected`), folded forward from every lane observation for one viewer. A claim leaves
  * only when its seat sends a newer claim or a release, never because newer mail pushed it off the
  * page. With a `{load, save}` store it survives a restart, for the mailbox source and viewer it was
  * read from: a record from another plane or another viewer is not shown, and the first change
@@ -342,7 +414,7 @@ function composeCapability(capabilities, capturedAt) {
  * not `{source, viewerIdentity, seats}`) stays out of this process and is never overwritten.
  * @param {Object|null} store
  * @param {String|null} source The admitted mailbox's identity, saved with the record.
- * @returns {{fold: Function, claimsFor: Function}}
+ * @returns {{fold: Function, entriesFor: Function}}
  * @private
  */
 function createLaneRecord(store, source) {
@@ -407,12 +479,11 @@ function createLaneRecord(store, source) {
             }
         },
 
-        claimsFor(viewerIdentity) {
+        // releases too: a release newer than a seat's forge claim ends that lane as well
+        entriesFor(viewerIdentity) {
             return viewerIdentity !== viewer ? [] : [...seats]
-                .filter(([, seat]) => seat?.collisionTag === 'lane-claim')
-                .map(([agentId, {messageId, occurredAt, subject}]) => ({
-                    type: 'lane-claim', source: FLEET_COCKPIT_SOURCES.a2a, agentId, occurredAt, payload: {messageId, subject}
-                }))
+                .filter(([, seat]) => seat?.collisionTag === 'lane-claim' || seat?.collisionTag === 'claim-corrected')
+                .map(([agentId, {collisionTag, messageId, occurredAt, subject}]) => ({agentId, collisionTag, messageId, occurredAt, subject}))
         }
     }
 }
@@ -426,17 +497,18 @@ function createLaneRecord(store, source) {
  * @param {Function} options.readPrLaneSnapshot `params => Promise<{capability, events}>` — the
  *   PR/lane adapter's read path. The adapter itself is a pure builder over already-read facts, so
  *   the caller owns the reading and this composer never reaches for GitHub or the graph directly.
- * @param {Number}   [options.limit=DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT] Default event bound.
- * @param {Function} [options.resolveViewerIdentity] Server-bound mailbox viewer at each call; absent disables retention.
+ * @param {Number}   [options.limit=DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT] Default event bound, and the lane observation's page.
+ * @param {Function} [options.resolveViewerIdentity] Server-bound mailbox viewer at each call; absent disables the lanes.
  * @param {Object}   [options.laneClaimStore] `{load, save}` for the per-seat lane record; absent keeps it in memory.
  * @param {String}   [options.laneClaimSource] The admitted mailbox's identity, required with a store:
  *   a saved record is only read back against the source it was read from.
- * @returns {{readActivitySnapshot: Function, readHeldA2ASnapshot: Function}} The activity read and its viewer-bound first-page observation.
+ * @param {Function} [options.now] `() → epoch ms`.
+ * @returns {{readActivitySnapshot: Function, readHeldLaneSnapshot: Function}} The activity read and the lanes it left.
  * @throws {TypeError} When a reader is missing — an unreadable half must be an explicit degraded
  *   capability from a real adapter, never a composer quietly composing one contributor and calling
  *   the result the fleet's activity — or when a lane store arrives without its source.
  */
-export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity = () => null, limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT, laneClaimStore = null, laneClaimSource = null} = {}) {
+export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity = () => null, limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT, laneClaimStore = null, laneClaimSource = null, now = () => Date.now()} = {}) {
     if (typeof readA2ASnapshot !== 'function' || typeof readPrLaneSnapshot !== 'function') {
         throw new TypeError('[fleetActivityComposer] readA2ASnapshot and readPrLaneSnapshot must be injected')
     }
@@ -461,51 +533,78 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
 
     const lanes = createLaneRecord(laneClaimStore, laneClaimSource);
 
-    let heldA2A       = null,
-        newestA2ARead = 0;
+    let observation       = null,
+        observationAsked  = -Infinity,
+        observationViewer = null,
+        newestObservation = 0,
+        forge             = null,
+        newestForgeRead   = 0;
 
     return {
         /**
-         * @summary Read the admitted first mailbox page without I/O, only within its bound viewer.
-         * @returns {Object|null} An independent snapshot carrying the viewer's per-seat `laneClaims`,
-         * or null before a matching viewer's read.
+         * @summary The lanes the newest reads left, without I/O, only for the viewer they were observed for. A failed
+         * observation lends no retained claim.
+         * @returns {Object|null} `{a2a: {capability, entries}, forge: {assignments, capability, claims}|null}`: the
+         * A2A lane source with each seat's newest claim or release, and the forge's lane facts. Null before a lane
+         * observation for this viewer.
          */
-        readHeldA2ASnapshot() {
+        readHeldLaneSnapshot() {
             const viewerIdentity = resolveViewerIdentity();
 
-            return viewerIdentity && viewerIdentity === heldA2A?.viewerIdentity
-                ? {...structuredClone(heldA2A.snapshot), laneClaims: lanes.claimsFor(viewerIdentity)}
-                : null
+            if (!viewerIdentity || observation?.viewerIdentity !== viewerIdentity) {
+                return null
+            }
+
+            return structuredClone({
+                a2a: {capability: observation.capability, entries: observation.capability.policy ? lanes.entriesFor(viewerIdentity) : []},
+                forge
+            })
         },
 
         /**
-         * @summary Read the requested slots; explicit observers never enter ordinary mailbox retention.
+         * @summary Read the requested slots. A live read also observes the lanes once a minute, under the
+         * composer's own selector: the caller's page and observer never feed the lane record.
          * @param {Object} params Activity selection and paging.
          * @returns {Promise<Object>} The bounded snapshot, with optional `a2a` admission, canonical page
          * and continuation. A mixed cut rereads its source page through `slots: ['a2a']` before advancing.
          */
         async readActivitySnapshot(params = {}) {
             const
-                capturedAt     = new Date().toISOString(),
+                capturedAt     = new Date(now()).toISOString(),
                 bound          = normalizeBound(params.limit, limit),
                 offset         = normalizeOffset(params.offset),
                 selected       = selectSlots(params.slots, slots),
-                holdsA2A       = params.observer === undefined && offset === 0 && selected.some(({slot}) => slot === FLEET_ACTIVITY_SLOTS.a2a),
-                generation     = holdsA2A ? ++newestA2ARead : null,
-                viewerIdentity = holdsA2A ? resolveViewerIdentity() : null,
-                // Every asked slot is read even when one is expected to fail: a contributor that cannot
-                // read must return its OWN degraded capability, and short-circuiting would replace
-                // that adapter's stated reason with the composer's guess about it. A caller's
-                // `slots` is a question about lanes, not a skip of a failing one.
-                contributions = await Promise.all(selected.map(({read, slot}) =>
-                    readSlot(read, slot, {...params, limit: bound, offset}, capturedAt)));
+                live           = offset === 0,
+                asks           = slot => live && selected.some(chosen => chosen.slot === slot),
+                viewerIdentity = asks(FLEET_ACTIVITY_SLOTS.a2a) ? resolveViewerIdentity() : null,
+                // an observation still in flight counts as asked, so concurrent first reads ask once
+                observes       = Boolean(viewerIdentity) &&
+                    (observationViewer !== viewerIdentity || now() - observationAsked >= FLEET_LANE_OBSERVATION_INTERVAL),
+                laneRead       = observes ? ++newestObservation : null,
+                forgeRead      = asks(FLEET_ACTIVITY_SLOTS.prLane) ? ++newestForgeRead : null;
 
-            // History and late completions cannot replace the newest admitted mailbox window.
-            if (holdsA2A && generation === newestA2ARead) {
-                const a2a = contributions.find(({capability}) => capability.slot === FLEET_ACTIVITY_SLOTS.a2a);
+            if (observes) {
+                observationAsked  = now();
+                observationViewer = viewerIdentity
+            }
 
-                heldA2A = viewerIdentity ? {viewerIdentity, snapshot: structuredClone(a2a)} : null;
-                viewerIdentity && lanes.fold(viewerIdentity, a2a)
+            // Every asked slot is read even when one is expected to fail: a contributor that cannot
+            // read must return its OWN degraded capability, and short-circuiting would replace
+            // that adapter's stated reason with the composer's guess about it. A caller's
+            // `slots` is a question about lanes, not a skip of a failing one.
+            const [contributions, observed] = await Promise.all([
+                Promise.all(selected.map(({read, slot}) => readSlot(read, slot, {...params, limit: bound, offset}, capturedAt))),
+                observes ? readSlot(readA2ASnapshot, FLEET_ACTIVITY_SLOTS.a2a, {observer: {...FLEET_LANE_OBSERVER}, limit}, capturedAt) : null
+            ]);
+
+            // a late answer never replaces a newer one
+            if (observed && laneRead === newestObservation) {
+                lanes.fold(viewerIdentity, observed);
+                observation = {viewerIdentity, capability: laneObservationCapability(observed, capturedAt)}
+            }
+
+            if (forgeRead !== null && forgeRead === newestForgeRead) {
+                forge = forgeLaneState(contributions.find(({capability}) => capability.slot === FLEET_ACTIVITY_SLOTS.prLane), capturedAt)
             }
 
             const events             = boundEvents(contributions.flatMap(contribution => contribution.events), bound),

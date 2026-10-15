@@ -527,7 +527,7 @@ paths:
       x-annotations:
         readOnlyHint: true
       x-neo-tool-summary: Read the Fleet activity feed's PR/lane slot from the corpus the orchestrator materializes.
-      description: Serves the Fleet activity feed's PR/lane slot (PR, issue, lane-claim and stall-finding events) from the corpus the orchestrator materializes (`orchestrator.corpusProjection.materializedRoot`), for a Fleet attached to this plane that carries no corpus of its own. Returns the slot's own snapshot `{capability, counts, events, corpusIndexedAt}` with at most `limit` events. `capability.state` is `wired`, or `degraded` with the reader's reason when the tree is absent, mid-swap or unreadable — never an empty success. The tree is read once per materialization (`_index.json` write), not per call. Read-only, team-visible.
+      description: Serves the Fleet activity feed's PR/lane slot (PR, issue, lane-claim and stall-finding events) from the corpus the orchestrator materializes (`orchestrator.corpusProjection.materializedRoot`), for a Fleet attached to this plane that carries no corpus of its own. Returns the slot's own snapshot `{capability, counts, events, lanes, corpusIndexedAt}` with at most `limit` events. `lanes` is each login's newest lane-claim comment and newest assigned issue among the open issues, read from every issue and never bounded by `limit`. `capability.state` is `wired`, or `degraded` with the reader's reason when the tree is absent, mid-swap or unreadable — never an empty success. The tree is read once per materialization (`_index.json` write), not per call. Read-only, team-visible.
       tags: [Diagnostics]
       requestBody:
         required: false

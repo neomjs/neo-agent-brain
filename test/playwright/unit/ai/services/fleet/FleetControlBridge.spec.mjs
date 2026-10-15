@@ -871,7 +871,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
     });
 
 
-    test('fleetRoster reuses the held mailbox page and never reads the mailbox itself', async () => {
+    test('fleetRoster reads the lanes the activity read holds and never reads the mailbox itself', async () => {
         const {wireFleetActivityReadSource} = await import('../../../../../../ai/services/fleet/wireFleetActivityReadSource.mjs');
         let   mailboxCalls                  = 0;
         registryStub.listAgents = () => [{id: 'registry-seat', githubUsername: 'alice'}];
@@ -880,19 +880,27 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         wireFleetActivityReadSource({
             bridge               : FleetControlBridge,
             resolveViewerIdentity: () => '@viewer',
-            listMessages         : async () => {
+            // the broadcast reaches the team observation only, never the viewer's own page
+            listMessages         : async args => {
+                const messages = args.observer
+                    ? [{messageId: 'MESSAGE:lane', subject: '[lane-claim] taking one lane', from: '@alice', to: 'AGENT:*', sentAt: '2026-10-02T09:00:00.000Z'}]
+                    : [];
+
                 mailboxCalls++;
-                return {messages: [{messageId: 'MESSAGE:lane', subject: '[lane-claim] taking one lane', from: '@alice', to: 'AGENT:*', sentAt: '2026-10-02T09:00:00.000Z'}], totalCount: 1, truncated: false}
+                return {
+                    messages, totalCount: messages.length, truncated: false, nextOffset: null, limit: args.limit, offset: 0,
+                    ...(args.observer && {observation: {admissionKey: 'key', clamped: false, planeId: 'plane', policy: 'team', scope: 'all', viewer: '@viewer'}})
+                }
             },
             readPrLane: async () => ({capability: {state: 'wired'}, events: []})
         });
         expect((await FleetControlBridge.fleetRoster()).rows[0].sources.lane.state).toBe('not-wired');
         expect(mailboxCalls).toBe(0);
         await FleetControlBridge.fleetActivity();
-        expect(mailboxCalls).toBe(1);
+        expect(mailboxCalls, 'the activity page and the lane observation').toBe(2);
         const row = (await FleetControlBridge.fleetRoster()).rows[0];
         expect(row).toMatchObject({laneLine: '[lane-claim] taking one lane', laneClaimedAt: '2026-10-02T09:00:00.000Z', sources: {lane: {state: 'wired'}}});
-        expect(mailboxCalls).toBe(1);
+        expect(mailboxCalls).toBe(2);
         expect((await FleetControlBridge.fleetRoster()).capabilities.lane.scanned).toBe(1);
     });
 

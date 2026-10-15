@@ -39,7 +39,9 @@ const LANE_CLAIM_PATTERN = /\[(?:lane-claim|claiming)\]|\blane-state:\s*next-lan
  * @param {Boolean} [options.prEvents=true] `false` emits no pull-request events: the caller's PR
  *     contributor is another source (the open-work producer), and the bound here must not be spent
  *     on events that source replaces. `prs` still feed nothing else here; the stall inference consumed them upstream.
- * @returns {{capability: Object, counts: Object[], events: Object[]}}
+ * @returns {{capability: Object, counts: Object[], events: Object[], lanes: Object}} `lanes` is
+ *     {@link createIssueLaneFacts} over every issue read, with its own `state` and `reason`: `degraded` names the
+ *     origins it could not read. It is absent when no issue could be read.
  */
 export function createFleetPrLaneActivitySnapshot({
     prs = [],
@@ -86,6 +88,8 @@ export function createFleetPrLaneActivitySnapshot({
         .sort((a, b) => new Date(b.occurredAt || 0) - new Date(a.occurredAt || 0))
         .slice(0, Math.max(0, limit))
 
+    const lanes = createIssueLaneFacts(issues, {capturedAt: observedAt})
+
     if (failures.length > 0) {
         const reason = normalizeError(failures.join(' · '))
 
@@ -110,7 +114,8 @@ export function createFleetPrLaneActivitySnapshot({
                     }
                 }),
                 ...events
-            ]
+            ],
+            lanes: {...lanes, reason, state: 'degraded'}
         }
     }
 
@@ -123,8 +128,54 @@ export function createFleetPrLaneActivitySnapshot({
         // This reader cannot prove a complete PR/lane population without parsing the whole synced
         // corpus on every poll. Honest absence beats a partial number presented as a fleet total.
         counts: [],
-        events
+        events,
+        lanes : {...lanes, reason: null, state: 'wired'}
     }
+}
+
+/**
+ * @summary Each login's lane on this forge, read from every issue instead of the bounded event window, so newer
+ * pull-request events cannot push a claim out of it: the newest lane-claim comment the login wrote on an open issue,
+ * and the open issue assigned to it that changed last. An issue that closes takes its claim and its assignment with
+ * it. The line names the issue: its repository and number, then its title.
+ * @param {Object[]} issues GitHub issue or local-sync issue payloads.
+ * @param {Object} options
+ * @param {Date|String} options.capturedAt Fallback timestamp.
+ * @returns {{assignments: Object[], claims: Object[]}} One `{agentId, issue, line, occurredAt}` per login in each.
+ *     An assignment's `occurredAt` is the issue's last change, never the assignment's own time.
+ */
+export function createIssueLaneFacts(issues = [], {capturedAt = new Date()} = {}) {
+    const
+        claims      = new Map(),
+        assignments = new Map(),
+        keepNewest  = (facts, fact) => {
+            const known = facts.get(fact.agentId)
+
+            if (!known || Date.parse(fact.occurredAt) > Date.parse(known.occurredAt)) {
+                facts.set(fact.agentId, fact)
+            }
+        }
+
+    for (const issue of asArray(issues).filter(Boolean)) {
+        const normalized = normalizeIssue(issue, capturedAt)
+
+        if (normalized.number === null || String(normalized.state).toUpperCase() !== 'OPEN') continue;
+
+        const ref  = `${normalized.repoSlug ?? ''}#${normalized.number}`,
+              line = normalized.title ? `${ref} ${normalized.title}` : ref
+
+        for (const comment of normalized.comments) {
+            if (comment.author && LANE_CLAIM_PATTERN.test(comment.body || '')) {
+                keepNewest(claims, {agentId: comment.author, issue: ref, line, occurredAt: toIsoString(comment.createdAt, normalized.updatedAt)})
+            }
+        }
+
+        for (const agentId of normalized.assignees) {
+            keepNewest(assignments, {agentId, issue: ref, line, occurredAt: normalized.updatedAt})
+        }
+    }
+
+    return {assignments: [...assignments.values()], claims: [...claims.values()]}
 }
 
 /**

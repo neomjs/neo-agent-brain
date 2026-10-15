@@ -97,13 +97,13 @@ function realCorpusBase() {
                     {number: 19359, title: 'pr', state: 'OPEN',   author: {login: 'neo-opus-vega'}, updatedAt: T2, repoSlug: 'neo'}
                 ],
                 issues: [{
-                    number: 19361, title: 'issue', state: 'OPEN', updatedAt: T1, repoSlug: 'neo',
+                    number  : 19361, title: 'issue', state: 'OPEN', updatedAt: T1, repoSlug: 'neo',
                     comments: {nodes: [{id: 'IC_lane', author: {login: 'neo-opus-vega'}, createdAt: T1, body: '[lane-claim] taking #19361'}]}
                 }],
                 stallFindings: [{findingClass: 'stalled-review', grade: 'stall', waitingSince: T0, subject: {repoSlug: 'neo', number: 1, owner: null}}],
-                limit     : params.limit,
-                prEvents  : params.prEvents,
-                capturedAt: T0
+                limit        : params.limit,
+                prEvents     : params.prEvents,
+                capturedAt   : T0
             })
         }
     }
@@ -235,11 +235,11 @@ test.describe('producerPrLaneEvents — the PR lane over the open-work producer 
 
     test('AC-2 in plane mode: the plane is asked the same way, and a plane that still answers PR events has them replaced before the bound', async () => {
         const
-            calls      = [],
-            planeFlag  = createPlanePrLaneActivityReader({callTool: async (name, args) => { calls.push(args); return realCorpusBase().read(args) }}),
-            planeOld   = createPlanePrLaneActivityReader({callTool: async (name, args) => realCorpusBase().read({limit: args.limit})}),
-            producer   = producerOf(stateAt([transition({kind: 'merged', from: 'open', to: 'merged', pulse: T2})])),
-            now        = () => Date.parse(T2);
+            calls     = [],
+            planeFlag = createPlanePrLaneActivityReader({callTool: async (name, args) => { calls.push(args); return realCorpusBase().read(args) }}),
+            planeOld  = createPlanePrLaneActivityReader({callTool: async (name, args) => realCorpusBase().read({limit: args.limit})}),
+            producer  = producerOf(stateAt([transition({kind: 'merged', from: 'open', to: 'merged', pulse: T2})])),
+            now       = () => Date.parse(T2);
 
         const fresh = await withProducerPrLane(planeFlag, {producer, now})({limit: 2});
 
@@ -319,11 +319,11 @@ test.describe('producerPrLaneEvents — the PR lane over the open-work producer 
             identities = {byLogin: login => login === 'neo-opus-vega' ? '@neo-opus-vega' : null, byName: () => null},
             node       = number => ({
                 number, headRefOid: 'h1', reviewDecision: null, mergeable: 'MERGEABLE', isDraft: false, body: '',
-                author: {login: 'neo-opus-vega'}, repository: {nameWithOwner: 'neomjs/neo'},
-                reviewRequests: {pageInfo: {hasNextPage: false}, nodes: []},
-                latestReviews : {pageInfo: {hasNextPage: false}, nodes: []},
+                author                  : {login: 'neo-opus-vega'}, repository: {nameWithOwner: 'neomjs/neo'},
+                reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []},
+                latestReviews           : {pageInfo: {hasNextPage: false}, nodes: []},
                 latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: []},
-                commits       : {nodes: [{commit: {oid: 'h1', statusCheckRollup: {state: 'SUCCESS'}}}]}
+                commits                 : {nodes: [{commit: {oid: 'h1', statusCheckRollup: {state: 'SUCCESS'}}}]}
             }),
             clock      = () => { let ms = Date.parse(T0); return () => new Date(ms += 60_000) },
             build      = async transitionWindow => {
@@ -425,5 +425,19 @@ test.describe('producerPrLaneEvents — the PR lane over the open-work producer 
         expect(snapshot.capability.reason).toContain('open-work producer unavailable: no GitHub token');
         expect(snapshot.capability.producer).toMatchObject({state: 'unavailable', observedAt: null});
         expect(snapshot.events.map(event => event.type)).toEqual(['issue-activity', 'work-stall'])
+    });
+
+    test('the base\'s lane facts pass through as it answered them, whatever the producer says of the pull requests (#1046)', async () => {
+        const lanes = {state: 'wired', reason: null, assignments: [], claims: [{agentId: 'neo-gpt', issue: 'neo#9', line: 'neo#9 i', occurredAt: T1}]},
+              read  = withProducerPrLane(async () => ({...baseSnapshot(), lanes}), {
+                  producer: () => producerOf({observedAt: null, coverage: 'unavailable', reason: 'no GitHub token', transitions: []}),
+                  now     : () => Date.parse(T2)
+              }),
+              snapshot = await read({limit: 1});
+
+        expect(snapshot.capability.state).toBe('degraded');
+        expect(snapshot.lanes).toEqual(lanes);
+        expect((await withProducerPrLane(null, {producer: producerOf(stateAt([])), now: () => Date.parse(T2)})({limit: 1})).lanes, 'no base, no lane facts')
+            .toBeUndefined()
     })
 });

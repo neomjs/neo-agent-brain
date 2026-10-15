@@ -1562,8 +1562,8 @@ class FleetControlBridge extends Base {
      * Rides the authenticated `registryBridge` as a **read** verb; it carries NO lifecycle-write /
      * restart authority (the R3 read-observe ÷ lifecycle-write seam). An agent without an identity
      * root can use its declared harness family; unknown families remain unclassified. Activity
-     * stays on its own {@link #fleetActivity} verb. Lane stamps reuse that source's admitted
-     * mailbox page synchronously; this read never requests another activity page.
+     * stays on its own {@link #fleetActivity} verb. Lane stamps read the lanes that source holds
+     * (`readHeldLaneSnapshot`) synchronously; this read never requests another page of its own.
      * @returns {Object} the serializable cockpit DTO `{sources, capabilities, rows, events}`.
      */
     async fleetRoster() {
@@ -1611,7 +1611,7 @@ class FleetControlBridge extends Base {
             wakeStatus    : wake?.states ?? [],
             throttleStatus: throttle?.states ?? [],
             presenceStatus: presence?.states ?? [],
-            laneStatus    : me.activitySource?.readHeldA2ASnapshot?.() ?? null,
+            laneStatus    : me.activitySource?.readHeldLaneSnapshot?.() ?? null,
             capabilities  : {
                 activity: createNotWiredCapability(FLEET_COCKPIT_SOURCES.activity, 'activity rides the dedicated fleetActivity verb'),
                 runtime : {

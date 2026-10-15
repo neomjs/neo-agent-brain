@@ -577,176 +577,238 @@ test.describe('fleetActivityComposer ↔ FleetControlBridge — the real consume
     })
 });
 
-test.describe('fleetActivityComposer — held mailbox admission', () => {
-    const stamp = '2026-10-02T09:00:00.000Z';
-    const page  = (subject = 'current', state = 'wired') => ({
-        capability: {source: 'memory-core:mailbox', state, confidence: state === 'wired' ? 'observed' : 'none', capturedAt: stamp, reason: state === 'wired' ? null : 'mailbox unavailable'},
-        scanned   : 7,
-        events    : state === 'wired' ? [{eventId: subject, type: 'lane-claim', source: 'memory-core:mailbox', agentId: '@alice', occurredAt: stamp, payload: {subject}}] : []
-    });
-    let createSource;
-    test.beforeAll(async () => {
-        createSource = (await import('../../../../../../ai/services/fleet/fleetActivityComposer.mjs')).createFleetActivityReadSource
-    });
-
-    test('holds the A2A contribution before the composite bound and returns independent copies only to its viewer', async () => {
-        let   viewer = '@viewer-a';
-        const source = createSource({
-            resolveViewerIdentity: () => viewer,
-            readA2ASnapshot      : async () => page(),
-            readPrLaneSnapshot   : async () => ({capability: {state: 'wired'}, events: [{eventId: 'new-pr', occurredAt: '2026-10-02T10:00:00.000Z'}]})
-        });
-        expect(source.readHeldA2ASnapshot()).toBeNull();
-        const result = await source.readActivitySnapshot({limit: 1, viewerIdentity: '@forged'});
-        expect(result.events.map(event => event.eventId)).toEqual(['new-pr']);
-        const held = source.readHeldA2ASnapshot();
-        expect(held).toMatchObject({scanned: 7, capability: {capturedAt: stamp}, events: [{payload: {subject: 'current'}}]});
-        held.events[0].payload.subject = 'mutated';
-        expect(source.readHeldA2ASnapshot().events[0].payload.subject).toBe('current');
-        viewer = '@viewer-b';
-        expect(source.readHeldA2ASnapshot()).toBeNull();
-        viewer = null;
-        expect(source.readHeldA2ASnapshot()).toBeNull();
-    });
-
-    test('history and PR-only reads cannot replace the first mailbox page', async () => {
-        let   mailboxReads = 0;
-        const source       = createSource({
-            resolveViewerIdentity: () => '@viewer',
-            readA2ASnapshot      : async params => { mailboxReads++; return page(params.offset ? 'history' : 'current') },
-            readPrLaneSnapshot   : async () => ({capability: {state: 'wired'}, events: []})
-        });
-        await source.readActivitySnapshot();
-        await source.readActivitySnapshot({offset: 10});
-        const before = mailboxReads;
-        await source.readActivitySnapshot({slots: ['pr-lane']});
-        expect(mailboxReads).toBe(before);
-        expect(source.readHeldA2ASnapshot().events[0].payload.subject).toBe('current');
-    });
-
-    test('captures the viewer before an asynchronous read settles', async () => {
-        let   viewer = '@viewer-a', release;
-        const source = createSource({
-            resolveViewerIdentity: () => viewer,
-            readA2ASnapshot      : () => new Promise(resolve => { release = resolve }),
-            readPrLaneSnapshot   : async () => ({capability: {state: 'wired'}, events: []})
-        });
-        const pending = source.readActivitySnapshot();
-        viewer = '@viewer-b';
-        release(page());
-        await pending;
-        expect(source.readHeldA2ASnapshot()).toBeNull();
-        viewer = '@viewer-a';
-        expect(source.readHeldA2ASnapshot().events[0].payload.subject).toBe('current');
-    });
-
-    test('a late older completion cannot overwrite a newer first-page read', async () => {
-        let release, reads = 0;
-        const source = createSource({
-            resolveViewerIdentity: () => '@viewer',
-            readA2ASnapshot      : () => ++reads === 1 ? new Promise(resolve => { release = resolve }) : Promise.resolve(page('new')),
-            readPrLaneSnapshot   : async () => ({capability: {state: 'wired'}, events: []})
-        });
-        const older = source.readActivitySnapshot();
-        await source.readActivitySnapshot();
-        release(page('old'));
-        await older;
-        expect(source.readHeldA2ASnapshot().events[0].payload.subject).toBe('new');
-    });
-
-    test('a newer failed read replaces prior successful claims with the slot\'s degradation', async () => {
-        let   fail   = false;
-        const source = createSource({
-            resolveViewerIdentity: () => '@viewer',
-            readA2ASnapshot      : async () => { if (fail) throw new Error('mailbox failed'); return page() },
-            readPrLaneSnapshot   : async () => ({capability: {state: 'wired'}, events: []})
-        });
-        await source.readActivitySnapshot();
-        fail = true;
-        await source.readActivitySnapshot();
-        expect(source.readHeldA2ASnapshot()).toMatchObject({capability: {state: 'degraded', reason: expect.stringContaining('mailbox failed')}, events: []});
-    });
-
-    test('an unbound source never retains a page from caller-supplied identity', async () => {
-        const source = createSource({
-            readA2ASnapshot   : async () => page(),
-            readPrLaneSnapshot: async () => ({capability: {state: 'wired'}, events: []})
-        });
-        await source.readActivitySnapshot({viewerIdentity: '@forged'});
-        expect(source.readHeldA2ASnapshot()).toBeNull();
-    });
-});
-
-// A lane lives for days, a held page for hours, a Fleet process until its next restart.
-test.describe('fleetActivityComposer — the per-seat lane record', () => {
+// A lane lives for days, a mailbox page for minutes, a Fleet process until its next restart.
+test.describe('fleetActivityComposer — the lanes', () => {
     const
-        event   = (agentId, occurredAt, subject, collisionTag = 'lane-claim') => ({
+        stamp = '2026-10-03T18:00:00.000Z',
+        LANES = {memorySharing: 'team', scope: 'all'},
+        claim = (agentId, occurredAt, subject, collisionTag = 'lane-claim') => ({
             eventId: `${agentId}@${occurredAt}`, type: collisionTag === 'lane-claim' ? 'lane-claim' : 'a2a-activity',
             source : 'memory-core:mailbox', agentId, occurredAt, payload: {subject, collisionTag}
         }),
-        page    = (events, state = 'wired') => ({
-            capability: {source: 'memory-core:mailbox', state, confidence: state === 'wired' ? 'observed' : 'none', capturedAt: '2026-10-03T18:00:00.000Z'},
+        // one mailbox answer; an observer answer carries the admission it was read under
+        answer  = (events, {policy = null, state = 'wired'} = {}) => ({
+            capability: {source: 'memory-core:mailbox', state, confidence: state === 'wired' ? 'observed' : 'none', capturedAt: stamp, reason: state === 'wired' ? null : 'mailbox unavailable'},
             scanned   : events.length,
-            events    : state === 'wired' ? events : []
+            events    : state === 'wired' ? events : [],
+            ...(policy && {a2a: {observation: {admissionKey: `key-${policy}`, clamped: policy !== 'team', planeId: 'plane', policy, scope: 'all', viewer: '@viewer'}, page: {nextOffset: null, offset: 0}}})
         }),
+        // the viewer's own inbox holds no broadcast; the team observation holds every one
+        mailbox = ({calls = [], inbox = [], policy = 'team', team = []} = {}) => async params => {
+            calls.push(params);
+            return params.observer ? answer(team, {policy}) : answer(inbox)
+        },
         prLane  = async () => ({capability: {state: 'wired'}, events: []}),
-        lanesOf = source => Object.fromEntries(source.readHeldA2ASnapshot().laneClaims.map(claim => [claim.agentId, claim.payload.subject])),
+        lanesOf = source => Object.fromEntries((source.readHeldLaneSnapshot()?.a2a.entries ?? [])
+            .map(({agentId, collisionTag, subject}) => [agentId, collisionTag === 'lane-claim' ? subject : 'released'])),
+        clock   = () => {
+            let at = Date.parse(stamp);
+            return Object.assign(() => at, {advance(ms) { at += ms }})
+        },
         memory  = () => {
             const store = {state: null, saves: 0};
             return Object.assign(store, {load: () => structuredClone(store.state), save: state => { store.saves++; store.state = structuredClone(state) }})
         };
-    let createSource;
+    let createSource, INTERVAL;
     test.beforeAll(async () => {
-        createSource = (await import('../../../../../../ai/services/fleet/fleetActivityComposer.mjs')).createFleetActivityReadSource
+        const composer = await import('../../../../../../ai/services/fleet/fleetActivityComposer.mjs');
+
+        createSource = composer.createFleetActivityReadSource;
+        INTERVAL     = composer.FLEET_LANE_OBSERVATION_INTERVAL
+    });
+
+    test('a human viewer reads every seat\'s broadcast lane from the team observation, never from its own mailbox (AC-1)', async () => {
+        const calls  = [],
+              source = createSource({
+                  resolveViewerIdentity: () => '@tobiu', readPrLaneSnapshot: prLane,
+                  readA2ASnapshot      : mailbox({calls, team: [claim('neo-gpt', '2026-10-15T09:15:00.000Z', '[lane-claim] Stage #39')]})
+              });
+
+        expect(source.readHeldLaneSnapshot(), 'nothing is held before the first observation').toBeNull();
+        await source.readActivitySnapshot({limit: 1});
+
+        expect(calls, 'the observation asks the team breadth with its own bound, and nothing else').toEqual([{limit: 1, offset: 0}, {limit: 50, observer: LANES}]);
+        expect(lanesOf(source)).toEqual({'neo-gpt': '[lane-claim] Stage #39'});
+        expect(source.readHeldLaneSnapshot().a2a.capability).toMatchObject({
+            source: 'memory-core:mailbox', state: 'wired', confidence: 'observed', policy: 'team', reason: null, scanned: 1
+        });
+
+        source.readHeldLaneSnapshot().a2a.entries[0].subject = 'mutated';
+        expect(lanesOf(source), 'every read is an independent copy').toEqual({'neo-gpt': '[lane-claim] Stage #39'});
+    });
+
+    test('a narrower sharing policy still folds what it admits, and the A2A source says it is clamped (AC-2)', async () => {
+        const source = createSource({
+            resolveViewerIdentity: () => '@tobiu', readPrLaneSnapshot: prLane,
+            readA2ASnapshot      : mailbox({policy: 'private', team: [claim('neo-gpt', '2026-10-15T09:15:00.000Z', '[lane-claim] granted inbox')]})
+        });
+
+        await source.readActivitySnapshot();
+
+        expect(lanesOf(source)).toEqual({'neo-gpt': '[lane-claim] granted inbox'});
+        expect(source.readHeldLaneSnapshot().a2a.capability).toMatchObject({
+            state: 'degraded', confidence: 'none', policy: 'private', reason: "the 'private' sharing policy shows other seats' broadcasts only through inbox grants"
+        });
+    });
+
+    test('the caller\'s page and observer never feed the lanes', async () => {
+        const source = createSource({
+            resolveViewerIdentity: () => '@viewer', readPrLaneSnapshot: prLane,
+            readA2ASnapshot      : async params => params.observer?.memorySharing === 'team'
+                ? answer([], {policy: 'team'})
+                : answer([claim('alice', stamp, params.observer ? '[lane-claim] the caller\'s observer' : '[lane-claim] the caller\'s page')], {policy: params.observer ? 'team' : null})
+        });
+
+        await source.readActivitySnapshot();
+        await source.readActivitySnapshot({observer: {scope: 'involves-me'}});
+
+        expect(lanesOf(source)).toEqual({});
+    });
+
+    test('a live read observes once a minute per viewer; history and PR-only reads never do', async () => {
+        const calls        = [],
+              now          = clock(),
+              observations = () => calls.filter(params => params.observer).length;
+        let   viewer = '@viewer';
+        const source = createSource({resolveViewerIdentity: () => viewer, readA2ASnapshot: mailbox({calls}), readPrLaneSnapshot: prLane, now});
+
+        await source.readActivitySnapshot();
+        await source.readActivitySnapshot();
+        await source.readActivitySnapshot({offset: 10, slots: ['a2a']});
+        await source.readActivitySnapshot({slots: ['pr-lane']});
+        expect(observations(), 'one observation stands for a minute').toBe(1);
+
+        now.advance(INTERVAL);
+        await source.readActivitySnapshot();
+        expect(observations()).toBe(2);
+
+        viewer = '@other';
+        await source.readActivitySnapshot();
+        expect(observations(), 'another viewer is observed at once').toBe(3);
+    });
+
+    test('a late observation never replaces a newer one, and holds for the viewer it was asked for', async () => {
+        const now      = clock(),
+              releases = [];
+        let   viewer = '@viewer';
+        const source = createSource({
+            resolveViewerIdentity: () => viewer, readPrLaneSnapshot: prLane, now,
+            readA2ASnapshot      : params => params.observer ? new Promise(resolve => releases.push(resolve)) : Promise.resolve(answer([]))
+        });
+
+        const older = source.readActivitySnapshot();
+        now.advance(INTERVAL);
+        const newer = source.readActivitySnapshot();
+
+        releases[1](answer([claim('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] the newer read')], {policy: 'team'}));
+        await newer;
+        releases[0](answer([claim('alice', '2026-10-03T13:00:00.000Z', '[lane-claim] the older read')], {policy: 'private'}));
+        await older;
+
+        expect(lanesOf(source)).toEqual({alice: '[lane-claim] the newer read'});
+        expect(source.readHeldLaneSnapshot().a2a.capability.policy).toBe('team');
+
+        now.advance(INTERVAL);
+        const pending = source.readActivitySnapshot();
+        viewer = '@other';
+        releases[2](answer([], {policy: 'team'}));
+        await pending;
+        expect(source.readHeldLaneSnapshot(), 'the observation belongs to the viewer it was asked for').toBeNull();
+        viewer = '@viewer';
+        expect(lanesOf(source)).toEqual({alice: '[lane-claim] the newer read'});
+    });
+
+    test('a failed observation names its cause and lends no retained claim until the next one answers', async () => {
+        const now    = clock();
+        let   fail   = false;
+        const source = createSource({
+            resolveViewerIdentity: () => '@viewer', readPrLaneSnapshot: prLane, now,
+            readA2ASnapshot      : async params => {
+                if (params.observer && fail) throw new Error('observer refused');
+                return params.observer ? answer([claim('alice', stamp, '[lane-claim] A')], {policy: 'team'}) : answer([])
+            }
+        });
+
+        await source.readActivitySnapshot();
+        expect(lanesOf(source)).toEqual({alice: '[lane-claim] A'});
+
+        fail = true;
+        now.advance(INTERVAL);
+        await source.readActivitySnapshot();
+        expect(source.readHeldLaneSnapshot().a2a).toEqual({
+            capability: expect.objectContaining({state: 'degraded', policy: null, reason: expect.stringContaining('observer refused')}),
+            entries   : []
+        });
+
+        fail = false;
+        now.advance(INTERVAL);
+        await source.readActivitySnapshot();
+        expect(lanesOf(source)).toEqual({alice: '[lane-claim] A'});
+    });
+
+    test('an unbound source observes nothing and holds nothing, whatever the caller names', async () => {
+        const calls  = [],
+              source = createSource({readA2ASnapshot: mailbox({calls}), readPrLaneSnapshot: prLane});
+
+        await source.readActivitySnapshot({viewerIdentity: '@forged'});
+
+        expect(calls.some(params => params.observer)).toBe(false);
+        expect(source.readHeldLaneSnapshot()).toBeNull();
     });
 
     test('a claim pushed off the page stays with its seat until the seat replaces or releases it', async () => {
-        const pages  = [
-                  page([event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A'), event('bob', '2026-10-03T12:01:00.000Z', '[lane-claim] B')]),
-                  page([event('carol', '2026-10-03T13:00:00.000Z', 'chatter', null)]),
-                  page([], 'degraded'),
-                  page([event('bob', '2026-10-03T14:00:00.000Z', '[claim-corrected] B is free', 'claim-corrected'),
-                        event('alice', '2026-10-03T11:00:00.000Z', '[lane-claim] older than A')]),
-                  page([event('alice', '2026-10-03T15:00:00.000Z', '[lane-claim] A2')])
+        const now   = clock(),
+              pages = [
+                  answer([claim('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A'), claim('bob', '2026-10-03T12:01:00.000Z', '[lane-claim] B')], {policy: 'team'}),
+                  answer([claim('carol', '2026-10-03T13:00:00.000Z', 'chatter', null)], {policy: 'team'}),
+                  answer([], {state: 'degraded'}),
+                  answer([claim('bob', '2026-10-03T14:00:00.000Z', '[claim-corrected] B is free', 'claim-corrected'),
+                          claim('alice', '2026-10-03T11:00:00.000Z', '[lane-claim] older than A')], {policy: 'team'}),
+                  answer([claim('alice', '2026-10-03T15:00:00.000Z', '[lane-claim] A2')], {policy: 'team'})
               ],
-              source = createSource({resolveViewerIdentity: () => '@viewer', readA2ASnapshot: async () => pages.shift(), readPrLaneSnapshot: prLane});
+              source  = createSource({
+                  resolveViewerIdentity: () => '@viewer', readPrLaneSnapshot: prLane, now,
+                  readA2ASnapshot      : async params => params.observer ? pages.shift() : answer([])
+              }),
+              observe = async () => { await source.readActivitySnapshot(); now.advance(INTERVAL) };
 
-        await source.readActivitySnapshot();
-        await source.readActivitySnapshot();
+        await observe();
+        await observe();
         expect(lanesOf(source)).toEqual({alice: '[lane-claim] A', bob: '[lane-claim] B'});
 
-        await source.readActivitySnapshot();
-        expect(lanesOf(source), 'a degraded page changes no seat').toEqual({alice: '[lane-claim] A', bob: '[lane-claim] B'});
+        await observe();
+        expect(lanesOf(source), 'a failed observation lends nothing').toEqual({});
 
-        await source.readActivitySnapshot();
-        expect(lanesOf(source), 'a release clears; an older claim displaces nothing').toEqual({alice: '[lane-claim] A'});
+        await observe();
+        expect(lanesOf(source), 'the failure changed no seat; a release ends a lane; an older claim displaces nothing')
+            .toEqual({alice: '[lane-claim] A', bob: 'released'});
 
-        await source.readActivitySnapshot();
-        expect(lanesOf(source)).toEqual({alice: '[lane-claim] A2'});
+        await observe();
+        expect(lanesOf(source)).toEqual({alice: '[lane-claim] A2', bob: 'released'});
     });
 
-    test('after a restart the first page shows the saved claims, only to the viewer and mailbox they were read from', async () => {
+    test('after a restart the first observation shows the saved claims, only to the viewer and mailbox they were read from', async () => {
         const store = memory(),
               start = (viewer, events, laneClaimSource = 'plane:https://plane-a.example') => createSource({
-                  resolveViewerIdentity: () => viewer, readA2ASnapshot: async () => page(events), readPrLaneSnapshot: prLane,
-                  laneClaimStore       : store, laneClaimSource
+                  resolveViewerIdentity: () => viewer, readPrLaneSnapshot: prLane, laneClaimStore: store, laneClaimSource,
+                  readA2ASnapshot      : async params => params.observer ? answer(events, {policy: 'team'}) : answer([])
               });
 
-        await start('@viewer', [event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')]).readActivitySnapshot();
+        await start('@viewer', [claim('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')]).readActivitySnapshot();
         expect(store.saves).toBe(1);
 
-        const restarted = start('@viewer', [event('carol', '2026-10-03T19:00:00.000Z', 'chatter', null)]);
-        expect(restarted.readHeldA2ASnapshot(), 'nothing is held before the first page').toBeNull();
+        const restarted = start('@viewer', [claim('carol', '2026-10-03T19:00:00.000Z', 'chatter', null)]);
+        expect(restarted.readHeldLaneSnapshot(), 'nothing is held before the first observation').toBeNull();
         await restarted.readActivitySnapshot();
         expect(lanesOf(restarted)).toEqual({alice: '[lane-claim] A'});
-        expect(store.saves, 'a page that changes no seat writes nothing').toBe(1);
+        expect(store.saves, 'an observation that changes no seat writes nothing').toBe(1);
 
         const other = start('@other', []);
         await other.readActivitySnapshot();
         expect(lanesOf(other)).toEqual({});
 
         // the same viewer and data directory, restarted against another plane: that plane's claims only
-        await start('@viewer', [event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')]).readActivitySnapshot();
+        await start('@viewer', [claim('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')]).readActivitySnapshot();
         const otherPlane = start('@viewer', [], 'plane:https://plane-b.example');
         await otherPlane.readActivitySnapshot();
         expect(lanesOf(otherPlane)).toEqual({});
@@ -763,7 +825,7 @@ test.describe('fleetActivityComposer — the per-seat lane record', () => {
             const store  = {saves: 0, load, save() { this.saves++ }},
                   source = createSource({
                       resolveViewerIdentity: () => '@viewer', readPrLaneSnapshot: prLane, laneClaimStore: store, laneClaimSource: 'plane:https://plane-a.example',
-                      readA2ASnapshot      : async () => page([event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')])
+                      readA2ASnapshot      : mailbox({team: [claim('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')]})
                   });
 
             await source.readActivitySnapshot();
@@ -774,7 +836,37 @@ test.describe('fleetActivityComposer — the per-seat lane record', () => {
 
     test('a lane store without the mailbox source it belongs to is refused at construction', () => {
         expect(() => createSource({
-            readA2ASnapshot: async () => page([]), readPrLaneSnapshot: prLane, laneClaimStore: memory()
+            readA2ASnapshot: mailbox(), readPrLaneSnapshot: prLane, laneClaimStore: memory()
         })).toThrow(TypeError);
+    });
+
+    test('the newest live read holds its forge lane facts under their own state; a read without them is degraded', async () => {
+        const facts = {state: 'wired', reason: null, assignments: [], claims: [{agentId: 'neo-gpt', issue: 'neo-agent-brain#1046', line: 'neo-agent-brain#1046 Roster lanes', occurredAt: stamp}]},
+              reads = [
+                  {capability: {state: 'degraded', reason: 'open-work producer stale since 2026-10-03T17:00:00.000Z', capturedAt: stamp}, events: [], lanes: facts},
+                  {capability: {state: 'wired', capturedAt: stamp}, events: []},
+                  () => { throw new Error('plane unreachable') }
+              ],
+              source  = createSource({
+                  resolveViewerIdentity: () => '@viewer', readA2ASnapshot: mailbox(),
+                  readPrLaneSnapshot   : async () => {
+                      const next = reads.shift();
+                      return typeof next === 'function' ? next() : next
+                  }
+              }),
+              forgeOf = () => source.readHeldLaneSnapshot().forge;
+
+        await source.readActivitySnapshot();
+        expect(forgeOf(), 'a stale producer does not touch the issues the facts are read from').toEqual({
+            assignments: [],
+            capability : {source: 'github-workflow:issue-comments', state: 'wired', confidence: 'observed', reason: null, capturedAt: stamp},
+            claims     : facts.claims
+        });
+
+        await source.readActivitySnapshot();
+        expect(forgeOf(), 'a plane that predates lane facts').toMatchObject({claims: [], capability: {state: 'degraded', reason: 'the PR/lane read answered no lane facts'}});
+
+        await source.readActivitySnapshot();
+        expect(forgeOf()).toMatchObject({claims: [], capability: {state: 'degraded', reason: expect.stringContaining('plane unreachable')}});
     });
 });
