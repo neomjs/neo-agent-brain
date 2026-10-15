@@ -12,6 +12,8 @@
  * unit fixtures consume one contract without importing a connect-on-init service.
  */
 
+import {normalizeAgentIdentityNodeId} from '../../../graph/normalizeAgentIdentityNodeId.mjs';
+
 export const RAW_MEMORY_NODE_LABEL        = 'AGENT_MEMORY';
 export const LEGACY_RAW_MEMORY_NODE_LABEL = 'MEMORY';
 
@@ -92,6 +94,36 @@ export function normalizeRawMemoryUserId(input) {
     const value = String(input);
 
     return value.startsWith('@') ? value.slice(1) : value
+}
+
+/**
+ * @summary The recency keys a raw memory's graph node carries, read from its Chroma row: the same
+ * `agentIdentity` and `timestamp` the write path projects, which identity recency filters and
+ * orders by. Chroma keeps the timestamp as epoch milliseconds and the graph as an ISO string. A key
+ * the row lacks is left out, so the node keeps its own.
+ * @param {Object} [metadata] Chroma metadata of one memory row.
+ * @returns {{agentIdentity?: String, timestamp?: String}}
+ */
+export function rawMemoryRecencyKeys(metadata = {}) {
+    const
+        identity = typeof metadata.agentIdentity === 'string' && metadata.agentIdentity ? normalizeAgentIdentityNodeId(metadata.agentIdentity) : null,
+        at       = typeof metadata.timestamp === 'number' ? metadata.timestamp : Date.parse(metadata.timestamp);
+
+    return {
+        ...(identity ? {agentIdentity: identity} : {}),
+        ...(Number.isFinite(at) ? {timestamp: new Date(at).toISOString()} : {})
+    }
+}
+
+/**
+ * @summary Whether a graph node already holds every recency key its Chroma row carries. A row
+ * attributed after its first projection fails this check, which is what re-projects it.
+ * @param {Object} [properties] The node's properties.
+ * @param {Object} [metadata] Chroma metadata of its row.
+ * @returns {Boolean}
+ */
+export function carriesRawMemoryRecencyKeys(properties = {}, metadata = {}) {
+    return Object.entries(rawMemoryRecencyKeys(metadata)).every(([key, value]) => properties?.[key] === value)
 }
 
 /**

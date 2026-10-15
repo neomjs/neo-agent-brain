@@ -4,9 +4,11 @@ import {Memory_GraphService as GraphService, Memory_StorageRouter as StorageRout
 import logger                                                                       from '../../mcp/server/memory-core/logger.mjs';
 import {
     canonicalRawMemoryGraphId,
+    carriesRawMemoryRecencyKeys,
     normalizeRawMemoryUserId,
     parseRawMemoryGraphId,
-    RAW_MEMORY_NODE_LABEL
+    RAW_MEMORY_NODE_LABEL,
+    rawMemoryRecencyKeys
 } from '../memory-core/helpers/rawMemoryGraphIdentity.mjs';
 
 /**
@@ -129,6 +131,10 @@ class MemorySessionIngestor extends Base {
      * Computes a stable SHA-256 hash of a memory's metadata fields. Mirror of
      * `computeSessionPayloadHash` scoped to per-turn Memory artifacts so the same
      * differential-sync skip path applies at memory granularity.
+     *
+     * It leaves the recency keys out: a canonical node's hash must keep matching its legacy
+     * `memory:<uuid>` twin's, or `reconcileRawMemoryGraphIdentities` refuses the pair as a
+     * conflict. `carriesRawMemoryRecencyKeys` re-projects a row attributed later instead.
      * @param {Object} metadata The Chroma metadata object for a single memory row
      * @returns {String} 64-character hex sha256 digest
      * @protected
@@ -151,8 +157,10 @@ class MemorySessionIngestor extends Base {
      *
      * Deterministic: output depends only on (session metadata, memory metadata). No LLM calls.
      * Idempotent: re-running on the same session produces identical graph state (skip path via
-     * `payloadHash`). The Chroma row set is the **Structural Layer** source; the graph nodes are
-     * the **Projection Layer** other subsystems (`SemanticGraphExtractor`, future mailbox,
+     * `payloadHash` and the recency keys). Each memory node carries its row's `agentIdentity` and
+     * `timestamp` (`rawMemoryRecencyKeys`), which identity recency reads. The Chroma row set is the
+     * **Structural Layer** source; the graph nodes are the **Projection Layer** other subsystems
+     * (`SemanticGraphExtractor`, future mailbox,
      * AgentIdentity ownership) traverse.
      *
      * @param {Object}   session The session row from the Chroma summary collection
@@ -269,13 +277,14 @@ class MemorySessionIngestor extends Base {
                         }
                     }
 
-                    if (existingProperties?.payloadHash === memoryPayloadHash) {
+                    if (existingProperties?.payloadHash === memoryPayloadHash && carriesRawMemoryRecencyKeys(existingProperties, meta)) {
                         stats.memoriesSkipped++;
                         continue;
                     }
 
                     const projectedProperties = {
                         ...(existingProperties || {}),
+                        ...rawMemoryRecencyKeys(meta),
                         chromaId : memoryChromaId,
                         createdAt: meta.createdAt,
                         // Provenance marker — see sibling comment in the SESSION upsert.
@@ -450,8 +459,9 @@ class MemorySessionIngestor extends Base {
     }
 
     /**
-     * Fetches a single Memory row from Chroma and upserts it as an AGENT_MEMORY graph node, recursively
-     * ensuring the parent Session node exists so the `ORIGINATES_IN` edge terminates cleanly.
+     * Fetches a single Memory row from Chroma and upserts it as an AGENT_MEMORY graph node carrying the
+     * row's recency keys, recursively ensuring the parent Session node exists so the `ORIGINATES_IN`
+     * edge terminates cleanly.
      * Private helper for `ingestSingleRow`.
      *
      * @param {String} chromaId Chroma memory row ID (the bare ID, no `memory:` prefix)
@@ -500,6 +510,7 @@ class MemorySessionIngestor extends Base {
             name            : chromaId.slice(0, 12),
             semanticVectorId: chromaId,
             properties      : {
+                ...rawMemoryRecencyKeys(meta),
                 backfilled: true,
                 chromaId,
                 createdAt : meta.createdAt,

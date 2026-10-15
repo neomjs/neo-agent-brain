@@ -571,6 +571,132 @@ test.describe('Neo.ai.daemons.services.MemorySessionIngestor', () => {
         expect(GraphService.db.nodes.get('MEMORY:mem-upper')).toBeFalsy();
     });
 
+    // Identity recency filters AGENT_MEMORY nodes by agentIdentity and orders them by timestamp
+    test.describe('the recency keys an ingested memory carries', () => {
+        const at   = Date.parse('2026-01-13T12:53:27.852Z'),
+              iso  = '2026-01-13T12:53:27.852Z',
+              mira = {agentIdentity: 'neo-test-mira', timestamp: at, userId: 'neo-test-mira'};
+
+        test('a synced or back-filled memory carries its row\'s agentIdentity, normalized, and an ISO timestamp, and recency returns it', async () => {
+            const memoryCollection = stubMemoryCollection([
+                      {id: 'mem-sync', metadata: {...mira, sessionId: 'session-recency'}},
+                      {id: 'mem-lazy', metadata: {...mira, agentIdentity: '@neo-test-mira', sessionId: 'session-lazy'}}
+                  ]),
+                  summaryCollection = stubSummaryCollection([]),
+                  [{default: MemoryService}, {default: RequestContextService}] = await Promise.all([
+                      import('../../../../../../ai/services/memory-core/MemoryService.mjs'),
+                      import('../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs')
+                  ]);
+
+            await MemorySessionIngestor.syncSessionToGraph({id: 'summary-recency', meta: {sessionId: 'session-recency', userId: 'neo-test-mira'}}, {memoryCollection});
+            await MemorySessionIngestor.ingestSingleRow('memory:mem-lazy', {memoryCollection, summaryCollection});
+
+            for (const id of ['mem-sync', 'mem-lazy']) {
+                expect(GraphService.db.nodes.get(id)?.properties, id).toMatchObject({agentIdentity: '@neo-test-mira', timestamp: iso})
+            }
+
+            const recent = await RequestContextService.run({agentIdentityNodeId: '@neo-test-mira', userId: 'neo-test-mira'}, () =>
+                MemoryService.queryRecentTurns({agentIdentity: '@me', limit: 10}));
+
+            expect(recent.turns.map(turn => turn.id).sort()).toEqual(['mem-lazy', 'mem-sync']);
+        });
+
+        test('a row without the keys leaves the node\'s own values untouched', async () => {
+            GraphService.upsertNode({
+                id        : 'mem-written', type: 'AGENT_MEMORY', name: 'Memory: written',
+                properties: {agentIdentity: '@neo-test-mira', sessionId: 'session-kept', timestamp: iso, userId: 'neo-test-mira'}
+            });
+
+            await MemorySessionIngestor.syncSessionToGraph({id: 'summary-kept', meta: {sessionId: 'session-kept', userId: 'neo-test-mira'}}, {
+                memoryCollection: stubMemoryCollection([{id: 'mem-written', metadata: {sessionId: 'session-kept', userId: 'neo-test-mira'}}])
+            });
+
+            expect(GraphService.db.nodes.get('mem-written')?.properties).toMatchObject({agentIdentity: '@neo-test-mira', liveIngested: true, timestamp: iso});
+        });
+
+        // a userId change still fails closed: re-keying a tenant is a migration's, never a sync's
+        test('a row whose identity is added after its first sync re-projects on the next one', async () => {
+            const rows    = [{id: 'mem-later', metadata: {sessionId: 'session-later', timestamp: at, userId: 'neo-test-mira'}}],
+                  session = {id: 'summary-later', meta: {sessionId: 'session-later', userId: 'neo-test-mira'}};
+
+            await MemorySessionIngestor.syncSessionToGraph(session, {memoryCollection: stubMemoryCollection(rows)});
+            expect(GraphService.db.nodes.get('mem-later')?.properties.agentIdentity).toBeUndefined();
+
+            rows[0].metadata = {...rows[0].metadata, agentIdentity: '@neo-test-mira'};
+            const stats = await MemorySessionIngestor.syncSessionToGraph(session, {memoryCollection: stubMemoryCollection(rows)});
+
+            expect(stats).toMatchObject({errors: [], memoriesSkipped: 0, memoriesUpserted: 1});
+            expect(GraphService.db.nodes.get('mem-later')?.properties).toMatchObject({agentIdentity: '@neo-test-mira', timestamp: iso});
+        });
+
+        // the reconciler refuses a twin pair whose payloadHash differs, and the twin keeps the hash it was projected with
+        test('a node re-projected with the keys still reconciles with its legacy twin', async () => {
+            const {planRawMemoryIdentityReconciliation} = await import('../../../../../../ai/scripts/migrations/reconcileRawMemoryGraphIdentities.mjs');
+
+            const row  = {id: 'mem-twin', metadata: {...mira, sessionId: 'session-twin'}},
+                  twin = {
+                      chromaId    : 'mem-twin',
+                      liveIngested: true,
+                      payloadHash : MemorySessionIngestor.computeMemoryPayloadHash({sessionId: 'session-twin', userId: 'neo-test-mira'}),
+                      sessionId   : 'session-twin',
+                      userId      : 'neo-test-mira'
+                  };
+
+            GraphService.upsertNode({id: 'mem-twin', type: 'AGENT_MEMORY', name: 'mem-twin', properties: twin});
+
+            const stats = await MemorySessionIngestor.syncSessionToGraph({id: 'summary-twin', meta: {sessionId: 'session-twin', userId: 'neo-test-mira'}}, {
+                memoryCollection: stubMemoryCollection([row])
+            });
+            const canonical = GraphService.db.nodes.get('mem-twin')?.properties;
+
+            expect(planRawMemoryIdentityReconciliation({
+                chromaRows: [row],
+                graphEdges: [],
+                graphNodes: [{id: 'mem-twin', label: 'AGENT_MEMORY', properties: canonical}, {id: 'memory:mem-twin', label: 'MEMORY', properties: {...twin, name: 'mem-twin'}}]
+            }).conflicts).toEqual([]);
+            expect(stats.memoriesUpserted).toBe(1);
+            expect(canonical).toMatchObject({agentIdentity: '@neo-test-mira', timestamp: iso});
+        });
+
+        test('the recency repair projects the keys onto what the graph holds without them, and a second run plans nothing', async () => {
+            const
+                {applyRecencyRepair, planRecencyRepair, readRecencyGraphState} = await import('../../../../../../ai/scripts/maintenance/repairRawMemoryRecencyKeys.mjs'),
+                [{default: MemoryService}, {default: RequestContextService}]   = await Promise.all([
+                    import('../../../../../../ai/services/memory-core/MemoryService.mjs'),
+                    import('../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs')
+                ]),
+                rows = [
+                    {id: 'mem-unkeyed',     metadata: {...mira, sessionId: 'session-history'}},
+                    {id: 'mem-unprojected', metadata: {...mira, sessionId: 'session-history'}}
+                ],
+                runtime = {
+                    memoryCollection     : stubMemoryCollection(rows),
+                    memorySessionIngestor: MemorySessionIngestor,
+                    summaryCollection    : stubSummaryCollection([{id: 'summary-history', metadata: {sessionId: 'session-history', userId: 'neo-test-mira'}}])
+                },
+                plan    = () => planRecencyRepair({chromaRows: rows, graph: readRecencyGraphState(GraphService.db.storage.db)}),
+                recency = () => RequestContextService.run({agentIdentityNodeId: '@neo-test-mira', userId: 'neo-test-mira'}, () =>
+                    MemoryService.queryRecentTurns({agentIdentity: '@me', limit: 10}));
+
+            GraphService.upsertNode({id: 'mem-unkeyed', type: 'AGENT_MEMORY', name: 'mem-unkeyed', properties: {
+                chromaId    : 'mem-unkeyed',
+                liveIngested: true,
+                payloadHash : MemorySessionIngestor.computeMemoryPayloadHash(rows[0].metadata),
+                sessionId   : 'session-history',
+                userId      : 'neo-test-mira'
+            }});
+
+            expect((await recency()).turns).toEqual([]);
+
+            const first = plan();
+
+            expect(first.counts).toMatchObject({current: 0, project: 1, reproject: 1});
+            expect(await applyRecencyRepair(first, runtime)).toEqual({failed: [], noSummary: 0, projected: 1, reprojected: 1});
+            expect(plan().counts).toMatchObject({current: 2, project: 0, reproject: 0});
+            expect((await recency()).turns.map(turn => turn.id).sort()).toEqual(['mem-unkeyed', 'mem-unprojected']);
+        });
+    });
+
     test('syncSessionToGraph tags upserted nodes with liveIngested: true provenance marker', async () => {
         const session = {
             id  : 'chroma-summary-live',
