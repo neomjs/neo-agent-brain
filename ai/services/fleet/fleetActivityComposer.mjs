@@ -406,33 +406,40 @@ function forgeLaneState({capability, lanes}, capturedAt) {
 
 /**
  * @summary A seat's lane outlives the page it was read from: each seat's newest claim or release
- * (`claim-corrected`), folded forward from every lane observation for one viewer. A claim leaves
+ * (`claim-corrected`), folded forward from every lane observation under one admission. A claim leaves
  * only when its seat sends a newer claim or a release, never because newer mail pushed it off the
- * page. With a `{load, save}` store it survives a restart, for the mailbox source and viewer it was
- * read from: a record from another plane or another viewer is not shown, and the first change
- * replaces it. A saved record this process cannot read (a throwing load, or a parsed value that is
- * not `{source, viewerIdentity, seats}`) stays out of this process and is never overwritten.
+ * page. The admission is the observation's `admissionKey`, which the mailbox derives from the viewer,
+ * plane, scope, policy and grants: when it changes, every retained claim retires, because a narrower
+ * admission must not lend what only a broader one showed. With a `{load, save}` store the record
+ * survives a restart, for the mailbox source it was read from, and lends nothing until an observation
+ * under its admission arrives. A saved record this process cannot read (a throwing load, or a parsed
+ * value that is not `{source, viewerIdentity, admissionKey?, seats}`) stays out of this process and is
+ * never overwritten.
  * @param {Object|null} store
  * @param {String|null} source The admitted mailbox's identity, saved with the record.
  * @returns {{fold: Function, entriesFor: Function}}
  * @private
  */
 function createLaneRecord(store, source) {
-    let viewer   = null,
-        seats    = new Map(),
-        writable = Boolean(store);
+    let viewer    = null,
+        admission = null,
+        seats     = new Map(),
+        writable  = Boolean(store);
 
     try {
         const saved = store?.load() ?? null;
 
         if (saved !== null) {
-            if (typeof saved.source !== 'string' || typeof saved.viewerIdentity !== 'string' || !Array.isArray(saved.seats)) {
-                throw new TypeError('not a {source, viewerIdentity, seats} record')
+            if (typeof saved.source !== 'string' || typeof saved.viewerIdentity !== 'string' || !Array.isArray(saved.seats) ||
+                (saved.admissionKey !== undefined && typeof saved.admissionKey !== 'string')) {
+                throw new TypeError('not a {source, viewerIdentity, admissionKey?, seats} record')
             }
 
             if (saved.source === source) {
-                viewer = saved.viewerIdentity;
-                seats  = new Map(saved.seats)
+                viewer    = saved.viewerIdentity;
+                // a record saved before admissions were kept names none, so no observation can lend it
+                admission = saved.admissionKey ?? null;
+                seats     = new Map(saved.seats)
             }
         }
     } catch (error) {
@@ -441,14 +448,17 @@ function createLaneRecord(store, source) {
     }
 
     return {
-        fold(viewerIdentity, {capability, events} = {}) {
-            if (capability?.state !== 'wired') return;
+        fold(viewerIdentity, {a2a, capability, events} = {}) {
+            const admissionKey = a2a?.observation?.admissionKey;
 
-            let changed = viewer !== viewerIdentity;
+            if (capability?.state !== 'wired' || typeof admissionKey !== 'string') return;
+
+            let changed = viewer !== viewerIdentity || admission !== admissionKey;
 
             if (changed) {
-                viewer = viewerIdentity;
-                seats  = new Map()
+                viewer    = viewerIdentity;
+                admission = admissionKey;
+                seats     = new Map()
             }
 
             for (const {agentId, occurredAt, payload} of (Array.isArray(events) ? events : []).filter(Boolean)) {
@@ -472,7 +482,7 @@ function createLaneRecord(store, source) {
 
             if (changed && writable) {
                 try {
-                    store.save({source, viewerIdentity: viewer, seats: [...seats]})
+                    store.save({source, viewerIdentity: viewer, admissionKey: admission, seats: [...seats]})
                 } catch (error) {
                     console.warn('[fleetActivityComposer] the lane record was not saved:', error?.message ?? error)
                 }
@@ -480,8 +490,8 @@ function createLaneRecord(store, source) {
         },
 
         // releases too: a release newer than a seat's forge claim ends that lane as well
-        entriesFor(viewerIdentity) {
-            return viewerIdentity !== viewer ? [] : [...seats]
+        entriesFor(viewerIdentity, admissionKey) {
+            return viewerIdentity !== viewer || typeof admissionKey !== 'string' || admissionKey !== admission ? [] : [...seats]
                 .filter(([, seat]) => seat?.collisionTag === 'lane-claim' || seat?.collisionTag === 'claim-corrected')
                 .map(([agentId, {collisionTag, messageId, occurredAt, subject}]) => ({agentId, collisionTag, messageId, occurredAt, subject}))
         }
@@ -542,8 +552,8 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
 
     return {
         /**
-         * @summary The lanes the newest reads left, without I/O, only for the viewer they were observed for. A failed
-         * observation lends no retained claim.
+         * @summary The lanes the newest reads left, without I/O, only for the viewer they were observed for. Retained
+         * claims are lent only under the newest observation's admission, so a failed observation lends none.
          * @returns {Object|null} `{a2a: {capability, entries}, forge: {assignments, capability, claims}|null}`: the
          * A2A lane source with each seat's newest claim or release, and the forge's lane facts. Null before a lane
          * observation for this viewer.
@@ -556,7 +566,7 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
             }
 
             return structuredClone({
-                a2a: {capability: observation.capability, entries: observation.capability.policy ? lanes.entriesFor(viewerIdentity) : []},
+                a2a: {capability: observation.capability, entries: lanes.entriesFor(viewerIdentity, observation.admissionKey)},
                 forge
             })
         },
@@ -599,8 +609,10 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
 
             // a late answer never replaces a newer one
             if (observed && laneRead === newestObservation) {
+                const capability = laneObservationCapability(observed, capturedAt);
+
                 lanes.fold(viewerIdentity, observed);
-                observation = {viewerIdentity, capability: laneObservationCapability(observed, capturedAt)}
+                observation = {viewerIdentity, capability, admissionKey: capability.policy ? observed.a2a.observation.admissionKey ?? null : null}
             }
 
             if (forgeRead !== null && forgeRead === newestForgeRead) {

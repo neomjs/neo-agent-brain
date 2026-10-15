@@ -587,11 +587,11 @@ test.describe('fleetActivityComposer — the lanes', () => {
             source : 'memory-core:mailbox', agentId, occurredAt, payload: {subject, collisionTag}
         }),
         // one mailbox answer; an observer answer carries the admission it was read under
-        answer  = (events, {policy = null, state = 'wired'} = {}) => ({
+        answer  = (events, {admissionKey = null, policy = null, state = 'wired'} = {}) => ({
             capability: {source: 'memory-core:mailbox', state, confidence: state === 'wired' ? 'observed' : 'none', capturedAt: stamp, reason: state === 'wired' ? null : 'mailbox unavailable'},
             scanned   : events.length,
             events    : state === 'wired' ? events : [],
-            ...(policy && {a2a: {observation: {admissionKey: `key-${policy}`, clamped: policy !== 'team', planeId: 'plane', policy, scope: 'all', viewer: '@viewer'}, page: {nextOffset: null, offset: 0}}})
+            ...(policy && {a2a: {observation: {admissionKey: admissionKey ?? `key-${policy}`, clamped: policy !== 'team', planeId: 'plane', policy, scope: 'all', viewer: '@viewer'}, page: {nextOffset: null, offset: 0}}})
         }),
         // the viewer's own inbox holds no broadcast; the team observation holds every one
         mailbox = ({calls = [], inbox = [], policy = 'team', team = []} = {}) => async params => {
@@ -812,6 +812,54 @@ test.describe('fleetActivityComposer — the lanes', () => {
         const otherPlane = start('@viewer', [], 'plane:https://plane-b.example');
         await otherPlane.readActivitySnapshot();
         expect(lanesOf(otherPlane)).toEqual({});
+    });
+
+    test('a changed admission retires every retained claim: a narrower policy, a revoked grant', async () => {
+        const now     = clock(),
+              claimA  = claim('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A'),
+              answers = [],
+              source  = createSource({
+                  resolveViewerIdentity: () => '@viewer', readPrLaneSnapshot: prLane, now,
+                  readA2ASnapshot      : async params => params.observer ? answers.shift() : answer([])
+              }),
+              observe = async next => {
+                  answers.push(next);
+                  await source.readActivitySnapshot();
+                  now.advance(INTERVAL)
+              };
+
+        await observe(answer([claimA], {policy: 'team'}));
+        expect(lanesOf(source)).toEqual({alice: '[lane-claim] A'});
+
+        await observe(answer([], {policy: 'private'}));
+        expect(lanesOf(source), 'the narrower admission lends nothing only the team one showed').toEqual({});
+
+        await observe(answer([claimA], {admissionKey: 'key-private-granted', policy: 'private'}));
+        expect(lanesOf(source)).toEqual({alice: '[lane-claim] A'});
+
+        await observe(answer([], {admissionKey: 'key-private-revoked', policy: 'private'}));
+        expect(lanesOf(source), 'a revoked grant retires what it admitted').toEqual({});
+    });
+
+    test('a saved record lends its claims only under the admission it was saved for', async () => {
+        const store = memory(),
+              start = (events, policy) => createSource({
+                  resolveViewerIdentity: () => '@viewer', readPrLaneSnapshot: prLane, laneClaimStore: store, laneClaimSource: 'plane:https://plane-a.example',
+                  readA2ASnapshot      : async params => params.observer ? answer(events, {policy}) : answer([])
+              });
+
+        await start([claim('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')], 'team').readActivitySnapshot();
+        expect(store.state.admissionKey).toBe('key-team');
+
+        const narrower = start([], 'private');
+        await narrower.readActivitySnapshot();
+        expect(lanesOf(narrower), 'a restart under a narrower admission replays nothing').toEqual({});
+
+        // a record saved before admissions were kept names none, so it lends nothing either
+        store.state = {source: 'plane:https://plane-a.example', viewerIdentity: '@viewer', seats: [['alice', {collisionTag: 'lane-claim', occurredAt: '2026-10-03T12:00:00.000Z', messageId: null, subject: '[lane-claim] A'}]]};
+        const legacy = start([], 'team');
+        await legacy.readActivitySnapshot();
+        expect(lanesOf(legacy)).toEqual({});
     });
 
     test('a saved record that cannot be read is kept in memory only and never overwritten', async () => {
