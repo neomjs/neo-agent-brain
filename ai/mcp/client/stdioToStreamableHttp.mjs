@@ -7,7 +7,10 @@ import {Command}                       from 'commander';
 import {pathToFileURL}                 from 'node:url';
 
 const
+    RECOVERED_MESSAGE       = 'Neo MCP bridge kept its session after a transport error.',
+    REQUEST_FAILURE_MESSAGE = 'Neo MCP bridge could not deliver the request.',
     RUNTIME_FAILURE_MESSAGE = 'Neo MCP bridge transport failed.',
+    SESSION_ENDING_CODES    = new Set([-1, 401, 403, 404]),
     STARTUP_FAILURE_MESSAGE = 'Neo MCP bridge failed to start.';
 
 /**
@@ -84,23 +87,54 @@ export function getStartupFailureMessage(error) {
 }
 
 /**
+ * @summary Name a transport error with a fixed, locally-authored cause.
+ * SDK and remote messages can carry endpoint or response text, so only this vocabulary crosses the
+ * stderr boundary: the SDK's stream-recovery messages by prefix, then its HTTP status `code`.
+ * @param {*} error
+ * @returns {String}
+ */
+export function getBridgeErrorCause(error) {
+    const message = typeof error?.message === 'string' ? error.message : '';
+
+    if (message.startsWith('SSE stream disconnected'))       return 'sse-disconnect';
+    if (message.startsWith('Failed to reconnect'))           return 'sse-reconnect-failed';
+    if (message.startsWith('Maximum reconnection attempts')) return 'sse-reconnect-exhausted';
+    if (error?.code === -1)                                  return 'unexpected-content-type';
+    if (Number.isInteger(error?.code) && error.code >= 100 && error.code <= 599) return `http-${error.code}`;
+    if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return 'timeout';
+    if (error instanceof TypeError)                          return 'network';
+
+    return 'unknown'
+}
+
+/**
  * @summary Wire two MCP SDK transports, declining unsupported discovery before an HTTP session exists.
  * A stdio client may probe `server/discover` before initialization. This bridge does not implement
  * discovery: answer MethodNotFound locally so the client can initialize instead of losing its
  * connection to the HTTP transport's pre-session refusal. Initialized traffic remains transparent.
- * Initialization responses propagate the negotiated protocol version into the HTTP transport;
- * either close or error closes both sides exactly once.
+ * Initialization responses propagate the negotiated protocol version into the HTTP transport.
+ *
+ * After initialization the bridge survives what costs no message. The SDK reconnects a dropped
+ * standalone GET stream itself, and a POST response stream exists only while a request is pending
+ * (the plane keeps no event store, so it cannot resume): a stream drop with nothing pending, or a
+ * failed reconnect attempt the SDK will retry, is reported and survived. A request whose delivery
+ * fails is answered locally with a JSON-RPC error. Everything else — any failure before
+ * initialization, a session or auth refusal, exhausted reconnection, a local transport error —
+ * closes both sides exactly once, as does any close. Every report names its cause.
  * @param {Object} options
  * @param {Object} options.localTransport Stdio-facing server transport.
  * @param {Object} options.remoteTransport Streamable-HTTP-facing client transport.
- * @param {Function} [options.onError]
+ * @param {Function} [options.onError] Receives the terminal report.
+ * @param {Function} [options.onRecovered] Receives each survived error's report.
  * @returns {Promise<{close: Function}>}
  */
 export async function bridgeTransports({
     localTransport,
     remoteTransport,
-    onError = () => process.stderr.write(`${RUNTIME_FAILURE_MESSAGE}\n`)
+    onError     = error => process.stderr.write(`${error.message}\n`),
+    onRecovered = error => process.stderr.write(`${error.message}\n`)
 }) {
+    const pendingRequestIds = new Set();
     let
         closePromise          = null,
         initializeRequestId,
@@ -128,18 +162,28 @@ export async function bridgeTransports({
         return closePromise
     };
 
-    const fail = () => {
-        if (terminalErrorReported || closePromise) return;
-
-        terminalErrorReported = true;
-
+    const report = (reporter, text, error) => {
         try {
-            onError(new Error(RUNTIME_FAILURE_MESSAGE))
+            reporter(new Error(`${text} Cause: ${getBridgeErrorCause(error)}.`))
         } catch {
             // A reporter failure must never prevent transport cleanup.
         }
+    };
+
+    const fail = error => {
+        if (terminalErrorReported || closePromise) return;
+
+        terminalErrorReported = true;
+        report(onError, RUNTIME_FAILURE_MESSAGE, error);
 
         void close({terminate: false})
+    };
+
+    const isSurvivable = error => {
+        const cause = getBridgeErrorCause(error);
+
+        return initialized && !closePromise &&
+            (cause === 'sse-reconnect-failed' || (cause === 'sse-disconnect' && pendingRequestIds.size === 0))
     };
 
     localTransport.onmessage = message => {
@@ -154,15 +198,38 @@ export async function bridgeTransports({
             return
         }
 
+        const isRequest = Object.hasOwn(message, 'id') && typeof message.method === 'string';
+
         if (message.method === 'initialize' && Object.hasOwn(message, 'id')) {
             initializeRequestId = message.id
         }
 
+        if (isRequest) pendingRequestIds.add(message.id);
+
         Promise.resolve()
             .then(() => remoteTransport.send(message))
+            .catch(error => {
+                if (!initialized || !isRequest || SESSION_ENDING_CODES.has(error?.code)) return fail(error);
+
+                pendingRequestIds.delete(message.id);
+                report(onRecovered, RECOVERED_MESSAGE, error);
+
+                return localTransport.send({
+                    jsonrpc: '2.0',
+                    id     : message.id,
+                    error  : {
+                        code   : ErrorCode.InternalError,
+                        message: `${REQUEST_FAILURE_MESSAGE} Cause: ${getBridgeErrorCause(error)}.`
+                    }
+                })
+            })
             .catch(fail)
     };
     remoteTransport.onmessage = message => {
+        if (Object.hasOwn(message, 'id') && (Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error'))) {
+            pendingRequestIds.delete(message.id)
+        }
+
         const isInitializeResponse =
             initializeRequestId !== undefined &&
             Object.hasOwn(message, 'id') &&
@@ -183,7 +250,7 @@ export async function bridgeTransports({
             .catch(fail)
     };
     localTransport.onerror  = fail;
-    remoteTransport.onerror = fail;
+    remoteTransport.onerror = error => isSurvivable(error) ? report(onRecovered, RECOVERED_MESSAGE, error) : fail(error);
     localTransport.onclose  = () => void close();
     remoteTransport.onclose = () => void close({terminate: false});
 
@@ -247,9 +314,9 @@ export async function main(argv=process.argv.slice(2), env=process.env) {
         bridge               = await startBridge({
             endpoint,
             token,
-            onError: () => {
+            onError: report => {
                 process.exitCode = 1;
-                process.stderr.write(`${RUNTIME_FAILURE_MESSAGE}\n`)
+                process.stderr.write(`${report.message}\n`)
             }
         });
 

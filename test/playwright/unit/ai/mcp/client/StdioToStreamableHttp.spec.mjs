@@ -2,11 +2,12 @@ import {expect, test}     from '@playwright/test';
 import {spawn, spawnSync} from 'node:child_process';
 import {once}             from 'node:events';
 import {createServer}     from 'node:http';
-import {createInterface} from 'node:readline';
+import {createInterface}  from 'node:readline';
 import {fileURLToPath}    from 'node:url';
 import {
     bridgeTransports,
     createProgram,
+    getBridgeErrorCause,
     getStartupFailureMessage,
     parseArgs,
     startBridge
@@ -43,6 +44,30 @@ class FakeTransport {
     async terminateSession() {
         this.terminated++
     }
+}
+
+/** @summary Let every queued bridge promise chain settle. */
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
+/** @summary Run one bridge with recording reporters and complete its handshake. */
+async function startInitializedBridge() {
+    const
+        errors    = [],
+        recovered = [],
+        local     = new FakeTransport(),
+        remote    = new FakeTransport(),
+        bridge    = await bridgeTransports({
+            localTransport : local,
+            remoteTransport: remote,
+            onError        : error => errors.push(error.message),
+            onRecovered    : error => recovered.push(error.message)
+        });
+
+    local.onmessage({jsonrpc: '2.0', id: 'init', method: 'initialize', params: {}});
+    remote.onmessage({jsonrpc: '2.0', id: 'init', result: {protocolVersion: '2025-11-25'}});
+    await flush();
+
+    return {bridge, errors, local, recovered, remote}
 }
 
 /** @summary Read one bridge protocol response while surfacing premature child exit and bounding hangs. */
@@ -199,13 +224,13 @@ test.describe('stdioToStreamableHttp', () => {
 
     test('answers discovery locally before initialize and forwards it after a successful initialize', async () => {
         const
-            errors  = [],
-            local   = new FakeTransport(),
-            remote  = new FakeTransport(),
-            bridge  = await bridgeTransports({localTransport: local, remoteTransport: remote, onError: error => errors.push(error)}),
+            errors                   = [],
+            local                    = new FakeTransport(),
+            remote                   = new FakeTransport(),
+            bridge                   = await bridgeTransports({localTransport: local, remoteTransport: remote, onError: error => errors.push(error)}),
             discoverBeforeInitialize = {jsonrpc: '2.0', id: 0, method: 'server/discover', params: {}},
-            initialize = {jsonrpc: '2.0', id: 1, method: 'initialize', params: {}},
-            discoverAfterInitialize = {jsonrpc: '2.0', id: 2, method: 'server/discover', params: {}};
+            initialize               = {jsonrpc: '2.0', id: 1, method: 'initialize', params: {}},
+            discoverAfterInitialize  = {jsonrpc: '2.0', id: 2, method: 'server/discover', params: {}};
 
         local.onmessage(discoverBeforeInitialize);
         await Promise.resolve();
@@ -284,6 +309,108 @@ test.describe('stdioToStreamableHttp', () => {
         expect(local.closed).toBe(1);
         expect(remote.closed).toBe(1);
         expect(errors).toEqual([])
+    });
+
+    test('names causes from a fixed vocabulary, never from error text', () => {
+        const abort = new Error('This operation was aborted, Bearer must-not-print');
+
+        abort.name = 'AbortError';
+
+        expect(getBridgeErrorCause(new Error('SSE stream disconnected: TypeError: terminated'))).toBe('sse-disconnect');
+        expect(getBridgeErrorCause(new Error('Failed to reconnect SSE stream: Bad Gateway'))).toBe('sse-reconnect-failed');
+        expect(getBridgeErrorCause(new Error('Maximum reconnection attempts (2) exceeded.'))).toBe('sse-reconnect-exhausted');
+        expect(getBridgeErrorCause(Object.assign(new Error('Error POSTing to endpoint: Bearer must-not-print'), {code: 503}))).toBe('http-503');
+        expect(getBridgeErrorCause(Object.assign(new Error('Unexpected content type'), {code: -1}))).toBe('unexpected-content-type');
+        expect(getBridgeErrorCause(new TypeError('fetch failed'))).toBe('network');
+        expect(getBridgeErrorCause(abort)).toBe('timeout');
+        expect(getBridgeErrorCause(new Error('Bearer must-not-print'))).toBe('unknown');
+        expect(getBridgeErrorCause(undefined)).toBe('unknown')
+    });
+
+    test('survives a dropped stream with nothing pending and keeps forwarding', async () => {
+        const
+            {bridge, errors, local, recovered, remote} = await startInitializedBridge(),
+            later                                      = {jsonrpc: '2.0', method: 'notifications/tools/list_changed'};
+
+        remote.onerror(new Error('SSE stream disconnected: TypeError: terminated'));
+        local.onmessage({jsonrpc: '2.0', id: 3, method: 'tools/list', params: {}});
+        remote.onerror(new Error('Failed to reconnect SSE stream: Bad Gateway'));
+        remote.onmessage(later);
+        await flush();
+
+        expect(errors).toEqual([]);
+        expect(recovered).toEqual([
+            'Neo MCP bridge kept its session after a transport error. Cause: sse-disconnect.',
+            'Neo MCP bridge kept its session after a transport error. Cause: sse-reconnect-failed.'
+        ]);
+        expect(remote.messages.at(-1).id).toBe(3);
+        expect(local.messages.at(-1)).toEqual(later);
+        expect(local.closed).toBe(0);
+
+        await bridge.close()
+    });
+
+    test('a dropped stream while a request is pending closes the bridge with its cause', async () => {
+        const {errors, local, recovered, remote} = await startInitializedBridge();
+
+        local.onmessage({jsonrpc: '2.0', id: 9, method: 'tools/call', params: {name: 'add_memory'}});
+        await flush();
+        remote.onerror(new Error('SSE stream disconnected: TypeError: terminated'));
+        await flush();
+
+        expect(recovered).toEqual([]);
+        expect(errors).toEqual(['Neo MCP bridge transport failed. Cause: sse-disconnect.']);
+        expect(local.closed).toBe(1);
+        expect(remote.closed).toBe(1)
+    });
+
+    test('exhausted reconnection and a refused session still close the bridge, each naming its cause', async () => {
+        const exhausted = await startInitializedBridge();
+
+        exhausted.remote.onerror(new Error('Maximum reconnection attempts (2) exceeded.'));
+        await flush();
+
+        expect(exhausted.errors).toEqual(['Neo MCP bridge transport failed. Cause: sse-reconnect-exhausted.']);
+        expect(exhausted.local.closed).toBe(1);
+
+        const refused = await startInitializedBridge();
+
+        refused.remote.send = async () => {
+            throw Object.assign(new Error('Streamable HTTP error: Error POSTing to endpoint: Session not found'), {code: 404})
+        };
+        refused.local.onmessage({jsonrpc: '2.0', id: 4, method: 'tools/call', params: {}});
+        await flush();
+
+        expect(refused.errors).toEqual(['Neo MCP bridge transport failed. Cause: http-404.']);
+        expect(refused.local.closed).toBe(1)
+    });
+
+    test('a request whose delivery fails is answered locally while the session stays open', async () => {
+        const {bridge, errors, local, recovered, remote} = await startInitializedBridge();
+
+        remote.send = async message => {
+            if (message.id === 11) {
+                throw Object.assign(new Error('Streamable HTTP error: Error POSTing to endpoint: Bearer must-not-print'), {code: 502})
+            }
+
+            remote.messages.push(message)
+        };
+        local.onmessage({jsonrpc: '2.0', id: 11, method: 'tools/call', params: {}});
+        local.onmessage({jsonrpc: '2.0', id: 12, method: 'tools/call', params: {}});
+        await flush();
+
+        expect(local.messages.at(-1)).toEqual({
+            jsonrpc: '2.0',
+            id     : 11,
+            error  : {code: -32603, message: 'Neo MCP bridge could not deliver the request. Cause: http-502.'}
+        });
+        expect(remote.messages.at(-1).id).toBe(12);
+        expect(recovered).toEqual(['Neo MCP bridge kept its session after a transport error. Cause: http-502.']);
+        expect(errors).toEqual([]);
+        expect(JSON.stringify(local.messages)).not.toContain('must-not-print');
+        expect(local.closed).toBe(0);
+
+        await bridge.close()
     });
 
     test('closes both sides when partial startup fails', async () => {
@@ -455,7 +582,8 @@ test.describe('stdioToStreamableHttp', () => {
             expect(code).toBe(1);
             expect(stderr).not.toContain(token);
             expect(stderr).not.toContain('remote body echoed');
-            expect(stderr.match(/Neo MCP bridge transport failed\./g)).toHaveLength(1)
+            expect(stderr.match(/Neo MCP bridge transport failed\./g)).toHaveLength(1);
+            expect(stderr).toContain('Neo MCP bridge transport failed. Cause: http-500.')
         } finally {
             await new Promise(resolve => server.close(resolve))
         }
@@ -463,9 +591,9 @@ test.describe('stdioToStreamableHttp', () => {
 
     test('the executable rejects pre-initialize discovery locally then completes an HTTP handshake', async () => {
         const
-            token = 'inert-loopback-fixture-token',
+            token    = 'inert-loopback-fixture-token',
             requests = [],
-            server = createServer(async (request, response) => {
+            server   = createServer(async (request, response) => {
                 if (request.method === 'GET') {
                     response.writeHead(405);
                     response.end();
@@ -505,7 +633,7 @@ test.describe('stdioToStreamableHttp', () => {
                 if (method === 'initialize') {
                     sendJson(200, {
                         jsonrpc: '2.0', id: message.id,
-                        result: {protocolVersion: '2025-11-25', capabilities: {tools: {}}, serverInfo: {name: 'loopback-fixture', version: '1.0.0'}}
+                        result : {protocolVersion: '2025-11-25', capabilities: {tools: {}}, serverInfo: {name: 'loopback-fixture', version: '1.0.0'}}
                     }, {'mcp-session-id': 'inert-session'});
                     return
                 }
@@ -537,7 +665,7 @@ test.describe('stdioToStreamableHttp', () => {
 
         const
             endpoint = `http://127.0.0.1:${server.address().port}/mcp`,
-            child = spawn(process.execPath, [BRIDGE_ENTRYPOINT, '--url', endpoint, '--token-env', 'NEO_LOOPBACK_FIXTURE_TOKEN'], {
+            child    = spawn(process.execPath, [BRIDGE_ENTRYPOINT, '--url', endpoint, '--token-env', 'NEO_LOOPBACK_FIXTURE_TOKEN'], {
                 env: {
                     ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !['FORCE_COLOR', 'NO_COLOR'].includes(key))),
                     NEO_LOOPBACK_FIXTURE_TOKEN: token
@@ -572,8 +700,8 @@ test.describe('stdioToStreamableHttp', () => {
         } finally {
             if (child.exitCode === null && child.signalCode === null) {
                 child.stdin.end();
-                let childClosed = false, killTimer;
-                const closed = once(child, 'close').then(() => { childClosed = true });
+                let   childClosed = false, killTimer;
+                const closed      = once(child, 'close').then(() => { childClosed = true });
 
                 await Promise.race([
                     closed,
