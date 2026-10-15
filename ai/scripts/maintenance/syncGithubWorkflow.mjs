@@ -71,6 +71,11 @@ import {
  * `.corpus-sync.lock` is transient and must not be published. Progress stays in the destination;
  * the publisher owns cleanup of unsuccessful attempts and serialization across jobs.
  *
+ * `--refetch-issues=<n,…>` (with `--corpus-only` only) heals corpus files that drifted from GitHub without
+ * an `updatedAt` change, which the delta sync never revisits: the issues facet force-refetches the named
+ * numbers of the selected source in the same emission, so they publish with it. Every token must be a
+ * positive integer, checked before the emitter loads; a named issue that does not come back fails the run.
+ *
  * Ordinary invocation retains its existing local directory layout.
  * Both modes write origin-qualified index identities. Bootstrapping an unqualified legacy index
  * requires explicit `NEO_MCP_GITHUB_LEGACY_REPO_SLUG`; the current source is never guessed as owner.
@@ -95,6 +100,8 @@ import {
  *   npm run ai:sync-github-workflow -- --emit-only
  *   NEO_MCP_GITHUB_OWNER=neomjs NEO_MCP_GITHUB_REPO=neo \
  *     NEO_MCP_GITHUB_CONTENT_ROOT=/checkout/corpus npm run ai:sync-github-workflow -- --corpus-only
+ *   NEO_MCP_GITHUB_CONTENT_ROOT=/checkout/corpus \
+ *     npm run ai:sync-github-workflow -- --corpus-only --refetch-issues=19565,19637
  *
  *   # Full output streamed to stdout/stderr (no MCP timeout ceiling).
  *   # Exit code 0 on success / 1 on failure.
@@ -113,6 +120,31 @@ async function assertSyncGithubWorkflowDevBranch() {
         );
 
     await guard();
+}
+
+/**
+ * @summary Reads `--refetch-issues=<n,…>` into issue numbers, refusing anything but positive integers.
+ * @param {String[]} argv CLI arguments.
+ * @returns {Number[]} The named issue numbers, deduplicated; empty when the flag is absent.
+ * @throws {Error} If the flag repeats, has no `=` value, or holds a token that is not a positive integer.
+ */
+function parseRefetchIssues(argv) {
+    const flags = argv.filter(arg => arg === '--refetch-issues' || arg.startsWith('--refetch-issues='));
+
+    if (flags.length === 0) return [];
+    if (flags.length > 1 || flags[0] === '--refetch-issues') {
+        throw new Error('--refetch-issues takes one comma-separated list: --refetch-issues=<n,…>.');
+    }
+
+    const
+        tokens  = flags[0].slice('--refetch-issues='.length).split(','),
+        invalid = tokens.find(token => !/^[1-9]\d*$/.test(token) || !Number.isSafeInteger(Number(token)));
+
+    if (invalid !== undefined) {
+        throw new Error(`--refetch-issues takes positive issue numbers, not "${invalid}".`);
+    }
+
+    return [...new Set(tokens.map(Number))]
 }
 
 /**
@@ -199,8 +231,12 @@ async function syncGithubWorkflow() {
         emitOnly   = process.argv.includes('--emit-only'),
         verbose    = process.argv.includes('--verbose');
 
+    let refetchIssues;
+
     try {
         if (corpusOnly && emitOnly) throw new Error('Choose either --corpus-only or --emit-only.');
+        refetchIssues = parseRefetchIssues(process.argv);
+        if (refetchIssues.length > 0 && !corpusOnly) throw new Error('--refetch-issues needs --corpus-only.');
         if (corpusOnly) await assertCorpusDestination();
         else await assertSyncGithubWorkflowDevBranch();
     } catch (error) {
@@ -212,7 +248,8 @@ async function syncGithubWorkflow() {
 
     if (verbose) console.log('Corpus context:', {
         source     : `${GH_Config.owner}/${GH_Config.repo}`,
-        contentRoot: GH_Config.issueSync.contentRoot
+        contentRoot: GH_Config.issueSync.contentRoot,
+        ...(refetchIssues.length > 0 && {refetchIssues})
     });
 
     console.log(corpusOnly ? '🔄 Starting origin-qualified conversation corpus emission...' : emitOnly
@@ -227,7 +264,7 @@ async function syncGithubWorkflow() {
     try {
         outcome = await withHeavyMaintenanceLease(
             async () => corpusOnly
-                ? GH_SyncService.emitConversationCorpus()
+                ? GH_SyncService.emitConversationCorpus({refetchIssues})
                 : emitOnly
                 ? GH_SyncService.emitGeneratedContent({pushLocalChanges: false})
                 : GH_SyncService.runFullSync(),
@@ -261,4 +298,4 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
     syncGithubWorkflow();
 }
 
-export {assertCorpusDestination, assertSyncGithubWorkflowDevBranch, syncGithubWorkflow};
+export {assertCorpusDestination, assertSyncGithubWorkflowDevBranch, parseRefetchIssues, syncGithubWorkflow};

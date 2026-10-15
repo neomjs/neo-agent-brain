@@ -115,9 +115,11 @@ class SyncService extends Base {
      * @param {Object} [options]
      * @param {Boolean} [options.pushLocalChanges=true] Whether locally-authored issue changes may
      * be pushed to GitHub before the pull. Scheduled CI emission passes `false` and remains read-only.
+     * @param {Number[]} [options.refetchIssues=[]] Issues the `issues` facet force-refetches in this run,
+     * failing the facet unless each comes back (`IssueSyncer#pullFromGitHub`).
      * @returns {Promise<object>} Statistics for the emitted generated content, plus `facetOutcomes`.
      */
-    async emitGeneratedContent({pushLocalChanges = true} = {}) {
+    async emitGeneratedContent({pushLocalChanges = true, refetchIssues = []} = {}) {
         const
             metadata = await MetadataManager.load(),
             outcomes = [],
@@ -198,7 +200,7 @@ class SyncService extends Base {
                 logger.info('[SyncService] Pull-only emission: skipping local-to-GitHub issue push.')
             }
 
-            const {newMetadata, stats} = await IssueSyncer.pullFromGitHub(metadata);
+            const {newMetadata, stats} = await IssueSyncer.pullFromGitHub(metadata, {refetchIssues});
 
             pullStats = stats;
 
@@ -342,10 +344,13 @@ class SyncService extends Base {
      * Release history remains the prerequisite for issue, discussion and pull bucketing, and the
      * notes are written beside the conversations, so a reader of the corpus alone has them. Portal/SEO
      * output, local-to-GitHub issue pushes and git publication stay outside this producer-only boundary.
+     * @param {Object} [options]
+     * @param {Number[]} [options.refetchIssues=[]] Issues to force-refetch in this emission, for corpus files
+     * that drifted from GitHub without an `updatedAt` change.
      * @returns {Promise<object>} Facet statistics and truthful aggregate outcome.
      */
-    async emitConversationCorpus() {
-        return this.emitGeneratedContent({pushLocalChanges: false});
+    async emitConversationCorpus({refetchIssues = []} = {}) {
+        return this.emitGeneratedContent({pushLocalChanges: false, refetchIssues});
     }
 
     /**

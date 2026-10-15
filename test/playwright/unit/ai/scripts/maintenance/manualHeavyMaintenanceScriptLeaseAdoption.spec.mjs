@@ -37,6 +37,11 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
     const scriptPath  = file => path.join(scriptsRoot, file);
 
     /**
+     * The `leasePath` every script declares unless its entry says otherwise: the shared heavy-maintenance lease.
+     */
+    const HEAVY_LEASE_PATH = 'resolveHeavyMaintenanceLeasePath\\(\\{dataDir\\s*:\\s*AiConfig\\.orchestrator\\.dataDir\\}\\)';
+
+    /**
      * Maps each script to its expected lease `owner` string. Owner strings are stable
      * identifiers used by both the wrapper-side defer message and the orchestrator-side
      * task names — keep these in sync with `MaintenanceBackpressureService.mjs` DEFAULT_HEAVY_MAINTENANCE_TASK_NAMES.
@@ -77,6 +82,9 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
             file           : 'maintenance/syncGithubWorkflow.mjs',
             owner          : 'syncGithubWorkflow',
             invocation     : 'withHeavyMaintenanceLease(',
+            // Corpus emission writes an external corpus, so it serializes on that corpus's own lease;
+            // the manual modes keep the shared heavy-maintenance lease.
+            leasePath      : `corpusOnly\\s*\\?\\s*GH_Config\\.issueSync\\.corpusLeaseFile\\s*:\\s*${HEAVY_LEASE_PATH}`,
             heldExitPattern: /process\.exit\(0\)/
         },
         {
@@ -103,6 +111,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
         owner,
         reason = 'manual-cli',
         invocation,
+        leasePath = HEAVY_LEASE_PATH,
         heldExitPattern,
         heldDiagnosticPattern = /Deferred:.*lease held by/i
     } of SCRIPTS) {
@@ -123,7 +132,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
 
             // Scope all wiring assertions to the actual wrapper-options object. A leasePath
             // occurrence elsewhere in the file must not self-confirm this caller contract.
-            const leasePathMatch = /leasePath\s*:\s*resolveHeavyMaintenanceLeasePath\(\{dataDir\s*:\s*AiConfig\.orchestrator\.dataDir\}\)/g;
+            const leasePathMatch = new RegExp(`leasePath\\s*:\\s*${leasePath}`, 'g');
             leasePathMatch.lastIndex = invocationIndex;
             const leasePathWiring = leasePathMatch.exec(source);
             expect(leasePathWiring, `${file}: configured leasePath must follow the wrapper invocation`).not.toBeNull();
@@ -146,7 +155,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
                 : reasonLit;
 
             expect(wrapperOptions).toMatch(new RegExp(
-                `^\\{\\s*leasePath\\s*:\\s*resolveHeavyMaintenanceLeasePath\\(\\{dataDir\\s*:\\s*AiConfig\\.orchestrator\\.dataDir\\}\\)\\s*,` +
+                `^\\{\\s*leasePath\\s*:\\s*${leasePath}\\s*,` +
                 `\\s*owner\\s*:\\s*['"]${owner}['"]\\s*,\\s*reason\\s*:\\s*${reasonMatch}`
             ));
         });
@@ -168,7 +177,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
         // GPT's cycle-1 review caught: prior code set
         // process.exitCode=1 in the outer catch but FELL THROUGH to GraphService.decayGlobalTopology()
         // which mutates SQLite graph edges + _SYSTEM_STATE. That defeats the substrate protection the
-        // lease exists to provide. ticket-ref-ok: load-bearing review-history anchor for this spec's existence.
+        // lease exists to provide.
         // PR is shipping — the one path where the lease was NOT acquired could still mutate the graph.
         //
         // Fix: exit(1) directly in the catch block to short-circuit before the canonical REM cycle.
@@ -237,7 +246,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
 
     test('all heavy maintenance scripts share the same lease-wrapper pattern (no per-script private locks)', async () => {
         // Empirical anchor: the original lease-work explicitly named "per-script private locks" as
-        // an avoided trap (ticket-ref-ok: load-bearing design-history anchor). This test pins that
+        // an avoided trap. This test pins that
         // none of the heavy-maintenance scripts introduces an alternative
         // lock-file or in-process mutex — they all consume the shared lease primitive.
         for (const {file} of SCRIPTS) {

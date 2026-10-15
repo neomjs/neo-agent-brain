@@ -697,9 +697,12 @@ class IssueSyncer extends Base {
      * Fetches all relevant issues from GitHub using GraphQL with automatic pagination.
      * This single query fetches issues WITH their comments and relationships in one go!
      * @param {object} metadata
+     * @param {object} [options]
+     * @param {number[]} [options.refetchIssues=[]] Issues to force-refetch in this pull, for local files that
+     * drifted from GitHub without an `updatedAt` change. Each one must come back refetched, or the pull throws.
      * @returns {Promise<{newMetadata: object, stats: object}>}
      */
-    async pullFromGitHub(metadata) {
+    async pullFromGitHub(metadata, {refetchIssues = []} = {}) {
         logger.info('📥 Fetching issues from GitHub via GraphQL...');
 
         // Reset per-sync-cycle dedupe set for ARCHIVE ANOMALY WARN emission. pullFromGitHub is
@@ -958,12 +961,21 @@ class IssueSyncer extends Base {
         // Remove issues that were already updated in the main loop
         allIssues.forEach(issue => relatedIssuesToUpdate.delete(issue.number));
 
+        // Named issues are refetched even when the delta returned them: the delta writes on an `updatedAt`
+        // change, and a named issue is one whose file drifted without one.
+        refetchIssues.forEach(issueNumber => relatedIssuesToUpdate.add(issueNumber));
+
         if (relatedIssuesToUpdate.size > 0) {
-            logger.info(`🔄 Force-updating ${relatedIssuesToUpdate.size} related issues due to relationship activity...`);
+            logger.info(`🔄 Force-updating ${relatedIssuesToUpdate.size} issues: relationship activity, plus ${refetchIssues.length} named...`);
             const refetchStats = await this.refetchIssuesByNumber([...relatedIssuesToUpdate], newMetadata, indexMutations);
             stats.pulled.count   += refetchStats.refetched.count;
             stats.pulled.updated += refetchStats.refetched.count;
             stats.pulled.issues.push(...refetchStats.refetched.issues);
+
+            const missing = refetchIssues.filter(issueNumber => !refetchStats.refetched.issues.includes(issueNumber));
+            if (missing.length > 0) {
+                throw new Error(`Named issues were not refetched: #${missing.join(', #')}`);
+            }
         }
 
         await pruneEmptyDirs(issueSyncConfig.issuesDir);
