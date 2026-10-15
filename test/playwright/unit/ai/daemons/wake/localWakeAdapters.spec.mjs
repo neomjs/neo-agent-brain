@@ -533,7 +533,7 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
         expect(script).not.toContain('key code 53');
     });
 
-    test('an Antigravity userDataDir route focuses the composer with Cmd+I, dismisses autocomplete with Esc before Return, and fails closed on wrong instance (#1035)', async () => {
+    test('an Antigravity userDataDir route focuses the composer with Cmd+I, dismisses autocomplete with Space before Return, and fails closed on wrong instance (#1035)', async () => {
         let osascriptArgs;
         let resolvedQuery;
         const antigravityRecord = record('osascript', {
@@ -577,10 +577,12 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
         // Preserves and restores any in-progress operator draft around the wake paste.
         expect(script).toContain('before prompt clear');
         expect(script).toContain('before user input restore paste');
-        // Dismisses Lexical '/' and '@' autocomplete popups before Return so Return submits the turn.
-        expect(script).toContain('key code 53');
+        // Terminates any trailing Lexical '@'-mention token with Space (key code 49) rather than Escape
+        // (key code 53), which blurs the composer to BODY when no popup is open.
+        expect(script).toContain('key code 49');
+        expect(script).not.toContain('key code 53');
         expect(script).toContain('key code 36');
-        expect(script.indexOf('key code 53')).toBeLessThan(script.indexOf('key code 36'));
+        expect(script.indexOf('key code 49')).toBeLessThan(script.indexOf('key code 36'));
 
         // Wrong or missing userDataDir instance fails closed before spawning osascript.
         let spawnedOnMismatch = false;

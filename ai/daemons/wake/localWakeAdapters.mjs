@@ -856,7 +856,11 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         '-e', '    tell targetProcess',
         '-e', '      keystroke "v" using command down',
         '-e', '      delay 0.5',
-        ...(['Antigravity', 'Codex'].includes(appName) ? ['-e', '      key code 53', '-e', '      delay 0.45'] : []),
+        ...(appName === 'Antigravity'
+            ? ['-e', '      key code 49', '-e', '      delay 0.45']
+            : appName === 'Codex'
+                ? ['-e', '      key code 53', '-e', '      delay 0.45']
+                : []),
         '-e', '      key code 36',
         '-e', '      delay 1.0',
         '-e', '    end tell',
