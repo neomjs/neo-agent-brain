@@ -71,6 +71,29 @@ function readDirectoryCustody(directory, fileSystem, uid) {
     return stat
 }
 
+/** @summary Creates canonical protected journal directories and flushes the new ancestor entries. */
+function createJournalDirectory(directory, fileSystem, uid) {
+    if (!path.isAbsolute(directory || '') || !Number.isInteger(uid)) throw refused('invalid-binding');
+    for (let ancestor = directory; ; ancestor = path.dirname(ancestor)) {
+        try {
+            if (!fileSystem.lstatSync(ancestor).isDirectory() || fileSystem.realpathSync(ancestor) !== path.resolve(ancestor)) {
+                throw refused('directory-custody');
+            }
+            break;
+        } catch (error) { if (error.code !== 'ENOENT') throw error }
+    }
+    const firstCreated = fileSystem.mkdirSync(directory, {recursive: true, mode: 0o700});
+    if (firstCreated) {
+        const last = path.dirname(firstCreated);
+        for (let current = directory; ; current = path.dirname(current)) {
+            const descriptor = fileSystem.openSync(current, 'r');
+            try { fileSystem.fsyncSync(descriptor) } finally { fileSystem.closeSync(descriptor) }
+            if (current === last) break;
+        }
+    }
+    return readDirectoryCustody(directory, fileSystem, uid);
+}
+
 /**
  * @summary Inspects the existing journal through its format owner, without acquiring or consuming authority.
  * A matched clean handoff is a point-in-time observation, not proof of surviving processes, runtime
@@ -166,14 +189,44 @@ export function holdLaunchAdmissionHandoff({
     if (expected !== null && (!expected || typeof expected !== 'object' || Array.isArray(expected) ||
         Object.keys(expected).sort().join(',') !== 'epoch,issuer' ||
         !isId(expected.issuer) || !Number.isSafeInteger(expected.epoch) || expected.epoch <= 0)) throw refused('invalid-binding');
-    const options  = {directory, validateSnapshot, fileSystem, uid};
+    const options  = {directory, validateSnapshot, fileSystem, uid, acquireLease};
     const observed = readLaunchAdmissionJournal(options);
     if (!observed?.handoffProved) throw refused('handoff-incomplete');
     if (expected && (observed.state.issuer !== expected.issuer || observed.state.epoch !== expected.epoch)) {
         throw refused('issuer-changed')
     }
+    const fingerprint = JSON.stringify(observed.state);
+    return holdJournalEvidence(options, observed, () => {
+        const current = readLaunchAdmissionJournal(options);
+        if (!current?.handoffProved || JSON.stringify(current.state) !== fingerprint) throw refused('handoff-changed');
+    });
+}
+
+/**
+ * @summary Excludes issuers in a vacant journal without publishing or consuming any authority record.
+ * A null evidence value proves only that no journal records exist while this lease is held. The
+ * caller separately proves first-install eligibility or explicit discontinuous legacy migration.
+ * @param {Object} options
+ * @param {String} options.directory Canonical admission directory, created if absent.
+ * @param {Object} [options.fileSystem=fs] Synchronous filesystem seam.
+ * @param {Function} [options.acquireLease=acquireFileLease] Existing exclusion primitive.
+ * @param {Number} [options.uid=process.getuid()] Expected owner.
+ * @returns {{evidence:null, assertCurrent:Function, release:Function}} Non-authorizing vacancy guard.
+ */
+export function holdLaunchAdmissionVacancy({
+    directory, fileSystem = fs, acquireLease = acquireFileLease, uid = process.getuid?.()
+}) {
+    const options = {directory, fileSystem, uid};
+    if (readLaunchAdmissionJournal(options) !== null) throw refused('journal-not-vacant');
+    createJournalDirectory(directory, fileSystem, uid);
+    return holdJournalEvidence({...options, acquireLease}, null, () => {
+        if (readLaunchAdmissionJournal(options) !== null) throw refused('journal-not-vacant');
+    });
+}
+
+/** @summary Holds detached journal evidence under the existing issuer lease and proves its release. */
+function holdJournalEvidence({directory, fileSystem, uid, acquireLease = acquireFileLease}, observed, verifyEvidence) {
     const directoryStat = readDirectoryCustody(directory, fileSystem, uid);
-    const fingerprint   = JSON.stringify(observed.state);
     const lease         = acquireLease({dir: directory, filename: 'issuer.lock', owner: 'fleet-launch-admission',
         fs: fileSystem, isHeldFresh, onCorrupt: 'refuse'});
     let closed = false, released = false;
@@ -185,8 +238,7 @@ export function holdLaunchAdmissionHandoff({
         if (stat.dev !== directoryStat.dev || stat.ino !== directoryStat.ino || !lease.pulse().held) {
             throw refused('ownership-unproved')
         }
-        const current = readLaunchAdmissionJournal(options);
-        if (!current?.handoffProved || JSON.stringify(current.state) !== fingerprint) throw refused('handoff-changed');
+        verifyEvidence();
     }
 
     /**
@@ -244,18 +296,7 @@ export function openLaunchAdmissionJournal({
 }) {
     if (!path.isAbsolute(directory || '') || !Number.isInteger(uid) || typeof validateSnapshot !== 'function' ||
         validateSnapshot(emptySnapshot) !== true) throw refused('invalid-binding');
-    const firstCreated = fileSystem.mkdirSync(directory, {recursive: true, mode: 0o700});
-    // The lease needs its directory before the atomic writer runs, so flush the entries this
-    // earlier mkdir created. Later strict file writes cannot discover those new ancestors.
-    if (firstCreated) {
-        const last = path.dirname(firstCreated);
-        for (let current = directory; ; current = path.dirname(current)) {
-            const descriptor = fileSystem.openSync(current, 'r');
-            try { fileSystem.fsyncSync(descriptor) } finally { fileSystem.closeSync(descriptor) }
-            if (current === last) break;
-        }
-    }
-    const directoryStat = readDirectoryCustody(directory, fileSystem, uid);
+    const directoryStat = createJournalDirectory(directory, fileSystem, uid);
 
     const lease = acquireLease({
         dir: directory, filename: 'issuer.lock', owner: 'fleet-launch-admission',

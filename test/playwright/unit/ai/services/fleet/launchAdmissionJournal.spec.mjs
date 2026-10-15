@@ -1,12 +1,12 @@
-import {expect, test}                                                                                            from '@playwright/test';
-import fs                                                                                                        from 'fs-extra';
-import os                                                                                                        from 'node:os';
-import path                                                                                                      from 'node:path';
-import {spawn}                                                                                                   from 'node:child_process';
-import {once}                                                                                                    from 'node:events';
-import {holdLaunchAdmissionHandoff, isAdmissionSnapshot, openLaunchAdmissionJournal, readLaunchAdmissionJournal} from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
-import {writeFileAtomicSync}                                                                                     from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
-import {acquireFileLease}                                                                                        from '../../../../../../ai/daemons/shared/fileLease.mjs';
+import {expect, test}                                                                                                                        from '@playwright/test';
+import fs                                                                                                                                    from 'fs-extra';
+import os                                                                                                                                    from 'node:os';
+import path                                                                                                                                  from 'node:path';
+import {spawn}                                                                                                                               from 'node:child_process';
+import {once}                                                                                                                                from 'node:events';
+import {holdLaunchAdmissionHandoff, holdLaunchAdmissionVacancy, isAdmissionSnapshot, openLaunchAdmissionJournal, readLaunchAdmissionJournal} from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
+import {writeFileAtomicSync}                                                                                                                 from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
+import {acquireFileLease}                                                                                                                    from '../../../../../../ai/daemons/shared/fileLease.mjs';
 
 let root, journals;
 const emptySnapshot = {version: 1, generations: []};
@@ -35,6 +35,46 @@ test.beforeEach(() => {
 test.afterEach(() => {
     journals.forEach(journal => journal.close());
     fs.removeSync(root);
+});
+
+test('vacancy exclusion creates no journal or fence and releases for the first actual issuer', () => {
+    const directory = path.join(root, 'new/fleet/launch-admission');
+    const guard     = holdLaunchAdmissionVacancy({directory});
+    try {
+        expect(guard.evidence).toBeNull();
+        expect(readLaunchAdmissionJournal({directory})).toBeNull();
+        expect(fs.readdirSync(directory)).toEqual(['issuer.lock']);
+        expect(() => holdLaunchAdmissionVacancy({directory})).toThrow(/held/);
+        expect(() => open({directory})).toThrow(/held/);
+        guard.assertCurrent();
+    } finally { expect(guard.release()).toBe(true) }
+    expect(fs.readdirSync(directory)).toEqual([]);
+    const retry = holdLaunchAdmissionVacancy({directory});
+    expect(retry.evidence).toBeNull();
+    retry.release();
+    expect(open({directory}).previous).toBeNull();
+});
+
+test('vacancy exclusion never replaces active, handed-off, corrupt or torn records', () => {
+    const production = {version: 6, generations: [], seats: []};
+    const journal    = open({validateSnapshot: isAdmissionSnapshot, emptySnapshot: production});
+    expect(() => holdLaunchAdmissionVacancy({directory: root})).toThrow(/journal-not-vacant/);
+    journal.handoff(production);
+    const state = fs.readFileSync(path.join(root, 'issuer.json'), 'utf8');
+    expect(() => holdLaunchAdmissionVacancy({directory: root})).toThrow(/journal-not-vacant/);
+    expect(fs.readFileSync(path.join(root, 'issuer.json'), 'utf8')).toBe(state);
+    fs.writeFileSync(path.join(root, 'issuer.json'), 'broken');
+    expect(() => holdLaunchAdmissionVacancy({directory: root})).toThrow(/record-unreadable/);
+    fs.unlinkSync(path.join(root, 'issuer.json'));
+    expect(() => holdLaunchAdmissionVacancy({directory: root})).toThrow(/record-invalid/);
+});
+
+test('vacancy directory creation refuses a linked ancestor before creating descendants', () => {
+    const other = path.join(root, 'actual'), link = path.join(root, 'linked');
+    fs.mkdirSync(other);
+    fs.symlinkSync(other, link);
+    expect(() => holdLaunchAdmissionVacancy({directory: path.join(link, 'new/journal')})).toThrow(/directory-custody/);
+    expect(fs.readdirSync(other)).toEqual([]);
 });
 
 test('clean handoff is durably consumed before the successor receives the original snapshot', () => {
