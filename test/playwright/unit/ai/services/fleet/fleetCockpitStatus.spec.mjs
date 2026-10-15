@@ -175,6 +175,20 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         expect(snapshot.rows.map(row => row.sessionFolder)).toEqual([sessionFolder, null])
     })
 
+    test('carries why a seat exited without a Stop from the runtime row — null for every other row', () => {
+        const
+            exitReason = {state: 'harness-update', exitedAt: '2026-10-15T12:26:13.450Z', logPath: '/tmp/main.log', matchedLine: '2026-10-15 14:26:13 [info] beforeQuitForUpdate'},
+            snapshot   = createFleetCockpitStatus({
+                agents       : [{id: 'alice'}, {id: 'bob'}],
+                runtimeStatus: [
+                    {agentId: 'alice', state: 'stopped', running: false, confidence: 'observed', exitReason},
+                    {agentId: 'bob',   state: 'stopped', running: false, confidence: 'observed'}
+                ]
+            })
+
+        expect(snapshot.rows.map(row => row.exitReason)).toEqual([exitReason, null])
+    })
+
     test('carries the Git identity the last start resolved from the runtime row — null before a start', () => {
         const
             derived  = {state: 'derived', source: 'commit-email', name: 'Alice', email: 'alice@example.test'},

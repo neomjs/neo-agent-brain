@@ -195,6 +195,7 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 // where a running Claude Desktop seat's session opened, against its checkout; null
                 // for every other family and every seat not running
                 sessionFolder: runtime?.sessionFolder ?? null,
+                exitReason   : runtime?.exitReason ?? null,
                 // the Git identity the last start resolved, a refused start's included; null before a start
                 gitIdentity  : runtime?.gitIdentity ?? null,
                 // the model and effort a Codex seat's config is set to now (configured state, never what a

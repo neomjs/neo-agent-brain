@@ -15,6 +15,7 @@ import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                                 
 import FleetRegistryService                                                     from './FleetRegistryService.mjs';
 import {readSeatEnvOperatorKeys, SEAT_ENV_NOT_REGULAR}                          from './seatEnvFile.mjs';
 import {readSeatSessionFolder}                                                  from './seatSessionFolder.mjs';
+import {readSeatExitReason}                                                     from './seatExitReason.mjs';
 import memoryCoreConfig                                                         from '../../mcp/server/memory-core/config.mjs';
 import knowledgeBaseConfig                                                      from '../../mcp/server/knowledge-base/config.mjs';
 import neuralLinkConfig                                                         from '../../mcp/server/neural-link/config.mjs';
@@ -492,6 +493,12 @@ class FleetLifecycleService extends Base {
      * @member {Object|null} launchAdmission=null
      */
     launchAdmission = null
+
+    /**
+     * Override path to Claude Desktop's `main.log` for unplanned-exit classification ({@link exitReasonFor}).
+     * @member {String|null} claudeMainLogPath=null
+     */
+    claudeMainLogPath = null
 
     /**
      * Process inspection behind the seat lease: `(pid) => {startedAt, exited, command}|null`. Defaults
@@ -1051,7 +1058,9 @@ class FleetLifecycleService extends Base {
             launchInterpreter  : survivesFleetExit ? readShebangLine(resolvedCommand) : null,
             profileArg         : survivesFleetExit ? args.find(arg => arg.startsWith('--user-data-dir=')) ?? null : null,
             admissionGeneration: null,
-            runtimeGeneration  : opts.runtimeGeneration ?? null
+            runtimeGeneration  : opts.runtimeGeneration ?? null,
+            stopRequested      : false,
+            exitReason         : null
         };
         this.processes.set(id, record);
 
@@ -1358,6 +1367,11 @@ class FleetLifecycleService extends Base {
 
         const record = this.processes.get(id);
 
+        if (record) {
+            record.stopRequested = true;
+            record.exitReason    = null
+        }
+
         this.refreshAdoptedSeat(record);
 
         // A helper proof the bundle could not give at adoption is asked for again on each retry.
@@ -1491,7 +1505,7 @@ class FleetLifecycleService extends Base {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, dependencies: this.dependenciesOf(id), sessionFolder: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, dependencies: this.dependenciesOf(id), sessionFolder: null, exitReason: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
 
         this.refreshAdoptedSeat(record);
 
@@ -1530,6 +1544,7 @@ class FleetLifecycleService extends Base {
             repos            : record.repos ? record.repos.map(repo => ({...repo})) : null,
             dependencies     : this.dependenciesOf(id),
             sessionFolder    : this.sessionFolderFor(record),
+            exitReason       : this.exitReasonFor(record),
             gitIdentity      : this.gitIdentityOf(id),
             seatModel        : this.seatModelOf(id),
             launchAdmission  : this.launchAdmissionOf(id, record),
@@ -1596,6 +1611,34 @@ class FleetLifecycleService extends Base {
         return record.harnessType === 'claude-desktop' && record.state === 'running' && record.instanceHome && record.cwd && record.startedAt
             ? readSeatSessionFolder({instanceHome: record.instanceHome, expected: record.cwd, since: record.startedAt})
             : null
+    }
+
+    /**
+     * @summary Why a supervised seat exited without a `stop(id)` request, captured at exit finalization
+     * ({@link finalizeExitedProcess}).
+     * @param {Object|null} record A process record.
+     * @returns {Object|null}
+     */
+    exitReasonFor(record) {
+        return record?.state === 'stopped' && record.exitReason
+            ? {...record.exitReason}
+            : null
+    }
+
+    /**
+     * @summary Classify an unplanned process exit at the moment {@link finalizeExitedProcess} observes it.
+     * @param {Object} record Tracked lifecycle record with `exitedAt` set.
+     * @returns {Object|null}
+     * @private
+     */
+    readExitReasonFor(record) {
+        if (!record?.exitedAt) return null;
+
+        return readSeatExitReason({
+            harnessType: record.harnessType,
+            exitedAt   : record.exitedAt,
+            ...(this.claudeMainLogPath ? {logPath: this.claudeMainLogPath} : {})
+        })
     }
 
     /**
@@ -1872,7 +1915,7 @@ class FleetLifecycleService extends Base {
             {harnessType} = agent,
             instanceHome  = deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: agent.id, harnessType}),
             leasePath     = path.join(instanceHome, SEAT_LEASE_FILE),
-            record        = {id: agent.id, child: null, adopted: false, pid: null, startedAt: null, exitCode: null, signal: null, exitedAt: null, stderrBytes: 0, harnessType, instanceHome};
+            record        = {id: agent.id, child: null, adopted: false, pid: null, startedAt: null, exitCode: null, signal: null, exitedAt: null, stderrBytes: 0, harnessType, instanceHome, stopRequested: false, exitReason: null};
         let launch = null, lease;
 
         try {
@@ -2044,6 +2087,9 @@ class FleetLifecycleService extends Base {
      * @private
      */
     async stopAdoptedSeat(record) {
+        record.stopRequested = true;
+        record.exitReason    = null;
+
         const
             signal = this.getProcessSignalFn(),
             result = () => ({success: record.state === 'stopped', id: record.id, state: record.state, cleanupUnresolved: Boolean(record.cleanupUnresolved)});
@@ -2428,6 +2474,7 @@ class FleetLifecycleService extends Base {
 
         if (!record.electronProfile) {
             record.state           = 'stopped';
+            record.exitReason      = record.stopRequested ? null : this.readExitReasonFor(record);
             this.persistRuntimeState(record);
             record.finalizePromise = Promise.resolve();
             return record.finalizePromise;
@@ -2437,6 +2484,7 @@ class FleetLifecycleService extends Base {
         // its helpers' cleanup cannot be shown, so it is never reported as a clean stop.
         if (!record.crashpadExecutable) {
             record.state             = 'failed';
+            record.exitReason        = null;
             record.cleanupUnresolved = true;
             record.failureReason     = 'Codex Desktop helper cleanup cannot be proven: the installed bundle no longer names its Crashpad helper';
             this.persistRuntimeState(record);
@@ -2464,6 +2512,7 @@ class FleetLifecycleService extends Base {
             }))
             .then(() => {
                 record.state             = 'stopped';
+                record.exitReason        = record.stopRequested ? null : this.readExitReasonFor(record);
                 record.failureReason     = null;
                 record.cleanupUnresolved = false;
             })
@@ -2471,6 +2520,7 @@ class FleetLifecycleService extends Base {
                 const words = failureWords(error, `the Codex Desktop helper cleanup of agent '${record.id}' failed`, CODEX_CLEANUP_CALLERS);
 
                 record.state             = 'failed';
+                record.exitReason        = null;
                 record.failureReason     = words ? `Codex Desktop helper cleanup failed: ${words}` : 'Codex Desktop helper cleanup failed; the Fleet log names the cause';
                 record.cleanupUnresolved = true;
             }).then(() => { this.persistRuntimeState(record) });

@@ -831,6 +831,25 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         expect(Object.hasOwn(bob, 'sessionFolder')).toBe(false)
     });
 
+    test('why a seat exited without a Stop rides its runtime row when present', () => {
+        const
+            registryStub = {listAgents: () => [{id: 'alice'}, {id: 'bob'}]},
+            exitReason   = {state: 'harness-update', exitedAt: '2026-10-15T12:26:13.450Z', logPath: '/tmp/main.log', matchedLine: '2026-10-15 14:26:13 [info] beforeQuitForUpdate'};
+
+        FleetManager.lifecycleService = {
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            : id => id === 'alice'
+                ? {id, state: 'stopped', running: false, pid: null, startedAt: '2026-10-15T10:00:00Z', exitCode: 0, exitedAt: '2026-10-15T12:26:13.450Z', exitReason}
+                : {id, state: 'stopped', running: false, pid: null, startedAt: '2026-10-15T10:00:00Z', exitCode: 0, exitedAt: '2026-10-15T12:26:13.450Z', exitReason: null}
+        };
+
+        const [alice, bob] = FleetManager.fleetRuntimeStatus();
+
+        expect(alice.exitReason).toEqual(exitReason);
+        expect(Object.hasOwn(bob, 'exitReason')).toBe(false)
+    });
+
     test('the Git identity a seat\'s last start resolved rides its runtime row, a refused start\'s included', () => {
         const
             registryStub = {listAgents: () => [{id: 'alice'}, {id: 'bob'}, {id: 'carol'}]},

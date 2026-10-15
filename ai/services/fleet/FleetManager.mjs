@@ -631,14 +631,15 @@ class FleetManager extends Base {
             if (status.failureReason != null) row.failureReason   = status.failureReason;
             if (status.repos != null)         row.repos           = status.repos;
             if (status.dependencies != null)  row.dependencies    = status.dependencies;
-            if (status.sessionFolder != null) row.sessionFolder   = status.sessionFolder;
-            if (status.gitIdentity != null)   row.gitIdentity     = status.gitIdentity;
-            if (status.seatModel != null)     row.seatModel       = status.seatModel;
-            if (status.launchAdmission != null) row.launchAdmission = status.launchAdmission;
+            if (status.sessionFolder != null)   row.sessionFolder   = status.sessionFolder;
+            if (status.exitReason != null)      row.exitReason      = status.exitReason;
+            if (status.gitIdentity != null)     row.gitIdentity     = status.gitIdentity;
+            if (status.seatModel != null)       row.seatModel       = status.seatModel;
+            if (status.launchAdmission != null)   row.launchAdmission   = status.launchAdmission;
             if (status.runtimeGeneration != null) row.runtimeGeneration = status.runtimeGeneration;
-            if (installedGeneration) row.installedGeneration = installedGeneration;
-            if (nextRuntimeGeneration) row.nextRuntimeGeneration = nextRuntimeGeneration;
-            if (harnessSettings != null)      row.harnessSettings = harnessSettings;
+            if (installedGeneration)              row.installedGeneration = installedGeneration;
+            if (nextRuntimeGeneration)            row.nextRuntimeGeneration = nextRuntimeGeneration;
+            if (harnessSettings != null)          row.harnessSettings   = harnessSettings;
 
             return row;
         });
