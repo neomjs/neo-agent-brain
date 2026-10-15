@@ -2502,7 +2502,8 @@ test.describe('Wake Daemon', () => {
         const mockOutput = fs.readFileSync(mockOutPath, 'utf8');
         const args       = JSON.parse(mockOutput);
 
-        expect(args.join(' ')).toContain('keystroke "i" using {command down, shift down}');
+        expect(args.join(' ')).toContain('keystroke "i" using command down');
+        expect(args.join(' ')).toContain('key code 53');
         expect(args.join(' ')).toContain('tell application "Antigravity" to activate');
         expect(args.join(' ')).not.toContain('key code 49');
         expect(stdoutLog).toContain(

@@ -12,7 +12,7 @@ import os                 from 'node:os';
 import path               from 'node:path';
 import {spawn, spawnSync} from 'node:child_process';
 
-import {applyHarnessMetadataDefaults} from './hostHarnessMetadata.mjs';
+import {applyHarnessMetadataDefaults}          from './hostHarnessMetadata.mjs';
 import {COURIER_ADAPTER, deliverClaudeCourier} from './claudeCourierTransport.mjs';
 import {
     getDefaultInstanceTarget,
@@ -856,7 +856,11 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         '-e', '    tell targetProcess',
         '-e', '      keystroke "v" using command down',
         '-e', '      delay 0.5',
-        ...(appName === 'Codex' ? ['-e', '      key code 53', '-e', '      delay 0.45'] : []),
+        ...(appName === 'Antigravity'
+            ? ['-e', '      key code 49', '-e', '      delay 0.45']
+            : appName === 'Codex'
+                ? ['-e', '      key code 53', '-e', '      delay 0.45']
+                : []),
         '-e', '      key code 36',
         '-e', '      delay 1.0',
         '-e', '    end tell',

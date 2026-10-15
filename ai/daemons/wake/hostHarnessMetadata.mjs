@@ -4,7 +4,7 @@
  */
 const APP_HARNESS_DEFAULTS = Object.freeze({
     Antigravity: Object.freeze({
-        tabShortcut: 'shift+i'
+        tabShortcut: 'i'
     }),
     Claude: Object.freeze({
         tabShortcut      : '3',

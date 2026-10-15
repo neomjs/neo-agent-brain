@@ -424,7 +424,7 @@ export function deriveCodexHome({harnessType, instanceHome} = {}) {
  *     Fleet does not launch as a GUI window, or a home that is not absolute.
  */
 export function deriveHarnessWakeAddress({harnessType, instanceHome} = {}) {
-    if (!['claude-desktop', 'codex-desktop'].includes(harnessType)) return null;
+    if (!['antigravity', 'claude-desktop', 'codex-desktop'].includes(harnessType)) return null;
     if (typeof instanceHome !== 'string' || !path.isAbsolute(instanceHome)) return null;
 
     return {addressType: 'userDataDir', instanceAddress: guiProfileDir(harnessType, instanceHome)}
