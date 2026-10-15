@@ -2466,7 +2466,7 @@ async function deliverDigest(subscription, digest, deliveryEvidence = {}, abortS
                 // by the composer. The longer post-Escape settle is Codex-scoped: operator
                 // samples show human-delayed Enter succeeds after the scripted Enter is
                 // intermittently consumed, so do not shorten this back to the generic key delay.
-                ...(appName === 'Codex' ? [
+                ...(['Antigravity', 'Codex'].includes(appName) ? [
                     '-e', '      key code 53',
                     '-e', '      delay 0.45'
                 ] : []),
