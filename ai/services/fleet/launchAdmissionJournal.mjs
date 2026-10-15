@@ -18,6 +18,8 @@ import {isAdmissibleEnvName, isLaunchIdentity}                                  
  * owns publication and inspection, never the grants or their recovery.
  */
 const VERSION  = 1, MAX_BYTES = 8 * 1024 * 1024;
+/** Snapshot producers at this version participate in runtime-reference exclusion. */
+export const RUNTIME_REFERENCE_SNAPSHOT_VERSION = 7;
 const isId     = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
 const isOrigin = value => typeof value === 'string' && /^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(value) && Number(value.split(':').at(-1)) <= 65535;
 
@@ -148,7 +150,7 @@ export function isAdmissionSnapshot(value) {
     const unique    = (rows, key) => new Set(rows.map(row => row[key])).size === rows.length;
     const phase     = row => Object.values(STATES).includes(row.state) &&
         (row.reason === null || Object.values(REASONS).includes(row.reason));
-    return exact(value, ['version', 'generations', 'seats']) && value.version === 6 && Array.isArray(value.generations) &&
+    return exact(value, ['version', 'generations', 'seats']) && [6, RUNTIME_REFERENCE_SNAPSHOT_VERSION].includes(value.version) && Array.isArray(value.generations) &&
         Array.isArray(value.seats) && value.seats.every(isSeatRuntimeSnapshot) &&
         new Set(value.seats.map(row => row.start.agentId)).size === value.seats.length &&
         value.generations.every(row => exact(row, [
@@ -167,6 +169,15 @@ export function isAdmissionSnapshot(value) {
                 text(server.key) && text(server.grantId) && phase(server) && hash(server.capabilityHash)) &&
             unique(row.servers, 'key') && unique(row.servers, 'grantId')) &&
         unique(value.generations, 'id') && unique(value.generations, 'agentId')
+}
+
+/**
+ * @summary Keeps pre-exclusion snapshots readable for recovery without granting retirement authority.
+ * @param {*} value The existing complete lifecycle/admission snapshot.
+ * @returns {Boolean} Whether the closed snapshot was published by a reference-excluding writer.
+ */
+export function isRuntimeReferenceSnapshot(value) {
+    return isAdmissionSnapshot(value) && value.version === RUNTIME_REFERENCE_SNAPSHOT_VERSION;
 }
 
 /**

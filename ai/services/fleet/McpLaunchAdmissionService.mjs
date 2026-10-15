@@ -10,11 +10,12 @@ import {
     LAUNCH_ADMISSION_STATES   as STATES,
     isLaunchAdmissionProofReason
 }                                 from '../../../src/fleet/contract/launchAdmission.mjs';
-import {mcpCatalogFor, resolveMcpMatrix}                 from '../../../src/fleet/contract/mcpServers.mjs';
-import {launchRowEnvNames}                               from './managedAgentWorkspacePlan.mjs';
-import {isAdmissionSnapshot, openLaunchAdmissionJournal} from './launchAdmissionJournal.mjs';
-import {runtimeGenerationPin}                            from './runtimeGeneration.mjs';
-import {isLaunchCredentialBinding, isResidentMcpBinding} from './launchCredentialOwners.mjs';
+import {mcpCatalogFor, resolveMcpMatrix}                                                     from '../../../src/fleet/contract/mcpServers.mjs';
+import {launchRowEnvNames}                                                                   from './managedAgentWorkspacePlan.mjs';
+import {isAdmissionSnapshot, openLaunchAdmissionJournal, RUNTIME_REFERENCE_SNAPSHOT_VERSION} from './launchAdmissionJournal.mjs';
+import {runtimeGenerationPin}                                                                from './runtimeGeneration.mjs';
+import {assertRuntimeGenerationReferences}                                                   from './runtimeGenerationLease.mjs';
+import {isLaunchCredentialBinding, isResidentMcpBinding}                                     from './launchCredentialOwners.mjs';
 import {
     LAUNCH_ADMISSION_MAX_BYTES,
     LAUNCH_ADMISSION_PATH,
@@ -187,7 +188,7 @@ class McpLaunchAdmissionService extends Base {
         if (typeof readSeatStarts !== 'function') throw new TypeError('Seat Start projection must be a function.');
         this.readSeatStarts = readSeatStarts;
         this.journal = openLaunchAdmissionJournal({
-            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: 6, generations: [], seats: []}
+            ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: RUNTIME_REFERENCE_SNAPSHOT_VERSION, generations: [], seats: []}
         });
         return this.journal.previous
     }
@@ -200,13 +201,20 @@ class McpLaunchAdmissionService extends Base {
      * @param {Object} options
      * @param {Object} options.registry Existing definition owner.
      * @param {Function} options.restoreSeat `(start, saved) => {capabilities, owners, residentInputs, probe}`.
+     * @param {Object} options.runtimeReferenceGuard Live exclusion for every retained generation parent.
      * @returns {Promise<Object[]>} Per-seat admission disposition, without capabilities or owner values.
      */
-    async recover({registry, restoreSeat}) {
+    async recover({registry, restoreSeat, runtimeReferenceGuard}) {
         if (!this.journal || this.generations.size || this.listening || this.continuityPhase !== 'ready' ||
             typeof restoreSeat !== 'function') throw new Error('Launch recovery must precede admission and Start.');
         const previous = this.journal.previous;
         if (!previous) return [];
+        const retainedRuntimes = [...previous.snapshot.generations.map(row => row.runtime),
+            ...previous.snapshot.seats.map(row => row.start.runtime)].filter(Boolean);
+        /** @summary Revalidates the same parent exclusion before publishing recovered authority. */
+        const assertReferences = () => retainedRuntimes.forEach(runtime =>
+            assertRuntimeGenerationReferences(runtimeReferenceGuard, path.dirname(runtime.directory)));
+        assertReferences();
         this.continuityPhase = 'recovering';
         this.observeRegistry(registry);
         for (const saved of previous.snapshot.generations) {
@@ -255,6 +263,7 @@ class McpLaunchAdmissionService extends Base {
                 }
                 if (previous.origin !== null) await this.listen({origin: previous.origin});
             }
+            assertReferences();
             this.journal.assertOwner();
             for (const generation of this.generations.values()) {
                 if (generation.state !== STATES.ACTIVE) continue;
@@ -402,7 +411,7 @@ class McpLaunchAdmissionService extends Base {
      */
     admissionSnapshot() {
         return {
-            version    : 6,
+            version    : RUNTIME_REFERENCE_SNAPSHOT_VERSION,
             seats      : this.readSeatStarts ? this.readSeatStarts() : [],
             generations: [...this.generations.values()].map(generation => ({
                 id                : generation.id, agentId: generation.agentId, identity: generation.identity,
@@ -459,11 +468,12 @@ class McpLaunchAdmissionService extends Base {
      * @param {Number} [options.since] The {@link revocationMark} the Start read as it began.
      * @param {AbortSignal} [options.startSignal] The owning managed Start's cancellation signal.
      * @param {Object|null} [options.runtimeGeneration] The verified packaged runtime selected for this Start.
+     * @param {Object} [options.runtimeReferenceGuard] Live parent exclusion for a packaged reservation.
      * @returns {Promise<{generation: String, issuer: String, identity: String, grants: Object<String, String>}>}
      *     `grants` maps each enabled server to the capability its profile row carries; `identity` is the
      *     validated login the rows must name.
      */
-    async reserve({agent, registry = null, since = null, startSignal = null, runtimeGeneration = null}) {
+    async reserve({agent, registry = null, since = null, startSignal = null, runtimeGeneration = null, runtimeReferenceGuard = null}) {
         if (this.continuityPhase !== 'ready') throw new Error('Fleet launch continuity is not ready.');
         if (this.journalFailed) throw new Error('Launch admission issuer is frozen after a failed durable transition.');
         if (startSignal && (
@@ -481,6 +491,7 @@ class McpLaunchAdmissionService extends Base {
         }
 
         const runtime = runtimeGeneration === null ? null : runtimeGenerationPin(runtimeGeneration);
+        if (runtime) assertRuntimeGenerationReferences(runtimeReferenceGuard, path.dirname(runtime.directory));
         this.observeRegistry(registry);
 
         const
@@ -541,6 +552,7 @@ class McpLaunchAdmissionService extends Base {
 
             registry?.getDefinition && this.onDefinitionChange({id: agent.id, next: registry.getDefinition(agent.id)});
             issuer = await this.listen();
+            if (runtime) assertRuntimeGenerationReferences(runtimeReferenceGuard, path.dirname(runtime.directory));
             this.persistAdmission()
         } catch (error) {
             this.revoke(agent.id, REASONS.START_FAILED, {generation: generation.id});
@@ -881,7 +893,7 @@ class McpLaunchAdmissionService extends Base {
      * @param {String} name The name the value goes under.
      * @param {String} value
      * @param {Number|null} port Port captured for this child, relevant only to the Bridge token owner.
-     * @returns {Promise<{verdict: String, reason?: String}>}
+     * @returns {Promise<{verdict: String, reason: (String|undefined)}>}
      * @protected
      */
     prove(generation, name, value, port = null) {

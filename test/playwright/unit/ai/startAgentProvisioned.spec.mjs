@@ -1,16 +1,30 @@
-import {test, expect}                              from '@playwright/test';
-import fs                                          from 'node:fs/promises';
-import os                                          from 'node:os';
-import path                                        from 'node:path';
-import {importSeatMemory}                          from '../../../../ai/services/fleet/seatMemoryImport.mjs';
-import {CREDENTIAL_FAMILIES}                       from '../../../../ai/services/fleet/redactCredentials.mjs';
-import {LAUNCHABLE_HARNESS_TYPES, deriveCodexHome} from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
-import {deriveAgentInstanceHome}                   from '../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
-import {readCodexModelCatalog}                     from '../../../../ai/services/fleet/codexModelCatalog.mjs';
-import {createManagedAgentWorkspacePlan}           from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
-import {startAgentProvisioned as startProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
-import {resolveSeatGitIdentity}                    from '../../../../ai/services/fleet/seatGitIdentity.mjs';
-import {supportsTenantMcpTarget}                   from '../../../../src/fleet/contract/harnessTypes.mjs';
+import {test, expect}                                                        from '@playwright/test';
+import fs                                                                    from 'node:fs/promises';
+import os                                                                    from 'node:os';
+import path                                                                  from 'node:path';
+import {importSeatMemory}                                                    from '../../../../ai/services/fleet/seatMemoryImport.mjs';
+import {CREDENTIAL_FAMILIES}                                                 from '../../../../ai/services/fleet/redactCredentials.mjs';
+import {LAUNCHABLE_HARNESS_TYPES, deriveCodexHome}                           from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
+import {deriveAgentInstanceHome}                                             from '../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
+import {readCodexModelCatalog}                                               from '../../../../ai/services/fleet/codexModelCatalog.mjs';
+import {createManagedAgentWorkspacePlan}                                     from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
+import {startAgentProvisioned as startProvisioned}                           from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {resolveSeatGitIdentity}                                              from '../../../../ai/services/fleet/seatGitIdentity.mjs';
+import {supportsTenantMcpTarget}                                             from '../../../../src/fleet/contract/harnessTypes.mjs';
+import {holdRuntimeGenerationReferences, waitForRuntimeGenerationReferences} from '../../../../ai/services/fleet/runtimeGenerationLease.mjs';
+
+const runtimeRoots = new Set();
+/** @summary Supplies real disposable lease custody while runtime execution itself remains stubbed. */
+async function runtimeFixture() {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'provisioned-runtime-')));
+    runtimeRoots.add(root);
+    const directory = path.join(root, 'generation');
+    return {directory, runtimeRoot: path.join(directory, 'organism'), executable: path.join(directory, 'host')};
+}
+test.afterEach(async () => {
+    for (const root of runtimeRoots) await fs.rm(root, {recursive: true, force: true});
+    runtimeRoots.clear();
+});
 
 /** The Git identity a fixture seat resolves to unless a case says otherwise. */
 const SEAT_GIT_IDENTITY           = {state: 'derived', source: 'verified-primary', name: 'Seat Agent', email: 'seat@example.test'};
@@ -289,9 +303,46 @@ function makeTenantService({
 }
 
 test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning)', () => {
+    test('Stop while waiting for runtime exclusion prevents later preparation and spawn', async () => {
+        const lifecycle  = makeLifecycle({agents: repoAgent('a')}), prepare = makePrepareWorkspace();
+        const generation = await runtimeFixture(), abort = new AbortController();
+        lifecycle.installedRuntime = {...generation, generation};
+        const held = holdRuntimeGenerationReferences({directory: path.dirname(generation.directory)});
+        let observed;
+        const waiting = new Promise(resolve => { observed = resolve; });
+        try {
+            const pending = startAgentProvisioned({lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed',
+                ensureRepo: makeEnsureRepo(), prepareWorkspace: prepare, startSignal: abort.signal,
+                acquireRuntimeReferences(options) { observed(); return waitForRuntimeGenerationReferences(options); }});
+            await waiting;
+            abort.abort();
+            expect(await pending).toMatchObject({canceled: true, reason: 'stop-requested'});
+            expect(prepare.calls).toHaveLength(0);
+            expect(lifecycle.calls.start).toHaveLength(0);
+            expect(lifecycle.calls.reserve).toHaveLength(0);
+            held.assertCurrent();
+        } finally { held.release(); }
+    });
+
+    test('runtime exclusion remains held through preparation and process publication', async () => {
+        const generation = await runtimeFixture(), prepare = makePrepareWorkspace(), directory = path.dirname(generation.directory);
+        const lifecycle  = makeLifecycle({agents: repoAgent('a'), startHandler: () => {
+            expect(() => holdRuntimeGenerationReferences({directory})).toThrow(/held/);
+            return {id: 'a', state: 'running', pid: 42};
+        }});
+        lifecycle.installedRuntime = {...generation, generation};
+        await startAgentProvisioned({lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed', ensureRepo: makeEnsureRepo(),
+            prepareWorkspace: async options => {
+                expect(() => holdRuntimeGenerationReferences({directory})).toThrow(/held/);
+                return prepare(options);
+            }});
+        const after = holdRuntimeGenerationReferences({directory});
+        expect(after.release()).toBe(true);
+    });
+
     test('packaged preparation uses the verified executable and records only a prepared runtime', async () => {
         const lifecycle  = makeLifecycle({agents: repoAgent('a')}), prepare = makePrepareWorkspace();
-        const generation = {directory: '/generations/one', runtimeRoot: '/generations/one/organism', executable: '/generations/one/host'};
+        const generation = await runtimeFixture();
         lifecycle.installedRuntime = {...generation, generation};
         const options = {lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed',
             ensureRepo: makeEnsureRepo(), prepareWorkspace: prepare};
@@ -1307,7 +1358,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             const agents = remoteRepoAgent('seat');
             agents.seat.harnessType = 'claude-desktop';
             const lifecycle  = makeLifecycle({agents}), ensure = makeEnsureRepo(), prepare = makePrepareWorkspace();
-            const generation = {runtimeRoot: '/generations/one/organism', executable: '/generations/one/host'};
+            const generation = await runtimeFixture();
             lifecycle.installedRuntime = {...generation, generation};
             const inputOwners = {'neural-link': {binding: {kind: 'fixture'}, read: () => ({})}};
             lifecycle.captureResidentMcpInputs = () => ({environment: {}, owners: inputOwners});

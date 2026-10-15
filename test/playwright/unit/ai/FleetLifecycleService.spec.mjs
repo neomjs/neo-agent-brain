@@ -11,17 +11,19 @@ setup({
     }
 });
 
-import {test, expect}                  from '@playwright/test';
-import {execFile, execFileSync, spawn} from 'child_process';
-import {EventEmitter}                  from 'events';
-import fs                              from 'fs';
-import os                              from 'os';
-import path                            from 'path';
-import {WebSocketServer}               from 'ws';
-import {once}                          from 'node:events';
-import {createHash}                    from 'node:crypto';
-import {generateAntigravityMcpFiles}   from '../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
-import {createBridgeVerifierPayload}   from '../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
+import {test, expect}                    from '@playwright/test';
+import {execFile, execFileSync, spawn}   from 'child_process';
+import {EventEmitter}                    from 'events';
+import fs                                from 'fs';
+import os                                from 'os';
+import path                              from 'path';
+import {WebSocketServer}                 from 'ws';
+import {once}                            from 'node:events';
+import {createHash}                      from 'node:crypto';
+import {generateAntigravityMcpFiles}     from '../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
+import {createBridgeVerifierPayload}     from '../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
+import {holdRuntimeGenerationReferences} from '../../../../ai/services/fleet/runtimeGenerationLease.mjs';
+
 
 import Neo                                                          from 'neo.mjs/src/Neo.mjs';
 import * as core                                                    from 'neo.mjs/src/core/_export.mjs';
@@ -46,6 +48,27 @@ import {
 }                                   from '../../../../ai/services/fleet/mcpLaunchAdmission.mjs';
 
 import {createFleetWireRequest, FLEET_WIRE_RESPONSE_STATES} from '../../../../src/fleet/contract/wire.mjs';
+
+/** @summary Keeps the real fixture guard through synchronous or asynchronous reference publication. */
+function withTestRuntimeReferences(runtime, invoke) {
+    const guard = holdRuntimeGenerationReferences({directory: path.dirname(runtime.directory)});
+    try {
+        const result = invoke(guard);
+        if (result?.then) return result.finally(() => guard.release());
+        guard.release();
+        return result;
+    } catch (error) { guard.release(); throw error; }
+}
+/** @summary Calls the real synchronous lifecycle with an acquired generation-parent guard. */
+function startWithRuntimeReferences(id, options) {
+    return withTestRuntimeReferences(options.runtimeGeneration, runtimeReferenceGuard =>
+        FleetLifecycleService.start(id, {...options, runtimeReferenceGuard}));
+}
+/** @summary Gives the admission owner the same real exclusion used by managed preparation. */
+function reserveWithRuntimeReferences(options) {
+    return withTestRuntimeReferences(options.runtimeGeneration, runtimeReferenceGuard =>
+        McpLaunchAdmissionService.reserve({...options, runtimeReferenceGuard}));
+}
 
 let nextPid = 1000;
 
@@ -236,8 +259,18 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService', () => {
         expect(() => FleetLifecycleService.start('a', {runtimeGeneration: FleetLifecycleService.installedRuntime.generation}))
             .toThrow(/runtime custody is not attached/);
         expect(spawn.calls).toHaveLength(0);
+        expect(() => FleetLifecycleService.start('a')).toThrow(/packaged Start requires its prepared runtime/);
+        expect(spawn.calls).toHaveLength(0);
+    });
+
+    test('a direct packaged restart refuses before stopping its existing seat', async () => {
+        const spawn = install({agents: {a: agentDef('a')}, creds: {a: 'ghp_x'}});
         FleetLifecycleService.start('a');
-        expect(FleetLifecycleService.processes.get('a').runtimeGeneration).toBeNull();
+        FleetLifecycleService.installedRuntime = {generation: {id: 'current'}};
+        await expect(FleetLifecycleService.restart('a')).rejects.toThrow(/prepared managed restart/);
+        expect(spawn.calls).toHaveLength(1);
+        expect(spawn.calls[0].child.signals).toEqual([]);
+        expect(FleetLifecycleService.status('a').state).toBe('running');
     });
 
     test('start spawns the launch command and reports running', () => {
@@ -2195,7 +2228,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 const captured = FleetLifecycleService.captureResidentMcpInputs(agent);
                 try {
                     FleetLifecycleService.openRuntimeCustody({directory});
-                    const reserved = await service.reserve({agent, runtimeGeneration: generation});
+                    const reserved = await reserveWithRuntimeReferences({agent, runtimeGeneration: generation});
                     const rows     = {'neo-mjs-neural-link': {command: generation.executable,
                         args              : [path.join(generation.runtimeRoot, 'ai/mcp/client/fleetMcpLauncher.mjs'), '--server', 'neural-link'], env: {
                         NEO_AGENT_IDENTITY: 'seat', NEO_FLEET_LAUNCH_ISSUER: reserved.issuer, NEO_FLEET_LAUNCH_GRANT: reserved.grants['neural-link']}}};
@@ -2210,7 +2243,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                     }
                     const carrier       = path.join(home, harnessType === 'antigravity' ? '.neo-fleet-mcp/neural-link.sh' : 'claude_desktop_config.json');
                     const originalBytes = fs.readFileSync(carrier, 'utf8');
-                    FleetLifecycleService.start('seat', {cwd: workspace, runtimeGeneration: generation, runtimePlan: plan,
+                    startWithRuntimeReferences('seat', {cwd: workspace, runtimeGeneration: generation, runtimePlan: plan,
                         resolvedResidentMcpEnv: captured.environment,
                         launchAdmission       : {generation: reserved.generation, plan, profile, residentInputs: captured.owners}});
                     const original = FleetLifecycleService.processes.get('seat');
@@ -2284,12 +2317,12 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 if (fail) throw Error('fixture lost revocation write');
                 return writeFileAtomicSync(file, content, options);
             }});
-            const reserved = await service.reserve({agent, runtimeGeneration: generation});
+            const reserved = await reserveWithRuntimeReferences({agent, runtimeGeneration: generation});
             const profile  = createDesktopLaunchBinding({identity: 'seat', issuer: reserved.issuer, rows: {
                 'neo-mjs-neural-link': {env: {NEO_AGENT_IDENTITY: 'seat', NEO_FLEET_LAUNCH_ISSUER: reserved.issuer,
                     NEO_FLEET_LAUNCH_GRANT: reserved.grants['neural-link']}}
             }});
-            FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: plan,
+            startWithRuntimeReferences('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: plan,
                 launchAdmission: {generation: reserved.generation, plan, profile}});
             const snapshot = JSON.parse(fs.readFileSync(path.join(directory, 'issuer.json'), 'utf8')).snapshot;
             expect(snapshot.generations[0]).toMatchObject({id: reserved.generation, state: 'active', runtime: generation});
@@ -2333,12 +2366,15 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 return writeFileAtomicSync(file, content, options);
             }});
             const mint = FleetLifecycleService.registry.mintBridgeToken;
-            FleetLifecycleService.registry.mintBridgeToken = () => ({token: 'unbound-fixture-token'});
             expect(() => FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []}))
+                .toThrow(/not guarded/);
+            expect(spawn.calls).toHaveLength(0);
+            FleetLifecycleService.registry.mintBridgeToken = () => ({token: 'unbound-fixture-token'});
+            expect(() => startWithRuntimeReferences('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []}))
                 .toThrow(/original Bridge signing authority was not captured/);
             expect(spawn.calls).toHaveLength(0);
             FleetLifecycleService.registry.mintBridgeToken = mint;
-            const status   = FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []});
+            const status   = startWithRuntimeReferences('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []});
             const file     = path.join(directory, 'issuer.json');
             const snapshot = JSON.parse(fs.readFileSync(file, 'utf8')).snapshot;
             expect(snapshot.generations).toEqual([]);
@@ -2375,7 +2411,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 return writeFileAtomicSync(file, content, options);
             }});
             fail = true;
-            expect(() => FleetLifecycleService.start('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []}))
+            expect(() => startWithRuntimeReferences('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: []}))
                 .toThrow(/durability-failed/);
             await expect.poll(() => FleetLifecycleService.processes.get('seat')?.state).toBe('stopped');
             expect(spawn.calls[0].child.signals).toContain('SIGTERM');
@@ -3392,7 +3428,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
             FleetLifecycleService.instanceRoot = fs.realpathSync(fixture.root);
             FleetLifecycleService.processInspectFn = () => fixture.table.alive ? {startedAt: fixture.table.startedAt,
                 command: `${process.execPath} --user-data-dir=${home}`} : null;
-            const id         = 'a'.repeat(64), directory = `/runtime/${id}`;
+            const id         = 'a'.repeat(64), directory = path.join(fs.realpathSync(fixture.root), id);
             const generation = {id, directory, payloadDigest: 'b'.repeat(64),
                 runtimeRoot: `${directory}/host.runtime/organism`, executable: `${directory}/host.runtime/node`};
             const agent = FleetLifecycleService.registry.getDefinition('seat');
@@ -3410,7 +3446,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
             FleetLifecycleService.launchAdmission.journal = {};
             FleetLifecycleService.launchAdmission.persistAdmission = () => { fixture.events.push('persist') };
             try {
-                const started = FleetLifecycleService.start('seat', {
+                const started = startWithRuntimeReferences('seat', {
                     cwd                   : workspace, startSignal: signal, runtimeGeneration: generation, runtimePlan: plan,
                     resolvedResidentMcpEnv: captured.environment,
                     launchAdmission       : {...ADMISSION, plan, profile, residentInputs: captured.owners},

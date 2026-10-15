@@ -27,6 +27,7 @@ import {isOnInstance}                                                           
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities}             from './manageCodexDesktopRuntime.mjs';
 import {GIT_IDENTITY_ENV, gitIdentityEnv}                                       from './seatGitIdentity.mjs';
 import {runtimeGenerationPin, readRuntimeGeneration}                            from './runtimeGeneration.mjs';
+import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences}  from './runtimeGenerationLease.mjs';
 import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot} from './seatRuntimeRecord.mjs';
 import {writeFileAtomicSync}                                                    from '../shared/atomicFileWrite.mjs';
 
@@ -677,6 +678,7 @@ class FleetLifecycleService extends Base {
      * @param {Object} [opts.runtimeGeneration] The boot descriptor used by this prepared Start's MCP
      *     commands. Raw launches and adopted records have no inferred generation.
      * @param {Object[]} [opts.runtimePlan] The exact plan prepared for that runtime; its digest binds custody.
+     * @param {Object} [opts.runtimeReferenceGuard] Transient generation-parent exclusion held through Start publication.
      * @param {Function} [opts.bindAntigravityProject] Trusted, curated Antigravity-only Start callback. When present,
      *     it runs after the app-bundle process is leased and before its reserved MCP generation activates; this
      *     callback path returns a Promise while every other harness keeps the synchronous status shape.
@@ -701,11 +703,18 @@ class FleetLifecycleService extends Base {
         }
         if (this.getLaunchAdmission().journalFailed) throw new Error('Fleet Start refused: runtime custody is frozen.');
 
+        if (this.installedRuntime && !opts.runtimeGeneration) {
+            throw new Error('Fleet Start refused: a packaged Start requires its prepared runtime.');
+        }
+
         if (opts.runtimeGeneration && opts.runtimeGeneration !== this.installedRuntime?.generation) {
             throw new Error('FleetLifecycleService.start: prepared runtime does not match this Fleet boot.')
         }
         if (opts.runtimeGeneration && !this.getLaunchAdmission().journal) {
             throw new Error('Fleet Start refused: packaged runtime custody is not attached.');
+        }
+        if (opts.runtimeGeneration) {
+            assertRuntimeGenerationReferences(opts.runtimeReferenceGuard, path.dirname(opts.runtimeGeneration.directory));
         }
 
         const priorRecord = this.processes.get(id);
@@ -1427,10 +1436,12 @@ class FleetLifecycleService extends Base {
      * (read from the persisted process record) — so a provisioned agent restarts inside its own checkout,
      * not this process's directory, and its checkout-path-keyed auto-memory does not fork. `restart` of a
      * non-running agent is just `start` (at the recorded `cwd` when one exists).
+     * Packaged seats use FleetManager's prepared restart, never this checkout-only compatibility path.
      * @param {String} id
      * @returns {Promise<Object>} status
      */
     async restart(id) {
+        if (this.installedRuntime) throw new Error('Fleet restart refused: a packaged seat requires a prepared managed restart.');
         const priorCwd = this.processes.get(id)?.cwd ?? null;
         const stopped  = await this.stop(id);
 
@@ -2139,7 +2150,19 @@ class FleetLifecycleService extends Base {
      * @param {Function} [options.readGrants=recoverLaunchProfileGrants] Isolated-test seam for profile custody.
      * @returns {Promise<Object[]>} Admission dispositions without credentials or capabilities.
      */
-    async recoverRuntimeCustody({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverLaunchProfileGrants} = {}) {
+    async recoverRuntimeCustody(options = {}) {
+        if (!this.getLaunchAdmission().journal) throw new Error('Runtime custody must be attached before recovery.');
+        const runtime = runtimeGenerationPin(this.installedRuntime?.generation);
+        const guard   = await waitForRuntimeGenerationReferences({directory: path.dirname(runtime.directory), signal: options.signal});
+        try {
+            const result = await this.recoverRuntimeCustodyUnderGuard(options, guard);
+            assertRuntimeGenerationReferences(guard, path.dirname(runtime.directory));
+            return result;
+        } finally { guard.release(); }
+    }
+
+    /** @summary Reconstructs retained references while publication and retirement share exclusion. @private */
+    async recoverRuntimeCustodyUnderGuard({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverLaunchProfileGrants}, runtimeReferenceGuard) {
         const admission = this.getLaunchAdmission();
         if (!admission.journal) throw new Error('Runtime custody must be attached before recovery.');
         const previous = admission.journal.previous, registry = this.getRegistry(), verified = new Map();
@@ -2175,7 +2198,7 @@ class FleetLifecycleService extends Base {
             } catch {}
             return !record.runtimeUnresolved;
         };
-        const dispositions = await admission.recover({registry, restoreSeat: async (start, saved) => {
+        const dispositions = await admission.recover({registry, runtimeReferenceGuard, restoreSeat: async (start, saved) => {
             if (!await verifyPin(start)) throw Error();
             return this.readOriginalRuntimeInputs(start, saved, {tenantService, readGrants});
         }});

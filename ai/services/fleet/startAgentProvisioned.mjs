@@ -13,12 +13,13 @@ import {
     proveSeatForgeAccount,
     resolveSeatGitIdentity
 }                                                        from './seatGitIdentity.mjs';
-import {readSeatModelCatalog, unofferedDeclaration}                from './seatModelCatalog.mjs';
-import {bindAntigravityProject}                                    from './antigravityProjectBinding.mjs';
-import {probeAntigravityRuntime, verifyAntigravityProfileListener} from './probeAntigravityRuntime.mjs';
-import {excludeManagedWorkspaceFiles}                              from './excludeManagedWorkspaceFiles.mjs';
-import path                                                        from 'node:path';
-import {fileURLToPath}                                             from 'node:url';
+import {readSeatModelCatalog, unofferedDeclaration}                            from './seatModelCatalog.mjs';
+import {bindAntigravityProject}                                                from './antigravityProjectBinding.mjs';
+import {probeAntigravityRuntime, verifyAntigravityProfileListener}             from './probeAntigravityRuntime.mjs';
+import {excludeManagedWorkspaceFiles}                                          from './excludeManagedWorkspaceFiles.mjs';
+import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences} from './runtimeGenerationLease.mjs';
+import path                                                                    from 'node:path';
+import {fileURLToPath}                                                         from 'node:url';
 
 const DEFAULT_AGENTOS_RUNTIME_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -194,6 +195,7 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                                 spawn checks the registry alone.
  * @param {Function} [options.excludeWorkspaceFiles] Local Git exclusion writer for Antigravity artifacts; test seam.
  * @param {Function} [options.bindProject] Curated Antigravity project binder; test seam.
+ * @param {Function} [options.acquireRuntimeReferences] Existing runtime-parent lease acquisition; test seam.
  * @param {Function} [options.probeAntigravityRuntimeFn] Re-probe seam for the selected Antigravity binary.
  * @param {Object}   [options.tenantService]     Remote tenant authority. Lazily imports the real
  *                                              singleton only for an opted-in remote seat.
@@ -275,6 +277,7 @@ async function provisionAgent({
     readModelCatalog = readSeatModelCatalog,
     excludeWorkspaceFiles = excludeManagedWorkspaceFiles,
     bindProject = bindAntigravityProject,
+    acquireRuntimeReferences = waitForRuntimeGenerationReferences,
     probeAntigravityRuntimeFn = probeAntigravityRuntime,
     readParticipation = null,
     tenantService = null,
@@ -662,13 +665,17 @@ async function provisionAgent({
     // A Claude Desktop seat's profile rows carry one launch grant per enabled server, reserved before the rows
     // are written. The lifecycle activates them once the seat runs and is leased; a Start that fails before
     // that revokes them, so a row written here never admits a child of a seat this Start did not launch.
-    const reservation = admission && await admission.reserve({agent, registry, since: admissionSince, startSignal,
-        runtimeGeneration: installedRuntime?.generation ?? null});
+    const runtimeReferenceGuard = installedRuntime
+        ? await acquireRuntimeReferences({directory: path.dirname(installedRuntime.generation.directory), signal: startSignal})
+        : null;
 
-    let prepared, memory, status;
+    let reservation, prepared, memory, status;
 
     try {
         startSignal.throwIfAborted();
+        if (installedRuntime) assertRuntimeGenerationReferences(runtimeReferenceGuard, path.dirname(installedRuntime.generation.directory));
+        reservation = admission && await admission.reserve({agent, registry, since: admissionSince, startSignal,
+            runtimeGeneration: installedRuntime?.generation ?? null, runtimeReferenceGuard});
         // Import before create-only birth files: the adopted seat's own notes take precedence.
         memory = await importMemory({agent, instanceRoot: seatInstanceRoot});
         startSignal.throwIfAborted();
@@ -790,7 +797,7 @@ async function provisionAgent({
                 resolvedCredential,
                 resolvedResidentMcpEnv,
                 gitIdentity: commitIdentity,
-                ...(installedRuntime ? {runtimeGeneration: installedRuntime.generation, runtimePlan: prepared.mcpPlan} : {}),
+                ...(installedRuntime ? {runtimeGeneration: installedRuntime.generation, runtimePlan: prepared.mcpPlan, runtimeReferenceGuard} : {}),
                 ...(remote
                     ? {resolvedMcpCredential, resolvedMcpEndpoint: remotePlan.endpoint, remoteMcpCapability: remoteCapability}
                     : antigravityStartContext ? {remoteMcpCapability: remoteCapability} : {}),
@@ -811,6 +818,8 @@ async function provisionAgent({
     } catch (error) {
         reservation && admission.revoke(agentId, startSignal.aborted ? LAUNCH_ADMISSION_REASONS.STOP_REQUESTED : LAUNCH_ADMISSION_REASONS.START_FAILED, {generation: reservation.generation});
         throw error
+    } finally {
+        runtimeReferenceGuard?.release();
     }
 
     // the answer reaches whoever pressed Start; the launch record keeps it for every later read

@@ -22,6 +22,8 @@ import fs                                            from 'fs-extra';
 import http                                          from 'node:http';
 import os                                            from 'node:os';
 import path                                          from 'node:path';
+import {holdRuntimeGenerationReferences}             from '../../../../../../ai/services/fleet/runtimeGenerationLease.mjs';
+
 import {fileURLToPath}                               from 'node:url';
 import Neo                                           from 'neo.mjs/src/Neo.mjs';
 import * as core                                     from 'neo.mjs/src/core/_export.mjs';
@@ -39,6 +41,23 @@ import {
     parseLaunchCapability,
     verifyLaunchResponse
 } from '../../../../../../ai/services/fleet/mcpLaunchAdmission.mjs';
+
+/** @summary Holds actual file exclusion until a reference-producing fixture operation settles. */
+function withTestRuntimeReferences(runtime, invoke) {
+    const guard = holdRuntimeGenerationReferences({directory: path.dirname(runtime.directory)});
+    try { return Promise.resolve(invoke(guard)).finally(() => guard.release()); }
+    catch (error) { guard.release(); throw error; }
+}
+/** @summary Exercises the production reservation under an independently held real guard. */
+function reserveWithRuntimeReferences(options) {
+    return withTestRuntimeReferences(options.runtimeGeneration, runtimeReferenceGuard =>
+        service.reserve({...options, runtimeReferenceGuard}));
+}
+/** @summary Exercises direct recovery with the fixture's original runtime parent. */
+function recoverWithRuntimeReferences(options) {
+    return withTestRuntimeReferences(options.runtime, runtimeReferenceGuard =>
+        service.recover({...options, runtimeReferenceGuard}));
+}
 
 const
     REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..'),
@@ -174,7 +193,7 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
         const plan    = boundPlan({root: runtime.runtimeRoot, matrix}).map(row => ({...row, command: runtime.executable}));
         const custody = path.join(directory, 'custody');
         service.openJournal({directory: custody, readSeatStarts: () => state.seats});
-        const reservation = await service.reserve({agent, registry, runtimeGeneration: runtime});
+        const reservation = await reserveWithRuntimeReferences({agent, registry, runtimeGeneration: runtime});
         const profile     = createDesktopLaunchBinding({identity: LOGIN, issuer: reservation.issuer, rows: {
             'neo-mjs-github-workflow': {env: {NEO_AGENT_IDENTITY: LOGIN, NEO_FLEET_LAUNCH_ISSUER: reservation.issuer,
                 NEO_FLEET_LAUNCH_GRANT: reservation.grants['github-workflow']}}
@@ -197,13 +216,15 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
         service.continuityPhase = 'ready'; service.handoffPromise = null;
         const previous    = service.openJournal({directory: custody, readSeatStarts: () => state.seats});
         const restoreSeat = async () => ({capabilities: reservation.grants, owners: {GH_TOKEN: owner}, residentInputs: {}, probe: () => state.observed});
-        return {state, registry, reservation, previous, restoreSeat, custody};
+        return {state, registry, reservation, previous, restoreSeat, custody, runtime};
     }
 
     test('a clean successor rebinds the original origin and redeems the same capability with current owner bytes', async () => {
         const f = await predecessor();
         f.state.credential = 'rotated-fixture-pat';
-        expect(await service.recover(f)).toEqual([{agentId: 'seat', state: 'active', reason: null}]);
+        await expect(service.recover(f)).rejects.toThrow(/not guarded/);
+        expect(service.generations.size).toBe(0);
+        expect(await recoverWithRuntimeReferences(f)).toEqual([{agentId: 'seat', state: 'active', reason: null}]);
         expect(service.issuerOrigin).toBe(f.reservation.issuer);
         expect(await redeem(f.reservation.grants['github-workflow'], {server: 'github-workflow'}))
             .toMatchObject({outcome: 'admitted', env: {GH_TOKEN: 'rotated-fixture-pat'}, generationRoot: f.state.seats[0].start.runtime.runtimeRoot});
@@ -215,7 +236,7 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
     test('an unclean predecessor preserves hashes and pins but restores no capability or endpoint', async () => {
         const f     = await predecessor({clean: false});
         let   calls = 0;
-        expect(await service.recover({...f, restoreSeat: async () => { calls++; return f.restoreSeat(); }}))
+        expect(await recoverWithRuntimeReferences({...f, restoreSeat: async () => { calls++; return f.restoreSeat(); }}))
             .toEqual([{agentId: 'seat', state: 'stale', reason: 'recovery-unverified'}]);
         expect(calls).toBe(0);
         expect(service.httpServer).toBeNull();
@@ -230,7 +251,7 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
         const blocker = http.createServer();
         await new Promise(resolve => blocker.listen(Number(f.reservation.issuer.split(':').at(-1)), '127.0.0.1', resolve));
         try {
-            await expect(service.recover(f)).rejects.toThrow('no alternate port selected');
+            await expect(recoverWithRuntimeReferences(f)).rejects.toThrow('no alternate port selected');
             expect(service.grants.size).toBe(0);
             expect(service.httpServer).toBeNull();
             expect(service.continuityPhase).toBe('unavailable');
@@ -241,7 +262,7 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
     test('revocation before handoff and Stop during asynchronous custody checks cannot be recovered', async () => {
         const f        = await predecessor();
         const entered  = deferred(), finish = deferred();
-        const recovery = service.recover({...f, restoreSeat: async () => { entered.resolve(); await finish.promise; return f.restoreSeat(); }});
+        const recovery = recoverWithRuntimeReferences({...f, restoreSeat: async () => { entered.resolve(); await finish.promise; return f.restoreSeat(); }});
         await entered.promise;
         service.revoke('seat', 'stop-requested');
         finish.resolve();
@@ -253,7 +274,7 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
     test('a predecessor tombstone is preserved without reading a profile', async () => {
         const f    = await predecessor({revoke: true});
         let   read = false;
-        expect(await service.recover({...f, restoreSeat: async () => { read = true; return f.restoreSeat(); }}))
+        expect(await recoverWithRuntimeReferences({...f, restoreSeat: async () => { read = true; return f.restoreSeat(); }}))
             .toEqual([{agentId: 'seat', state: 'revoked', reason: 'stop-requested'}]);
         expect(read).toBe(false);
     });
@@ -261,7 +282,7 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
     test('a failed recovery write releases its newly bound listener and leaves no admitted grants', async () => {
         const f = await predecessor();
         service.journal.write = () => { throw Error('fixture lost recovery write'); };
-        await expect(service.recover(f)).rejects.toThrow('fixture lost recovery write');
+        await expect(recoverWithRuntimeReferences(f)).rejects.toThrow('fixture lost recovery write');
         expect(service.journalFailed).toBe(true);
         expect(service.grants.size).toBe(0);
         expect(service.httpServer).toBeNull();
@@ -283,7 +304,7 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
             service.onDefinitionChange({id: 'seat', next: original});
             return f.restoreSeat();
         };
-        expect((await service.recover({...f, restoreSeat}))[0].state).toBe('active');
+        expect((await recoverWithRuntimeReferences({...f, restoreSeat}))[0].state).toBe('active');
         expect(await redeem(f.reservation.grants['github-workflow'], {server: 'github-workflow'}))
             .toMatchObject({outcome: 'refused', code: 'revoked', reason: 'server-disabled'});
     });
@@ -299,7 +320,7 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
                 if (failure === 'definition') f.state.agent = {...f.state.agent, launchOwner: 'external'};
                 return result;
             };
-            expect(await service.recover({...f, restoreSeat})).toEqual([{agentId: 'seat', state: 'stale', reason: 'recovery-unverified'}]);
+            expect(await recoverWithRuntimeReferences({...f, restoreSeat})).toEqual([{agentId: 'seat', state: 'stale', reason: 'recovery-unverified'}]);
             expect(service.grants.size).toBe(0);
         });
     }
@@ -489,7 +510,10 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
             const runtime = {id, directory: runtimeDirectory, payloadDigest: 'c'.repeat(64),
                 runtimeRoot: path.join(runtimeDirectory, 'host.runtime/organism'),
                 executable : path.join(runtimeDirectory, 'host.runtime/node')};
-            const reservation = await service.reserve({agent: seatDefinition({id: letter}), runtimeGeneration: runtime});
+            const before = service.generations.size;
+            await expect(service.reserve({agent: seatDefinition({id: letter}), runtimeGeneration: runtime})).rejects.toThrow(/not guarded/);
+            expect(service.generations.size).toBe(before);
+            const reservation = await reserveWithRuntimeReferences({agent: seatDefinition({id: letter}), runtimeGeneration: runtime});
             const plan        = boundPlan({root: runtime.runtimeRoot}).map(row => ({...row, command: runtime.executable}));
             expect(() => service.activate({generation: reservation.generation, agentId: letter,
                 plan: plan.map(row => ({...row, command: process.execPath})), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'}))
@@ -501,7 +525,7 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
             expect(service.statusOf(letter).recent.at(-1).generationRoot).toBe(runtime.runtimeRoot);
         }
         const snapshot = fs.readJsonSync(path.join(directory, 'issuer.json')).snapshot;
-        expect(snapshot.version).toBe(6);
+        expect(snapshot.version).toBe(7);
         expect(snapshot.generations.map(row => row.runtime.id)).toEqual(['a'.repeat(64), 'b'.repeat(64)]);
         expect(snapshot.generations.every(row => row.state === 'active')).toBe(true);
         const extraSecret = structuredClone(snapshot);

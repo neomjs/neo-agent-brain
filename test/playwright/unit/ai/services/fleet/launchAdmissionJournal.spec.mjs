@@ -5,6 +5,7 @@ import path                                                                     
 import {spawn}                                                                                                                               from 'node:child_process';
 import {once}                                                                                                                                from 'node:events';
 import {holdLaunchAdmissionHandoff, holdLaunchAdmissionVacancy, isAdmissionSnapshot, openLaunchAdmissionJournal, readLaunchAdmissionJournal} from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
+import {isRuntimeReferenceSnapshot, RUNTIME_REFERENCE_SNAPSHOT_VERSION}                                                                      from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
 import {writeFileAtomicSync}                                                                                                                 from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
 import {acquireFileLease}                                                                                                                    from '../../../../../../ai/daemons/shared/fileLease.mjs';
 
@@ -12,6 +13,21 @@ let root, journals;
 const emptySnapshot = {version: 1, generations: []};
 const snapshot      = {version: 1, generations: [{id: 'original-start', state: 'active'}]};
 const origin        = 'http://127.0.0.1:47123';
+
+test('legacy snapshots remain recoverable but only the guarded producer version authorizes retirement', () => {
+    const legacy  = {version: 6, generations: [], seats: []};
+    const current = {...legacy, version: RUNTIME_REFERENCE_SNAPSHOT_VERSION};
+    expect(isAdmissionSnapshot(legacy)).toBe(true);
+    expect(isRuntimeReferenceSnapshot(legacy)).toBe(false);
+    expect(isRuntimeReferenceSnapshot(current)).toBe(true);
+    expect(isAdmissionSnapshot({...current, version: 8})).toBe(false);
+    const old = open({validateSnapshot: isAdmissionSnapshot, emptySnapshot: legacy});
+    old.handoff(legacy);
+    const next = open({validateSnapshot: isAdmissionSnapshot, emptySnapshot: current});
+    expect(next.previous.snapshot).toEqual(legacy);
+    next.write(current);
+    expect(isRuntimeReferenceSnapshot(readLaunchAdmissionJournal({directory: root}).state.snapshot)).toBe(true);
+});
 
 /** @summary A closed fixture schema; production supplies the issuer's non-secret record codec. */
 function validateSnapshot(value) {
