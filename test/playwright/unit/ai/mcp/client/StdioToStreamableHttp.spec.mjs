@@ -451,6 +451,45 @@ test.describe('stdioToStreamableHttp', () => {
         }
     });
 
+    test('a session or auth refusal on the stream GET closes, with no survival report', async () => {
+        for (const code of [401, 403, 404]) {
+            const {errors, local, recovered, remote} = await startInitializedBridge();
+
+            remote.onerror(httpError(code, 'Failed to open SSE stream: refused'));
+            await flush();
+
+            expect(errors).toEqual([`Neo MCP bridge transport failed. Cause: http-${code}.`]);
+            expect(recovered).toEqual([]);
+            expect(local.closed).toBe(1)
+        }
+    });
+
+    test('a pending send aborted by the close reports nothing after it', async () => {
+        const {errors, local, recovered, remote} = await startInitializedBridge();
+        let abortPending;
+
+        remote.send = message => message.id === 8
+            ? new Promise((resolve, reject) => {
+                abortPending = () => reject(Object.assign(new Error('This operation was aborted'), {name: 'AbortError'}))
+            })
+            : Promise.resolve().then(() => {
+                const error = httpError(404, 'Error POSTing to endpoint: Session not found');
+
+                remote.onerror(error);
+                throw error
+            });
+        local.onmessage({jsonrpc: '2.0', id: 8, method: 'tools/call', params: {}});
+        local.onmessage({jsonrpc: '2.0', id: 9, method: 'tools/call', params: {}});
+        await flush();
+        abortPending();
+        await flush();
+
+        expect(errors).toEqual(['Neo MCP bridge transport failed. Cause: http-404.']);
+        expect(recovered).toEqual([]);
+        expect(local.messages.some(message => message.id === 8)).toBe(false);
+        expect(local.closed).toBe(1)
+    });
+
     test('a session, auth or protocol refusal on a request stays terminal in the SDK order', async () => {
         for (const [code, cause] of [[401, 'http-401'], [403, 'http-403'], [-1, 'unexpected-content-type']]) {
             const {errors, local, recovered, remote} = await startInitializedBridge();

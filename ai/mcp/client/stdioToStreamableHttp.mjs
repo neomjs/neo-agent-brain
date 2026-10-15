@@ -191,7 +191,9 @@ export async function bridgeTransports({
     const isTerminalRemoteError = error => {
         const cause = getBridgeErrorCause(error);
 
-        return !initialized || cause === 'sse-reconnect-exhausted' || (cause === 'sse-disconnect' && pendingRequestIds.size > 0)
+        // a session or auth refusal ends the session whichever request met it, a stream GET included
+        return !initialized || SESSION_ENDING_CODES.has(error?.code) || cause === 'sse-reconnect-exhausted' ||
+            (cause === 'sse-disconnect' && pendingRequestIds.size > 0)
     };
 
     const onRemoteError = error => {
@@ -236,6 +238,9 @@ export async function bridgeTransports({
                 if (cancelledId !== undefined) pendingRequestIds.delete(cancelledId)
             }, error => {
                 if (error !== null && typeof error === 'object') claimedErrors.add(error);
+
+                // a send aborted by the bridge's own close is no survived error
+                if (closePromise) return;
 
                 if (!initialized || !isRequest || SESSION_ENDING_CODES.has(error?.code)) return fail(error);
 
