@@ -31,7 +31,7 @@ import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot} 
 import {writeFileAtomicSync}                                                    from '../shared/atomicFileWrite.mjs';
 
 import {createResidentMcpInputOwner, createBridgeTokenOwner, restoreLaunchCredentialOwner} from './launchCredentialOwners.mjs';
-import {recoverDesktopLaunchGrants}                                                        from './desktopLaunchProfile.mjs';
+import {recoverLaunchProfileGrants}                                                        from './launchProfileCustody.mjs';
 import {LAUNCH_ADMISSION_PROTOCOL}                                                         from './mcpLaunchAdmission.mjs';
 import {probeAntigravityRuntime}                                                           from './probeAntigravityRuntime.mjs';
 
@@ -1215,6 +1215,11 @@ class FleetLifecycleService extends Base {
             } else {
                 await callback(descriptor);
 
+                if (!signal.aborted && record.runtimeStart) {
+                    await recoverLaunchProfileGrants({managedRoot: fs.realpathSync(this.getInstanceRoot()),
+                        instanceHome: record.instanceHome, workspaceRoot: record.cwd, binding: record.runtimeStart.profile});
+                }
+
                 if (signal.aborted) {
                     failureReason = LAUNCH_ADMISSION_REASONS.STOP_REQUESTED
                 } else if (this.processes.get(id) !== record || record.pid !== descriptor.pid ||
@@ -2131,10 +2136,10 @@ class FleetLifecycleService extends Base {
      * @param {Object} options
      * @param {Object} options.tenantService Original plane/tenant credential owner.
      * @param {Function} [options.verifyRuntime=readRuntimeGeneration] Isolated-test seam for payload verification.
-     * @param {Function} [options.readGrants=recoverDesktopLaunchGrants] Isolated-test seam for profile custody.
+     * @param {Function} [options.readGrants=recoverLaunchProfileGrants] Isolated-test seam for profile custody.
      * @returns {Promise<Object[]>} Admission dispositions without credentials or capabilities.
      */
-    async recoverRuntimeCustody({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverDesktopLaunchGrants} = {}) {
+    async recoverRuntimeCustody({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverLaunchProfileGrants} = {}) {
         const admission = this.getLaunchAdmission();
         if (!admission.journal) throw new Error('Runtime custody must be attached before recovery.');
         const previous = admission.journal.previous, registry = this.getRegistry(), verified = new Map();
@@ -2187,11 +2192,11 @@ class FleetLifecycleService extends Base {
      * @returns {Promise<Object>} Transient capabilities and callbacks, never persistable credentials.
      * @private
      */
-    async readOriginalRuntimeInputs(start, saved, {tenantService, readGrants = recoverDesktopLaunchGrants, adopted = true} = {}) {
+    async readOriginalRuntimeInputs(start, saved, {tenantService, readGrants = recoverLaunchProfileGrants, adopted = true} = {}) {
         const record = this.processes.get(start.agentId), registry = this.getRegistry();
         if (!record || !this.matchesRuntimeStart(record, start, {adopted})) throw Error();
         const capabilities = await readGrants({managedRoot: fs.realpathSync(this.getInstanceRoot()),
-            instanceHome: record.instanceHome, binding: start.profile});
+            instanceHome: record.instanceHome, workspaceRoot: record.cwd, binding: start.profile});
         const owners = Object.fromEntries(Object.entries(saved.credentialBindings).map(([name, binding]) =>
             [name, restoreLaunchCredentialOwner(binding, {registry, tenantService})]));
         const residentInputs = Object.fromEntries(Object.entries(saved.residentBindings).map(([key, source]) =>
@@ -2207,7 +2212,7 @@ class FleetLifecycleService extends Base {
      * @param {Object} options Existing tenant owner, with isolated-test seams for runtime/profile reads.
      * @returns {Promise<Object>} The admission owner's terminal handoff disposition.
      */
-    handoffRuntimeCustody({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverDesktopLaunchGrants} = {}) {
+    handoffRuntimeCustody({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverLaunchProfileGrants} = {}) {
         const admission = this.getLaunchAdmission();
         return admission.handoff({verifySeats: async () => {
             if (this.pendingStarts.size) throw Error();

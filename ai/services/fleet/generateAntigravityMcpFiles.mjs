@@ -78,6 +78,53 @@ export function generateAntigravityMcpFiles({profileHome, rows, processEnvironme
     }
 }
 
+/**
+ * @summary Reads only this writer's closed literal invoker format, without executing shell code.
+ * Canonical re-rendering checks the profile guard, empty environment, argument order and quoting.
+ * @param {Object} options
+ * @param {String} options.profileHome The original profile, selected by the lifecycle.
+ * @param {String} options.key Canonical MCP server key.
+ * @param {String} options.source Bounded, custody-verified invoker text.
+ * @returns {Object} Transient row including its existing admission capability.
+ */
+export function parseAntigravityMcpInvoker({profileHome, key, source}) {
+    try {
+        const prefix = `${HEADER}\n[ "\${AGY_BROWSER_ACTIVE_PORT_FILE-}" = ${quote(path.join(profileHome, 'DevToolsActivePort'))} ] || exit 78\nexec /usr/bin/env -i `;
+        if (!SERVER_KEYS.has(key) || typeof source !== 'string' || !source.startsWith(prefix) || !source.endsWith('\n')) throw Error();
+        const input  = source.slice(prefix.length, -1), words = [];
+        let   offset = 0;
+        while (offset < input.length) {
+            if (input[offset++] !== "'") throw Error();
+            let word = '';
+            for (;;) {
+                const end = input.indexOf("'", offset);
+                if (end < 0) throw Error();
+                word += input.slice(offset, end);
+                offset = end + 1;
+                if (input.slice(offset, offset + 3) !== "\\''") break;
+                word += "'";
+                offset += 3;
+            }
+            words.push(word);
+            if (offset < input.length && input[offset++] !== ' ') throw Error();
+        }
+        if (words.length < 4) throw Error();
+        const environment = {}, processEnvironment = {}, env = {};
+        for (const word of words.slice(0, -4)) {
+            const match = word.match(/^([A-Z][A-Z0-9_]*)=([\s\S]*)$/);
+            if (!match || Object.hasOwn(environment, match[1])) throw Error();
+            environment[match[1]] = match[2];
+            (PROCESS_ENV.has(match[1]) ? processEnvironment : env)[match[1]] = match[2];
+        }
+        const row       = {command: words.at(-4), args: words.slice(-3), env};
+        const canonical = generateAntigravityMcpFiles({profileHome, processEnvironment, rows: {[`neo-mjs-${key}`]: row}});
+        if (canonical.files[0].content !== source) throw Error();
+        return row;
+    } catch {
+        throw new TypeError('Antigravity MCP invoker does not match the closed literal format.');
+    }
+}
+
 /** @summary Quote one literal POSIX argument, including shell metacharacters and newlines. @param {String} value @returns {String} */
 function quote(value) {
     if (typeof value !== 'string' || value.includes('\0')) throw new TypeError('Invalid Antigravity MCP argument.');

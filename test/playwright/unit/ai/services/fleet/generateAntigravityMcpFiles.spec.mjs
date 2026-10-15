@@ -140,7 +140,7 @@ test.describe('Antigravity profile MCP carrier', () => {
                 const valid   = record && request.identity === record.identity && request.server === 'memory-core' &&
                     verifyLaunchRequest(record.grant.secret, request);
                 const answer = valid ? signLaunchResponse(record.grant.secret, request, {
-                    outcome: 'admitted', args: [record.target], env: {GH_TOKEN: 'admitted-fixture-token'}
+                    outcome: 'admitted', generationRoot: record.generation, args: [record.target], env: {GH_TOKEN: 'admitted-fixture-token'}
                 }) : {outcome: 'refused', code: 'unknown-grant'};
                 res.writeHead(200, {'content-type': 'application/json'}).end(JSON.stringify(answer));
             });
@@ -159,7 +159,7 @@ test.describe('Antigravity profile MCP carrier', () => {
                 fs.writeFileSync(target, `process.stdout.write(JSON.stringify({identity:process.env.NEO_AGENT_IDENTITY,
                     tokenAdmitted:process.env.GH_TOKEN==='admitted-fixture-token',
                     aliasAbsent:!('GITHUB_TOKEN' in process.env), grantConsumed:!('NEO_FLEET_LAUNCH_GRANT' in process.env)}));`);
-                const record = {identity, target, grant};
+                const record = {identity, target, grant, generation};
                 records.set(grant.id, record);
                 const generated = generateAntigravityMcpFiles({profileHome, processEnvironment: {PATH: '/usr/bin:/bin', LANG: 'C'}, rows: {
                     [SERVER]: {command: process.execPath, args: [path.join(generation, 'ai/mcp/client/fleetMcpLauncher.mjs'), '--server', 'memory-core'],
@@ -197,6 +197,12 @@ test.describe('Antigravity profile MCP carrier', () => {
             expect(foreignTarget.code).toBe(1);
             expect(foreignTarget.stdout).toBe('');
             expect(foreignTarget.stderr).toContain('target-invalid');
+            seats[0].record.target = path.join(seats[0].record.generation, 'target.mjs');
+            seats[0].record.generation = seats[1].record.generation;
+            const foreignGeneration = await launch(seats[0]);
+            expect(foreignGeneration.code).toBe(1);
+            expect(foreignGeneration.stdout).toBe('');
+            expect(foreignGeneration.stderr).toContain('target-invalid');
             records.delete(seats[1].record.grant.id);
             const revoked = await launch(seats[1]);
             expect(revoked.code).toBe(1);

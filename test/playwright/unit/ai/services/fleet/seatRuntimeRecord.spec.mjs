@@ -1,8 +1,12 @@
 import {expect, test} from '@playwright/test';
 import {createSeatRuntimeRecord, isSeatRuntimeRecord, isSeatRuntimeSnapshot, seatRuntimeSnapshot}
     from '../../../../../../ai/services/fleet/seatRuntimeRecord.mjs';
-import {createManagedAgentWorkspacePlan} from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
-import path                              from 'node:path';
+import {createManagedAgentWorkspacePlan}                            from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
+import path                                                         from 'node:path';
+import {createAntigravityLaunchBinding, createDesktopLaunchBinding} from '../../../../../../ai/services/fleet/launchProfileCustody.mjs';
+import {generateAntigravityMcpFiles}                                from '../../../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
+import {mintLaunchGrant}                                            from '../../../../../../ai/services/fleet/mcpLaunchAdmission.mjs';
+import {isAdmissionSnapshot}                                        from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
 
 /** @summary A fresh observed Start with deliberately noisy internal fields that must never persist. */
 function fixture(harnessType = 'codex-desktop') {
@@ -32,6 +36,26 @@ test('original Start custody is closed metadata, detached from the live process 
     }
     snapshot.start.runtime.id = 'c'.repeat(64);
     expect(record.runtimeStart.runtime.id).toBe('a'.repeat(64));
+});
+
+test('Antigravity Starts require their exact native profile and workspace binding in the shared journal codec', () => {
+    const record = {...fixture('antigravity'), admissionGeneration: 'original-admission'};
+    const grant  = mintLaunchGrant(), identity = 'seat-login', issuer = 'http://127.0.0.1:47123';
+    const rows   = {'neo-mjs-memory-core': {command: record.runtimeGeneration.executable,
+        args: [path.join(record.runtimeGeneration.runtimeRoot, 'ai/mcp/client/fleetMcpLauncher.mjs'), '--server', 'memory-core'],
+        env : {NEO_AGENT_IDENTITY: identity, NEO_FLEET_LAUNCH_ISSUER: issuer, NEO_FLEET_LAUNCH_GRANT: grant.capability}}};
+    const generated = generateAntigravityMcpFiles({profileHome: record.instanceHome, rows, processEnvironment: {}});
+    const profile   = createAntigravityLaunchBinding({identity, issuer, instanceHome: record.instanceHome,
+        workspaceRoot: record.cwd, files: generated.files});
+    const options = {record, identity, plan: [], leaseRequired: true, profile};
+    record.runtimeStart = createSeatRuntimeRecord(options);
+    expect(isAdmissionSnapshot({version: 6, generations: [], seats: [seatRuntimeSnapshot(record)]})).toBe(true);
+    for (const changed of [null, {...profile, instanceHome: '/other/profile'}, {...profile, workspaceRoot: '/other/workspace'},
+        createDesktopLaunchBinding({rows, identity, issuer})]) {
+        expect(() => createSeatRuntimeRecord({...options, profile: changed})).toThrow(/incomplete or invalid/);
+    }
+    expect(() => createSeatRuntimeRecord({...options, record: {...record, harnessType: 'claude-desktop'}})).toThrow(/incomplete or invalid/);
+    expect(JSON.stringify(record.runtimeStart)).not.toContain(grant.secret);
 });
 
 test('lease-required records need observed birth; malformed or absent original process facts cannot be filled from a pin', () => {

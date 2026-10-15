@@ -1,5 +1,6 @@
 import {createHash}                                                  from 'node:crypto';
 import path                                                          from 'node:path';
+import {isLaunchProfileBinding}                                      from './launchProfileCustody.mjs';
 import {canonicalJson, isAdmissibleEnvName, isLaunchIdentity}        from './mcpLaunchAdmission.mjs';
 import {isRuntimeGenerationPin, runtimeGenerationPin}                from './runtimeGeneration.mjs';
 import {launchRowEnvNames, MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS} from './managedAgentWorkspacePlan.mjs';
@@ -83,15 +84,6 @@ export function isBridgeSigningAuthority(value) {
         ['config', 'registry-file'].includes(value.source) && absolute(value.registryRoot) && hash(value.publicKeySha256);
 }
 
-/** @summary Checks only the non-secret owned-profile binding; file custody remains the profile reader's job. */
-function isProfileBinding(value) {
-    return exact(value, ['version', 'identity', 'issuer', 'projectionSha256', 'grants']) && value.version === 1 &&
-        isLaunchIdentity(value.identity) && /^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(value.issuer) &&
-        Number(value.issuer.split(':').at(-1)) <= 65535 && hash(value.projectionSha256) &&
-        value.grants && typeof value.grants === 'object' && !Array.isArray(value.grants) &&
-        Object.entries(value.grants).every(([key, grant]) => /^[a-z][a-z0-9-]{0,63}$/.test(key) &&
-            exact(grant, ['id', 'sha256']) && typeof grant.id === 'string' && /^[A-Za-z0-9_-]{22,128}$/.test(grant.id) && hash(grant.sha256))
-}
 
 /**
  * @summary Validates the closed persisted binding without inferring missing original facts.
@@ -108,9 +100,11 @@ export function isSeatRuntimeRecord(value) {
         isRuntimeGenerationPin(value.runtime) && hash(value.planSha256) && isBridgeSigningAuthority(value.bridgeAuthority) &&
         Array.isArray(value.targets) && value.targets.every(target => isTarget(target, value.runtime)) &&
         new Set(value.targets.map(target => target.key)).size === value.targets.length &&
-        optional(value.admissionGeneration, text) && optional(value.profile, isProfileBinding) &&
+        optional(value.admissionGeneration, text) && optional(value.profile, isLaunchProfileBinding) &&
         (!value.profile || value.profile.identity === value.identity) &&
-        (value.harnessType !== 'claude-desktop' || value.profile !== null && value.admissionGeneration !== null)
+        (value.harnessType !== 'claude-desktop' || value.profile?.version === 1 && value.admissionGeneration !== null) &&
+        (value.harnessType !== 'antigravity' || value.profile?.kind === 'antigravity' && value.admissionGeneration !== null &&
+            value.profile.instanceHome === value.instanceHome && value.profile.workspaceRoot === value.cwd)
 }
 
 /**

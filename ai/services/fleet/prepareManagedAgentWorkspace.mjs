@@ -14,9 +14,10 @@ import {deriveNodeRuntimeEnv}                         from './deriveNodeRuntimeE
 import {
     DESKTOP_PROFILE_RECEIPT,
     createDesktopLaunchBinding,
+    createAntigravityLaunchBinding,
     desktopProfileProjection as claudeJsonOwnedProjection,
-    recoverDesktopLaunchGrants
-} from './desktopLaunchProfile.mjs';
+    recoverLaunchProfileGrants
+} from './launchProfileCustody.mjs';
 import {KIMI_SEAT_SERVERS, generateKimiSeatConfig}                                            from './generateKimiSeatConfig.mjs';
 import {ANTIGRAVITY_MEMORY_FILE, ANTIGRAVITY_MCP_WORKSPACE_FILE, generateAntigravityMcpFiles} from './generateAntigravityMcpFiles.mjs';
 import {registerAntigravityProject}                                                           from './antigravityProjectRegistry.mjs';
@@ -407,7 +408,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         fileSystem
     });
 
-    const {artifacts, antigravityProject} = await prepareHarnessArtifacts({
+    const {artifacts, antigravityProject, launchAdmissionBinding: nativeLaunchAdmissionBinding} = await prepareHarnessArtifacts({
         agent,
         targetRepoRoot    : canonicalTargetRepoRoot,
         instanceRoot      : canonicalInstanceRoot,
@@ -446,10 +447,10 @@ async function applyManagedAgentWorkspacePlanUnchecked({
     const launchAdmissionBinding = agent.harnessType === 'claude-desktop' ? createDesktopLaunchBinding({
         rows    : renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission}),
         identity: launchAdmission.identity, issuer: launchAdmission.issuer
-    }) : null;
+    }) : nativeLaunchAdmissionBinding ?? null;
     if (launchAdmissionBinding) {
-        await recoverDesktopLaunchGrants({
-            managedRoot: canonicalInstanceRoot, instanceHome, binding: launchAdmissionBinding, fileSystem
+        await recoverLaunchProfileGrants({
+            managedRoot: canonicalInstanceRoot, instanceHome, workspaceRoot: canonicalTargetRepoRoot, binding: launchAdmissionBinding, fileSystem
         });
     }
 
@@ -813,7 +814,7 @@ async function prepareHarnessArtifacts({
             return {artifacts: await prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, residentMcpEnv, launchAdmission, fileSystem})};
         case 'antigravity': {
             const generated = await prepareAntigravityArtifacts({
-                agent, instanceHome, plan, residentMcpEnv, launchAdmission, fileSystem,
+                agent, instanceHome, targetRepoRoot, plan, residentMcpEnv, launchAdmission, fileSystem,
                 processEnvironment: antigravityStart.processEnvironment
             });
             if (generated.residuals.length) throw unsupported('Antigravity profile contains unowned invokers; resolve them before Start');
@@ -839,8 +840,9 @@ async function prepareHarnessArtifacts({
                 writeAtomic         : (file, content, options) => writeFileAtomic(file, content, {...options, fsModule: fileSystem})
             });
             return {
-                artifacts         : [...generated.artifacts, ...workspace, memoryLoader],
-                antigravityProject: {id: project.projectId, name: project.projectName, root: project.projectRoot}
+                artifacts             : [...generated.artifacts, ...workspace, memoryLoader],
+                launchAdmissionBinding: generated.launchAdmissionBinding,
+                antigravityProject    : {id: project.projectId, name: project.projectName, root: project.projectRoot}
             }
         }
         default:
@@ -1495,6 +1497,7 @@ function renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission})
  * @param {Object} options
  * @param {Object} options.agent
  * @param {String} options.instanceHome Antigravity's isolated Electron user-data directory.
+ * @param {String} options.targetRepoRoot Canonical original workspace selected for this Start.
  * @param {Object[]} options.plan Bound canonical MCP rows.
  * @param {Object} options.residentMcpEnv Resolved resident child environments.
  * @param {Object} options.launchAdmission Reserved, per-server launch grants.
@@ -1503,11 +1506,13 @@ function renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission})
  * @returns {Promise<Object>} Profile invokers, complete workspace rows, permission rules, and residual files.
  * @private
  */
-export async function prepareAntigravityArtifacts({agent, instanceHome, plan, residentMcpEnv, launchAdmission, fileSystem,
+export async function prepareAntigravityArtifacts({agent, instanceHome, targetRepoRoot, plan, residentMcpEnv, launchAdmission, fileSystem,
     processEnvironment}) {
     const
-        rows           = renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission}),
-        generated      = generateAntigravityMcpFiles({profileHome: instanceHome, rows, processEnvironment}),
+        rows                   = renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission}),
+        generated              = generateAntigravityMcpFiles({profileHome: instanceHome, rows, processEnvironment}),
+        launchAdmissionBinding = createAntigravityLaunchBinding({instanceHome, workspaceRoot: targetRepoRoot,
+            identity: launchAdmission.identity, issuer: launchAdmission.issuer, files: generated.files}),
         artifacts      = [],
         residuals      = [],
         generatedNames = new Set(Object.keys(generated.mcpServers).filter(name => !generated.mcpServers[name].disabled));
@@ -1544,7 +1549,7 @@ export async function prepareAntigravityArtifacts({agent, instanceHome, plan, re
         artifacts.push(observation)
     }
 
-    return {artifacts, mcpServers: generated.mcpServers, projectMcpAllowRules: generated.projectMcpAllowRules, residuals}
+    return {artifacts, mcpServers: generated.mcpServers, projectMcpAllowRules: generated.projectMcpAllowRules, residuals, launchAdmissionBinding}
 }
 
 /** @summary Retire only unchanged invokers whose content remains bound to Fleet's receipt. @private */

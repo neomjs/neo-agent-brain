@@ -32,7 +32,7 @@ import {writeFileAtomicSync}                             from '../../../../../..
 import {createSeatPatOwner, createResidentMcpInputOwner} from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
 import {createManagedAgentWorkspacePlan}                 from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {createSeatRuntimeRecord}                         from '../../../../../../ai/services/fleet/seatRuntimeRecord.mjs';
-import {createDesktopLaunchBinding}                      from '../../../../../../ai/services/fleet/desktopLaunchProfile.mjs';
+import {createDesktopLaunchBinding}                      from '../../../../../../ai/services/fleet/launchProfileCustody.mjs';
 import {
     LAUNCH_ADMISSION_PATH,
     createLaunchRequest,

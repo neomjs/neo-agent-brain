@@ -2263,7 +2263,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
                 identity: 'shared-login',
                 grants  : Object.fromEntries(['memory-core', 'knowledge-base'].map(key => [key, mintLaunchGrant().capability]))
             },
-            options = {agent, instanceHome: path.join(instanceRoot, agent.id, 'harness', 'antigravity'), plan,
+            options = {agent, instanceHome: path.join(instanceRoot, agent.id, 'harness', 'antigravity'), targetRepoRoot: path.join(root, 'native-checkout'), plan,
                 residentMcpEnv: {}, launchAdmission, processEnvironment: {HOME: root, PATH: '/usr/bin:/bin'}, fileSystem: fs};
 
         await fs.mkdir(options.instanceHome, {recursive: true});
@@ -2396,6 +2396,9 @@ test.describe('prepareManagedAgentWorkspace', () => {
             processEnvironment: {HOME: root, PATH: '/usr/bin:/bin'},
             exclusion         : excludeManagedWorkspaceFiles({targetRepoRoot: opts.targetRepoRoot})};
         const result = await prepareManagedAgentWorkspace({...opts, antigravityStart, launchAdmission: desktopAdmission()});
+        expect(result.launchAdmissionBinding).toMatchObject({version: 2, kind: 'antigravity', identity: 'shared-login',
+            instanceHome: result.instanceHome, workspaceRoot: opts.targetRepoRoot});
+        expect(Object.keys(result.launchAdmissionBinding.invokerSha256).sort()).toEqual(Object.keys(result.launchAdmissionBinding.grants).sort());
         expect(result.antigravityProject).toMatchObject({name: opts.agent.id, root: opts.targetRepoRoot});
         const loader = await read(path.join(opts.targetRepoRoot, 'GEMINI.md'));
         expect(loader).toContain(`@[Seat memory](${path.join(memoryDir, 'MEMORY.md')})`);
