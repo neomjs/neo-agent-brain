@@ -670,12 +670,14 @@ class IssueSyncer extends Base {
      * @private
      */
     async #removeOtherCopies(issueNumber, targetPath, inventory, oldAbsolutePath) {
-        const candidates = new Set((inventory.get(issueNumber) || [])
-            .map(copy => copy.absPath)
-            .filter(absPath => !absPath.startsWith(issueSyncConfig.archiveRoot)));
+        // Compared resolved: an absolute metadata path may spell the target differently (`..`)
+        const archiveRoot = path.resolve(issueSyncConfig.archiveRoot),
+              candidates  = new Set((inventory.get(issueNumber) || [])
+                  .map(copy => path.resolve(copy.absPath))
+                  .filter(absPath => !absPath.startsWith(archiveRoot)));
 
-        if (oldAbsolutePath) candidates.add(oldAbsolutePath);
-        candidates.delete(targetPath);
+        if (oldAbsolutePath) candidates.add(path.resolve(oldAbsolutePath));
+        candidates.delete(path.resolve(targetPath));
 
         let removed = 0;
 

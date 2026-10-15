@@ -1789,9 +1789,10 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
 
     /**
      * Mocks the bulk fetch with one updated issue and pulls it against a metadata entry whose path is
-     * given, so a test controls where the sync believes the old copy is.
+     * given, so a test controls where the sync believes the old copy is. `rawPath` stores the path
+     * string as given instead of relative to the metadata root.
      */
-    const pullUpdated = async (mockIssue, metadataPath) => {
+    const pullUpdated = async (mockIssue, metadataPath, {rawPath = false} = {}) => {
         GraphqlService.query = async query => {
             if (query.includes('FetchIssuesForSync')) {
                 return {
@@ -1806,10 +1807,51 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             lastSync: '2026-10-12T00:00:00Z',
             issues  : {[mockIssue.number]: {
                 state: 'OPEN', updatedAt: '2026-10-12T14:10:00Z', contentHash: 'h', commentsTotal: 0,
-                path : path.relative(aiConfig.issueSync.metadataBaseRoot, metadataPath)
+                path : rawPath ? metadataPath : path.relative(aiConfig.issueSync.metadataBaseRoot, metadataPath)
             }}
         })
     };
+
+    /** The same file, spelled through a `..` segment the way an absolute metadata path may carry it. */
+    const equivalentSpelling = file => [path.dirname(file), '..', path.basename(path.dirname(file)), path.basename(file)].join(path.sep);
+
+    test('cleanup keeps the fresh rendering when the metadata spells its path another way (#1038)', async () => {
+        const first  = buildMockIssue({number: 61004, title: 'First rendering',  timelineFirst: [], hasNextPage: false, endCursor: null}),
+              second = buildMockIssue({number: 61004, title: 'Second rendering', timelineFirst: [], hasNextPage: false, endCursor: null});
+
+        first.updatedAt  = '2026-10-13T02:53:00Z';
+        second.updatedAt = '2026-10-14T09:00:00Z';
+
+        await pullUpdated(first, path.join(issueSyncConfig.issuesDir, 'chunk-5', 'issue-61004.md'));
+
+        const [target] = await activeCopies(issueSyncConfig.issuesDir, 61004);
+
+        await pullUpdated(second, equivalentSpelling(target), {rawPath: true});
+
+        expect(await activeCopies(issueSyncConfig.issuesDir, 61004)).toEqual([target]);
+        expect(await fs.readFile(target, 'utf8')).toContain('Second rendering')
+    });
+
+    test('refetchIssuesByNumber keeps the fresh rendering when the metadata spells its path another way (#1038)', async () => {
+        const issue = buildMockIssue({number: 61005, title: 'First refetch', timelineFirst: [], hasNextPage: false, endCursor: null});
+
+        GraphqlService.query = async query => {
+            if (query.includes('FetchSingleIssue')) {
+                return {repository: {issue: structuredClone(issue)}};
+            }
+            throw new Error(`Unexpected GraphQL query in test: ${query.slice(0, 80)}`);
+        };
+
+        await IssueSyncer.refetchIssuesByNumber([61005], {issues: {}});
+
+        const [target] = await activeCopies(issueSyncConfig.issuesDir, 61005);
+
+        issue.title = 'Second refetch';
+        await IssueSyncer.refetchIssuesByNumber([61005], {issues: {61005: {path: equivalentSpelling(target)}}});
+
+        expect(await activeCopies(issueSyncConfig.issuesDir, 61005)).toEqual([target]);
+        expect(await fs.readFile(target, 'utf8')).toContain('Second refetch')
+    });
 
     test('a moved issue keeps its fresh rendering: the old copy is never renamed onto it (#1038)', async () => {
         const staleAbs  = path.join(issueSyncConfig.issuesDir, 'chunk-9', 'issue-61001.md'),
