@@ -219,6 +219,10 @@ class Bridge extends Base {
     }
 
     /**
+     * @summary Registers an Agent connection; the newest connection under an id is the one routed to. A seat running
+     * two sessions opens two connections under its id, and a reconnect can race its predecessor's close, so a replaced
+     * connection's close leaves its successor registered and announces nothing to Agents. Apps still hear every
+     * connection's close, keyed by its `sessionId`.
      * @param {String} id
      * @param {WebSocket} ws
      */
@@ -234,11 +238,15 @@ class Bridge extends Base {
         ws.on('message', (data) => this.handleAgentMessage(id, data));
         ws.on('close',   ()     => {
             logger.info(`Bridge: Agent disconnected [${id}]`);
-            this.agents.delete(id);
-            this.broadcastToAgents({
-                type   : 'agent_disconnected',
-                agentId: id
-            });
+
+            if (this.agents.get(id) === ws) {
+                this.agents.delete(id);
+                this.broadcastToAgents({
+                    type   : 'agent_disconnected',
+                    agentId: id
+                })
+            }
+
             // Lets the app-side write-guard release locks held by the now-dead writer; idempotent so a
             // blanket app broadcast is safe.
             this.broadcastToApps({

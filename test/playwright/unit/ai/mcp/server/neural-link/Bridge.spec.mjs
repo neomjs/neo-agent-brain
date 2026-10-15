@@ -207,6 +207,54 @@ test.describe('Bridge.handleAgentMessage — agent-message sidecar emit', () => 
     });
 });
 
+// A seat running two sessions holds two sockets under one id, and a reconnect can race its predecessor's close
+test.describe('Bridge — two agent sockets under one id', () => {
+    const framesOf = (ws, type) => ws.sent.map(JSON.parse).filter(frame => frame.type === type);
+
+    test.beforeEach(() => {
+        Bridge.agents = new Map();
+        Bridge.apps   = new Map();
+    });
+
+    test('the replaced socket\'s close leaves the newer one routable and tells no agent it left; apps release its session', () => {
+        const older = makeWs(), newer = makeWs(), peer = makeWs(), appWs = makeWs();
+
+        Bridge.apps.set('app-1', appWs);
+        Bridge.registerAgent('agent-peer', peer);
+        Bridge.registerAgent('agent-a', older);
+        Bridge.registerAgent('agent-a', newer);
+
+        older.handlers.close();
+
+        expect(Bridge.agents.get('agent-a')).toBe(newer);
+        expect(framesOf(peer, 'agent_disconnected')).toEqual([]);
+        expect(framesOf(appWs, 'agent_disconnected')).toEqual([{type: 'agent_disconnected', agentId: 'agent-a', sessionId: older.sessionId}]);
+
+        Bridge.handleAppMessage('app-1', Buffer.from(JSON.stringify({jsonrpc: '2.0', method: 'window_connected', params: {windowId: 'w-1'}})));
+        expect(framesOf(newer, 'app_message').at(-1), 'the newer socket still receives the App').toMatchObject({appWorkerId: 'app-1'});
+
+        // the registered socket's own close still evicts and announces
+        newer.handlers.close();
+        expect(Bridge.agents.has('agent-a')).toBe(false);
+        expect(framesOf(peer, 'agent_disconnected')).toEqual([{type: 'agent_disconnected', agentId: 'agent-a'}]);
+        expect(framesOf(appWs, 'agent_disconnected').map(frame => frame.sessionId)).toEqual([older.sessionId, newer.sessionId]);
+    });
+
+    test('a sole socket\'s close evicts its id and tells every agent and app, as before', () => {
+        const only = makeWs(), peer = makeWs(), appWs = makeWs();
+
+        Bridge.apps.set('app-1', appWs);
+        Bridge.registerAgent('agent-peer', peer);
+        Bridge.registerAgent('agent-a', only);
+
+        only.handlers.close();
+
+        expect(Bridge.agents.has('agent-a')).toBe(false);
+        expect(framesOf(peer, 'agent_disconnected')).toEqual([{type: 'agent_disconnected', agentId: 'agent-a'}]);
+        expect(framesOf(appWs, 'agent_disconnected')).toEqual([{type: 'agent_disconnected', agentId: 'agent-a', sessionId: only.sessionId}]);
+    });
+});
+
 test.describe('Bridge — an Agent that joins later learns what connected Apps announced (#953)', () => {
     // An App announces itself once per socket open; every frame below arrives before the late Agent joins
     const fromApp  = (id, method, params) => Bridge.handleAppMessage(id, Buffer.from(JSON.stringify({jsonrpc: '2.0', method, params})));
