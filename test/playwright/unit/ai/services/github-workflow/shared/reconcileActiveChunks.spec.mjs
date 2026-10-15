@@ -97,6 +97,27 @@ test.describe('Neo.ai.services.github-workflow.shared.reconcileActiveChunks', ()
         expect(survivors).toHaveLength(1)
     })
 
+    test('keeps the newest rendering of a duplicated id, whichever copy sorts first (#1038)', async () => {
+        for (const [type, filePrefix] of [['issues', 'issue-'], ['pulls', 'pr-'], ['discussions', 'discussion-']]) {
+            const typeDir = path.join(contentRoot, repoSlug, type),
+                  write   = async (chunk, updatedAt, body) => {
+                      await fs.mkdir(path.join(typeDir, `chunk-${chunk}`), {recursive: true});
+                      await fs.writeFile(path.join(typeDir, `chunk-${chunk}`, `${filePrefix}30.md`), `---\nupdatedAt: '${updatedAt}'\n---\n${body}\n`, 'utf8')
+                  };
+
+            // `chunk-12` sorts before `chunk-3`, so path order alone would keep the stale copy.
+            await write(12, '2026-10-12T14:10:00Z', 'stale');
+            await write(3,  '2026-10-13T02:53:00Z', 'fresh');
+
+            const result    = await reconcileActiveChunks({contentRoot}, {repoSlug, type, filePrefix, itemsPerChunk: 3}),
+                  survivors = (await fs.readdir(typeDir, {recursive: true})).filter(f => path.basename(f) === `${filePrefix}30.md`);
+
+            expect(result.deduped).toBe(1);
+            expect(survivors).toHaveLength(1);
+            expect(await fs.readFile(path.join(typeDir, survivors[0]), 'utf8')).toContain('fresh')
+        }
+    });
+
     test('re-chunks an explicit ordinary origin root without dropping the row provenance', async () => {
         await writeOrdinaryPr(5, 20);
         await writeOrdinaryPr(9, 10);

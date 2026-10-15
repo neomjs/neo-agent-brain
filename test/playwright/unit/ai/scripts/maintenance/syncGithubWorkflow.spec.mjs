@@ -102,15 +102,25 @@ async function runCliChild({args = [], contentRoot, preload, env = {}} = {}) {
 }
 
 /**
+ * @summary Builds one GitHub issue node as the sync queries return it.
+ * @param {Object} [overrides] Fields replacing those of the open fixture issue, number 101.
+ * @returns {Object}
+ */
+function issueNode(overrides = {}) {
+    return {number: 101, title: 'Corpus issue', body: 'issue body', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', closedAt: null, url: 'https://github.com/neomjs/neo/issues/101', author: {login: 'fixture'}, labels: {nodes: []}, assignees: {nodes: []}, milestone: null, parent: null, subIssues: {nodes: []}, subIssuesSummary: {total: 0, completed: 0, percentCompleted: 0}, blockedBy: {nodes: []}, blocking: {nodes: []}, timelineItems: {nodes: [], pageInfo: {hasNextPage: false, endCursor: null}}, ...overrides};
+}
+
+/**
  * @summary Controls remote acquisition while exercising the actual CLI and filesystem writers.
  * @param {Object} [options]
  * @param {Boolean} [options.fail=false] Refuse all acquisition for the failure control.
  * @param {Boolean} [options.releases=true] False answers as a repository that has never cut a release.
+ * @param {Object[]} [options.issues] The delta's issue nodes; defaults to the open fixture issue alone.
+ * @param {Object} [options.singles={}] Issue nodes by number for single-issue refetches; others are absent.
  * @returns {String} Node preload data URL.
  */
-function corpusAcquisitionPreload({fail = false, releases = true} = {}) {
+function corpusAcquisitionPreload({fail = false, releases = true, issues = [issueNode()], singles = {}} = {}) {
     const release    = releases ? "{tagName:'v1.0.0',name:'v1.0.0',description:'fixture',publishedAt:'2026-01-03T00:00:00Z',url:'https://example.test/release'}" : '';
-    const issue      = {number: 101, title: 'Corpus issue', body: 'issue body', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', closedAt: null, url: 'https://github.com/neomjs/neo/issues/101', author: {login: 'fixture'}, labels: {nodes: []}, assignees: {nodes: []}, milestone: null, parent: null, subIssues: {nodes: []}, subIssuesSummary: {total: 0, completed: 0, percentCompleted: 0}, blockedBy: {nodes: []}, blocking: {nodes: []}, timelineItems: {nodes: [], pageInfo: {hasNextPage: false, endCursor: null}}};
     const discussion = {number: 102, title: 'Corpus discussion', body: 'discussion body', closed: false, closedAt: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', author: {login: 'fixture'}, category: {name: 'General'}, comments: {nodes: [], totalCount: 0, pageInfo: {hasNextPage: false, endCursor: null}}};
     const pull       = {number: 103, title: 'Corpus pull', body: 'pull body', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', closedAt: null, mergedAt: null, headRefName: 'fixture', baseRefName: 'dev', url: 'https://github.com/neomjs/neo/pull/103', author: {login: 'fixture'}, milestone: null, comments: {nodes: []}, reviews: {nodes: []}};
     const source     = `
@@ -118,10 +128,11 @@ function corpusAcquisitionPreload({fail = false, releases = true} = {}) {
       import ${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'node_modules/neo.mjs/src/core/_export.mjs')).href)};
       import GraphqlService from ${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'ai/services/github-workflow/GraphqlService.mjs')).href)};
       ${fail ? "GraphqlService.query = async () => { throw new Error('controlled acquisition failure') };" : `
-      GraphqlService.query = async query => {
+      GraphqlService.query = async (query, variables) => {
         if (query.includes('FetchLatestRelease')) return {repository:{latestRelease:${releases ? "{tagName:'v1.0.0',publishedAt:'2026-01-03T00:00:00Z'}" : 'null'}}};
         if (query.includes('FetchReleases')) return {repository:{releases:{nodes:[${release}],pageInfo:{hasNextPage:false,endCursor:null}}}};
-        if (query.includes('FetchIssuesForSync')) return {rateLimit:{cost:1,remaining:5000,resetAt:'2026-01-04T00:00:00Z'},repository:{issues:{nodes:[${JSON.stringify(issue)}],pageInfo:{hasNextPage:false,endCursor:null}}}};
+        if (query.includes('FetchSingleIssue')) return {repository:{issue:${JSON.stringify(singles)}[variables.number] ?? null}};
+        if (query.includes('FetchIssuesForSync')) return {rateLimit:{cost:1,remaining:5000,resetAt:'2026-01-04T00:00:00Z'},repository:{issues:{nodes:${JSON.stringify(issues)},pageInfo:{hasNextPage:false,endCursor:null}}}};
         if (query.includes('FetchDiscussionsForSync')) return {repository:{discussions:{nodes:[${JSON.stringify(discussion)}],pageInfo:{hasNextPage:false,endCursor:null}}}};
         if (query.includes('FetchPullRequestsForSync')) return {repository:{pullRequests:{nodes:[${JSON.stringify(pull)}],pageInfo:{hasNextPage:false,endCursor:null}}}};
         throw new Error('unexpected acquisition query');
@@ -132,6 +143,27 @@ function corpusAcquisitionPreload({fail = false, releases = true} = {}) {
       IssueSyncer.pushToGitHub = async () => { throw new Error('pushToGitHub must not run') };
     `;
     return `data:text/javascript,${encodeURIComponent(source)}`;
+}
+
+/**
+ * @summary Runs `parseRefetchIssues` over each argument list in one fresh Node process.
+ * @param {String[][]} argvs Argument lists.
+ * @returns {Promise<Object[]>} Per list, `{numbers}` or `{error}`.
+ */
+async function parseRefetchIssuesInChild(argvs) {
+    const script = `
+        const {parseRefetchIssues} = await import(${JSON.stringify(pathToFileURL(cliScriptPath).href)});
+        console.log(JSON.stringify(${JSON.stringify(argvs)}.map(argv => {
+            try { return {numbers: parseRefetchIssues(argv)} } catch (error) { return {error: error.message} }
+        })));
+    `;
+    const {stdout} = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
+        cwd      : process.cwd(),
+        env      : {...process.env, NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${configResolverPath}`].filter(Boolean).join(' ')},
+        maxBuffer: 1024 * 1024
+    });
+
+    return JSON.parse(stdout.trim().split('\n').pop());
 }
 
 /**
@@ -239,7 +271,7 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
             ),
             startIndex       = source.indexOf('Starting full GitHub Workflow sync'),
             leaseIndex       = source.indexOf('outcome = await withHeavyMaintenanceLease('),
-            corpusSyncIndex  = source.indexOf('? GH_SyncService.emitConversationCorpus()', leaseIndex),
+            corpusSyncIndex  = source.indexOf('? GH_SyncService.emitConversationCorpus({refetchIssues})', leaseIndex),
             syncIndex        = source.indexOf(': GH_SyncService.runFullSync()', leaseIndex),
             emitIndex        = source.indexOf(
                 'GH_SyncService.emitGeneratedContent({pushLocalChanges: false})',
@@ -443,6 +475,98 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
             expect(result.code, result.stderr).toBe(0);
             await expect(fs.access(path.join(corpusRoot, 'neo', 'issues'))).resolves.toBeUndefined();
             await expect(fs.access(path.join(corpusRoot, 'neo', 'release-notes'))).rejects.toThrow();
+        });
+    });
+
+    test('parseRefetchIssues accepts a list of positive integers and refuses anything else', async () => {
+        const [absent, list, single, ...refused] = await parseRefetchIssuesInChild([
+            [], ['--refetch-issues=19565,19637,19565'], ['--refetch-issues=7'],
+            ['--refetch-issues=1;id'], ['--refetch-issues=1 2'], ['--refetch-issues=-1'], ['--refetch-issues=0'],
+            ['--refetch-issues=12,'], ['--refetch-issues=99999999999999999999'],
+            ['--refetch-issues', '5'], ['--refetch-issues=1', '--refetch-issues=2']
+        ]);
+
+        expect(absent).toEqual({numbers: []});
+        expect(list).toEqual({numbers: [19565, 19637]});
+        expect(single).toEqual({numbers: [7]});
+        expect(refused.map(result => result.error)).toEqual([
+            ...['1;id', '1 2', '-1', '0', '', '99999999999999999999']
+                .map(token => `--refetch-issues takes positive issue numbers, not "${token}".`),
+            ...Array(2).fill('--refetch-issues takes one comma-separated list: --refetch-issues=<n,…>.')
+        ]);
+    });
+
+    test('refuses --refetch-issues without --corpus-only before either guard', async () => {
+        const result = await runCliChild({args: ['--refetch-issues=5']});
+        const output = `${result.stdout}\n${result.stderr}`;
+
+        expect(result.code).toBe(1);
+        expect(output).toContain('--refetch-issues needs --corpus-only.');
+        expect(output).not.toContain('Starting');
+    });
+
+    test('refuses a non-integer --refetch-issues token in the CLI child before importing the emitter', async () => {
+        await withOwnedFixture(async ({corpusRoot}) => {
+            await fs.mkdir(corpusRoot);
+            const result = await runCliChild({args: ['--corpus-only', '--refetch-issues=12,1;id'], contentRoot: corpusRoot});
+            const output = `${result.stdout}\n${result.stderr}`;
+
+            expect(result.code).toBe(1);
+            expect(output).toContain('--refetch-issues takes positive issue numbers, not "1;id".');
+            expect(output).not.toContain('Starting origin-qualified conversation corpus emission');
+            expect(await fs.readdir(corpusRoot)).toEqual([]);
+        });
+    });
+
+    test('actual corpus CLI rewrites a named issue whose stale copy the delta never revisits', async () => {
+        await withOwnedFixture(async ({corpusRoot}) => {
+            const
+                origin = path.join(corpusRoot, 'neo'),
+                stale  = path.join(origin, 'issues/chunk-1/issue-201.md'),
+                fresh  = issueNode({number: 201, title: 'Fresh title', state: 'CLOSED', updatedAt: '2026-01-04T00:00:00Z', closedAt: '2026-01-04T00:00:00Z', url: 'https://github.com/neomjs/neo/issues/201'});
+
+            // The drift this flag heals: the metadata holds the fresh `updatedAt`, the file the stale rendering
+            await fs.mkdir(path.dirname(stale), {recursive: true});
+            await fs.writeFile(stale, "---\nid: 201\ntitle: Stale title\nstate: OPEN\nupdatedAt: '2026-01-02T00:00:00Z'\n---\nissue body\n");
+            await fs.writeFile(path.join(origin, '.sync-metadata.json'), JSON.stringify({
+                lastSync: '2026-01-05T00:00:00Z', pulls: {}, discussions: {},
+                releases: {'v1.0.0': {publishedAt: '2026-01-03T00:00:00Z'}},
+                issues  : {201: {state: 'CLOSED', path: 'neo/issues/chunk-1/issue-201.md', updatedAt: '2026-01-04T00:00:00Z', closedAt: '2026-01-04T00:00:00Z', milestone: null, title: 'Fresh title', contentHash: 'stale', commentsTotal: 0}}
+            }));
+
+            const result = await runCliChild({
+                args       : ['--corpus-only', '--refetch-issues=201'],
+                contentRoot: corpusRoot,
+                preload    : corpusAcquisitionPreload({issues: [], singles: {201: fresh}})
+            });
+
+            expect(result.code, result.stderr).toBe(0);
+            const
+                copies   = (await fs.readdir(origin, {recursive: true})).filter(file => file.endsWith('issue-201.md')),
+                metadata = JSON.parse(await fs.readFile(path.join(origin, '.sync-metadata.json'), 'utf8')),
+                index    = JSON.parse(await fs.readFile(path.join(corpusRoot, '_index.json'), 'utf8'));
+
+            expect(copies).toHaveLength(1);
+            const markdown = await fs.readFile(path.join(origin, copies[0]), 'utf8');
+            expect(markdown).toContain('state: CLOSED');
+            expect(markdown).toContain('Fresh title');
+            expect(metadata.issues['201']).toMatchObject({state: 'CLOSED', path: `neo/${copies[0]}`});
+            expect(metadata.issues['201'].contentHash).not.toBe('stale');
+            expect(index).toEqual(expect.arrayContaining([
+                expect.objectContaining({repoSlug: 'neo', type: 'issues', id: 201, path: `neo/${copies[0]}`})
+            ]));
+        });
+    });
+
+    test('actual corpus CLI fails the run, and the issues facet, when a named issue does not come back', async () => {
+        await withOwnedFixture(async ({corpusRoot}) => {
+            await fs.mkdir(corpusRoot);
+            const result = await runCliChild({args: ['--corpus-only', '--refetch-issues=202'], contentRoot: corpusRoot, preload: corpusAcquisitionPreload()});
+
+            expect(result.code).toBe(1);
+            expect(`${result.stdout}\n${result.stderr}`).toContain('Named issues were not refetched: #202');
+            const metadata = JSON.parse(await fs.readFile(path.join(corpusRoot, 'neo', '.sync-metadata.json'), 'utf8'));
+            expect(metadata.issues ?? {}).toEqual({});
         });
     });
 

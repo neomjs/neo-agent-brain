@@ -46,6 +46,7 @@ export class AntigravityProjectBindingRefusal extends Error {
  * @param {Function} options.verifyNativeCapability Proves measured runtime continuity and the project tuple.
  * @param {Object} [options.fileSystem=fs] Filesystem seam for deterministic tests.
  * @param {Function} [options.WebSocketCtor=WebSocket] RFC6455 client seam.
+ * @param {Function} [options.now=Date.now] Wall-clock seam for deterministic deadline tests.
  * @param {AbortSignal} [options.signal] Start-owned cancellation signal.
  * @param {Number} [options.timeoutMs=60000] Total budget, capped at 120000 ms.
  * @returns {Promise<Object>} Project proof and observed renderer route/version.
@@ -61,13 +62,14 @@ export async function bindAntigravityProject({
     verifyNativeCapability,
     fileSystem  = fs,
     WebSocketCtor = WebSocket,
+    now         = Date.now,
     signal,
     timeoutMs   = DEFAULT_TIMEOUT
 } = {}) {
     const profile      = absoluteDirectory(profileDirectory),
           projectProof = validProject(project),
           owner        = validExpectedProcess(expectedProcess),
-          deadline     = Date.now() + boundedTimeout(timeoutMs);
+          deadline     = now() + boundedTimeout(timeoutMs);
 
     const projectReader = readRegisteredProject ?? (typeof registryDirectory === 'string'
         ? options => readAntigravityProjectRecord({...options, registryDirectory, fileSystem})
@@ -92,9 +94,9 @@ export async function bindAntigravityProject({
         readRegisteredProject: projectReader,
         registryDirectory,
         fileSystem,
-        timeoutMs            : Math.max(100, Math.min(2000, remaining(deadline))),
+        timeoutMs            : Math.max(100, Math.min(2000, remaining(deadline, now))),
         signal
-    })), deadline, signal).catch(error => {
+    })), deadline, signal, now).catch(error => {
         if (error instanceof AntigravityProjectRegistryRefusal) throw refuse(error.code);
         throw preserveRefusal(error, 'project-registry-unproven')
     });
@@ -107,7 +109,8 @@ export async function bindAntigravityProject({
         verifyProfileListener,
         owner,
         deadline,
-        signal
+        signal,
+        now
     });
 
     checkAbort(signal);
@@ -121,17 +124,17 @@ export async function bindAntigravityProject({
         throw refuse('browser-unavailable')
     }
 
-    const cdp = createCdpConnection(socket);
+    const cdp = createCdpConnection(socket, now);
 
     try {
-        await waitForSocketOpen(socket, deadline, signal);
+        await waitForSocketOpen(socket, deadline, signal, now);
 
         const version = await cdp.call('Browser.getVersion', {}, null, deadline, signal)
             .catch(error => { throw preserveRefusal(error, 'browser-unavailable') });
 
         if (typeof version?.product !== 'string' || !version.product) throw refuse('browser-unavailable');
 
-        const renderers = await waitForUniqueRenderer({cdp, deadline, signal});
+        const renderers = await waitForUniqueRenderer({cdp, deadline, signal, now});
 
         const renderer = renderers[0], rendererUrl = canonicalRendererUrl(renderer.url), capabilityProof =
             await within(Promise.resolve().then(() => verifyNativeCapability({
@@ -142,7 +145,7 @@ export async function bindAntigravityProject({
                 rendererUrl,
                 listenerProof,
                 signal
-            })), deadline, signal).catch(error => { throw preserveRefusal(error, 'native-capability-unproven') });
+            })), deadline, signal, now).catch(error => { throw preserveRefusal(error, 'native-capability-unproven') });
 
         if (!capabilityMatches(capabilityProof, projectProof, version.product)) {
             throw refuse(capabilityProof?.reason === 'runtime-changed-during-start' ? 'runtime-changed-during-start' : 'native-capability-unproven')
@@ -174,7 +177,7 @@ export async function bindAntigravityProject({
 
         const marker = `Select project, current: ${projectProof.name}`;
 
-        await waitForProjectMarker({cdp, sessionId, marker, deadline, signal});
+        await waitForProjectMarker({cdp, sessionId, marker, deadline, signal, now});
         observedUrl = await readRendererUrl(cdp, sessionId, deadline, signal);
 
         if (observedUrl !== expectedUrl) throw refuse('route-mismatch');
@@ -253,24 +256,29 @@ function parseActivePort(value) {
     return {port, browserPath: lines[1]}
 }
 
-/** @summary Wait only on the supplied profile until its endpoint is owned by the original Start. @private */
-async function waitForOwnedProfileEndpoint({profile, activePortPath, fileSystem, verifyProfileListener, owner, deadline, signal}) {
+/**
+ * @summary Wait only on the supplied profile until its endpoint is owned by the original Start.
+ * Reaching the deadline during an in-flight poll step or the inter-poll sleep reports `lastRefusal`;
+ * caller cancellation still refuses with `canceled`.
+ * @private
+ */
+async function waitForOwnedProfileEndpoint({profile, activePortPath, fileSystem, verifyProfileListener, owner, deadline, signal, now = Date.now}) {
     let lastRefusal = 'stale-endpoint';
 
-    while (remaining(deadline) > 0) {
+    while (remaining(deadline, now) > 0) {
         checkAbort(signal);
 
         try {
             const
-                profileStat = await within(Promise.resolve().then(() => fileSystem.lstat(profile)), deadline, signal),
-                portStat    = await within(Promise.resolve().then(() => fileSystem.lstat(activePortPath)), deadline, signal);
+                profileStat = await within(Promise.resolve().then(() => fileSystem.lstat(profile)), deadline, signal, now),
+                portStat    = await within(Promise.resolve().then(() => fileSystem.lstat(activePortPath)), deadline, signal, now);
 
             if (!profileStat.isDirectory() || profileStat.isSymbolicLink() ||
                 !portStat.isFile() || portStat.isSymbolicLink()) {
                 throw refuse('stale-endpoint')
             }
 
-            const activePortText = await within(Promise.resolve().then(() => fileSystem.readFile(activePortPath, 'utf8')), deadline, signal),
+            const activePortText = await within(Promise.resolve().then(() => fileSystem.readFile(activePortPath, 'utf8')), deadline, signal, now),
                   endpoint       = parseActivePort(activePortText),
                   listenerProof  = await within(Promise.resolve().then(() => verifyProfileListener({
                       profileDirectory: profile,
@@ -278,7 +286,7 @@ async function waitForOwnedProfileEndpoint({profile, activePortPath, fileSystem,
                       browserPath     : endpoint.browserPath,
                       expectedProcess : owner,
                       signal
-                  })), deadline, signal).catch(error => { throw preserveRefusal(error, 'listener-unproven') }),
+                  })), deadline, signal, now).catch(error => { throw preserveRefusal(error, 'listener-unproven') }),
                   refusalCode = listenerRefusal(listenerProof, {profileDirectory: profile, endpoint, owner});
 
             if (!refusalCode) return {endpoint, listenerProof};
@@ -286,23 +294,47 @@ async function waitForOwnedProfileEndpoint({profile, activePortPath, fileSystem,
             lastRefusal = refusalCode
         } catch (error) {
             if (error instanceof AntigravityProjectBindingRefusal) {
+                if (error.code === 'timeout') break;
                 if (error.code !== 'stale-endpoint' && error.code !== 'listener-unproven') throw error;
                 lastRefusal = error.code
             } else if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') {
-                if (error?.code === 'canceled' || error?.code === 'timeout') throw error;
+                if (error?.code === 'canceled') throw error;
+                if (error?.code === 'timeout') break;
                 lastRefusal = 'stale-endpoint'
             }
         }
 
-        await within(new Promise(resolve => setTimeout(resolve, Math.min(POLL_INTERVAL, remaining(deadline)))), deadline, signal)
+        const delay = Math.min(POLL_INTERVAL, remaining(deadline, now));
+        if (delay <= 0) break;
+
+        await waitForPollInterval(delay, signal)
     }
 
+    checkAbort(signal);
     throw refuse(lastRefusal)
 }
 
+/** @summary Sleep until the next poll without racing a deadline timeout against `lastRefusal`. @private */
+function waitForPollInterval(delay, signal) {
+    if (signal?.aborted) return Promise.reject(refuse('canceled'));
+    if (delay <= 0) return Promise.resolve();
+
+    return new Promise((resolve, reject) => {
+        const finish = (fn, value) => {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', abort);
+            fn(value)
+        };
+        const timer = setTimeout(() => finish(resolve), delay),
+              abort = () => finish(reject, refuse('canceled'));
+
+        signal?.addEventListener('abort', abort, {once: true})
+    })
+}
+
 /** @summary Wait for the first unique Antigravity renderer without selecting an ambiguous page. @private */
-async function waitForUniqueRenderer({cdp, deadline, signal}) {
-    while (remaining(deadline) > 0) {
+async function waitForUniqueRenderer({cdp, deadline, signal, now = Date.now}) {
+    while (remaining(deadline, now) > 0) {
         checkAbort(signal);
         const targets = await cdp.call('Target.getTargets', {}, null, deadline, signal)
             .catch(error => { throw preserveRefusal(error, 'browser-unavailable') });
@@ -312,9 +344,13 @@ async function waitForUniqueRenderer({cdp, deadline, signal}) {
         if (renderers.length > 1) throw refuse('renderer-ambiguous');
         if (renderers.length === 1) return renderers;
 
-        await within(new Promise(resolve => setTimeout(resolve, Math.min(POLL_INTERVAL, remaining(deadline)))), deadline, signal)
+        const delay = Math.min(POLL_INTERVAL, remaining(deadline, now));
+        if (delay <= 0) break;
+
+        await waitForPollInterval(delay, signal)
     }
 
+    checkAbort(signal);
     throw refuse('renderer-unproven')
 }
 
@@ -364,7 +400,7 @@ function projectRoute(rendererUrl, projectId) {
 }
 
 /** @summary Correlate bounded CDP commands/events over the one profile-owned WebSocket. @private */
-function createCdpConnection(socket) {
+function createCdpConnection(socket, now = Date.now) {
     let   nextId  = 0;
     const pending = new Map(), eventListeners = new Set();
 
@@ -405,7 +441,7 @@ function createCdpConnection(socket) {
     return {
         call(method, params, sessionId, deadline, signal) {
             const id = ++nextId;
-            return boundedWait({deadline, signal, subscribe: (resolve, reject) => {
+            return boundedWait({deadline, signal, now, subscribe: (resolve, reject) => {
                 pending.set(id, {method, resolve, reject});
                 try {
                     socket.send(JSON.stringify({id, method, params, ...(sessionId ? {sessionId} : {})}))
@@ -416,7 +452,7 @@ function createCdpConnection(socket) {
             }})
         },
         waitForEvent(method, sessionId, deadline, signal) {
-            return boundedWait({deadline, signal, subscribe: (resolve, reject) => {
+            return boundedWait({deadline, signal, now, subscribe: (resolve, reject) => {
                 const entry = {method, sessionId, resolve, reject};
                 eventListeners.add(entry)
                 return () => eventListeners.delete(entry)
@@ -432,10 +468,10 @@ function createCdpConnection(socket) {
 }
 
 /** @summary Await the exact browser WebSocket without leaking listeners on abort or timeout. @private */
-function waitForSocketOpen(socket, deadline, signal) {
+function waitForSocketOpen(socket, deadline, signal, now = Date.now) {
     if (socket.readyState === WebSocket.OPEN) return Promise.resolve();
 
-    return boundedWait({deadline, signal, subscribe: (resolve, reject) => {
+    return boundedWait({deadline, signal, now, subscribe: (resolve, reject) => {
         const open  = () => resolve(),
               error = () => reject(refuse('browser-unavailable')),
               close = () => reject(refuse('browser-unavailable'));
@@ -461,8 +497,8 @@ async function readRendererUrl(cdp, sessionId, deadline, signal) {
 }
 
 /** @summary Wait boundedly for one visible project selector with the exact registered project name. @private */
-async function waitForProjectMarker({cdp, sessionId, marker, deadline, signal}) {
-    while (Date.now() < deadline) {
+async function waitForProjectMarker({cdp, sessionId, marker, deadline, signal, now = Date.now}) {
+    while (remaining(deadline, now) > 0) {
         checkAbort(signal);
         const response = await cdp.call('Accessibility.getFullAXTree', {}, sessionId, deadline, signal)
             .catch(error => { throw error instanceof AntigravityProjectBindingRefusal ? error : refuse('marker-unavailable') });
@@ -472,23 +508,27 @@ async function waitForProjectMarker({cdp, sessionId, marker, deadline, signal}) 
         if (matches.length > 1) throw refuse('marker-ambiguous');
         if (matches.length === 1) return;
 
-        await within(new Promise(resolve => setTimeout(resolve, Math.min(POLL_INTERVAL, remaining(deadline)))), deadline, signal)
+        const delay = Math.min(POLL_INTERVAL, remaining(deadline, now));
+        if (delay <= 0) break;
+
+        await waitForPollInterval(delay, signal)
     }
 
+    checkAbort(signal);
     throw refuse('marker-mismatch')
 }
 
 /** @summary Race an injected asynchronous step against the operation deadline and Start cancellation. @private */
-function within(promise, deadline, signal) {
-    return boundedWait({deadline, signal, subscribe: (resolve, reject) => {
+function within(promise, deadline, signal, now = Date.now) {
+    return boundedWait({deadline, signal, now, subscribe: (resolve, reject) => {
         Promise.resolve(promise).then(resolve, reject)
     }})
 }
 
 /** @summary Share one timeout, cancellation, and unsubscription path for a bounded asynchronous wait. @private */
-function boundedWait({deadline, signal, subscribe}) {
+function boundedWait({deadline, signal, now = Date.now, subscribe}) {
     if (signal?.aborted) return Promise.reject(refuse('canceled'));
-    const timeout = remaining(deadline);
+    const timeout = remaining(deadline, now);
     if (!timeout) return Promise.reject(refuse('timeout'));
 
     return new Promise((resolve, reject) => {
@@ -521,8 +561,8 @@ function boundedWait({deadline, signal, subscribe}) {
 }
 
 /** @summary Return the remaining milliseconds without extending an operation's original deadline. @private */
-function remaining(deadline) {
-    return Math.max(0, deadline - Date.now())
+function remaining(deadline, now = Date.now) {
+    return Math.max(0, deadline - now())
 }
 
 /** @summary Refuse an already-canceled Start before doing further work. @private */

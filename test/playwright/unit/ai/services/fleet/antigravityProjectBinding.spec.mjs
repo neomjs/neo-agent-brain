@@ -62,6 +62,7 @@ class FakeWebSocket extends EventEmitter {
                 break;
             case 'Target.getTargets':
                 this.behavior.targetReadCount = (this.behavior.targetReadCount ?? 0) + 1;
+                this.behavior.onTargetRead?.(this.behavior.targetReadCount);
                 result = {targetInfos: this.behavior.targetReadCount <= (this.behavior.rendererUnpublishedReads ?? 0)
                     ? []
                     : this.behavior.targets ?? [{targetId: 'page-a', type: 'page', url: this.currentUrl}]};
@@ -84,6 +85,8 @@ class FakeWebSocket extends EventEmitter {
                 result = {frameTree: {frame: {url: this.currentUrl}}};
                 break;
             case 'Accessibility.getFullAXTree':
+                this.behavior.axReadCount = (this.behavior.axReadCount ?? 0) + 1;
+                this.behavior.onAxRead?.(this.behavior.axReadCount);
                 result = {nodes: this.behavior.axNodes ?? [{
                     ignored: false,
                     role   : {value: 'button'},
@@ -259,13 +262,115 @@ test.describe('bindAntigravityProject', () => {
         expect(fixture.behavior.sockets).toHaveLength(0)
     });
 
-    test('Start cancellation during profile readiness stops polling before a socket is opened', async () => {
+    test('reports the last observed refusal when the deadline lands on the final inter-poll sleep or an in-flight poll step', async () => {
+        const makeFinalSleepClock = isSecondPollComplete => {
+            let sleepStartedAt = null;
+
+            return () => {
+                if (!isSecondPollComplete()) return 1_000;
+                if (sleepStartedAt === null) {
+                    sleepStartedAt = Date.now();
+                    return 1_160
+                }
+                // A synchronous second read (such as a competing deadline timer) sees 15 ms remaining
+                // against the 20 ms sleep; once the sleep timer fires, the clock reaches the 1_180 deadline.
+                return Date.now() - sleepStartedAt < 10 ? 1_165 : 1_180
+            }
+        };
+
+        const missingPort = harness({portFileMissingReads: 10});
+
+        await expect(missingPort.run({
+            timeoutMs: 180,
+            now      : makeFinalSleepClock(() => missingPort.observed.portStatReads >= 2)
+        })).rejects.toMatchObject({code: 'stale-endpoint'});
+        expect(missingPort.observed.portStatReads).toBe(2);
+
+        const unreadyListener = harness({listenerUnreadyReads: 10});
+
+        await expect(unreadyListener.run({
+            timeoutMs: 180,
+            now      : makeFinalSleepClock(() => unreadyListener.observed.listenerChecks >= 2)
+        })).rejects.toMatchObject({code: 'listener-unproven'});
+        expect(unreadyListener.observed.listenerChecks).toBe(2);
+
+        let   inFlightClock = 1_000;
+        const stuckStep     = harness({
+            verifyProfileListener: async () => {
+                if (stuckStep.observed.portReads === 1) return {verified: false};
+                inFlightClock = 1_180;
+                return new Promise(() => {})
+            }
+        });
+
+        await expect(stuckStep.run({
+            timeoutMs: 180,
+            now      : () => inFlightClock
+        })).rejects.toMatchObject({code: 'listener-unproven'});
+
+        const unreadyRenderer = harness({behavior: {rendererUnpublishedReads: 10}});
+
+        await expect(unreadyRenderer.run({
+            timeoutMs: 180,
+            now      : makeFinalSleepClock(() => (unreadyRenderer.behavior.targetReadCount ?? 0) >= 2)
+        })).rejects.toMatchObject({code: 'renderer-unproven'});
+        expect(unreadyRenderer.behavior.targetReadCount).toBe(2);
+
+        const missingMarker = harness({behavior: {marker: 'Select project, current: Another Project'}});
+
+        await expect(missingMarker.run({
+            timeoutMs: 180,
+            now      : makeFinalSleepClock(() => (missingMarker.behavior.axReadCount ?? 0) >= 2)
+        })).rejects.toMatchObject({code: 'marker-mismatch'});
+        expect(missingMarker.behavior.axReadCount).toBe(2);
+
+        const rendererSleepAbort = new AbortController(),
+              rendererSleep      = harness({
+                  behavior: {
+                      rendererUnpublishedReads: 10,
+                      onTargetRead            : () => setTimeout(() => rendererSleepAbort.abort(), 10)
+                  }
+              });
+
+        await expect(rendererSleep.run({signal: rendererSleepAbort.signal, timeoutMs: 1000}))
+            .rejects.toMatchObject({code: 'canceled'});
+        expect(rendererSleep.behavior.targetReadCount).toBe(1);
+
+        const markerSleepAbort = new AbortController(),
+              markerSleep      = harness({
+                  behavior: {
+                      marker  : 'Select project, current: Another Project',
+                      onAxRead: () => setTimeout(() => markerSleepAbort.abort(), 10)
+                  }
+              });
+
+        await expect(markerSleep.run({signal: markerSleepAbort.signal, timeoutMs: 1000}))
+            .rejects.toMatchObject({code: 'canceled'});
+        expect(markerSleep.behavior.axReadCount).toBe(1)
+    });
+
+    test('Start cancellation during profile readiness or the inter-poll sleep stops polling before a socket is opened', async () => {
         const controller = new AbortController(),
               fixture    = harness({portFileMissingReads:10, abortOnPortStat:controller});
 
         await expect(fixture.run({signal:controller.signal, timeoutMs:1000})).rejects.toMatchObject({code:'canceled'});
         expect(fixture.observed.portStatReads).toBe(1);
-        expect(fixture.behavior.sockets).toHaveLength(0)
+        expect(fixture.behavior.sockets).toHaveLength(0);
+
+        const sleepAbortController = new AbortController(),
+              sleepFixture         = harness({
+                  portFileMissingReads : 10,
+                  verifyProfileListener: async () => {
+                      setTimeout(() => sleepAbortController.abort(), 10);
+                      return {verified: false}
+                  }
+              });
+        sleepFixture.observed.portStatReads = 10;
+
+        await expect(sleepFixture.run({signal: sleepAbortController.signal, timeoutMs: 1000}))
+            .rejects.toMatchObject({code: 'canceled'});
+        expect(sleepFixture.observed.portReads).toBe(1);
+        expect(sleepFixture.behavior.sockets).toHaveLength(0)
     });
 
     test('rejects a listener whose PID does not match the lifecycle-owned process birth', async () => {
