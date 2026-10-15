@@ -153,11 +153,76 @@ function arm({agent = AGENT, plane = fakePlane(), publish = async () => ({armed:
 
 test.describe('armFleetSeatWake — the address is the launch profile', () => {
     test('the wake address IS the --user-data-dir each GUI family launches with', () => {
-        const codex  = deriveHarnessLaunchSpec({harnessType: 'codex-desktop', instanceHome: HOME, binaryPath: '/app/Codex', cwd: '/agents/neo-gpt-sophie/repo'}),
-              claude = deriveHarnessLaunchSpec({harnessType: 'claude-desktop', instanceHome: '/agents/a/harness/claude-desktop', binaryPath: '/app/Claude'});
+        const antigravityHome = '/agents/neo-gemini-pro/harness/antigravity',
+              antigravity     = deriveHarnessLaunchSpec({harnessType: 'antigravity', instanceHome: antigravityHome, binaryPath: '/app/Antigravity', cwd: '/agents/neo-gemini-pro/repo'}),
+              codex           = deriveHarnessLaunchSpec({harnessType: 'codex-desktop', instanceHome: HOME, binaryPath: '/app/Codex', cwd: '/agents/neo-gpt-sophie/repo'}),
+              claude          = deriveHarnessLaunchSpec({harnessType: 'claude-desktop', instanceHome: '/agents/a/harness/claude-desktop', binaryPath: '/app/Claude'});
 
+        expect(antigravity.args[0]).toBe(`--user-data-dir=${deriveHarnessWakeAddress({harnessType: 'antigravity', instanceHome: antigravityHome}).instanceAddress}`);
+        expect(deriveHarnessWakeAddress({harnessType: 'antigravity', instanceHome: antigravityHome})).toEqual({
+            addressType    : 'userDataDir',
+            instanceAddress: antigravityHome
+        });
         expect(codex.args[0]).toBe(`--user-data-dir=${deriveHarnessWakeAddress({harnessType: 'codex-desktop', instanceHome: HOME}).instanceAddress}`);
         expect(claude.args[0]).toBe(`--user-data-dir=${deriveHarnessWakeAddress({harnessType: 'claude-desktop', instanceHome: '/agents/a/harness/claude-desktop'}).instanceAddress}`);
+    });
+
+    test('a Fleet-launched Antigravity seat arms its userDataDir route and reuses it on repeat Start (#1035)', async () => {
+        const antigravityHome  = '/agents/neo-gemini-pro/harness/antigravity',
+              antigravityAgent = Object.freeze({
+                  id            : 'neo-gemini-pro',
+                  harnessType   : 'antigravity',
+                  githubUsername: 'neo-gemini-pro',
+                  mcpTarget     : {kind: 'tenant', tenantId: 'local'}
+              }),
+              expectedRoute    = {
+                  action               : 'subscribe',
+                  trigger              : 'SENT_TO_ME',
+                  filters              : {},
+                  harnessTarget        : 'a2a-webhook',
+                  harnessTargetMetadata: {
+                      adapter        : 'osascript',
+                      appName        : 'Antigravity',
+                      url            : `${RECEIVER}/wake`,
+                      addressType    : 'userDataDir',
+                      instanceAddress: antigravityHome
+                  }
+              },
+              first            = fakePlane({proof: {ok: true, identity: '@neo-gemini-pro'}}),
+              second           = fakePlane({
+                  proof: {ok: true, identity: '@neo-gemini-pro'},
+                  rows : [{
+                      id                   : 'WAKE_SUB:minted',
+                      status               : 'active',
+                      agentIdentity        : '@neo-gemini-pro',
+                      trigger              : 'SENT_TO_ME',
+                      filters              : {},
+                      harnessTarget        : 'a2a-webhook',
+                      routeDeliverable     : true,
+                      harnessTargetMetadata: expectedRoute.harnessTargetMetadata
+                  }],
+                  subscribed: {subscriptionId: 'WAKE_SUB:minted', status: 'existing'}
+              });
+
+        const {result, armCalls} = arm({agent: antigravityAgent, instanceHome: antigravityHome, plane: first});
+
+        expect(await result).toEqual({
+            state          : 'ready',
+            reason         : null,
+            adapter        : 'osascript',
+            addressType    : 'userDataDir',
+            instanceAddress: antigravityHome,
+            subscriptionId : 'WAKE_SUB:minted'
+        });
+        expect(first.subscribeCalls()).toEqual([expectedRoute]);
+        expect(armCalls[0]).toMatchObject({
+            manifestPath: MANIFEST,
+            tuple       : {identity: '@neo-gemini-pro', instanceAddress: antigravityHome, instanceType: 'userDataDir'}
+        });
+
+        expect(await arm({agent: antigravityAgent, instanceHome: antigravityHome, plane: second, publish: publishListed}).result)
+            .toMatchObject({state: 'ready', subscriptionId: 'WAKE_SUB:minted'});
+        expect(second.subscribeCalls()).toEqual(first.subscribeCalls());
     });
 
     test('a family the Fleet does not launch as a window has no wake address and no route slot', async () => {

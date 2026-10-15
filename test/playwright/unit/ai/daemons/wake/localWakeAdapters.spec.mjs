@@ -253,13 +253,13 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
     test('OpenCode retries changed coordinates once without allowing authority retarget', async () => {
         const first = {
             agentIdentity,
-            hostname     : '127.0.0.1',
-            port         : 4101,
-            sessionId    : 'session-1',
-            projectId    : 'project-1',
-            directory    : '/workspace/one',
-            username     : 'neo',
-            password     : 'secret'
+            hostname : '127.0.0.1',
+            port     : 4101,
+            sessionId: 'session-1',
+            projectId: 'project-1',
+            directory: '/workspace/one',
+            username : 'neo',
+            password : 'secret'
         };
         const rebound    = {...first, port: 4102};
         let   readCount  = 0;
@@ -362,7 +362,7 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
     test('a post-submit draft-restore focus race is delivered and never retried', async () => {
         let   probeAttempts    = 0;
         let   deliveryAttempts = 0;
-        const uiRecord = record('osascript', {
+        const uiRecord         = record('osascript', {
             route: {
                 agentIdentity,
                 harnessTargetMetadata: {adapter: 'osascript', appName: 'Claude'},
@@ -531,6 +531,69 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
         expect(script).toContain('key code 36');
         // …and no Codex-only Esc prelude: the OpenCode route gets the generic submit, not a quirk.
         expect(script).not.toContain('key code 53');
+    });
+
+    test('an Antigravity userDataDir route focuses the composer with Cmd+I, dismisses autocomplete with Esc before Return, and fails closed on wrong instance (#1035)', async () => {
+        let osascriptArgs;
+        let resolvedQuery;
+        const antigravityRecord = record('osascript', {
+            route: {
+                agentIdentity        : '@neo-gemini-pro',
+                harnessTargetMetadata: {
+                    adapter        : 'osascript',
+                    appName        : 'Antigravity',
+                    addressType    : 'userDataDir',
+                    instanceAddress: '/agents/neo-gemini-pro/harness/antigravity'
+                },
+                adapterConfig: {attemptTimeoutMs: 1000}
+            }
+        });
+
+        expect(await dispatchLocalWake(antigravityRecord, {
+            platform             : 'darwin',
+            resolveGuiInstancePid: async query => {
+                resolvedQuery = query;
+                return 92475;
+            },
+            spawnAsync: async (command, args) => {
+                expect(command).toBe('osascript');
+                osascriptArgs = args;
+            }
+        })).toBe('delivered');
+
+        expect(resolvedQuery).toMatchObject({
+            appName        : 'Antigravity',
+            addressType    : 'userDataDir',
+            instanceAddress: '/agents/neo-gemini-pro/harness/antigravity'
+        });
+
+        const script = osascriptArgs.join('\n');
+
+        expect(script).toContain('tell application "Antigravity" to activate');
+        expect(script).toContain('first process whose unix id is 92475');
+        // Antigravity 2.x binds focusInput to Cmd+I (idempotent composer focus, not Cmd+Shift+I).
+        expect(script).toContain('keystroke "i" using command down');
+        expect(script).not.toContain('using {command down, shift down}');
+        // Preserves and restores any in-progress operator draft around the wake paste.
+        expect(script).toContain('before prompt clear');
+        expect(script).toContain('before user input restore paste');
+        // Dismisses Lexical '/' and '@' autocomplete popups before Return so Return submits the turn.
+        expect(script).toContain('key code 53');
+        expect(script).toContain('key code 36');
+        expect(script.indexOf('key code 53')).toBeLessThan(script.indexOf('key code 36'));
+
+        // Wrong or missing userDataDir instance fails closed before spawning osascript.
+        let spawnedOnMismatch = false;
+        expect(await dispatchLocalWake(antigravityRecord, {
+            platform             : 'darwin',
+            resolveGuiInstancePid: async () => {
+                throw new Error("No running Antigravity instance found for userDataDir='/agents/neo-gemini-pro/harness/antigravity'.");
+            },
+            spawnAsync: async () => {
+                spawnedOnMismatch = true;
+            }
+        })).toBe('skipped');
+        expect(spawnedOnMismatch).toBe(false);
     });
 
     test.describe('probeSessionContext (#16682 context gate)', () => {

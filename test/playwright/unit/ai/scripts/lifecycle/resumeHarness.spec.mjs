@@ -284,7 +284,7 @@ test.describe('ai/scripts/resumeHarness', () => {
         });
         expect(applyHarnessMetadataDefaults({appName: 'Antigravity'})).toMatchObject({
             appName    : 'Antigravity',
-            tabShortcut: 'shift+i'
+            tabShortcut: 'i'
         });
         expect(applyHarnessMetadataDefaults({appName: 'Antigravity', tabShortcut: null})).toMatchObject({
             appName    : 'Antigravity',

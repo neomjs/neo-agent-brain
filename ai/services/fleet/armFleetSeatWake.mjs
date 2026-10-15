@@ -36,6 +36,7 @@ import {resolveSeatPlaneTarget}     from './resolveSeatPlaneTarget.mjs';
  * @type {Object}
  */
 export const GUI_WAKE_DISPATCH = Object.freeze({
+    'antigravity'  : Object.freeze({adapter: 'osascript', appName: 'Antigravity'}),
     'codex-desktop': Object.freeze({adapter: 'osascript', appName: 'Codex', focusSeedKey: 'r'})
 });
 
