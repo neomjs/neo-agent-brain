@@ -3156,6 +3156,34 @@ test.describe('FleetLifecycleService.exitReasonFor — why a seat exited without
             matchedLine: line
         });
 
+        // A failed Codex Desktop record with cleanupUnresolved stopped again records stopRequested and leaves exitReason null
+        const
+            origCleanup       = FleetLifecycleService.codexDesktopCleanupFn,
+            cleanupRetrySeat  = {
+                id                : 'codex-cleanup-retry',
+                state             : 'failed',
+                cleanupUnresolved : true,
+                child             : null,
+                electronProfile   : path.join(root, 'electron-profile'),
+                crashpadExecutable: '/Applications/Codex.app/Contents/Resources/chrome_crashpad_handler',
+                harnessType       : 'codex-desktop',
+                exitedAt          : unplannedStatus.exitedAt,
+                stopRequested     : false,
+                exitReason        : null
+            };
+        FleetLifecycleService.codexDesktopCleanupFn = async () => {};
+        FleetLifecycleService.processes.set('codex-cleanup-retry', cleanupRetrySeat);
+        try {
+            await FleetLifecycleService.stop('codex-cleanup-retry');
+            expect(FleetLifecycleService.status('codex-cleanup-retry')).toMatchObject({
+                state            : 'stopped',
+                cleanupUnresolved: false,
+                exitReason       : null
+            })
+        } finally {
+            FleetLifecycleService.codexDesktopCleanupFn = origCleanup
+        }
+
         // Adopted seat exiting without stop(id) when refreshAdoptedSeat observes probeSeat === 'gone'
         const adoptedRecord = {
             id           : 'adopted-seat',

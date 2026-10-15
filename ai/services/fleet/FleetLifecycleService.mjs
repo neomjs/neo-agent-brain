@@ -1369,7 +1369,7 @@ class FleetLifecycleService extends Base {
 
         this.refreshAdoptedSeat(record);
 
-        if (record && (record.state === 'running' || record.state === 'stopping' || record.state === 'cleanupUnresolved')) {
+        if (record && (record.state === 'running' || record.state === 'stopping' || record.cleanupUnresolved)) {
             record.stopRequested = true;
             record.exitReason    = null
         }
