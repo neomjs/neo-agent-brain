@@ -3147,6 +3147,15 @@ test.describe('FleetLifecycleService.exitReasonFor — why a seat exited without
             matchedLine: line
         });
 
+        // A redundant stop(id) on an already-stopped seat keeps its captured exitReason
+        await FleetLifecycleService.stop('claude-seat');
+        expect(FleetLifecycleService.status('claude-seat').exitReason).toEqual({
+            state      : 'harness-update',
+            exitedAt   : unplannedStatus.exitedAt,
+            logPath,
+            matchedLine: line
+        });
+
         // Adopted seat exiting without stop(id) when refreshAdoptedSeat observes probeSeat === 'gone'
         const adoptedRecord = {
             id           : 'adopted-seat',
@@ -3159,8 +3168,12 @@ test.describe('FleetLifecycleService.exitReasonFor — why a seat exited without
             exitReason   : null
         };
         FleetLifecycleService.processes.set('adopted-seat', adoptedRecord);
-        const origSignal = FleetLifecycleService.processSignalFn;
-        FleetLifecycleService.processSignalFn = () => {
+        const
+            origSignal  = FleetLifecycleService.processSignalFn,
+            origInspect = FleetLifecycleService.processInspectFn;
+
+        FleetLifecycleService.processInspectFn = () => ({startedAt: 'Thu Oct 15 10:00:00 2026', command: ''});
+        FleetLifecycleService.processSignalFn  = () => {
             const err = new Error('ESRCH');
             err.code  = 'ESRCH';
             throw err
@@ -3176,12 +3189,46 @@ test.describe('FleetLifecycleService.exitReasonFor — why a seat exited without
                 matchedLine: line
             });
 
-            // Adopted seat stopped via stop(id) keeps exitReason null
+            // Adopted seat already gone before stop(id) is called keeps harness-update
+            const goneBeforeStop = {
+                id           : 'gone-before-stop',
+                adopted      : true,
+                state        : 'running',
+                pid          : 987655,
+                pidStartedAt : 'Thu Oct 15 10:00:00 2026',
+                harnessType  : 'claude-desktop',
+                stopRequested: false,
+                exitReason   : null
+            };
+            FleetLifecycleService.processes.set('gone-before-stop', goneBeforeStop);
+            await FleetLifecycleService.stop('gone-before-stop');
+            const goneBeforeStopStatus = FleetLifecycleService.status('gone-before-stop');
+            expect(goneBeforeStopStatus.state).toBe('stopped');
+            expect(goneBeforeStopStatus.exitReason).toEqual({
+                state      : 'harness-update',
+                exitedAt   : goneBeforeStopStatus.exitedAt,
+                logPath,
+                matchedLine: line
+            });
+
+            // Live adopted seat stopped via stop(id) keeps exitReason null
+            let alive = true;
+            FleetLifecycleService.processSignalFn = (_pid, sig) => {
+                if (sig === 'SIGTERM') {
+                    alive = false;
+                    return
+                }
+                if (!alive) {
+                    const err = new Error('ESRCH');
+                    err.code  = 'ESRCH';
+                    throw err
+                }
+            };
             const stoppedAdopted = {
                 id           : 'stopped-adopted',
                 adopted      : true,
                 state        : 'running',
-                pid          : 987655,
+                pid          : 987656,
                 pidStartedAt : 'Thu Oct 15 10:00:00 2026',
                 harnessType  : 'claude-desktop',
                 stopRequested: false,
@@ -3191,7 +3238,8 @@ test.describe('FleetLifecycleService.exitReasonFor — why a seat exited without
             await FleetLifecycleService.stop('stopped-adopted');
             expect(FleetLifecycleService.status('stopped-adopted').exitReason).toBeNull()
         } finally {
-            FleetLifecycleService.processSignalFn = origSignal
+            FleetLifecycleService.processSignalFn  = origSignal;
+            FleetLifecycleService.processInspectFn = origInspect
         }
 
         // Subsequent running record clears exitReason

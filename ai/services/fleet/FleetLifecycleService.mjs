@@ -1367,12 +1367,12 @@ class FleetLifecycleService extends Base {
 
         const record = this.processes.get(id);
 
-        if (record) {
+        this.refreshAdoptedSeat(record);
+
+        if (record && (record.state === 'running' || record.state === 'stopping' || record.state === 'cleanupUnresolved')) {
             record.stopRequested = true;
             record.exitReason    = null
         }
-
-        this.refreshAdoptedSeat(record);
 
         // A helper proof the bundle could not give at adoption is asked for again on each retry.
         if (record?.cleanupUnresolved && !record.child && record.electronProfile) {

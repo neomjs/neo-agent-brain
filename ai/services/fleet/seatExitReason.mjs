@@ -9,8 +9,10 @@ import path from 'node:path';
  * Arbitrary child `stderr` is never status authority. The harness's own update marker in
  * `~/Library/Logs/Claude/main.log` within the 60 s window before the observed exit
  * (`[stealth-update] Triggering stealth update` or `beforeQuitForUpdate`) is the single named match,
- * because it is the harness naming its own act. Any other exit — no match in the window, a missing or
- * unreadable log, or another harness family — reports `state: 'unknown'`.
+ * because it is the harness naming its own act (`main.log` is shared by every Claude instance on the
+ * host, so a marker inside the window names the harness's act rather than this seat's process). Any
+ * other exit — no match in the window, a missing or unreadable log, or another harness family —
+ * reports `state: 'unknown'`.
  */
 
 /**
