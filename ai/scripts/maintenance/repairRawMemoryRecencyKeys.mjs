@@ -162,7 +162,8 @@ export async function applyRecencyRepair(plan, {memoryCollection, memorySessionI
 }
 
 /**
- * @summary The read-only runtime of a dry run: a read-only SQLite handle, so no graph writer starts.
+ * @summary The read-only runtime of a dry run: an existing Chroma collection and a read-only SQLite
+ * handle, so neither store is written. A missing collection refuses the run.
  * @returns {Promise<Object>}
  */
 export async function createDryRunRuntime() {
@@ -175,11 +176,13 @@ export async function createDryRunRuntime() {
 
     await ChromaManager.ready();
 
-    const graphDb = new Database(aiConfig.storagePaths.graph, {fileMustExist: true, readonly: true});
+    const
+        memoryCollection = await ChromaManager.openExistingCollection(aiConfig.collections.memory),
+        graphDb          = new Database(aiConfig.storagePaths.graph, {fileMustExist: true, readonly: true});
 
     return {
         graphDb,
-        memoryCollection: await ChromaManager.getMemoryCollection(),
+        memoryCollection,
         cleanup() {
             graphDb.close()
         }

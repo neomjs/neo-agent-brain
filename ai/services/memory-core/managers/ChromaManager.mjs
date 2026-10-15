@@ -248,6 +248,20 @@ class ChromaManager extends AbstractVectorManager {
     }
 
     /**
+     * @summary Opens an existing collection and never creates one. The cached getters use
+     * `getOrCreateCollection`, so a read-only tool that resolved a missing collection through them
+     * would create it and then read it as empty; here a missing collection is an error.
+     * @param {String} name
+     * @returns {Promise<Object>}
+     */
+    async openExistingCollection(name) {
+        return this.#executeSilently(() => this.client.getCollection({
+            name,
+            embeddingFunction: this.#createEmbeddingFunction()
+        }), {filter: MC_WARN_FILTER})
+    }
+
+    /**
      * @returns {Promise<Object>}
      */
     async getSummaryCollection() {

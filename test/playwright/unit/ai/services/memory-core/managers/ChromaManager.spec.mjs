@@ -193,6 +193,37 @@ test.describe('Neo.ai.services.memory-core.managers.ChromaManager', () => {
         expect(ChromaManager.isCollectionNotFoundError(new Error('connection refused'))).toBe(false);
     });
 
+    test('openExistingCollection opens an existing collection and refuses a missing one without creating it', async () => {
+        const calls = [];
+        let originalClient;
+
+        try {
+            if (!SystemLifecycleService._initPromise) { await SystemLifecycleService.initAsync(); } else { await SystemLifecycleService.ready(); }
+
+            originalClient       = ChromaManager.client;
+            ChromaManager.client = {
+                async getCollection({name, embeddingFunction}) {
+                    calls.push(['getCollection', name, Boolean(embeddingFunction)]);
+
+                    if (name === 'test-missing') {
+                        throw new Error(`Collection [${name}] does not exist`)
+                    }
+
+                    return {name}
+                },
+                async createCollection()      { calls.push(['createCollection']) },
+                async getOrCreateCollection() { calls.push(['getOrCreateCollection']) }
+            };
+
+            await expect(ChromaManager.openExistingCollection('test-missing')).rejects.toThrow('does not exist');
+            await expect(ChromaManager.openExistingCollection('test-present')).resolves.toEqual({name: 'test-present'});
+            expect(calls).toEqual([['getCollection', 'test-missing', true], ['getCollection', 'test-present', true]]);
+        } finally {
+            if (originalClient) ChromaManager.client = originalClient;
+            await resetMemoryCoreLifecycle();
+        }
+    });
+
     test('should prevent console.warn global state theft during concurrent collection fetching', async () => {
         // Set up a custom warn logger to inspect leaks
         const warningLogs  = [];

@@ -8,6 +8,7 @@ import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 import {
     applyRecencyRepair,
+    createDryRunRuntime,
     parseArgs,
     planRecencyRepair,
     readRecencyGraphState,
@@ -46,6 +47,54 @@ test.describe('ai/scripts/maintenance/repairRawMemoryRecencyKeys', () => {
             stderr        : message => errors.push(message)
         })).toBe(2);
         expect(errors).toEqual(['[repairRawMemoryRecencyKeys] --apply requires --offline after every Memory Core graph writer is stopped']);
+    });
+
+    // ChromaManager's cached getters create a missing collection; an inspection must refuse one instead
+    test('a dry run against a missing raw-memory collection refuses, and creates nothing', async () => {
+        const
+            {default: ChromaManager}   = await import('../../../../../../ai/services/memory-core/managers/ChromaManager.mjs'),
+            {resetMemoryCoreLifecycle} = await import('../../services/memory-core/util.mjs'),
+            calls                      = [];
+
+        let originalClient;
+
+        try {
+            await ChromaManager.ready();
+
+            originalClient       = ChromaManager.client;
+            ChromaManager.client = {
+                async getCollection({name}) {
+                    calls.push('getCollection');
+                    throw new Error(`Collection [${name}] does not exist`)
+                },
+                async createCollection()      { calls.push('createCollection') },
+                async getOrCreateCollection() { calls.push('getOrCreateCollection') }
+            };
+
+            await expect(createDryRunRuntime()).rejects.toThrow('does not exist');
+            expect(calls).toEqual(['getCollection']);
+        } finally {
+            if (originalClient) ChromaManager.client = originalClient;
+            await resetMemoryCoreLifecycle();
+        }
+    });
+
+    test('a dry run only reads the collection it scans', async () => {
+        const
+            calls      = [],
+            out        = [],
+            collection = {
+                async get({offset}) {
+                    calls.push('get');
+                    return offset ? {ids: [], metadatas: []} : {ids: ['mem-1'], metadatas: [{...mira, sessionId: 'session-a'}]}
+                }
+            };
+
+        ['add', 'delete', 'modify', 'update', 'upsert'].forEach(method => collection[method] = async () => calls.push(method));
+
+        expect(await runCli([], {runtimeFactory: () => ({graphDb: graphDb([]), memoryCollection: collection}), stdout: line => out.push(line)})).toBe(0);
+        expect(new Set(calls)).toEqual(new Set(['get']));
+        expect(JSON.parse(out[0])).toMatchObject({counts: {project: 1}, mode: 'dry-run'});
     });
 
     test('each row is classified against the graph from the row itself', () => {
