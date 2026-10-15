@@ -739,11 +739,11 @@ class PullRequestSyncer extends Base {
     /**
      * @summary Restores pull requests owning more than one artifact from canonical GitHub state.
      *
-     * A divergent pair cannot be resolved locally. Both files are real renderings of one PR and
-     * nothing on disk records which is current — `reconcileActiveChunks`' keep-first dedup is safe in
-     * the active tier only because the next sync rewrites the survivor from GitHub, and applied here
-     * it would silently canonicalise whichever copy sorted first. So neither copy is trusted: GitHub
-     * is the source of truth for this corpus, and the artifact is re-derived from it.
+     * A divergent pair cannot be resolved locally. Both files are real renderings of one PR, and when
+     * their `updatedAt` stamps agree nothing on disk records which is current: `reconcileActiveChunks`
+     * would keep whichever copy sorted first, and the delta sync never rewrites an unchanged item.
+     * So neither copy is trusted: GitHub is the source of truth for this corpus, and the artifact is
+     * re-derived from it.
      *
      * **Fetch before unlink.** The copies are the only local record of that PR, so deleting first and
      * writing second would turn any network failure into a corpus that is simply missing the PR — a

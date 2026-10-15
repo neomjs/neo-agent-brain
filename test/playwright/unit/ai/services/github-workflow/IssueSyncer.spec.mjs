@@ -620,7 +620,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
     });
 
     test('reconcileClosedIssueLocations re-plans after a move cuts a new bucket, so milestone routing into that bucket still happens in the same pass (#403)', async () => {
-        // @neo-gpt's differential on PR #405: with routeByMilestone=true, `#deriveMilestoneVersion` routes a
+        // A differential: with routeByMilestone=true, `#deriveMilestoneVersion` routes a
         // milestone issue only into an ALREADY-CUT bucket (existsSync). Before the hoist, the first move cut
         // the bucket and the next per-issue plan saw it; a plan computed once before any move would not.
         // Both issues must land: the pre-release close by date, the milestone issue by the bucket the pass cut.
@@ -671,7 +671,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
     });
 
     test('reconcileClosedIssueLocations refreshes the plan on the bucket the mkdir cut even when that move\'s rename fails (#403)', async () => {
-        // @neo-gpt's second differential on PR #405: the refresh must key on the directory-state change, not
+        // The second differential: the refresh must key on the directory-state change, not
         // on the rename succeeding. `mkdir` cuts the bucket, the rename of the first issue fails and is caught,
         // and the milestone issue planned after it must still see the cut bucket and land there.
         const originalSorted           = ReleaseNotesSyncer.sortedReleases,
@@ -1786,7 +1786,98 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         // reconciliation-path call that carries no author — assert the resolved default is the empty set.
         expect(issueSyncConfig.issueDenylist).toEqual({numbers: [], authors: []})
     });
+
+    /**
+     * Mocks the bulk fetch with one updated issue and pulls it against a metadata entry whose path is
+     * given, so a test controls where the sync believes the old copy is.
+     */
+    const pullUpdated = async (mockIssue, metadataPath) => {
+        GraphqlService.query = async query => {
+            if (query.includes('FetchIssuesForSync')) {
+                return {
+                    rateLimit : {cost: 1, remaining: 4999, resetAt: mockIssue.updatedAt},
+                    repository: {issues: {pageInfo: {hasNextPage: false, endCursor: null}, nodes: [structuredClone(mockIssue)]}}
+                };
+            }
+            throw new Error(`Unexpected GraphQL query in test: ${query.slice(0, 80)}`);
+        };
+
+        await IssueSyncer.pullFromGitHub({
+            lastSync: '2026-10-12T00:00:00Z',
+            issues  : {[mockIssue.number]: {
+                state: 'OPEN', updatedAt: '2026-10-12T14:10:00Z', contentHash: 'h', commentsTotal: 0,
+                path : path.relative(aiConfig.issueSync.metadataBaseRoot, metadataPath)
+            }}
+        })
+    };
+
+    test('a moved issue keeps its fresh rendering: the old copy is never renamed onto it (#1038)', async () => {
+        const staleAbs  = path.join(issueSyncConfig.issuesDir, 'chunk-9', 'issue-61001.md'),
+              mockIssue = buildMockIssue({number: 61001, title: 'Fresh title after the move', timelineFirst: [], hasNextPage: false, endCursor: null});
+
+        mockIssue.updatedAt = '2026-10-13T02:53:00Z';
+        await fs.ensureDir(path.dirname(staleAbs));
+        await fs.writeFile(staleAbs, 'STALE rendering', 'utf8');
+
+        await pullUpdated(mockIssue, staleAbs);
+
+        const copies = await activeCopies(issueSyncConfig.issuesDir, 61001);
+
+        expect(copies).toHaveLength(1);
+        expect(copies[0]).not.toBe(staleAbs); // the planned path moved, so this pull took the move branch
+        expect(await fs.readFile(copies[0], 'utf8')).toContain('Fresh title after the move')
+    });
+
+    test('a write at a stale metadata path leaves no second copy beside the relocated file (#1038)', async () => {
+        // reconcileActiveChunks moved the file to chunk-8 and left the metadata pointing at chunk-3.
+        const realAbs   = path.join(issueSyncConfig.issuesDir, 'chunk-8', 'issue-61002.md'),
+              mockIssue = buildMockIssue({number: 61002, title: 'Fresh title beside the relocated file', timelineFirst: [], hasNextPage: false, endCursor: null});
+
+        mockIssue.updatedAt = '2026-10-13T02:53:00Z';
+        await fs.ensureDir(path.dirname(realAbs));
+        await fs.writeFile(realAbs, 'STALE rendering', 'utf8');
+
+        await pullUpdated(mockIssue, path.join(issueSyncConfig.issuesDir, 'chunk-3', 'issue-61002.md'));
+
+        const copies = await activeCopies(issueSyncConfig.issuesDir, 61002);
+
+        expect(copies).toHaveLength(1);
+        expect(await fs.readFile(copies[0], 'utf8')).toContain('Fresh title beside the relocated file')
+    });
+
+    test('refetchIssuesByNumber leaves only the fresh rendering, even where the metadata knows no copy (#1038)', async () => {
+        const staleAbs  = path.join(issueSyncConfig.issuesDir, 'chunk-7', 'issue-61003.md'),
+              mockIssue = buildMockIssue({number: 61003, title: 'Fresh title from the refetch', timelineFirst: [], hasNextPage: false, endCursor: null});
+
+        await fs.ensureDir(path.dirname(staleAbs));
+        await fs.writeFile(staleAbs, 'STALE rendering', 'utf8');
+
+        GraphqlService.query = async query => {
+            if (query.includes('FetchSingleIssue')) {
+                return {repository: {issue: structuredClone(mockIssue)}};
+            }
+            throw new Error(`Unexpected GraphQL query in test: ${query.slice(0, 80)}`);
+        };
+
+        await IssueSyncer.refetchIssuesByNumber([61003], {issues: {}});
+
+        const copies = await activeCopies(issueSyncConfig.issuesDir, 61003);
+
+        expect(copies).toHaveLength(1);
+        expect(await fs.readFile(copies[0], 'utf8')).toContain('Fresh title from the refetch')
+    });
 });
+
+/**
+ * @param {String} issuesDir The active issue tier
+ * @param {Number} number
+ * @returns {Promise<String[]>} Every active-tier file of the issue
+ */
+async function activeCopies(issuesDir, number) {
+    return (await fsp.readdir(issuesDir, {recursive: true}))
+        .filter(rel => path.basename(rel) === `issue-${number}.md`)
+        .map(rel => path.join(issuesDir, rel))
+}
 
 function buildComment(i) {
     const minute = String(i).padStart(2, '0');

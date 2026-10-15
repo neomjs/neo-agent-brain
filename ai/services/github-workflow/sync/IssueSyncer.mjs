@@ -559,8 +559,9 @@ class IssueSyncer extends Base {
      * Mirrors `DiscussionSyncer#isDenylisted`, deliberately without that sibling's `|| {}` fallback:
      * `issueDenylist` is an AiConfig leaf with an object default, so the SSOT guarantees the subtree
      * and a defensive fallback would only hide a broken config tree.
-     * ticket-ref-ok: ADR 0019 §3 B3 — the divergence from the adjacent sibling is deliberate, and
-     * without the authority citation a future maintainer reads it as an oversight and "fixes" it back.
+     * Authority: ADR 0019 [not-ticket-ref: decision record] §3 B3. The divergence from the adjacent
+     * sibling is deliberate, and without the citation a future maintainer reads it as an oversight and
+     * "fixes" it back.
      *
      * The two legs have different reach, and the difference is structural rather than incidental.
      * `number` is present at every `#getIssuePath` call site, including the reconciliation paths that
@@ -655,6 +656,42 @@ class IssueSyncer extends Base {
     }
 
     /**
+     * @summary Removes every copy of an issue except the rendering just written to `targetPath`.
+     *
+     * The metadata path alone cannot find them: `reconcileActiveChunks` relocates active files
+     * without touching the sync metadata, so the old file may sit in another chunk. The inventory's
+     * active-tier copies close that gap. Archived copies are sealed and stay, unless the metadata
+     * path names one, which a move retires.
+     * @param {Number} issueNumber
+     * @param {String} targetPath The fresh rendering
+     * @param {Map<Number, Array<{absPath: String}>>} inventory Output of `buildContentInventory`
+     * @param {String|null} oldAbsolutePath The metadata path
+     * @returns {Promise<Number>} The count of removed files
+     * @private
+     */
+    async #removeOtherCopies(issueNumber, targetPath, inventory, oldAbsolutePath) {
+        const candidates = new Set((inventory.get(issueNumber) || [])
+            .map(copy => copy.absPath)
+            .filter(absPath => !absPath.startsWith(issueSyncConfig.archiveRoot)));
+
+        if (oldAbsolutePath) candidates.add(oldAbsolutePath);
+        candidates.delete(targetPath);
+
+        let removed = 0;
+
+        for (const absPath of candidates) {
+            try {
+                await fs.unlink(absPath);
+                removed++;
+            } catch (e) {
+                if (e.code !== 'ENOENT') logger.warn(`Could not remove a stale copy of #${issueNumber} at ${absPath}: ${e.message}`);
+            }
+        }
+
+        return removed;
+    }
+
+    /**
      * Fetches all relevant issues from GitHub using GraphQL with automatic pagination.
      * This single query fetches issues WITH their comments and relationships in one go!
      * @param {object} metadata
@@ -685,7 +722,7 @@ class IssueSyncer extends Base {
                     cursor,
                     states: ['OPEN', 'CLOSED'],
                     // Clean-slate sync (`metadata.lastSync === null`) must traverse the full repo
-                    // history per ADR 0004 (ticket-ref-ok: file-owned decision record). Falling back to the normal syncStartDate would miss old
+                    // history per ADR 0004 [not-ticket-ref: file-owned decision record]. Falling back to the normal syncStartDate would miss old
                     // issues that have not been touched since that date. Use an explicit pre-Neo date,
                     // then let droppedLabels and maxIssues caps trim the actual processed set.
                     since           : metadata.lastSync || '2017-01-01T00:00:00Z',
@@ -827,17 +864,14 @@ class IssueSyncer extends Base {
                     logger.debug(`✨ Created #${issueNumber}: ${targetPath}`);
                 } else if (oldAbsolutePath && oldAbsolutePath !== targetPath) {
                     stats.pulled.moved++;
-                    try {
-                        await fs.rename(oldAbsolutePath, targetPath);
-                        shouldPruneEmptyDirs = true;
-                        logger.debug(`📦 Moved #${issueNumber}: ${oldAbsolutePath} → ${targetPath}`);
-                    } catch (e) {
-                        logger.warn(`Could not rename #${issueNumber}, falling back to write. Error: ${e.message}`);
-                        await fs.unlink(oldAbsolutePath).then(() => { shouldPruneEmptyDirs = true; }).catch(() => {});
-                    }
+                    logger.debug(`📦 Moved #${issueNumber}: ${oldAbsolutePath} → ${targetPath}`);
                 } else {
                     stats.pulled.updated++;
                     logger.debug(`✅ Updated #${issueNumber}: ${targetPath}`);
+                }
+
+                if (await this.#removeOtherCopies(issueNumber, targetPath, inventory, oldAbsolutePath) > 0) {
+                    shouldPruneEmptyDirs = true;
                 }
             }
 
@@ -1006,8 +1040,11 @@ class IssueSyncer extends Base {
                 const markdown    = this.#formatIssueMarkdown(issue);
                 const contentHash = this.#calculateContentHash(markdown);
 
+                const oldAbsolutePath = this.#resolvePath(metadata.issues[issueNumber]?.path);
+
                 await fs.mkdir(path.dirname(targetPath), {recursive: true});
                 await fs.writeFile(targetPath, markdown, 'utf-8');
+                await this.#removeOtherCopies(issueNumber, targetPath, inventory, oldAbsolutePath);
 
                 stats.refetched.count++;
                 stats.refetched.issues.push(issueNumber);
@@ -1197,7 +1234,7 @@ class IssueSyncer extends Base {
         // earlier move in the same pass must be visible to the issues planned after it. A move's other
         // effect — the issue's path — resolves to the same release either way. Re-planning per NEW bucket
         // is bounded by the release count, not the closed backlog; planning per closed active issue made
-        // this pass quadratic — ~35 minutes for zero moves on the Engine corpus (#403).
+        // this pass quadratic — ~35 minutes for zero moves on the Engine corpus.
         let planBuckets = null;
 
         const plan = () => planBuckets ??= this.#planBuckets(metadata, [], {inventory});

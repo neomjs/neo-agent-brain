@@ -1,5 +1,6 @@
 import {existsSync}                                from 'fs';
 import fs                                          from 'fs/promises';
+import matter                                      from 'gray-matter';
 import path                                        from 'path';
 import contentPath                                 from './contentPath.mjs';
 import pruneEmptyDirs                              from './pruneEmptyDirs.mjs';
@@ -56,22 +57,32 @@ export default async function reconcileActiveChunks(issueSyncConfig = {}, {repoS
         .filter(Boolean)
         .sort((a, b) => a.id - b.id || a.absPath.localeCompare(b.absPath));
 
-    // Dedup by id: a drifted tier can hold the same id in more than one chunk (a stale copy a prior
-    // sync left behind). Keep the first occurrence and unlink the rest — otherwise a duplicate
-    // consumes an ordinal slot and shifts every later item's chunk by one.
-    const unique  = [];
-    let   deduped = 0;
+    // Dedup by id: a drifted tier can hold the same id in more than one chunk, and a duplicate would
+    // consume an ordinal slot and shift every later item's chunk by one. The newest rendering
+    // survives: a delta sync never rewrites an unchanged item, so a stale survivor is permanent.
+    const copiesById = new Map(),
+          unique     = [];
+    let   deduped    = 0;
 
     for (const item of items) {
-        if (unique.length > 0 && unique[unique.length - 1].id === item.id) {
-            await fs.unlink(item.absPath);
-            deduped++;
-            // `[WARN]` prefix so the orchestrator's ProcessSupervisor classifies this child-stderr
-            // line as WARN, not its unprefixed-default ERROR (routine dedup ≠ error).
-            console.warn(`[WARN] [reconcileActiveChunks] removed duplicate ${filePrefix}${item.id}.md at ${item.absPath}`)
-        } else {
-            unique.push(item)
+        if (!copiesById.has(item.id)) copiesById.set(item.id, []);
+        copiesById.get(item.id).push(item)
+    }
+
+    for (const copies of copiesById.values()) {
+        const keep = copies.length > 1 ? await newestCopy(copies) : copies[0];
+
+        for (const copy of copies) {
+            if (copy !== keep) {
+                await fs.unlink(copy.absPath);
+                deduped++;
+                // `[WARN]` prefix so the orchestrator's ProcessSupervisor classifies this child-stderr
+                // line as WARN, not its unprefixed-default ERROR (routine dedup ≠ error).
+                console.warn(`[WARN] [reconcileActiveChunks] removed duplicate ${filePrefix}${copy.id}.md at ${copy.absPath}`)
+            }
         }
+
+        unique.push(keep)
     }
 
     const upsert = [];
@@ -104,4 +115,37 @@ export default async function reconcileActiveChunks(issueSyncConfig = {}, {repoS
     await pruneEmptyDirs(activeDir);
 
     return {type, total: unique.length, moved, deduped}
+}
+
+/**
+ * @summary Picks the copy whose frontmatter `updatedAt` is newest; equal or missing stamps keep the first.
+ *
+ * GitHub's `updatedAt` never decreases, so a stale rendering cannot outrank a fresh one.
+ * @param {Array<{absPath: String}>} copies Copies of one id, in path order
+ * @returns {Promise<{absPath: String}>}
+ */
+async function newestCopy(copies) {
+    let keep  = copies[0],
+        stamp = await readUpdatedAt(keep.absPath);
+
+    for (const copy of copies.slice(1)) {
+        const copyStamp = await readUpdatedAt(copy.absPath);
+
+        if (copyStamp > stamp) {
+            keep  = copy;
+            stamp = copyStamp
+        }
+    }
+
+    return keep
+}
+
+/**
+ * @param {String} absPath
+ * @returns {Promise<Number>} The frontmatter `updatedAt` in ms, or `-Infinity` when it is absent or unparseable
+ */
+async function readUpdatedAt(absPath) {
+    const time = new Date(matter(await fs.readFile(absPath, 'utf8')).data.updatedAt).getTime();
+
+    return Number.isNaN(time) ? -Infinity : time
 }
