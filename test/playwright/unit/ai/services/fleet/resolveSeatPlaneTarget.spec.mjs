@@ -19,7 +19,8 @@ const
 test.describe('resolveSeatPlaneTarget — a seat\'s memories live where its peers read them', () => {
     test('the contract still has families on both sides, so neither arm below is vacuous', () => {
         expect(REMOTE.length).toBeGreaterThan(0);
-        expect(LOCAL).toContain('antigravity');
+        expect(LOCAL).toContain('native-neo');
+        expect(REMOTE).toContain('antigravity');
     });
 
     test('every remote-capable family on a Fleet that serves a plane reaches that plane', () => {

@@ -378,15 +378,18 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
             id         : 'portable',
             harnessType: 'claude-desktop'
         }).mcpTarget).toEqual({kind: 'tenant', tenantId: 'tenant-a'});
+        expect(FleetRegistryService.configureAgent({
+            id: 'portable', harnessType: 'antigravity'
+        }).mcpTarget).toEqual({kind: 'tenant', tenantId: 'tenant-a'});
 
         const before = fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8');
 
         expect(() => FleetRegistryService.configureAgent({
             id         : 'portable',
-            harnessType: 'antigravity'
+            harnessType: 'native-neo'
         })).toThrow(/no proven secret-safe tenant MCP grammar/);
         expect(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).toBe(before);
-        expect(FleetRegistryService.getAgent('portable').harnessType).toBe('claude-desktop')
+        expect(FleetRegistryService.getAgent('portable').harnessType).toBe('antigravity')
     });
 
     test('unrepresentable declarations refuse before writing; Desktop GitHub rows are representable', () => {
@@ -516,7 +519,7 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
 
         expect(() => FleetRegistryService.defineAgent({
             githubUsername: 'unsupported-remote',
-            harnessType   : 'antigravity',
+            harnessType   : 'native-neo',
             mcpTarget     : {kind: 'tenant', tenantId: 'tenant-a'}
         })).toThrow(/no proven secret-safe tenant MCP grammar/)
     });

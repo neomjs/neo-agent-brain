@@ -110,3 +110,19 @@ test.describe('seatMemoryLayerTemplate — Codex home instruction memory', () =>
             .toThrow("'memoryDir' must be an absolute path")
     })
 });
+
+test.describe('seatMemoryLayerTemplate — Antigravity native Markdown memory', () => {
+    test('birth files describe only the native workspace GEMINI.md includes', () => {
+        const
+            index = renderMemoryIndexMd({harness: 'antigravity'}),
+            about = renderAboutThisLayerMd({harness: 'antigravity'});
+
+        expect(index).toContain('GEMINI.md');
+        expect(index).toContain('identity.md');
+        expect(about).toContain('GEMINI.md');
+        expect(about).toContain('@include');
+        expect(about).toContain('MEMORY.md');
+        expect(about).toContain('identity.md');
+        expect(`${index}\n${about}`).not.toMatch(/AGENTS\.md|opencode\.jsonc|config\.toml|PostCompact|17KB|24\.6KB|post-compact/i)
+    });
+});

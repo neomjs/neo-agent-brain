@@ -148,18 +148,24 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         expect(result.turns[0].thought).toBeUndefined();
     });
 
-    test('AC7a isolation: tenant B cannot see tenant A\'s recent turns', async () => {
+    test('AC7a isolation: under the private policy tenant B cannot see tenant A\'s recent turns; the default follows the deployment', async () => {
         await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'}, async () => {
             await MemoryService.addMemory({prompt: 'A-only prompt', response: 'A-only response', thought: 'A-only thought'});
         });
+        const readA = options => RequestContextService.run({userId: 'tenant-b', agentIdentityNodeId: '@agent-b'}, async () =>
+            MemoryService.queryRecentTurns({agentIdentity: '@agent-a', limit: 50, ...options}));
 
-        const bResult = await RequestContextService.run({userId: 'tenant-b', agentIdentityNodeId: '@agent-b'}, async () =>
-            MemoryService.queryRecentTurns({agentIdentity: '@agent-a', limit: 50})
-        );
+        // Tenant B's userId scope fail-closes under private, even when B explicitly asks for @agent-a's turns.
+        const isolated = await readA({memorySharing: 'private'});
+        expect(isolated.count).toBe(0);
 
-        // Tenant B's userId scope fail-closes — A's tenant-a-tagged rows are invisible even when
-        // B explicitly asks for @agent-a's turns.
-        expect(bResult.count).toBe(0);
+        // Without a policy, a public-summary read of another identity follows the deployment default (team
+        // here): A's public summaries only, as with an explicit team read.
+        const shared = await readA({});
+        expect(shared.count).toBeGreaterThan(0);
+        expect(shared.memorySharing).toEqual({policy: 'team', clamped: false});
+        expect(JSON.stringify(shared)).not.toContain('A-only thought');
+        expect(shared.turns.every(turn => turn.prompt === undefined && turn.response === undefined && turn.thought === undefined)).toBe(true);
     });
 
     test('AC7b no-scope fail-closed: no resolvable userId returns EMPTY, not all', async () => {
@@ -1153,6 +1159,48 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         expect(shared.turns.every(turn => turn.prompt === undefined && turn.response === undefined && turn.thought === undefined)).toBe(true);
     });
 
+    test('another identity\'s summaries follow the deployment default; an empty owner-scoped page carries a hint, never a scope refusal (#1019)', async () => {
+        const id   = 'hint-peer-1019', sharedId = 'hint-tenant-mate-1019', identity = '@hint-peer-1019';
+        const seed = (nodeId, agentIdentity, userId) => GraphService.upsertNode({id: nodeId, type: 'AGENT_MEMORY', name: nodeId, description: nodeId,
+            semanticVectorId: nodeId, properties: {agentIdentity, userId, sessionId: 'hint-1019', timestamp: '2032-01-01T00:00:00.000Z', miniSummary: nodeId}});
+        seed(id, identity, 'hint-peer-tenant');
+        seed(sharedId, '@hint-tenant-mate-1019', 'hint-caller-tenant');
+        const read = options => RequestContextService.run({userId: 'hint-caller-tenant', agentIdentityNodeId: '@hint-caller-1019'}, () =>
+            MemoryService.queryRecentTurns({limit: 5, ...options}));
+        try {
+            // No policy given: the public-summary read follows the deployment's default (team in this suite).
+            const foreignDefault = await read({agentIdentity: identity});
+            expect(foreignDefault.turns.map(turn => turn.id)).toEqual([id]);
+            expect(foreignDefault.memorySharing).toEqual({policy: 'team', clamped: false});
+            expect(foreignDefault.hint).toBeUndefined();
+
+            const foreignPrivate = await read({agentIdentity: identity, memorySharing: 'private'});
+            expect(foreignPrivate.count).toBe(0);
+            expect(foreignPrivate.scope).toBeUndefined();
+            expect(foreignPrivate.hint).toContain('private reads only rows owned by this caller;');
+            expect(foreignPrivate.hint).toContain("memorySharing 'team'");
+
+            const foreignLegacy = await read({agentIdentity: identity, memorySharing: 'legacy'});
+            expect(foreignLegacy.count).toBe(0);
+            expect(foreignLegacy.hint).toContain('legacy reads only rows owned by this caller, shared or untagged;');
+
+            const foreignTeam = await read({agentIdentity: identity, memorySharing: 'team'});
+            expect(foreignTeam.turns.map(turn => turn.id)).toEqual([id]);
+            expect(foreignTeam.hint).toBeUndefined();
+
+            // A tenant-mate's rows share the caller's userId, so the private page is real and needs no hint.
+            const tenantMate = await read({agentIdentity: '@hint-tenant-mate-1019', memorySharing: 'private'});
+            expect(tenantMate.turns.map(turn => turn.id)).toEqual([sharedId]);
+            expect(tenantMate.hint).toBeUndefined();
+
+            const own = await read({});
+            expect(own.count).toBe(0);
+            expect(own.hint).toBeUndefined();
+        } finally {
+            for (const nodeId of [id, sharedId]) GraphService.db.storage.db.prepare('DELETE FROM Nodes WHERE id = ?').run(nodeId);
+        }
+    });
+
     test('a widened full/private request refuses before SQL, WAL or content reads', async () => {
         const sqlite  = GraphService.db.storage.db, prepare = sqlite.prepare;
         const pending = MemoryService._readPendingWalRecencyRows, hydrate = MemoryService._hydrateRecentTurnSummaries;
@@ -1350,16 +1398,19 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         expect((await read(tombstoned)).turns).toEqual([]);
     });
 
-    test('explicit graph unavailability is an error, while default recovery keeps its empty fallback', async () => {
+    test('graph unavailability fails a shared read, explicit or implicit, while default recovery keeps its empty fallback', async () => {
         const db = GraphService.db;
         try {
             GraphService.db = null;
             const read = options => RequestContextService.run({userId: 'sharing-caller', agentIdentityNodeId: '@sharing-caller'}, () =>
-                MemoryService.queryRecentTurns({agentIdentity: '@sharing-peer', ...options}));
+                MemoryService.queryRecentTurns(options));
             expect(await read({})).toMatchObject({count: 0, turns: [], nextCursor: null});
-            const explicit = await read({memorySharing: 'team'});
-            expect(explicit).toMatchObject({code: 'RECENT_TURNS_ERROR'});
-            expect(explicit.message).toContain('unavailable');
+            // Another identity's summaries are a shared read on this team deployment, with or without the parameter.
+            for (const options of [{agentIdentity: '@sharing-peer', memorySharing: 'team'}, {agentIdentity: '@sharing-peer'}]) {
+                const shared = await read(options);
+                expect(shared).toMatchObject({code: 'RECENT_TURNS_ERROR'});
+                expect(shared.message).toContain('unavailable');
+            }
         } finally {
             GraphService.db = db;
         }
@@ -1377,14 +1428,18 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
             return readdir.apply(fs, args);
         };
         try {
-            const read = options => RequestContextService.run({userId: 'sharing-caller', agentIdentityNodeId: '@sharing-caller'}, () =>
+            const read = (agentIdentityNodeId, options) => RequestContextService.run({userId: 'sharing-caller', agentIdentityNodeId}, () =>
                 MemoryService.queryRecentTurns({agentIdentity: '@availability-wal-741', ...options}));
-            const defaultRead = await read({});
-            expect(defaultRead.turns.some(turn => turn.id === 'availability-own-741')).toBe(true);
-            const shared = await read({memorySharing: 'team'});
-            expect(shared).toMatchObject({code: 'RECENT_TURNS_ERROR'});
-            expect(shared.message).toContain('WAL unreadable');
-            expect(shared.turns).toBeUndefined();
+            // Recovery (the caller's own identity) keeps its graph rows when the WAL is unreadable.
+            const recovery = await read('@availability-wal-741', {});
+            expect(recovery.turns.some(turn => turn.id === 'availability-own-741')).toBe(true);
+            // A shared read, explicit or (for another identity on a team deployment) implicit, fails instead.
+            for (const options of [{memorySharing: 'team'}, {}]) {
+                const shared = await read('@sharing-caller', options);
+                expect(shared).toMatchObject({code: 'RECENT_TURNS_ERROR'});
+                expect(shared.message).toContain('WAL unreadable');
+                expect(shared.turns).toBeUndefined();
+            }
         } finally {
             fs.readdir = readdir;
         }

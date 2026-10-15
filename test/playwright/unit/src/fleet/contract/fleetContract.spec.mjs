@@ -85,7 +85,7 @@ test.describe('installed Fleet client contract', () => {
     });
 
     test('public harness capabilities preserve tenant support without exposing target policy', () => {
-        const supported = ['codex', 'codex-desktop', 'claude-code', 'claude-desktop', 'opencode', 'kimi-code'];
+        const supported = ['antigravity', 'codex', 'codex-desktop', 'claude-code', 'claude-desktop', 'opencode', 'kimi-code'];
         for (const entry of contract.listHarnessTypes()) {
             expect(entry.tenantMcpTarget).toBe(supported.includes(entry.type));
             expect(contract.supportsTenantMcpTarget(entry.type)).toBe(entry.tenantMcpTarget);

@@ -25,7 +25,10 @@
     "the shell, a written file) whose input carries the seat's own harness session id. Memory Core is our",
     "own store and may hold that id, so its tools stay off the matcher. It is anchored because Claude tests",
     "a matcher regex against the tool name unanchored. The hook must stay sync, because a pre-tool",
-    "decision cannot run in the background; the 2 s timeout bounds it."
+    "decision cannot run in the background; the 2 s timeout bounds it.",
+    "seatModelGuardHook is ours: on a Desktop seat whose account picked another model family, prompt blocks",
+    "(exit 2) and stop records the family the seat ran. Both arms are local file reads, so 2 s and",
+    "5 s bound them; a timeout lets the prompt run."
   ],
   "events": {
     "PreToolUse": [
@@ -61,6 +64,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/seatModelGuardHook.mjs\" prompt",
+            "timeout": 2
+          },
+          {
+            "type": "command",
             "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/turnPresenceHook.mjs\" start",
             "timeout": 2
           },
@@ -90,6 +98,11 @@
             "type": "command",
             "command": "NEO_LANE_STATE_ENFORCE=1 /usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/laneStateStopHook.mjs\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/seatModelGuardHook.mjs\" stop",
+            "timeout": 5
           },
           {
             "type": "command",

@@ -2,6 +2,7 @@
 
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {StdioServerTransport}          from '@modelcontextprotocol/sdk/server/stdio.js';
+import {ErrorCode}                     from '@modelcontextprotocol/sdk/types.js';
 import {Command}                       from 'commander';
 import {pathToFileURL}                 from 'node:url';
 
@@ -83,7 +84,10 @@ export function getStartupFailureMessage(error) {
 }
 
 /**
- * @summary Wire two MCP SDK transports without terminating either protocol endpoint.
+ * @summary Wire two MCP SDK transports, declining unsupported discovery before an HTTP session exists.
+ * A stdio client may probe `server/discover` before initialization. This bridge does not implement
+ * discovery: answer MethodNotFound locally so the client can initialize instead of losing its
+ * connection to the HTTP transport's pre-session refusal. Initialized traffic remains transparent.
  * Initialization responses propagate the negotiated protocol version into the HTTP transport;
  * either close or error closes both sides exactly once.
  * @param {Object} options
@@ -100,6 +104,7 @@ export async function bridgeTransports({
     let
         closePromise          = null,
         initializeRequestId,
+        initialized           = false,
         terminalErrorReported = false;
 
     const close = ({terminate=true} = {}) => {
@@ -138,6 +143,17 @@ export async function bridgeTransports({
     };
 
     localTransport.onmessage = message => {
+        if (!initialized && message.method === 'server/discover' && Object.hasOwn(message, 'id')) {
+            Promise.resolve()
+                .then(() => localTransport.send({
+                    jsonrpc: '2.0',
+                    id     : message.id,
+                    error  : {code: ErrorCode.MethodNotFound, message: 'Method not found'}
+                }))
+                .catch(fail);
+            return
+        }
+
         if (message.method === 'initialize' && Object.hasOwn(message, 'id')) {
             initializeRequestId = message.id
         }
@@ -157,6 +173,7 @@ export async function bridgeTransports({
             initializeRequestId = undefined;
 
             if (typeof message.result?.protocolVersion === 'string') {
+                initialized = true;
                 remoteTransport.setProtocolVersion?.(message.result.protocolVersion)
             }
         }

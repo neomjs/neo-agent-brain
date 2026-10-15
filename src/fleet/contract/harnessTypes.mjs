@@ -24,7 +24,7 @@ export const HARNESS_TYPES = Object.freeze([
     Object.freeze({type: 'claude-desktop', label: 'Claude',        tenantMcpTarget: true,  modelFamily: 'claude', product: 'claude',      runsAs: 'app', seatSettings: null, seatSettingOverrides: Object.freeze({reasoningEffort: 'claude-env'})}),
     Object.freeze({type: 'opencode',       label: 'OpenCode',      tenantMcpTarget: true,  modelFamily: null,     product: 'opencode',    runsAs: 'cli', seatSettings: null}),
     Object.freeze({type: 'kimi-code',      label: 'Kimi Code',     tenantMcpTarget: true,  modelFamily: 'kimi',   product: 'kimi-code',   runsAs: 'cli', seatSettings: null}),
-    Object.freeze({type: 'antigravity',    label: 'Antigravity',   tenantMcpTarget: false, modelFamily: 'gemini', product: 'antigravity', runsAs: 'app', seatSettings: null}),
+    Object.freeze({type: 'antigravity',    label: 'Antigravity',   tenantMcpTarget: true,  modelFamily: 'gemini', product: 'antigravity', runsAs: 'app', seatSettings: null}),
     Object.freeze({type: 'native-neo',     label: 'Native',        tenantMcpTarget: false, modelFamily: null,     product: 'native-neo',  runsAs: null,  seatSettings: null})
 ]);
 

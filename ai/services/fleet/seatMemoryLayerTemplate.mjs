@@ -1,10 +1,11 @@
 import path from 'node:path';
 
 /**
- * The seat memory-layer SSOT: markdown scaffolds and supported loading descriptions. Kimi Code and
- * OpenCode use the Grace-pattern hot index and harness-specific loading mechanisms. Codex uses the
- * same seat-owned files, but Fleet projects the two boot files inline into home `AGENTS.md`; no
- * Codex-specific byte cap or post-compaction reload is claimed here.
+ * The seat memory-layer SSOT: Markdown scaffolds and supported loading descriptions. Antigravity
+ * uses native workspace `GEMINI.md` includes; Kimi Code and OpenCode use the Grace-pattern hot index
+ * and harness-specific loading mechanisms. Codex uses the same seat-owned files, but Fleet projects
+ * the two boot files inline into home `AGENTS.md`; no Codex-specific byte cap or post-compaction reload
+ * is claimed here.
  *
  * Harness loading mechanisms:
  *
@@ -36,7 +37,7 @@ export const MEMORY_LAYER_BOOT_FILES = Object.freeze(['MEMORY.md', 'identity.md'
  * The harnesses this template knows how to describe a load mechanism for.
  * @type {ReadonlyArray<String>}
  */
-const HARNESSES = Object.freeze(['codex', 'codex-desktop', 'kimi-code', 'opencode']);
+const HARNESSES = Object.freeze(['antigravity', 'codex', 'codex-desktop', 'kimi-code', 'opencode']);
 
 /**
  * Render the seat's `MEMORY.md`. Kimi/OpenCode receive the capped hot-index skeleton; Codex gets a
@@ -44,7 +45,7 @@ const HARNESSES = Object.freeze(['codex', 'codex-desktop', 'kimi-code', 'opencod
  * near-empty at birth — the index ACCRETES from the seat's own public record (weak-spots are
  * per-seat: another seat's mistakes are not this seat's content).
  * @param {Object} options
- * @param {String} options.harness 'codex' | 'codex-desktop' | 'kimi-code' | 'opencode'
+ * @param {String} options.harness 'antigravity' | 'codex' | 'codex-desktop' | 'kimi-code' | 'opencode'
  * @returns {String}
  */
 export function renderMemoryIndexMd({harness} = {}) {
@@ -61,6 +62,24 @@ export function renderMemoryIndexMd({harness} = {}) {
             '## Identity & loading',
             '- [Identity](identity.md) — the self-story; filled at the naming gate, bearer-authored only.',
             '- [About this layer](about-this-layer.md) — how the home instruction projection loads these files.',
+            '',
+            '## Working memory',
+            '- (append durable, record-backed lessons and current lane anchors as they become useful)',
+            ''
+        ].join('\n')
+    }
+
+    if (harness === 'antigravity') {
+        return [
+            '# Seat memory index',
+            '',
+            '> This is the seat-owned Markdown memory. The native workspace `GEMINI.md` includes this index',
+            '> and the bearer-authored identity file from the seat memory directory.',
+            '> The Memory Core remains the provenance-bearing archive for turn records and deeper retrieval.',
+            '',
+            '## Identity & loading',
+            '- [Identity](identity.md) — the self-story; filled at the naming gate, bearer-authored only.',
+            '- [About this layer](about-this-layer.md) — how native workspace includes load these files.',
             '',
             '## Working memory',
             '- (append durable, record-backed lessons and current lane anchors as they become useful)',
@@ -131,6 +150,25 @@ export function renderAboutThisLayerMd({harness} = {}) {
             'so Fleet refuses to claim a memory projection while that override is present. Fleet refreshes',
             'the projection during Start; an already-running session is not updated, and post-compaction',
             'reload has not been verified.',
+            '',
+            '**Rules of the layer:**',
+            '- `identity.md` is the bearer\'s self-story; nobody else writes it.',
+            '- Keep useful working knowledge in these files and cite durable claims to their source record.',
+            '- Use the Memory Core for provenance-bearing turn records and deeper retrieval.',
+            ''
+        ].join('\n')
+    }
+
+    if (harness === 'antigravity') {
+        return [
+            '# About this layer',
+            '',
+            '**What this is:** the seat\'s persistent Markdown memory. `MEMORY.md` is the working index,',
+            '`identity.md` is the bearer-authored self-story, and the Memory Core holds provenance-bearing',
+            'turn records and deeper retrieval.',
+            '',
+            '**How it loads (Antigravity):** the native workspace `GEMINI.md` uses `@include` references',
+            'to this seat\'s `MEMORY.md` and `identity.md` in its memory directory.',
             '',
             '**Rules of the layer:**',
             '- `identity.md` is the bearer\'s self-story; nobody else writes it.',

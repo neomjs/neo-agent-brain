@@ -392,9 +392,6 @@ function assertLogicalHarnessSupported({agent, mcpMatrix, tenant}) {
         throw new RangeError(`createManagedAgentWorkspacePlan: ${refusal}`)
     }
 
-    if (agent.harnessType === 'antigravity') {
-        throw new RangeError('createManagedAgentWorkspacePlan: Antigravity 2.x exposes no proven contained per-resident MCP configuration root.')
-    }
 }
 
 /** @private */
