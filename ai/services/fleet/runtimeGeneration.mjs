@@ -1,6 +1,6 @@
 import {createHash}                from 'node:crypto';
-import fsSync, {createReadStream}  from 'node:fs';
-import fs                          from 'node:fs/promises';
+import nodeFs                      from 'node:fs';
+import {createRequire}             from 'node:module';
 import path                        from 'node:path';
 import {isDeepStrictEqual}         from 'node:util';
 import {LAUNCH_ADMISSION_PROTOCOL} from './mcpLaunchAdmission.mjs';
@@ -21,6 +21,11 @@ export const MAX_PACKAGE_SLOT_BYTES = 262144;
 const RUNTIME_ARGUMENT = '--neo-runtime-generation=';
 
 const RECORD = RUNTIME_GENERATION_RECORD, PAYLOAD = RUNTIME_GENERATION_PAYLOAD;
+
+// The manifest describes physical package bytes. Electron's ASAR view synthesizes inode values
+// and turns archives into directories; retain the original filesystem without a global noAsar toggle.
+const fsSync = process.versions.electron ? createRequire(import.meta.url)('original-fs') : nodeFs;
+const fs     = fsSync.promises, {createReadStream} = fsSync;
 
 /** @summary Creates a named refusal without turning an unknown binding into a fallback. */
 function refusal(code, detail, cause) {
