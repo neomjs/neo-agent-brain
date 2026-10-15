@@ -1,7 +1,7 @@
-import {EventEmitter} from 'node:events';
+import {EventEmitter}             from 'node:events';
 import {constants as fsConstants} from 'node:fs';
-import {pathToFileURL} from 'node:url';
-import {expect, test}  from '@playwright/test';
+import {pathToFileURL}            from 'node:url';
+import {expect, test}             from '@playwright/test';
 import {
     AntigravityProjectBindingRefusal,
     bindAntigravityProject,
@@ -19,7 +19,7 @@ const
     PRODUCT  = 'Chrome/128.0.0.0';
 
 const
-    projectUri = pathToFileURL(PROJECT.root).href,
+    projectUri    = pathToFileURL(PROJECT.root).href,
     projectRecord = {id: PROJECT.id, name: PROJECT.name, folderUris: [projectUri]};
 
 /** @summary A hermetic DevTools peer that answers only the CDP methods exercised by the binding. */
@@ -72,9 +72,9 @@ class FakeWebSocket extends EventEmitter {
             case 'Page.navigate':
                 if (this.behavior.navigationError) {
                     queueMicrotask(() => this.emit('message', Buffer.from(JSON.stringify({
-                        id: message.id,
+                        id       : message.id,
                         sessionId: message.sessionId,
-                        error: {message: 'navigation refused'}
+                        error    : {message: 'navigation refused'}
                     }))));
                     return
                 }
@@ -86,8 +86,8 @@ class FakeWebSocket extends EventEmitter {
             case 'Accessibility.getFullAXTree':
                 result = {nodes: this.behavior.axNodes ?? [{
                     ignored: false,
-                    role: {value: 'button'},
-                    name: {value: this.behavior.marker ?? `Select project, current: ${PROJECT.name}`}
+                    role   : {value: 'button'},
+                    name   : {value: this.behavior.marker ?? `Select project, current: ${PROJECT.name}`}
                 }]};
                 if (this.behavior.urlAfterMarker) this.currentUrl = this.behavior.urlAfterMarker;
                 break;
@@ -97,9 +97,9 @@ class FakeWebSocket extends EventEmitter {
             this.emit('message', Buffer.from(JSON.stringify({id: message.id, sessionId: message.sessionId, result})));
             if (message.method === 'Page.navigate' && !this.behavior.suppressLoadEvent) {
                 this.emit('message', Buffer.from(JSON.stringify({
-                    method: 'Page.loadEventFired',
+                    method   : 'Page.loadEventFired',
                     sessionId: message.sessionId,
-                    params: {timestamp: 1}
+                    params   : {timestamp: 1}
                 })))
             }
         })
@@ -120,8 +120,8 @@ class FakeWebSocket extends EventEmitter {
 
 /** @summary Bind fake profile/filesystem inputs to the same strict proof callback shape as Start. */
 function harness(options = {}) {
-    const behavior = {sockets: [], ...options.behavior};
-    const observed = {portStatReads:0, portReads:0, listenerChecks:0, listenerOwners:[]};
+    const behavior   = {sockets: [], ...options.behavior};
+    const observed   = {portStatReads:0, portReads:0, listenerChecks:0, listenerOwners:[]};
     const fileSystem = {
         lstat: async file => file === PROFILE
             ? {isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false}
@@ -159,18 +159,18 @@ function harness(options = {}) {
                 processTreeVerified: true,
                 profileDirectory   : input.profileDirectory,
                 port               : input.port,
-                browserPath         : input.browserPath,
-                pid                 : input.expectedProcess.pid,
-                startedAt           : input.expectedProcess.startedAt
+                browserPath        : input.browserPath,
+                pid                : input.expectedProcess.pid,
+                startedAt          : input.expectedProcess.startedAt
             }
     });
     const verifyNativeCapability = options.verifyNativeCapability ?? (async input => ({
-        verified          : true,
-        projectId         : input.project.id,
-        projectName       : input.project.name,
-        projectRoot       : input.project.root,
-        browserProduct    : input.browserProduct,
-        capabilityVersion : '2.23-section-route'
+        verified         : true,
+        projectId        : input.project.id,
+        projectName      : input.project.name,
+        projectRoot      : input.project.root,
+        browserProduct   : input.browserProduct,
+        capabilityVersion: '2.23-section-route'
     }));
 
     return {
@@ -178,13 +178,13 @@ function harness(options = {}) {
         observed,
         run: overrides => bindAntigravityProject({
             profileDirectory: PROFILE,
-            project: PROJECT,
-            expectedProcess: OWNER,
+            project         : PROJECT,
+            expectedProcess : OWNER,
             readRegisteredProject,
             verifyProfileListener,
             verifyNativeCapability,
             fileSystem,
-            WebSocketCtor: class extends FakeWebSocket {
+            WebSocketCtor   : class extends FakeWebSocket {
                 constructor(url) { super(url, behavior) }
             },
             timeoutMs: 500,
@@ -198,16 +198,16 @@ test.describe('bindAntigravityProject', () => {
         const fixture = harness(), result = await fixture.run(), socket = fixture.behavior.sockets[0];
 
         expect(result).toEqual({
-            browserProduct: PRODUCT,
-            capabilityVersion: '2.23-section-route',
-            projectId: PROJECT.id,
-            projectRoot: PROJECT.root,
+            browserProduct        : PRODUCT,
+            capabilityVersion     : '2.23-section-route',
+            projectId             : PROJECT.id,
+            projectRoot           : PROJECT.root,
             registeredProjectProof: {
-                verified: true,
+                verified        : true,
                 profileDirectory: PROFILE,
-                projectId: PROJECT.id,
-                projectName: PROJECT.name,
-                projectRoot: PROJECT.root
+                projectId       : PROJECT.id,
+                projectName     : PROJECT.name,
+                projectRoot     : PROJECT.root
             },
             rendererUrl: 'https://127.0.0.1:4567/?section=project-a'
         });
@@ -259,20 +259,82 @@ test.describe('bindAntigravityProject', () => {
         expect(fixture.behavior.sockets).toHaveLength(0)
     });
 
-    test('Start cancellation during profile readiness stops polling before a socket is opened', async () => {
+    test('reports the last observed refusal when the deadline lands on the final inter-poll sleep or an in-flight poll step', async () => {
+        const makeFinalSleepClock = isSecondPollComplete => {
+            let sleepStartedAt = null;
+
+            return () => {
+                if (!isSecondPollComplete()) return 1_000;
+                if (sleepStartedAt === null) {
+                    sleepStartedAt = Date.now();
+                    return 1_160
+                }
+                // A synchronous second read (such as a competing deadline timer) sees 15 ms remaining
+                // against the 20 ms sleep; once the sleep timer fires, the clock reaches the 1_180 deadline.
+                return Date.now() - sleepStartedAt < 10 ? 1_165 : 1_180
+            }
+        };
+
+        const missingPort = harness({portFileMissingReads: 10});
+
+        await expect(missingPort.run({
+            timeoutMs: 180,
+            now      : makeFinalSleepClock(() => missingPort.observed.portStatReads >= 2)
+        })).rejects.toMatchObject({code: 'stale-endpoint'});
+        expect(missingPort.observed.portStatReads).toBe(2);
+
+        const unreadyListener = harness({listenerUnreadyReads: 10});
+
+        await expect(unreadyListener.run({
+            timeoutMs: 180,
+            now      : makeFinalSleepClock(() => unreadyListener.observed.listenerChecks >= 2)
+        })).rejects.toMatchObject({code: 'listener-unproven'});
+        expect(unreadyListener.observed.listenerChecks).toBe(2);
+
+        let   inFlightClock = 1_000;
+        const stuckStep     = harness({
+            verifyProfileListener: async () => {
+                if (stuckStep.observed.portReads === 1) return {verified: false};
+                inFlightClock = 1_180;
+                return new Promise(() => {})
+            }
+        });
+
+        await expect(stuckStep.run({
+            timeoutMs: 180,
+            now      : () => inFlightClock
+        })).rejects.toMatchObject({code: 'listener-unproven'})
+    });
+
+    test('Start cancellation during profile readiness or the inter-poll sleep stops polling before a socket is opened', async () => {
         const controller = new AbortController(),
-              fixture = harness({portFileMissingReads:10, abortOnPortStat:controller});
+              fixture    = harness({portFileMissingReads:10, abortOnPortStat:controller});
 
         await expect(fixture.run({signal:controller.signal, timeoutMs:1000})).rejects.toMatchObject({code:'canceled'});
         expect(fixture.observed.portStatReads).toBe(1);
-        expect(fixture.behavior.sockets).toHaveLength(0)
+        expect(fixture.behavior.sockets).toHaveLength(0);
+
+        const sleepAbortController = new AbortController(),
+              sleepFixture         = harness({
+                  portFileMissingReads : 10,
+                  verifyProfileListener: async () => {
+                      setTimeout(() => sleepAbortController.abort(), 10);
+                      return {verified: false}
+                  }
+              });
+        sleepFixture.observed.portStatReads = 10;
+
+        await expect(sleepFixture.run({signal: sleepAbortController.signal, timeoutMs: 1000}))
+            .rejects.toMatchObject({code: 'canceled'});
+        expect(sleepFixture.observed.portReads).toBe(1);
+        expect(sleepFixture.behavior.sockets).toHaveLength(0)
     });
 
     test('rejects a listener whose PID does not match the lifecycle-owned process birth', async () => {
         const fixture = harness({verifyProfileListener: async input => ({
-            verified: true, processTreeVerified: true,
+            verified        : true, processTreeVerified: true,
             profileDirectory: input.profileDirectory, port: input.port, browserPath: input.browserPath,
-            pid: input.expectedProcess.pid + 1, startedAt: input.expectedProcess.startedAt
+            pid             : input.expectedProcess.pid + 1, startedAt: input.expectedProcess.startedAt
         })});
 
         await expect(fixture.run()).rejects.toMatchObject({code: 'listener-pid-mismatch'});
@@ -281,10 +343,10 @@ test.describe('bindAntigravityProject', () => {
 
     test('rejects an endpoint receipt for another browser id even when its port matches', async () => {
         const fixture = harness({verifyProfileListener: async input => ({
-            verified: true, processTreeVerified: true,
+            verified        : true, processTreeVerified: true,
             profileDirectory: input.profileDirectory, port: input.port,
-            browserPath: '/devtools/browser/another-browser',
-            pid: input.expectedProcess.pid, startedAt: input.expectedProcess.startedAt
+            browserPath     : '/devtools/browser/another-browser',
+            pid             : input.expectedProcess.pid, startedAt: input.expectedProcess.startedAt
         })});
 
         await expect(fixture.run()).rejects.toMatchObject({code: 'stale-endpoint'});
@@ -300,11 +362,11 @@ test.describe('bindAntigravityProject', () => {
 
     test('rejects project metadata that no longer binds the id to the registered repository root', async () => {
         const fixture = harness({verifyNativeCapability: async input => ({
-            verified: true,
-            projectId: input.project.id,
-            projectName: input.project.name,
-            projectRoot: '/private/tmp/another-repository',
-            browserProduct: input.browserProduct,
+            verified         : true,
+            projectId        : input.project.id,
+            projectName      : input.project.name,
+            projectRoot      : '/private/tmp/another-repository',
+            browserProduct   : input.browserProduct,
             capabilityVersion: '2.23-section-route'
         })});
 
@@ -331,7 +393,7 @@ test.describe('bindAntigravityProject', () => {
 
     test('cancellation during target discovery closes the socket and refuses the operation', async () => {
         const controller = new AbortController(),
-              fixture = harness({behavior: {abortOn: 'Target.getTargets', abortController: controller}});
+              fixture    = harness({behavior: {abortOn: 'Target.getTargets', abortController: controller}});
 
         await expect(fixture.run({signal: controller.signal})).rejects.toBeInstanceOf(AntigravityProjectBindingRefusal);
         await expect(fixture.run({signal: AbortSignal.abort()})).rejects.toMatchObject({code: 'canceled'});
@@ -340,7 +402,7 @@ test.describe('bindAntigravityProject', () => {
 
     test('cancellation before socket open terminates the client and clears all listeners', async () => {
         const controller = new AbortController(),
-              fixture = harness({behavior: {neverOpen: true, abortBeforeOpenController: controller}});
+              fixture    = harness({behavior: {neverOpen: true, abortBeforeOpenController: controller}});
 
         await expect(fixture.run({signal: controller.signal})).rejects.toMatchObject({code: 'canceled'});
 
@@ -378,8 +440,8 @@ test.describe('bindAntigravityProject', () => {
 
     test('an accepted future build still refuses route mismatch and a missing project-selector marker', async () => {
         const runtime = classifyAntigravityRuntimeFingerprint({
-            platform: 'darwin', architecture: 'arm64', bundleId: 'com.google.antigravity',
-            shortVersion: '9.0.0', buildVersion: 'future-build',
+            platform     : 'darwin', architecture: 'arm64', bundleId: 'com.google.antigravity',
+            shortVersion : '9.0.0', buildVersion: 'future-build',
             appAsarSha256: 'c'.repeat(64), languageServerSha256: 'd'.repeat(64)
         });
         expect(runtime).toEqual({available: true, reason: null});
@@ -398,12 +460,12 @@ test.describe('bindAntigravityProject', () => {
 
 test.describe('proveRegisteredAntigravityProject', () => {
     const options = overrides => ({
-        profileDirectory: PROFILE,
-        projectId: PROJECT.id,
-        projectName: PROJECT.name,
-        projectRoot: PROJECT.root,
+        profileDirectory     : PROFILE,
+        projectId            : PROJECT.id,
+        projectName          : PROJECT.name,
+        projectRoot          : PROJECT.root,
         readRegisteredProject: async () => projectRecord,
-        fileSystem: {
+        fileSystem           : {
             lstat: async file => file === PROFILE || file === PROJECT.root
                 ? {isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false}
                 : Object.assign(new Error('missing fixture'), {code: 'ENOENT'}),
@@ -417,11 +479,11 @@ test.describe('proveRegisteredAntigravityProject', () => {
 
     test('binds the exact profile, project ID/name, and one real folder root', async () => {
         await expect(proveRegisteredAntigravityProject(options())).resolves.toEqual({
-            verified: true,
+            verified        : true,
             profileDirectory: PROFILE,
-            projectId: PROJECT.id,
-            projectName: PROJECT.name,
-            projectRoot: PROJECT.root
+            projectId       : PROJECT.id,
+            projectName     : PROJECT.name,
+            projectRoot     : PROJECT.root
         })
     });
 
@@ -432,7 +494,7 @@ test.describe('proveRegisteredAntigravityProject', () => {
     });
 
     test('rejects a different registered ID or display name', async () => {
-        const wrongId = options({readRegisteredProject: async () => ({...projectRecord, id: 'other'})}),
+        const wrongId   = options({readRegisteredProject: async () => ({...projectRecord, id: 'other'})}),
               wrongName = options({readRegisteredProject: async () => ({...projectRecord, name: 'Other'})});
 
         await expect(proveRegisteredAntigravityProject(wrongId)).rejects.toMatchObject({code: 'project-registry-mismatch'});
@@ -441,7 +503,7 @@ test.describe('proveRegisteredAntigravityProject', () => {
 
     test('rejects multiple folders and a folder URI outside the exact checkout', async () => {
         const multiple = options({readRegisteredProject: async () => ({...projectRecord, folderUris: [projectUri, 'file:///private/tmp/foreign']})}),
-              foreign = options({readRegisteredProject: async () => ({...projectRecord, folderUris: ['file:///private/tmp/foreign']})});
+              foreign  = options({readRegisteredProject: async () => ({...projectRecord, folderUris: ['file:///private/tmp/foreign']})});
 
         await expect(proveRegisteredAntigravityProject(multiple)).rejects.toMatchObject({code: 'project-registry-mismatch'});
         await expect(proveRegisteredAntigravityProject(foreign)).rejects.toMatchObject({code: 'project-folder-mismatch'})
@@ -460,14 +522,14 @@ test.describe('proveRegisteredAntigravityProject', () => {
 
     test('reads only the explicit UUID project file and returns binding fields without touching grants/settings', async () => {
         const registryDirectory = '/private/tmp/antigravity-project-binding/profile/config/projects',
-              projectId = '154e7ad7-ab8c-4445-bd6b-9ac6bdddcd0f',
-              document = {
-                  id: projectId,
-                  name: PROJECT.name,
+              projectId         = '154e7ad7-ab8c-4445-bd6b-9ac6bdddcd0f',
+              document          = {
+                  id              : projectId,
+                  name            : PROJECT.name,
                   projectResources: {resources: [{gitFolder: {folderUri: projectUri}}]},
                   permissionGrants: {permissionGrants: {allow: ['mcp(sensitive-fixture/*)']}},
-                  settings: {opaque: true},
-                  isWorkspaceOnly: false
+                  settings        : {opaque: true},
+                  isWorkspaceOnly : false
               },
               opened = [],
               fileSystem = {
@@ -475,19 +537,19 @@ test.describe('proveRegisteredAntigravityProject', () => {
                       ? {isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false}
                       : Object.assign(new Error('missing fixture'), {code: 'ENOENT'}),
                   realpath: async file => file,
-                  open: async (file, flags) => {
+                  open    : async (file, flags) => {
                       opened.push({file, flags});
                       return {
-                          stat: async () => ({isFile: () => true, size: 512}),
+                          stat    : async () => ({isFile: () => true, size: 512}),
                           readFile: async () => JSON.stringify(document),
-                          close: async () => {}
+                          close   : async () => {}
                       }
                   }
               };
 
         await expect(readAntigravityProjectRecord({registryDirectory, projectId, fileSystem})).resolves.toEqual({
-            id: projectId,
-            name: PROJECT.name,
+            id        : projectId,
+            name      : PROJECT.name,
             folderUris: [projectUri]
         });
         expect(opened).toHaveLength(1);
@@ -497,15 +559,15 @@ test.describe('proveRegisteredAntigravityProject', () => {
 
     test('refuses unsafe IDs and unknown or multiple native resource records', async () => {
         const registryDirectory = '/private/tmp/antigravity-project-binding/profile/config/projects',
-              projectId = '154e7ad7-ab8c-4445-bd6b-9ac6bdddcd0f',
-              base = {id: projectId, name: PROJECT.name, projectResources: {resources: [{folderUri: projectUri}]}},
-              makeFs = document => ({
-                  lstat: async () => ({isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false}),
+              projectId         = '154e7ad7-ab8c-4445-bd6b-9ac6bdddcd0f',
+              base              = {id: projectId, name: PROJECT.name, projectResources: {resources: [{folderUri: projectUri}]}},
+              makeFs            = document => ({
+                  lstat   : async () => ({isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false}),
                   realpath: async file => file,
-                  open: async () => ({
-                      stat: async () => ({isFile: () => true, size: 512}),
+                  open    : async () => ({
+                      stat    : async () => ({isFile: () => true, size: 512}),
                       readFile: async () => JSON.stringify(document),
-                      close: async () => {}
+                      close   : async () => {}
                   })
               });
 
@@ -521,20 +583,20 @@ test.describe('proveRegisteredAntigravityProject', () => {
 
     test('closes a registry descriptor that opens after timeout', async () => {
         const registryDirectory = '/private/tmp/antigravity-project-binding/profile/config/projects',
-              projectId = '154e7ad7-ab8c-4445-bd6b-9ac6bdddcd0f';
+              projectId         = '154e7ad7-ab8c-4445-bd6b-9ac6bdddcd0f';
         let resolveOpen, closes = 0, stats = 0;
         const fileSystem = {
-            lstat: async () => ({isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false}),
+            lstat   : async () => ({isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false}),
             realpath: async file => file,
-            open: () => new Promise(resolve => {resolveOpen = resolve})
+            open    : () => new Promise(resolve => {resolveOpen = resolve})
         };
 
         await expect(readAntigravityProjectRecord({registryDirectory, projectId, fileSystem, timeoutMs: 100}))
             .rejects.toMatchObject({code: 'timeout'});
         resolveOpen({
-            stat: async () => {stats++; return {isFile: () => true, size: 1}},
+            stat    : async () => {stats++; return {isFile: () => true, size: 1}},
             readFile: async () => '{}',
-            close: async () => {closes++}
+            close   : async () => {closes++}
         });
         await new Promise(resolve => setImmediate(resolve));
 
