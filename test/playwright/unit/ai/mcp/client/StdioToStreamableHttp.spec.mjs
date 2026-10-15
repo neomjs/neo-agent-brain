@@ -1,9 +1,10 @@
-import {expect, test}     from '@playwright/test';
-import {spawn, spawnSync} from 'node:child_process';
-import {once}             from 'node:events';
-import {createServer}     from 'node:http';
-import {createInterface}  from 'node:readline';
-import {fileURLToPath}    from 'node:url';
+import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {expect, test}                  from '@playwright/test';
+import {spawn, spawnSync}              from 'node:child_process';
+import {once}                          from 'node:events';
+import {createServer}                  from 'node:http';
+import {createInterface}               from 'node:readline';
+import {fileURLToPath}                 from 'node:url';
 import {
     bridgeTransports,
     createProgram,
@@ -46,8 +47,11 @@ class FakeTransport {
     }
 }
 
-/** @summary Let every queued bridge promise chain settle. */
-const flush = () => new Promise(resolve => setImmediate(resolve));
+/** @summary Let every queued bridge promise chain and deferred survival report settle. */
+const flush = () => new Promise(resolve => setTimeout(resolve, 5));
+
+/** @summary An error shaped like the SDK's `StreamableHTTPError`: an HTTP status on `code`. */
+const httpError = (code, text) => Object.assign(new Error(`Streamable HTTP error: ${text}`), {code});
 
 /** @summary Run one bridge with recording reporters and complete its handshake. */
 async function startInitializedBridge() {
@@ -376,7 +380,10 @@ test.describe('stdioToStreamableHttp', () => {
         const refused = await startInitializedBridge();
 
         refused.remote.send = async () => {
-            throw Object.assign(new Error('Streamable HTTP error: Error POSTing to endpoint: Session not found'), {code: 404})
+            const error = httpError(404, 'Error POSTing to endpoint: Session not found');
+
+            refused.remote.onerror(error);
+            throw error
         };
         refused.local.onmessage({jsonrpc: '2.0', id: 4, method: 'tools/call', params: {}});
         await flush();
@@ -390,7 +397,11 @@ test.describe('stdioToStreamableHttp', () => {
 
         remote.send = async message => {
             if (message.id === 11) {
-                throw Object.assign(new Error('Streamable HTTP error: Error POSTing to endpoint: Bearer must-not-print'), {code: 502})
+                const error = httpError(502, 'Error POSTing to endpoint: Bearer must-not-print');
+
+                // the SDK's order: onerror first, then the rejection
+                remote.onerror(error);
+                throw error
             }
 
             remote.messages.push(message)
@@ -411,6 +422,133 @@ test.describe('stdioToStreamableHttp', () => {
         expect(local.closed).toBe(0);
 
         await bridge.close()
+    });
+
+    test('a retried reconnect survives in the SDK order, and only exhaustion closes', async () => {
+        const
+            {errors, local, recovered, remote} = await startInitializedBridge(),
+            raw                                = httpError(502, 'Failed to open SSE stream: Bad Gateway');
+
+        // one failed reconnect attempt as the SDK reports it: the raw error, then its wrapper, then a retry
+        remote.onerror(raw);
+        remote.onerror(new Error(`Failed to reconnect SSE stream: ${raw.message}`));
+        await flush();
+
+        expect(errors).toEqual([]);
+        expect(recovered).toEqual([
+            'Neo MCP bridge kept its session after a transport error. Cause: http-502.',
+            'Neo MCP bridge kept its session after a transport error. Cause: sse-reconnect-failed.'
+        ]);
+        expect(local.closed).toBe(0);
+
+        remote.onerror(new Error('Maximum reconnection attempts (2) exceeded.'));
+        await flush();
+
+        expect(errors).toEqual(['Neo MCP bridge transport failed. Cause: sse-reconnect-exhausted.']);
+        expect(local.closed).toBe(1)
+    });
+
+    test('a delivered cancellation retires its request, while a live request still makes a drop terminal', async () => {
+        const
+            drop      = () => new Error('SSE stream disconnected: TypeError: terminated'),
+            cancelled = await startInitializedBridge(),
+            live      = await startInitializedBridge();
+
+        for (const {local} of [cancelled, live]) {
+            local.onmessage({jsonrpc: '2.0', id: 5, method: 'tools/call', params: {}});
+            local.onmessage({jsonrpc: '2.0', method: 'notifications/cancelled', params: {requestId: 5}})
+        }
+
+        live.local.onmessage({jsonrpc: '2.0', id: 6, method: 'tools/call', params: {}});
+        await flush();
+        cancelled.remote.onerror(drop());
+        live.remote.onerror(drop());
+        await flush();
+
+        expect(cancelled.errors).toEqual([]);
+        expect(cancelled.local.closed).toBe(0);
+        expect(live.errors).toEqual(['Neo MCP bridge transport failed. Cause: sse-disconnect.']);
+        expect(live.local.closed).toBe(1);
+
+        await cancelled.bridge.close()
+    });
+
+    test('with the real SDK client, a 502 on the GET stream or on one request keeps the session and a 404 ends it', async () => {
+        const server = createServer(async (request, response) => {
+            if (request.method === 'GET') {
+                response.writeHead(502).end();
+                return
+            }
+
+            let body = '';
+
+            for await (const chunk of request) body += chunk;
+
+            const message = JSON.parse(body);
+
+            if (message.method === 'initialize') {
+                response.writeHead(200, {'content-type': 'application/json', 'mcp-session-id': 'session-1'}).end(JSON.stringify({
+                    jsonrpc: '2.0', id: message.id,
+                    result : {protocolVersion: '2025-06-18', capabilities: {}, serverInfo: {name: 'fixture', version: '1.0.0'}}
+                }))
+            } else if (!Object.hasOwn(message, 'id')) {
+                response.writeHead(202).end()
+            } else if (message.id === 2) {
+                response.writeHead(502).end('Bad Gateway')
+            } else if (message.id === 3) {
+                response.writeHead(200, {'content-type': 'application/json'}).end(JSON.stringify({jsonrpc: '2.0', id: 3, result: {tools: []}}))
+            } else {
+                response.writeHead(404).end('Session not found')
+            }
+        });
+
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+
+        const
+            errors    = [],
+            recovered = [],
+            local     = new FakeTransport(),
+            remote    = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${server.address().port}/mcp`)),
+            answer    = id => local.messages.find(message => message.id === id);
+
+        try {
+            await bridgeTransports({
+                localTransport : local,
+                remoteTransport: remote,
+                onError        : error => errors.push(error.message),
+                onRecovered    : error => recovered.push(error.message)
+            });
+
+            local.onmessage({jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+                protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'fixture', version: '1.0.0'}
+            }});
+            await expect.poll(() => answer(1)).toBeTruthy();
+            local.onmessage({jsonrpc: '2.0', method: 'notifications/initialized'});
+            await expect.poll(() => recovered.length).toBe(1);
+
+            local.onmessage({jsonrpc: '2.0', id: 2, method: 'tools/list', params: {}});
+            await expect.poll(() => answer(2)).toBeTruthy();
+            local.onmessage({jsonrpc: '2.0', id: 3, method: 'tools/list', params: {}});
+            await expect.poll(() => answer(3)).toBeTruthy();
+
+            expect(errors).toEqual([]);
+            expect(local.closed).toBe(0);
+            expect(answer(2).error.message).toBe('Neo MCP bridge could not deliver the request. Cause: http-502.');
+            expect(answer(3).result).toEqual({tools: []});
+            // the GET's 502 reaches onerror twice as one object and is reported once; the request's 502 once, by its send
+            expect(recovered).toEqual([
+                'Neo MCP bridge kept its session after a transport error. Cause: http-502.',
+                'Neo MCP bridge kept its session after a transport error. Cause: http-502.'
+            ]);
+
+            local.onmessage({jsonrpc: '2.0', id: 4, method: 'tools/list', params: {}});
+            await expect.poll(() => errors).toEqual(['Neo MCP bridge transport failed. Cause: http-404.']);
+            expect(local.closed).toBe(1);
+            expect(recovered).toHaveLength(2)
+        } finally {
+            await remote.close().catch(() => {});
+            await new Promise(resolve => server.close(resolve))
+        }
     });
 
     test('closes both sides when partial startup fails', async () => {

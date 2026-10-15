@@ -116,10 +116,12 @@ export function getBridgeErrorCause(error) {
  *
  * After initialization the bridge survives what costs no message. The SDK reconnects a dropped
  * standalone GET stream itself, and a POST response stream exists only while a request is pending
- * (the plane keeps no event store, so it cannot resume): a stream drop with nothing pending, or a
- * failed reconnect attempt the SDK will retry, is reported and survived. A request whose delivery
- * fails is answered locally with a JSON-RPC error. Everything else — any failure before
- * initialization, a session or auth refusal, exhausted reconnection, a local transport error —
+ * (the plane keeps no event store, so it cannot resume); a delivered cancellation retires its request.
+ * The SDK reports an error to `onerror` before it rejects the send that raised it or retries the
+ * stream that lost it, so `onerror` closes only on what is terminal by itself — any failure before
+ * initialization, exhausted reconnection, a stream drop with a request pending — and reports anything
+ * else as survived one task later, unless a send claimed it first. A request whose delivery fails is
+ * answered locally with a JSON-RPC error; a session or auth refusal, or a local transport error,
  * closes both sides exactly once, as does any close. Every report names its cause.
  * @param {Object} options
  * @param {Object} options.localTransport Stdio-facing server transport.
@@ -179,11 +181,30 @@ export async function bridgeTransports({
         void close({terminate: false})
     };
 
-    const isSurvivable = error => {
+    // The SDK hands an error to `onerror` BEFORE it rejects the send that raised it or retries the stream
+    // that lost it, and may hand the same object twice. So `onerror` decides only what is terminal on its
+    // own; anything else waits one task, letting a send rejection claim its error, and is reported as
+    // survived once, unless it was claimed or the bridge closed meanwhile.
+    const claimedErrors  = new WeakSet(),
+          reportedErrors = new WeakSet();
+
+    const isTerminalRemoteError = error => {
         const cause = getBridgeErrorCause(error);
 
-        return initialized && !closePromise &&
-            (cause === 'sse-reconnect-failed' || (cause === 'sse-disconnect' && pendingRequestIds.size === 0))
+        return !initialized || cause === 'sse-reconnect-exhausted' || (cause === 'sse-disconnect' && pendingRequestIds.size > 0)
+    };
+
+    const onRemoteError = error => {
+        if (isTerminalRemoteError(error)) return fail(error);
+
+        setTimeout(() => {
+            const tracked = error !== null && typeof error === 'object';
+
+            if (closePromise || tracked && (claimedErrors.has(error) || reportedErrors.has(error))) return;
+
+            tracked && reportedErrors.add(error);
+            report(onRecovered, RECOVERED_MESSAGE, error)
+        }, 0)
     };
 
     localTransport.onmessage = message => {
@@ -198,7 +219,10 @@ export async function bridgeTransports({
             return
         }
 
-        const isRequest = Object.hasOwn(message, 'id') && typeof message.method === 'string';
+        const
+            isRequest   = Object.hasOwn(message, 'id') && typeof message.method === 'string',
+            // a delivered cancellation may legitimately never be answered, so its request stops being pending
+            cancelledId = message.method === 'notifications/cancelled' ? message.params?.requestId : undefined;
 
         if (message.method === 'initialize' && Object.hasOwn(message, 'id')) {
             initializeRequestId = message.id
@@ -208,7 +232,11 @@ export async function bridgeTransports({
 
         Promise.resolve()
             .then(() => remoteTransport.send(message))
-            .catch(error => {
+            .then(() => {
+                if (cancelledId !== undefined) pendingRequestIds.delete(cancelledId)
+            }, error => {
+                if (error !== null && typeof error === 'object') claimedErrors.add(error);
+
                 if (!initialized || !isRequest || SESSION_ENDING_CODES.has(error?.code)) return fail(error);
 
                 pendingRequestIds.delete(message.id);
@@ -250,7 +278,7 @@ export async function bridgeTransports({
             .catch(fail)
     };
     localTransport.onerror  = fail;
-    remoteTransport.onerror = error => isSurvivable(error) ? report(onRecovered, RECOVERED_MESSAGE, error) : fail(error);
+    remoteTransport.onerror = onRemoteError;
     localTransport.onclose  = () => void close();
     remoteTransport.onclose = () => void close({terminate: false});
 
