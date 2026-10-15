@@ -425,27 +425,49 @@ test.describe('stdioToStreamableHttp', () => {
     });
 
     test('a retried reconnect survives in the SDK order, and only exhaustion closes', async () => {
-        const
-            {errors, local, recovered, remote} = await startInitializedBridge(),
-            raw                                = httpError(502, 'Failed to open SSE stream: Bad Gateway');
+        for (const [raw, cause] of [
+            [httpError(502, 'Failed to open SSE stream: Bad Gateway'), 'http-502'],
+            [new TypeError('fetch failed'),                            'network']
+        ]) {
+            const {errors, local, recovered, remote} = await startInitializedBridge();
 
-        // one failed reconnect attempt as the SDK reports it: the raw error, then its wrapper, then a retry
-        remote.onerror(raw);
-        remote.onerror(new Error(`Failed to reconnect SSE stream: ${raw.message}`));
-        await flush();
+            // one failed reconnect attempt as the SDK reports it: the raw error, then its wrapper, then a retry
+            remote.onerror(raw);
+            remote.onerror(new Error(`Failed to reconnect SSE stream: ${raw.message}`));
+            await flush();
 
-        expect(errors).toEqual([]);
-        expect(recovered).toEqual([
-            'Neo MCP bridge kept its session after a transport error. Cause: http-502.',
-            'Neo MCP bridge kept its session after a transport error. Cause: sse-reconnect-failed.'
-        ]);
-        expect(local.closed).toBe(0);
+            expect(errors).toEqual([]);
+            expect(recovered).toEqual([
+                `Neo MCP bridge kept its session after a transport error. Cause: ${cause}.`,
+                'Neo MCP bridge kept its session after a transport error. Cause: sse-reconnect-failed.'
+            ]);
+            expect(local.closed).toBe(0);
 
-        remote.onerror(new Error('Maximum reconnection attempts (2) exceeded.'));
-        await flush();
+            remote.onerror(new Error('Maximum reconnection attempts (2) exceeded.'));
+            await flush();
 
-        expect(errors).toEqual(['Neo MCP bridge transport failed. Cause: sse-reconnect-exhausted.']);
-        expect(local.closed).toBe(1)
+            expect(errors).toEqual(['Neo MCP bridge transport failed. Cause: sse-reconnect-exhausted.']);
+            expect(local.closed).toBe(1)
+        }
+    });
+
+    test('a session, auth or protocol refusal on a request stays terminal in the SDK order', async () => {
+        for (const [code, cause] of [[401, 'http-401'], [403, 'http-403'], [-1, 'unexpected-content-type']]) {
+            const {errors, local, recovered, remote} = await startInitializedBridge();
+
+            remote.send = async () => {
+                const error = httpError(code, 'refused');
+
+                remote.onerror(error);
+                throw error
+            };
+            local.onmessage({jsonrpc: '2.0', id: 7, method: 'tools/call', params: {}});
+            await flush();
+
+            expect(errors).toEqual([`Neo MCP bridge transport failed. Cause: ${cause}.`]);
+            expect(recovered).toEqual([]);
+            expect(local.closed).toBe(1)
+        }
     });
 
     test('a delivered cancellation retires its request, while a live request still makes a drop terminal', async () => {
