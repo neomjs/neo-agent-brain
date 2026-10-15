@@ -228,8 +228,11 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 seatModel      : runtime?.seatModel ?? null,
                 // whether a Claude Desktop seat's profile rows can start new MCP children (the
                 // `launchAdmission` contract); null for every other family and before a start
-                launchAdmission: runtime?.launchAdmission ?? null,
-                lifecycle      : supervised
+                launchAdmission      : runtime?.launchAdmission ?? null,
+                runtimeGeneration    : runtime?.runtimeGeneration ?? null,
+                installedGeneration  : runtime?.installedGeneration ?? null,
+                nextRuntimeGeneration: runtime?.nextRuntimeGeneration ?? null,
+                lifecycle            : supervised
                     ? {
                         source    : FLEET_COCKPIT_SOURCES.runtime,
                         state     : runtime.state ?? 'unknown',

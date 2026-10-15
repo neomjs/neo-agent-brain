@@ -1,7 +1,8 @@
 import {createHash}                from 'node:crypto';
-import {createReadStream}          from 'node:fs';
+import fsSync, {createReadStream}  from 'node:fs';
 import fs                          from 'node:fs/promises';
 import path                        from 'node:path';
+import {isDeepStrictEqual}         from 'node:util';
 import {LAUNCH_ADMISSION_PROTOCOL} from './mcpLaunchAdmission.mjs';
 
 export {LAUNCH_ADMISSION_PROTOCOL};
@@ -14,6 +15,9 @@ export {LAUNCH_ADMISSION_PROTOCOL};
  */
 export const RUNTIME_GENERATION_RECORD = 'generation.json';
 export const RUNTIME_GENERATION_PAYLOAD = 'host.runtime';
+export const PACKAGE_SLOTS_RECORD = '.package-slots.json';
+export const PACKAGE_RECEIPT_PATH = path.join('Contents', 'Resources', 'organism', 'organism-build-info.json');
+export const MAX_PACKAGE_SLOT_BYTES = 262144;
 const RUNTIME_ARGUMENT = '--neo-runtime-generation=';
 
 const RECORD = RUNTIME_GENERATION_RECORD, PAYLOAD = RUNTIME_GENERATION_PAYLOAD;
@@ -280,4 +284,105 @@ export async function bindCurrentRuntime({args, runtimeRoot, executable}) {
         throw refusal('runtime-binding-invalid', 'the generation does not bind this code root and executable')
     }
     return {runtimeRoot: root, executable: binary, generation}
+}
+
+/**
+ * @summary Validates the installer's bounded location record without duplicating its write authority.
+ * selectedPaths orders the installed, rollback and interrupted-restore slots; retained prior slots
+ * remain in slots. This ordering belongs to the versioned format, not a consumer's path convention.
+ * @param {Object} record Installer-produced location metadata.
+ * @param {String} directory Expected canonical runtime parent.
+ * @returns {Object} The validated record, without observing package contents.
+ */
+export function validatePackageSlotRecord(record, directory) {
+    const absolute = value => typeof value === 'string' && !value.includes('\0') && path.isAbsolute(value) && path.resolve(value) === value;
+    if (!record || Object.keys(record).sort().join(',') !== 'completedAt,completionId,directory,selectedPaths,slots,version' ||
+        record.version !== 1 || record.directory !== directory || !absolute(directory) ||
+        !/^[a-f0-9-]{36}$/.test(record.completionId) || typeof record.completedAt !== 'string' || !Number.isFinite(Date.parse(record.completedAt)) ||
+        !Array.isArray(record.selectedPaths) || record.selectedPaths.length !== 3 ||
+        !Array.isArray(record.slots) || record.slots.length < 3 || record.slots.length > 64 ||
+        new Set(record.selectedPaths).size !== 3 || new Set(record.slots.map(slot => slot?.path)).size !== record.slots.length) {
+        throw refusal('package-slots-invalid', 'package slot record is invalid');
+    }
+    for (const slot of record.slots) {
+        if (!slot || Object.keys(slot).sort().join(',') !== 'exists,path,receipt' || !absolute(slot.path) ||
+            typeof slot.exists !== 'boolean' || !slot.exists && slot.receipt !== null) throw refusal('package-slots-invalid', 'package slot binding is invalid');
+        if (slot.exists) runtimeGenerationIdentity(slot.receipt);
+    }
+    if (record.selectedPaths.some(selected => !record.slots.some(slot => slot.path === selected))) throw refusal('package-slots-invalid', 'selected package slot is missing');
+    return record;
+}
+
+/** @summary Reads bounded JSON while proving its descriptor still names the same non-link file. */
+function readPackageJson(file, {fileSystem, maxBytes, privateOwner = false}) {
+    const descriptor = fileSystem.openSync(file, fsSync.constants.O_RDONLY | fsSync.constants.O_NOFOLLOW);
+    try {
+        const before = fileSystem.fstatSync(descriptor, {bigint: true});
+        if (!before.isFile() || before.nlink !== 1n || before.size > BigInt(maxBytes) ||
+            before.mode & (privateOwner ? 0o077n : 0o022n) || privateOwner && before.uid !== BigInt(process.getuid())) {
+            throw refusal('package-slots-unverified', 'package record custody is invalid');
+        }
+        const buffer = Buffer.alloc(Number(before.size) + 1);
+        let   offset = 0;
+        while (offset < buffer.length) {
+            const count = fileSystem.readSync(descriptor, buffer, offset, buffer.length - offset, offset);
+            if (!count) break;
+            offset += count;
+        }
+        const after = fileSystem.fstatSync(descriptor, {bigint: true}), named = fileSystem.lstatSync(file, {bigint: true});
+        if (offset !== Number(before.size) || [after, named].some(stat =>
+            ['dev', 'ino', 'uid', 'mode', 'size', 'mtimeNs', 'ctimeNs'].some(key => stat[key] !== before[key]))) {
+            throw refusal('package-slots-unverified', 'package record changed while reading');
+        }
+        return JSON.parse(buffer.subarray(0, offset).toString('utf8'));
+    } finally { fileSystem.closeSync(descriptor) }
+}
+
+/**
+ * @summary Reads the installer-owned slot record through the shared read-only codec.
+ * Null means unrecorded, never no installed package or no protected runtime.
+ * @param {Object} options
+ * @param {String} options.directory Canonical runtime-generation parent.
+ * @param {Object} [options.fileSystem] Synchronous filesystem seam.
+ * @returns {Object|null} Valid record structure, still requiring fresh slot observations.
+ */
+export function readPackageSlotRecord({directory, fileSystem = fsSync}) {
+    if (typeof directory !== 'string' || !path.isAbsolute(directory) || path.resolve(directory) !== directory) throw refusal('package-slots-invalid', 'canonical runtime parent is required');
+    let before, record;
+    try {
+        before = fileSystem.lstatSync(directory, {bigint: true});
+        if (!before.isDirectory() || before.uid !== BigInt(process.getuid()) || before.mode & 0o022n ||
+            fileSystem.realpathSync(directory) !== directory) throw refusal('package-slots-unverified', 'package slot parent custody is invalid');
+        record = readPackageJson(path.join(directory, PACKAGE_SLOTS_RECORD), {fileSystem, maxBytes: MAX_PACKAGE_SLOT_BYTES, privateOwner: true});
+    } catch (error) { if (error.code === 'ENOENT') return null; throw error }
+    const after = fileSystem.lstatSync(directory, {bigint: true});
+    if (before.dev !== after.dev || before.ino !== after.ino) throw refusal('package-slots-unverified', 'package slot parent changed');
+    return validatePackageSlotRecord(record, directory);
+}
+
+/**
+ * @summary Observes the installed slot separately from the serving Fleet's next-Start selection.
+ * This reads package identity metadata, not an executable/payload integrity guarantee. The host
+ * remains the only writer; changed, missing or unreadable evidence stays explicitly unknown.
+ * @param {Object} options Canonical generation parent and optional filesystem seam.
+ * @returns {Object} Closed observed identity or a bounded unknown reason, without host paths.
+ */
+export function readInstalledRuntimeGeneration({directory, fileSystem = fsSync}) {
+    try {
+        const record = readPackageSlotRecord({directory, fileSystem});
+        if (!record) return {state: 'unknown', id: null, identity: null, reason: 'package-slots-unrecorded'};
+        const installed = record.slots.find(slot => slot.path === record.selectedPaths[0]);
+        if (!installed.exists) return {state: 'unknown', id: null, identity: null, reason: 'installed-slot-empty'};
+        const file = path.join(installed.path, PACKAGE_RECEIPT_PATH);
+        if (!fileSystem.lstatSync(installed.path).isDirectory() || fileSystem.realpathSync(installed.path) !== installed.path ||
+            fileSystem.realpathSync(file) !== file) throw Error('redirected installed slot');
+        const receipt = readPackageJson(file, {fileSystem, maxBytes: MAX_PACKAGE_SLOT_BYTES});
+        if (!isDeepStrictEqual(receipt, installed.receipt) || !isDeepStrictEqual(readPackageSlotRecord({directory, fileSystem}), record)) {
+            return {state: 'unknown', id: null, identity: null, reason: 'installed-slot-changed'};
+        }
+        const identity = runtimeGenerationIdentity(receipt);
+        return {state: 'observed', id: identity.id, identity: [...identity.identity], reason: null};
+    } catch {
+        return {state: 'unknown', id: null, identity: null, reason: 'installed-slot-unverified'};
+    }
 }

@@ -16,6 +16,7 @@ import {redactReadFailure}                                                      
 import {convergeSeatGitIdentity, resolveSeatGitIdentity}                             from './seatGitIdentity.mjs';
 import {readSeatModelCatalog}                                                        from './seatModelCatalog.mjs';
 import {startAgentProvisioned}                                                       from './startAgentProvisioned.mjs';
+import {readInstalledRuntimeGeneration}                                              from './runtimeGeneration.mjs';
 import path                                                                          from 'node:path';
 
 /**
@@ -593,9 +594,16 @@ class FleetManager extends Base {
      *     `harnessSettings` its config is set to now ({@link FleetLifecycleService#harnessSettingsFor}).
      *     `runtimeGeneration` preserves the actual Start's runtime and retention pin; unknown bindings
      *     remain unknown across installed-runtime changes.
+     *     `nextRuntimeGeneration` is this connected Fleet's verified boot selection for new Starts.
+     *     `installedGeneration` independently observes the installer-owned package slot; neither
+     *     substitutes for the original Start, and both are absent for checkout runtimes.
      */
     fleetRuntimeStatus() {
-        const lifecycle = this.getLifecycleService();
+        const lifecycle             = this.getLifecycleService();
+        const installed             = lifecycle.installedRuntime?.generation;
+        const nextRuntimeGeneration = installed ? {id: installed.id, payloadDigest: installed.payloadDigest,
+            identity: [...installed.identity]} : null;
+        const installedGeneration = installed ? readInstalledRuntimeGeneration({directory: path.dirname(installed.directory)}) : null;
 
         return lifecycle.getRegistry().listAgents().map(agent => {
             const status   = lifecycle.status(agent.id),
@@ -628,6 +636,8 @@ class FleetManager extends Base {
             if (status.seatModel != null)     row.seatModel       = status.seatModel;
             if (status.launchAdmission != null) row.launchAdmission = status.launchAdmission;
             if (status.runtimeGeneration != null) row.runtimeGeneration = status.runtimeGeneration;
+            if (installedGeneration) row.installedGeneration = installedGeneration;
+            if (nextRuntimeGeneration) row.nextRuntimeGeneration = nextRuntimeGeneration;
             if (harnessSettings != null)      row.harnessSettings = harnessSettings;
 
             return row;
@@ -732,12 +742,16 @@ class FleetManager extends Base {
      * `restart`, which re-starts with no `cwd`: that would re-spawn a provisioned agent in the wrong
      * directory, and the checkout-path-keyed auto-memory would silently fork (the exact failure the
      * provisioned start path prevents). Restarting a non-running agent is just a provisioned start. A
-     * seat the start would refuse is refused before the stop, so a restart never ends half done.
+     * seat the start would refuse is refused before the stop. An exact runtime choice is checked again
+     * after Stop; if its installed target changed during cleanup, the seat stays stopped with a refusal.
      * @param {String} agentId Registry agent id.
+     * @param {Object} [options]
+     * @param {String} [options.expectedRuntimeGeneration] Exact installed/next-Start identity the operator selected.
      * @returns {Promise<Object>} the agent's lifecycle status (see {@link startAgent}).
      */
-    async restartAgent(agentId) {
+    async restartAgent(agentId, {expectedRuntimeGeneration} = {}) {
         this.assertStartPermitted('restartAgent', agentId, await this.seatParticipation(agentId));
+        this.assertRuntimeRestartTarget(expectedRuntimeGeneration);
 
         const stopped = await this.stopAgent(agentId);
 
@@ -745,7 +759,23 @@ class FleetManager extends Base {
             throw new Error(`FleetManager.restartAgent: cleanup failed for agent '${agentId}'; refusing to spawn a replacement over ambiguous residual processes.`);
         }
 
+        this.assertRuntimeRestartTarget(expectedRuntimeGeneration);
         return this.startAgent(agentId);
+    }
+
+    /**
+     * @summary Refuses an exact runtime promise before Stop and revalidates it before the new Start.
+     * @param {String} [expected] Installed runtime identity chosen by the operator; omitted for ordinary restart.
+     */
+    assertRuntimeRestartTarget(expected) {
+        if (expected === undefined) return;
+        const next      = this.getLifecycleService().installedRuntime?.generation;
+        const installed = next ? readInstalledRuntimeGeneration({directory: path.dirname(next.directory)}) : null;
+        if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/.test(expected) || next?.id !== expected ||
+            installed?.state !== 'observed' || installed.id !== expected) {
+            throw Object.assign(new Error('FleetManager.restartAgent: the runtime target changed or is not verified; review it before restarting.'),
+                {code: 'runtime-target-changed'});
+        }
     }
 
     /**

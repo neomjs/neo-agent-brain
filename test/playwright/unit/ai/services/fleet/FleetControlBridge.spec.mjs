@@ -640,6 +640,25 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(calls).toEqual([['restartAgent', 'alice']]);
     });
 
+    test('the existing restart wire carries the exact-generation precondition without dropping it', async () => {
+        managerStub.restartAgent = async (id, options) => { calls.push(['restart', id, options]); return {id, state: 'running'} };
+        const expectedRuntimeGeneration = 'a'.repeat(64);
+        await expect(dispatchFleetRequest(createFleetWireRequest('restartAgent', {agentId: 'alice', expectedRuntimeGeneration}), FleetControlBridge))
+            .resolves.toMatchObject({ok: true, result: {id: 'alice', state: 'running'}});
+        expect(calls).toEqual([['restart', 'alice', {expectedRuntimeGeneration}]]);
+        for (const request of [{agentId: 'alice'}, {agentId: 'alice', expectedRuntimeGeneration: null},
+            {agentId: 'alice', expectedRuntimeGeneration, extra: true}]) {
+            expect(await FleetControlBridge.restartAgent(request)).toMatchObject({status: 'rejected'});
+        }
+        expect(calls).toHaveLength(1);
+    });
+
+    test('an exact runtime refusal survives the wire as a domain result', async () => {
+        managerStub.restartAgent = async () => { throw Object.assign(new Error('FleetManager.restartAgent: the runtime target changed.'), {code: 'runtime-target-changed'}) };
+        await expect(dispatchFleetRequest(createFleetWireRequest('restartAgent', {agentId: 'alice', expectedRuntimeGeneration: 'a'.repeat(64)}), FleetControlBridge))
+            .resolves.toMatchObject({ok: true, result: {status: 'rejected', code: 'runtime-target-changed'}});
+    });
+
     test('skipAgentDependencies delegates to the manager, and the wire routes it', async () => {
         expect(FleetControlBridge.skipAgentDependencies('alice')).toEqual({id: 'alice', skippedStarts: 1});
         await expect(dispatchFleetRequest(createFleetWireRequest('skipAgentDependencies', 'alice'), FleetControlBridge))

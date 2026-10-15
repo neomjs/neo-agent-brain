@@ -13,22 +13,23 @@ setup({
     }
 });
 
-import {test, expect}                                from '@playwright/test';
-import Neo                                           from 'neo.mjs/src/Neo.mjs';
-import * as core                                     from 'neo.mjs/src/core/_export.mjs';
-import FleetControlBridge                            from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
-import FleetLifecycleService                         from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
-import FleetManager                                  from '../../../../../../ai/services/fleet/FleetManager.mjs';
-import FleetRegistryService                          from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
-import {armFleetSeatWake}                            from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
-import {createFleetCockpitStatus}                    from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
-import {createFleetWireRequest}                      from '../../../../../../src/fleet/contract/wire.mjs';
-import {dispatchFleetRequest}                        from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
-import {DEPENDENCY_RECEIPT, installSeatDependencies} from '../../../../../../ai/services/fleet/installAgentRepoDependencies.mjs';
-import {execFileSync}                                from 'node:child_process';
-import fs                                            from 'fs';
-import os                                            from 'os';
-import path                                          from 'path';
+import {test, expect}                                                          from '@playwright/test';
+import Neo                                                                     from 'neo.mjs/src/Neo.mjs';
+import * as core                                                               from 'neo.mjs/src/core/_export.mjs';
+import FleetControlBridge                                                      from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
+import FleetLifecycleService                                                   from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
+import FleetManager                                                            from '../../../../../../ai/services/fleet/FleetManager.mjs';
+import FleetRegistryService                                                    from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import {armFleetSeatWake}                                                      from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
+import {createFleetCockpitStatus}                                              from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
+import {PACKAGE_SLOTS_RECORD, PACKAGE_RECEIPT_PATH, runtimeGenerationIdentity} from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
+import {createFleetWireRequest}                                                from '../../../../../../src/fleet/contract/wire.mjs';
+import {dispatchFleetRequest}                                                  from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
+import {DEPENDENCY_RECEIPT, installSeatDependencies}                           from '../../../../../../ai/services/fleet/installAgentRepoDependencies.mjs';
+import {execFileSync}                                                          from 'node:child_process';
+import fs                                                                      from 'fs';
+import os                                                                      from 'os';
+import path                                                                    from 'path';
 
 test.describe('FleetManager guarded checkout removal (#951)', () => {
     let root, repoPath, agent, retired;
@@ -891,6 +892,28 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         expect(Object.hasOwn(ada, 'harnessSettings')).toBe(false)
     });
 
+    test('runtime rows keep the original Start separate from the package selected for the next Start', () => {
+        const original  = {id: 'a'.repeat(64), pin: 'held'};
+        const installed = {id: 'b'.repeat(64), directory: '/unrecorded-runtime/' + 'b'.repeat(64),
+            payloadDigest: 'c'.repeat(64), identity: ['product', 'brain', 'engine', 'electron']};
+        FleetManager.lifecycleService = {
+            installedRuntime  : {generation: installed},
+            getRegistry       : () => ({listAgents: () => [{id: 'alice'}, {id: 'bob'}]}),
+            harnessSettingsFor: () => null,
+            status            : id => ({id, state: id === 'alice' ? 'running' : 'stopped', running: id === 'alice',
+                runtimeGeneration: id === 'alice' ? original : null})
+        };
+        const rows = FleetManager.fleetRuntimeStatus();
+        expect(rows[0].runtimeGeneration).toEqual(original);
+        expect(rows.map(row => row.nextRuntimeGeneration)).toEqual([installed, installed].map(value =>
+            ({id: value.id, payloadDigest: value.payloadDigest, identity: value.identity})));
+        expect(rows[0].nextRuntimeGeneration.identity).not.toBe(installed.identity);
+        expect(rows[0].installedGeneration).toMatchObject({state: 'unknown', id: null});
+        expect(rows[1]).not.toHaveProperty('runtimeGeneration');
+        FleetManager.lifecycleService.installedRuntime = null;
+        expect(FleetManager.fleetRuntimeStatus().every(row => !Object.hasOwn(row, 'installedGeneration'))).toBe(true);
+    });
+
     test('an agent the fleet never launched reports unmanaged, NOT stopped — never-launched is not stopped (#17305)', () => {
         // The incident: nine external-harness seats rendered `benched / offline` because `status()`
         // answers `stopped` for an agent it holds no record of — a sound lifecycle default, an
@@ -993,6 +1016,65 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
             source       : 'fleet:runtimeStatus',
             failureReason: 'updater-disable-predicate-missing'
         }]);
+    });
+});
+
+test.describe('FleetManager exact installed-runtime restart', () => {
+    let root, directory, receiptFile, receipt, next, calls;
+    test.beforeEach(() => {
+        root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-runtime-restart-')));
+        directory = path.join(root, 'runtime');
+        const installed = path.join(root, 'Installed.app'), rollback = path.join(root, 'Rollback'), parked = path.join(root, 'Parked');
+        receipt = {electronVersion: '43.5.0', owners: Object.fromEntries(['product', 'brain', 'engine'].map((name, i) =>
+            [name, {revision: String(i + 1).repeat(40)}]))};
+        receiptFile = path.join(installed, PACKAGE_RECEIPT_PATH);
+        fs.mkdirSync(path.dirname(receiptFile), {recursive: true});
+        fs.mkdirSync(directory, {mode: 0o700});
+        fs.writeFileSync(receiptFile, JSON.stringify(receipt));
+        const identity = runtimeGenerationIdentity(receipt);
+        next = {...identity, directory: path.join(directory, identity.id), payloadDigest: 'd'.repeat(64)};
+        fs.writeFileSync(path.join(directory, PACKAGE_SLOTS_RECORD), JSON.stringify({version: 1, directory,
+            completionId : '12345678-1234-4234-8234-123456789abc', completedAt: '2026-10-15T13:00:00Z',
+            selectedPaths: [installed, rollback, parked], slots: [{path: installed, exists: true, receipt},
+                {path: rollback, exists: false, receipt: null}, {path: parked, exists: false, receipt: null}]}), {mode: 0o600});
+        calls = [];
+        FleetManager.lifecycleService = lifecycleWithStarts({installedRuntime: {generation: next},
+            getRegistry: () => ({getAgent: () => null}),
+            stop       : async () => { calls.push('stop'); return {cleanupUnresolved: false} }
+        });
+        FleetManager.managedRoot = '/managed/root';
+        FleetManager.provisionAndStartFn = async () => { calls.push('start'); return {runtimeGeneration: next.id} };
+    });
+    test.afterEach(() => {
+        FleetManager.lifecycleService = null;
+        FleetManager.managedRoot = null;
+        FleetManager.provisionAndStartFn = null;
+        fs.rmSync(root, {recursive: true, force: true});
+    });
+    test('an exact installed and next-Start match uses the existing Stop then provisioned Start', async () => {
+        await expect(FleetManager.restartAgent('seat', {expectedRuntimeGeneration: next.id})).resolves.toEqual({runtimeGeneration: next.id});
+        expect(calls).toEqual(['stop', 'start']);
+    });
+    test('a changed displayed identity refuses before Stop', async () => {
+        await expect(FleetManager.restartAgent('seat', {expectedRuntimeGeneration: 'f'.repeat(64)})).rejects.toMatchObject({code: 'runtime-target-changed'});
+        expect(calls).toEqual([]);
+    });
+    test('an incumbent selecting another runtime and an unverified installed slot each refuse before Stop', async () => {
+        FleetManager.lifecycleService.installedRuntime.generation = {...next, id: 'f'.repeat(64)};
+        await expect(FleetManager.restartAgent('seat', {expectedRuntimeGeneration: next.id})).rejects.toMatchObject({code: 'runtime-target-changed'});
+        FleetManager.lifecycleService.installedRuntime.generation = next;
+        fs.unlinkSync(path.join(directory, PACKAGE_SLOTS_RECORD));
+        await expect(FleetManager.restartAgent('seat', {expectedRuntimeGeneration: next.id})).rejects.toMatchObject({code: 'runtime-target-changed'});
+        expect(calls).toEqual([]);
+    });
+    test('a target changing while Stop settles never starts a different generation', async () => {
+        FleetManager.lifecycleService.stop = async () => {
+            calls.push('stop');
+            fs.writeFileSync(receiptFile, JSON.stringify({...receipt, changed: true}));
+            return {cleanupUnresolved: false};
+        };
+        await expect(FleetManager.restartAgent('seat', {expectedRuntimeGeneration: next.id})).rejects.toMatchObject({code: 'runtime-target-changed'});
+        expect(calls).toEqual(['stop']);
     });
 });
 

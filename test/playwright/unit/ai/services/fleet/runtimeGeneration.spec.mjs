@@ -13,7 +13,12 @@ import {
     readRuntimeGeneration,
     runtimeGenerationIdentity,
     runtimeGenerationArguments,
-    runtimeGenerationPin
+    runtimeGenerationPin,
+    PACKAGE_SLOTS_RECORD,
+    PACKAGE_RECEIPT_PATH,
+    readPackageSlotRecord,
+    readInstalledRuntimeGeneration,
+    validatePackageSlotRecord
 } from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
 
 let root;
@@ -29,6 +34,43 @@ async function remove(file) {
     await fs.rm(file, {recursive: true, force: true});
 }
 test.afterEach(async () => { await remove(root); });
+
+/** @summary Writes the installer's existing location format in a private disposable root. */
+async function slotsFixture() {
+    const installed = path.join(root, 'Installed.app'), rollback = path.join(root, 'Rollback'), parked = path.join(root, 'Parked');
+    const receipt   = {electronVersion: '43.5.0', owners: Object.fromEntries(['product', 'brain', 'engine'].map((name, i) =>
+        [name, {revision: String(i + 1).repeat(40)}]))};
+    const file = path.join(installed, PACKAGE_RECEIPT_PATH);
+    await fs.mkdir(path.dirname(file), {recursive: true});
+    await fs.writeFile(file, JSON.stringify(receipt));
+    const record = {version: 1, directory: root, completedAt: '2026-10-15T13:00:00Z',
+        completionId: '12345678-1234-4234-8234-123456789abc', selectedPaths: [installed, rollback, parked],
+        slots       : [{path: installed, exists: true, receipt}, {path: rollback, exists: false, receipt: null},
+            {path: parked, exists: false, receipt: null}]};
+    await fs.writeFile(path.join(root, PACKAGE_SLOTS_RECORD), JSON.stringify(record), {mode: 0o600});
+    return {record, file, receipt};
+}
+
+test('installed identity comes from the verified slot receipt, independently of a serving runtime', async () => {
+    expect(readInstalledRuntimeGeneration({directory: root})).toMatchObject({state: 'unknown', reason: 'package-slots-unrecorded'});
+    const {record, receipt} = await slotsFixture();
+    expect(readPackageSlotRecord({directory: root})).toEqual(record);
+    expect(readInstalledRuntimeGeneration({directory: root})).toEqual({state: 'observed', ...runtimeGenerationIdentity(receipt), reason: null});
+    expect(validatePackageSlotRecord(record, root)).toEqual(record);
+});
+
+test('changed installed contents, redirected metadata and malformed location records stay unknown', async () => {
+    const {record, file, receipt} = await slotsFixture();
+    await fs.writeFile(file, JSON.stringify({...receipt, changed: true}));
+    expect(readInstalledRuntimeGeneration({directory: root})).toMatchObject({state: 'unknown', reason: 'installed-slot-changed'});
+    await fs.writeFile(file, JSON.stringify(receipt));
+    const slotFile = path.join(root, PACKAGE_SLOTS_RECORD);
+    await fs.chmod(slotFile, 0o666);
+    expect(readInstalledRuntimeGeneration({directory: root}).state).toBe('unknown');
+    await fs.chmod(slotFile, 0o600);
+    await fs.writeFile(slotFile, JSON.stringify({...record, extra: true}));
+    expect(readInstalledRuntimeGeneration({directory: root}).state).toBe('unknown');
+});
 
 /** @summary Builds one sealed fixture using the same format constructor the host consumes. */
 async function fixture() {

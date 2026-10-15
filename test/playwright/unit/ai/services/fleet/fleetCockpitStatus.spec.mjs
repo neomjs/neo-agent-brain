@@ -189,6 +189,16 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         expect(snapshot.rows.map(row => row.gitIdentity)).toEqual([derived, {state: 'mismatch', source: 'public', name: 'Bob', email: 'bob@example.test'}, null])
     })
 
+    test('keeps the seat generation and installed selection distinct without inventing either', () => {
+        const runtimeGeneration   = {id: 'a'.repeat(64), pin: 'unknown'}, installedGeneration = {state: 'observed', id: 'b'.repeat(64)},
+            nextRuntimeGeneration = {id: 'c'.repeat(64)};
+        const snapshot = createFleetCockpitStatus({agents: [{id: 'alice'}, {id: 'bob'}], runtimeStatus: [
+            {agentId: 'alice', state: 'running', running: true, confidence: 'observed', runtimeGeneration, installedGeneration, nextRuntimeGeneration}
+        ]});
+        expect(snapshot.rows[0]).toMatchObject({runtimeGeneration, installedGeneration, nextRuntimeGeneration});
+        expect(snapshot.rows[1]).toMatchObject({runtimeGeneration: null, installedGeneration: null, nextRuntimeGeneration: null});
+    });
+
     test('an unmanaged runtime row is NOT wired — row-existence is a roster fact, not a supervision fact (#17305)', () => {
         const snapshot = createFleetCockpitStatus({
             agents       : [{id: 'grace'}],

@@ -860,11 +860,18 @@ class FleetControlBridge extends Base {
     /**
      * @summary Restart a running agent through the provisioned path (repo re-ensured, harness runs in
      * ITS checkout). Restarting a non-running agent is just a provisioned start, with its refusals.
-     * @param {String} id Registry agent id.
+     * @param {String|Object} request Registry id, or `{agentId, expectedRuntimeGeneration}` for an exact installed-runtime choice.
      * @returns {Promise<Object>} the agent's lifecycle status, or `{status: 'rejected', reason}`.
      */
-    restartAgent(id) {
-        return startOutcome(() => this.getManager().restartAgent(id));
+    async restartAgent(request) {
+        if (typeof request === 'string') return startOutcome(() => this.getManager().restartAgent(request));
+        if (!request || Array.isArray(request) || Object.keys(request).sort().join(',') !== 'agentId,expectedRuntimeGeneration' ||
+            typeof request.agentId !== 'string' || !request.agentId || typeof request.expectedRuntimeGeneration !== 'string' ||
+            !/^[a-f0-9]{64}$/.test(request.expectedRuntimeGeneration)) {
+            return {status: 'rejected', reason: 'The runtime restart request is invalid.'};
+        }
+        const {agentId, expectedRuntimeGeneration} = request;
+        return startOutcome(() => this.getManager().restartAgent(agentId, {expectedRuntimeGeneration}));
     }
 
     /**
