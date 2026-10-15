@@ -4,6 +4,7 @@ import os             from 'node:os';
 import path           from 'path';
 import {
     acquireFileLease,
+    holdFileLease,
     FileLeaseHeldError,
     FileLeaseLostError
 } from '../../../../../../ai/daemons/shared/fileLease.mjs';
@@ -51,6 +52,55 @@ const LEASE_OPTS = dir => ({
     // the core. Note what it never reads: pid visibility. That is the namespace falsifier — a
     // pid probe would answer "dead" for a live container holder, and this strategy cannot.
     isHeldFresh: ({holder, now: at}) => (at - Date.parse(holder.lastPulse ?? holder.startedAt)) < TTL
+});
+
+test.describe('protected same-host lease guard', () => {
+    let directory;
+    const options = () => ({directory, filename: 'transaction.lock', owner: 'fixture-installer'});
+    test.beforeEach(() => { directory = fs.realpathSync(tmpDir()) });
+    test.afterEach(() => { fs.removeSync(directory) });
+
+    test('the published entry excludes another holder and observes release before reacquisition', async () => {
+        const published = await import('neo-agent-brain/file-lease');
+        expect(published.holdFileLease).toBe(holdFileLease);
+        const guard = holdFileLease(options());
+        try {
+            expect(() => holdFileLease(options())).toThrow(FileLeaseHeldError);
+            guard.assertCurrent();
+        } finally { expect(guard.release()).toBe(true) }
+        expect(() => guard.assertCurrent()).toThrow(/guard-closed/);
+        expect(guard.release()).toBe(true);
+        const next = holdFileLease(options());
+        expect(next.release()).toBe(true);
+        expect(fs.readdirSync(directory)).toEqual([]);
+    });
+
+    test('best-effort release is not success while the original token remains', () => {
+        const guard = holdFileLease({...options(), acquireLease: input => ({...acquireFileLease(input), release() {}})});
+        expect(() => guard.release()).toThrow(/release-unproved/);
+        expect(() => guard.release()).toThrow(/release-unproved/);
+        expect(() => guard.assertCurrent()).toThrow(/guard-closed/);
+        expect(fs.existsSync(path.join(directory, 'transaction.lock'))).toBe(true);
+    });
+
+    test('changed directory identity, links and permissive custody cannot retain mutation permission', () => {
+        const original = directory;
+        const guard    = holdFileLease(options());
+        const moved    = `${directory}-moved`;
+        fs.renameSync(directory, moved);
+        fs.mkdirSync(directory, {mode: 0o700});
+        try {
+            expect(() => guard.assertCurrent()).toThrow(/ownership-unproved/);
+            guard.release();
+            fs.removeSync(directory);
+            fs.symlinkSync(moved, directory);
+            expect(() => holdFileLease(options())).toThrow(/directory-custody/);
+            fs.unlinkSync(directory);
+            fs.mkdirSync(directory, {mode: 0o777});
+            fs.chmodSync(directory, 0o777);
+            expect(() => holdFileLease(options())).toThrow(/directory-custody/);
+        } finally { fs.removeSync(moved); directory = original }
+    });
 });
 
 test.describe('#16230 — file lease: claim, refuse, reclaim, release (TTL-liveness)', () => {

@@ -348,3 +348,70 @@ export function acquireFileLease({
     // the retry — refuse rather than a third pass.
     throw heldError({lockPath, holder: readFileLeaseHolder(lockPath, fsImpl), requester: {owner, pid}});
 }
+
+/**
+ * @summary Holds a same-host lease in an existing protected directory and verifies its release.
+ * Unlike the low-level best-effort handle, this guard refuses unproved release. Only a definite
+ * absent PID permits stale acquisition; unreadable/corrupt ownership never authorizes takeover.
+ * Directory creation and domain-specific evidence checks remain the caller's responsibility.
+ * @param {Object} options
+ * @param {String} options.directory Existing canonical, owner-controlled directory.
+ * @param {String} options.filename Lease basename.
+ * @param {String} options.owner Diagnostic owner label.
+ * @param {Object} [options.fileSystem=fs] Synchronous filesystem seam.
+ * @param {Function} [options.acquireLease=acquireFileLease] Low-level lease seam.
+ * @param {Number} [options.uid=process.getuid()] Expected local owner.
+ * @returns {{assertCurrent:Function, release:Function}} Release returns true only after observed removal or replacement.
+ */
+export function holdFileLease({directory, filename, owner, fileSystem = fs, acquireLease = acquireFileLease, uid = process.getuid?.()}) {
+    const refuse = reason => Object.assign(new Error(`File lease guard refused: ${reason}.`), {code: 'FILE_LEASE_GUARD_REFUSED', reason});
+    if (!path.isAbsolute(directory || '') || !Number.isInteger(uid) || typeof filename !== 'string' ||
+        !filename || filename !== path.basename(filename) || ['.', '..'].includes(filename)) throw refuse('invalid-binding');
+
+    /** @summary Revalidates the protected namespace without creating or following a redirected directory. */
+    function readDirectory() {
+        const stat = fileSystem.lstatSync(directory);
+        if (!stat.isDirectory() || stat.uid !== uid || stat.mode & 0o022 ||
+            fileSystem.realpathSync(directory) !== path.resolve(directory)) throw refuse('directory-custody');
+        return stat;
+    }
+    const original = readDirectory();
+    const lease    = acquireLease({dir: directory, filename, owner, fs: fileSystem, onCorrupt: 'refuse',
+        isHeldFresh({holder}) {
+            try { process.kill(holder.pid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
+        }});
+    let closed = false, released = false;
+
+    /** @summary Rechecks this acquisition's directory and owner token before the caller mutates its resource. */
+    function assertCurrent() {
+        if (closed) throw refuse('guard-closed');
+        const stat = readDirectory();
+        if (stat.dev !== original.dev || stat.ino !== original.ino || !lease.pulse().held) throw refuse('ownership-unproved');
+    }
+
+    /** @summary Observes this token gone or replaced; never deletes a foreign holder after failed release. */
+    function release() {
+        if (released) return true;
+        closed = true;
+        lease.release();
+        try {
+            const before = fileSystem.lstatSync(lease.lockPath, {bigint: true});
+            if (!before.isFile() || before.uid !== BigInt(uid) || before.mode & 0o022n) throw refuse('release-unproved');
+            const holder = readFileLeaseHolder(lease.lockPath, fileSystem);
+            const after  = fileSystem.lstatSync(lease.lockPath, {bigint: true});
+            if (!holder || holder.ownerToken === lease.ownerToken ||
+                ['dev', 'ino', 'uid', 'mode', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key] !== after[key])) throw refuse('release-unproved');
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw refuse('release-unproved');
+        }
+        released = true;
+        return true;
+    }
+    try {
+        assertCurrent();
+        return {assertCurrent, release};
+    } catch (error) {
+        release();
+        throw error;
+    }
+}

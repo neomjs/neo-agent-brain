@@ -1,7 +1,7 @@
 import {randomUUID}                                                             from 'node:crypto';
 import fs                                                                       from 'fs-extra';
 import path                                                                     from 'node:path';
-import {acquireFileLease, readFileLeaseHolder}                                  from '../../daemons/shared/fileLease.mjs';
+import {acquireFileLease, holdFileLease}                                        from '../../daemons/shared/fileLease.mjs';
 import {writeFileAtomicSync}                                                    from '../shared/atomicFileWrite.mjs';
 import {LAUNCH_ADMISSION_REASONS as REASONS, LAUNCH_ADMISSION_STATES as STATES} from '../../../src/fleet/contract/launchAdmission.mjs';
 import {isRuntimeGenerationPin}                                                 from './runtimeGeneration.mjs';
@@ -226,46 +226,20 @@ export function holdLaunchAdmissionVacancy({
 
 /** @summary Holds detached journal evidence under the existing issuer lease and proves its release. */
 function holdJournalEvidence({directory, fileSystem, uid, acquireLease = acquireFileLease}, observed, verifyEvidence) {
-    const directoryStat = readDirectoryCustody(directory, fileSystem, uid);
-    const lease         = acquireLease({dir: directory, filename: 'issuer.lock', owner: 'fleet-launch-admission',
-        fs: fileSystem, isHeldFresh, onCorrupt: 'refuse'});
-    let closed = false, released = false;
+    const lease = holdFileLease({directory, filename: 'issuer.lock', owner: 'fleet-launch-admission',
+        fileSystem, uid, acquireLease});
 
-    /** @summary Rechecks the same custody and proof under exclusion immediately before each host mutation. */
+    /** @summary Rechecks exclusion and the same domain evidence immediately before each host mutation. */
     function assertCurrent() {
-        if (closed) throw refused('update-guard-closed');
-        const stat = readDirectoryCustody(directory, fileSystem, uid);
-        if (stat.dev !== directoryStat.dev || stat.ino !== directoryStat.ino || !lease.pulse().held) {
-            throw refused('ownership-unproved')
+        try { lease.assertCurrent() } catch (error) {
+            throw refused(error.reason === 'guard-closed' ? 'update-guard-closed' : 'ownership-unproved');
         }
         verifyEvidence();
     }
 
-    /**
-     * @summary Confirms this guard's lease is gone before the host starts its successor.
-     * The shared release is best-effort and bounded. Contention or unreadable ownership refuses;
-     * the caller must not open the app. After this installer exits, normal stale-owner acquisition
-     * can recover its leftover lease without deleting another owner's lock.
-     * @returns {Boolean} True only after this owner's lease is observed absent or replaced.
-     */
+    /** @summary Preserves the journal's named refusal when the shared observed-release check fails. */
     function release() {
-        if (released) return true;
-        closed = true;
-        lease.release();
-        try {
-            const before = fileSystem.lstatSync(lease.lockPath, {bigint: true});
-            if (!before.isFile() || before.uid !== BigInt(uid) || before.mode & 0o022n) throw refused('update-release-unproved');
-            const holder = readFileLeaseHolder(lease.lockPath, fileSystem);
-            const after  = fileSystem.lstatSync(lease.lockPath, {bigint: true});
-            if (!holder || holder.ownerToken === lease.ownerToken ||
-                ['dev', 'ino', 'uid', 'mode', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key] !== after[key])) {
-                throw refused('update-release-unproved');
-            }
-        } catch (error) {
-            if (error.code !== 'ENOENT') throw refused('update-release-unproved');
-        }
-        released = true;
-        return true;
+        try { return lease.release() } catch { throw refused('update-release-unproved') }
     }
     try {
         assertCurrent();
