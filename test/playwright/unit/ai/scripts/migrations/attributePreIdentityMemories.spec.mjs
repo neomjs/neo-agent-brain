@@ -112,12 +112,23 @@ test.describe('attributePreIdentityMemories — evidence-bound attribution of pr
     /**
      * @summary Adds a `memory:<uuid>` node: REM's legacy projection of a row, or with `chromaId: null` a curated node.
      */
-    function addLegacyNode(db, id, {chromaId = id, userId = 'shared'} = {}) {
+    function addLegacyNode(db, id, {agentIdentity = null, chromaId = id, userId = 'shared'} = {}) {
         db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)').run(`memory:${id}`, userId, JSON.stringify({
             id        : `memory:${id}`,
             label     : 'MEMORY',
-            properties: {...(chromaId ? {chromaId} : {}), sessionId: `s-${id}`, userId}
+            properties: {...(agentIdentity ? {agentIdentity} : {}), ...(chromaId ? {chromaId} : {}), sessionId: `s-${id}`, userId}
         }))
+    }
+
+    /**
+     * @summary Hands a legacy projection to another owner, as something outside the migration might.
+     */
+    function setLegacyOwner(db, id, userId, agentIdentity = null) {
+        const data = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(`memory:${id}`).data);
+
+        data.properties = {...data.properties, userId};
+        agentIdentity ? data.properties.agentIdentity = agentIdentity : delete data.properties.agentIdentity;
+        db.prepare('UPDATE Nodes SET user_id = ?, data = ? WHERE id = ?').run(userId, JSON.stringify(data), `memory:${id}`)
     }
 
     const ownerOf = (db, id) => {
@@ -272,32 +283,91 @@ test.describe('attributePreIdentityMemories — evidence-bound attribution of pr
         expect(rows.map(({id}) => ownerOf(db, id).agentIdentity)).toEqual([IDENTITY, IDENTITY, IDENTITY])
     });
 
-    // left on `shared`, a projection would conflict with its re-keyed row in the reconciler
-    test('a row\'s legacy projection moves with it, and one that holds a foreign owner is refused', async () => {
+    test.describe('a row\'s legacy memory: projection', () => {
         const
-            rows       = [shared('m-start', 's-cli', MARKER), shared('m-legacy', 's-cli', 'a turn'), shared('m-foreign', 's-cli', 'a turn'), shared('m-curated', 's-cli', 'a turn')],
-            collection = createCollection(rows),
-            db         = createGraph(['m-start']),
-            mira       = {agentIdentity: IDENTITY, propertyUserId: 'neo-test-mira', userId: 'neo-test-mira'},
-            mirror     = {agentIdentity: undefined, propertyUserId: 'shared', userId: 'shared'},
-            legacyOf   = ids => ids.map(id => ownerOf(db, `memory:${id}`));
+            MIRA      = {agentIdentity: IDENTITY, propertyUserId: 'neo-test-mira', userId: 'neo-test-mira'},
+            MIRROR    = {agentIdentity: undefined, propertyUserId: 'shared', userId: 'shared'},
+            ORIN      = {agentIdentity: undefined, propertyUserId: 'neo-test-orin', userId: 'neo-test-orin'},
+            JOURNALED = JSON.stringify({agentIdentity: null, propertyUserId: 'shared', userId: 'shared'}),
+            legacyOf  = (db, ids) => ids.map(id => ownerOf(db, `memory:${id}`)),
+            reverse   = (collection, db) => reverseAttribution({collection, db, identity: IDENTITY, rows: collection.rows()});
 
-        addLegacyNode(db, 'm-start');
-        addLegacyNode(db, 'm-legacy');
-        addLegacyNode(db, 'm-foreign', {userId: 'neo-test-orin'});
-        addLegacyNode(db, 'm-curated', {chromaId: null});
+        // left on `shared`, a projection would conflict with its re-keyed row in the reconciler
+        test('moves with its row from the shared mirror, journaled first, and one holding a foreign owner is refused', async () => {
+            const
+                rows       = [shared('m-start', 's-cli', MARKER), shared('m-legacy', 's-cli', 'a turn'), shared('m-foreign', 's-cli', 'a turn'), shared('m-curated', 's-cli', 'a turn')],
+                collection = createCollection(rows),
+                db         = createGraph(['m-start']);
 
-        await expect(applyAttribution({collection, db, plan: plan(collection.rows())}))
-            .resolves.toEqual({chromaUpdated: 4, graphMissing: 3, graphUpdated: 1, legacyRefused: 1, legacyUpdated: 2});
-        expect(legacyOf(['m-start', 'm-legacy']), 'a twin and a lone projection both move').toEqual([mira, mira]);
-        expect(legacyOf(['m-foreign', 'm-curated'])).toEqual([{agentIdentity: undefined, propertyUserId: 'neo-test-orin', userId: 'neo-test-orin'}, mirror]);
+            addLegacyNode(db, 'm-start');
+            addLegacyNode(db, 'm-legacy');
+            addLegacyNode(db, 'm-foreign', {userId: 'neo-test-orin'});
+            addLegacyNode(db, 'm-curated', {chromaId: null});
 
-        await expect(applyAttribution({collection, db, plan: plan(collection.rows())}), 'a re-run moves nothing')
-            .resolves.toEqual({chromaUpdated: 0, graphMissing: 3, graphUpdated: 0, legacyRefused: 1, legacyUpdated: 0});
+            await expect(applyAttribution({collection, db, plan: plan(collection.rows())}))
+                .resolves.toEqual({chromaUpdated: 4, graphMissing: 3, graphUpdated: 1, legacyRefused: 1, legacyUpdated: 2});
+            expect(legacyOf(db, ['m-start', 'm-legacy']), 'a twin and a lone projection both move').toEqual([MIRA, MIRA]);
+            expect(legacyOf(db, ['m-foreign', 'm-curated'])).toEqual([ORIN, MIRROR]);
+            expect(['m-start', 'm-legacy', 'm-foreign'].map(id => collection.store.get(id).attributionLegacyPrior), 'only a moved projection is journaled')
+                .toEqual([JOURNALED, JOURNALED, undefined]);
 
-        await expect(reverseAttribution({collection, db, identity: IDENTITY, rows: collection.rows()}))
-            .resolves.toEqual({chromaRestored: 4, graphRestored: 1, legacyRefused: 1, legacyRestored: 2});
-        expect(legacyOf(['m-start', 'm-legacy', 'm-curated'])).toEqual([mirror, mirror, mirror])
+            await expect(applyAttribution({collection, db, plan: plan(collection.rows())}), 'a re-run moves nothing')
+                .resolves.toEqual({chromaUpdated: 0, graphMissing: 3, graphUpdated: 0, legacyRefused: 1, legacyUpdated: 0});
+
+            await expect(reverse(collection, db)).resolves.toEqual({chromaRestored: 4, graphRestored: 1, legacyRefused: 0, legacyRestored: 2});
+            expect(legacyOf(db, ['m-start', 'm-legacy', 'm-foreign', 'm-curated']), 'a projection the apply never moved is never restored')
+                .toEqual([MIRROR, MIRROR, ORIN, MIRROR])
+        });
+
+        test('a refused reverse keeps its row attributed, journal included, and a retry finishes it', async () => {
+            const
+                rows       = [shared('m-start', 's-cli', MARKER)],
+                collection = createCollection(rows),
+                db         = createGraph([]);
+
+            addLegacyNode(db, 'm-start');
+            await applyAttribution({collection, db, plan: plan(collection.rows())});
+            setLegacyOwner(db, 'm-start', 'neo-test-orin');
+
+            await expect(reverse(collection, db)).resolves.toEqual({chromaRestored: 0, graphRestored: 0, legacyRefused: 1, legacyRestored: 0});
+            expect(collection.store.get('m-start')).toMatchObject({agentIdentity: IDENTITY, attributionLegacyPrior: JOURNALED, attributionRule: 'harness-marker'});
+
+            setLegacyOwner(db, 'm-start', 'neo-test-mira', IDENTITY);
+
+            await expect(reverse(collection, db)).resolves.toEqual({chromaRestored: 1, graphRestored: 0, legacyRefused: 0, legacyRestored: 1});
+            expect(collection.store.get('m-start')).toEqual(rows[0].metadata);
+            expect(legacyOf(db, ['m-start'])).toEqual([MIRROR])
+        });
+
+        test('one the identity already held is left alone by an apply and by its reverse', async () => {
+            const
+                rows       = [shared('m-start', 's-cli', MARKER)],
+                collection = createCollection(rows),
+                db         = createGraph([]);
+
+            addLegacyNode(db, 'm-start', {agentIdentity: IDENTITY, userId: 'neo-test-mira'});
+
+            await expect(applyAttribution({collection, db, plan: plan(collection.rows())}))
+                .resolves.toEqual({chromaUpdated: 1, graphMissing: 1, graphUpdated: 0, legacyRefused: 0, legacyUpdated: 0});
+            expect(collection.store.get('m-start').attributionLegacyPrior).toBeUndefined();
+
+            await expect(reverse(collection, db)).resolves.toEqual({chromaRestored: 1, graphRestored: 0, legacyRefused: 0, legacyRestored: 0});
+            expect(legacyOf(db, ['m-start'])).toEqual([MIRA])
+        });
+
+        test('a row an earlier apply attributed without it journals and moves it on a re-apply', async () => {
+            const
+                rows       = [row('m-start', {agentIdentity: IDENTITY, attributionEvidence: MARKER, attributionPrior: 'null', attributionRule: 'harness-marker', prompt: MARKER, sessionId: 's-cli', userId: 'neo-test-mira'})],
+                collection = createCollection(rows),
+                db         = createGraph([]);
+
+            addLegacyNode(db, 'm-start');
+
+            await expect(applyAttribution({collection, db, plan: plan(collection.rows())}))
+                .resolves.toEqual({chromaUpdated: 1, graphMissing: 1, graphUpdated: 0, legacyRefused: 0, legacyUpdated: 1});
+            expect(collection.store.get('m-start').attributionLegacyPrior).toBe(JOURNALED);
+            expect(legacyOf(db, ['m-start'])).toEqual([MIRA])
+        });
     });
 
     test.describe('the read paths a re-keyed row travels', () => {
