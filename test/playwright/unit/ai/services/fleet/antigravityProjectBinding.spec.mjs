@@ -62,6 +62,7 @@ class FakeWebSocket extends EventEmitter {
                 break;
             case 'Target.getTargets':
                 this.behavior.targetReadCount = (this.behavior.targetReadCount ?? 0) + 1;
+                this.behavior.onTargetRead?.(this.behavior.targetReadCount);
                 result = {targetInfos: this.behavior.targetReadCount <= (this.behavior.rendererUnpublishedReads ?? 0)
                     ? []
                     : this.behavior.targets ?? [{targetId: 'page-a', type: 'page', url: this.currentUrl}]};
@@ -84,6 +85,8 @@ class FakeWebSocket extends EventEmitter {
                 result = {frameTree: {frame: {url: this.currentUrl}}};
                 break;
             case 'Accessibility.getFullAXTree':
+                this.behavior.axReadCount = (this.behavior.axReadCount ?? 0) + 1;
+                this.behavior.onAxRead?.(this.behavior.axReadCount);
                 result = {nodes: this.behavior.axNodes ?? [{
                     ignored: false,
                     role   : {value: 'button'},
@@ -303,7 +306,47 @@ test.describe('bindAntigravityProject', () => {
         await expect(stuckStep.run({
             timeoutMs: 180,
             now      : () => inFlightClock
-        })).rejects.toMatchObject({code: 'listener-unproven'})
+        })).rejects.toMatchObject({code: 'listener-unproven'});
+
+        const unreadyRenderer = harness({behavior: {rendererUnpublishedReads: 10}});
+
+        await expect(unreadyRenderer.run({
+            timeoutMs: 180,
+            now      : makeFinalSleepClock(() => (unreadyRenderer.behavior.targetReadCount ?? 0) >= 2)
+        })).rejects.toMatchObject({code: 'renderer-unproven'});
+        expect(unreadyRenderer.behavior.targetReadCount).toBe(2);
+
+        const missingMarker = harness({behavior: {marker: 'Select project, current: Another Project'}});
+
+        await expect(missingMarker.run({
+            timeoutMs: 180,
+            now      : makeFinalSleepClock(() => (missingMarker.behavior.axReadCount ?? 0) >= 2)
+        })).rejects.toMatchObject({code: 'marker-mismatch'});
+        expect(missingMarker.behavior.axReadCount).toBe(2);
+
+        const rendererSleepAbort = new AbortController(),
+              rendererSleep      = harness({
+                  behavior: {
+                      rendererUnpublishedReads: 10,
+                      onTargetRead            : () => setTimeout(() => rendererSleepAbort.abort(), 10)
+                  }
+              });
+
+        await expect(rendererSleep.run({signal: rendererSleepAbort.signal, timeoutMs: 1000}))
+            .rejects.toMatchObject({code: 'canceled'});
+        expect(rendererSleep.behavior.targetReadCount).toBe(1);
+
+        const markerSleepAbort = new AbortController(),
+              markerSleep      = harness({
+                  behavior: {
+                      marker  : 'Select project, current: Another Project',
+                      onAxRead: () => setTimeout(() => markerSleepAbort.abort(), 10)
+                  }
+              });
+
+        await expect(markerSleep.run({signal: markerSleepAbort.signal, timeoutMs: 1000}))
+            .rejects.toMatchObject({code: 'canceled'});
+        expect(markerSleep.behavior.axReadCount).toBe(1)
     });
 
     test('Start cancellation during profile readiness or the inter-poll sleep stops polling before a socket is opened', async () => {

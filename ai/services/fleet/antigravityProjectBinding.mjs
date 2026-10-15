@@ -124,17 +124,17 @@ export async function bindAntigravityProject({
         throw refuse('browser-unavailable')
     }
 
-    const cdp = createCdpConnection(socket);
+    const cdp = createCdpConnection(socket, now);
 
     try {
-        await waitForSocketOpen(socket, deadline, signal);
+        await waitForSocketOpen(socket, deadline, signal, now);
 
         const version = await cdp.call('Browser.getVersion', {}, null, deadline, signal)
             .catch(error => { throw preserveRefusal(error, 'browser-unavailable') });
 
         if (typeof version?.product !== 'string' || !version.product) throw refuse('browser-unavailable');
 
-        const renderers = await waitForUniqueRenderer({cdp, deadline, signal});
+        const renderers = await waitForUniqueRenderer({cdp, deadline, signal, now});
 
         const renderer = renderers[0], rendererUrl = canonicalRendererUrl(renderer.url), capabilityProof =
             await within(Promise.resolve().then(() => verifyNativeCapability({
@@ -145,7 +145,7 @@ export async function bindAntigravityProject({
                 rendererUrl,
                 listenerProof,
                 signal
-            })), deadline, signal).catch(error => { throw preserveRefusal(error, 'native-capability-unproven') });
+            })), deadline, signal, now).catch(error => { throw preserveRefusal(error, 'native-capability-unproven') });
 
         if (!capabilityMatches(capabilityProof, projectProof, version.product)) {
             throw refuse(capabilityProof?.reason === 'runtime-changed-during-start' ? 'runtime-changed-during-start' : 'native-capability-unproven')
@@ -177,7 +177,7 @@ export async function bindAntigravityProject({
 
         const marker = `Select project, current: ${projectProof.name}`;
 
-        await waitForProjectMarker({cdp, sessionId, marker, deadline, signal});
+        await waitForProjectMarker({cdp, sessionId, marker, deadline, signal, now});
         observedUrl = await readRendererUrl(cdp, sessionId, deadline, signal);
 
         if (observedUrl !== expectedUrl) throw refuse('route-mismatch');
@@ -333,8 +333,8 @@ function waitForPollInterval(delay, signal) {
 }
 
 /** @summary Wait for the first unique Antigravity renderer without selecting an ambiguous page. @private */
-async function waitForUniqueRenderer({cdp, deadline, signal}) {
-    while (remaining(deadline) > 0) {
+async function waitForUniqueRenderer({cdp, deadline, signal, now = Date.now}) {
+    while (remaining(deadline, now) > 0) {
         checkAbort(signal);
         const targets = await cdp.call('Target.getTargets', {}, null, deadline, signal)
             .catch(error => { throw preserveRefusal(error, 'browser-unavailable') });
@@ -344,9 +344,13 @@ async function waitForUniqueRenderer({cdp, deadline, signal}) {
         if (renderers.length > 1) throw refuse('renderer-ambiguous');
         if (renderers.length === 1) return renderers;
 
-        await within(new Promise(resolve => setTimeout(resolve, Math.min(POLL_INTERVAL, remaining(deadline)))), deadline, signal)
+        const delay = Math.min(POLL_INTERVAL, remaining(deadline, now));
+        if (delay <= 0) break;
+
+        await waitForPollInterval(delay, signal)
     }
 
+    checkAbort(signal);
     throw refuse('renderer-unproven')
 }
 
@@ -396,7 +400,7 @@ function projectRoute(rendererUrl, projectId) {
 }
 
 /** @summary Correlate bounded CDP commands/events over the one profile-owned WebSocket. @private */
-function createCdpConnection(socket) {
+function createCdpConnection(socket, now = Date.now) {
     let   nextId  = 0;
     const pending = new Map(), eventListeners = new Set();
 
@@ -437,7 +441,7 @@ function createCdpConnection(socket) {
     return {
         call(method, params, sessionId, deadline, signal) {
             const id = ++nextId;
-            return boundedWait({deadline, signal, subscribe: (resolve, reject) => {
+            return boundedWait({deadline, signal, now, subscribe: (resolve, reject) => {
                 pending.set(id, {method, resolve, reject});
                 try {
                     socket.send(JSON.stringify({id, method, params, ...(sessionId ? {sessionId} : {})}))
@@ -448,7 +452,7 @@ function createCdpConnection(socket) {
             }})
         },
         waitForEvent(method, sessionId, deadline, signal) {
-            return boundedWait({deadline, signal, subscribe: (resolve, reject) => {
+            return boundedWait({deadline, signal, now, subscribe: (resolve, reject) => {
                 const entry = {method, sessionId, resolve, reject};
                 eventListeners.add(entry)
                 return () => eventListeners.delete(entry)
@@ -464,10 +468,10 @@ function createCdpConnection(socket) {
 }
 
 /** @summary Await the exact browser WebSocket without leaking listeners on abort or timeout. @private */
-function waitForSocketOpen(socket, deadline, signal) {
+function waitForSocketOpen(socket, deadline, signal, now = Date.now) {
     if (socket.readyState === WebSocket.OPEN) return Promise.resolve();
 
-    return boundedWait({deadline, signal, subscribe: (resolve, reject) => {
+    return boundedWait({deadline, signal, now, subscribe: (resolve, reject) => {
         const open  = () => resolve(),
               error = () => reject(refuse('browser-unavailable')),
               close = () => reject(refuse('browser-unavailable'));
@@ -493,8 +497,8 @@ async function readRendererUrl(cdp, sessionId, deadline, signal) {
 }
 
 /** @summary Wait boundedly for one visible project selector with the exact registered project name. @private */
-async function waitForProjectMarker({cdp, sessionId, marker, deadline, signal}) {
-    while (Date.now() < deadline) {
+async function waitForProjectMarker({cdp, sessionId, marker, deadline, signal, now = Date.now}) {
+    while (remaining(deadline, now) > 0) {
         checkAbort(signal);
         const response = await cdp.call('Accessibility.getFullAXTree', {}, sessionId, deadline, signal)
             .catch(error => { throw error instanceof AntigravityProjectBindingRefusal ? error : refuse('marker-unavailable') });
@@ -504,9 +508,13 @@ async function waitForProjectMarker({cdp, sessionId, marker, deadline, signal}) 
         if (matches.length > 1) throw refuse('marker-ambiguous');
         if (matches.length === 1) return;
 
-        await within(new Promise(resolve => setTimeout(resolve, Math.min(POLL_INTERVAL, remaining(deadline)))), deadline, signal)
+        const delay = Math.min(POLL_INTERVAL, remaining(deadline, now));
+        if (delay <= 0) break;
+
+        await waitForPollInterval(delay, signal)
     }
 
+    checkAbort(signal);
     throw refuse('marker-mismatch')
 }
 
