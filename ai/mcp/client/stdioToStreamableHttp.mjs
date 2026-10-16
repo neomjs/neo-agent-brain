@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 
-import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import {StdioServerTransport}          from '@modelcontextprotocol/sdk/server/stdio.js';
-import {ErrorCode}                     from '@modelcontextprotocol/sdk/types.js';
-import {Command}                       from 'commander';
-import {pathToFileURL}                 from 'node:url';
+import {StreamableHTTPClientTransport}     from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {StdioServerTransport}              from '@modelcontextprotocol/sdk/server/stdio.js';
+import {ErrorCode, InitializeResultSchema} from '@modelcontextprotocol/sdk/types.js';
+import {Command}                           from 'commander';
+import {isDeepStrictEqual}                 from 'node:util';
+import {pathToFileURL}                     from 'node:url';
 
 const
     RECOVERED_MESSAGE       = 'Neo MCP bridge kept its session after a transport error.',
     REQUEST_FAILURE_MESSAGE = 'Neo MCP bridge could not deliver the request.',
     RUNTIME_FAILURE_MESSAGE = 'Neo MCP bridge transport failed.',
-    SESSION_ENDING_CODES    = new Set([-1, 401, 403, 404]),
+    SESSION_ENDING_CODES    = new Set([-1, 401, 403]),
     STARTUP_FAILURE_MESSAGE = 'Neo MCP bridge failed to start.';
 
 /**
@@ -27,6 +28,9 @@ class BridgeConfigurationError extends Error {
         this.name = 'BridgeConfigurationError'
     }
 }
+
+/** @summary Refuse a replacement handshake that changes the local client's negotiated contract. */
+class BridgeProtocolError extends Error {}
 
 /**
  * @summary Build the fail-loud CLI grammar for Neo's deliberately narrow local bridge.
@@ -94,6 +98,7 @@ export function getStartupFailureMessage(error) {
  * @returns {String}
  */
 export function getBridgeErrorCause(error) {
+    if (error instanceof BridgeProtocolError) return 'protocol-mismatch';
     const message = typeof error?.message === 'string' ? error.message : '';
 
     if (message.startsWith('SSE stream disconnected'))       return 'sse-disconnect';
@@ -108,68 +113,68 @@ export function getBridgeErrorCause(error) {
 }
 
 /**
- * @summary Wire two MCP SDK transports, declining unsupported discovery before an HTTP session exists.
- * A stdio client may probe `server/discover` before initialization. This bridge does not implement
- * discovery: answer MethodNotFound locally so the client can initialize instead of losing its
- * connection to the HTTP transport's pre-session refusal. Initialized traffic remains transparent.
- * Initialization responses propagate the negotiated protocol version into the HTTP transport.
- *
- * After initialization the bridge survives what costs no message. The SDK reconnects a dropped
- * standalone GET stream itself, and a POST response stream exists only while a request is pending
- * (the plane keeps no event store, so it cannot resume); a delivered cancellation retires its request.
- * The SDK reports an error to `onerror` before it rejects the send that raised it or retries the
- * stream that lost it, so `onerror` closes only on what is terminal by itself — any failure before
- * initialization, exhausted reconnection, a stream drop with a request pending — and reports anything
- * else as survived one task later, unless a send claimed it first. A request whose delivery fails is
- * answered locally with a JSON-RPC error; a session or auth refusal, or a local transport error,
- * closes both sides exactly once, as does any close. Every report names its cause.
+ * @summary Keep a local MCP connection while replacing a lost remote HTTP session.
+ * Lost requests receive an error with an unknown outcome and are never replayed. Only future
+ * traffic joins a bounded initialization flight, using the original client parameters and protocol
+ * contract. Idle SSE reconnects stay with the SDK; auth, protocol and local failures stay terminal.
  * @param {Object} options
  * @param {Object} options.localTransport Stdio-facing server transport.
- * @param {Object} options.remoteTransport Streamable-HTTP-facing client transport.
- * @param {Function} [options.onError] Receives the terminal report.
- * @param {Function} [options.onRecovered] Receives each survived error's report.
+ * @param {Object} options.remoteTransport Initial HTTP client transport.
+ * @param {Function} [options.createRemoteTransport] Creates a fresh HTTP transport without a session ID.
+ * @param {Number} [options.reinitializeTimeoutMs=10000] Bounds one replacement handshake.
+ * @param {Function} [options.onError] Receives terminal reports.
+ * @param {Function} [options.onRecovered] Receives survived-error reports.
  * @returns {Promise<{close: Function}>}
  */
 export async function bridgeTransports({
     localTransport,
     remoteTransport,
+    createRemoteTransport,
+    reinitializeTimeoutMs = 10000,
     onError     = error => process.stderr.write(`${error.message}\n`),
     onRecovered = error => process.stderr.write(`${error.message}\n`)
 }) {
-    const pendingRequestIds = new Set();
+    const
+        pending        = new Map(),
+        serverRequests = new Map(),
+        claimedErrors  = new WeakSet(),
+        reportedErrors = new WeakSet();
     let
-        closePromise          = null,
-        initializeRequestId,
-        initialized           = false,
+        current,
+        closePromise = null,
+        initializeRequest,
+        initializeResult,
+        initializationFlight = null,
+        initialized = false,
+        sequence = 0,
         terminalErrorReported = false;
-
-    const close = ({terminate=true} = {}) => {
-        if (closePromise) return closePromise;
-
-        closePromise = Promise.resolve().then(async () => {
-            if (terminate) {
-                try {
-                    await remoteTransport.terminateSession?.()
-                } catch {
-                    // Session termination is best-effort during an already-requested shutdown.
-                }
-            }
-
-            await Promise.allSettled([
-                localTransport.close(),
-                remoteTransport.close()
-            ])
-        });
-
-        return closePromise
-    };
 
     const report = (reporter, text, error) => {
         try {
             reporter(new Error(`${text} Cause: ${getBridgeErrorCause(error)}.`))
         } catch {
-            // A reporter failure must never prevent transport cleanup.
+            // Reporting must never prevent cleanup.
         }
+    };
+
+    const close = ({terminate=true} = {}) => {
+        if (closePromise) return closePromise;
+
+        const generation = current;
+        current = null;
+        generation?.handshake?.reject(new Error('Bridge closed.'));
+
+        closePromise = Promise.resolve().then(async () => {
+            if (terminate) {
+                try {
+                    await generation?.transport.terminateSession?.()
+                } catch {
+                    // Remote termination is best-effort on an already-requested shutdown.
+                }
+            }
+            await Promise.allSettled([localTransport.close(), generation?.transport.close()])
+        });
+        return closePromise
     };
 
     const fail = error => {
@@ -177,124 +182,234 @@ export async function bridgeTransports({
 
         terminalErrorReported = true;
         report(onError, RUNTIME_FAILURE_MESSAGE, error);
-
         void close({terminate: false})
     };
 
-    // The SDK hands an error to `onerror` BEFORE it rejects the send that raised it or retries the stream
-    // that lost it, and may hand the same object twice. So `onerror` decides only what is terminal on its
-    // own; anything else waits one task, letting a send rejection claim its error, and is reported as
-    // survived once, unless it was claimed or the bridge closed meanwhile.
-    const claimedErrors  = new WeakSet(),
-          reportedErrors = new WeakSet();
+    const answerFailure = (id, request, error, unknown=false) => {
+        if (closePromise || pending.get(id) !== request) return;
 
-    const isTerminalRemoteError = error => {
-        const cause = getBridgeErrorCause(error);
-
-        // a session or auth refusal ends the session whichever request met it, a stream GET included
-        return !initialized || SESSION_ENDING_CODES.has(error?.code) || cause === 'sse-reconnect-exhausted' ||
-            (cause === 'sse-disconnect' && pendingRequestIds.size > 0)
+        pending.delete(id);
+        return localTransport.send({
+            jsonrpc: '2.0',
+            id,
+            error  : {
+                code   : ErrorCode.InternalError,
+                message: `${REQUEST_FAILURE_MESSAGE} Cause: ${getBridgeErrorCause(error)}.`,
+                ...(unknown ? {data: {outcome: 'unknown'}} : {})
+            }
+        })
     };
 
-    const onRemoteError = error => {
-        if (isTerminalRemoteError(error)) return fail(error);
+    const retire = (generation, error) => {
+        if (!generation || current !== generation || closePromise) return;
+
+        current = null;
+        generation.handshake?.reject(error);
+        // Fence before close(): the SDK invokes onclose synchronously and aborted sends reject later.
+        generation.transport.onmessage = generation.transport.onerror = generation.transport.onclose = undefined;
+        for (const [id, owner] of serverRequests) {
+            if (owner.generation === generation) serverRequests.delete(id)
+        }
+        for (const [id, request] of pending) {
+            if (request.generation === generation) {
+                Promise.resolve(answerFailure(id, request, error, request.sent)).catch(fail)
+            }
+        }
+        report(onRecovered, 'Neo MCP bridge is renewing its remote session.', error);
+        void Promise.resolve().then(() => generation.transport.close()).catch(() => {})
+    };
+
+    const isTerminal = error => !initialized || error instanceof BridgeProtocolError || SESSION_ENDING_CODES.has(error?.code);
+
+    const onRemoteError = (generation, error) => {
+        if (current !== generation || closePromise) return;
+        if (isTerminal(error)) return fail(error);
+
+        const cause = getBridgeErrorCause(error);
+        if (error?.code === 404 || cause === 'sse-reconnect-exhausted' ||
+            cause === 'sse-disconnect' && (generation.handshake || [...pending.values()].some(
+                request => request.generation === generation
+            ))) return retire(generation, error);
 
         setTimeout(() => {
             const tracked = error !== null && typeof error === 'object';
-
-            if (closePromise || tracked && (claimedErrors.has(error) || reportedErrors.has(error))) return;
+            if (current !== generation || closePromise ||
+                tracked && (claimedErrors.has(error) || reportedErrors.has(error))) return;
 
             tracked && reportedErrors.add(error);
             report(onRecovered, RECOVERED_MESSAGE, error)
         }, 0)
     };
 
+    const wire = transport => {
+        const generation = {transport, handshake: null, serverIds: new Map()};
+        current = generation;
+
+        transport.onerror = error => onRemoteError(generation, error);
+        transport.onclose = () => {
+            if (current === generation) void close({terminate: false})
+        };
+        transport.onmessage = message => {
+            if (current !== generation || closePromise) return;
+
+            const isResponse = Object.hasOwn(message, 'id') &&
+                (Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error'));
+
+            if (isResponse && generation.handshake?.id === message.id) {
+                const parsed = InitializeResultSchema.safeParse(message.result);
+                if (!parsed.success || parsed.data.protocolVersion !== initializeResult.protocolVersion ||
+                    !isDeepStrictEqual(parsed.data.capabilities, initializeResult.capabilities)) {
+                    // A replacement cannot silently change the contract already seen by the local client.
+                    const error = new BridgeProtocolError('Incompatible initialization response.');
+                    generation.handshake.reject(error);
+                    fail(error);
+                    return
+                }
+                transport.setProtocolVersion?.(parsed.data.protocolVersion);
+                generation.handshake.resolve();
+                return
+            }
+
+            if (isResponse) {
+                const request = pending.get(message.id);
+                if (request?.generation !== generation) return;
+                pending.delete(message.id);
+
+                if (!initialized && message.id === initializeRequest?.id) {
+                    if (typeof message.result?.protocolVersion === 'string') {
+                        initialized = true;
+                        initializeResult = structuredClone(message.result);
+                        transport.setProtocolVersion?.(message.result.protocolVersion)
+                    }
+                    initializeRequest = {...initializeRequest, id: undefined}
+                }
+            }
+            if (Object.hasOwn(message, 'id') && typeof message.method === 'string') {
+                // A restarted server may reuse its counter while the local client still handles an old request.
+                const id = `neo-bridge-server-${++sequence}`;
+                serverRequests.set(id, {generation, originalId: message.id});
+                generation.serverIds.set(message.id, id);
+                message = {...message, id}
+            } else if (message.method === 'notifications/cancelled') {
+                const id = generation.serverIds.get(message.params?.requestId);
+                if (id === undefined) return;
+                message = {...message, params: {...message.params, requestId: id}}
+            }
+            Promise.resolve().then(() => {
+                if (current === generation && !closePromise) return localTransport.send(message)
+            }).catch(fail)
+        };
+        return generation
+    };
+
+    const ensureRemote = () => {
+        if (initializationFlight) return initializationFlight;
+        if (current) return Promise.resolve(current);
+
+        initializationFlight = Promise.resolve().then(async () => {
+            let generation, timer;
+            try {
+                if (closePromise) throw new Error('Bridge closed.');
+                generation = wire(createRemoteTransport());
+                const ready = new Promise((resolve, reject) => {
+                    generation.handshake = {id: `neo-bridge-initialize-${++sequence}`, resolve, reject}
+                }), timeout = new Promise((_, reject) => {
+                    timer = setTimeout(() => reject(Object.assign(new Error('Initialization timed out.'), {
+                        name: 'TimeoutError'
+                    })), reinitializeTimeoutMs)
+                });
+                // Attach the rejection handler before start/send can report a transport error.
+                const sent = Promise.resolve().then(async () => {
+                    await generation.transport.start();
+                    if (current !== generation || closePromise) throw new Error('Bridge closed.');
+                    await generation.transport.send({
+                        ...initializeRequest,
+                        id    : generation.handshake.id,
+                        params: structuredClone(initializeRequest.params)
+                    })
+                });
+                await Promise.race([timeout, Promise.all([ready, sent]).then(async () => {
+                    if (current !== generation || closePromise) throw new Error('Bridge closed.');
+                    await generation.transport.send({jsonrpc: '2.0', method: 'notifications/initialized'})
+                })]);
+                if (current !== generation || closePromise) throw new Error('Bridge closed.');
+                generation.handshake = null;
+                return generation
+            } catch (error) {
+                if (isTerminal(error)) fail(error);
+                else if (generation) retire(generation, error);
+                throw error
+            } finally {
+                clearTimeout(timer)
+            }
+        }).finally(() => { initializationFlight = null });
+        return initializationFlight
+    };
+
     localTransport.onmessage = message => {
+        if (closePromise) return;
         if (!initialized && message.method === 'server/discover' && Object.hasOwn(message, 'id')) {
-            Promise.resolve()
-                .then(() => localTransport.send({
-                    jsonrpc: '2.0',
-                    id     : message.id,
-                    error  : {code: ErrorCode.MethodNotFound, message: 'Method not found'}
-                }))
-                .catch(fail);
+            Promise.resolve().then(() => localTransport.send({
+                jsonrpc: '2.0', id: message.id, error: {code: ErrorCode.MethodNotFound, message: 'Method not found'}
+            })).catch(fail);
             return
         }
 
         const
-            isRequest   = Object.hasOwn(message, 'id') && typeof message.method === 'string',
-            // a delivered cancellation may legitimately never be answered, so its request stops being pending
+            isRequest  = Object.hasOwn(message, 'id') && typeof message.method === 'string',
+            isResponse = Object.hasOwn(message, 'id') &&
+                (Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error')),
+            responseOwner = isResponse ? serverRequests.get(message.id) : null,
+            request = {generation: initializationFlight ? null : current, sent: false},
             cancelledId = message.method === 'notifications/cancelled' ? message.params?.requestId : undefined;
 
-        if (message.method === 'initialize' && Object.hasOwn(message, 'id')) {
-            initializeRequestId = message.id
+        if (isResponse) {
+            serverRequests.delete(message.id);
+            if (!responseOwner || responseOwner.generation !== current) return;
+            current.serverIds.delete(responseOwner.originalId);
+            message = {...message, id: responseOwner.originalId}
         }
+        if (!initialized && message.method === 'initialize' && isRequest) initializeRequest = structuredClone(message);
+        if (isRequest) pending.set(message.id, request);
 
-        if (isRequest) pendingRequestIds.add(message.id);
-
-        Promise.resolve()
-            .then(() => remoteTransport.send(message))
-            .then(() => {
-                if (cancelledId !== undefined) pendingRequestIds.delete(cancelledId)
-            }, error => {
-                if (error !== null && typeof error === 'object') claimedErrors.add(error);
-
-                // a send aborted by the bridge's own close is no survived error
-                if (closePromise) return;
-
-                if (!initialized || !isRequest || SESSION_ENDING_CODES.has(error?.code)) return fail(error);
-
-                pendingRequestIds.delete(message.id);
-                report(onRecovered, RECOVERED_MESSAGE, error);
-
-                return localTransport.send({
-                    jsonrpc: '2.0',
-                    id     : message.id,
-                    error  : {
-                        code   : ErrorCode.InternalError,
-                        message: `${REQUEST_FAILURE_MESSAGE} Cause: ${getBridgeErrorCause(error)}.`
-                    }
-                })
-            })
-            .catch(fail)
-    };
-    remoteTransport.onmessage = message => {
-        if (Object.hasOwn(message, 'id') && (Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error'))) {
-            pendingRequestIds.delete(message.id)
-        }
-
-        const isInitializeResponse =
-            initializeRequestId !== undefined &&
-            Object.hasOwn(message, 'id') &&
-            message.id === initializeRequestId &&
-            (Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error'));
-
-        if (isInitializeResponse) {
-            initializeRequestId = undefined;
-
-            if (typeof message.result?.protocolVersion === 'string') {
-                initialized = true;
-                remoteTransport.setProtocolVersion?.(message.result.protocolVersion)
+        // The first handshake stays transparent; later handshakes are internal.
+        const remoteReady = isResponse ? Promise.resolve(responseOwner.generation) :
+            initialized ? ensureRemote() : Promise.resolve(current);
+        remoteReady.then(async generation => {
+            if (closePromise) return;
+            if (current !== generation) {
+                if (isRequest) return answerFailure(message.id, request, new Error('Remote retired before send.'));
+                return
             }
-        }
-
-        Promise.resolve()
-            .then(() => localTransport.send(message))
-            .catch(fail)
+            request.generation = generation;
+            request.sent = true;
+            await generation.transport.send(message);
+            if (cancelledId !== undefined) pending.delete(cancelledId)
+        }).catch(error => {
+            if (error !== null && typeof error === 'object') claimedErrors.add(error);
+            if (closePromise) return;
+            if (isTerminal(error)) return fail(error);
+            if (request.generation && current !== request.generation) return;
+            if (request.generation && error?.code === 404) return retire(request.generation, error);
+            if (!isRequest) {
+                // Lost notifications cannot be answered. Renew before accepting future traffic.
+                if (current) retire(current, error);
+                return
+            }
+            report(onRecovered, RECOVERED_MESSAGE, error);
+            return answerFailure(message.id, request, error, request.sent)
+        }).catch(fail)
     };
-    localTransport.onerror  = fail;
-    remoteTransport.onerror = onRemoteError;
-    localTransport.onclose  = () => void close();
-    remoteTransport.onclose = () => void close({terminate: false});
-
+    localTransport.onerror = fail;
+    localTransport.onclose = () => void close();
+    const initial = wire(remoteTransport);
     try {
-        await remoteTransport.start();
+        await initial.transport.start();
         await localTransport.start()
     } catch (error) {
         await close({terminate: false});
         throw error
     }
-
     return {close: () => close()}
 }
 
@@ -319,13 +434,13 @@ export async function startBridge({
         throw new BridgeConfigurationError('Bridge bearer environment slot is missing or empty.')
     }
 
-    remoteTransport ||= new StreamableHTTPClientTransport(endpoint, {
+    const createRemoteTransport = () => new StreamableHTTPClientTransport(endpoint, {
         requestInit: {
             headers: {Authorization: `Bearer ${token}`}
         }
     });
 
-    return bridgeTransports({localTransport, remoteTransport, onError})
+    return bridgeTransports({localTransport, remoteTransport: remoteTransport || createRemoteTransport(), createRemoteTransport, onError})
 }
 
 /**

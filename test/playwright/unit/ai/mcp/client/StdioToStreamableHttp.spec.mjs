@@ -54,7 +54,7 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 5));
 const httpError = (code, text) => Object.assign(new Error(`Streamable HTTP error: ${text}`), {code});
 
 /** @summary Run one bridge with recording reporters and complete its handshake. */
-async function startInitializedBridge() {
+async function startInitializedBridge(options={}) {
     const
         errors    = [],
         recovered = [],
@@ -64,11 +64,12 @@ async function startInitializedBridge() {
             localTransport : local,
             remoteTransport: remote,
             onError        : error => errors.push(error.message),
-            onRecovered    : error => recovered.push(error.message)
+            onRecovered    : error => recovered.push(error.message),
+            ...options
         });
 
     local.onmessage({jsonrpc: '2.0', id: 'init', method: 'initialize', params: {}});
-    remote.onmessage({jsonrpc: '2.0', id: 'init', result: {protocolVersion: '2025-11-25'}});
+    remote.onmessage({jsonrpc: '2.0', id: 'init', result: {protocolVersion: '2025-11-25', capabilities: {}, serverInfo: {name: 'fixture', version: '1'}}});
     await flush();
 
     return {bridge, errors, local, recovered, remote}
@@ -214,7 +215,7 @@ test.describe('stdioToStreamableHttp', () => {
         expect(remote.started).toBe(1);
         expect(local.started).toBe(1);
         expect(remote.messages).toEqual([initialize]);
-        expect(local.messages).toEqual([response, reusedId]);
+        expect(local.messages).toEqual([response]);
         expect(remote.protocolVersion).toBe('2025-11-25');
         expect(errors).toEqual([]);
 
@@ -354,7 +355,7 @@ test.describe('stdioToStreamableHttp', () => {
         await bridge.close()
     });
 
-    test('a dropped stream while a request is pending closes the bridge with its cause', async () => {
+    test('a dropped stream answers the lost request without closing local stdio or replaying it', async () => {
         const {errors, local, recovered, remote} = await startInitializedBridge();
 
         local.onmessage({jsonrpc: '2.0', id: 9, method: 'tools/call', params: {name: 'add_memory'}});
@@ -362,20 +363,26 @@ test.describe('stdioToStreamableHttp', () => {
         remote.onerror(new Error('SSE stream disconnected: TypeError: terminated'));
         await flush();
 
-        expect(recovered).toEqual([]);
-        expect(errors).toEqual(['Neo MCP bridge transport failed. Cause: sse-disconnect.']);
-        expect(local.closed).toBe(1);
-        expect(remote.closed).toBe(1)
+        expect(errors).toEqual([]);
+        expect(local.closed).toBe(0);
+        expect(remote.closed).toBe(1);
+        expect(local.messages.filter(message => message.id === 9)).toEqual([{
+            jsonrpc: '2.0', id: 9,
+            error  : {code: -32603, message: 'Neo MCP bridge could not deliver the request. Cause: sse-disconnect.', data: {outcome: 'unknown'}}
+        }]);
+        expect(remote.messages.filter(message => message.method === 'tools/call')).toHaveLength(1)
     });
 
-    test('exhausted reconnection and a refused session still close the bridge, each naming its cause', async () => {
+    test('exhausted reconnection and a refused session retire only the remote transport', async () => {
         const exhausted = await startInitializedBridge();
 
         exhausted.remote.onerror(new Error('Maximum reconnection attempts (2) exceeded.'));
         await flush();
 
-        expect(exhausted.errors).toEqual(['Neo MCP bridge transport failed. Cause: sse-reconnect-exhausted.']);
-        expect(exhausted.local.closed).toBe(1);
+        expect(exhausted.errors).toEqual([]);
+        expect(exhausted.recovered).toEqual(['Neo MCP bridge is renewing its remote session. Cause: sse-reconnect-exhausted.']);
+        expect(exhausted.local.closed).toBe(0);
+        await exhausted.bridge.close();
 
         const refused = await startInitializedBridge();
 
@@ -388,8 +395,10 @@ test.describe('stdioToStreamableHttp', () => {
         refused.local.onmessage({jsonrpc: '2.0', id: 4, method: 'tools/call', params: {}});
         await flush();
 
-        expect(refused.errors).toEqual(['Neo MCP bridge transport failed. Cause: http-404.']);
-        expect(refused.local.closed).toBe(1)
+        expect(refused.errors).toEqual([]);
+        expect(refused.local.closed).toBe(0);
+        expect(refused.local.messages.at(-1)).toMatchObject({id: 4, error: {data: {outcome: 'unknown'}}});
+        await refused.bridge.close()
     });
 
     test('a request whose delivery fails is answered locally while the session stays open', async () => {
@@ -413,7 +422,7 @@ test.describe('stdioToStreamableHttp', () => {
         expect(local.messages.at(-1)).toEqual({
             jsonrpc: '2.0',
             id     : 11,
-            error  : {code: -32603, message: 'Neo MCP bridge could not deliver the request. Cause: http-502.'}
+            error  : {code: -32603, message: 'Neo MCP bridge could not deliver the request. Cause: http-502.', data: {outcome: 'unknown'}}
         });
         expect(remote.messages.at(-1).id).toBe(12);
         expect(recovered).toEqual(['Neo MCP bridge kept its session after a transport error. Cause: http-502.']);
@@ -424,7 +433,7 @@ test.describe('stdioToStreamableHttp', () => {
         await bridge.close()
     });
 
-    test('a retried reconnect survives in the SDK order, and only exhaustion closes', async () => {
+    test('a retried reconnect survives in the SDK order, and exhaustion retires the remote', async () => {
         for (const [raw, cause] of [
             [httpError(502, 'Failed to open SSE stream: Bad Gateway'), 'http-502'],
             [new TypeError('fetch failed'),                            'network']
@@ -446,13 +455,14 @@ test.describe('stdioToStreamableHttp', () => {
             remote.onerror(new Error('Maximum reconnection attempts (2) exceeded.'));
             await flush();
 
-            expect(errors).toEqual(['Neo MCP bridge transport failed. Cause: sse-reconnect-exhausted.']);
-            expect(local.closed).toBe(1)
+            expect(errors).toEqual([]);
+            expect(local.closed).toBe(0);
+            expect(remote.closed).toBe(1)
         }
     });
 
-    test('a session or auth refusal on the stream GET closes, with no survival report', async () => {
-        for (const code of [401, 403, 404]) {
+    test('an auth refusal on the stream GET closes, with no survival report', async () => {
+        for (const code of [401, 403]) {
             const {errors, local, recovered, remote} = await startInitializedBridge();
 
             remote.onerror(httpError(code, 'Failed to open SSE stream: refused'));
@@ -473,7 +483,7 @@ test.describe('stdioToStreamableHttp', () => {
                 abortPending = () => reject(Object.assign(new Error('This operation was aborted'), {name: 'AbortError'}))
             })
             : Promise.resolve().then(() => {
-                const error = httpError(404, 'Error POSTing to endpoint: Session not found');
+                const error = httpError(403, 'Error POSTing to endpoint: Session not found');
 
                 remote.onerror(error);
                 throw error
@@ -484,7 +494,7 @@ test.describe('stdioToStreamableHttp', () => {
         abortPending();
         await flush();
 
-        expect(errors).toEqual(['Neo MCP bridge transport failed. Cause: http-404.']);
+        expect(errors).toEqual(['Neo MCP bridge transport failed. Cause: http-403.']);
         expect(recovered).toEqual([]);
         expect(local.messages.some(message => message.id === 8)).toBe(false);
         expect(local.closed).toBe(1)
@@ -509,7 +519,7 @@ test.describe('stdioToStreamableHttp', () => {
         }
     });
 
-    test('a delivered cancellation retires its request, while a live request still makes a drop terminal', async () => {
+    test('a delivered cancellation retires its request, while a live request is answered on a drop', async () => {
         const
             drop      = () => new Error('SSE stream disconnected: TypeError: terminated'),
             cancelled = await startInitializedBridge(),
@@ -528,13 +538,16 @@ test.describe('stdioToStreamableHttp', () => {
 
         expect(cancelled.errors).toEqual([]);
         expect(cancelled.local.closed).toBe(0);
-        expect(live.errors).toEqual(['Neo MCP bridge transport failed. Cause: sse-disconnect.']);
-        expect(live.local.closed).toBe(1);
+        expect(live.errors).toEqual([]);
+        expect(live.local.closed).toBe(0);
+        expect(live.local.messages.filter(message => message.id === 5)).toEqual([]);
+        expect(live.local.messages.find(message => message.id === 6).error.data).toEqual({outcome: 'unknown'});
+        await live.bridge.close();
 
         await cancelled.bridge.close()
     });
 
-    test('with the real SDK client, a 502 on the GET stream or on one request keeps the session and a 404 ends it', async () => {
+    test('with the real SDK client, a 502 keeps the session and a 404 retires only the remote', async () => {
         const server = createServer(async (request, response) => {
             if (request.method === 'GET') {
                 response.writeHead(502).end();
@@ -603,12 +616,161 @@ test.describe('stdioToStreamableHttp', () => {
             ]);
 
             local.onmessage({jsonrpc: '2.0', id: 4, method: 'tools/list', params: {}});
-            await expect.poll(() => errors).toEqual(['Neo MCP bridge transport failed. Cause: http-404.']);
-            expect(local.closed).toBe(1);
-            expect(recovered).toHaveLength(2)
+            await expect.poll(() => answer(4)).toBeTruthy();
+            expect(errors).toEqual([]);
+            expect(local.closed).toBe(0);
+            expect(answer(4).error.data).toEqual({outcome: 'unknown'});
+            expect(recovered).toHaveLength(3)
         } finally {
             await remote.close().catch(() => {});
             await new Promise(resolve => server.close(resolve))
+        }
+    });
+
+
+    test('concurrent future calls share a hidden handshake and ignore every retired callback', async () => {
+        const replacement                     = new FakeTransport();
+        let   factories                       = 0;
+        const {bridge, errors, local, remote} = await startInitializedBridge({
+            createRemoteTransport: () => { factories++; return replacement }
+        });
+        try {
+            local.onmessage({jsonrpc: '2.0', id: 9, method: 'tools/call', params: {name: 'inert-write'}});
+            await flush();
+            const lateMessage = remote.onmessage, lateError = remote.onerror, lateClose = remote.onclose;
+            lateError(new Error('SSE stream disconnected: secret-shaped-body'));
+            lateError(new Error('SSE stream disconnected: duplicate'));
+            local.onmessage({jsonrpc: '2.0', id: 9, method: 'tools/list', params: {}});
+            local.onmessage({jsonrpc: '2.0', id: 10, method: 'tools/list', params: {}});
+            await flush();
+
+            expect(factories).toBe(1);
+            expect(replacement.messages).toHaveLength(1);
+            expect(replacement.messages[0]).toMatchObject({method: 'initialize', params: {}});
+            const initId = replacement.messages[0].id;
+            lateMessage({jsonrpc: '2.0', id: 9, result: {poison: true}});
+            lateClose();
+            replacement.onmessage({jsonrpc: '2.0', id: initId, result: {
+                protocolVersion: '2025-11-25', capabilities: {}, serverInfo: {name: 'fixture', version: '1'}
+            }});
+            await flush();
+
+            expect(replacement.messages.map(message => message.method)).toEqual([
+                'initialize', 'notifications/initialized', 'tools/list', 'tools/list'
+            ]);
+            expect(replacement.protocolVersion).toBe('2025-11-25');
+            expect(remote.messages.filter(message => message.method === 'tools/call')).toHaveLength(1);
+            expect(replacement.messages.some(message => message.method === 'tools/call')).toBe(false);
+            replacement.onmessage({jsonrpc: '2.0', id: 9, result: {tools: []}});
+            replacement.onmessage({jsonrpc: '2.0', id: 10, result: {tools: []}});
+            await flush();
+            expect(local.messages.filter(message => message.id === 9)).toHaveLength(2);
+            expect(local.messages.filter(message => message.id === initId)).toEqual([]);
+            expect(local.messages.some(message => message.result?.poison)).toBe(false);
+            expect(local.closed).toBe(0);
+            expect(errors).toEqual([])
+        } finally {
+            await bridge.close()
+        }
+    });
+
+    test('replacement handshake timeouts settle waiting calls and allow a later attempt', async () => {
+        const replacements            = [];
+        const {bridge, local, remote} = await startInitializedBridge({
+            createRemoteTransport: () => {
+                const transport = new FakeTransport();
+                replacements.push(transport);
+                return transport
+            },
+            reinitializeTimeoutMs: 20
+        });
+        try {
+            remote.onerror(httpError(404, 'Session not found'));
+            local.onmessage({jsonrpc: '2.0', id: 21, method: 'tools/list', params: {}});
+            local.onmessage({jsonrpc: '2.0', id: 22, method: 'tools/list', params: {}});
+            await expect.poll(() => local.messages.filter(message => [21,22].includes(message.id)).length).toBe(2);
+            expect(local.messages.filter(message => [21,22].includes(message.id)).every(
+                message => message.error?.message.endsWith('Cause: timeout.')
+            )).toBe(true);
+            expect(replacements[0].closed).toBe(1);
+            expect(local.closed).toBe(0);
+
+            local.onmessage({jsonrpc: '2.0', id: 23, method: 'tools/list', params: {}});
+            await flush();
+            expect(replacements).toHaveLength(2);
+            await bridge.close();
+            replacements[1].onmessage?.({jsonrpc: '2.0', id: replacements[1].messages[0].id, result: {
+                protocolVersion: '2025-11-25', capabilities: {}, serverInfo: {name: 'fixture', version: '1'}
+            }});
+            await flush();
+            expect(replacements[1].messages.some(message => message.method === 'tools/list')).toBe(false)
+        } finally {
+            await bridge.close()
+        }
+    });
+
+    test('a replacement cannot change the negotiated protocol or capabilities', async () => {
+        for (const delta of [{protocolVersion: '2025-06-18'}, {capabilities: {tools: {}}}, {protocolVersion: null}]) {
+            const replacement                     = new FakeTransport();
+            const {bridge, errors, local, remote} = await startInitializedBridge({
+                createRemoteTransport: () => replacement
+            });
+            remote.onerror(httpError(404, 'Session not found'));
+            local.onmessage({jsonrpc: '2.0', id: 31, method: 'tools/list', params: {}});
+            await flush();
+            replacement.onmessage({jsonrpc: '2.0', id: replacement.messages[0].id, result: {
+                protocolVersion: '2025-11-25', capabilities: {}, serverInfo: {name: 'fixture', version: '1'}, ...delta
+            }});
+            await flush();
+            expect(local.closed).toBe(1);
+            expect(errors).toEqual(['Neo MCP bridge transport failed. Cause: protocol-mismatch.']);
+            expect(replacement.messages.some(message => message.method === 'tools/list')).toBe(false);
+            await bridge.close()
+        }
+    });
+
+
+    test('server requests during recovery bypass the handshake flight and late responses cannot change generation', async () => {
+        const replacements            = [];
+        const {bridge, local, remote} = await startInitializedBridge({
+            createRemoteTransport: () => {
+                const transport = new FakeTransport();
+                replacements.push(transport);
+                return transport
+            }
+        });
+        try {
+            remote.onmessage({jsonrpc: '2.0', id: 1, method: 'ping'});
+            await flush();
+            const oldPingId = local.messages.at(-1).id;
+            remote.onerror(httpError(404, 'Session not found'));
+            local.onmessage({jsonrpc: '2.0', id: oldPingId, result: {}});
+            await flush();
+            expect(replacements).toHaveLength(0);
+
+            local.onmessage({jsonrpc: '2.0', id: 41, method: 'tools/list'});
+            await flush();
+            const replacement = replacements[0], initId = replacement.messages[0].id;
+            replacement.onmessage({jsonrpc: '2.0', id: 1, method: 'ping'});
+            await flush();
+            const newPingId = local.messages.at(-1).id;
+            expect(newPingId).not.toBe(oldPingId);
+            local.onmessage({jsonrpc: '2.0', id: oldPingId, result: {poison: true}});
+            replacement.onmessage({jsonrpc: '2.0', method: 'notifications/cancelled', params: {requestId: 1}});
+            await flush();
+            expect(local.messages.at(-1)).toMatchObject({method: 'notifications/cancelled', params: {requestId: newPingId}});
+            local.onmessage({jsonrpc: '2.0', id: newPingId, result: {}});
+            await flush();
+            expect(replacement.messages.at(-1)).toEqual({jsonrpc: '2.0', id: 1, result: {}});
+            expect(replacement.messages.some(message => message.result?.poison)).toBe(false);
+            expect(replacement.messages.some(message => message.method === 'tools/list')).toBe(false);
+            replacement.onmessage({jsonrpc: '2.0', id: initId, result: {
+                protocolVersion: '2025-11-25', capabilities: {}, serverInfo: {name: 'fixture', version: '1'}
+            }});
+            await flush();
+            expect(replacement.messages.at(-1).method).toBe('tools/list')
+        } finally {
+            await bridge.close()
         }
     });
 
@@ -788,7 +950,8 @@ test.describe('stdioToStreamableHttp', () => {
         }
     })
 
-    test('the executable rejects pre-initialize discovery locally then completes an HTTP handshake', async () => {
+    test('the executable recovers after committed-write SSE loss and a 404 without replay or stdio EOF', async () => {
+        let writes = 0, sessionNumber = 0;
         const
             token    = 'inert-loopback-fixture-token',
             requests = [],
@@ -830,21 +993,30 @@ test.describe('stdioToStreamableHttp', () => {
                 }
 
                 if (method === 'initialize') {
+                    sessionNumber++;
                     sendJson(200, {
                         jsonrpc: '2.0', id: message.id,
                         result : {protocolVersion: '2025-11-25', capabilities: {tools: {}}, serverInfo: {name: 'loopback-fixture', version: '1.0.0'}}
-                    }, {'mcp-session-id': 'inert-session'});
+                    }, {'mcp-session-id': `inert-session-${sessionNumber}`});
                     return
                 }
 
-                if (session !== 'inert-session') {
-                    sendJson(400, {jsonrpc: '2.0', id: message?.id ?? null, error: {code: -32000, message: 'Session required'}});
+                if (session !== `inert-session-${sessionNumber}` || message.id === 6) {
+                    sendJson(404, {jsonrpc: '2.0', id: message?.id ?? null, error: {code: -32000, message: 'Session required'}});
                     return
                 }
 
                 if (method === 'notifications/initialized') {
                     response.writeHead(202);
                     response.end();
+                    return
+                }
+
+                if (method === 'tools/call') {
+                    writes++;
+                    response.writeHead(200, {'content-type': 'text/event-stream'});
+                    response.write(': committed; response intentionally lost\n\n');
+                    setTimeout(() => response.destroy(), 10);
                     return
                 }
 
@@ -890,8 +1062,30 @@ test.describe('stdioToStreamableHttp', () => {
 
             expect(requests.map(({method}) => method)).toEqual(['initialize', 'notifications/initialized', 'tools/list']);
             expect(requests[0].session).toBeUndefined();
-            expect(requests.slice(1).every(({session}) => session === 'inert-session')).toBe(true);
+            expect(requests.slice(1).every(({session}) => session === 'inert-session-1')).toBe(true);
             expect(stderr).toBe('');
+
+            child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 4, method: 'tools/call', params: {name: 'inert-write'}})}\n`);
+            expect(await readBridgeMessage(lines, child)).toMatchObject({id: 4, error: {
+                code: -32603, data: {outcome: 'unknown'}
+            }});
+            child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 5, method: 'tools/list', params: {}})}\n`);
+            expect(await readBridgeMessage(lines, child)).toMatchObject({id: 5, result: {tools: [{name: 'fixture_tool'}]}});
+            child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 6, method: 'tools/list', params: {}})}\n`);
+            expect(await readBridgeMessage(lines, child)).toMatchObject({id: 6, error: {
+                code: -32603, data: {outcome: 'unknown'}
+            }});
+            child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 7, method: 'tools/list', params: {}})}\n`);
+            expect(await readBridgeMessage(lines, child)).toMatchObject({id: 7, result: {tools: [{name: 'fixture_tool'}]}});
+            expect(writes).toBe(1);
+            expect(requests.filter(({method}) => method === 'initialize')).toHaveLength(3);
+            expect(requests.filter(({method}) => method === 'initialize').every(({session}) => session === undefined)).toBe(true);
+            expect(requests.filter(({method}) => method === 'notifications/initialized').map(({session}) => session)).toEqual([
+                'inert-session-1', 'inert-session-2', 'inert-session-3'
+            ]);
+            expect(stderr).toContain('Cause: sse-disconnect.');
+            expect(stderr).toContain('Cause: http-404.');
+            expect(stderr).not.toContain(token);
 
             child.stdin.end();
             const [exitCode] = await once(child, 'close');
