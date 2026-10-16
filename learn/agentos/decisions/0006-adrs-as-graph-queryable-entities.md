@@ -126,6 +126,13 @@ also keeps its reservation after the Brain extraction: that evidenced population
 above `0040`, not `0032` or `0039`. Higher proved reservations raise the floor; current files
 alone never establish it.
 
+Authoring tools may expose the present-file and unfiltered-history observations, including
+rename destinations, to help an author choose a candidate. They must disclose shallow or
+incomplete history; an add/delete-only history scan can miss a renamed number. Only the
+admission owner's proved population certifies eligibility. Automatic allocation is not a
+prerequisite. Renumbering an unadmitted proposal may preserve its slug references; changing
+an already-assigned number is an identity migration, outside this contract.
+
 ### 2.7 Source authority, custody and aliases
 
 The admitted, source-backed ADR catalog owns the identity, the `ADR` type and its canonical
@@ -134,25 +141,96 @@ a parallel source registry. Non-authoritative semantic writers may enrich relati
 provenance but cannot replace those authority fields. Membership is proved by admission,
 never by an `adr-` or `adr:` prefix.
 
-Each admitted record binds its identity to a canonical source tuple
-`(repository identity, commit revision, repository-relative path, source hash)`. The reviewed
-migration manifest additionally carries the legacy ID, identity-assignment evidence, current
-and intended custody, reserved aliases, historical citation dispositions, observed node/vector/
-edge state, and semantic disposition. A branch name or a directory traversal is not a pinned
-source. Source hashes and revisions are preconditions, not hints.
+The [D19816 naming amendment](https://github.com/orgs/neomjs/discussions/19816), delivered by
+[Brain #1068](https://github.com/neomjs/neo-agent-brain/issues/1068), selects readable slug
+locators without replacing §2.6's canonical key. One retained, identity-bound admission record
+owns assignment and scope:
+
+| Bound data | Authority / meaning |
+|---|---|
+| Canonical key and assignment evidence | The immutable §2.6 identity; legacy assignment is reviewed, not inferred from current custody |
+| Declared source tuple | Evidenced repository identity, commit revision, repository-relative path and source hash; changed custody is explicitly reconciled |
+| Alias bindings | Each binding carries `kind` (slug or legacy number), `value`, `forge`, stable `repositoryId` and the qualified `namespace` at which it was admitted; its target is this record's key |
+| Historical reservations | Source-repository numeric and locator reservations survive move-out and source disappearance |
+| Admission/recovery provenance | Assignment, source and transition evidence sufficient for reconstruction, or a named refusal when missing or inconsistent |
+
+Normal source admission maintains this record for new decisions and renames. Authors do not
+separately edit or register a manifest. The reviewed migration/recovery manifest preserves the
+same evidence for legacy assignments, plus the legacy ID, current/intended custody, historical citation
+dispositions, observed node/vector/edge state and semantic disposition. A branch name or
+directory traversal is not a pinned source; revisions and hashes are preconditions, not hints.
 
 A staged destination file is not a second authority. The declared source at its verified
 revision is the writer; an undeclared competing canonical claim refuses mutation and retains
 the last admitted state. The manifest's custody transition must be explicit and recoverable.
 It must not silently elect whichever full copy was scanned last.
 
-Reserve admitted legacy aliases instead of repointing them on a move. Human-qualified references
-use `forge/organization/repository#adr-NNNN`; a bare `adr-NNNN` remains a legacy lookup.
-Resolve a human repository locator through the forge adapter to its stable repository ID
-before alias lookup; provider case rules do not rewrite the stored namespace or canonical key.
-Where alias evidence identifies more than one legitimate target, return those candidates
-and uncertainty. A locator conflicting with a reserved historical alias requires the canonical
-identity key. Never choose by current custodian, newest content or current URL occupancy.
+Admission checks the current authoritative population and the incoming batch before changing
+authority. A competing key or reserved scoped-alias claim refuses; an admitted owner remains.
+If two conflicting new claims have no prior owner, neither is admitted. Traversal order cannot
+manufacture a prior winner.
+
+#### 2.7.1 Human references and citation context
+
+Ordinary citations use these locators; machine keys remain exact identity references:
+
+| Form | Required context |
+|---|---|
+| `adr:<slug>` | Evidenced forge and repository context for the citation |
+| `<organization>/<repository>#adr:<slug>` | The citation context establishes the forge |
+| `<forge>/<organization>/<repository>#adr:<slug>` | Explicit forge and repository locator |
+
+Existing numeric forms, including `forge/organization/repository#adr-NNNN` and bare
+`adr-NNNN`, remain legacy references. Resolve a human repository locator through the forge
+adapter to its stable repository ID before alias lookup; provider case rules do not rewrite
+the stored namespace or canonical key. Preserve admitted historical aliases instead of
+repointing them on a move. A locator conflicting with reserved historical name occupancy
+retains the exact canonical-key escape.
+
+| Citation surface | Evidence available to resolve the reference |
+|---|---|
+| Newly authored repository file, issue or PR | Its verified source origin may supply repository/forge context; a cross-repository target still needs qualification |
+| Moved or copied historical content | Preserve its evidenced citation origin; current custody does not replace it |
+| Organization Discussion | The hosting repository is not implicit semantic context; qualify the repository, with verified web origin supplying the forge |
+| Memory Core memory or A2A message | Infer no repository from seat, cwd, related-ticket list or hosting implementation; qualify the repository and use the full forge form unless the origin envelope separately establishes the forge |
+
+Missing context stays unresolved or ambiguous within reader scope. Return only authorized
+candidates for legitimate ambiguity; neither alias results nor conflict reporting may reveal
+a hidden decision. Never choose a global first unique hit, current custodian, newest content
+or current URL occupancy.
+
+#### 2.7.2 Source-local slug history
+
+The current slug is the suffix of `NNNN-<slug>.md`, using lowercase ASCII kebab grammar
+`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`. Historical spellings use the same ADR's opening attribute table:
+
+```markdown
+| **Aliases** | `old-engine-contract`, `former-engine-contract` |
+```
+
+Read this field only from root Markdown blocks after the initial H1 and before the first H2.
+Select one two-column table with canonical `Attribute | Value` headers. Do not recurse into
+fences, blockquotes or lists, or scan later sections. Recognize `Aliases` as plain text or a
+single strong-emphasis label. Multiple candidate tables or duplicate recognized rows refuse
+before alias publication, even when duplicate values are identical.
+
+The cell is a comma-separated set of backtick-delimited slug tokens. An absent or empty row
+supplies no additional source history. An alias declaration in a noncanonical opening table
+is a named validation error. Legacy documents without a declaration retain their existing
+metadata readers: Engine `0032` has blank table headers; Stage `0001` has prose fields and no
+table. Their first alias declaration must normalize or create the canonical table in the same
+source edit. This rule does not silently replace their status or other metadata readers.
+
+A rename adds the former filename slug to the row in the same source change. Compare the
+union of current and historical spellings: moving a spelling between those positions does
+not remove it. Removing an admitted spelling refuses reconciliation and retains its reservation.
+Adding historical spellings requires source-lineage evidence or a reviewed legacy manifest;
+copied or arbitrary source claims cannot acquire another decision's reservations.
+
+The row is source-local history, not assignment or repository-scope proof. Its bare tokens
+acquire scope when admitted. A custody transition explicitly admits the destination's current
+locator; it never re-scopes every historical token under the destination repository. Retained
+admission evidence owns that history even when the original source becomes unavailable.
 
 ### 2.8 Historical references and graph preservation
 
@@ -206,6 +284,7 @@ The `guide-authoring` skill consumes this definition by reference rather than de
 | Old or new declared source available alone | One admitted identity/document at the verified custody revision |
 | Both full sources present | Only the declared source can be admitted; an undeclared competing claim refuses mutation |
 | Neither source available | Retain last admitted identity/aliases and graph/edges with stale-source evidence; report document and KB availability separately |
+| Retained admission evidence unavailable | Refuse reconstruction without the required assignment/scope proof; surviving source claims or URLs cannot recreate that authority |
 | Legacy citation resolves but document cannot be read | Report identity resolution and unavailable document as separate facts |
 | Interrupted or retried migration | Reconcile from a durable phase and matching preconditions; a completed rerun is a no-op |
 
@@ -220,7 +299,49 @@ surfaces; unchanged counts do not prove cross-store success. Final acceptance us
 old/qualified citation, graph, KB and published-reader paths. This amendment defines their
 contract; it does not claim that the current readers or stored data already implement it.
 
-## 3. Implementation Details
+### 2.11 Naming acceptance and delivery
+
+These are contract vectors, not claims of an implemented reader or executed migration.
+Here A and B denote evidenced repository scopes on one forge, and K denotes an assigned key.
+
+| Operation | Required outcome |
+|---|---|
+| Create `0042-old.md` | Normal admission verifies assignment/allocation and retains K plus A's `old` locator; ordinary citation needs no machine-key paste or second registration |
+| Rename to `0042-new.md`, retain `old` in Aliases | K is unchanged; A's old/new locators resolve after projection rebuild from source plus retained evidence |
+| Move the declared source from A to B | K and A's reservations remain; the evidenced custody transition admits B's current locator without re-scoping historical entries |
+| Combine rename `old`→`new` with A→B move | A's `old` and B's `new` resolve to K; B's `old` remains unadmitted even though its bare token travels with the file |
+| Lose both declared sources | Retain K/history as stale when admission evidence survives, with document unavailable; losing that evidence too refuses reconstruction |
+| Compete with an owner, or with another new claim in one batch | Retain an admitted owner; admit neither conflicting new same-batch claim |
+| Present fenced, quoted or later-section alias examples; duplicate opening rows | Examples reserve nothing; duplicate recognized rows refuse |
+| Repeat qualified/ambiguous lookup with different reader permissions | Preserve reader policy, with no hidden decision disclosed through candidates or conflict results |
+
+Measure actual author actions for creation and rename against the existing numbered-file
+baseline, including the alias-row edit and any legacy-table normalization. No additional
+registration surface or automatic-numbering prerequisite may be introduced.
+
+This amendment must merge before dependent implementations adopt the naming contract:
+
+- [Brain #1012](https://github.com/neomjs/neo-agent-brain/issues/1012) owns normal admission,
+  scoped slug references, authoritative endpoint typing, batch refusal and author-flow evidence.
+- [Brain #1013](https://github.com/neomjs/neo-agent-brain/issues/1013) owns the bounded alias
+  reader, both KB extraction paths and census/composition consumers. Discovery uses evidenced
+  repository territories, including `learn/agentos/decisions` and `learn/decisions`; discovering
+  private Stage content does not authorize publishing it into a public/shared tenant.
+- [Brain #1014](https://github.com/neomjs/neo-agent-brain/issues/1014) owns reviewed migration
+  and recovery using the same admission evidence and the verified reader capability.
+- [Skills #174](https://github.com/neomjs/neo-agent-skills/issues/174) owns guidance and the
+  affected reference-manifest/checker consumers; valid slug references are not rewritten to
+  bare single-repository filenames. Actual consuming-version load remains separate evidence.
+
+[Brain #1010](https://github.com/neomjs/neo-agent-brain/issues/1010) retains integrated graph,
+KB, custody and published-reader acceptance. This ADR is the single contract; guidance cites
+it, and executable enforcement retires duplicated explanatory examples when it covers them.
+No live data cut or source move follows merely from this document's publication.
+
+## 3. Original Implementation Plan
+
+The original plan below records the initial ADR projection. It is not evidence that the
+repository-qualified identity, redirect or slug contracts in §§2.6–2.11 are implemented.
 
 ### 3.1 Deterministic ingestion
 
