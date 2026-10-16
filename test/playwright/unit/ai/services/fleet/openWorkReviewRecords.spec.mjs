@@ -54,7 +54,7 @@ function sequence(values) {
 test('original facts survive normalization and projection without observation restamping', () => {
     const value = row(), packet = value.reviewRecords;
 
-    expect(packet.source).toEqual({apiBase: API, repo: REPO, prId: 'PR_7'});
+    expect(packet.source).toEqual({apiBase: API, repo: REPO, prId: 'PR_7', number: 7});
     expect(packet.historyCoverage).toBe('complete');
     expect(packet.opinionsComplete).toBe(true);
     expect(packet.events[0]).toEqual({kind: 'requested', id: 'RRE_1', at: at(1),
@@ -68,6 +68,7 @@ test('original facts survive normalization and projection without observation re
 
 test('source, requester or recipient metadata is not inferred for legacy or malformed inputs', () => {
     expect(row({...node(), id: undefined}).reviewRecords).toBeNull();
+    expect(row(node({number: undefined})).reviewRecords).toBeNull();
     expect(normalizePullRequest(node(), identities).reviewRecords).toBeNull();
     const packet = row(node({timelineItems: history([request({requestedReviewer: {login: 'reviewer'}})])})).reviewRecords;
     expect(packet.historyCoverage).toBe('unavailable');

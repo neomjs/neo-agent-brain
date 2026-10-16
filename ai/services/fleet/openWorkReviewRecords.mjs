@@ -74,7 +74,7 @@ function association(approval, events, coverage) {
  * @returns {Object|null} Source scope, timeline coverage, opinion coverage, events and approvals.
  */
 export function normalizeReviewRecords(node, apiBase) {
-    if (!node?.id || !node.repository?.nameWithOwner || typeof apiBase !== 'string' || !apiBase) return null;
+    if (!node?.id || !node.repository?.nameWithOwner || !Number.isInteger(node.number) || node.number < 1 || typeof apiBase !== 'string' || !apiBase) return null;
 
     const
         timeline = node.timelineItems,
@@ -91,7 +91,7 @@ export function normalizeReviewRecords(node, apiBase) {
         approvals = opinions.filter(item => item?.state === 'APPROVED' && !events.some(event => event.kind === 'dismissed' && event.reviewId === item.id))
             .map(({state, ...approval}) => ({...approval, ...association(approval, events, historyCoverage)}));
 
-    return {source: {apiBase, repo: node.repository.nameWithOwner, prId: node.id}, historyCoverage, opinionsComplete, events, approvals}
+    return {source: {apiBase, repo: node.repository.nameWithOwner, prId: node.id, number: node.number}, historyCoverage, opinionsComplete, events, approvals}
 }
 
 /**
@@ -104,7 +104,7 @@ export function normalizeReviewRecords(node, apiBase) {
  */
 export function retainReviewWitnesses(current, previous) {
     if (!current || !previous || current.historyCoverage !== 'partial' ||
-        !['apiBase', 'repo', 'prId'].every(key => current.source[key] === previous.source?.[key])) return current;
+        !['apiBase', 'repo', 'prId', 'number'].every(key => current.source[key] === previous.source?.[key])) return current;
 
     const approvals = current.approvals.map(approval => {
         if (approval.requestState !== 'unknown') return approval;
