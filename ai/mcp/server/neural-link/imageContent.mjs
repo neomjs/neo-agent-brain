@@ -3,9 +3,13 @@
  */
 const IMAGE_TYPES = new Set(['image/gif', 'image/jpeg', 'image/png', 'image/webp']),
     BASE64        = /^[A-Za-z0-9+/]*={0,2}$/,
-    // Model APIs cap the size of one image, and a refused image fails the caller's whole turn, while inline text
-    // still reaches it. A rendered frame is far below this: 1024×561 is about 100 KB as a PNG.
-    MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+    // Model APIs cap one image, and a refused image fails the caller's whole turn, while inline text still reaches
+    // it. A rendered frame is far below this: 1024×561 is about 100 KB as a PNG.
+    MAX_IMAGE_BYTES = 5 * 1024 * 1024,
+    // Once a request carries more than 20 images, Anthropic's API refuses any image wider or taller than this
+    // (platform.claude.com/docs/en/build-with-claude/vision). A long session reaches 20 images, and a hi-DPI frame
+    // (2560×1386) would then fail every later turn, so a larger declared image stays inline.
+    MAX_DIMENSION = 2000;
 
 /**
  * @summary True for the objects JSON produces: the only ones that can carry an artifact.
@@ -26,10 +30,10 @@ function isPlainObject(value) {
  * @returns {Boolean}
  */
 function isImageArtifact(value) {
-    const {data, mimeType} = value;
+    const {data, height, mimeType, width} = value;
 
     return IMAGE_TYPES.has(mimeType) && typeof data === 'string' && data.length > 0 &&
-        data.length * 3 / 4 <= MAX_IMAGE_BYTES && BASE64.test(data)
+        data.length * 3 / 4 <= MAX_IMAGE_BYTES && !(width > MAX_DIMENSION) && !(height > MAX_DIMENSION) && BASE64.test(data)
 }
 
 /**
@@ -79,7 +83,8 @@ function lift(value, images) {
  * as a renderer's draw receipt does: `{width, height, encoding: 'png-base64', mimeType: 'image/png', sha256, data}`.
  * Its `data` becomes an image block; in its place the JSON keeps the artifact's other fields plus `contentIndex`,
  * the block's position in the tool result's `content`. Nothing is guessed: a long string is never an image unless its
- * object declares one, and an artifact above `MAX_IMAGE_BYTES` or with invalid base64 stays inline.
+ * object declares one, and an artifact above `MAX_IMAGE_BYTES`, declared wider or taller than `MAX_DIMENSION`, or with
+ * invalid base64 stays inline.
  *
  * Pure and server-free, like `verifyBridgeToken.mjs`, so the walk is unit-testable without the Bridge.
  * @param {*} result A tool result, e.g. `call_method`'s

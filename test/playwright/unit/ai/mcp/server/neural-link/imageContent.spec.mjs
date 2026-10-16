@@ -78,6 +78,8 @@ test.describe('Neural Link image content (imageContent.mjs)', () => {
                   {...artifact(), data: 'not base64!'},
                   {...artifact(), data: `data:image/png;base64,${PNG}`},
                   {...artifact(), data: oversized},
+                  {...artifact(), width: 2560, height: 1386},
+                  {...artifact(), width: 1280, height: 2001},
                   new Artifact()
               ];
 
@@ -86,6 +88,12 @@ test.describe('Neural Link image content (imageContent.mjs)', () => {
 
             expect(liftImageArtifacts(wrapped)).toEqual({presented: wrapped, images: []});
             expect(liftImageArtifacts(wrapped).presented).toBe(wrapped)
+        }
+    });
+
+    test('an image at the dimension bound, or with no declared dimensions, is lifted', () => {
+        for (const value of [{...artifact(), width: 2000, height: 2000}, {mimeType: 'image/png', data: PNG}]) {
+            expect(liftImageArtifacts({color: value}).images).toEqual([{type: 'image', data: PNG, mimeType: 'image/png'}])
         }
     });
 
