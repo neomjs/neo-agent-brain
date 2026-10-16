@@ -5,6 +5,7 @@ import ConnectionService       from '../../../services/neural-link/ConnectionSer
 import HealthService           from '../../../services/neural-link/HealthService.mjs';
 import {listTools, callTool}   from './toolService.mjs';
 import {attestDiagnosticPaths} from './diagnosticPathAttestation.mjs';
+import {formatWithImages}      from './imageContent.mjs';
 
 let _turnId = 0;
 
@@ -137,6 +138,17 @@ class Server extends BaseServer {
      */
     getHealthExemptTools() {
         return ['healthcheck', 'manage_connection'];
+    }
+
+    /**
+     * @summary Delivers the image artifacts a result declares as MCP image content after its JSON text, so a model
+     * sees a draw receipt's frame in the same answer instead of reading its base64. A result without artifacts, and
+     * every error, formats as `BaseServer` formats it. The walk and its bounds live in `imageContent.mjs`.
+     * @param {*} result
+     * @returns {Object}
+     */
+    formatToolResult(result) {
+        return formatWithImages(result, value => super.formatToolResult(value));
     }
 
     /**
