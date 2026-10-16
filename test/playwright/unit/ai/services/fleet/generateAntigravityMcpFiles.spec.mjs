@@ -213,4 +213,46 @@ test.describe('Antigravity profile MCP carrier', () => {
             await new Promise(resolve => server.close(resolve));
         }
     });
+
+    test('github-workflow invoker preserves normalized Homebrew and local bin PATH segments under env -i', () => {
+        const
+            profileHome        = path.join(root, 'seat-gh'),
+            launcher           = path.join(root, 'seat-gh-runtime', 'fleetMcpLauncher.mjs'),
+            normalizedGuiPath  = '/Applications/Neo Harness.app/Contents/Resources/organism/shims:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin',
+            processEnvironment = {HOME: root, PATH: normalizedGuiPath, LANG: 'C'},
+            rows               = {
+                'neo-mjs-github-workflow': {
+                    command: process.execPath,
+                    args   : [launcher, '--server', 'github-workflow'],
+                    env    : {
+                        NEO_AGENT_IDENTITY     : 'seat-gh',
+                        NEO_FLEET_LAUNCH_GRANT : mintLaunchGrant().capability,
+                        NEO_FLEET_LAUNCH_ISSUER: 'http://127.0.0.1:12345'
+                    }
+                }
+            };
+
+        fs.mkdirSync(path.dirname(launcher), {recursive: true});
+        fs.writeFileSync(launcher, 'process.stdout.write(JSON.stringify({argv: process.argv.slice(2), path: process.env.PATH}));');
+
+        const generated = generateAntigravityMcpFiles({profileHome, rows, processEnvironment});
+        for (const file of generated.files) {
+            fs.mkdirSync(path.dirname(file.path), {recursive: true});
+            fs.writeFileSync(file.path, file.content, {mode: file.mode});
+        }
+
+        const row    = generated.mcpServers['neo-mjs-github-workflow'];
+        const result = spawnSync(row.command, row.args, {
+            env     : {AGY_BROWSER_ACTIVE_PORT_FILE: path.join(profileHome, 'DevToolsActivePort'), PATH: '/stripped/by/env-i'},
+            encoding: 'utf8',
+            timeout : 5000
+        });
+
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual({
+            argv: ['--server', 'github-workflow'],
+            path: normalizedGuiPath
+        });
+    });
 });

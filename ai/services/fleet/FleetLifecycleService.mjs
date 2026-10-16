@@ -121,7 +121,39 @@ const HARNESS_BINARY_LEAF_KEYS = {
 const AMBIENT_ENV_ALLOWLIST = Object.freeze([
     'HOME', 'LANG', 'LC_ALL', 'LOGNAME', 'PATH', 'SHELL', 'TERM', 'TMPDIR', 'USER'
 ]);
-const AMBIENT_ENV_KEYS = new Set(AMBIENT_ENV_ALLOWLIST);
+const AMBIENT_ENV_KEYS    = new Set(AMBIENT_ENV_ALLOWLIST);
+const LAUNCHD_SYSTEM_DIRS = new Set([
+    '/usr/bin', '/bin', '/usr/sbin', '/sbin', '/opt/homebrew/bin', '/usr/local/bin'
+]);
+const STANDARD_TOOL_BIN_DIRS = Object.freeze(['/opt/homebrew/bin', '/usr/local/bin']);
+
+/**
+ * @summary Append standard POSIX/macOS tool directories (`/opt/homebrew/bin`, `/usr/local/bin`)
+ * when the parent `PATH` is a macOS `launchd` GUI path (optionally preceded by organism `shims`
+ * and `node_modules/.bin`), preserving caller segment order without duplicating present entries.
+ * @param {String} value Raw `PATH` string.
+ * @returns {String}
+ * @private
+ */
+function normalizeAmbientPath(value) {
+    const segments = value.split(path.delimiter).filter(Boolean);
+
+    if (!segments.includes('/usr/bin') || !segments.includes('/bin') ||
+        !segments.every(entry => LAUNCHD_SYSTEM_DIRS.has(entry) || entry.endsWith('/shims') || entry.endsWith('/node_modules/.bin'))) {
+        return value
+    }
+
+    const seen = new Set(segments);
+
+    for (const dir of STANDARD_TOOL_BIN_DIRS) {
+        if (!seen.has(dir)) {
+            segments.push(dir);
+            seen.add(dir)
+        }
+    }
+
+    return segments.join(path.delimiter)
+}
 
 // Env keys that would mutate the merge target's prototype chain instead of (or in addition to)
 // defining an own property — a registry-authored `{"__proto__": …}` must be rejected, never
@@ -3110,12 +3142,21 @@ class FleetLifecycleService extends Base {
         }
     }
 
-    /** @returns {Object} A fresh copy of only the benign parent environment allowlist. */
+    /**
+     * @summary Copy only the benign parent environment allowlist, appending missing standard
+     * POSIX/macOS tool directories (`/opt/homebrew/bin`, `/usr/local/bin`) when the parent
+     * `PATH` is a stripped GUI `launchd` path.
+     * @returns {Object} A fresh copy of only the benign parent environment allowlist.
+     */
     snapshotAmbientProcessEnvironment() {
         const environment = {};
 
         for (const key of AMBIENT_ENV_ALLOWLIST) {
             if (typeof process.env[key] === 'string') environment[key] = process.env[key];
+        }
+
+        if (typeof environment.PATH === 'string') {
+            environment.PATH = normalizeAmbientPath(environment.PATH)
         }
 
         return environment

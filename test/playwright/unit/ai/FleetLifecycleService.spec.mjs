@@ -1596,6 +1596,27 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         }
     });
 
+    test('snapshotAmbientProcessEnvironment appends Homebrew and local bin directories to stripped launchd GUI PATHs without duplication', () => {
+        const priorPath = process.env.PATH;
+
+        try {
+            process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+            expect(FleetLifecycleService.snapshotAmbientProcessEnvironment().PATH)
+                .toBe('/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin');
+
+            process.env.PATH = '/Applications/Neo Harness.app/Contents/Resources/organism/shims:/Applications/Neo Harness.app/Contents/Resources/organism/node_modules/.bin:/usr/bin:/bin:/usr/sbin:/sbin';
+            expect(FleetLifecycleService.snapshotAmbientProcessEnvironment().PATH)
+                .toBe('/Applications/Neo Harness.app/Contents/Resources/organism/shims:/Applications/Neo Harness.app/Contents/Resources/organism/node_modules/.bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin');
+
+            process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin';
+            expect(FleetLifecycleService.snapshotAmbientProcessEnvironment().PATH)
+                .toBe('/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin');
+        } finally {
+            if (priorPath === undefined) delete process.env.PATH;
+            else process.env.PATH = priorPath;
+        }
+    });
+
     test('Claude Desktop native Code-tab transport needs no command bridge', async () => {
         install();
         FleetLifecycleService.harnessBinaryPaths = {'claude-desktop': process.execPath};
@@ -3158,8 +3179,8 @@ test.describe('FleetLifecycleService.exitReasonFor — why a seat exited without
 
         // A failed Codex Desktop record with cleanupUnresolved stopped again records stopRequested and leaves exitReason null
         const
-            origCleanup       = FleetLifecycleService.codexDesktopCleanupFn,
-            cleanupRetrySeat  = {
+            origCleanup      = FleetLifecycleService.codexDesktopCleanupFn,
+            cleanupRetrySeat = {
                 id                : 'codex-cleanup-retry',
                 state             : 'failed',
                 cleanupUnresolved : true,
