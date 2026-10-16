@@ -12,6 +12,7 @@ setup({
 });
 
 import {test, expect}                         from '@playwright/test';
+import {CallToolResultSchema}                 from '@modelcontextprotocol/sdk/types.js';
 import Neo                                    from 'neo.mjs/src/Neo.mjs';
 import * as core                              from 'neo.mjs/src/core/_export.mjs';
 import BaseServer                             from '../../../../../../../ai/mcp/server/BaseServer.mjs';
@@ -68,7 +69,7 @@ test.describe('Neural Link image content (imageContent.mjs)', () => {
             constructor() { Object.assign(this, artifact()) }
         }
 
-        const oversized = 'A'.repeat(Math.ceil(5 * 1024 * 1024 * 4 / 3) + 4),
+        const oversized = Buffer.alloc(5 * 1024 * 1024 + 1).toString('base64'),
               refused   = [
                   {...artifact(), mimeType: 'image/svg+xml'},
                   {...artifact(), mimeType: 'application/pdf'},
@@ -77,6 +78,8 @@ test.describe('Neural Link image content (imageContent.mjs)', () => {
                   {...artifact(), data: ''},
                   {...artifact(), data: 'not base64!'},
                   {...artifact(), data: `data:image/png;base64,${PNG}`},
+                  // Admitted by a character-class regex, refused by the SDK's ImageContentSchema
+                  ...['A', '=', 'AA=', 'AAAA='].map(data => ({...artifact(), data})),
                   {...artifact(), data: oversized},
                   {...artifact(), width: 2560, height: 1386},
                   {...artifact(), width: 1280, height: 2001},
@@ -95,6 +98,21 @@ test.describe('Neural Link image content (imageContent.mjs)', () => {
         for (const value of [{...artifact(), width: 2000, height: 2000}, {mimeType: 'image/png', data: PNG}]) {
             expect(liftImageArtifacts({color: value}).images).toEqual([{type: 'image', data: PNG, mimeType: 'image/png'}])
         }
+    });
+
+    test('the size bound counts decoded bytes, padding excluded: 5 MiB and one byte below are lifted', () => {
+        for (const bytes of [5 * 1024 * 1024, 5 * 1024 * 1024 - 1]) {
+            const data = Buffer.alloc(bytes).toString('base64');
+
+            expect(data.endsWith('=')).toBe(true);
+            expect(liftImageArtifacts({color: {mimeType: 'image/png', data}}).images).toHaveLength(1)
+        }
+    });
+
+    test('every lifted envelope is one the SDK admits', () => {
+        const response = formatWithImages({receipt: {color: artifact(), ids: artifact()}}, format);
+
+        expect(CallToolResultSchema.safeParse(response).success).toBe(true)
     });
 
     test('an error result keeps its complete object and gets no image block', () => {

@@ -1,8 +1,9 @@
+import {ImageContentSchema} from '@modelcontextprotocol/sdk/types.js';
+
 /**
  * @summary The image types a Neural Link result may hand to a model as MCP image content.
  */
 const IMAGE_TYPES = new Set(['image/gif', 'image/jpeg', 'image/png', 'image/webp']),
-    BASE64        = /^[A-Za-z0-9+/]*={0,2}$/,
     // Model APIs cap one image, and a refused image fails the caller's whole turn, while inline text still reaches
     // it. A rendered frame is far below this: 1024×561 is about 100 KB as a PNG.
     MAX_IMAGE_BYTES = 5 * 1024 * 1024,
@@ -32,8 +33,10 @@ function isPlainObject(value) {
 function isImageArtifact(value) {
     const {data, height, mimeType, width} = value;
 
+    // The SDK's own image schema judges the base64, so a lifted block is always one the result envelope admits
     return IMAGE_TYPES.has(mimeType) && typeof data === 'string' && data.length > 0 &&
-        data.length * 3 / 4 <= MAX_IMAGE_BYTES && !(width > MAX_DIMENSION) && !(height > MAX_DIMENSION) && BASE64.test(data)
+        Buffer.byteLength(data, 'base64') <= MAX_IMAGE_BYTES && !(width > MAX_DIMENSION) && !(height > MAX_DIMENSION) &&
+        ImageContentSchema.safeParse({type: 'image', data, mimeType}).success
 }
 
 /**
