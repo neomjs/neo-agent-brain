@@ -1596,7 +1596,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         }
     });
 
-    test('snapshotAmbientProcessEnvironment appends Homebrew and local bin directories to stripped launchd GUI PATHs without duplication', () => {
+    test('snapshotAmbientProcessEnvironment appends Homebrew and local bin directories to stripped launchd GUI PATHs without duplication and leaves non-launchd PATHs unchanged', () => {
         const priorPath = process.env.PATH;
 
         try {
@@ -1611,6 +1611,10 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
             process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin';
             expect(FleetLifecycleService.snapshotAmbientProcessEnvironment().PATH)
                 .toBe('/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin');
+
+            process.env.PATH = '/Users/me/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+            expect(FleetLifecycleService.snapshotAmbientProcessEnvironment().PATH)
+                .toBe('/Users/me/bin:/usr/bin:/bin:/usr/sbin:/sbin');
         } finally {
             if (priorPath === undefined) delete process.env.PATH;
             else process.env.PATH = priorPath;
