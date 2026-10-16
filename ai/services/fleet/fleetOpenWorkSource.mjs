@@ -49,9 +49,10 @@ export function openWorkFreshness(observedAt, {now, staleAfterMs = STALE_AFTER_M
  * @private
  */
 function summaryOf(row, stale) {
-    const {repo, number, title, head, ci, verdict, mergeable, draft, reviews, observedAt} = row;
+    const {repo, number, title, head, ci, verdict, mergeable, draft, reviews, reviewRecords, observedAt} = row;
 
-    return {repo, number, title: title ?? null, head, ci, verdict, mergeable, draft, reviews: reviews ?? [], observedAt, stale, holder: holderOf(row)}
+    return {repo, number, title: title ?? null, head, ci, verdict, mergeable, draft, reviews: reviews ?? [],
+        ...reviewRecords ? {reviewRecords} : {}, observedAt, stale, holder: holderOf(row)}
 }
 
 /**

@@ -6,7 +6,8 @@
  * the budget cuts off, or a review-request, latest-review or latest-opinion list past its first 20,
  * makes the pulse partial, never complete. The latest review is any engagement, a comment included;
  * the latest opinion is each reviewer's standing approval or change request, which a later comment
- * on the same head does not withdraw.
+ * on the same head does not withdraw. Original review history has its own bounded timeline coverage;
+ * its unread prefix never makes current-work coverage partial.
  *
  * Variables: `$query` (a search string with `is:pr` and the `repo:` qualifiers), `$cursor`.
  */
@@ -32,6 +33,7 @@ export const OPEN_WORK_SNAPSHOT = `
       }
       nodes {
         ... on PullRequest {
+          id
           number
           title
           isDraft
@@ -89,12 +91,57 @@ export const OPEN_WORK_SNAPSHOT = `
               hasNextPage
             }
             nodes {
+              id
+              submittedAt
               state
               author {
+                __typename
+                ... on Node { id }
                 login
               }
               commit {
                 oid
+              }
+            }
+          }
+          timelineItems(last: 20, itemTypes: [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT, REVIEW_DISMISSED_EVENT]) {
+            pageInfo {
+              hasPreviousPage
+              hasNextPage
+            }
+            nodes {
+              __typename
+              ... on ReviewRequestedEvent {
+                id
+                createdAt
+                actor { __typename login ... on Node { id } }
+                requestedReviewer {
+                  __typename
+                  ... on Node { id }
+                  ... on User { login }
+                  ... on Bot { login }
+                  ... on Mannequin { login }
+                  ... on Team { slug organization { login } }
+                }
+              }
+              ... on ReviewRequestRemovedEvent {
+                id
+                createdAt
+                actor { __typename login ... on Node { id } }
+                requestedReviewer {
+                  __typename
+                  ... on Node { id }
+                  ... on User { login }
+                  ... on Bot { login }
+                  ... on Mannequin { login }
+                  ... on Team { slug organization { login } }
+                }
+              }
+              ... on ReviewDismissedEvent {
+                id
+                createdAt
+                actor { __typename login ... on Node { id } }
+                review { id }
               }
             }
           }
@@ -154,13 +201,13 @@ export const OPEN_WORK_TERMINAL = `
 
 /**
  * @summary Published GraphQL formula estimates for these two static documents, not timeout-cost bounds.
- * Snapshot has the search plus four connections for up to 50 PRs: round((1 + 50 * 4) / 100) = 2.
+ * Snapshot has the search plus five connections for up to 50 PRs: round((1 + 50 * 5) / 100) = 3.
  * Terminal has one connection; the published minimum is one. The gate also uses measured maxima.
  * @see https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api
  * @type {Object[]}
  */
 export const OPEN_WORK_QUERY_COSTS = Object.freeze([
-    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 2}),
+    Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_SNAPSHOT).digest('hex'), formulaCost: 3}),
     Object.freeze({queryHash: createHash('sha256').update(OPEN_WORK_TERMINAL).digest('hex'), formulaCost: 1})
 ]);
 

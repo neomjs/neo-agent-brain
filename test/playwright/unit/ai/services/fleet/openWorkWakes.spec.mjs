@@ -395,8 +395,8 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         const result = gate(observed);
         expect(result).toMatchObject({holds: true, certification: {version: 1, policy: 'open-work-operational-estimate-v1'}});
         const bucket = result.certification.buckets.find(item => item.resetAt === iso(420));
-        expect(bucket).toMatchObject({measured: 36, estimated: 0, unattributed: 6, unattributedCalls: 3, decision: 'operational-estimate'});
-        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: snapshotHash, formulaCost: 2, reservePerCall: 2}));
+        expect(bucket).toMatchObject({measured: 36, estimated: 0, unattributed: 9, unattributedCalls: 3, decision: 'operational-estimate'});
+        expect(result.certification.estimates).toContainEqual(expect.objectContaining({queryHash: snapshotHash, formulaCost: 3, reservePerCall: 3}));
         observed.pulses.at(-1).seats[0].outcome = 'failed';
         expect(gate(observed).holds).toBe(false);
     });

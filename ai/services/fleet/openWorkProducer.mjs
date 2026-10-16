@@ -299,7 +299,7 @@ export function createOpenWorkProducer({
                         : {nodes: [], complete: true, cursor: null};
                 coverageSeat.outcome = authored.complete && held.complete && ended.complete ? 'complete' : 'partial';
 
-                reads.push({seat, login, mark, window, nodes: [...authored.nodes, ...held.nodes], complete: authored.complete && held.complete, ended})
+                reads.push({seat, login, apiBase, mark, window, nodes: [...authored.nodes, ...held.nodes], complete: authored.complete && held.complete, ended})
             } catch (error) {
                 // a message-less error still failed: without the fallback it would count as answered
                 reads.push({seat, failure: redactReadFailure(error) ?? 'the read failed without a message', refused: error?.status === 401})
@@ -323,7 +323,7 @@ export function createOpenWorkProducer({
             owes     = seat => !benched.has(seat),
             missed   = [...unread, ...reads.filter(read => read.failure || !read.complete || !read.ended.complete).map(read => read.seat)].filter(seat => !owes(seat)),
             byKey    = rows => [...new Map(rows.map(row => [row.key, row])).values()],
-            rows     = byKey(answered.flatMap(read => read.nodes).map(node => normalizePullRequest(node, identities))),
+            rows     = byKey(answered.flatMap(read => read.nodes.map(node => normalizePullRequest(node, identities, {apiBase: read.apiBase})))),
             terminal = {rows: byKey(answered.flatMap(read => read.ended.nodes).map(node => normalizeTerminal(node, identities))), complete: !failed.some(read => owes(read.seat)) && answered.every(read => !owes(read.seat) || read.ended.complete)},
             complete = !unread.some(owes) && !failed.some(read => owes(read.seat)) && answered.every(read => !owes(read.seat) || read.complete),
             // a seat unread or failed this pulse keeps its mark for when it reads again, and one with no mark yet holds

@@ -18,6 +18,8 @@
  * would have read carry, and a row first seen after that miss is no `opened`.
  */
 
+import {normalizeReviewRecords, retainReviewWitnesses} from './openWorkReviewRecords.mjs';
+
 /**
  * The mandatory PR-body line naming the authoring seat: `Authored by <Social Name> (…)`.
  * @type {RegExp}
@@ -85,11 +87,14 @@ function connectionOf(connection) {
  * @summary One open search node as a snapshot row.
  * @param {Object} node A `PullRequest` node from the open-work search.
  * @param {{byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
+ * @param {Object} [source] Acquisition identity; absent for legacy inputs.
+ * @param {String} [source.apiBase] Provider API identity from the existing reader.
  * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, draft, owner, requested,
- *     reviews, opinions, requestsComplete, opinionsComplete, partial}`. `title` is the forge's prose with its
- *     whitespace collapsed, or `null`; it names the PR and is never a transition.
+ *     reviews, opinions, reviewRecords, requestsComplete, opinionsComplete, partial}`. `title` is the forge's
+ *     prose with whitespace collapsed, or `null`; it names the PR and is never a transition. Optional
+ *     original review records keep their own history coverage and never change current-work completeness.
  */
-export function normalizePullRequest(node, identities) {
+export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
     const
         repo      = node.repository?.nameWithOwner ?? null,
         commit    = node.commits?.nodes?.[0]?.commit,
@@ -122,6 +127,7 @@ export function normalizePullRequest(node, identities) {
         requested: requested.filter(Boolean).sort(),
         reviews  : reviewed.filter(review => review.reviewer),
         opinions : opined.filter(opinion => opinion.reviewer),
+        reviewRecords: normalizeReviewRecords(node, apiBase),
         requestsComplete,
         opinionsComplete,
         partial  : !requestsComplete || !reviewsComplete || !opinionsComplete
@@ -285,7 +291,7 @@ export function reduceOpenWork({previous, observed, terminal, since, id}) {
             before = previous?.rows[row.key],
             merged = before && !row.requestsComplete ? {...row, requested: [...new Set([...before.requested, ...row.requested])].sort()} : row;
 
-        rows[row.key] = {...merged, observedAt: id};
+        rows[row.key] = {...merged, reviewRecords: retainReviewWitnesses(row.reviewRecords, before?.reviewRecords), observedAt: id};
         delete closed[row.key];
 
         previous && transitions.push(...before ? changesOf(before, merged, id) : arrivalOf(merged, previous.complete !== false && !readBy(merged, previous.missed ?? []), id))
