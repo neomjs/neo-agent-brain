@@ -25,9 +25,9 @@ export const SESSION_SUMMARY_RECEIPT_ENCODING = 'gzip-json-v1';
 /**
  * @summary Declares the complete metadata write-set owned by session-summary synthesis.
  *
- * `unclassifiedSourceCount` and `userId` are conditional at issuance; every other key is
- * required. Keeping the allowed set explicit makes a new or accidentally dropped synthesis
- * field fail at the receipt boundary instead of silently narrowing replay verification.
+ * Historical v2 receipts may omit a zero `unclassifiedSourceCount`; `userId` is conditional
+ * at issuance. Every other key is required. Keeping the allowed set explicit makes a new or
+ * accidentally dropped synthesis field fail at the receipt boundary instead of silently narrowing replay verification.
  * Dream-owned overlays such as `graphDigested` and `digestState` deliberately remain outside
  * this boundary.
  */
@@ -279,7 +279,8 @@ export function acknowledgeSessionSummaryReceipt({db, sessionId, now = Date.now(
  * synthesis result stale. The receipt remains exact for its document and the metadata key set
  * owned by its envelope version: version 1 uses its frozen issuance-era keys, while current
  * envelopes enforce the full declared synthesis-owned key set. A missing or changed
- * receipt-owned value still requires replay.
+ * receipt-owned value still requires replay. The producer's historical v2 omission of a zero
+ * source count accepts either absence or numeric zero, without relaxing any ownership field.
  *
  * @param {Object|undefined} row
  * @param {Object} receipt
@@ -293,7 +294,7 @@ function matchesSessionSummaryReceipt(row, receipt) {
     // Version 1 is a closed issuance schema, so its own frozen metadata keys are authoritative.
     // Applying the current declared set would require dreamInputRevision, which v1 cannot carry:
     // recovery would replay, Chroma would preserve that newer overlay, and the next sweep would
-    // mismatch again — #16110's retained-v1 non-convergent loop (ticket-ref-ok: exact failure anchor).
+    // mismatch again without ever converging the retained v1 receipt.
     const ownedKeys = receipt.version === 1
         ? Object.keys(receipt.metadata)
         : SESSION_SUMMARY_RECEIPT_METADATA_KEYS;
@@ -302,9 +303,24 @@ function matchesSessionSummaryReceipt(row, receipt) {
         const receiptHasKey = Object.hasOwn(receipt.metadata, key),
               rowHasKey     = Object.hasOwn(row.metadata, key);
 
+        if (receipt.version === 2 && key === 'unclassifiedSourceCount' && !receiptHasKey) {
+            return !rowHasKey || row.metadata[key] === 0;
+        }
+
         return receiptHasKey === rowHasKey &&
             (!receiptHasKey || isDeepStrictEqual(row.metadata[key], receipt.metadata[key]));
     });
+}
+
+/**
+ * @summary Materializes a historical v2 zero count for Chroma's merging metadata upsert.
+ * @param {Object} receipt Decoded durable receipt, which remains unchanged.
+ * @returns {Object} Projection metadata with a numeric zero when the v2 count was omitted.
+ */
+function receiptReplayMetadata(receipt) {
+    return receipt.version === 2 && !Object.hasOwn(receipt.metadata, 'unclassifiedSourceCount')
+        ? {...receipt.metadata, unclassifiedSourceCount: 0}
+        : receipt.metadata;
 }
 
 /**
@@ -461,7 +477,7 @@ export async function recoverSessionSummaryReceipts({
                 await collection.upsert({
                     ids      : toReplay.map(item => item.receipt.summaryId),
                     documents: toReplay.map(item => item.receipt.document),
-                    metadatas: toReplay.map(item => item.receipt.metadata)
+                    metadatas: toReplay.map(item => receiptReplayMetadata(item.receipt))
                 });
 
                 const readBack = await collection.get({

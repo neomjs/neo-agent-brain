@@ -804,21 +804,19 @@ ${sessionContent}
         const summaryMetadata = {
             sessionId, timestamp: lastActivity, memoryCount: memories.ids.length, dreamInputRevision,
             title, category, quality, productivity, impact, complexity,
-            technologies         : (technologies || []).join(','),
-            participatingAgents  : participatingAgents.join(','),
-            models               : models.join(','),
+            technologies           : (technologies || []).join(','),
+            participatingAgents    : participatingAgents.join(','),
+            models                 : models.join(','),
             totalToolCalls,
-            toolsUsed            : Array.from(allToolsUsed).join(','),
-            sourceAgentIdentities: sourceProvenance.sourceAgentIdentities.join(','),
-            sourceTrustTier      : sourceProvenance.sourceTrustTier,
-            provenancePolicy     : 'most-restrictive-source',
-            sourceTier           : summarySourceTier,
-            degraded             : summaryDegraded,
-            rawCanonical         : true
+            toolsUsed              : Array.from(allToolsUsed).join(','),
+            sourceAgentIdentities  : sourceProvenance.sourceAgentIdentities.join(','),
+            sourceTrustTier        : sourceProvenance.sourceTrustTier,
+            unclassifiedSourceCount: sourceProvenance.unclassifiedSourceCount,
+            provenancePolicy       : 'most-restrictive-source',
+            sourceTier             : summarySourceTier,
+            degraded               : summaryDegraded,
+            rawCanonical           : true
         };
-        if (sourceProvenance.unclassifiedSourceCount > 0) {
-            summaryMetadata.unclassifiedSourceCount = sourceProvenance.unclassifiedSourceCount;
-        }
         if (userId) summaryMetadata.userId = userId;
 
         await this.sessionsCollection.upsert({

@@ -78,26 +78,27 @@ function createReceipt(sessionId, overrides = {}) {
         document : `Summary for ${sessionId}`,
         metadata : {
             sessionId,
-            timestamp            : 1_800_000_000_000,
-            memoryCount          : 2,
-            dreamInputRevision   : `sha256:${'a'.repeat(64)}`,
-            title                : 'Durable summary',
-            category             : 'implementation',
-            quality              : 80,
-            productivity         : 90,
-            impact               : 70,
-            complexity           : 40,
-            technologies         : 'Neo.mjs',
-            participatingAgents  : 'neo-gpt',
-            models               : 'gpt-5',
-            totalToolCalls       : 12,
-            toolsUsed            : 'run_shell_command',
-            sourceAgentIdentities: '@neo-gpt',
-            sourceTrustTier      : 'trusted',
-            provenancePolicy     : 'most-restrictive-source',
-            sourceTier           : 'raw',
-            degraded             : false,
-            rawCanonical         : true
+            timestamp              : 1_800_000_000_000,
+            memoryCount            : 2,
+            dreamInputRevision     : `sha256:${'a'.repeat(64)}`,
+            title                  : 'Durable summary',
+            category               : 'implementation',
+            quality                : 80,
+            productivity           : 90,
+            impact                 : 70,
+            complexity             : 40,
+            technologies           : 'Neo.mjs',
+            participatingAgents    : 'neo-gpt',
+            models                 : 'gpt-5',
+            totalToolCalls         : 12,
+            toolsUsed              : 'run_shell_command',
+            sourceAgentIdentities  : '@neo-gpt',
+            sourceTrustTier        : 'trusted',
+            unclassifiedSourceCount: 0,
+            provenancePolicy       : 'most-restrictive-source',
+            sourceTier             : 'raw',
+            degraded               : false,
+            rawCanonical           : true
         },
         ...overrides
     };
@@ -194,7 +195,7 @@ test.describe('sessionSummaryReceiptStore (#16105, #16114, #16115)', () => {
     test('enforces the declared synthesis-owned metadata key set at issuance', () => {
         const receipt = createReceipt('owned-key-set');
 
-        expect(Object.keys(receipt.metadata))
+        expect(Object.keys(receipt.metadata).filter(key => key !== 'unclassifiedSourceCount'))
             .toEqual(REQUIRED_RECEIPT_METADATA_KEYS);
         expect(() => encodeSessionSummaryReceipt({
             ...receipt,
@@ -455,6 +456,156 @@ test.describe('sessionSummaryReceiptStore (#16105, #16114, #16115)', () => {
                 document: receipt.document,
                 metadata: {...receipt.metadata, ...dreamState}
             });
+        } finally {
+            db.close();
+        }
+    });
+
+    for (const batchSize of [1, 100]) {
+        test(`clears a retained provenance count once without rewriting receipts (batch ${batchSize})`, async () => {
+            const db         = createReceiptDb();
+            const collection = createFakeCollection();
+            const receipt    = createReceipt('legacy-zero-count');
+            const sibling    = createReceipt('healthy-count-sibling');
+
+            delete receipt.metadata.unclassifiedSourceCount;
+
+            try {
+                stageSessionSummaryReceipt({db, ...receipt, now: 100});
+                acknowledgeSessionSummaryReceipt({db, sessionId: receipt.sessionId, now: 101});
+                stageSessionSummaryReceipt({db, ...sibling, now: 102});
+
+                const envelope = db.prepare('SELECT result_envelope FROM SummarizationJobs WHERE session_id = ?')
+                    .get(receipt.sessionId).result_envelope;
+
+                collection.rows.set(receipt.summaryId, {
+                    document: receipt.document,
+                    metadata: {...receipt.metadata, unclassifiedSourceCount: 7, graphDigested: true}
+                });
+
+                const first = await recoverSessionSummaryReceipts({db, collection, batchSize, now: 200});
+
+                expect(first).toMatchObject({replayed: 2, completed: 2});
+                expect(collection.rows.get(receipt.summaryId)).toEqual({
+                    document: receipt.document,
+                    metadata: {...receipt.metadata, unclassifiedSourceCount: 0, graphDigested: true}
+                });
+                expect(db.prepare('SELECT status FROM SummarizationJobs WHERE session_id = ?')
+                    .get(sibling.sessionId).status).toBe('completed');
+                expect(db.prepare('SELECT result_envelope FROM SummarizationJobs WHERE session_id = ?')
+                    .get(receipt.sessionId).result_envelope).toEqual(envelope);
+
+                const calls  = collection.upsertCalls;
+                const second = await recoverSessionSummaryReceipts({db, collection, batchSize, now: 300});
+
+                expect(second).toMatchObject({present: 2, replayed: 0});
+                expect(collection.upsertCalls).toBe(calls);
+            } finally {
+                db.close();
+            }
+        });
+    }
+
+    for (const count of [undefined, 0]) {
+        test(`does not replay a legacy zero count already represented by ${String(count)}`, async () => {
+            const db         = createReceiptDb();
+            const collection = createFakeCollection();
+            const receipt    = createReceipt('represented-zero-count');
+
+            delete receipt.metadata.unclassifiedSourceCount;
+
+            try {
+                stageSessionSummaryReceipt({db, ...receipt, now: 100});
+                collection.rows.set(receipt.summaryId, {
+                    document: receipt.document,
+                    metadata: {...receipt.metadata, ...(count === undefined ? {} : {unclassifiedSourceCount: count})}
+                });
+
+                const result = await recoverSessionSummaryReceipts({db, collection, now: 200});
+
+                expect(result).toMatchObject({present: 1, replayed: 0});
+                expect(collection.upsertCalls).toBe(0);
+            } finally {
+                db.close();
+            }
+        });
+    }
+
+    for (const count of ['0', false, null]) {
+        test(`restores numeric zero instead of coercing ${JSON.stringify(count)}`, async () => {
+            const db         = createReceiptDb();
+            const collection = createFakeCollection();
+            const receipt    = createReceipt('typed-zero-count');
+
+            delete receipt.metadata.unclassifiedSourceCount;
+
+            try {
+                stageSessionSummaryReceipt({db, ...receipt, now: 100});
+                collection.rows.set(receipt.summaryId, {
+                    document: receipt.document,
+                    metadata: {...receipt.metadata, unclassifiedSourceCount: count}
+                });
+
+                const result = await recoverSessionSummaryReceipts({db, collection, now: 200});
+
+                expect(result.replayed).toBe(1);
+                expect(collection.rows.get(receipt.summaryId).metadata.unclassifiedSourceCount).toBe(0);
+            } finally {
+                db.close();
+            }
+        });
+    }
+
+    test('keeps explicit provenance counts strict', async () => {
+        const db         = createReceiptDb();
+        const collection = createFakeCollection();
+        const receipt    = createReceipt('explicit-count');
+
+        try {
+            receipt.metadata.unclassifiedSourceCount = 3;
+            stageSessionSummaryReceipt({db, ...receipt, now: 100});
+            collection.rows.set(receipt.summaryId, {
+                document: receipt.document,
+                metadata: {...receipt.metadata, unclassifiedSourceCount: 0}
+            });
+
+            expect((await recoverSessionSummaryReceipts({db, collection, now: 200})).replayed).toBe(1);
+            expect(collection.rows.get(receipt.summaryId).metadata.unclassifiedSourceCount).toBe(3);
+
+            receipt.metadata.unclassifiedSourceCount = 0;
+            stageSessionSummaryReceipt({db, ...receipt, now: 300});
+            delete collection.rows.get(receipt.summaryId).metadata.unclassifiedSourceCount;
+
+            expect((await recoverSessionSummaryReceipts({db, collection, now: 400})).replayed).toBe(1);
+            expect(collection.rows.get(receipt.summaryId).metadata.unclassifiedSourceCount).toBe(0);
+        } finally {
+            db.close();
+        }
+    });
+
+    test('keeps an absent v1 count outside its frozen write set', async () => {
+        const db         = createReceiptDb();
+        const collection = createFakeCollection();
+        const receipt    = createReceipt('v1-count-overlay');
+
+        delete receipt.metadata.unclassifiedSourceCount;
+        db.prepare(`
+            INSERT INTO SummarizationJobs (session_id, status, result_envelope, result_encoding)
+            VALUES (?, 'completed', ?, ?)
+        `).run(receipt.sessionId, gzipSync(Buffer.from(JSON.stringify({version: 1, ...receipt}))), SESSION_SUMMARY_RECEIPT_ENCODING);
+
+        try {
+            collection.rows.set(receipt.summaryId, {
+                document: receipt.document,
+                metadata: {...receipt.metadata, unclassifiedSourceCount: 7}
+            });
+
+            expect((await recoverSessionSummaryReceipts({db, collection, now: 200})).present).toBe(1);
+            expect(collection.upsertCalls).toBe(0);
+
+            collection.rows.get(receipt.summaryId).document = 'Changed document';
+            expect((await recoverSessionSummaryReceipts({db, collection, now: 300})).replayed).toBe(1);
+            expect(collection.rows.get(receipt.summaryId).metadata.unclassifiedSourceCount).toBe(7);
         } finally {
             db.close();
         }
@@ -789,6 +940,59 @@ test.describe('sessionSummaryReceiptStore (#16105, #16114, #16115)', () => {
                 ...receipt.metadata,
                 ...dreamState
             }]);
+
+            const legacy = createReceipt('legacy-count-real-sdk');
+            delete legacy.metadata.unclassifiedSourceCount;
+
+            await collection.upsert({
+                ids      : [legacy.summaryId],
+                documents: [legacy.document],
+                metadatas: [{...legacy.metadata, ...dreamState, unclassifiedSourceCount: 7}]
+            });
+            stageSessionSummaryReceipt({db, ...legacy, now: 500});
+
+            const envelope = db.prepare('SELECT result_envelope FROM SummarizationJobs WHERE session_id = ?')
+                .get(legacy.sessionId).result_envelope;
+            let   replays           = 0;
+            const countedCollection = {
+                get   : args => collection.get(args),
+                upsert: args => {
+                    replays++;
+                    return collection.upsert(args);
+                }
+            };
+
+            const zeroRepaired = await recoverSessionSummaryReceipts({
+                db,
+                collection       : countedCollection,
+                sessionId        : legacy.sessionId,
+                expectedDimension: 3,
+                now              : 600
+            });
+            const zeroExact = await collection.get({
+                ids    : [legacy.summaryId],
+                include: ['documents', 'metadatas']
+            });
+
+            expect(zeroRepaired).toMatchObject({replayed: 1, completed: 1});
+            expect(zeroExact.documents).toEqual([legacy.document]);
+            expect(zeroExact.metadatas).toEqual([{
+                ...legacy.metadata,
+                ...dreamState,
+                unclassifiedSourceCount: 0
+            }]);
+            expect(db.prepare('SELECT result_envelope FROM SummarizationJobs WHERE session_id = ?')
+                .get(legacy.sessionId).result_envelope).toEqual(envelope);
+
+            const zeroSettled = await recoverSessionSummaryReceipts({
+                db,
+                collection: countedCollection,
+                sessionId : legacy.sessionId,
+                now       : 700
+            });
+
+            expect(zeroSettled).toMatchObject({present: 1, replayed: 0});
+            expect(replays).toBe(1);
         } finally {
             if (chromaPid) {
                 await stopDetachedProcess(chromaPid);

@@ -565,4 +565,44 @@ test.describe('SessionService summary provenance (#10292)', () => {
         expect(authoredByEdges.some(([, target]) => target === '@tobiu')).toBe(false);
         expect(authoredByEdges.some(([, target]) => target === '@external-contributor')).toBe(false);
     });
+
+    test('summarizeSession preserves explicit zero unclassified sources in the collection and staged receipt', async () => {
+        const stagedReceipts = [], originalGet = SessionService.memoryCollection.get;
+        SessionService.memoryCollection.get = async () => ({
+            ...await originalGet(),
+            metadatas: [{timestamp: 10, agent: 'neo-gpt', model: 'unit-model', agentIdentity: '@neo-gpt'},
+                {timestamp: 20, agent: 'neo-opus-ada', model: 'unit-model', agentIdentity: '@neo-opus-ada'},
+                {timestamp: 30, agent: 'neo-gpt', model: 'unit-model', agentIdentity: '@neo-gpt'}]
+        });
+        SessionService.stageSessionSummaryReceipt = receipt => stagedReceipts.push(receipt);
+
+        const result = await RequestContextService.run({
+            userId             : 'tobiu',
+            username           : 'Tobias',
+            agentIdentityNodeId: '@tobiu',
+            source             : 'oidc'
+        }, () => SessionService.summarizeSession('summary-zero-unclassified-session'));
+
+        expect(result.summaryId).toBe('summary_summary-zero-unclassified-session');
+        expect(sessionUpserts).toHaveLength(1);
+        expect(stagedReceipts).toHaveLength(1);
+        const metadata = sessionUpserts[0].metadatas[0], receipt = stagedReceipts[0];
+        expect(receipt).toMatchObject({
+            sessionId: 'summary-zero-unclassified-session',
+            summaryId: result.summaryId,
+            document : sessionUpserts[0].documents[0]
+        });
+        for (const output of [metadata, receipt.metadata]) {
+            expect(output).toMatchObject({
+                userId               : 'shared',
+                sourceAgentIdentities: '@neo-gpt,@neo-opus-ada',
+                sourceTrustTier      : 'peer-trusted',
+                provenancePolicy     : 'most-restrictive-source',
+                participatingAgents  : 'neo-gpt,neo-opus-ada',
+                rawCanonical         : true
+            });
+        }
+        expect(linkNodesCalls.some(([, target, relationship]) => target === '@tobiu' && relationship === 'AUTHORED_BY')).toBe(false);
+        expect([metadata.unclassifiedSourceCount, receipt.metadata.unclassifiedSourceCount]).toEqual([0, 0]);
+    });
 });
