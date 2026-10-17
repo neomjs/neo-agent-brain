@@ -47,7 +47,7 @@ const closed = (number, closedAt, state='CLOSED') => ({
  * @param {String} search
  * @returns {'open'|'held'|'terminal'}
  */
-const kindOf = search => !search.includes('is:open') ? 'terminal' : search.includes('review-requested:') ? 'held' : 'open';
+const kindOf = search => !search.includes('is:open') ? 'terminal' : search.includes('review-requested:') ? 'held' : search.includes('-author:') ? 'outside' : 'open';
 
 /**
  * @summary A GraphQL stub answering each search from a script: open (authored), held and terminal
@@ -107,9 +107,9 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
             seat: '@' + login, login, apiBase: 'https://api.github.com', query: async () => answer()
         }))));
         const pulse = (await producer.pulse()).pulses.at(-1);
-        expect(pulse).toMatchObject({telemetryVersion: 1, cost: 8, pages: 4, costUnknown: false});
+        expect(pulse).toMatchObject({telemetryVersion: 1, cost: 10, pages: 5, costUnknown: false, outside: {complete: true, rows: 0}});
         expect(pulse.quota).toHaveLength(1);
-        expect(pulse.quota[0]).toMatchObject({apiBase: 'https://api.github.com', viewerId: 'issuer-1', resetAt: '2026-10-14T11:00:00.000Z', limit: 1000, cost: 8, calls: 4, failed: 0, unknown: false});
+        expect(pulse.quota[0]).toMatchObject({apiBase: 'https://api.github.com', viewerId: 'issuer-1', resetAt: '2026-10-14T11:00:00.000Z', limit: 1000, cost: 10, calls: 5, failed: 0, unknown: false});
         expect(Date.parse(pulse.quota[0].firstAt)).toBeLessThanOrEqual(Date.parse(pulse.quota[0].lastAt));
         expect(pulse.seats).toEqual(['ada', 'gpt'].map(login => ({seat: '@' + login, benched: false, outcome: 'complete',
             authored: {complete: true, rows: 0}, held: {complete: true, rows: 0}, terminal: {required: false, complete: true, rows: 0}})));
@@ -126,13 +126,13 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
         await producer.pulse();
         const ordinary = (await producer.pulse()).pulses.at(-1);
         expect(ordinary.quota.map(row => row.queryHash)).toEqual([OPEN_WORK_SNAPSHOT, OPEN_WORK_TERMINAL].map(text => createHash('sha256').update(text).digest('hex')));
-        expect(ordinary.quota[0]).toMatchObject({reported: true, maxMeasuredCost: 2, firstOrdinal: 1, lastOrdinal: 2, zeroCostFailedCalls: 0});
+        expect(ordinary.quota[0]).toMatchObject({reported: true, maxMeasuredCost: 2, firstOrdinal: 1, lastOrdinal: 4, zeroCostFailedCalls: 0});
         expect(ordinary.quota[1]).toMatchObject({firstOrdinal: 3, lastOrdinal: 3});
         failing = true;
         const failed = (await producer.pulse()).pulses.at(-1);
         expect(failed).toMatchObject({cost: 0, costUnknown: false, quota: [{reported: true, calls: 1, failed: 1, zeroCostFailedCalls: 1}]});
         expect(Date.parse(failed.quota[0].firstAttemptAt)).toBeLessThanOrEqual(Date.parse(failed.quota[0].firstAt));
-        expect(calls).toBe(6);
+        expect(calls).toBe(8);
     });
 
     test('a reset within a pulse, missing quota fields and known error costs remain separate evidence', async () => {
@@ -146,11 +146,11 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
             {seat: '@gpt', login: 'gpt', apiBase: 'https://api.github.com', query: async () => ({search: {nodes: [], pageInfo: {hasNextPage: false}}})},
             {seat: '@bench', login: 'bench', query: null, benched: true}
         ])).pulse()).pulses.at(-1);
-        expect(pulse).toMatchObject({cost: 5, pages: 3, costUnknown: true});
+        expect(pulse).toMatchObject({cost: 5, pages: 4, costUnknown: true});
         expect(pulse.quota.map(({resetAt, cost, calls, failed, unknown}) => ({resetAt, cost, calls, failed, unknown}))).toEqual([
             {resetAt: '2026-10-14T11:00:00.000Z', cost: 2, calls: 1, failed: 0, unknown: false},
             {resetAt: '2026-10-14T12:00:00.000Z', cost: 3, calls: 1, failed: 1, unknown: false},
-            {resetAt: null, cost: 0, calls: 2, failed: 0, unknown: true}
+            {resetAt: null, cost: 0, calls: 3, failed: 0, unknown: true}
         ]);
         expect(pulse.seats[0]).toMatchObject({outcome: 'failed', authored: {complete: true, rows: 0}, held: {complete: false, rows: 0}});
         expect(pulse.seats[1]).toMatchObject({outcome: 'complete', authored: {complete: true, rows: 0}});
@@ -190,7 +190,7 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
         expect(pulse.quota).toHaveLength(3);
         expect(pulse.quota[0]).toMatchObject({remaining: null, unknown: false, calls: 1, cost: 2});
         expect(pulse.quota[1]).toMatchObject({viewerId: null, unknown: true, failed: 1, calls: 1});
-        expect(pulse.quota[2]).toMatchObject({apiBase: 'https://github.example/api', viewerId: 'issuer-1', calls: 2});
+        expect(pulse.quota[2]).toMatchObject({apiBase: 'https://github.example/api', viewerId: 'issuer-1', calls: 3});
         expect(pulse.seats[0]).toMatchObject({outcome: 'failed', authored: {complete: false, rows: 1}, held: null});
     });
 
@@ -220,7 +220,7 @@ test.describe('openWorkProducer — compact measured quota evidence (#761)', () 
         const pulse = (await createOpenWorkProducer(options(async () => [{seat: '@ada', login: 'ada', apiBase: 'https://api.github.com',
             query: async () => answer('issuer-1', '2026-10-14T09:59:59Z')
         }])).pulse()).pulses.at(-1);
-        expect(pulse).toMatchObject({cost: 4, costUnknown: false, quota: [{resetAt: '2026-10-14T09:59:59.000Z', cost: 4, calls: 2, unknown: false}]});
+        expect(pulse).toMatchObject({cost: 6, costUnknown: false, quota: [{resetAt: '2026-10-14T09:59:59.000Z', cost: 6, calls: 3, unknown: false}]});
         expect(Date.parse(pulse.quota[0].firstAt)).toBeGreaterThan(Date.parse(pulse.quota[0].resetAt));
     });
 });
@@ -240,14 +240,14 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         expect(state.coverage).toBe('complete');
         expect(state.transitions.map(({kind, to}) => [kind, to])).toEqual([['verdict', 'APPROVED']]);
-        expect(state.pulses.at(-1)).toMatchObject({cost: 3, pages: 3, coverage: 'complete', transitions: {'@neo-opus-ada': 1}});
+        expect(state.pulses.at(-1)).toMatchObject({cost: 4, pages: 4, coverage: 'complete', transitions: {'@neo-opus-ada': 1}});
         // the seat reads what it authored and holds, one scope per repository; the terminal read is its
         // window of close times from its watermark, an overlap back
         expect(stub.calls.slice(0, 2).map(call => call.search)).toEqual([
             'is:pr is:open archived:false author:neo-opus-ada repo:acme/app',
             'is:pr is:open archived:false review-requested:neo-opus-ada repo:acme/app'
         ]);
-        expect(stub.calls.at(-1).search).toBe('is:pr is:closed closed:2026-10-02T09:51:00Z..2026-10-02T10:02:00Z author:neo-opus-ada repo:acme/app')
+        expect(stub.calls.find(call => call.kind === 'terminal').search).toBe('is:pr is:closed closed:2026-10-02T09:51:00Z..2026-10-02T10:02:00Z author:neo-opus-ada repo:acme/app')
     });
 
     test('a merge the search indexes after its window ended is read in the next window\'s overlap, once', async () => {
@@ -300,8 +300,8 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
         release();
 
         expect(await second).toBe(await first);
-        // one pulse's two open reads, never a second pulse's
-        expect(calls).toHaveLength(2)
+        // one pulse's two seat open reads plus the outside open read, never a second pulse's
+        expect(calls).toHaveLength(3)
     });
 
     test('a page without its structure is a failed read: the snapshot stays and the watermark holds', async () => {
@@ -453,10 +453,10 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
     /**
      * @summary A query that answers as one seat: only that seat's authored or held work, recording
      * every search it was asked.
-     * @param {Object} work `{authored: Object[], held: Object[], closed: Object[]}`
+     * @param {Object} work `{authored: Object[], held: Object[], outside?: Object[], closed: Object[]}`
      * @returns {{query: Function, searches: String[]}}
      */
-    const asSeat = ({authored = [], held = [], closed: ended = []}) => {
+    const asSeat = ({authored = [], held = [], outside = [], closed: ended = []}) => {
         const searches = [];
 
         return {
@@ -464,7 +464,7 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
             query: async (text, {query: search}) => {
                 searches.push(search);
 
-                const nodes = {open: authored, held, terminal: ended}[kindOf(search)];
+                const nodes = {open: authored, held, outside, terminal: ended}[kindOf(search)];
 
                 return {rateLimit: {cost: 1}, search: {nodes, pageInfo: {hasNextPage: false}}}
             }
@@ -483,10 +483,41 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
             }),
             state      = await producer.pulse();
 
-        expect(adaSeat.searches.every(search => search.includes('neo-opus-ada') && !search.includes('neo-gpt'))).toBe(true);
+        expect(adaSeat.searches.filter(search => !search.includes('-author:')).every(search => search.includes('neo-opus-ada') && !search.includes('neo-gpt'))).toBe(true);
+        expect(adaSeat.searches.find(search => search.includes('-author:'))).toBe('is:pr is:open archived:false -author:neo-opus-ada -author:neo-gpt repo:acme/app');
         expect(euclidSeat.searches.every(search => search.includes(':neo-gpt ') && !search.includes('neo-opus-ada'))).toBe(true);
         expect(Object.keys(state.snapshot.rows).sort()).toEqual(['acme/app#7', 'acme/app#9']);
         expect(state).toMatchObject({coverage: 'complete', reason: null})
+    });
+
+    test('unassigned outside contributor PRs are discovered per repository, and a failed outside read stays partial while keeping carried outside rows (#1008)', async () => {
+        let failOutside = false;
+        const
+            outsidePr = {...pr({number: 42, author: 'external-dev', name: 'External'}), body: 'External fix', reviewRequests: {pageInfo: {hasNextPage: false}, nodes: []}},
+            query     = async (text, {query: search}) => {
+                if (kindOf(search) === 'outside') {
+                    if (failOutside) throw new Error('outside search failed');
+                    return {rateLimit: {cost: 1}, search: {nodes: [outsidePr], pageInfo: {hasNextPage: false}}}
+                }
+                return {rateLimit: {cost: 1}, search: {nodes: [], pageInfo: {hasNextPage: false}}}
+            },
+            producer  = createOpenWorkProducer({
+                readers: async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', query}],
+                repos  : async () => ['acme/app'],
+                identities,
+                now    : clock('2026-10-02T10:00:00Z')
+            }),
+            first     = await producer.pulse();
+
+        expect(first.coverage).toBe('complete');
+        expect(first.pulses.at(-1).outside).toEqual({complete: true, rows: 1});
+        expect(first.snapshot.rows['acme/app#42']?.owner).toEqual({kind: 'outside', seat: null, login: 'external-dev'});
+
+        failOutside = true;
+        const second = await producer.pulse();
+        expect(second.coverage).toBe('partial');
+        expect(second.pulses.at(-1).outside).toEqual({complete: false, rows: 0});
+        expect(second.snapshot.rows['acme/app#42']?.observedAt).toBe(first.observedAt);
     });
 
     test('a seat without a readable PAT is named with its next step, never "set GH_TOKEN", and the others still read', async () => {
@@ -573,7 +604,7 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
             }),
             ada      = {authored: [], held: [held(19, ['neo-opus-ada'], true), held(21, ['neo-opus-ada'], false)]},
             euclid   = {authored: [], held: [held(19, ['neo-opus-ada'], true)]},
-            answer   = work => async (text, {query: search}) => ({rateLimit: {cost: 1}, search: {nodes: {open: work.authored, held: work.held, terminal: []}[kindOf(search)], pageInfo: {hasNextPage: false}}}),
+            answer   = work => async (text, {query: search}) => ({rateLimit: {cost: 1}, search: {nodes: {open: work.authored, held: work.held, outside: [], terminal: []}[kindOf(search)], pageInfo: {hasNextPage: false}}}),
             producer = createOpenWorkProducer({
                 readers   : async () => [
                     {seat: '@neo-opus-ada', login: 'neo-opus-ada', query: answer(ada), benched: false},

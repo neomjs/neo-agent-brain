@@ -13,18 +13,51 @@
  * transition leaves the producer's bounded history. Admitted merges need no permanent seen set: the
  * saved pulse excludes their original observations on the next round.
  */
+import {createHash}            from 'node:crypto';
 import {openWorkFreshness}     from './fleetOpenWorkSource.mjs';
 import {holderOf}              from './openWorkHolder.mjs';
 import {OPEN_WORK_QUERY_COSTS} from '../github-workflow/queries/openWorkQueries.mjs';
 
 const REASONS = Object.freeze({
-    'repair-ci'      : 'CI is red on your head',
-    'address-changes': 'changes are requested on your head',
-    rebase           : 'your approved head has conflicts to rebase',
-    review           : 'your review is due on the current head',
-    'route-review'   : 'CI is green; request a reviewer for your head',
-    'post-merge'     : 'your pull request was merged'
+    'repair-ci'       : 'CI is red on your head',
+    'address-changes' : 'changes are requested on your head',
+    rebase            : 'your approved head has conflicts to rebase',
+    review            : 'your review is due on the current head',
+    'route-review'    : 'CI is green; request a reviewer for your head',
+    'triage-outside'  : 'an untouched outside contributor pull request has finished CI',
+    'approve-runs'    : 'an outside contributor pull request has workflow runs awaiting approval',
+    'post-merge'      : 'your pull request was merged'
 });
+
+/**
+ * @summary Human-readable reason for a wake action kind.
+ * @param {String} kind
+ * @returns {String|null}
+ */
+export const reasonOf = kind => REASONS[kind] ?? null;
+
+/**
+ * @summary Deterministic rotation seat selection from the participating roster, advancing to the first reachable seat.
+ * @param {Object} row
+ * @param {String} kind
+ * @param {String[]} roster
+ * @param {Function} routeOf
+ * @returns {String|null}
+ * @private
+ */
+function pickRotationSeat(row, kind, roster, routeOf) {
+    if (!roster.length) return null;
+    const
+        digest = createHash('sha256').update(JSON.stringify([row.repo, row.number, row.head, kind])).digest(),
+        offset = digest.readUInt32BE(0) % roster.length;
+
+    for (let index = 0; index < roster.length; index++) {
+        const seat = roster[(offset + index) % roster.length];
+        if (routeOf(seat) !== 'unreachable') return seat
+    }
+
+    return null
+}
 
 /**
  * @summary A source identity that can bind a wake, without shortening its head.
@@ -63,10 +96,11 @@ function wakeOf(row, seat, role, kind, episode) {
  * @param {Object|null} options.ledger Previous {pulse, holding, pendingMerges, baselines}; null starts a quiet baseline.
  * @param {Number} options.now Epoch milliseconds.
  * @param {Function} [options.routeOf] Native seat to reachable, unreachable or unknown; only unreachable skips.
+ * @param {Array<String|Object>} [options.rotationSeats] Participating native seats (or pulse seat records) for rotation actions.
  * @param {Boolean} [options.quiet=false] Baseline the observed actions without admitting sends.
  * @returns {{wakes: Object[], ledger: Object|null}} Inputs are never mutated.
  */
-export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown', quiet = false}) {
+export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown', rotationSeats, quiet = false}) {
     const
         wakes   = [],
         holding = Object.fromEntries(Object.entries(ledger?.holding ?? {}).map(([key, entry]) =>
@@ -86,7 +120,10 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
         decided = new Set(),
         current = new Set(),
         ended   = new Set(),
-        native  = seat => typeof seat === 'string' && seat.startsWith('@') && seat.length > 1;
+        native  = seat => typeof seat === 'string' && seat.startsWith('@') && seat.length > 1,
+        roster  = [...new Set((Array.isArray(rotationSeats) ? rotationSeats : state?.pulses?.at(-1)?.seats ?? [])
+            .filter(item => typeof item === 'string' ? native(item) : !item?.benched && native(item?.seat))
+            .map(item => typeof item === 'string' ? item : item.seat))];
 
     for (const row of Object.values(state.snapshot.rows)) {
         if (!hasIdentity(row)) continue;
@@ -108,6 +145,34 @@ export function planOpenWorkWakes({state, ledger, now, routeOf = () => 'unknown'
 
         delete baselines[row.key];
         decided.add(row.key);
+
+        if (holder.role === 'rotation' && REASONS[holder.kind]) {
+            const
+                slot    = JSON.stringify([row.repo, row.number, row.head, 'rotation', holder.kind]),
+                prior   = holding[slot],
+                episode = prior?.wake?.episode ?? state.observedAt;
+
+            current.add(slot);
+            if (prior?.status === 'admitted' || prior?.status === 'baseline') {
+                holding[slot] = prior;
+                continue
+            }
+            if (rowBaseline) {
+                const seat = pickRotationSeat(row, holder.kind, roster, () => 'unknown') ?? prior?.wake?.to ?? roster[0] ?? '@rotation';
+                holding[slot] = {wake: wakeOf(row, seat, 'rotation', holder.kind, episode), status: 'baseline'};
+                continue
+            }
+            const seat = pickRotationSeat(row, holder.kind, roster, routeOf);
+            if (seat) {
+                const wake = wakeOf(row, seat, 'rotation', holder.kind, episode);
+                holding[slot] = {wake, status: 'admitted'};
+                wakes.push(wake)
+            } else {
+                const fallback = prior?.wake?.to ?? roster[0] ?? '@rotation';
+                holding[slot] = {wake: wakeOf(row, fallback, 'rotation', holder.kind, episode), status: 'pending'}
+            }
+            continue
+        }
 
         const seats = holder.role === 'reviewer' ||
             holder.role === 'author' && row.owner?.kind === 'seat'
@@ -330,6 +395,14 @@ export function wakeGateOf(state, {now}) {
             !Number.isFinite(pulse.intervalMs) || pulse.intervalMs <= 0 ||
             !Array.isArray(pulse.quota) || !Array.isArray(pulse.seats) ||
             pulse.costUnknown != null && typeof pulse.costUnknown !== 'boolean') return refuse('malformed or unordered pulse telemetry');
+
+        if (pulse.outside != null && (typeof pulse.outside !== 'object' || Array.isArray(pulse.outside) ||
+            typeof pulse.outside.complete !== 'boolean' || !Number.isInteger(pulse.outside.rows) || pulse.outside.rows < 0)) {
+            return refuse('a pulse has malformed seat coverage')
+        }
+        if (index === pulses.length - 1 && (!pulse.outside || pulse.outside.complete !== true)) {
+            return refuse('the outside pull-request read is missing or incomplete')
+        }
 
         const seen         = new Set();
         let   minimumCalls = 0, calls = 0, unpricedCalls = 0;

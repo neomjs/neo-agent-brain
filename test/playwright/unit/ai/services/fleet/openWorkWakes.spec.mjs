@@ -347,6 +347,40 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
         expect(planOpenWorkWakes({state: observed, ledger, now: at(1)}).wakes).toHaveLength(1);
         expect(JSON.stringify({observed, ledger})).toBe(before)
     });
+
+    test('outside rotation actions wake one deterministic reachable seat per episode and retry only while all seats are unreachable (#1008)', () => {
+        const
+            roster  = [ADA, GPT],
+            outside = {kind: 'outside', seat: null, login: 'contributor'},
+            digest  = kind => createHash('sha256').update(JSON.stringify(['acme/app', 7, HEAD, kind])).digest().readUInt32BE(0) % roster.length,
+            first   = roster[digest('triage-outside')],
+            second  = roster[(digest('triage-outside') + 1) % roster.length],
+            run     = journey();
+
+        run.step(0, [{owner: outside, ci: 'pending'}], {}, {rotationSeats: roster});
+
+        // All rotation seats unreachable -> stays pending without admitting a wake.
+        const blocked = run.step(1, [{owner: outside, ci: 'green'}], {}, {rotationSeats: roster, routeOf: () => 'unreachable'});
+        expect(blocked.wakes).toEqual([]);
+        expect(Object.values(blocked.ledger.holding)[0].status).toBe('pending');
+
+        // Primary hashed seat unreachable, next seat reachable -> wakes second seat once.
+        const admitted = run.step(2, [{owner: outside, ci: 'green'}], {}, {
+            rotationSeats: roster,
+            routeOf      : seat => seat === first ? 'unreachable' : 'reachable'
+        });
+        expect(admitted.wakes).toHaveLength(1);
+        expect(admitted.wakes[0]).toMatchObject({to: second, role: 'rotation', kind: 'triage-outside'});
+
+        // Primary seat becomes reachable later on the same head -> does NOT wake a second seat for the same episode.
+        const later = run.step(3, [{owner: outside, ci: 'green'}], {}, {rotationSeats: roster, routeOf: () => 'reachable'});
+        expect(later.wakes).toEqual([]);
+
+        // Action changes to approve-runs on the same head -> new kind episode wakes once.
+        const approval = run.step(4, [{owner: outside, ci: 'pending', runApproval: 'action_required'}], {}, {rotationSeats: roster});
+        expect(approval.wakes).toHaveLength(1);
+        expect(approval.wakes[0]).toMatchObject({to: roster[digest('approve-runs')], role: 'rotation', kind: 'approve-runs'});
+    });
 });
 
 test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)', () => {
@@ -359,6 +393,7 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
         pulse = (minute, {phase = 0, issuers = [{viewerId: 'U_ADA', limit: 1000, cost: 3, calls: 3}]} = {}) => ({
             telemetryVersion: 1, at: iso(minute), finishedAt: new Date(at(minute) + 1000).toISOString(), intervalMs: 4 * 60000,
             seats           : [completeSeat()],
+            outside         : {complete: true, rows: 0},
             quota           : issuers.map(issuer => ({
                 apiBase  : 'https://api.github.com', viewerId: issuer.viewerId,
                 resetAt  : iso(Math.floor((minute - phase) / 60) * 60 + phase + 60),
@@ -715,6 +750,12 @@ test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)'
             mutate(observed);
             expect(wakeGateOf(observed, {now: at(1440) + 2000}).holds).toBe(false)
         }
+        const missingOutside = history();
+        delete missingOutside.pulses.at(-1).outside;
+        expect(gate(missingOutside)).toEqual({holds: false, reason: 'the outside pull-request read is missing or incomplete'});
+        const incompleteOutside = history();
+        incompleteOutside.pulses.at(-1).outside = {complete: false, rows: 1};
+        expect(gate(incompleteOutside)).toEqual({holds: false, reason: 'the outside pull-request read is missing or incomplete'});
         expect(wakeGateOf(history(), {now: at(1446)}).holds).toBe(false)
     });
 });

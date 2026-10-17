@@ -10,13 +10,25 @@ const
     row     = overrides => ({ci: 'green', verdict: null, mergeable: 'MERGEABLE', draft: false, owner: seat, requested: [], reviews: [], opinions: [], ...overrides});
 
 test.describe('openWorkHolder — the shared holder and next-action kind, first match wins (#761)', () => {
-    test('an outside PR whose CI finished and that nobody has engaged with keeps the existing rotation behavior', () => {
-        expect(holderOf(row({owner: outside}))).toEqual({role: 'rotation', kind: null, ids: []});
-        expect(holderOf(row({owner: outside, ci: 'red'}))).toEqual({role: 'rotation', kind: null, ids: []});
+    test('an eligible outside PR routes to rotation for triage-outside when finished and untouched, or approve-runs when runs await approval (#1008)', () => {
+        expect(holderOf(row({owner: outside}))).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        expect(holderOf(row({owner: outside, ci: 'red'}))).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
         expect(holderOf(row({owner: outside, ci: 'pending'}))).toEqual({role: 'none', kind: null, ids: []});
+        expect(holderOf(row({owner: outside, ci: 'pending', runApproval: 'action_required'})))
+            .toEqual({role: 'rotation', kind: 'approve-runs', ids: []});
+        expect(holderOf(row({owner: outside, ci: 'red', runApproval: 'action_required', reviews: [review('COMMENTED')]})))
+            .toEqual({role: 'rotation', kind: 'approve-runs', ids: []});
         expect(holderOf(row({owner: outside, requested: ['@neo-gpt']}))).toEqual({role: 'reviewer', kind: 'review', ids: ['@neo-gpt']});
-        // A comment counts as engagement, but gives an outside author no seat-owned routing action.
-        expect(holderOf(row({owner: outside, reviews: [review('COMMENTED')]}))).toEqual({role: 'none', kind: null, ids: []})
+        // A comment counts as engagement for triage-outside, and gives an outside author no seat-owned routing action.
+        expect(holderOf(row({owner: outside, reviews: [review('COMMENTED')]}))).toEqual({role: 'none', kind: null, ids: []});
+        // Drafts, bots, and maintainer associations do not produce outside rotation actions.
+        expect(holderOf(row({owner: outside, draft: true, runApproval: 'action_required'}))).toEqual({role: 'none', kind: null, ids: []});
+        expect(holderOf(row({owner: outside, bot: true}))).toEqual({role: 'none', kind: null, ids: []});
+        expect(holderOf(row({owner: outside, authorType: 'Bot', runApproval: 'action_required'}))).toEqual({role: 'none', kind: null, ids: []});
+        for (const authorAssociation of ['OWNER', 'MEMBER', 'COLLABORATOR']) {
+            expect(holderOf(row({owner: outside, authorAssociation}))).toEqual({role: 'none', kind: null, ids: []});
+            expect(holderOf(row({owner: outside, authorAssociation, runApproval: 'action_required'}))).toEqual({role: 'none', kind: null, ids: []})
+        }
     });
 
     test('red CI takes precedence over every verdict and keeps the same action kind', () => {

@@ -22,18 +22,20 @@
  * @summary The holder of one open snapshot row; the first rule below that matches wins.
  * @param {Object} row An open row of the producer's snapshot.
  * @returns {{role: 'rotation'|'author'|'reviewer'|'operator'|'none'|'unknown',
- *     kind: 'repair-ci'|'address-changes'|'rebase'|'review'|'route-review'|'merge'|null, ids: String[]}}
+ *     kind: 'approve-runs'|'triage-outside'|'repair-ci'|'address-changes'|'rebase'|'review'|'route-review'|'merge'|null, ids: String[]}}
  */
-export function holderOf({ci, mergeable, draft, owner, partial = false, requested = [], reviews = [], opinions}) {
+export function holderOf({ci, mergeable, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions}) {
     const
         incomplete = partial || !Array.isArray(opinions),
         onHead     = state => (opinions ?? []).some(opinion => opinion.onHead && opinion.state === state),
         finished   = ci === 'red' || ci === 'green',
-        untouched  = !requested.length && !reviews.some(review => review.onHead);
+        untouched  = !requested.length && !reviews.some(review => review.onHead),
+        maintainer = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation),
+        eligible   = owner?.kind === 'outside' && !draft && !bot && authorType !== 'Bot' && !maintainer;
 
-    // "untouched" is an absence, so only a complete read hands an outside PR to the rotation
-    if (owner?.kind === 'outside' && finished && untouched && !incomplete) {
-        return {role: 'rotation', kind: null, ids: []}
+    // "untouched" and run-approval completeness require a complete read before handing an outside PR to the rotation
+    if (eligible && !incomplete && (runApproval === 'action_required' || finished && untouched)) {
+        return {role: 'rotation', kind: runApproval === 'action_required' ? 'approve-runs' : 'triage-outside', ids: []}
     }
 
     if (ci === 'red' || onHead('CHANGES_REQUESTED')) {

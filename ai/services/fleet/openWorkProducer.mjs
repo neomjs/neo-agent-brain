@@ -319,11 +319,41 @@ export function createOpenWorkProducer({
         }
 
         const
-            benched  = new Set(seats.filter(seat => seat.benched).map(seat => seat.seat)),
-            owes     = seat => !benched.has(seat),
-            missed   = [...unread, ...reads.filter(read => read.failure || !read.complete || !read.ended.complete).map(read => read.seat)].filter(seat => !owes(seat)),
+            benched       = new Set(seats.filter(seat => seat.benched).map(seat => seat.seat)),
+            owes          = seat => !benched.has(seat),
+            outsideReader = seats.find(seat => owes(seat.seat) && answered.some(read => read.seat === seat.seat))
+                ?? seats.find(seat => answered.some(read => read.seat === seat.seat)),
+            excluded      = [...new Set(seats.map(seat => seat.login).filter(Boolean))].map(login => `-author:${login}`).join(' '),
+            outside       = {complete: false, rows: 0},
+            outsideNodes  = [];
+        let outsideComplete = Boolean(outsideReader?.query);
+
+        for (const slug of outsideReader?.query ? slugs : []) {
+            const
+                progress = {complete: false, rows: 0},
+                search   = ['is:pr is:open archived:false', excluded, `repo:${slug}`].filter(Boolean).join(' ');
+            try {
+                const result = await readSearch({
+                    query: outsideReader.query, text: OPEN_WORK_SNAPSHOT, search,
+                    pageBudget, tally, apiBase: outsideReader.apiBase, stamp, progress
+                });
+                outsideNodes.push(...result.nodes);
+                outsideComplete &&= result.complete
+            } catch {
+                outsideComplete = false
+            } finally {
+                outside.rows += progress.rows
+            }
+        }
+        outside.complete = outsideComplete;
+
+        const
+            missed   = [...unread, ...reads.filter(read => read.failure || !read.complete || !read.ended.complete).map(read => read.seat)].filter(seat => !owes(seat)).concat(outside.complete ? [] : ['outside']),
             byKey    = rows => [...new Map(rows.map(row => [row.key, row])).values()],
-            rows     = byKey(answered.flatMap(read => read.nodes.map(node => normalizePullRequest(node, identities, {apiBase: read.apiBase})))),
+            rows     = byKey([
+                ...answered.flatMap(read => read.nodes.map(node => normalizePullRequest(node, identities, {apiBase: read.apiBase}))),
+                ...outsideNodes.map(node => normalizePullRequest(node, identities, {apiBase: outsideReader?.apiBase}))
+            ]),
             terminal = {rows: byKey(answered.flatMap(read => read.ended.nodes).map(node => normalizeTerminal(node, identities))), complete: !failed.some(read => owes(read.seat)) && answered.every(read => !owes(read.seat) || read.ended.complete)},
             complete = !unread.some(owes) && !failed.some(read => owes(read.seat)) && answered.every(read => !owes(read.seat) || read.complete),
             // a seat unread or failed this pulse keeps its mark for when it reads again, and one with no mark yet holds
@@ -347,7 +377,7 @@ export function createOpenWorkProducer({
             // the earliest seat's watermark bounds what is still closing, and seeds a seat that joins later
             watermark = Object.values(marks).map(mark => mark.watermark).filter(Boolean).sort()[0] ?? null,
             next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed}, terminal, since: state.watermark ?? null, id: at}),
-            coverage  = complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial';
+            coverage  = complete && outside.complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial';
 
         return finish({
             snapshot   : {rows: next.rows, closed: next.closed, complete: next.complete, missed: next.missed},
@@ -359,7 +389,7 @@ export function createOpenWorkProducer({
             reason     : unreadReason(unread.filter(owes), failed.filter(read => owes(read.seat))),
             detail     : failed[0]?.failure ?? null,
             transitions: [...state.transitions, ...next.transitions].slice(-transitionWindow)
-        }, {at, ...tally, seats: coverageSeats, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished, ...(unread.length || failed.length ? {unread: [...unread, ...failed.map(read => read.seat)]} : {})})
+        }, {at, ...tally, seats: coverageSeats, outside, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished, ...(unread.length || failed.length ? {unread: [...unread, ...failed.map(read => read.seat)]} : {})})
     }
 
     return {

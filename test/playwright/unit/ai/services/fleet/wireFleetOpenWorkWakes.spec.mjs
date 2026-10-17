@@ -52,6 +52,7 @@ function measuredState(minute, ci = 'pending') {
         return {telemetryVersion: 1, at: stamp, finishedAt: stamp, intervalMs: 60000, costUnknown: false,
             seats: [{seat: SEAT, benched: false, outcome: 'complete', authored: {complete: true, rows: 1},
                 held: {complete: true, rows: 0}, terminal: {required: false, complete: true, rows: 0}}],
+            outside: {complete: true, rows: 0},
             quota: [{apiBase: 'https://api.github.com', viewerId: 'issuer-1', limit: 1000, remaining: 900,
                 cost   : 2, calls: 2, failed: 0, unknown: false, firstAt: stamp, lastAt: stamp,
                 resetAt: new Date(Math.floor(time / 3600000) * 3600000 + 3600000).toISOString()}]}
@@ -541,5 +542,29 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
             await round(state(0)); expect(fs.existsSync(path.join(directory, 'open-work-wakes.json'))).toBe(true);
             await round.stop()
         } finally { fs.rmSync(directory, {recursive: true, force: true}) }
+    });
+
+    test('rotation episodes for outside PRs persist under the rotation slot and validate on the next round (#1008)', async () => {
+        let   minute = 0;
+        const store  = memoryStore(), sends = [],
+            round    = createOpenWorkWakeRound({store, gateOf: openGate, rotationSeats: [SEAT], now: () => at(minute), sendMessage: async message => sends.push(message)}),
+            outside  = (minute, ci, runApproval = null) => ({
+                observedAt: iso(minute), coverage: 'complete', transitions: [],
+                pulses    : [{at: iso(-1500)}, {at: iso(minute), seats: [{seat: SEAT, benched: false}]}],
+                snapshot  : {closed: {}, rows: {'acme/app#42': {
+                    key      : 'acme/app#42', repo: 'acme/app', number: 42, head: HEAD,
+                    owner    : {kind: 'outside', seat: null, login: 'contributor'}, ci, verdict: null,
+                    mergeable: 'MERGEABLE', draft: false, bot: false, authorAssociation: 'CONTRIBUTOR',
+                    runApproval, requested: [], reviews: [], opinions: [], partial: false, observedAt: iso(minute)
+                }}}
+            });
+
+        await round(outside(0, 'pending'));
+        minute = 1;
+        expect(await round(outside(1, 'green'))).toMatchObject({admitted: 1});
+        expect(sends[0]).toMatchObject({to: SEAT, subject: expect.stringContaining('[open-work:triage-outside] acme/app#42')});
+        minute = 2;
+        expect(await round(outside(2, 'green'))).toMatchObject({admitted: 0});
+        await round.stop()
     });
 });

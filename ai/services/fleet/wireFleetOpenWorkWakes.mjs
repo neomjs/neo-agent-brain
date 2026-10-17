@@ -23,6 +23,7 @@ const REFUSAL_REASONS = [
     ['pending: unattributed attempts have no known endpoint window or query estimate', 'unattributed-window-pending'],
     ['a pulse has malformed seat coverage', 'seat-coverage-invalid'],
     ['a participating seat has an incomplete', 'seat-read-incomplete'],
+    ['the outside pull-request read is missing or incomplete', 'outside-read-incomplete'],
     ['a pulse repeats a seat coverage identity', 'seat-coverage-duplicate'],
     ['a query has missing, malformed or unknown quota evidence', 'quota-evidence-unknown'],
     ['one issuer quota window reports conflicting', 'quota-limits-conflict'],
@@ -123,7 +124,7 @@ function validateLedger(ledger, now) {
         text   = value => typeof value === 'string' && value.length > 0,
         wake   = value => object(value) && text(value.repo) && Number.isInteger(value.number) && value.number > 0 &&
             text(value.head) && text(value.to) && value.to.startsWith('@') && text(value.kind) &&
-            text(value.episode) && text(value.reason) && ['author', 'reviewer'].includes(value.role) &&
+            text(value.episode) && text(value.reason) && ['author', 'reviewer', 'rotation'].includes(value.role) &&
             value.pr === `${value.repo}#${value.number}` &&
             value.key === JSON.stringify([value.repo, value.number, value.head, value.to, value.kind, value.episode]);
 
@@ -137,7 +138,8 @@ function validateLedger(ledger, now) {
         ledger.certificationRefusal != null && !REFUSAL_CODES.has(ledger.certificationRefusal) ||
         Object.entries(ledger.holding).some(([slot, entry]) => !object(entry) || !wake(entry.wake) ||
             !['baseline', 'pending', 'admitted'].includes(entry.status) ||
-            slot !== JSON.stringify([entry.wake.repo, entry.wake.number, entry.wake.head, entry.wake.to, entry.wake.kind])) ||
+            slot !== JSON.stringify([entry.wake.repo, entry.wake.number, entry.wake.head,
+                entry.wake.role === 'rotation' ? 'rotation' : entry.wake.to, entry.wake.kind])) ||
         Object.entries(ledger.pendingMerges).some(([id, value]) => !wake(value) || value.kind !== 'post-merge' || id !== value.episode) ||
         Object.values(ledger.baselines).some(value => !text(value))) {
         throw new Error('Malformed open-work wake ledger; existing history preserved')
@@ -203,11 +205,12 @@ function freshWake(wake, state, now) {
  * @param {Number} [options.routesTtlMs] Short cache duration for the existing route read.
  * @param {Function} [options.gateOf] Test seam; production uses wakeGateOf's measured observation gate.
  * @param {Function} [options.isEnabled] The entrypoint's live permission to send; no config is read here.
+ * @param {Array<String|Object>|Function} [options.rotationSeats] Participating native seats for rotation actions.
  * @param {Object} [options.log] Bounded diagnostics; sender error contents are never logged.
  * @returns {Function} Post-pulse callback with an async stop() method; persistence errors reject.
  */
 export function createOpenWorkWakeRound({store, sendMessage, readUndeliverable = async () => null,
-    now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true, log = console}) {
+    now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true, rotationSeats, log = console}) {
     let running = null, queued = null, stopped = false, routes = null;
 
     /** @summary Read the existing route projection only when a plan has eligible work. */
@@ -269,7 +272,8 @@ export function createOpenWorkWakeRound({store, sendMessage, readUndeliverable =
         });
         const first = Date.parse(state?.pulses?.[0]?.at),
             ledger  = stored && !stored.activation && Number.isFinite(first) && Date.parse(stored.pulse) < first ? null : stored,
-            args    = {state, ledger};
+            roster  = typeof rotationSeats === 'function' ? rotationSeats() : rotationSeats,
+            args    = {state, ledger, ...(roster !== undefined ? {rotationSeats: roster} : {})};
         let plan = planOpenWorkWakes({...args, now: time, quiet: !activation}), expired = 0;
 
         // A newly proven certification survives a later route timeout; this write admits no send.
@@ -350,14 +354,15 @@ export function createOpenWorkWakeRound({store, sendMessage, readUndeliverable =
  * @param {Function} [options.now]
  * @param {Function} [options.gateOf] Test seam only.
  * @param {Function} [options.isEnabled] Live entrypoint enablement, checked at effect boundaries.
+ * @param {Array<String|Object>|Function} [options.rotationSeats]
  * @param {Object} [options.log]
  * @returns {Function|null} onPulse with stop(), or null without the required registry/sender.
  */
-export function wireFleetOpenWorkWakes({registry, sendMessage, readUndeliverable, now, gateOf, isEnabled, log} = {}) {
+export function wireFleetOpenWorkWakes({registry, sendMessage, readUndeliverable, now, gateOf, isEnabled, rotationSeats, log} = {}) {
     if (typeof registry?.getDataDir !== 'function' || typeof sendMessage !== 'function') return null;
     return createOpenWorkWakeRound({
         store: fileStore(path.join(registry.getDataDir(), 'open-work-wakes.json')),
-        sendMessage, readUndeliverable, now, gateOf, isEnabled, log
+        sendMessage, readUndeliverable, now, gateOf, isEnabled, rotationSeats, log
     })
 }
 

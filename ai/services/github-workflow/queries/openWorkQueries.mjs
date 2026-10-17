@@ -41,7 +41,9 @@ export const OPEN_WORK_SNAPSHOT = `
           reviewDecision
           mergeable
           body
+          authorAssociation
           author {
+            __typename
             login
           }
           repository {
@@ -151,6 +153,17 @@ export const OPEN_WORK_SNAPSHOT = `
                 oid
                 statusCheckRollup {
                   state
+                }
+                checkSuites(last: 100) {
+                  pageInfo {
+                    hasNextPage
+                  }
+                  nodes {
+                    conclusion
+                    workflowRun {
+                      event
+                    }
+                  }
                 }
               }
             }

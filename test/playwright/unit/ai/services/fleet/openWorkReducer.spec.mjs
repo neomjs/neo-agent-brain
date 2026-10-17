@@ -272,4 +272,28 @@ test.describe('openWorkReducer — the owner is the body line, never a silent lo
         expect(normalizePullRequest(node({body: 'No author line here.'}), identities).owner).toEqual({kind: 'unowned', seat: null, login: 'neo-opus-ada'});
         expect(normalizePullRequest(node({body: '', login: 'dependabot'}), identities).owner).toEqual({kind: 'outside', seat: null, login: 'dependabot'})
     });
+
+    test('outside PR evidence normalizes authorAssociation, bot, and check-suite runApproval while keeping carried outside rows on an outside miss (#1008)', () => {
+        const outsideNode = (suites, {hasNextPage = false, authorAssociation = 'FIRST_TIME_CONTRIBUTOR', typename = 'User'} = {}) => ({
+            ...node({number: 19, body: '', login: 'contributor', reviewers: []}),
+            authorAssociation,
+            author : {__typename: typename, login: 'contributor'},
+            commits: {nodes: [{commit: {oid: 'a1', statusCheckRollup: {state: 'PENDING'}, checkSuites: {pageInfo: {hasNextPage}, nodes: suites}}}]}
+        });
+
+        expect(normalizePullRequest(outsideNode([{conclusion: 'ACTION_REQUIRED', workflowRun: {event: 'pull_request'}}]), identities))
+            .toMatchObject({authorAssociation: 'FIRST_TIME_CONTRIBUTOR', bot: false, runApproval: 'action_required', partial: false});
+        expect(normalizePullRequest(outsideNode([{conclusion: 'ACTION_REQUIRED', workflowRun: {event: 'pull_request_review'}}]), identities))
+            .toMatchObject({runApproval: null, partial: false});
+        expect(normalizePullRequest(outsideNode([], {hasNextPage: true, typename: 'Bot'}), identities))
+            .toMatchObject({bot: true, runApproval: null, partial: true});
+
+        const
+            contrib = normalizePullRequest(outsideNode([]), identities),
+            p0      = reduceOpenWork({previous: null, observed: {rows: [contrib], complete: true, missed: []}, terminal: {rows: [], complete: true}, since: null, id: 'p0'}),
+            p1      = reduceOpenWork({previous: p0, observed: {rows: [], complete: true, missed: ['outside']}, terminal: {rows: [], complete: true}, since: null, id: 'p1'});
+
+        expect(p1.rows['acme/app#19']?.observedAt).toBe('p0');
+        expect(p1.vanished).toEqual([])
+    });
 });
