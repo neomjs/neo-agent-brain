@@ -778,10 +778,13 @@ class TextEmbeddingService extends Base {
     // effect on the next admission rather than at the next process start. The gate throws on a value
     // it cannot honour — a fractional cap would report one number while admitting its ceiling, and a
     // non-finite cap turns the lane into either an unbounded path or a permanent stall.
-    #ollamaAdmission = new EmbeddingAdmission((aiConfig => ({
-        resolveBudget: () => aiConfig.ollama.maxInFlightEmbeddings,
-        createAbortError: getEmbeddingAbortError
-    }))({get ollama() { return this.#getConfig().ollama }}));
+    #ollamaAdmission = new EmbeddingAdmission((getConfig => {
+        const aiConfig = {get ollama() { return getConfig().ollama }};
+        return {
+            resolveBudget: () => aiConfig.ollama.maxInFlightEmbeddings,
+            createAbortError: getEmbeddingAbortError
+        };
+    })(() => this.#getConfig()));
 
     /**
      * @param {Object} config The configuration object.
