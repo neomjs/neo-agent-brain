@@ -328,25 +328,27 @@ class McpLaunchAdmissionService extends Base {
         const {capabilities, owners, residentInputs} = recovered;
         if (canonicalJson(Object.keys(capabilities).sort()) !== canonicalJson(saved.servers.map(row => row.key).sort()) ||
             canonicalJson(Object.keys(start.profile.grants).sort()) !== canonicalJson(saved.servers.map(row => row.key).sort()) ||
-            canonicalJson(start.targets.map(row => row.key).sort()) !== canonicalJson(saved.servers.map(row => row.key).sort())) throw Error();
+            canonicalJson(start.targets.map(row => row.key).sort()) !== canonicalJson(saved.servers.map(row => row.key).sort())) throw new Error('server set changed');
         for (const [name, owner] of Object.entries(owners)) {
-            if (!isDeepStrictEqual(owner.binding, saved.credentialBindings[name]) || !owner.matches()) throw Error();
+            if (!isDeepStrictEqual(owner.binding, saved.credentialBindings[name]) || !owner.matches()) throw new Error(`credential owner changed: ${name}`);
         }
         for (const [key, input] of Object.entries(residentInputs)) {
-            if (!isDeepStrictEqual({binding: input.binding, names: input.names}, saved.residentBindings[key]) || !input.matches()) throw Error();
+            if (!isDeepStrictEqual({binding: input.binding, names: input.names}, saved.residentBindings[key]) || !input.matches()) throw new Error(`resident input changed: ${key}`);
         }
         return new Map(saved.servers.map(row => {
             const capability = capabilities[row.key], grant = parseLaunchCapability(capability), expected = start.profile.grants[row.key];
             if (!grant || grant.id !== row.grantId || expected.id !== row.grantId || expected.sha256 !== row.capabilityHash ||
-                crypto.createHash('sha256').update(capability).digest('hex') !== row.capabilityHash) throw Error();
+                crypto.createHash('sha256').update(capability).digest('hex') !== row.capabilityHash) throw new Error(`capability changed: ${row.key}`);
             const target = start.targets.find(target => target.key === row.key);
             const owned  = [], resident = [], required = target.slots.filter(slot => slot.required).map(slot => slot.name);
             if (row.state !== STATES.REVOKED) {
-                if (row.state !== STATES.ACTIVE) throw Error();
+                if (row.state !== STATES.ACTIVE) throw new Error(`server state changed: ${row.key}`);
                 for (const slot of target.slots) {
                     if (slot.state === 'owner' && owners[slot.name]) owned.push(slot.name);
                     else if (slot.state === 'held' && residentInputs[row.key]?.names.includes(slot.name)) resident.push(slot.name);
-                    else if (slot.state !== 'absent' || slot.required) throw Error();
+                    else if (slot.state === 'owner') throw new Error(`credential owner missing: ${slot.name}`);
+                    else if (slot.state === 'held') throw new Error(`resident input missing: ${slot.name}`);
+                    else if (slot.state !== 'absent' || slot.required) throw new Error(`slot unaccounted: ${slot.name}`);
                 }
             }
             return [row.key, {...row, secret: grant.secret, args: [...target.args], env: {}, owned, resident, required}];
@@ -359,14 +361,18 @@ class McpLaunchAdmissionService extends Base {
      * custody without a handoff; ordinary process Quit remains the caller's choice, never blocked here.
      * @param {Object} options
      * @param {Function} options.verifySeats Validates every surviving seat against its original Start.
+     * @param {Function} [options.onStage] `(stage) => void`, called as each stage begins and once more on
+     *     a refusal (`refused at <stage>: <reason>`), so a caller's log witnesses how far a handoff got
+     *     even when the host kills the process mid-stage; never awaited, never trusted with control.
      * @returns {Promise<Object>} Coalesced terminal disposition, without grants or input values.
      */
-    handoff({verifySeats}) {
-        return this.handoffPromise ??= this.performHandoff(verifySeats);
+    handoff({verifySeats, onStage = null}) {
+        return this.handoffPromise ??= this.performHandoff(verifySeats, onStage);
     }
 
     /** @summary One bounded terminal transition; only the owner-facing handoff method starts it. @private */
-    async performHandoff(verifySeats) {
+    async performHandoff(verifySeats, onStage = null) {
+        const witness = stage => { try { onStage?.(stage) } catch {} };
         if (!this.journal || this.journalFailed || this.continuityPhase !== 'ready' || typeof verifySeats !== 'function') {
             throw new Error('Fleet continuity refused: custody-unavailable.');
         }
@@ -396,17 +402,22 @@ class McpLaunchAdmissionService extends Base {
                 stage = 'endpoint-binding';
                 throw new Error('Fleet continuity refused: endpoint-binding.');
             }
+            witness(stage);
             await bounded(Promise.resolve().then(verifySeats));
             stage = 'proof-drain';
+            witness(stage);
             await bounded(Promise.all([...this.generations.values()].flatMap(row => [...row.proofs.values()])));
             this.persistAdmission();
             stage = 'endpoint-release';
+            witness(stage);
             await bounded(release());
             stage = 'durable-handoff';
+            witness(stage);
             this.journal.handoff(this.admissionSnapshot(), this.issuerOrigin);
             this.continuityPhase = 'handed-off';
             return {state: 'handed-off'};
-        } catch {
+        } catch (error) {
+            witness(`refused at ${stage}${error?.message && !/^Fleet continuity refused/.test(error.message) ? `: ${error.message}` : ''}`);
             this.continuityPhase = 'unavailable';
             this.grants.clear();
             this.journal.close();

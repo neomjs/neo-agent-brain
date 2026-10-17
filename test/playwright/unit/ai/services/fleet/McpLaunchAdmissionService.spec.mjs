@@ -257,6 +257,17 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
         expect(service.grants.size).toBe(0);
     });
 
+    test('a handoff witnesses each stage before it awaits it, and a refusal names the stage and the reason', async () => {
+        const f = await predecessor({clean: false});
+        await recoverWithRuntimeReferences(f);
+        service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready'; service.handoffPromise = null;
+        await service.listen();
+        const stages = [];
+        await expect(service.handoff({verifySeats: async () => { throw new Error('seat seat is not a live original Start') }, onStage: stage => stages.push(stage)}))
+            .rejects.toThrow('Fleet continuity refused: survivor-validation.');
+        expect(stages).toEqual(['survivor-validation', 'refused at survivor-validation: seat seat is not a live original Start']);
+    });
+
     test('a bind conflict refuses the original origin without moving to another port', async () => {
         const f       = await predecessor();
         const blocker = http.createServer();
@@ -332,8 +343,12 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
                 return result;
             };
             const [disposition] = await recoverWithRuntimeReferences({...f, restoreSeat});
-            expect(disposition).toMatchObject({agentId: 'seat', state: 'stale', reason: 'recovery-unverified'});
-            expect(typeof disposition.detail === 'string' && disposition.detail.length > 0, `${failure}: ${disposition.detail}`).toBe(true);
+            expect(disposition).toMatchObject({agentId: 'seat', state: 'stale', reason: 'recovery-unverified', detail: {
+                capability: 'capability changed: github-workflow',
+                owner     : 'credential owner missing: GH_TOKEN',
+                process   : 'process not live',
+                definition: 'definition changed'
+            }[failure]});
             expect(service.grants.size).toBe(0);
         });
     }

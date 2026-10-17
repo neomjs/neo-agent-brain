@@ -610,9 +610,12 @@ async function boot() {
                 } else {
                     console.log('[fleet] continuity handoff skipped: no runtime generation, so a successor restores no seat');
                 }
+                runtime.generation && console.log(`[fleet] continuity handoff: draining requests (${elapsed()} ms)`);
                 await server.drainFleetRequests(lifecycle.getLaunchAdmission().proofTimeoutMs);
                 if (runtime.generation) {
-                    await lifecycle.handoffRuntimeCustody({tenantService: await FleetManager.getTenantService()});
+                    // Each stage is witnessed before its await, so a kill mid-stage still names the stage it died in.
+                    await lifecycle.handoffRuntimeCustody({tenantService: await FleetManager.getTenantService(),
+                        onStage: stage => console.log(`[fleet] continuity handoff: ${stage} (${elapsed()} ms)`)});
                     console.log(`[fleet] continuity handoff sealed after ${elapsed()} ms; a successor rebinds the released origin`);
                 }
             } catch (error) {

@@ -2277,7 +2277,7 @@ class FleetLifecycleService extends Base {
             return !record.runtimeUnresolved;
         };
         const dispositions = await admission.recover({registry, runtimeReferenceGuard, restoreSeat: async (start, saved) => {
-            if (!await verifyPin(start)) throw Error();
+            if (!await verifyPin(start)) throw new Error('runtime pin unverified');
             return this.readOriginalRuntimeInputs(start, saved, {tenantService, readGrants});
         }});
         for (const {start} of previous?.snapshot.seats ?? []) await verifyPin(start);
@@ -2295,7 +2295,7 @@ class FleetLifecycleService extends Base {
      */
     async readOriginalRuntimeInputs(start, saved, {tenantService, readGrants = recoverLaunchProfileGrants, adopted = true} = {}) {
         const record = this.processes.get(start.agentId), registry = this.getRegistry();
-        if (!record || !this.matchesRuntimeStart(record, start, {adopted})) throw Error();
+        if (!record || !this.matchesRuntimeStart(record, start, {adopted})) throw new Error('original Start record missing or changed');
         const capabilities = await readGrants({managedRoot: fs.realpathSync(this.getInstanceRoot()),
             instanceHome: record.instanceHome, workspaceRoot: record.cwd, binding: start.profile});
         const owners = Object.fromEntries(Object.entries(saved.credentialBindings).map(([name, binding]) =>
@@ -2313,39 +2313,39 @@ class FleetLifecycleService extends Base {
      * @param {Object} options Existing tenant owner, with isolated-test seams for runtime/profile reads.
      * @returns {Promise<Object>} The admission owner's terminal handoff disposition.
      */
-    handoffRuntimeCustody({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverLaunchProfileGrants} = {}) {
+    handoffRuntimeCustody({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverLaunchProfileGrants, onStage = null} = {}) {
         const admission = this.getLaunchAdmission();
-        return admission.handoff({verifySeats: async () => {
-            if (this.pendingStarts.size) throw Error();
+        return admission.handoff({onStage, verifySeats: async () => {
+            if (this.pendingStarts.size) throw new Error('a Start is pending');
             this.adoptLeasedSeats();
             const verified = new Map();
             for (const record of this.processes.values()) {
                 if (['stopped', 'exited'].includes(record.state) && !record.ownershipUnresolved && !record.cleanupUnresolved) continue;
                 const start = record.runtimeStart;
-                if (!start || record.runtimeUnresolved || !this.matchesRuntimeStart(record, start, {adopted: false}) || this.probeSeat(record) !== 'live') throw Error();
+                if (!start || record.runtimeUnresolved || !this.matchesRuntimeStart(record, start, {adopted: false}) || this.probeSeat(record) !== 'live') throw new Error(`seat ${record.id} is not a live original Start`);
                 const key = JSON.stringify(start.runtime);
                 if (!verified.has(key)) verified.set(key, Promise.resolve().then(() => verifyRuntime({directory: start.runtime.directory})));
                 const runtime = await verified.get(key);
                 if (!runtime || !isDeepStrictEqual(runtimeGenerationPin(runtime), start.runtime) ||
-                    runtime.compatibility?.launchProtocol !== LAUNCH_ADMISSION_PROTOCOL) throw Error();
+                    runtime.compatibility?.launchProtocol !== LAUNCH_ADMISSION_PROTOCOL) throw new Error(`runtime pin changed: ${record.id}`);
                 if (start.admissionGeneration) {
                     const saved = admission.admissionSnapshot().generations.find(row => row.id === start.admissionGeneration);
-                    if (!saved || !['active', 'revoked'].includes(saved.state)) throw Error();
+                    if (!saved || !['active', 'revoked'].includes(saved.state)) throw new Error(`admission generation missing: ${record.id}`);
                     if (saved.state === 'revoked') continue;
                     const recovered = await this.readOriginalRuntimeInputs(start, saved, {tenantService, readGrants, adopted: false});
                     const servers   = admission.recoverServers({saved, start, recovered});
                     for (const server of servers.values()) {
                         if (server.state === 'revoked') continue;
                         const resident = recovered.residentInputs[server.key], env = resident ? resident.read() : {};
-                        if (env === null || server.resident.some(name => server.required.includes(name) && typeof env[name] !== 'string')) throw Error();
+                        if (env === null || server.resident.some(name => server.required.includes(name) && typeof env[name] !== 'string')) throw new Error(`resident input missing: ${server.key}`);
                         const values = server.owned.map(name => recovered.owners[name].resolve());
-                        if (values.some(value => typeof value !== 'string' || !value.trim())) throw Error();
+                        if (values.some(value => typeof value !== 'string' || !value.trim())) throw new Error(`credential value missing: ${server.key}`);
                         const port       = typeof env.NEO_NL_PORT === 'string' && /^[1-9][0-9]{0,4}$/.test(env.NEO_NL_PORT) ? Number(env.NEO_NL_PORT) : null;
                         const generation = admission.generations.get(start.agentId);
                         const proofs     = await Promise.all(server.owned.map((name, index) => admission.prove(generation, name, values[index], port)));
-                        if (proofs.some(row => row.verdict !== 'proved') || resident && !resident.matches()) throw Error();
+                        if (proofs.some(row => row.verdict !== 'proved') || resident && !resident.matches()) throw new Error(`proof failed: ${server.key}`);
                     }
-                    if (recovered.probe() !== 'live') throw Error();
+                    if (recovered.probe() !== 'live') throw new Error(`process not live: ${record.id}`);
                 }
             }
         }});
