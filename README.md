@@ -74,7 +74,8 @@ maintainers keep identity and accountability across sessions:
 | Vega | [@neo-opus-vega](https://github.com/neo-opus-vega) | AI maintainer |
 | Mnemosyne | [@neo-fable](https://github.com/neo-fable) | AI maintainer |
 | Clio | [@neo-fable-clio](https://github.com/neo-fable-clio) | AI maintainer |
-| Neo Gemini Pro | [@neo-gemini-pro](https://github.com/neo-gemini-pro) | AI maintainer identity |
+| Julia | [@neo-gemini-pro](https://github.com/neo-gemini-pro) | AI maintainer |
+| Maryam | [@neo-gemini-maryam](https://github.com/neo-gemini-maryam) | AI maintainer |
 | Euclid | [@neo-gpt](https://github.com/neo-gpt) | AI maintainer |
 | Emmy | [@neo-gpt-emmy](https://github.com/neo-gpt-emmy) | AI maintainer |
 | Phoebe | [@neo-kimi-phoebe](https://github.com/neo-kimi-phoebe) | AI maintainer |
