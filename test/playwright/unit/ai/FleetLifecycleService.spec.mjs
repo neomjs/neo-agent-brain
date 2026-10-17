@@ -212,6 +212,12 @@ function install({agents = {}, creds = {}} = {}) {
     // reads as born at one fixed time, so an app-bundle start can lease it.
     FleetLifecycleService.processInspectFn  = () => ({startedAt: 'Thu Oct  1 08:00:00 2026', command: ''});
     FleetLifecycleService.processSignalFn   = () => { throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) };
+    // Window seams: no spec queries or moves a host window unless it opts in.
+    FleetLifecycleService.windowRectReadFn       = async () => null;
+    FleetLifecycleService.windowRectPlaceFn      = async () => null;
+    FleetLifecycleService.windowPlatform         = process.platform;
+    FleetLifecycleService.windowRestoreTimeoutMs = 20000;
+    FleetLifecycleService.windowRestorePollMs    = 500;
     FleetLifecycleService.adoptedExitPollMs = 5;
     FleetLifecycleService.leasesAdopted     = false;
     FleetLifecycleService.processListFn     = null;
@@ -2859,6 +2865,149 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             try { process.kill(pid, 'SIGKILL') } catch {}
         }
     });
+
+    test.describe('the window rectangle across stop and start', () => {
+        const
+            RECT        = {x: 2056, y: 30, width: 892, height: 1055},
+            OTHER       = {x: 79, y: 39, width: 1280, height: 820},
+            WINDOW_FILE = '.neo-fleet-window.json';
+
+        /** @summary Injects the window seams: a read queue whose last answer repeats, a placement answering what the OS "did". */
+        function windowSeams({reads = [null], place = null} = {}) {
+            const log = [], queue = [...reads];
+
+            FleetLifecycleService.windowPlatform         = 'darwin';
+            FleetLifecycleService.windowRestorePollMs    = 1;
+            FleetLifecycleService.windowRestoreTimeoutMs = 200;
+            FleetLifecycleService.windowRectReadFn       = async pid => { log.push(['read', pid]); return queue.length > 1 ? queue.shift() : queue[0] ?? null };
+            FleetLifecycleService.windowRectPlaceFn      = async (pid, rect) => { log.push(['place', pid, {...rect}]); return place ? place(rect) : null };
+
+            return log
+        }
+
+        function writeRecord(home, harnessType, rect = RECT) {
+            fs.writeFileSync(path.join(home, WINDOW_FILE), JSON.stringify({version: 1, agentId: 'seat', harnessType, rect, capturedAt: '2026-10-17T15:00:00.000Z'}));
+            return path.join(home, WINDOW_FILE)
+        }
+
+        test('stop records the window rectangle before the signal for the GUI families; a failed read keeps the file; a CLI seat never asks', async () => {
+            for (const harnessType of ['claude-desktop', 'antigravity']) {
+                const {spawn, home} = installSeat(harnessType), file = path.join(home, WINDOW_FILE);
+                let   signalsAtRead = null;
+
+                windowSeams();
+                const {pid} = FleetLifecycleService.start('seat'), child = spawn.calls.at(-1).child;
+                FleetLifecycleService.windowRectReadFn = async () => { signalsAtRead = [...child.signals]; return {...RECT} };
+
+                await FleetLifecycleService.stop('seat');
+
+                const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+                expect(signalsAtRead, harnessType).toEqual([]);
+                expect(child.signals, harnessType).toContain('SIGTERM');
+                expect(Object.keys(record).sort()).toEqual(['agentId', 'capturedAt', 'harnessType', 'rect', 'version']);
+                expect(record).toMatchObject({version: 1, agentId: 'seat', harnessType, rect: RECT});
+                expect(Date.parse(record.capturedAt)).not.toBeNaN();
+                expect(pid).toBe(child.pid);
+
+                // a failed read keeps the previous record byte for byte
+                const before = fs.readFileSync(file, 'utf8');
+                FleetLifecycleService.start('seat');
+                FleetLifecycleService.windowRectReadFn = async () => null;
+                await FleetLifecycleService.stop('seat');
+                expect(fs.readFileSync(file, 'utf8'), harnessType).toBe(before)
+            }
+
+            expect(FleetLifecycleService.keepsWindowRect({instanceHome: '/agents/seat/harness/codex-desktop', harnessType: 'codex-desktop'})).toBe(true);
+            expect(FleetLifecycleService.keepsWindowRect({instanceHome: null, harnessType: 'codex-desktop'})).toBe(false);
+
+            // a CLI seat has no window: the read seam is never asked
+            const log = windowSeams({reads: [RECT]});
+            install({agents: {a: agentDef('a')}, creds: {a: FIXTURE_PAT}});
+            FleetLifecycleService.windowRectReadFn = async pid => { log.push(['read', pid]); return {...RECT} };
+            FleetLifecycleService.start('a');
+            await FleetLifecycleService.stop('a');
+            expect(log).toEqual([]);
+        });
+
+        test('start puts the window back once it appears: the record is requested, the placement read back, the row says restored', async () => {
+            const {home} = installSeat('claude-desktop');
+
+            writeRecord(home, 'claude-desktop');
+            const log = windowSeams({reads: [null, OTHER], place: rect => ({...rect})});
+
+            FleetLifecycleService.start('seat');
+
+            const record = FleetLifecycleService.processes.get('seat');
+
+            expect(FleetLifecycleService.status('seat').windowPlacement).toMatchObject({state: 'pending', requested: RECT, observed: null});
+
+            const placement = await record.windowRestore;
+
+            expect(placement).toMatchObject({state: 'restored', requested: RECT, observed: RECT, reason: null});
+            expect(Date.parse(placement.at)).not.toBeNaN();
+            expect(log.filter(row => row[0] === 'place')).toEqual([['place', record.pid, RECT]]);
+            expect(FleetLifecycleService.status('seat').windowPlacement).toMatchObject({state: 'restored', observed: RECT});
+
+            await FleetLifecycleService.stop('seat')
+        });
+
+        test('a window already at its record is kept without a placement; a read-back that differs is refused with the reason, the record untouched; no record means none; no window means refused', async () => {
+            let {home} = installSeat('antigravity');
+
+            writeRecord(home, 'antigravity');
+            let log = windowSeams({reads: [RECT], place: rect => ({...rect})});
+            FleetLifecycleService.start('seat');
+            expect(await FleetLifecycleService.processes.get('seat').windowRestore).toMatchObject({state: 'kept', requested: RECT, observed: RECT});
+            expect(log.some(row => row[0] === 'place')).toBe(false);
+            await FleetLifecycleService.stop('seat');
+
+            ({home} = installSeat('antigravity'));
+            const file = writeRecord(home, 'antigravity'), before = fs.readFileSync(file, 'utf8');
+            log = windowSeams({reads: [OTHER], place: () => ({...OTHER})});   // the OS clamps: the read-back stays where it was
+            FleetLifecycleService.start('seat');
+            const placement = await FleetLifecycleService.processes.get('seat').windowRestore;
+            expect(placement).toMatchObject({state: 'refused', requested: RECT, observed: OTHER});
+            expect(placement.reason).toContain('did not take');
+            expect(log.filter(row => row[0] === 'place')).toHaveLength(1);
+            expect(fs.readFileSync(file, 'utf8')).toBe(before);
+            FleetLifecycleService.windowRectReadFn = async () => null;
+            await FleetLifecycleService.stop('seat');
+            expect(fs.readFileSync(file, 'utf8')).toBe(before);
+
+            ({home} = installSeat('claude-desktop'));
+            windowSeams({reads: [RECT]});
+            FleetLifecycleService.start('seat');
+            expect(await FleetLifecycleService.processes.get('seat').windowRestore).toMatchObject({state: 'none', requested: null, observed: null});
+            await FleetLifecycleService.stop('seat');
+
+            ({home} = installSeat('claude-desktop'));
+            writeRecord(home, 'claude-desktop');
+            windowSeams({reads: [null]});
+            FleetLifecycleService.windowRestoreTimeoutMs = 20;
+            FleetLifecycleService.start('seat');
+            const timedOut = await FleetLifecycleService.processes.get('seat').windowRestore;
+            expect(timedOut).toMatchObject({state: 'refused', requested: RECT, observed: null});
+            expect(timedOut.reason).toContain('no window appeared');
+            await FleetLifecycleService.stop('seat')
+        });
+
+        test('without a window adapter the stop writes nothing and the row says unsupported', async () => {
+            const {home} = installSeat('claude-desktop');
+
+            FleetLifecycleService.windowPlatform    = 'linux';
+            FleetLifecycleService.windowRectReadFn  = null;
+            FleetLifecycleService.windowRectPlaceFn = null;
+
+            FleetLifecycleService.start('seat');
+
+            expect(await FleetLifecycleService.processes.get('seat').windowRestore).toMatchObject({state: 'unsupported'});
+            expect(FleetLifecycleService.status('seat').windowPlacement.reason).toContain('linux');
+
+            await FleetLifecycleService.stop('seat');
+
+            expect(fs.existsSync(path.join(home, WINDOW_FILE))).toBe(false)
+        });
+    });
 });
 
 test.describe('FleetLifecycleService.setWakeRoute — the route the Fleet armed for a GUI seat', () => {
@@ -2916,6 +3065,7 @@ test.describe('FleetLifecycleService.setWakeRoute — the route the Fleet armed 
         expect(FleetLifecycleService.setWakeRoute('gui-seat', {state: 'unarmed', reason: 'no launch named'})).toBe(false);
         expect(FleetLifecycleService.processes.get('gui-seat').wakeRoute).toEqual(ready);
     });
+
 });
 
 test.describe('FleetLifecycleService.setRepoOutcomes — a start\'s per-repository outcome on its launch record', () => {

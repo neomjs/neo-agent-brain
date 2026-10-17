@@ -32,10 +32,11 @@ import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences}  
 import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot} from './seatRuntimeRecord.mjs';
 import {writeFileAtomicSync}                                                    from '../shared/atomicFileWrite.mjs';
 
-import {createResidentMcpInputOwner, createBridgeTokenOwner, restoreLaunchCredentialOwner} from './launchCredentialOwners.mjs';
-import {recoverLaunchProfileGrants}                                                        from './launchProfileCustody.mjs';
-import {LAUNCH_ADMISSION_PROTOCOL}                                                         from './mcpLaunchAdmission.mjs';
-import {probeAntigravityRuntime}                                                           from './probeAntigravityRuntime.mjs';
+import {createResidentMcpInputOwner, createBridgeTokenOwner, restoreLaunchCredentialOwner}                                                     from './launchCredentialOwners.mjs';
+import {recoverLaunchProfileGrants}                                                                                                            from './launchProfileCustody.mjs';
+import {LAUNCH_ADMISSION_PROTOCOL}                                                                                                             from './mcpLaunchAdmission.mjs';
+import {probeAntigravityRuntime}                                                                                                               from './probeAntigravityRuntime.mjs';
+import {isWindowRect, placeSeatWindow, readSeatWindowRecord, readSeatWindowRect, sameWindowRect, waitForSeatWindowRect, writeSeatWindowRecord} from './seatWindowRect.mjs';
 
 // Reserve the Neural Link policy slot against credential collisions and launch-metadata overrides.
 // Fleet does not impose a projection; explicitly restricted NL servers own their own ceiling.
@@ -558,6 +559,40 @@ class FleetLifecycleService extends Base {
      * @member {Number} adoptedExitPollMs=100
      */
     adoptedExitPollMs = 100
+
+    /**
+     * Reads a GUI seat's window rectangle by pid: `(pid) => Promise<{x, y, width, height}|null>`. Defaults
+     * (via {@link getWindowRectReadFn}) to the System Events read of `seatWindowRect.mjs` on macOS and to
+     * none elsewhere; injectable so unit specs never query a host window.
+     * @member {Function|null} windowRectReadFn=null
+     */
+    windowRectReadFn = null
+
+    /**
+     * Places a GUI seat's window by pid and reads it back: `(pid, rect) => Promise<rect|null>`. Defaults
+     * (via {@link getWindowRectPlaceFn}) to the System Events set of `seatWindowRect.mjs` on macOS and to
+     * none elsewhere; injectable for the same reason.
+     * @member {Function|null} windowRectPlaceFn=null
+     */
+    windowRectPlaceFn = null
+
+    /**
+     * The platform the window adapter is chosen for. Plain-field test seam; defaults to this process's.
+     * @member {String} windowPlatform=process.platform
+     */
+    windowPlatform = process.platform
+
+    /**
+     * Bound for a started GUI seat's first window before its window restore gives up.
+     * @member {Number} windowRestoreTimeoutMs=20000
+     */
+    windowRestoreTimeoutMs = 20000
+
+    /**
+     * Poll interval while a window restore waits for the seat's first window.
+     * @member {Number} windowRestorePollMs=500
+     */
+    windowRestorePollMs = 500
 
     /**
      * Whether this process has read the seat leases yet: adoption runs once, before the first
@@ -1177,6 +1212,10 @@ class FleetLifecycleService extends Base {
                 void this.stop(id, {cancelPending: false});
                 throw new Error(`FleetLifecycleService.start: ${record.failureReason} — agent '${id}'.`)
             }
+
+            // The window returns to where the operator left it once the harness has one. The harness's
+            // own restoration stays the first word: a window already at the recorded frame is kept.
+            record.windowRestore = this.restoreSeatWindow(record);
         }
 
         try {
@@ -1445,7 +1484,7 @@ class FleetLifecycleService extends Base {
 
         const child = record.child;
 
-        return new Promise(resolve => {
+        const signalStop = () => new Promise(resolve => {
             let settled = false;
 
             const finish = async () => {
@@ -1475,6 +1514,12 @@ class FleetLifecycleService extends Base {
                 void finish();
             }
         });
+
+        // The window rectangle is read while the window still exists: before the signal, never after. An
+        // internal cleanup stop (a failed lease or Start) keeps no window, and a seat without one signals at once.
+        return cancelPending && this.keepsWindowRect(record) && record.pid != null
+            ? this.captureSeatWindow(record).then(signalStop)
+            : signalStop()
     }
 
     /**
@@ -1537,7 +1582,7 @@ class FleetLifecycleService extends Base {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, dependencies: this.dependenciesOf(id), sessionFolder: null, exitReason: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, windowPlacement: null, repos: null, dependencies: this.dependenciesOf(id), sessionFolder: null, exitReason: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
 
         this.refreshAdoptedSeat(record);
 
@@ -1580,7 +1625,8 @@ class FleetLifecycleService extends Base {
             gitIdentity      : this.gitIdentityOf(id),
             seatModel        : this.seatModelOf(id),
             launchAdmission  : this.launchAdmissionOf(id, record),
-            runtimeGeneration: this.runtimeGenerationOf(record)
+            runtimeGeneration: this.runtimeGenerationOf(record),
+            windowPlacement  : record.windowPlacement ? structuredClone(record.windowPlacement) : null
         };
     }
 
@@ -2122,6 +2168,8 @@ class FleetLifecycleService extends Base {
         record.stopRequested = true;
         record.exitReason    = null;
 
+        await this.captureSeatWindow(record);
+
         const
             signal = this.getProcessSignalFn(),
             result = () => ({success: record.state === 'stopped', id: record.id, state: record.state, cleanupUnresolved: Boolean(record.cleanupUnresolved)});
@@ -2427,6 +2475,105 @@ class FleetLifecycleService extends Base {
     /** @returns {Function} signal delivery to an adopted seat. @private */
     getProcessSignalFn() {
         return this.processSignalFn || ((pid, signal) => process.kill(pid, signal));
+    }
+
+    /** @returns {Function|null} the window read behind the rectangle capture, or `null` where no adapter exists. @private */
+    getWindowRectReadFn() {
+        return this.windowRectReadFn || (this.windowPlatform === 'darwin' ? pid => readSeatWindowRect(pid) : null);
+    }
+
+    /** @returns {Function|null} the window placement behind the restore, or `null` where no adapter exists. @private */
+    getWindowRectPlaceFn() {
+        return this.windowRectPlaceFn || (this.windowPlatform === 'darwin' ? (pid, rect) => placeSeatWindow(pid, rect) : null);
+    }
+
+    /**
+     * @summary Whether the Fleet keeps this seat's window rectangle: a GUI family launched into its own
+     * harness home — the lease's seat set, read from the record so an adopted seat qualifies too.
+     * @param {Object|null} record
+     * @returns {Boolean}
+     * @private
+     */
+    keepsWindowRect(record) {
+        return Boolean(record?.instanceHome) && SURVIVING_HARNESS_TYPES.has(record.harnessType)
+    }
+
+    /**
+     * @summary Records a GUI seat's window rectangle before the seat is signalled, so the next start can
+     * put the window back. A failed or empty read, a minimised or missing window keeps the previous record.
+     * @param {Object} record Lifecycle record about to be stopped.
+     * @returns {Promise<Object|null>} The recorded rectangle, or `null` when nothing was recorded.
+     * @private
+     */
+    async captureSeatWindow(record) {
+        if (!this.keepsWindowRect(record) || record.pid == null) return null;
+
+        const read = this.getWindowRectReadFn();
+
+        if (!read) return null;
+
+        let rect = null;
+
+        try { rect = await read(record.pid) } catch { rect = null }
+
+        if (!isWindowRect(rect)) return null;
+
+        const failure = writeSeatWindowRecord({instanceHome: record.instanceHome, agentId: record.id, harnessType: record.harnessType, rect});
+
+        record.windowCapture = failure ? {state: 'failed', reason: failure} : {state: 'recorded', rect: {...rect}};
+
+        return failure ? null : rect
+    }
+
+    /**
+     * @summary Puts a started GUI seat's window back where its record says, once the seat has a window:
+     * nothing when the harness restored it itself (`kept`), one placement with a read-back otherwise
+     * (`restored`), and a named reason when the frame did not take or no window appeared (`refused`).
+     * The disposition lives on the record as `windowPlacement` and is projected by {@link status}.
+     * @param {Object} record Lifecycle record of a seat this server just started.
+     * @returns {Promise<Object>} `{state, requested, observed, reason, at}`.
+     * @private
+     */
+    async restoreSeatWindow(record) {
+        const placement = record.windowPlacement = {state: 'none', requested: null, observed: null, reason: null, at: null};
+
+        if (!this.keepsWindowRect(record) || record.pid == null) return placement;
+
+        const read = this.getWindowRectReadFn(), place = this.getWindowRectPlaceFn();
+
+        if (!read || !place) return Object.assign(placement, {state: 'unsupported', reason: `no window adapter on ${this.windowPlatform}`});
+
+        const saved = readSeatWindowRecord(record.instanceHome);
+
+        if (!saved) return placement;
+
+        Object.assign(placement, {state: 'pending', requested: {...saved.rect}});
+
+        try {
+            const observed = await waitForSeatWindowRect(record.pid, {readFn: read, timeoutMs: this.windowRestoreTimeoutMs, pollMs: this.windowRestorePollMs});
+
+            if (this.processes.get(record.id) !== record || record.state !== 'running') {
+                return Object.assign(placement, {state: 'refused', reason: 'the seat stopped before its window appeared', at: new Date().toISOString()})
+            }
+
+            if (!observed) return Object.assign(placement, {state: 'refused', reason: `no window appeared within ${this.windowRestoreTimeoutMs} ms`, at: new Date().toISOString()});
+
+            placement.observed = {...observed};
+
+            if (sameWindowRect(observed, saved.rect)) return Object.assign(placement, {state: 'kept', at: new Date().toISOString()});
+
+            const after = await place(record.pid, saved.rect);
+
+            placement.at = new Date().toISOString();
+
+            if (after) placement.observed = {...after};
+
+            return Object.assign(placement, after && sameWindowRect(after, saved.rect)
+                ? {state: 'restored'}
+                : {state: 'refused', reason: after ? 'the window did not take the recorded frame (a display missing, or the frame clamped)' : 'the window could not be placed or read back'})
+        } catch (error) {
+            return Object.assign(placement, {state: 'refused', reason: error?.message ?? String(error), at: new Date().toISOString()})
+        }
     }
 
     /**
