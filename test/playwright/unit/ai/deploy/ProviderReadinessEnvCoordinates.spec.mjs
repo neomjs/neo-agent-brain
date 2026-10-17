@@ -70,14 +70,14 @@ const REQUIRED = [{
     service : 'kb-server',
     env     : 'NEO_ORCHESTRATOR_PROVIDER_READY_TIMEOUT_MS',
     consumer: TES,
-    anchors : ['timeoutMs               = aiConfig.orchestrator.providerReadiness.timeoutMs,'],
+    anchors : ['timeoutMs               = cfg.orchestrator.providerReadiness.timeoutMs,'],
     why     : 'TextEmbeddingService bounds provider model-discovery from inside kb-server; the ' +
               'ingest path waits on it, so a CPU-only plane must raise it from the process that waits'
 }, {
     service : 'mc-server',
     env     : 'NEO_ORCHESTRATOR_PROVIDER_READY_TIMEOUT_MS',
     consumer: TES,
-    anchors : ['timeoutMs               = aiConfig.orchestrator.providerReadiness.timeoutMs,'],
+    anchors : ['timeoutMs               = cfg.orchestrator.providerReadiness.timeoutMs,'],
     why     : 'the same read runs in mc-server, where the WAL drain and the graph extractors wait on it'
 }, {
     service : 'mc-server',
