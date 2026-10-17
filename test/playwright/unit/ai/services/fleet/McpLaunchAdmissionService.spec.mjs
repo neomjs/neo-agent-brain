@@ -388,6 +388,29 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
         expect(fs.readJsonSync(path.join(directory, 'issuer.json')).phase).toBe('handoff');
     });
 
+    test('a paused handoff phase leaves its stage as the last witness until it settles; the sealed order follows', async () => {
+        service.openJournal({directory});
+        const seats = deferred(), proofStarted = deferred(), proofFinish = deferred(), owners = makeOwners(), stages = [];
+        owners.owners.GH_TOKEN.prove = () => { proofStarted.resolve(); return proofFinish.promise; };
+        const reservation = await activeSeat({owners: owners.owners});
+        const grant       = parseLaunchCapability(reservation.grants['github-workflow']);
+        const request     = createLaunchRequest({grant, server: 'github-workflow', identity: LOGIN});
+        const response    = fetch(reservation.issuer + LAUNCH_ADMISSION_PATH, {method: 'POST',
+            headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)}).then(result => result.json());
+        await proofStarted.promise;
+        const handoff = service.handoff({verifySeats: () => seats.promise, onStage: stage => stages.push(stage)});
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(stages.at(-1), 'survivor validation is paused: it is the last witness').toBe('survivor-validation');
+        seats.resolve();
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(stages.at(-1), 'the proof is still in flight: the drain is the last witness').toBe('proof-drain');
+        proofFinish.resolve({verdict: 'proved'});
+        expect(verifyLaunchResponse(grant.secret, request, await response)).toMatchObject({outcome: 'refused', code: 'issuer-unavailable'});
+        expect(await handoff).toEqual({state: 'handed-off'});
+        expect(stages).toEqual(['survivor-validation', 'proof-drain', 'endpoint-release', 'durable-handoff']);
+        expect(fs.readJsonSync(path.join(directory, 'issuer.json')).phase).toBe('handoff');
+    });
+
     test('an empty issuer hands off without inventing an endpoint or any grant', async () => {
         if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
         service.httpServer = service.listening = service.issuerOrigin = null;
