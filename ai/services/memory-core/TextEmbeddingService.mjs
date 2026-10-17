@@ -3,7 +3,7 @@ import {
     GoogleGenerativeAIAbortError
 }                           from '@google/generative-ai';
 import {types as utilTypes} from 'node:util';
-import aiConfig             from '../../mcp/server/memory-core/config.mjs';
+import defaultAiConfig      from '../../mcp/server/memory-core/config.mjs';
 import Base                 from 'neo.mjs/src/core/Base.mjs';
 import {
     resolveCompletedPrefix,
@@ -330,13 +330,13 @@ function normalizeEmbeddingOptions(options, defaultOperationLabel) {
 /**
  * @summary Resolves the configured model identifier for one explicit embedding provider.
  * @param {String} provider Explicit embedding provider.
- * @param {Object} [cfg=aiConfig] Resolved config tree or isolated test snapshot.
+ * @param {Object} [aiConfig=defaultAiConfig] Resolved config tree or isolated test snapshot.
  * @returns {String}
  */
-export function getEmbeddingModel(provider, cfg = aiConfig) {
-    if (provider === 'openAiCompatible') return cfg.openAiCompatible.embeddingModel;
-    if (provider === 'ollama') return cfg.ollama.embeddingModel || cfg.ollama.model;
-    if (provider === 'gemini') return cfg.embeddingModel;
+export function getEmbeddingModel(provider, aiConfig = defaultAiConfig) {
+    if (provider === 'openAiCompatible') return aiConfig.openAiCompatible.embeddingModel;
+    if (provider === 'ollama') return aiConfig.ollama.embeddingModel || aiConfig.ollama.model;
+    if (provider === 'gemini') return aiConfig.embeddingModel;
 
     return 'unknown';
 }
@@ -553,10 +553,10 @@ function logEmbeddingAbort({provider, operation, error}) {
 /**
  * @summary The Gemini key from its two carriers, read at the use site: the value leaf, else the file
  * sibling read at this call; `''` when neither is set, an error naming both leaves when both are.
- * @param {Object} [cfg=aiConfig] Resolved config tree or isolated test snapshot.
+ * @param {Object} [cfg=defaultAiConfig] Resolved config tree or isolated test snapshot.
  * @returns {String}
  */
-function readGeminiApiKey(cfg = aiConfig) {
+function readGeminiApiKey(cfg = defaultAiConfig) {
     return readSecretCarrier({value: cfg.geminiApiKey, file: cfg.geminiApiKeyFile, valueName: 'geminiApiKey', fileName: 'geminiApiKeyFile'});
 }
 
@@ -567,7 +567,7 @@ function readGeminiApiKey(cfg = aiConfig) {
  * @param {Object} cfg aiConfig-shaped input.
  * @returns {Boolean}
  */
-export function shouldInitializeGeminiEmbeddingClient(cfg = aiConfig) {
+export function shouldInitializeGeminiEmbeddingClient(cfg = defaultAiConfig) {
     return cfg.embeddingProvider === 'gemini';
 }
 
@@ -778,10 +778,10 @@ class TextEmbeddingService extends Base {
     // effect on the next admission rather than at the next process start. The gate throws on a value
     // it cannot honour — a fractional cap would report one number while admitting its ceiling, and a
     // non-finite cap turns the lane into either an unbounded path or a permanent stall.
-    #ollamaAdmission = new EmbeddingAdmission({
-        resolveBudget   : () => this.#getConfig().ollama.maxInFlightEmbeddings,
+    #ollamaAdmission = new EmbeddingAdmission((aiConfig => ({
+        resolveBudget: () => aiConfig.ollama.maxInFlightEmbeddings,
         createAbortError: getEmbeddingAbortError
-    });
+    }))({get ollama() { return this.#getConfig().ollama }}));
 
     /**
      * @param {Object} config The configuration object.
@@ -861,6 +861,8 @@ class TextEmbeddingService extends Base {
      * @returns {Object}
      */
     createConfigSnapshot() {
+        const aiConfig = defaultAiConfig;
+
         return {
             embeddingModel   : aiConfig.embeddingModel,
             embeddingProvider: aiConfig.embeddingProvider,
@@ -912,7 +914,7 @@ class TextEmbeddingService extends Base {
      * @private
      */
     #getConfig() {
-        return this.configSnapshot || aiConfig;
+        return this.configSnapshot || defaultAiConfig;
     }
 
     /**
@@ -1401,10 +1403,10 @@ class TextEmbeddingService extends Base {
         }
 
         const
-            cfg                     = this.#getConfig(),
-            configuredContextLength = cfg.localModels.embedding.contextLimitTokens,
-            timeoutMs               = cfg.orchestrator.providerReadiness.timeoutMs,
-            model                   = cfg.openAiCompatible.embeddingModel;
+            aiConfig                = this.#getConfig(),
+            configuredContextLength = aiConfig.localModels.embedding.contextLimitTokens,
+            timeoutMs               = aiConfig.orchestrator.providerReadiness.timeoutMs,
+            model                   = aiConfig.openAiCompatible.embeddingModel;
 
         if (!Neo.isNumber(configuredContextLength) || configuredContextLength <= 0) {
             throw new TypeError(`TextEmbeddingService: localModels.embedding.contextLimitTokens must be a positive number, got ${configuredContextLength}`);
@@ -1909,7 +1911,8 @@ class TextEmbeddingService extends Base {
     #getOllamaProvider() {
         if (this.ollamaProvider) return this.ollamaProvider;
 
-        const config   = this.#getConfig().ollama;
+        const aiConfig = this.#getConfig();
+        const config   = aiConfig.ollama;
         const provider = Neo.create(OllamaProvider, {
             host          : config.host,
             modelName     : config.model,
@@ -1925,7 +1928,8 @@ class TextEmbeddingService extends Base {
      * @private
      */
     #getOllamaEmbeddingTimeoutMs() {
-        const timeoutMs = this.#getConfig().ollama.embeddingTimeoutMs;
+        const aiConfig  = this.#getConfig();
+        const timeoutMs = aiConfig.ollama.embeddingTimeoutMs;
 
         if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
             throw new TypeError(`TextEmbeddingService: ollama.embeddingTimeoutMs must be a positive number, got ${timeoutMs}`);
