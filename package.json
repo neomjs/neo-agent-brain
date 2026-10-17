@@ -112,14 +112,14 @@
         "smol-toml": "1.9.1",
         "ws": "^8.22.0",
         "yaml": "2.9.1",
-        "zod": "^4.6.6"
+        "zod": "^4.6.7"
     },
     "devDependencies": {
         "@playwright/test": "^1.64.0",
         "autoprefixer": "^10.6.1",
         "catharsis": "0.11.0",
         "chalk": "^6.0.1",
-        "postcss": "^8.5.29",
+        "postcss": "^8.5.30",
         "sass": "^1.105.1"
     },
     "overrides": {
