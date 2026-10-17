@@ -189,6 +189,26 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         expect(snapshot.rows.map(row => row.exitReason)).toEqual([exitReason, null])
     })
 
+    test('carries unresolved helper cleanup and its failureReason from the runtime row onto the roster row (#1074)', () => {
+        const
+            failureReason = 'Codex Desktop helper cleanup failed: ambiguous profile-owned process identity (pid 4242); refusing cleanup.',
+            snapshot      = createFleetCockpitStatus({
+                agents       : [{id: 'alice'}, {id: 'bob'}],
+                runtimeStatus: [
+                    {agentId: 'alice', state: 'failed', running: false, confidence: 'observed', cleanupUnresolved: true, failureReason},
+                    {agentId: 'bob',   state: 'stopped', running: false, confidence: 'observed'}
+                ]
+            })
+
+        expect(snapshot.rows.map(row => ({
+            cleanupUnresolved: row.cleanupUnresolved,
+            failureReason    : row.failureReason
+        }))).toEqual([
+            {cleanupUnresolved: true,  failureReason},
+            {cleanupUnresolved: false, failureReason: null}
+        ])
+    })
+
     test('carries the Git identity the last start resolved from the runtime row — null before a start', () => {
         const
             derived  = {state: 'derived', source: 'commit-email', name: 'Alice', email: 'alice@example.test'},

@@ -1,7 +1,7 @@
-import {execFileSync} from 'node:child_process';
-import fs             from 'node:fs';
+import {execFileSync}  from 'node:child_process';
+import fs              from 'node:fs';
 import {createRequire} from 'node:module';
-import path           from 'node:path';
+import path            from 'node:path';
 
 const
     // Electron virtualizes ASAR paths; bundle inspection needs their physical bytes.
@@ -308,7 +308,8 @@ export async function cleanupCodexDesktopCrashpad({
     const residual = inspectOwned();
 
     if (residual.length) {
-        throw new Error(`cleanupCodexDesktopCrashpad: ${residual.length} exact-profile helper process(es) survived SIGKILL.`);
+        const ids = residual.map(item => item.pid).filter(Number.isInteger).join(',') || 'unknown';
+        throw new Error(`cleanupCodexDesktopCrashpad: ${residual.length} exact-profile helper process(es) (pid ${ids}) survived SIGKILL.`);
     }
 
     return {

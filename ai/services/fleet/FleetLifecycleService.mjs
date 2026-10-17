@@ -761,7 +761,7 @@ class FleetLifecycleService extends Base {
      *     seat's credentials. The generation activates only after the seat is leased; Antigravity may first
      *     await its trusted project-binding callback. Credentials reach children only through those owners,
      *     never from the environment injected here; a failed Start revokes the exact generation.
-     * @returns {Object|Promise<Object>} status (see {@link status}); the trusted Antigravity binding path is async.
+     * @returns {Object|Promise<Object>} status (see {@link status}); the trusted Antigravity binding path and Codex Desktop helper re-proof are async.
      */
     start(id, opts = {}) {
         const bindAntigravityProject = opts.bindAntigravityProject ?? null;
@@ -797,8 +797,30 @@ class FleetLifecycleService extends Base {
             throw new Error(`FleetLifecycleService.start: refusing to spawn agent '${id}' while its leased seat process is alive but cannot be identified.`);
         }
 
-        if (priorRecord?.state === 'stopping' || priorRecord?.cleanupUnresolved) {
-            throw new Error(`FleetLifecycleService.start: refusing to spawn agent '${id}' while Codex Desktop helper ownership is ${priorRecord.state === 'stopping' ? 'still being finalized' : 'unresolved after a lifecycle failure'}.`);
+        if (priorRecord?.state === 'stopping') {
+            throw new Error(`FleetLifecycleService.start: refusing to spawn agent '${id}' while Codex Desktop helper ownership is still being finalized.`);
+        }
+
+        if (priorRecord?.cleanupUnresolved) {
+            if (!priorRecord.child && priorRecord.electronProfile) {
+                priorRecord.crashpadExecutable ??= this.probeCrashpadExecutable(priorRecord.launchCommand);
+            }
+
+            if (priorRecord.child || !priorRecord.electronProfile || !priorRecord.crashpadExecutable) {
+                const detail = priorRecord.failureReason ? ` (${priorRecord.failureReason})` : '';
+                throw new Error(`FleetLifecycleService.start: refusing to spawn agent '${id}' while Codex Desktop helper ownership is unresolved after a lifecycle failure${detail}.`);
+            }
+
+            priorRecord.finalizePromise = null;
+
+            return this.finalizeCodexDesktopHelpers(priorRecord).then(() => {
+                if (priorRecord.cleanupUnresolved) {
+                    const detail = priorRecord.failureReason ? ` (${priorRecord.failureReason})` : '';
+                    throw new Error(`FleetLifecycleService.start: refusing to spawn agent '${id}' while Codex Desktop helper ownership is unresolved after a lifecycle failure${detail}.`);
+                }
+
+                return this.start(id, opts);
+            });
         }
 
         // The RAW definition read (Brain-internal): the public getAgent projection deliberately
@@ -2676,8 +2698,8 @@ class FleetLifecycleService extends Base {
 
     /**
      * @summary Run or retry the helper-only finalization for a Desktop record whose main has exited.
-     * A transient ambiguous scan remains a durable failed state, but a later `stop()` can re-run the
-     * exact same profile/executable proof and clear `cleanupUnresolved` only after zero residuals.
+     * A transient ambiguous scan remains a durable failed state, but a later `stop()` or `start()` can
+     * re-run the exact same profile/executable proof and clear `cleanupUnresolved` only after zero residuals.
      * @param {Object} record Tracked Codex Desktop lifecycle record.
      * @returns {Promise<void>}
      * @private

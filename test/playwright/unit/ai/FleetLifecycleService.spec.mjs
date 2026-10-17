@@ -1070,7 +1070,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         await expect(stop).resolves.toMatchObject({success: true, state: 'stopped'});
     });
 
-    test('codex-desktop ambiguous helper ownership fails stop status instead of broadening cleanup', async () => {
+    test('codex-desktop ambiguous helper ownership fails stop status instead of broadening cleanup, and a subsequent start re-proves and spawns without a Fleet restart (#1074 AC-1)', async () => {
         const spawn           = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
         let   cleanupAttempts = 0;
 
@@ -1088,17 +1088,66 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         FleetLifecycleService.start('desktop', {cwd: '/srv/checkouts/desktop'});
         const stopped = await FleetLifecycleService.stop('desktop');
 
-        expect(stopped).toMatchObject({success: false, state: 'failed'});
-        expect(stopped.cleanupUnresolved).toBe(true);
+        expect(stopped).toMatchObject({success: false, state: 'failed', cleanupUnresolved: true});
         // the refusal is worded for the operator; only its caller's name stays out of the status
         expect(FleetLifecycleService.status('desktop').failureReason).toBe('Codex Desktop helper cleanup failed: ambiguous profile-owned process identity (pid 4242); refusing cleanup.');
-        expect(() => FleetLifecycleService.start('desktop', {cwd: '/srv/checkouts/desktop'})).toThrow(/refusing to spawn.*lifecycle failure/);
 
-        await expect(FleetLifecycleService.stop('desktop')).resolves.toMatchObject({success: true, state: 'stopped', cleanupUnresolved: false});
+        await expect(FleetLifecycleService.start('desktop', {cwd: '/srv/checkouts/desktop'})).resolves.toMatchObject({
+            state            : 'running',
+            cleanupUnresolved: false,
+            failureReason    : null
+        });
         expect(cleanupAttempts).toBe(2);
-
-        expect(FleetLifecycleService.start('desktop', {cwd: '/srv/checkouts/desktop'})).toMatchObject({state: 'running'});
         expect(spawn.calls).toHaveLength(2);
+    });
+
+    test('codex-desktop start refuses with the live-helper or process-table reason when helper cleanup keeps failing, and status carries cleanupUnresolved + failureReason (#1074 AC-2)', async () => {
+        for (const [errorMessage, expectedReason] of [
+            [
+                'cleanupCodexDesktopCrashpad: ambiguous profile-owned process identity (pid 4242); refusing cleanup.',
+                'Codex Desktop helper cleanup failed: ambiguous profile-owned process identity (pid 4242); refusing cleanup.'
+            ],
+            [
+                'cleanupCodexDesktopCrashpad: 1 exact-profile helper process(es) (pid 4242) survived SIGKILL.',
+                'Codex Desktop helper cleanup failed: 1 exact-profile helper process(es) (pid 4242) survived SIGKILL.'
+            ],
+            [
+                'inspectCodexDesktopCrashpadProcesses: process-table inspection unavailable; ownership is ambiguous.',
+                'Codex Desktop helper cleanup failed: process-table inspection unavailable; ownership is ambiguous.'
+            ]
+        ]) {
+            const spawn      = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
+            let   shouldFail = true;
+
+            FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
+            FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
+            FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({
+                available         : true,
+                crashpadExecutable: '/app/browser_crashpad_handler'
+            });
+            FleetLifecycleService.codexDesktopCleanupFn = async () => {
+                if (shouldFail) throw new Error(errorMessage);
+                return {terminated: [], escalated: []};
+            };
+
+            FleetLifecycleService.start('desktop', {cwd: '/srv/checkouts/desktop'});
+            const stopped = await FleetLifecycleService.stop('desktop');
+
+            expect(stopped).toMatchObject({success: false, state: 'failed', cleanupUnresolved: true});
+
+            await expect(FleetLifecycleService.start('desktop', {cwd: '/srv/checkouts/desktop'})).rejects.toThrow(
+                `FleetLifecycleService.start: refusing to spawn agent 'desktop' while Codex Desktop helper ownership is unresolved after a lifecycle failure (${expectedReason}).`
+            );
+            expect(spawn.calls).toHaveLength(1);
+            expect(FleetLifecycleService.status('desktop')).toMatchObject({
+                state            : 'failed',
+                cleanupUnresolved: true,
+                failureReason    : expectedReason
+            });
+
+            shouldFail = false;
+            await expect(FleetLifecycleService.stop('desktop')).resolves.toMatchObject({success: true, state: 'stopped', cleanupUnresolved: false});
+        }
     });
 
     test('a cleanup failure reaches the status as its refusal\'s words or its system code, never another message; the Fleet log keeps the cause', async () => {

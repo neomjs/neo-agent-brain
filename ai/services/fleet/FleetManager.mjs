@@ -628,7 +628,8 @@ class FleetManager extends Base {
 
             const harnessSettings = lifecycle.harnessSettingsFor(agent);
 
-            if (status.failureReason != null) row.failureReason   = status.failureReason;
+            if (status.failureReason != null) row.failureReason     = status.failureReason;
+            if (status.cleanupUnresolved)     row.cleanupUnresolved = true;
             if (status.repos != null)         row.repos           = status.repos;
             if (status.dependencies != null)  row.dependencies    = status.dependencies;
             if (status.sessionFolder != null)   row.sessionFolder   = status.sessionFolder;

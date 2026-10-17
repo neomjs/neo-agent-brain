@@ -850,6 +850,26 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         expect(Object.hasOwn(bob, 'exitReason')).toBe(false)
     });
 
+    test('unresolved helper cleanup and its failureReason ride the runtime row when present (#1074)', () => {
+        const
+            registryStub  = {listAgents: () => [{id: 'alice'}, {id: 'bob'}]},
+            failureReason = 'Codex Desktop helper cleanup failed: ambiguous profile-owned process identity (pid 4242); refusing cleanup.';
+
+        FleetManager.lifecycleService = {
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            : id => id === 'alice'
+                ? {id, state: 'failed', running: false, pid: null, startedAt: '2026-10-15T10:00:00Z', exitCode: 0, exitedAt: '2026-10-15T12:26:13.450Z', cleanupUnresolved: true, failureReason}
+                : {id, state: 'stopped', running: false, pid: null, startedAt: '2026-10-15T10:00:00Z', exitCode: 0, exitedAt: '2026-10-15T12:26:13.450Z', cleanupUnresolved: false, failureReason: null}
+        };
+
+        const [alice, bob] = FleetManager.fleetRuntimeStatus();
+
+        expect(alice).toMatchObject({state: 'failed', cleanupUnresolved: true, failureReason});
+        expect(Object.hasOwn(bob, 'cleanupUnresolved')).toBe(false);
+        expect(Object.hasOwn(bob, 'failureReason')).toBe(false);
+    });
+
     test('the Git identity a seat\'s last start resolved rides its runtime row, a refused start\'s included', () => {
         const
             registryStub = {listAgents: () => [{id: 'alice'}, {id: 'bob'}, {id: 'carol'}]},

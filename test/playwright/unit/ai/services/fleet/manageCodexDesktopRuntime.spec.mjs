@@ -1,8 +1,8 @@
-import {test, expect} from '@playwright/test';
-import nodeFs         from 'node:fs';
+import {test, expect}  from '@playwright/test';
+import nodeFs          from 'node:fs';
 import {createRequire} from 'node:module';
-import os             from 'node:os';
-import path           from 'node:path';
+import os              from 'node:os';
+import path            from 'node:path';
 import {
     classifyCodexDesktopCrashpadProcesses,
     cleanupCodexDesktopCrashpad,
@@ -304,7 +304,7 @@ test.describe('manageCodexDesktopRuntime', () => {
             inspect           : () => ({owned: [owned], foreign: [], ambiguous: []}),
             killProcess       : () => {},
             wait              : async () => {}
-        })).rejects.toThrow(/survived SIGKILL/);
+        })).rejects.toThrow(/\(pid 61\) survived SIGKILL/);
     });
 
     test('cleanup refuses a reused pid whose birth token changes before signal', async () => {
