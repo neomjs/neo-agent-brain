@@ -41,6 +41,9 @@
  */
 const FAILURE_STATES = new Set(['failed', 'unknown']);
 
+/** Skips newer than the last delivery that retire it as evidence: the route reads `unknown`, never `unreachable`. */
+const STALE_SKIP_RUN = 3;
+
 /**
  * @summary The order in which attempts concluded, falling back through the fields a record may carry.
  *
@@ -59,12 +62,13 @@ function attemptTime(record) {
 
 /**
  * @summary Builds the empty verdict — the shape every unreadable outcome degrades to.
- * @returns {{state: String, consecutiveFailures: Number, lastOutcomeReason: String|null, lastDeliveredAt: String|null, lastAttemptedAt: String|null}}
+ * @returns {{state: String, consecutiveFailures: Number, consecutiveSkips: Number, lastOutcomeReason: String|null, lastDeliveredAt: String|null, lastAttemptedAt: String|null}}
  */
 function unknownVerdict() {
     return {
         state              : 'unknown',
         consecutiveFailures: 0,
+        consecutiveSkips   : 0,
         lastOutcomeReason  : null,
         lastDeliveredAt    : null,
         lastAttemptedAt    : null
@@ -75,10 +79,11 @@ function unknownVerdict() {
  * @summary Projects receiver dispatch records into one delivery verdict per subscription.
  *
  * A subscription is `unreachable` when its most recent attempts concluded `failed` or `unknown`,
- * `reachable` when a `delivered` record is observed and nothing failed after it, and `unknown` in
- * every other case — including the empty case. `consecutiveFailures` counts the trailing run of
- * non-delivering conclusions, so a single later success returns it to 0 and a seat that recovers
- * stops reading broken.
+ * `reachable` when a `delivered` record is observed with no failure and fewer than
+ * `STALE_SKIP_RUN` skips after it, and `unknown` in every other case — including the empty case.
+ * `consecutiveFailures` counts the trailing run of non-delivering conclusions, so a single later
+ * success returns it to 0 and a seat that recovers stops reading broken; `consecutiveSkips` counts
+ * the skips newer than any conclusion.
  *
  * Records for different subscriptions never interact: one broken seat cannot mask a healthy one,
  * and a healthy one cannot clear a broken one's streak.
@@ -86,7 +91,7 @@ function unknownVerdict() {
  * @param {Array<Object>} [records=[]] Receiver records, in any order. Each needs `subscriptionId`
  * and `state`; a record carrying neither a known `state` nor a conclusive timestamp is treated as
  * unreadable and degrades that subscription to `unknown` rather than being counted or trusted.
- * @returns {Object.<String, {state: String, consecutiveFailures: Number, lastOutcomeReason: String|null, lastDeliveredAt: String|null, lastAttemptedAt: String|null}>}
+ * @returns {Object.<String, {state: String, consecutiveFailures: Number, consecutiveSkips: Number, lastOutcomeReason: String|null, lastDeliveredAt: String|null, lastAttemptedAt: String|null}>}
  * Verdict keyed by `subscriptionId`; an empty input yields an empty object rather than a synthetic
  * entry, so "no subscriptions have any evidence" stays distinguishable from "a subscription is fine".
  */
@@ -126,6 +131,7 @@ export function projectWakeDelivery(records = []) {
             if (state === 'delivered') {
                 sawDelivered = true;
                 verdict.lastDeliveredAt ??= when;
+                verdict.lastAttemptedAt ??= when;
                 streakOpen    = false;
                 continue;
             }
@@ -140,6 +146,11 @@ export function projectWakeDelivery(records = []) {
                 // the receiver genuinely was asked — that is a fact about the receiver, not about
                 // whether a wake can land.
                 verdict.lastAttemptedAt ??= when;
+
+                if (!sawDelivered && verdict.consecutiveFailures === 0) {
+                    verdict.consecutiveSkips++;
+                }
+
                 continue;
             }
 
@@ -171,7 +182,7 @@ export function projectWakeDelivery(records = []) {
         } else if (verdict.consecutiveFailures > 0) {
             verdict.state = 'unreachable';
         } else if (sawDelivered) {
-            verdict.state = 'reachable';
+            verdict.state = verdict.consecutiveSkips < STALE_SKIP_RUN ? 'reachable' : 'unknown';
         }
 
         projected[subscriptionId] = verdict;

@@ -124,6 +124,33 @@ test.describe('projectWakeDelivery — per-subscription delivery outcome', () =>
         expect(projected.lastAttemptedAt, 'the receiver genuinely was asked, most recently by the skip').toBe('2026-09-25T00:03:01.000Z');
     });
 
+    test('a delivery followed only by a run of skips is no longer evidence that a wake lands', () => {
+        const minute = n => `2026-09-25T00:0${n}:01.000Z`,
+            records = n => [at('delivered', {dispatchFinishedAt: minute(0)}),
+                ...Array.from({length: n}, (_, i) => at('skipped', {acceptedAt: minute(i + 1), dispatchFinishedAt: minute(i + 1)}))],
+            stale = projectWakeDelivery(records(3))['WAKE_SUB:sub-a'];
+
+        expect(stale.state, 'the run retires the delivery as evidence, without claiming a failure').toBe('unknown');
+        expect(stale).toMatchObject({consecutiveSkips: 3, consecutiveFailures: 0, lastDeliveredAt: minute(0), lastAttemptedAt: minute(3)});
+        // The control: a shorter run still decides nothing, and a later delivery closes the run
+        expect(projectWakeDelivery(records(2))['WAKE_SUB:sub-a']).toMatchObject({state: 'reachable', consecutiveSkips: 2});
+        expect(projectWakeDelivery([...records(3), at('delivered', {acceptedAt: minute(4), dispatchFinishedAt: minute(4)})])['WAKE_SUB:sub-a'])
+            .toMatchObject({state: 'reachable', consecutiveSkips: 0});
+        // A run after failures still cannot erase them
+        expect(projectWakeDelivery([at('failed', {outcomeReason: 'a'}), ...records(3).slice(1)])['WAKE_SUB:sub-a'])
+            .toMatchObject({state: 'unreachable', consecutiveFailures: 1, consecutiveSkips: 3})
+    });
+
+    test('a delivery is an attempt, so `lastAttemptedAt` never predates `lastDeliveredAt`', () => {
+        const projected = projectWakeDelivery([
+            at('failed', {outcomeReason: 'connection-refused'}),
+            at('delivered', {acceptedAt: '2026-09-25T00:05:00.000Z', dispatchFinishedAt: '2026-09-25T00:05:01.000Z'})
+        ])['WAKE_SUB:sub-a'];
+
+        expect(projected.lastAttemptedAt).toBe('2026-09-25T00:05:01.000Z');
+        expect(projected.lastDeliveredAt).toBe('2026-09-25T00:05:01.000Z')
+    });
+
     test('`unknown` state IS a failure — an unlanded dispatch is not a delivery', () => {
         const unknown = projectWakeDelivery([
             at('unknown', {outcomeReason: 'receiver-restarted-during-non-idempotent-dispatch'})
