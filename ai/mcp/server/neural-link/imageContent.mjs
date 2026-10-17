@@ -116,7 +116,8 @@ export function formatWithImages(result, format) {
     // An error keeps its complete object: its envelope is text, and a pointer would name a block it never gets
     if (response.isError) return format(result);
 
-    response.content.push(...images);
+    // concat, never push(...images): a spread costs one call argument per image, and a long list exceeds the stack
+    response.content = response.content.concat(images);
 
     return response
 }

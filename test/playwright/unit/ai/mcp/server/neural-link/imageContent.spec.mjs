@@ -64,6 +64,16 @@ test.describe('Neural Link image content (imageContent.mjs)', () => {
         expect(presented.frames[1]).toBe(plain)
     });
 
+    test('a list longer than the call-argument ceiling appends in order', () => {
+        // A spread of the image list throws between 65,000 and 130,000 images on Node 25; the count stays uncapped
+        const count    = 140000,
+              response = formatWithImages({frames: Array.from({length: count}, artifact)}, format);
+
+        expect(response.content).toHaveLength(count + 1);
+        expect([response.content[1].type, response.content[count].type]).toEqual(['image', 'image']);
+        expect(response.structuredContent.frames[count - 1].contentIndex).toBe(count)
+    });
+
     test('only a declared image a client can show is lifted', () => {
         class Artifact {
             constructor() { Object.assign(this, artifact()) }
@@ -109,10 +119,15 @@ test.describe('Neural Link image content (imageContent.mjs)', () => {
         }
     });
 
-    test('every lifted envelope is one the SDK admits', () => {
-        const response = formatWithImages({receipt: {color: artifact(), ids: artifact()}}, format);
+    test('every envelope is one the SDK admits: a lifted PNG, and the text fallback of malformed base64', () => {
+        expect(CallToolResultSchema.safeParse(formatWithImages({receipt: {color: artifact(), ids: artifact()}}, format)).success).toBe(true);
 
-        expect(CallToolResultSchema.safeParse(response).success).toBe(true)
+        for (const data of ['A', '=', 'AA=', 'AAAA=']) {
+            const response = formatWithImages({receipt: {color: {...artifact(), data}}}, format);
+
+            expect(response.content.map(block => block.type)).toEqual(['text']);
+            expect(CallToolResultSchema.safeParse(response).success).toBe(true)
+        }
     });
 
     test('an error result keeps its complete object and gets no image block', () => {
