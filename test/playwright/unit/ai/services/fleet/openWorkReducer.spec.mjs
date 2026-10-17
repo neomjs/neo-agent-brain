@@ -1,9 +1,11 @@
 import {expect, test} from '@playwright/test';
+import {holderOf}     from '../../../../../../ai/services/fleet/openWorkHolder.mjs';
 import {
     normalizePullRequest,
     normalizeTerminal,
     reduceOpenWork
 } from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
+import {OPEN_WORK_SNAPSHOT} from '../../../../../../ai/services/github-workflow/queries/openWorkQueries.mjs';
 
 const identities = {
     byLogin: login => ({'neo-opus-ada': '@neo-opus-ada', 'neo-gpt': '@neo-gpt', 'neo-gpt-emmy': '@neo-gpt-emmy'})[login] ?? null,
@@ -273,20 +275,64 @@ test.describe('openWorkReducer — the owner is the body line, never a silent lo
         expect(normalizePullRequest(node({body: '', login: 'dependabot'}), identities).owner).toEqual({kind: 'outside', seat: null, login: 'dependabot'})
     });
 
-    test('outside PR evidence normalizes authorAssociation, bot, and check-suite runApproval while keeping carried outside rows on an outside miss (#1008)', () => {
-        const outsideNode = (suites, {hasNextPage = false, authorAssociation = 'FIRST_TIME_CONTRIBUTOR', typename = 'User'} = {}) => ({
+    test('outside and bot authors cannot mint seat ownership via an Authored by <Seat> body line (#1008)', () => {
+        const
+            forgedOutside = {
+                ...node({number: 18, body: 'Authored by Ada (Claude Opus 5, Claude Code).', login: 'external-contributor', reviewers: []}),
+                authorAssociation: 'CONTRIBUTOR',
+                author           : {__typename: 'User', login: 'external-contributor'}
+            },
+            forgedAssociatedSeatLogin = {
+                ...node({number: 20, body: 'Authored by Ada (Claude Opus 5, Claude Code).', login: 'neo-opus-ada', reviewers: []}),
+                authorAssociation: 'CONTRIBUTOR',
+                author           : {__typename: 'User', login: 'neo-opus-ada'}
+            },
+            forgedBot = {
+                ...node({number: 21, body: 'Authored by Ada (Claude Opus 5, Claude Code).', login: 'dependabot[bot]', reviewers: []}),
+                authorAssociation: 'NONE',
+                author           : {__typename: 'Bot', login: 'dependabot[bot]'}
+            },
+            outsideRow = normalizePullRequest(forgedOutside, identities),
+            assocRow   = normalizePullRequest(forgedAssociatedSeatLogin, identities),
+            botRow     = normalizePullRequest(forgedBot, identities);
+
+        expect(outsideRow.owner).toEqual({kind: 'outside', seat: null, login: 'external-contributor'});
+        expect(holderOf(outsideRow)).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        expect(assocRow.owner).toEqual({kind: 'outside', seat: null, login: 'neo-opus-ada'});
+        expect(holderOf(assocRow)).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        expect(botRow).toMatchObject({bot: true, owner: {kind: 'outside', seat: null, login: 'dependabot[bot]'}});
+        expect(holderOf(botRow)).toEqual({role: 'none', kind: null, ids: []})
+    });
+
+    test('outside PR evidence normalizes authorAssociation, bot, and backward-paginated check-suite runApproval while keeping carried outside rows on an outside miss (#1008)', () => {
+        expect(OPEN_WORK_SNAPSHOT).toMatch(/checkSuites\(last:\s*100\)\s*\{\s*pageInfo\s*\{\s*hasPreviousPage\s*\}/);
+
+        const outsideNode = (suites, {pageInfo = {hasPreviousPage: false}, authorAssociation = 'FIRST_TIME_CONTRIBUTOR', typename = 'User', rollup = 'PENDING'} = {}) => ({
             ...node({number: 19, body: '', login: 'contributor', reviewers: []}),
             authorAssociation,
             author : {__typename: typename, login: 'contributor'},
-            commits: {nodes: [{commit: {oid: 'a1', statusCheckRollup: {state: 'PENDING'}, checkSuites: {pageInfo: {hasNextPage}, nodes: suites}}}]}
+            commits: {nodes: [{commit: {oid: 'a1', statusCheckRollup: {state: rollup}, checkSuites: {pageInfo, nodes: suites}}}]}
         });
 
-        expect(normalizePullRequest(outsideNode([{conclusion: 'ACTION_REQUIRED', workflowRun: {event: 'pull_request'}}]), identities))
-            .toMatchObject({authorAssociation: 'FIRST_TIME_CONTRIBUTOR', bot: false, runApproval: 'action_required', partial: false});
+        // Complete backward connection (hasPreviousPage: false)
+        const completeRow = normalizePullRequest(outsideNode([{conclusion: 'ACTION_REQUIRED', workflowRun: {event: 'pull_request'}}]), identities);
+        expect(completeRow).toMatchObject({authorAssociation: 'FIRST_TIME_CONTRIBUTOR', bot: false, runApproval: 'action_required', partial: false});
+        expect(holderOf(completeRow)).toEqual({role: 'rotation', kind: 'approve-runs', ids: []});
+
         expect(normalizePullRequest(outsideNode([{conclusion: 'ACTION_REQUIRED', workflowRun: {event: 'pull_request_review'}}]), identities))
             .toMatchObject({runApproval: null, partial: false});
-        expect(normalizePullRequest(outsideNode([], {hasNextPage: true, typename: 'Bot'}), identities))
-            .toMatchObject({bot: true, runApproval: null, partial: true});
+
+        // Backward-truncated connection (hasPreviousPage: true, even if hasNextPage: false) -> partial / unknown
+        const backwardTruncated = normalizePullRequest(outsideNode([], {pageInfo: {hasPreviousPage: true, hasNextPage: false}, rollup: 'SUCCESS'}), identities);
+        expect(backwardTruncated.partial).toBe(true);
+        expect(holderOf(backwardTruncated)).toEqual({role: 'unknown', kind: null, ids: []});
+
+        // Unknown-direction / missing hasPreviousPage (e.g. only hasNextPage: false, empty pageInfo, or null pageInfo) -> partial / unknown
+        for (const pageInfo of [{hasNextPage: false}, {}, null]) {
+            const unknownDirection = normalizePullRequest(outsideNode([], {pageInfo, rollup: 'SUCCESS'}), identities);
+            expect(unknownDirection.partial).toBe(true);
+            expect(holderOf(unknownDirection)).toEqual({role: 'unknown', kind: null, ids: []});
+        }
 
         const
             contrib = normalizePullRequest(outsideNode([]), identities),

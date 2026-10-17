@@ -48,13 +48,19 @@ const CI_STATES = Object.freeze({
  */
 function ownerOf(node, identities) {
     const
-        login = node.author?.login ?? null,
-        name  = AUTHOR_LINE.exec(node.body ?? '')?.[1]?.trim(),
-        seat  = name ? identities.byName(name) : null;
+        login        = node.author?.login ?? null,
+        knownAccount = Boolean(login && identities.byLogin(login));
 
-    if (seat) return {kind: 'seat', seat, login};
+    if (!knownAccount || node.author?.__typename === 'Bot' ||
+        (node.authorAssociation && !['OWNER', 'MEMBER', 'COLLABORATOR'].includes(node.authorAssociation))) {
+        return {kind: 'outside', seat: null, login}
+    }
 
-    return {kind: login && identities.byLogin(login) ? 'unowned' : 'outside', seat: null, login}
+    const
+        name = AUTHOR_LINE.exec(node.body ?? '')?.[1]?.trim(),
+        seat = name ? identities.byName(name) : null;
+
+    return seat ? {kind: 'seat', seat, login} : {kind: 'unowned', seat: null, login}
 }
 
 /**
@@ -72,15 +78,16 @@ function reviewerOf(reviewer, identities) {
 
 /**
  * @summary A connection's nodes, and whether they are all of them. A connection without its
- * `pageInfo`, or one with a next page, is known only as far as it shows.
+ * `pageInfo`, or one with a remaining page along its pagination direction, is known only as far as it shows.
  * @param {Object} connection
+ * @param {'hasNextPage'|'hasPreviousPage'} [boundary='hasNextPage']
  * @returns {{nodes: Object[], complete: Boolean}}
  * @private
  */
-function connectionOf(connection) {
+function connectionOf(connection, boundary = 'hasNextPage') {
     const nodes = Array.isArray(connection?.nodes) ? connection.nodes : null;
 
-    return {nodes: nodes ?? [], complete: Boolean(nodes) && connection.pageInfo?.hasNextPage === false}
+    return {nodes: nodes ?? [], complete: Boolean(nodes) && connection.pageInfo?.[boundary] === false}
 }
 
 /**
@@ -102,7 +109,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         requests  = connectionOf(node.reviewRequests),
         reviews   = connectionOf(node.latestReviews),
         opinions  = connectionOf(node.latestOpinionatedReviews),
-        suites    = commit?.checkSuites === undefined ? {nodes: [], complete: true} : connectionOf(commit.checkSuites),
+        suites    = commit?.checkSuites === undefined ? {nodes: [], complete: true} : connectionOf(commit.checkSuites, 'hasPreviousPage'),
         requested = requests.nodes.map(item => reviewerOf(item?.requestedReviewer, identities)),
         // whether each review judged the current head
         judged    = item => ({reviewer: reviewerOf(item?.author, identities), state: item?.state ?? null, onHead: item?.commit?.oid === head}),

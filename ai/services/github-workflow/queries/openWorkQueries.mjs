@@ -156,7 +156,7 @@ export const OPEN_WORK_SNAPSHOT = `
                 }
                 checkSuites(last: 100) {
                   pageInfo {
-                    hasNextPage
+                    hasPreviousPage
                   }
                   nodes {
                     conclusion

@@ -381,6 +381,61 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
         expect(approval.wakes).toHaveLength(1);
         expect(approval.wakes[0]).toMatchObject({to: roster[digest('approve-runs')], role: 'rotation', kind: 'approve-runs'});
     });
+
+    test('outside and bot PR bodies containing Authored by <Seat> cannot hijack seat authorship or bypass bot suppression (#1008)', async () => {
+        const
+            {normalizePullRequest} = await import('../../../../../../ai/services/fleet/openWorkReducer.mjs'),
+            identities = {
+                byLogin: login => ({'neo-opus-ada': ADA, 'neo-gpt': GPT})[login] ?? null,
+                byName : name  => ({Ada: ADA, Euclid: GPT})[name] ?? null
+            },
+            roster     = [ADA, GPT],
+            digest     = kind => createHash('sha256').update(JSON.stringify(['acme/app', 19, HEAD, kind])).digest().readUInt32BE(0) % roster.length,
+            rawPr      = ({login, typename = 'User', authorAssociation = 'CONTRIBUTOR', rollup = 'SUCCESS'}) => ({
+                number                  : 19,
+                headRefOid              : HEAD,
+                reviewDecision          : 'REVIEW_REQUIRED',
+                mergeable               : 'MERGEABLE',
+                isDraft                 : false,
+                authorAssociation,
+                body                    : 'Authored by Ada (Claude Opus 5, Claude Code).',
+                author                  : {__typename: typename, login},
+                repository              : {nameWithOwner: 'acme/app'},
+                reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []},
+                latestReviews           : {pageInfo: {hasNextPage: false}, nodes: []},
+                latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: []},
+                commits                 : {nodes: [{commit: {oid: HEAD, statusCheckRollup: {state: rollup}, checkSuites: {pageInfo: {hasPreviousPage: false}, nodes: []}}}]}
+            }),
+            outsideRow = {
+                ...normalizePullRequest(rawPr({login: 'external-contributor', authorAssociation: 'CONTRIBUTOR'}), identities),
+                observedAt: iso(1)
+            },
+            botRow     = {
+                ...normalizePullRequest(rawPr({login: 'dependabot[bot]', typename: 'Bot', authorAssociation: 'NONE'}), identities),
+                observedAt: iso(2)
+            },
+            baseline   = planOpenWorkWakes({state: state(0, []), ledger: null, now: at(0), rotationSeats: roster}).ledger;
+
+        expect(outsideRow.owner).toEqual({kind: 'outside', seat: null, login: 'external-contributor'});
+        const outsidePlanned = planOpenWorkWakes({
+            state        : {observedAt: iso(1), coverage: 'complete', transitions: [], snapshot: {closed: {}, complete: true, rows: {[outsideRow.key]: outsideRow}}},
+            ledger       : baseline,
+            now          : at(1),
+            rotationSeats: roster
+        });
+        expect(outsidePlanned.wakes).toHaveLength(1);
+        expect(outsidePlanned.wakes[0]).toMatchObject({to: roster[digest('triage-outside')], role: 'rotation', kind: 'triage-outside'});
+        expect(outsidePlanned.wakes.some(wake => wake.role === 'author')).toBe(false);
+
+        expect(botRow).toMatchObject({bot: true, owner: {kind: 'outside', seat: null, login: 'dependabot[bot]'}});
+        const botPlanned = planOpenWorkWakes({
+            state        : {observedAt: iso(2), coverage: 'complete', transitions: [], snapshot: {closed: {}, complete: true, rows: {[botRow.key]: botRow}}},
+            ledger       : baseline,
+            now          : at(2),
+            rotationSeats: roster
+        });
+        expect(botPlanned.wakes).toEqual([]);
+    });
 });
 
 test.describe('wakeGateOf — elapsed coverage and issuer quota evidence (#761)', () => {
