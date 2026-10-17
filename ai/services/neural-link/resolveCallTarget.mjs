@@ -9,27 +9,52 @@
  * agents share the Bridge (a call meant for one session could land on whichever connected last). So when
  * **more than one** session is live an explicit target is now mandatory and this throws rather than guessing;
  * a single live session still resolves implicitly (back-compatible), and zero live sessions throws as before.
+ * The refusal names each live session — its app and who addressed it last — so the caller can pick in the
+ * same turn instead of guessing after a second call.
  *
- * @param {String|null} sessionId    The explicit target session id, or a falsy value to resolve implicitly.
- * @param {String[]} liveSessionIds  Currently-live session ids (e.g. `[...connectionService.sessionData.keys()]`).
+ * @param {String|null} sessionId The explicit target session id, or a falsy value to resolve implicitly.
+ * @param {Array<String|Object>} liveSessions Currently-live sessions: ids, or rows
+ * `{id, appName, lastAddressedBy: {agentId, at}|null}` (e.g. `connectionService.describeSessions()`).
  * @returns {String} The resolved target session id.
  * @throws {Error} When no explicit target is given and either zero or more-than-one sessions are live.
  */
-export function resolveCallTarget(sessionId, liveSessionIds) {
+export function resolveCallTarget(sessionId, liveSessions) {
     if (sessionId) {
         return sessionId
     }
 
-    if (liveSessionIds.length === 0) {
+    const ids = liveSessions.map(session => typeof session === 'string' ? session : session.id);
+
+    if (ids.length === 0) {
         throw new Error('No active App Worker sessions found.')
     }
 
-    if (liveSessionIds.length > 1) {
+    if (ids.length > 1) {
         throw new Error(
-            `Auto-targeting is disabled with ${liveSessionIds.length} live sessions: pass an explicit ` +
-            'sessionId. Silent most-recent targeting is unsafe with concurrent writers.'
+            `Auto-targeting is disabled with ${ids.length} live sessions: pass an explicit ` +
+            'sessionId. Silent most-recent targeting is unsafe with concurrent writers. ' +
+            `Live: ${liveSessions.map(session => describeSession(session)).join('; ')}`
         )
     }
 
-    return liveSessionIds[0]
+    return ids[0]
+}
+
+/**
+ * @summary One live session as the refusal names it: `<id> · <app> · last addressed by <agent> <n>s ago`, or `untouched`.
+ * @param {String|Object} session
+ * @param {Number} [now=Date.now()]
+ * @returns {String}
+ */
+function describeSession(session, now = Date.now()) {
+    if (typeof session === 'string') {
+        return session
+    }
+
+    const {id, appName, lastAddressedBy} = session,
+          who                            = lastAddressedBy ?
+              `last addressed by ${lastAddressedBy.agentId} ${Math.max(0, Math.round((now - lastAddressedBy.at) / 1000))}s ago` :
+              'untouched';
+
+    return `${id} · ${appName ?? 'unknown app'} · ${who}`
 }

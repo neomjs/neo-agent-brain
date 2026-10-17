@@ -52,7 +52,10 @@ class Bridge extends Base {
      * What each connected App announced about itself: its last `register` message and one `window_connected`
      * message per open window. An App sends both once per socket open, so an Agent that joins later learns them
      * only from this replay. Logs and events are history, not state, and are never kept.
-     * Map<appWorkerId, {register: Object|null, windows: Map<windowId, Object>}>
+     * `addressed` is who drove the App: the first and the last Agent with a timestamp, and each Agent's count.
+     * The Bridge is the one party that sees every Agent → App message, so peers sharing an App instance learn
+     * whose scene they are joining; access itself stays shared by design.
+     * Map<appWorkerId, {register: Object|null, windows: Map<windowId, Object>, addressed: Object|null}>
      */
     appState = new Map()
     /**
@@ -288,9 +291,10 @@ class Bridge extends Base {
         for (const [appWorkerId, appWs] of this.apps.entries()) {
             if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
-                    type   : 'app_connected',
+                    type     : 'app_connected',
                     appWorkerId,
-                    appName: appWs.appName || 'Unknown'
+                    appName  : appWs.appName || 'Unknown',
+                    addressed: this.addressedOf(appWorkerId)
                 }));
 
                 for (const message of this.replayOf(appWorkerId)) {
@@ -311,6 +315,52 @@ class Bridge extends Base {
         const state = this.appState.get(appWorkerId);
 
         return state ? [...(state.register ? [state.register] : []), ...state.windows.values()] : []
+    }
+
+    /**
+     * @summary Records that an Agent addressed an App, for the peers who share it.
+     * The first addresser is the closest the Bridge comes to "who opened it": a page a seat's browser opened
+     * announces no seat, and the Agent that drives it first usually is that seat.
+     * @param {String} appWorkerId
+     * @param {String} agentId
+     * @param {Number} [at=Date.now()]
+     * @returns {Object|null} `{agentId, at, first}`, or null for an App the Bridge does not hold
+     * @protected
+     */
+    rememberAddressed(appWorkerId, agentId, at = Date.now()) {
+        const state = this.appState.get(appWorkerId);
+
+        if (!state) return null;
+
+        const stamp = {agentId, at},
+              first = !state.addressed;
+
+        state.addressed ??= {first: stamp, last: stamp, agents: new Map()};
+        state.addressed.last = stamp;
+
+        const entry = state.addressed.agents.get(agentId) ?? {count: 0, lastAt: at};
+
+        entry.count++;
+        entry.lastAt = at;
+        state.addressed.agents.set(agentId, entry);
+
+        return {agentId, at, first}
+    }
+
+    /**
+     * @summary A plain snapshot of who addressed an App, as `app_connected` carries it to an Agent joining later.
+     * @param {String} appWorkerId
+     * @returns {Object|null} `{first, last, agents: [{agentId, count, lastAt}]}`, or null while nobody addressed it
+     * @protected
+     */
+    addressedOf(appWorkerId) {
+        const addressed = this.appState.get(appWorkerId)?.addressed;
+
+        return addressed ? {
+            first : addressed.first,
+            last  : addressed.last,
+            agents: [...addressed.agents].map(([agentId, {count, lastAt}]) => ({agentId, count, lastAt}))
+        } : null
     }
 
     /**
@@ -363,7 +413,7 @@ class Bridge extends Base {
         ws.appName = appName;
         this.apps.set(id, ws);
         // A new socket announces itself anew: nothing the replaced one said carries over
-        this.appState.set(id, {register: null, windows: new Map()});
+        this.appState.set(id, {register: null, windows: new Map(), addressed: null});
 
         // Only the socket registered under an id speaks for that App. A socket replaced by a reconnect can still
         // deliver a message or its close after its successor registered: neither may overwrite or evict the successor
@@ -385,7 +435,8 @@ class Bridge extends Base {
         this.broadcastToAgents({
             type       : 'app_connected',
             appWorkerId: id,
-            appName
+            appName,
+            addressed  : null
         });
     }
 
@@ -415,6 +466,11 @@ class Bridge extends Base {
                     sessionId: agentWs?.sessionId,
                     message  : payload.message
                 }));
+
+                // Every Agent, the sender included, learns who is in this App now
+                const addressed = this.rememberAddressed(payload.target, agentId);
+
+                addressed && this.broadcastToAgents({type: 'app_addressed', appWorkerId: payload.target, ...addressed});
             } else {
                 logger.warn(`Bridge: Target App [${payload.target}] not found for Agent [${agentId}]`);
 

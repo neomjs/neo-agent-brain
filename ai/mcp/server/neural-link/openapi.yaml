@@ -60,6 +60,9 @@ paths:
         readOnlyHint: true
       description: |
         Checks the health of the Neural Link server, including WebSocket connectivity and active sessions.
+        Each session row names the app it runs (appName, environment, userAgent) and who drove it
+        (firstAddressedBy, lastAddressedBy, addressedBy, addressedByMe), so a peer joining a shared app
+        instance knows whose scene it is before writing.
 
         **When to Use:**
         Use this as a first-step diagnostic tool to ensure the Neural Link bridge to the browser is operational.

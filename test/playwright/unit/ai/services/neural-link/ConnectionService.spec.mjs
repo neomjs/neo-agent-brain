@@ -743,4 +743,30 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
             fs.rmSync(root, {force: true, recursive: true})
         }
     });
+
+    test('a session row says what the app runs and who addressed it, and the resolver gets the same facts', () => {
+        const me = ConnectionService.agentId;
+
+        ConnectionService.handleAppConnected('app-x', 'avatarLab', null);
+        ConnectionService.handleNotification('app-x', {method: 'register', params: {appWorkerId: 'app-x', environment: 'development', isSharedWorker: false, userAgent: 'Chromium/156'}});
+        ConnectionService.handleAppAddressed({appWorkerId: 'app-x', agentId: 'agent-grace', at: 1_000, first: true});
+        ConnectionService.handleAppAddressed({appWorkerId: 'app-x', agentId: me,            at: 2_000, first: false});
+        ConnectionService.handleAppAddressed({appWorkerId: 'app-x', agentId: me,            at: 3_000, first: false});
+        // what the Bridge replays to a server joining late, and a session nobody drove
+        ConnectionService.handleAppConnected('app-y', 'agentos', {first: {agentId: 'agent-ada', at: 500}, last: {agentId: 'agent-ada', at: 500}, agents: [{agentId: 'agent-ada', count: 1, lastAt: 500}]});
+        ConnectionService.handleAppConnected('app-z', 'portal');
+        ConnectionService.handleAppAddressed({appWorkerId: 'unknown', agentId: me, at: 4_000, first: true}); // no session, no throw
+
+        const rows = Object.fromEntries(ConnectionService.getStatus().sessions.map(row => [row.id, row]));
+
+        expect(rows['app-x']).toMatchObject({
+            appName         : 'avatarLab', environment: 'development', isSharedWorker: false, userAgent: 'Chromium/156',
+            firstAddressedBy: {agentId: 'agent-grace', at: 1_000}, lastAddressedBy: {agentId: me, at: 3_000},
+            addressedBy     : ['agent-grace', me], addressedByMe: true
+        });
+        expect(rows['app-y']).toMatchObject({lastAddressedBy: {agentId: 'agent-ada', at: 500}, addressedBy: ['agent-ada'], addressedByMe: false});
+        expect(rows['app-z']).toMatchObject({appName: 'portal', firstAddressedBy: null, lastAddressedBy: null, addressedBy: [], addressedByMe: false});
+        expect(ConnectionService.describeSessions().find(session => session.id === 'app-x'))
+            .toEqual({id: 'app-x', appName: 'avatarLab', lastAddressedBy: {agentId: me, at: 3_000}})
+    });
 });

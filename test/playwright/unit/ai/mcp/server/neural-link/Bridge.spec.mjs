@@ -453,3 +453,69 @@ test.describe('Bridge — an Agent that joins later learns what connected Apps a
         }
     });
 });
+
+// Access to an App stays shared by design; what peers need is to know who is in it
+test.describe('Bridge — who addressed an App, for the peers who share it', () => {
+    const framesOf = (ws, type) => ws.sent.map(JSON.parse).filter(frame => frame.type === type);
+    const address  = (agentId, target, id) => Bridge.handleAgentMessage(agentId, Buffer.from(JSON.stringify({target, message: {id, method: 'describeScene'}})));
+
+    test.beforeEach(() => {
+        Bridge.agents   = new Map();
+        Bridge.apps     = new Map();
+        Bridge.appState = new Map();
+    });
+
+    test('records the first and the last addresser with counts, and tells every Agent each time', () => {
+        const agentA = makeWs(), agentB = makeWs();
+
+        Bridge.registerApp('app-1', makeWs(), 'avatarLab');
+        Bridge.registerAgent('agent-a', agentA);
+        Bridge.registerAgent('agent-b', agentB);
+
+        address('agent-a', 'app-1', 1);
+        address('agent-b', 'app-1', 2);
+        address('agent-b', 'app-1', 3);
+
+        const snapshot = Bridge.addressedOf('app-1');
+
+        expect(snapshot.first.agentId).toBe('agent-a');
+        expect(snapshot.last.agentId).toBe('agent-b');
+        expect(snapshot.agents).toEqual([
+            expect.objectContaining({agentId: 'agent-a', count: 1}),
+            expect.objectContaining({agentId: 'agent-b', count: 2})
+        ]);
+
+        const seenByA = framesOf(agentA, 'app_addressed');
+
+        expect(seenByA.map(frame => [frame.appWorkerId, frame.agentId, frame.first]))
+            .toEqual([['app-1', 'agent-a', true], ['app-1', 'agent-b', false], ['app-1', 'agent-b', false]]);
+        expect(framesOf(agentB, 'app_addressed')).toHaveLength(3)
+    });
+
+    test('an Agent joining later learns the addressers from app_connected; an untouched App says null', () => {
+        Bridge.registerApp('app-1', makeWs(), 'avatarLab');
+        Bridge.registerApp('app-2', makeWs(), 'agentos');
+        Bridge.registerAgent('agent-a', makeWs());
+        address('agent-a', 'app-1', 1);
+
+        const late = makeWs();
+        Bridge.registerAgent('agent-late', late);
+
+        const connected = Object.fromEntries(framesOf(late, 'app_connected').map(frame => [frame.appWorkerId, frame.addressed]));
+
+        expect(connected['app-1'].first.agentId).toBe('agent-a');
+        expect(connected['app-1'].agents).toEqual([expect.objectContaining({agentId: 'agent-a', count: 1})]);
+        expect(connected['app-2']).toBeNull()
+    });
+
+    test('an App the Bridge holds no state for records nothing and announces nothing', () => {
+        const agent = makeWs();
+
+        Bridge.apps.set('loose', makeWs()); // registered by hand, no appState: the sidecar still forwards
+        Bridge.registerAgent('agent-a', agent);
+        address('agent-a', 'loose', 1);
+
+        expect(Bridge.addressedOf('loose')).toBeNull();
+        expect(framesOf(agent, 'app_addressed')).toHaveLength(0)
+    });
+});

@@ -28,4 +28,18 @@ test.describe('resolveCallTarget (Neural Link auto-targeting deprecation)', () =
         expect(() => resolveCallTarget(null, ['a'])).not.toThrow();
         expect(() => resolveCallTarget(null, ['a', 'b'])).toThrow();
     });
+
+    test('the refusal names each live session: its id, its app and who addressed it last, or untouched', () => {
+        const rows = [
+            {id: 'fm-1',  appName: 'AgentOS',   lastAddressedBy: {agentId: 'agent-ada', at: Date.now() - 5_000}},
+            {id: 'lab-2', appName: 'avatarLab', lastAddressedBy: null},
+            {id: 'bare-3'}
+        ];
+
+        expect(() => resolveCallTarget(null, rows))
+            .toThrow(/Live: fm-1 · AgentOS · last addressed by agent-ada \d+s ago; lab-2 · avatarLab · untouched; bare-3 · unknown app · untouched/);
+        // rows resolve like ids: one live row implicitly, an explicit target always
+        expect(resolveCallTarget(null, rows.slice(0, 1))).toBe('fm-1');
+        expect(resolveCallTarget('lab-2', rows)).toBe('lab-2');
+    });
 });

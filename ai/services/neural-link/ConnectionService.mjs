@@ -336,8 +336,9 @@ class ConnectionService extends Base {
             throw new Error('Not connected to Neural Link Bridge');
         }
 
-        // Resolve the target session (explicit target honored; silent multi-session auto-targeting denied).
-        sessionId = resolveCallTarget(sessionId, Array.from(this.sessionData.keys()));
+        // Resolve the target session (explicit target honored; silent multi-session auto-targeting denied —
+        // the refusal names each live session with its app and its last addresser).
+        sessionId = resolveCallTarget(sessionId, this.describeSessions());
 
         const id         = crypto.randomUUID();
         const rpcMessage = {
@@ -635,10 +636,22 @@ class ConnectionService extends Base {
             windows  = [];
 
         for (const [id, meta] of this.sessionData.entries()) {
+            const addressed = meta.addressed ?? null;
+
             sessions.push({
                 id,
-                connectedAt: meta.connectedAt,
-                activeApps : meta.windows ? meta.windows.size : 0
+                appName       : meta.appName ?? null,
+                environment   : meta.environment ?? null,
+                userAgent     : meta.userAgent ?? null,
+                isSharedWorker: meta.isSharedWorker ?? null,
+                connectedAt   : meta.connectedAt,
+                activeApps    : meta.windows ? meta.windows.size : 0,
+                // Who drove this session: the first addresser is the closest thing to "who opened it" (a page a
+                // seat's browser opened announces no seat), the last is who is in it now. Access stays shared.
+                firstAddressedBy: addressed?.first ?? null,
+                lastAddressedBy : addressed?.last ?? null,
+                addressedBy     : addressed ? addressed.agents.map(entry => entry.agentId) : [],
+                addressedByMe   : !!addressed?.agents.some(entry => entry.agentId === this.agentId)
             });
 
             if (meta.windows) {
@@ -697,15 +710,57 @@ class ConnectionService extends Base {
     /**
      * @param {String} appWorkerId
      * @param {String} [appName='Unknown']
+     * @param {Object|null} [addressed=null] The Bridge's snapshot of who drove the App before this server joined:
+     * `{first, last, agents: [{agentId, count, lastAt}]}`
      */
-    handleAppConnected(appWorkerId, appName = 'Unknown') {
+    handleAppConnected(appWorkerId, appName = 'Unknown', addressed = null) {
         logger.info(`App Worker connected: ${appWorkerId} (${appName})`);
         this.sessionData.set(appWorkerId, {
+            addressed  : addressed ?? null,
             appName,
             connectedAt: Date.now(),
             logs       : [],
             sessionId  : appWorkerId
         });
+    }
+
+    /**
+     * @summary Folds a Bridge `app_addressed` frame into the session: who drove it first, who last, who at all.
+     * @param {Object} frame
+     * @param {String} frame.appWorkerId
+     * @param {String} frame.agentId
+     * @param {Number} frame.at
+     */
+    handleAppAddressed({appWorkerId, agentId, at}) {
+        const meta = this.sessionData.get(appWorkerId);
+
+        if (!meta) return;
+
+        const stamp = {agentId, at};
+
+        meta.addressed ??= {first: stamp, last: stamp, agents: []};
+        meta.addressed.last = stamp;
+
+        const entry = meta.addressed.agents.find(item => item.agentId === agentId);
+
+        if (entry) {
+            entry.count++;
+            entry.lastAt = at
+        } else {
+            meta.addressed.agents.push({agentId, count: 1, lastAt: at})
+        }
+    }
+
+    /**
+     * @summary The live sessions as the target resolver names them in a refusal: id, app name, last addresser.
+     * @returns {Object[]}
+     */
+    describeSessions() {
+        return Array.from(this.sessionData, ([id, meta]) => ({
+            id,
+            appName        : meta.appName ?? null,
+            lastAddressedBy: meta.addressed?.last ?? null
+        }))
     }
 
     /**
@@ -758,7 +813,10 @@ class ConnectionService extends Base {
 
             switch (payload.type) {
                 case 'app_connected':
-                    this.handleAppConnected(payload.appWorkerId, payload.appName);
+                    this.handleAppConnected(payload.appWorkerId, payload.appName, payload.addressed);
+                    break;
+                case 'app_addressed':
+                    this.handleAppAddressed(payload);
                     break;
                 case 'app_disconnected':
                     this.handleAppDisconnected(payload.appWorkerId);
