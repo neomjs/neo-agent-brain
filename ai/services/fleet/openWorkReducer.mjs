@@ -51,8 +51,7 @@ function ownerOf(node, identities) {
         login        = node.author?.login ?? null,
         knownAccount = Boolean(login && identities.byLogin(login));
 
-    if (!knownAccount || node.author?.__typename === 'Bot' ||
-        (node.authorAssociation && !['OWNER', 'MEMBER', 'COLLABORATOR'].includes(node.authorAssociation))) {
+    if (!knownAccount || node.author?.__typename === 'Bot') {
         return {kind: 'outside', seat: null, login}
     }
 

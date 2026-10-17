@@ -275,16 +275,21 @@ test.describe('openWorkReducer — the owner is the body line, never a silent lo
         expect(normalizePullRequest(node({body: '', login: 'dependabot'}), identities).owner).toEqual({kind: 'outside', seat: null, login: 'dependabot'})
     });
 
-    test('outside and bot authors cannot mint seat ownership via an Authored by <Seat> body line (#1008)', () => {
+    test('outside and bot authors cannot mint seat ownership via an Authored by <Seat> body line, while registered non-bot seats preserve seat ownership across repository associations (#1008)', () => {
         const
             forgedOutside = {
                 ...node({number: 18, body: 'Authored by Ada (Claude Opus 5, Claude Code).', login: 'external-contributor', reviewers: []}),
                 authorAssociation: 'CONTRIBUTOR',
                 author           : {__typename: 'User', login: 'external-contributor'}
             },
-            forgedAssociatedSeatLogin = {
+            registeredContributorSeat = {
                 ...node({number: 20, body: 'Authored by Ada (Claude Opus 5, Claude Code).', login: 'neo-opus-ada', reviewers: []}),
                 authorAssociation: 'CONTRIBUTOR',
+                author           : {__typename: 'User', login: 'neo-opus-ada'}
+            },
+            registeredNoneSeat = {
+                ...node({number: 22, body: 'Authored by Ada (Claude Opus 5, Claude Code).', login: 'neo-opus-ada', reviewers: []}),
+                authorAssociation: 'NONE',
                 author           : {__typename: 'User', login: 'neo-opus-ada'}
             },
             forgedBot = {
@@ -293,13 +298,16 @@ test.describe('openWorkReducer — the owner is the body line, never a silent lo
                 author           : {__typename: 'Bot', login: 'dependabot[bot]'}
             },
             outsideRow = normalizePullRequest(forgedOutside, identities),
-            assocRow   = normalizePullRequest(forgedAssociatedSeatLogin, identities),
+            contribRow = normalizePullRequest(registeredContributorSeat, identities),
+            noneRow    = normalizePullRequest(registeredNoneSeat, identities),
             botRow     = normalizePullRequest(forgedBot, identities);
 
         expect(outsideRow.owner).toEqual({kind: 'outside', seat: null, login: 'external-contributor'});
         expect(holderOf(outsideRow)).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
-        expect(assocRow.owner).toEqual({kind: 'outside', seat: null, login: 'neo-opus-ada'});
-        expect(holderOf(assocRow)).toEqual({role: 'rotation', kind: 'triage-outside', ids: []});
+        expect(contribRow.owner).toEqual({kind: 'seat', seat: '@neo-opus-ada', login: 'neo-opus-ada'});
+        expect(holderOf(contribRow)).toEqual({role: 'author', kind: 'route-review', ids: ['@neo-opus-ada']});
+        expect(noneRow.owner).toEqual({kind: 'seat', seat: '@neo-opus-ada', login: 'neo-opus-ada'});
+        expect(holderOf(noneRow)).toEqual({role: 'author', kind: 'route-review', ids: ['@neo-opus-ada']});
         expect(botRow).toMatchObject({bot: true, owner: {kind: 'outside', seat: null, login: 'dependabot[bot]'}});
         expect(holderOf(botRow)).toEqual({role: 'none', kind: null, ids: []})
     });

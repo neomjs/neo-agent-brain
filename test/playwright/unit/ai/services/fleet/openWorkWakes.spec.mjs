@@ -414,6 +414,10 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
                 ...normalizePullRequest(rawPr({login: 'dependabot[bot]', typename: 'Bot', authorAssociation: 'NONE'}), identities),
                 observedAt: iso(2)
             },
+            registeredSeatRow = {
+                ...normalizePullRequest(rawPr({login: 'neo-opus-ada', typename: 'User', authorAssociation: 'CONTRIBUTOR'}), identities),
+                observedAt: iso(3)
+            },
             baseline   = planOpenWorkWakes({state: state(0, []), ledger: null, now: at(0), rotationSeats: roster}).ledger;
 
         expect(outsideRow.owner).toEqual({kind: 'outside', seat: null, login: 'external-contributor'});
@@ -435,6 +439,16 @@ test.describe('openWorkWakes — pure holder-action episodes (#761)', () => {
             rotationSeats: roster
         });
         expect(botPlanned.wakes).toEqual([]);
+
+        expect(registeredSeatRow.owner).toEqual({kind: 'seat', seat: ADA, login: 'neo-opus-ada'});
+        const seatPlanned = planOpenWorkWakes({
+            state        : {observedAt: iso(3), coverage: 'complete', transitions: [], snapshot: {closed: {}, complete: true, rows: {[registeredSeatRow.key]: registeredSeatRow}}},
+            ledger       : baseline,
+            now          : at(3),
+            rotationSeats: roster
+        });
+        expect(seatPlanned.wakes).toHaveLength(1);
+        expect(seatPlanned.wakes[0]).toMatchObject({to: ADA, role: 'author', kind: 'route-review'});
     });
 });
 
