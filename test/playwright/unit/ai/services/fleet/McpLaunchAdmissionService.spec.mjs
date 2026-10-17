@@ -224,7 +224,7 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
         f.state.credential = 'rotated-fixture-pat';
         await expect(service.recover(f)).rejects.toThrow(/not guarded/);
         expect(service.generations.size).toBe(0);
-        expect(await recoverWithRuntimeReferences(f)).toEqual([{agentId: 'seat', state: 'active', reason: null}]);
+        expect(await recoverWithRuntimeReferences(f)).toEqual([{agentId: 'seat', state: 'active', reason: null, detail: null}]);
         expect(service.issuerOrigin).toBe(f.reservation.issuer);
         expect(await redeem(f.reservation.grants['github-workflow'], {server: 'github-workflow'}))
             .toMatchObject({outcome: 'admitted', env: {GH_TOKEN: 'rotated-fixture-pat'}, generationRoot: f.state.seats[0].start.runtime.runtimeRoot});
@@ -237,13 +237,24 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
         const f     = await predecessor({clean: false});
         let   calls = 0;
         expect(await recoverWithRuntimeReferences({...f, restoreSeat: async () => { calls++; return f.restoreSeat(); }}))
-            .toEqual([{agentId: 'seat', state: 'stale', reason: 'recovery-unverified'}]);
+            .toEqual([{agentId: 'seat', state: 'stale', reason: 'recovery-unverified', detail: 'unclean-issuer-exit'}]);
+        expect(service.statusOf('seat', {running: true})).toMatchObject({state: 'stale', reason: 'recovery-unverified', detail: 'unclean-issuer-exit'});
+        expect(service.continuityRecord).toMatchObject({previousReason: 'unclean-issuer-exit', handoffProved: false, seats: [{agentId: 'seat', detail: 'unclean-issuer-exit'}]});
         expect(calls).toBe(0);
         expect(service.httpServer).toBeNull();
         expect(service.grants.size).toBe(0);
         expect(service.admissionSnapshot().seats).toEqual(f.state.seats);
         expect(service.admissionSnapshot().generations[0].servers[0].capabilityHash)
             .toBe(f.previous.snapshot.generations[0].servers[0].capabilityHash);
+    });
+
+    test('a clean predecessor whose seat is no longer running keeps the generation stale and names the check', async () => {
+        const f = await predecessor();
+        service.journal.previous.snapshot.seats[0].state = 'exited';
+        expect(await recoverWithRuntimeReferences(f)).toEqual([{agentId: 'seat', state: 'stale', reason: 'recovery-unverified', detail: "seat state 'exited'"}]);
+        expect(service.statusOf('seat', {running: true})).toMatchObject({state: 'stale', detail: "seat state 'exited'"});
+        expect(service.continuityRecord).toMatchObject({previousReason: null, handoffProved: true, origin: f.reservation.issuer});
+        expect(service.grants.size).toBe(0);
     });
 
     test('a bind conflict refuses the original origin without moving to another port', async () => {
@@ -266,7 +277,7 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
         await entered.promise;
         service.revoke('seat', 'stop-requested');
         finish.resolve();
-        expect(await recovery).toEqual([{agentId: 'seat', state: 'revoked', reason: 'stop-requested'}]);
+        expect(await recovery).toEqual([{agentId: 'seat', state: 'revoked', reason: 'stop-requested', detail: null}]);
         expect(service.grants.size).toBe(0);
         expect(service.admissionSnapshot().generations[0].state).toBe('revoked');
     });
@@ -275,7 +286,7 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
         const f    = await predecessor({revoke: true});
         let   read = false;
         expect(await recoverWithRuntimeReferences({...f, restoreSeat: async () => { read = true; return f.restoreSeat(); }}))
-            .toEqual([{agentId: 'seat', state: 'revoked', reason: 'stop-requested'}]);
+            .toEqual([{agentId: 'seat', state: 'revoked', reason: 'stop-requested', detail: null}]);
         expect(read).toBe(false);
     });
 
@@ -320,7 +331,9 @@ test.describe('McpLaunchAdmissionService — original generation recovery', () =
                 if (failure === 'definition') f.state.agent = {...f.state.agent, launchOwner: 'external'};
                 return result;
             };
-            expect(await recoverWithRuntimeReferences({...f, restoreSeat})).toEqual([{agentId: 'seat', state: 'stale', reason: 'recovery-unverified'}]);
+            const [disposition] = await recoverWithRuntimeReferences({...f, restoreSeat});
+            expect(disposition).toMatchObject({agentId: 'seat', state: 'stale', reason: 'recovery-unverified'});
+            expect(typeof disposition.detail === 'string' && disposition.detail.length > 0, `${failure}: ${disposition.detail}`).toBe(true);
             expect(service.grants.size).toBe(0);
         });
     }
@@ -739,9 +752,15 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
     });
 
     test('a seat this issuer holds no generation for reads stale while it runs, and none while it does not', () => {
-        expect(service.statusOf('adopted', {running: true})).toEqual({state: 'stale', reason: 'issuer-replaced', generation: null, since: null, servers: [], recent: []});
-        expect(service.statusOf('adopted')).toMatchObject({state: 'none', reason: null});
-        expect(service.holds('adopted')).toBe(false)
+        expect(service.statusOf('adopted', {running: true})).toEqual({state: 'stale', reason: 'issuer-replaced', detail: null, generation: null, since: null, servers: [], recent: []});
+        expect(service.statusOf('adopted')).toMatchObject({state: 'none', reason: null, detail: null});
+        expect(service.holds('adopted')).toBe(false);
+        // after a boot that found an unclean predecessor, the stale row says so
+        service.continuityRecord = {recoveredAt: 't', previousReason: 'unclean-issuer-exit', handoffProved: false, origin: null, seats: []};
+        try {
+            expect(service.statusOf('adopted', {running: true})).toMatchObject({state: 'stale', reason: 'issuer-replaced', detail: 'unclean-issuer-exit'});
+            expect(service.statusOf('adopted').detail).toBeNull()
+        } finally { service.continuityRecord = null }
     });
 });
 

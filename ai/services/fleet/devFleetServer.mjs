@@ -179,7 +179,12 @@ async function boot() {
 
     if (runtime.generation) {
         lifecycle.openRuntimeCustody({directory: lifecycle.getRegistry().admissionDirectory()});
-        await lifecycle.recoverRuntimeCustody({tenantService: await FleetManager.getTenantService()});
+        const dispositions = await lifecycle.recoverRuntimeCustody({tenantService: await FleetManager.getTenantService()});
+        const record       = lifecycle.getLaunchAdmission().continuityRecord;
+        // The successor says what it inherited: a lost handoff is the one fact the roster line cannot name by itself.
+        console.log(`[fleet] continuity recovery: previous issuer ${record?.previousReason ?? (record?.handoffProved ? 'handed-off' : 'none')}` +
+            (record?.origin ? ` at ${record.origin}` : '') + `; ${dispositions.length} retained generation(s)` +
+            (dispositions.length ? ': ' + dispositions.map(row => `${row.agentId} ${row.state}${row.detail ? ` (${row.detail})` : ''}`).join(', ') : ''));
     }
 
     // Wire the cross-process boot-identity reader BEFORE serving: getBootIdentity() then serves the
@@ -596,14 +601,23 @@ async function boot() {
         // leaks the proven plane session (the server reaps it only on its own timeline).
         let shutdown;
         const cleanShutdown = signal => shutdown ??= (async () => {
+            const startedAt = Date.now(), elapsed = () => Date.now() - startedAt;
             console.log(`[fleet] received ${signal}; stopping.`);
             try {
+                // The first line lands before the first await: a handoff the host kills mid-way still leaves its trace.
+                if (runtime.generation) {
+                    console.log(`[fleet] continuity handoff starting: ${lifecycle.listRunning().length} running seat(s); drain and proofs bounded by ${lifecycle.getLaunchAdmission().proofTimeoutMs} ms each`);
+                } else {
+                    console.log('[fleet] continuity handoff skipped: no runtime generation, so a successor restores no seat');
+                }
                 await server.drainFleetRequests(lifecycle.getLaunchAdmission().proofTimeoutMs);
                 if (runtime.generation) {
                     await lifecycle.handoffRuntimeCustody({tenantService: await FleetManager.getTenantService()});
+                    console.log(`[fleet] continuity handoff sealed after ${elapsed()} ms; a successor rebinds the released origin`);
                 }
-            } catch {
-                console.error('[fleet] continuity handoff was not completed; a package update must refuse surviving-seat continuity.');
+            } catch (error) {
+                // The service names the stage it refused at (`Fleet continuity refused: <stage>.`); the log keeps it with the time it took.
+                console.error(`[fleet] continuity handoff was not completed after ${elapsed()} ms: ${error?.message ?? error}; a package update must refuse surviving-seat continuity.`);
             } finally {
                 try {
                     await lifecycle.getLaunchAdmission().closeUnclean();

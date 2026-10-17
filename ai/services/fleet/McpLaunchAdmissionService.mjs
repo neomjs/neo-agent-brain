@@ -170,6 +170,14 @@ class McpLaunchAdmissionService extends Base {
     /** @member {String} continuityPhase Boot recovery excludes new Starts until its evidence is settled. @private */
     continuityPhase = 'ready'
 
+    /**
+     * @member {Object|null} continuityRecord What boot recovery found: the previous issuer's exit
+     * (`previousReason`: `null` after a proved handoff, else `unclean-issuer-exit` or `handoff-replayed`),
+     * whether its handoff was proved, its origin, and each retained generation's disposition with the
+     * check that kept it stale. `null` until {@link recover} has run.
+     */
+    continuityRecord = null
+
     /** @member {Promise|null} handoffPromise One terminal handoff attempt per issuer. @private */
     handoffPromise = null
 
@@ -208,6 +216,8 @@ class McpLaunchAdmissionService extends Base {
         if (!this.journal || this.generations.size || this.listening || this.continuityPhase !== 'ready' ||
             typeof restoreSeat !== 'function') throw new Error('Launch recovery must precede admission and Start.');
         const previous = this.journal.previous;
+        this.continuityRecord = {recoveredAt: new Date().toISOString(), previousReason: previous?.reason ?? null,
+            handoffProved: previous?.handoffProved ?? null, origin: previous?.origin ?? null, seats: []};
         if (!previous) return [];
         const retainedRuntimes = [...previous.snapshot.generations.map(row => row.runtime),
             ...previous.snapshot.seats.map(row => row.start.runtime)].filter(Boolean);
@@ -225,6 +235,7 @@ class McpLaunchAdmissionService extends Base {
                 ...structuredClone(saved), definition, generationRoot: saved.runtime?.runtimeRoot ?? null,
                 state  : saved.state === STATES.REVOKED ? STATES.REVOKED : STATES.STALE,
                 reason : saved.state === STATES.REVOKED ? saved.reason : REASONS.RECOVERY_UNVERIFIED,
+                detail : saved.state === STATES.REVOKED || previous.handoffProved ? null : previous.reason,
                 servers: new Map(saved.servers.map(row => [row.key, {...row, secret: null,
                     state : row.state === STATES.REVOKED ? STATES.REVOKED : STATES.STALE,
                     reason: row.state === STATES.REVOKED ? row.reason : REASONS.RECOVERY_UNVERIFIED,
@@ -242,23 +253,30 @@ class McpLaunchAdmissionService extends Base {
                     if (saved.state !== STATES.ACTIVE) continue;
                     const seat = previous.snapshot.seats.find(row => row.start.agentId === saved.agentId);
                     try {
-                        if (!seat || seat.state !== 'running' || seat.ownershipUnresolved || seat.cleanupUnresolved ||
-                            seat.start.admissionGeneration !== saved.id || seat.start.identity !== saved.identity ||
-                            seat.start.profile?.issuer !== previous.origin || !isDeepStrictEqual(seat.start.runtime, saved.runtime)) throw Error();
+                        // Each check names itself: the one that fails is what the seat's row will say.
+                        const unproved = !seat ? 'no seat record' : seat.state !== 'running' ? `seat state '${seat.state}'`
+                            : seat.ownershipUnresolved ? 'seat ownership unresolved' : seat.cleanupUnresolved ? 'seat cleanup unresolved'
+                            : seat.start.admissionGeneration !== saved.id ? 'admission generation mismatch'
+                            : seat.start.identity !== saved.identity ? 'identity mismatch'
+                            : seat.start.profile?.issuer !== previous.origin ? 'profile issuer is not the original origin'
+                            : !isDeepStrictEqual(seat.start.runtime, saved.runtime) ? 'runtime pin mismatch' : null;
+                        if (unproved) throw new Error(unproved);
                         const recovered = await restoreSeat(seat.start, saved);
                         if (generation.state === STATES.REVOKED) continue;
                         const agent      = registry.getDefinition(saved.agentId);
                         const definition = agent && projectDefinition(agent);
-                        if (!definition || loginOf(agent) !== saved.identity ||
-                            crypto.createHash('sha256').update(canonicalJson(definition)).digest('hex') !== saved.definitionHash ||
-                            observeProcess(recovered.probe) !== 'live') throw Error();
+                        const changed    = !definition ? 'definition missing' : loginOf(agent) !== saved.identity ? 'identity changed'
+                            : crypto.createHash('sha256').update(canonicalJson(definition)).digest('hex') !== saved.definitionHash ? 'definition changed'
+                            : observeProcess(recovered.probe) !== 'live' ? 'process not live' : null;
+                        if (changed) throw new Error(changed);
                         const effective = {...saved, servers: saved.servers.map(row => generation.servers.get(row.key).state === STATES.REVOKED
                             ? {...row, state: STATES.REVOKED, reason: generation.servers.get(row.key).reason} : row)};
                         const servers = this.recoverServers({saved: effective, start: seat.start, recovered});
-                        Object.assign(generation, {definition, servers, state: STATES.ACTIVE, reason: null,
+                        Object.assign(generation, {definition, servers, state: STATES.ACTIVE, reason: null, detail: null,
                             owners: recovered.owners, residentInputs: recovered.residentInputs, probe: recovered.probe});
-                    } catch {
-                        // One unproved survivor cannot authorize itself or discard another seat's evidence.
+                    } catch (error) {
+                        // One unproved survivor cannot authorize itself or discard another seat's evidence; it says which check failed.
+                        generation.detail = error?.message || 'the original Start, its runtime pin or its inputs did not verify';
                     }
                 }
                 if (previous.origin !== null) await this.listen({origin: previous.origin});
@@ -269,7 +287,7 @@ class McpLaunchAdmissionService extends Base {
                 if (generation.state !== STATES.ACTIVE) continue;
                 if (observeProcess(generation.probe) !== 'live') {
                     Object.assign(generation, {state: STATES.STALE, reason: REASONS.RECOVERY_UNVERIFIED,
-                        owners: {}, residentInputs: {}, probe: null});
+                        detail: 'process not live after recovery', owners: {}, residentInputs: {}, probe: null});
                     generation.servers.forEach(server => { server.secret = null; });
                     continue;
                 }
@@ -277,13 +295,14 @@ class McpLaunchAdmissionService extends Base {
             }
             this.persistAdmission();
             this.continuityPhase = 'ready';
-            return [...this.generations.values()].map(row => ({agentId: row.agentId, state: row.state, reason: row.reason}));
+            this.continuityRecord.seats = [...this.generations.values()].map(row => ({agentId: row.agentId, state: row.state, reason: row.reason, detail: row.detail ?? null}));
+            return this.continuityRecord.seats.map(row => ({...row}));
         } catch (error) {
             this.continuityPhase = 'unavailable';
             this.grants.clear();
             for (const generation of this.generations.values()) {
                 if (generation.state === STATES.REVOKED) continue;
-                Object.assign(generation, {state: STATES.STALE, reason: REASONS.RECOVERY_UNVERIFIED, owners: {}, residentInputs: {}, probe: null});
+                Object.assign(generation, {state: STATES.STALE, reason: REASONS.RECOVERY_UNVERIFIED, detail: error?.message || 'recovery failed', owners: {}, residentInputs: {}, probe: null});
                 generation.servers.forEach(server => { server.secret = null; });
             }
             try {
@@ -745,7 +764,10 @@ class McpLaunchAdmissionService extends Base {
      * @param {Object} [options]
      * @param {Boolean} [options.running=false] Whether the lifecycle holds the seat as running. A running
      *     seat without a generation of this process is `stale`.
-     * @returns {{state: String, reason: String|null, generation: String|null, since: String|null,
+     * `detail` says why a stale row is stale in this process's own words: for a running seat this issuer
+     * holds no generation for, the previous issuer's exit as boot recovery read it; for a retained
+     * generation, the check that kept it stale.
+     * @returns {{state: String, reason: String|null, detail: String|null, generation: String|null, since: String|null,
      *     servers: Object[], recent: Object[]}}
      */
     statusOf(agentId, {running = false} = {}) {
@@ -755,6 +777,7 @@ class McpLaunchAdmissionService extends Base {
             return {
                 state     : running ? STATES.STALE : STATES.NONE,
                 reason    : running ? REASONS.ISSUER_REPLACED : null,
+                detail    : running ? this.continuityRecord?.previousReason ?? null : null,
                 generation: null,
                 since     : null,
                 servers   : [],
@@ -765,6 +788,7 @@ class McpLaunchAdmissionService extends Base {
         return {
             state     : generation.state,
             reason    : generation.reason,
+            detail    : generation.detail ?? null,
             generation: generation.id,
             since     : generation.revokedAt ?? generation.activatedAt ?? generation.reservedAt,
             servers   : [...generation.servers.values()].map(({key, state, reason}) => ({key, state, reason})),
