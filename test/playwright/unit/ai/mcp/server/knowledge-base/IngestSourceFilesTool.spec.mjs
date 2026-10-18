@@ -15,9 +15,12 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import fs                          from 'fs-extra';
+import {fileURLToPath}             from 'url';
+import {findSharedConfigMutations} from '../../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 /**
  * Coverage for the `ingest_source_files` MCP facade's Phase 2B work-volume boundary.
@@ -31,44 +34,40 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
  * is isolated from the openapi -> Zod dispatch layer and the `callTool` telemetry
  * wrapper; `listTools()` separately confirms the openapi operation registers.
  *
- * Serial mode: specs mutate the `aiConfig.mcpSyncMaxChunks` threshold and the
+ * Serial mode: specs configure `IngestionService.configSnapshot` and the
  * `IngestionService.ingestSourceFiles` singleton method.
  */
 test.describe.configure({mode: 'serial'});
 
 test.describe('ingest_source_files MCP facade — work-volume gate (#11634)', () => {
-    let callTool, ingestSourceFilesViaMcp, listTools, IngestionService, aiConfig;
-    let originalIngest, originalThreshold, originalTransport;
+    let callTool, ingestSourceFilesViaMcp, listTools, IngestionService;
+    let originalIngest;
 
     test.beforeAll(async () => {
         const toolService = await import('../../../../../../../ai/mcp/server/knowledge-base/toolService.mjs');
         const ingestTool  = await import('../../../../../../../ai/mcp/server/knowledge-base/ingestSourceFilesTool.mjs');
-        callTool               = toolService.callTool;
+        callTool                = toolService.callTool;
         ingestSourceFilesViaMcp = ingestTool.ingestSourceFilesViaMcp;
         listTools               = toolService.listTools;
 
         IngestionService = (await import('../../../../../../../ai/services/knowledge-base/IngestionService.mjs')).default;
-        aiConfig                      = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
 
-        originalIngest    = IngestionService.ingestSourceFiles;
-        originalThreshold = aiConfig.mcpSyncMaxChunks;
-        originalTransport = aiConfig.transport;
+        originalIngest = IngestionService.ingestSourceFiles;
     });
 
     test.afterAll(() => {
         if (IngestionService) {
             IngestionService.ingestSourceFiles = originalIngest;
-        }
-        if (aiConfig) {
-            aiConfig.mcpSyncMaxChunks = originalThreshold;
-            aiConfig.transport        = originalTransport;
+            IngestionService.configSnapshot    = null;
         }
     });
 
     test.beforeEach(() => {
         // Tight, predictable threshold; restore the real service method before each spec.
-        aiConfig.mcpSyncMaxChunks                       = 5;
-        aiConfig.transport                              = 'streamable-http';
+        const snapshot = IngestionService.createConfigSnapshot();
+        snapshot.mcpSyncMaxChunks          = 5;
+        snapshot.transport                 = 'streamable-http';
+        IngestionService.configSnapshot    = snapshot;
         IngestionService.ingestSourceFiles = originalIngest;
     });
 
@@ -178,7 +177,7 @@ test.describe('ingest_source_files MCP facade — work-volume gate (#11634)', ()
     });
 
     test('ingest_source_files is listed for the remote Streamable HTTP transport profile', () => {
-        aiConfig.transport = 'streamable-http';
+        IngestionService.configSnapshot.transport = 'streamable-http';
 
         const {tools} = listTools();
         const tool    = tools.find(item => item.name === 'ingest_source_files');
@@ -192,11 +191,17 @@ test.describe('ingest_source_files MCP facade — work-volume gate (#11634)', ()
     });
 
     test('ingest_source_files is hidden and fail-closed for local stdio transport', async () => {
-        aiConfig.transport = 'stdio';
+        IngestionService.configSnapshot.transport = 'stdio';
 
         const {tools} = listTools();
 
         expect(tools.find(item => item.name === 'ingest_source_files')).toBeUndefined();
         await expect(callTool('ingest_source_files', {files: []})).rejects.toThrow(/transport: "streamable-http"/);
+    });
+
+    test('uses per-test config snapshots instead of mutating shared config', async () => {
+        const specSource = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(specSource)).toEqual([]);
     });
 });

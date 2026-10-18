@@ -212,15 +212,14 @@ test.describe('DestructiveOperationGuard call-site wiring (#10845)', () => {
 
     test('Memory Core CollectionProxy stops before deleting a production Chroma collection', async () => {
         const
-            originalUseUnitTestDatabase = aiConfig.engines.chroma.useUnitTestDatabase,
-            originalUseTestHarness      = aiConfig.engines.chroma.useTestHarness,
-            proxy                       = Neo.create(CollectionProxy, {
+            proxy    = Neo.create(CollectionProxy, {
                 collectionType: 'memory'
-            });
+            }),
+            snapshot = proxy.createConfigSnapshot();
         let deleteCalls = 0;
 
-        aiConfig.engines.chroma.useUnitTestDatabase = false;
-        aiConfig.engines.chroma.useTestHarness      = false;
+        snapshot.engines.chroma.dataDir = aiConfig.engines.chroma.dataDirProd;
+        proxy.configSnapshot            = snapshot;
 
         try {
             proxy.getManagers = async () => [{
@@ -237,21 +236,18 @@ test.describe('DestructiveOperationGuard call-site wiring (#10845)', () => {
             });
             expect(deleteCalls).toBe(0);
         } finally {
-            aiConfig.engines.chroma.useUnitTestDatabase = originalUseUnitTestDatabase;
-            aiConfig.engines.chroma.useTestHarness      = originalUseTestHarness;
+            proxy.configSnapshot = null;
         }
     });
 
     test('Memory Core graph truncate stops before SQLite deletion on the production graph path', async () => {
         test.skip(skipCiSubstrateData, 'CI-skip: substrate data not seeded - bucket C (#10903)');
 
-        const
-            originalUseUnitTestDatabase = aiConfig.storagePaths.useUnitTestDatabase,
-            originalUseTestHarness      = aiConfig.storagePaths.useTestHarness;
+        const snapshot = MemoryDatabaseService.createConfigSnapshot();
 
         try {
-            aiConfig.storagePaths.useUnitTestDatabase = false;
-            aiConfig.storagePaths.useTestHarness      = false;
+            snapshot.storagePaths.graph          = aiConfig.storagePaths.graphProd;
+            MemoryDatabaseService.configSnapshot = snapshot;
 
             await expect(MemoryDatabaseService.truncateDatabase({
                 include: ['graph']
@@ -260,26 +256,26 @@ test.describe('DestructiveOperationGuard call-site wiring (#10845)', () => {
                 message: expect.stringContaining('DESTRUCTIVE_TARGET_BLOCKED')
             });
         } finally {
-            aiConfig.storagePaths.useUnitTestDatabase = originalUseUnitTestDatabase;
-            aiConfig.storagePaths.useTestHarness      = originalUseTestHarness;
+            MemoryDatabaseService.configSnapshot = null;
         }
     });
 
     test('Knowledge Base VectorService stops before deleting the production collection', async () => {
-        // Flip the test-mode SELECTOR, not the resolved value — the same idiom the two arms above
-        // use. `dataDir` is `useTestDatabase ? dataDirTest : dataDirProd` and `useTestDatabase` is
-        // `useUnitTestDatabase || useTestHarness`, so clearing both resolves the production
-        // coordinate by construction. The previous version assigned a literal path to a KB-child
-        // `path` leaf; that leaf is gone, and writing a resolved value would have left this arm
-        // green while exercising nothing, since `VectorService` now reads the Tier-1 leaf.
-        const
-            originalClient              = KbChromaManager.client,
-            originalUseUnitTestDatabase = aiConfig.engines.chroma.useUnitTestDatabase,
-            originalUseTestHarness      = aiConfig.engines.chroma.useTestHarness;
-        let deleteCalls = 0;
+        // Flip the test-mode SELECTOR on an isolated KbVectorService configSnapshot, not on the shared
+        // aiConfig singleton (B4). `dataDir` is `useTestDatabase ? dataDirTest : dataDirProd` and
+        // `useTestDatabase` is `useUnitTestDatabase || useTestHarness`, so clearing both resolves the
+        // production coordinate by construction.
+        const originalClient = KbChromaManager.client;
+        let   deleteCalls    = 0;
 
-        aiConfig.engines.chroma.useUnitTestDatabase = false;
-        aiConfig.engines.chroma.useTestHarness      = false;
+        KbVectorService.configSnapshot = KbVectorService.createConfigSnapshot({
+            engines: {
+                chroma: {
+                    useTestHarness     : false,
+                    useUnitTestDatabase: false
+                }
+            }
+        });
 
         KbChromaManager.client = {
             deleteCollection: async () => {
@@ -293,9 +289,8 @@ test.describe('DestructiveOperationGuard call-site wiring (#10845)', () => {
             });
             expect(deleteCalls).toBe(0);
         } finally {
-            KbChromaManager.client                      = originalClient;
-            aiConfig.engines.chroma.useUnitTestDatabase = originalUseUnitTestDatabase;
-            aiConfig.engines.chroma.useTestHarness      = originalUseTestHarness;
+            KbChromaManager.client         = originalClient;
+            KbVectorService.configSnapshot = null;
         }
     });
 

@@ -1,8 +1,9 @@
-import Ajv2020           from 'ajv/dist/2020.js';
-import Base              from 'neo.mjs/src/core/Base.mjs';
-import ChromaManager     from './ChromaManager.mjs';
-import GraphService      from '../memory-core/GraphService.mjs';
-import KBRecorderService from './KBRecorderService.mjs';
+import Ajv2020                                      from 'ajv/dist/2020.js';
+import Base                                         from 'neo.mjs/src/core/Base.mjs';
+import ChromaManager                                from './ChromaManager.mjs';
+import {cloneConfigSubtree, validateConfigSnapshot} from '../shared/configSnapshot.mjs';
+import GraphService                                 from '../memory-core/GraphService.mjs';
+import KBRecorderService                            from './KBRecorderService.mjs';
 import {
     bytesToTokens,
     emitConsumerFriction
@@ -198,6 +199,12 @@ class IngestionService extends Base {
          */
         className: 'Neo.ai.services.knowledge-base.IngestionService',
         /**
+         * @member {Object|null} configSnapshot_=null
+         * @summary Optional isolated config snapshot for deterministic ingestion tests.
+         * @reactive
+         */
+        configSnapshot_: null,
+        /**
          * @member {Boolean} singleton=true
          * @protected
          */
@@ -237,6 +244,83 @@ class IngestionService extends Base {
          * @summary Downstream embedding/upsert service.
          */
         vectorService: VectorService
+    }
+
+    /**
+     * @summary Validates reactive config snapshots before assignment.
+     * @param {Object|null} value
+     * @returns {Object|null}
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            serviceName     : 'KB_IngestionService',
+            requiredSubtrees: ['localModels', 'localModels.embedding', 'ollama', 'openAiCompatible', 'sourcePaths']
+        });
+    }
+
+    /**
+     * @summary Creates a plain config snapshot cloned from the KB AiConfig provider.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            customExtractors : [...aiConfig.customExtractors],
+            customParsers    : [...aiConfig.customParsers],
+            customSources    : [...aiConfig.customSources],
+            defaultRepoSlug  : aiConfig.defaultRepoSlug,
+            defaultTenantId  : aiConfig.defaultTenantId,
+            defaultVisibility: aiConfig.defaultVisibility,
+            localModels      : {
+                embedding: cloneConfigSubtree(aiConfig, ['localModels', 'embedding'])
+            },
+            mcpSyncMaxChunks   : aiConfig.mcpSyncMaxChunks,
+            neoRootDir         : aiConfig.neoRootDir,
+            ollama             : cloneConfigSubtree(aiConfig, ['ollama']),
+            openAiCompatible   : cloneConfigSubtree(aiConfig, ['openAiCompatible']),
+            rawRepoSource      : aiConfig.rawRepoSource,
+            sourcePaths        : cloneConfigSubtree(aiConfig, ['sourcePaths']),
+            tenantExtractorRoot: aiConfig.tenantExtractorRoot,
+            tenantParserRoot   : aiConfig.tenantParserRoot,
+            tenantRepos        : aiConfig.tenantRepos.map(entry => ({...entry})),
+            transport          : aiConfig.transport,
+            useDefaultParsers  : aiConfig.useDefaultParsers,
+            useDefaultSources  : aiConfig.useDefaultSources
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            localModels: {
+                ...snapshot.localModels,
+                ...(overrides.localModels || {}),
+                embedding: {
+                    ...snapshot.localModels.embedding,
+                    ...(overrides.localModels?.embedding || {})
+                }
+            },
+            ollama: {
+                ...snapshot.ollama,
+                ...(overrides.ollama || {})
+            },
+            openAiCompatible: {
+                ...snapshot.openAiCompatible,
+                ...(overrides.openAiCompatible || {})
+            },
+            sourcePaths: {
+                ...snapshot.sourcePaths,
+                ...(overrides.sourcePaths || {})
+            }
+        };
+    }
+
+    /**
+     * @summary Resolves the active ingestion config authority (`configSnapshot` or `aiConfig`).
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.configSnapshot || aiConfig;
     }
 
     /**
@@ -417,14 +501,15 @@ class IngestionService extends Base {
             });
             return summary;
         } catch (error) {
+            const config = this.#getConfig();
             summary.errors.push(this.createError({
                 code   : this.classifyIngestionFailureCode(error),
                 message: error.message
             }));
             summary.durationMs = Date.now() - startedAt;
             this.recordMetric(summary, {
-                tenantId: summary.tenantId || aiConfig.defaultTenantId,
-                repoSlug: aiConfig.defaultRepoSlug
+                tenantId: summary.tenantId || config.defaultTenantId,
+                repoSlug: config.defaultRepoSlug
             });
             this.finishIngestionProgress({summary, status: 'failed'});
             return summary;
@@ -942,7 +1027,7 @@ class IngestionService extends Base {
             // and would let a stale producer look like a complete run.
             yielded   : false,
             errors    : [],
-            tenantId  : aiConfig.defaultTenantId,
+            tenantId  : this.#getConfig().defaultTenantId,
             durationMs: Date.now() - startedAt
         };
     }
@@ -1089,7 +1174,7 @@ class IngestionService extends Base {
             ...(active || {
                 startedAt       : now - (summary.durationMs || 0),
                 tenantId        : summary.tenantId,
-                repoSlug        : aiConfig.defaultRepoSlug,
+                repoSlug        : this.#getConfig().defaultRepoSlug,
                 totalSources    : 0,
                 seenSources     : 0,
                 totalChunks     : summary.ingested + summary.skippedOversized,
@@ -1821,16 +1906,17 @@ class IngestionService extends Base {
      * @protected
      */
     resolveEmbeddingInputGuardrail() {
-        const embeddingProvider         = mcConfig.embeddingProvider;
-        const contextLimitTokens        = Number(aiConfig.localModels.embedding.contextLimitTokens);
-        const safeProcessingLimitTokens = Number(aiConfig.localModels.embedding.safeProcessingLimitTokens);
+        const config                    = this.#getConfig(),
+              embeddingProvider         = mcConfig.embeddingProvider,
+              contextLimitTokens        = Number(config.localModels.embedding.contextLimitTokens),
+              safeProcessingLimitTokens = Number(config.localModels.embedding.safeProcessingLimitTokens);
 
         return {
             recognized: IMPLEMENTED_EMBEDDING_PROVIDERS.includes(embeddingProvider),
             embeddingProvider,
             contextLimitTokens,
             safeProcessingLimitTokens,
-            model     : resolveEmbeddingProviderModel({embeddingProvider, aiConfig})
+            model     : resolveEmbeddingProviderModel({embeddingProvider, aiConfig: config})
         };
     }
 
@@ -2170,7 +2256,7 @@ class IngestionService extends Base {
 
         const ParserClass = await loadTenantParser({
             specifier : entry.parserModule,
-            root      : aiConfig.tenantParserRoot,
+            root      : this.#getConfig().tenantParserRoot,
             exportName: entry.exportName
         });
 
@@ -2294,8 +2380,9 @@ class IngestionService extends Base {
      * @protected
      */
     resolveTenantContext(payload = {}) {
-        const activeTenant    = normalizeUserId(this.requestContextService.getUserId?.());
-        const requestedTenant = normalizeUserId(payload.tenantId);
+        const config          = this.#getConfig(),
+              activeTenant    = normalizeUserId(this.requestContextService.getUserId?.()),
+              requestedTenant = normalizeUserId(payload.tenantId);
 
         if (activeTenant && requestedTenant && activeTenant !== requestedTenant) {
             const error = new Error(`Tenant '${requestedTenant}' does not match authenticated tenant '${activeTenant}'.`);
@@ -2303,12 +2390,12 @@ class IngestionService extends Base {
             throw error;
         }
 
-        const tenantId = activeTenant || requestedTenant || aiConfig.defaultTenantId;
+        const tenantId = activeTenant || requestedTenant || config.defaultTenantId;
 
         return {
             tenantId,
-            repoSlug           : payload.repoSlug || this.resolvePayloadRepoSlug(payload) || aiConfig.defaultRepoSlug,
-            visibility         : payload.visibility || aiConfig.defaultVisibility,
+            repoSlug           : payload.repoSlug || this.resolvePayloadRepoSlug(payload) || config.defaultRepoSlug,
+            visibility         : payload.visibility || config.defaultVisibility,
             originAgentIdentity: this.requestContextService.getAgentIdentityNodeId?.() || payload.originAgentIdentity
         };
     }
@@ -2408,7 +2495,7 @@ class IngestionService extends Base {
             custom.push(await loadTenantExtractor({
                 specifier : declaration.extractorModule,
                 exportName: declaration.exportName,
-                root      : aiConfig.tenantExtractorRoot
+                root      : this.#getConfig().tenantExtractorRoot
             }))
         }
 
@@ -2546,7 +2633,8 @@ class IngestionService extends Base {
      * @returns {Promise<{tenantId: String, source: String, version: Number, useDefaultSources: Boolean, rawRepoSource: Boolean, useDefaultParsers: Boolean, customSources: Array, customParsers: Array, sourcePaths: Object}>}
      */
     async getTenantConfig({tenantId} = {}) {
-        const resolvedTenant = normalizeUserId(tenantId) || aiConfig.defaultTenantId;
+        const config         = this.#getConfig(),
+              resolvedTenant = normalizeUserId(tenantId) || config.defaultTenantId;
 
         await this.graphService.ready();
 
@@ -2576,7 +2664,7 @@ class IngestionService extends Base {
         return await this.projectTenantConfig({
             tenantId: resolvedTenant,
             source  : 'default',
-            config  : aiConfig
+            config
         })
     }
 
@@ -2597,7 +2685,7 @@ class IngestionService extends Base {
         let source;
 
         try {
-            const bootstrapPath = path.join(aiConfig.neoRootDir, 'kb-config.yaml');
+            const bootstrapPath = path.join(this.#getConfig().neoRootDir, 'kb-config.yaml');
 
             source = fileSystem.readFileSync(bootstrapPath, 'utf8');
         } catch (error) {
@@ -2713,10 +2801,11 @@ class IngestionService extends Base {
     async listConfiguredTenantRepos() {
         await this.graphService.ready();
 
-        const bootstrapResult = this.readKbConfigBootstrapResult(),
+        const config          = this.#getConfig(),
+              bootstrapResult = this.readKbConfigBootstrapResult(),
               bootstrap       = bootstrapResult.document,
               yamlTenants     = (bootstrap && bootstrap.tenants) || {},
-              defaultRepos    = Array.isArray(aiConfig.tenantRepos) ? aiConfig.tenantRepos : [],
+              defaultRepos    = Array.isArray(config.tenantRepos) ? config.tenantRepos : [],
               graphRecords    = this.listTenantConfigRecords(),
               graphByTenantId = new Map(),
               tenantIds       = new Set();
@@ -2758,13 +2847,13 @@ class IngestionService extends Base {
                 configTier = 'yaml';
             } else {
                 rawConfig = {
-                    useDefaultSources: aiConfig.useDefaultSources,
-                    rawRepoSource    : aiConfig.rawRepoSource,
-                    useDefaultParsers: aiConfig.useDefaultParsers,
-                    customSources    : aiConfig.customSources,
-                    customParsers    : aiConfig.customParsers,
-                    customExtractors : aiConfig.customExtractors,
-                    sourcePaths      : aiConfig.sourcePaths,
+                    useDefaultSources: config.useDefaultSources,
+                    rawRepoSource    : config.rawRepoSource,
+                    useDefaultParsers: config.useDefaultParsers,
+                    customSources    : config.customSources,
+                    customParsers    : config.customParsers,
+                    customExtractors : config.customExtractors,
+                    sourcePaths      : config.sourcePaths,
                     tenantRepos      : defaultRepos.filter(entry =>
                         (normalizeUserId(entry.tenantId) || entry.tenantId) === tenantId
                     )

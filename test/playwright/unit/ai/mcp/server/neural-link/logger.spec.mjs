@@ -40,83 +40,76 @@ const __dirname  = path.dirname(__filename);
  */
 test.describe('NL MCP server logger — always-on file sink (#10582)', () => {
     let logger;
-    let aiConfig;
     let tmpLogDir;
-    let originalLogPath;
 
     test.beforeAll(async () => {
-        aiConfig = (await import('../../../../../../../ai/mcp/server/neural-link/config.template.mjs')).default;
+        tmpLogDir = path.resolve(os.tmpdir(), `nl-logger-test-${process.pid}-${Date.now()}`);
+        logger    = (await import('../../../../../../../ai/mcp/server/neural-link/logger.mjs')).default;
+    });
 
-        tmpLogDir       = path.resolve(os.tmpdir(), `nl-logger-test-${process.pid}-${Date.now()}`);
-        originalLogPath = aiConfig.data.logPath;
-        aiConfig.data.logPath = tmpLogDir;
-
-        logger = (await import('../../../../../../../ai/mcp/server/neural-link/logger.mjs')).default;
+    test.afterEach(() => {
+        logger.configSnapshot = null;
     });
 
     test.afterAll(() => {
-        aiConfig.data.logPath = originalLogPath;
+        logger.configSnapshot = null;
         if (tmpLogDir && fs.existsSync(tmpLogDir)) {
             fs.rmSync(tmpLogDir, {recursive: true, force: true});
         }
     });
 
     test('writes log entries to daily-rotated nl-server file regardless of debug flag', async () => {
-        const wasDebug = aiConfig.data.debug;
-        aiConfig.data.debug = false;
+        logger.configSnapshot = logger.createConfigSnapshot({
+            debug  : false,
+            logPath: tmpLogDir
+        });
 
-        try {
-            const today    = new Date().toISOString().slice(0, 10);
-            const expected = path.join(tmpLogDir, `nl-server-${today}.log`);
+        const today    = new Date().toISOString().slice(0, 10);
+        const expected = path.join(tmpLogDir, `nl-server-${today}.log`);
 
-            logger.debug('nl-debug-line');
-            logger.info('nl-info-line');
-            logger.warn('nl-warn-line');
-            logger.error('nl-error-line');
+        logger.debug('nl-debug-line');
+        logger.info('nl-info-line');
+        logger.warn('nl-warn-line');
+        logger.error('nl-error-line');
 
-            await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 100));
 
-            expect(fs.existsSync(expected)).toBe(true);
-            const content = fs.readFileSync(expected, 'utf8');
+        expect(fs.existsSync(expected)).toBe(true);
+        const content = fs.readFileSync(expected, 'utf8');
 
-            // All four levels — including debug — must land in the file even with
-            // aiConfig.debug=false. The file sink is the diagnostic substrate; only
-            // the stderr sink remains tier-gated.
-            expect(content).toContain('[DEBUG] nl-debug-line');
-            expect(content).toContain('[INFO] nl-info-line');
-            expect(content).toContain('[WARN] nl-warn-line');
-            expect(content).toContain('[ERROR] nl-error-line');
+        // All four levels — including debug — must land in the file even with
+        // aiConfig.debug=false. The file sink is the diagnostic substrate; only
+        // the stderr sink remains tier-gated.
+        expect(content).toContain('[DEBUG] nl-debug-line');
+        expect(content).toContain('[INFO] nl-info-line');
+        expect(content).toContain('[WARN] nl-warn-line');
+        expect(content).toContain('[ERROR] nl-error-line');
 
-            const firstLine = content.split('\n').find(l => l.length > 0);
-            expect(firstLine).toMatch(/^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] \[DEBUG\]/);
-        } finally {
-            aiConfig.data.debug = wasDebug;
-        }
+        const firstLine = content.split('\n').find(l => l.length > 0);
+        expect(firstLine).toMatch(/^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] \[DEBUG\]/);
     });
 
     test('preserves Error stack/message in the durable log (was lost via naked JSON.stringify pre-#10582)', async () => {
-        const wasDebug = aiConfig.data.debug;
-        aiConfig.data.debug = false;
+        logger.configSnapshot = logger.createConfigSnapshot({
+            debug  : false,
+            logPath: tmpLogDir
+        });
 
-        try {
-            const today    = new Date().toISOString().slice(0, 10);
-            const expected = path.join(tmpLogDir, `nl-server-${today}.log`);
+        const today    = new Date().toISOString().slice(0, 10);
+        const expected = path.join(tmpLogDir, `nl-server-${today}.log`);
 
-            const err = new Error('nl introspect failed for ref_42');
-            logger.error('inspect chain failed', err);
+        const err = new Error('nl introspect failed for ref_42');
+        logger.error('inspect chain failed', err);
 
-            const circular = {};
-            circular.self = circular;
-            logger.warn('circular sample', circular);
+        const circular = {};
+        circular.self = circular;
+        logger.warn('circular sample', circular);
 
-            await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 100));
 
-            const content = fs.readFileSync(expected, 'utf8');
-            expect(content).toContain('nl introspect failed for ref_42');
-            expect(content).toContain('at '); // V8 stack frame marker
-            expect(content).toContain('circular sample');
-        } finally {
-            aiConfig.data.debug = wasDebug;
-        }
+        const content = fs.readFileSync(expected, 'utf8');
+        expect(content).toContain('nl introspect failed for ref_42');
+        expect(content).toContain('at '); // V8 stack frame marker
+        expect(content).toContain('circular sample');
     });
 });

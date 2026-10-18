@@ -18,10 +18,16 @@ const getEffectiveToolName = toolName => {
 };
 
 /**
+ * @summary Resolves the active ingestion config authority (`IngestionService.configSnapshot` or `aiConfig`).
+ * @returns {Object}
+ */
+const getConfig = () => IngestionService.configSnapshot || aiConfig;
+
+/**
  * @summary Returns true when the KB MCP server is in its remote tenant-ingestion deployment profile.
  * @returns {Boolean} True when remote tenant push clients may call `ingest_source_files`.
  */
-const isRemoteIngestDeployment = () => isRemoteKnowledgeBaseDeployment(aiConfig);
+const isRemoteIngestDeployment = () => isRemoteKnowledgeBaseDeployment(getConfig());
 
 /**
  * @summary Returns true when the ingest tool should appear in MCP tools/list.
@@ -76,7 +82,7 @@ const ingestSourceFilesViaMcp = async args => {
     const
         files     = Array.isArray(args?.files) ? args.files : [],
         batchSize = files.reduce((sum, file) => sum + (Array.isArray(file?.parsedChunks) ? file.parsedChunks.length : 1), 0),
-        threshold = aiConfig.mcpSyncMaxChunks;
+        threshold = getConfig().mcpSyncMaxChunks;
 
     if (batchSize > threshold) {
         return {

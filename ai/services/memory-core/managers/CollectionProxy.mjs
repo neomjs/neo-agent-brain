@@ -1,12 +1,23 @@
 import Base                      from 'neo.mjs/src/core/Base.mjs';
 import aiConfig                  from '../../../mcp/server/memory-core/config.mjs';
 import DestructiveOperationGuard from '../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+}                                from '../../shared/configSnapshot.mjs';
 
 /**
  * @class Neo.ai.services.memory-core.managers.CollectionProxy
  * @extends Neo.core.Base
  */
 class CollectionProxy extends Base {
+    /**
+     * Instance-local test configuration snapshot seam.
+     * @type {Object|null}
+     * @private
+     */
+    #configSnapshot = null;
+
     static config = {
         /**
          * @member {String} className='Neo.ai.services.memory-core.managers.CollectionProxy'
@@ -19,8 +30,69 @@ class CollectionProxy extends Base {
         collectionType: 'memory'
     }
 
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * Validates a service-local test snapshot before storing it.
+     *
+     * @param {Object|null} value
+     * @returns {Object|null}
+     * @protected
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            requiredSubtrees: ['engines'],
+            serviceName     : 'CollectionProxy'
+        });
+    }
+
+    /**
+     * Clones the live `aiConfig` leaves read by `CollectionProxy` into a
+     * plain object suitable for `proxy.configSnapshot` in unit tests.
+     *
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            engine : aiConfig.engine,
+            engines: cloneConfigSubtree(aiConfig, ['engines'])
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            engines: overrides.engines
+                ? {...snapshot.engines, ...overrides.engines}
+                : snapshot.engines
+        };
+    }
+
+    /**
+     * Resolves the active configuration source: the test `configSnapshot` when
+     * installed, otherwise the live `aiConfig` singleton.
+     *
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.#configSnapshot || aiConfig;
+    }
+
     async getManagers() {
-        const architecture = aiConfig.engine;
+        const architecture = this.#getConfig().engine;
         const managers     = [];
 
         // In Hybrid RAG, vectors exclusively live in ChromaDB
@@ -46,11 +118,11 @@ class CollectionProxy extends Base {
      * @summary The identity of the vector collection(s) this proxy fronts — never the proxy's own id.
      *
      * `CollectionProxy` extends `Neo.core.Base`, so `proxy.id` is a framework-assigned INSTANCE id
-     * (`neo-base-86`) that moves with construction order. Reading it as a collection identity is what
-     * #281 fixes: backup receipts recorded it as `collectionId`, so `deriveLineage` compared
+     * (`neo-base-86`) that moves with construction order. Backup receipts previously recorded it as
+     * `collectionId`, so `deriveLineage` compared
      * process-instance counters rather than collections and could not detect a collection change in
      * either direction — `changed` for an ordinary restart, `same` for a genuine swap under a stable
-     * process. That is why #270's collapse guard was KB-complete but MC-partial.
+     * process, which previously left the collapse guard KB-complete but MC-partial.
      *
      * **It identifies the PRIMARY, because the primary is what gets exported.** `get()` and `count()`
      * both read `collections[0]` and ignore the rest, so the rows in a receipt come from exactly one
@@ -59,7 +131,7 @@ class CollectionProxy extends Base {
      * A composite over every manager was the first shape here, and it was wrong in a way worth
      * recording: it described a SET while the data came from a MEMBER. With a second manager present,
      * a change confined to a non-reading member would move the identity and derive `lineage: changed`
-     * for a source whose exported rows never changed — a false refuse in #270's collapse guard, caused
+     * for a source whose exported rows never changed — a false refuse in the collapse guard, caused
      * by an identity that did not identify what it accompanied.
      *
      * So this deliberately does NOT generalise ahead of the read path. If Memory Core ever exports
@@ -133,7 +205,7 @@ class CollectionProxy extends Base {
                     await manager.getSummaryCollection();
             }
 
-            const chromaCoordinates = aiConfig.engines.chroma;
+            const chromaCoordinates = this.#getConfig().engines.chroma;
             const chromaPath        = chromaCoordinates.path || chromaCoordinates.dataDir;
 
             await DestructiveOperationGuard.assertDestructiveTargetAllowed({

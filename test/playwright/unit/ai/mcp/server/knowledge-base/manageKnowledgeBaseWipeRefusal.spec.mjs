@@ -13,13 +13,14 @@ setup({
     }
 });
 
-import {test, expect}  from '@playwright/test';
-import fs              from 'node:fs';
-import os              from 'node:os';
-import path            from 'node:path';
-import {fileURLToPath} from 'node:url';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}              from '@playwright/test';
+import fs                          from 'node:fs';
+import os                          from 'node:os';
+import path                        from 'node:path';
+import {fileURLToPath}             from 'node:url';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations} from '../../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 /**
  * The shared core scan now publishes two repository-owned artifacts behind one manifest and embeds
@@ -64,34 +65,38 @@ function createSpyCollection(existingIds) {
 }
 
 test.describe('manage_knowledge_base shared core deletion boundary', () => {
-    let callTool, ChromaManager, KB_Config, VectorService;
-    let originalGetCollection, originalThreshold, originalDataPath, directory, dataPath;
+    let callTool, ChromaManager, DatabaseService, VectorService;
+    let originalGetCollection, directory, dataPath;
 
     test.beforeAll(async () => {
         const SDK = await import('../../../../../../../ai/services.mjs');
 
         ({callTool} = await import('../../../../../../../ai/mcp/server/knowledge-base/toolService.mjs'));
-        ChromaManager = SDK.KB_ChromaManager;
-        KB_Config = SDK.KB_Config;
-        VectorService = (await import('../../../../../../../ai/services/knowledge-base/VectorService.mjs')).default;
+        ChromaManager   = SDK.KB_ChromaManager;
+        DatabaseService = (await import('../../../../../../../ai/services/knowledge-base/DatabaseService.mjs')).default;
+        VectorService   = (await import('../../../../../../../ai/services/knowledge-base/VectorService.mjs')).default;
 
         originalGetCollection = ChromaManager.getKnowledgeBaseCollection.bind(ChromaManager);
-        originalThreshold = KB_Config.data.mcpSyncMaxChunks;
-        originalDataPath = KB_Config.data.dataPath;
-        directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-core-wipe-refusal-'));
-        dataPath = path.join(directory, 'core.jsonl');
+        directory             = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-core-wipe-refusal-'));
+        dataPath              = path.join(directory, 'core.jsonl');
     });
 
     test.afterAll(() => {
         ChromaManager.getKnowledgeBaseCollection = originalGetCollection;
-        KB_Config.data.mcpSyncMaxChunks = originalThreshold;
-        KB_Config.data.dataPath = originalDataPath;
+        DatabaseService.configSnapshot           = null;
+        VectorService.configSnapshot             = null;
         directory && fs.rmSync(directory, {recursive: true, force: true})
     });
 
     test.beforeEach(() => {
-        KB_Config.data.mcpSyncMaxChunks = 5;
-        KB_Config.data.dataPath = dataPath;
+        const dbSnapshot = DatabaseService.createConfigSnapshot();
+        dbSnapshot.dataPath = dataPath;
+        DatabaseService.configSnapshot = dbSnapshot;
+
+        const vecSnapshot = VectorService.createConfigSnapshot();
+        vecSnapshot.mcpSyncMaxChunks = 5;
+        VectorService.configSnapshot = vecSnapshot;
+
         fs.writeFileSync(dataPath, '');
         fs.rmSync(`${dataPath}.profiles.json`, {force: true})
     });
@@ -151,5 +156,11 @@ test.describe('manage_knowledge_base shared core deletion boundary', () => {
         expect(parsed).toEqual({action: 'embed'});
         expect('staleStrategy' in parsed).toBe(false);
         expect('viaMcp' in parsed).toBe(false)
-    })
+    });
+
+    test('uses per-test config snapshots instead of mutating shared config', () => {
+        const specSource = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(specSource)).toEqual([]);
+    });
 });

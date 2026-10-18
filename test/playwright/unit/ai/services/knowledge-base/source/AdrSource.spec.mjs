@@ -13,12 +13,13 @@ setup({
     }
 });
 
-import {test, expect}  from '@playwright/test';
-import fs              from 'fs-extra';
-import path            from 'path';
-import {fileURLToPath} from 'url';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}              from '@playwright/test';
+import fs                          from 'fs-extra';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations} from '../../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -26,15 +27,10 @@ const repoRoot   = path.resolve(__dirname, '../../../../../../..');
 
 test.describe('Neo.ai.services.knowledge-base.source.AdrSource', () => {
     let AdrSource;
-    let aiConfig;
-    let originalRoot;
     let mockRoot;
 
     test.beforeAll(async () => {
-        aiConfig    = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
         AdrSource = (await import('../../../../../../../ai/services/knowledge-base/source/AdrSource.mjs')).default;
-
-        originalRoot = aiConfig.neoRootDir;
 
         const tmpDir = path.resolve(process.cwd(), 'tmp');
         fs.ensureDirSync(tmpDir);
@@ -51,11 +47,13 @@ Example decision.`);
 `# Not an ADR
 This should be skipped.`);
 
-        aiConfig.neoRootDir = mockRoot;
+        const snapshot = AdrSource.createConfigSnapshot();
+        snapshot.neoRootDir  = mockRoot;
+        AdrSource.configSnapshot = snapshot;
     });
 
     test.afterAll(() => {
-        aiConfig.neoRootDir = originalRoot;
+        AdrSource.configSnapshot = null;
         if (mockRoot && fs.existsSync(mockRoot)) fs.removeSync(mockRoot);
     });
 
@@ -87,5 +85,10 @@ This should be skipped.`);
             name   : '0001-example-adr',
             content: '# ADR 1\nExample decision.'
         });
+    });
+
+    test('uses AdrSource.configSnapshot instead of mutating shared config singletons', async () => {
+        const source = await fs.readFile(__filename, 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });

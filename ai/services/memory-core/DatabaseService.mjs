@@ -17,6 +17,10 @@ import {
     isBundlePayload,
     openBundlePayload
 } from '../shared/bundlePayload.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+} from '../shared/configSnapshot.mjs';
 
 /**
  * @summary Service for exporting and importing memory core data.
@@ -30,6 +34,13 @@ import {
  * @singleton
  */
 class DatabaseService extends Base {
+    /**
+     * Service-local test configuration snapshot seam.
+     * @type {Object|null}
+     * @private
+     */
+    #configSnapshot = null;
+
     static config = {
         /**
          * @member {String} className='Neo.ai.services.memory-core.DatabaseService'
@@ -41,6 +52,72 @@ class DatabaseService extends Base {
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * Validates a service-local test snapshot before storing it.
+     *
+     * @param {Object|null} value
+     * @returns {Object|null}
+     * @protected
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            requiredSubtrees: ['collections', 'storagePaths'],
+            serviceName     : 'DatabaseService'
+        });
+    }
+
+    /**
+     * Clones the live `aiConfig` leaves read by `DatabaseService` into a
+     * plain object suitable for `DatabaseService.configSnapshot` in unit tests.
+     *
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            backupPath     : aiConfig.backupPath,
+            collections    : cloneConfigSubtree(aiConfig, ['collections']),
+            storagePaths   : cloneConfigSubtree(aiConfig, ['storagePaths']),
+            vectorDimension: aiConfig.vectorDimension
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            collections: overrides.collections
+                ? {...snapshot.collections, ...overrides.collections}
+                : snapshot.collections,
+            storagePaths: overrides.storagePaths
+                ? {...snapshot.storagePaths, ...overrides.storagePaths}
+                : snapshot.storagePaths
+        };
+    }
+
+    /**
+     * Resolves the active configuration source: the test `configSnapshot` when
+     * installed, otherwise the live `aiConfig` singleton.
+     *
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.#configSnapshot || aiConfig;
     }
 
     /**
@@ -900,13 +977,14 @@ class DatabaseService extends Base {
      * @private
      */
     async #assertGraphDestructiveTargetAllowed({operation, mode, source, confirmation}) {
+        const cfg = this.#getConfig();
         return DestructiveOperationGuard.assertDestructiveTargetAllowed({
             operation,
             subsystem: 'memory-core',
             mode,
             target   : {
-                sqlitePath: aiConfig.storagePaths.graph,
-                path      : aiConfig.storagePaths.graph,
+                sqlitePath: cfg.storagePaths.graph,
+                path      : cfg.storagePaths.graph,
                 repoRoot  : process.cwd()
             },
             source,

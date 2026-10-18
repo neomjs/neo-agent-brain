@@ -13,29 +13,26 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import fs             from 'fs-extra';
-import path           from 'path';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import fs                          from 'fs-extra';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 test.describe('Neo.ai.services.knowledge-base.QueryService#getClassHierarchy', () => {
-    let aiConfig;
     let QueryService;
-    let originalHierarchyPath;
     let tmpHierarchyPath;
 
     test.beforeAll(async () => {
-        aiConfig      = (await import('../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
-        QueryService  = (await import('../../../../../../ai/services/knowledge-base/QueryService.mjs')).default;
-
-        originalHierarchyPath = aiConfig.hierarchyPath;
-        tmpHierarchyPath      = path.resolve(process.cwd(), 'tmp', `kb-hierarchy-${process.pid}-${Date.now()}.json`);
+        QueryService     = (await import('../../../../../../ai/services/knowledge-base/QueryService.mjs')).default;
+        tmpHierarchyPath = path.resolve(process.cwd(), 'tmp', `kb-hierarchy-${process.pid}-${Date.now()}.json`);
         await fs.ensureDir(path.dirname(tmpHierarchyPath));
     });
 
     test.afterEach(async () => {
-        aiConfig.hierarchyPath = originalHierarchyPath;
+        QueryService.configSnapshot = null;
         await fs.remove(tmpHierarchyPath).catch(() => {});
     });
 
@@ -45,7 +42,9 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#getClassHierarchy', (
     });
 
     test('names the resolved path and the PRODUCER when the hierarchy file is absent', async () => {
-        aiConfig.hierarchyPath = tmpHierarchyPath;
+        const snapshot = QueryService.createConfigSnapshot();
+        snapshot.hierarchyPath = tmpHierarchyPath;
+        QueryService.configSnapshot = snapshot;
 
         // Was asserted as `'…Please sync the knowledge base first.'` — remediation that pointed at the
         // wrong operation, since a KB sync CONSUMES this file and cannot produce it. Asserting the two
@@ -61,7 +60,10 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#getClassHierarchy', (
     });
 
     test('returns the requested root and all recursive descendants', async () => {
-        aiConfig.hierarchyPath = tmpHierarchyPath;
+        const snapshot = QueryService.createConfigSnapshot();
+        snapshot.hierarchyPath = tmpHierarchyPath;
+        QueryService.configSnapshot = snapshot;
+
         await fs.writeJson(tmpHierarchyPath, {
             'Neo.component.Base'  : 'Neo.core.Base',
             'Neo.button.Base'     : 'Neo.component.Base',
@@ -82,7 +84,10 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#getClassHierarchy', (
     });
 
     test('reports a known leaf root with no subclasses without expanding payload', async () => {
-        aiConfig.hierarchyPath = tmpHierarchyPath;
+        const snapshot = QueryService.createConfigSnapshot();
+        snapshot.hierarchyPath = tmpHierarchyPath;
+        QueryService.configSnapshot = snapshot;
+
         await fs.writeJson(tmpHierarchyPath, {
             'Neo.core.Base': null
         });
@@ -94,7 +99,10 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#getClassHierarchy', (
     });
 
     test('reports an unknown root without leaking the whole hierarchy', async () => {
-        aiConfig.hierarchyPath = tmpHierarchyPath;
+        const snapshot = QueryService.createConfigSnapshot();
+        snapshot.hierarchyPath = tmpHierarchyPath;
+        QueryService.configSnapshot = snapshot;
+
         await fs.writeJson(tmpHierarchyPath, {
             'Neo.component.Base': 'Neo.core.Base'
         });
@@ -103,5 +111,11 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#getClassHierarchy', (
             .resolves.toEqual({
                 message: "Class 'Neo.unknown.Missing' found in hierarchy, but it has no subclasses or entry."
             });
+    });
+
+    test('uses per-test config snapshots instead of mutating shared config', async () => {
+        const specSource = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(specSource)).toEqual([]);
     });
 });

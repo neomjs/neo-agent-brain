@@ -13,13 +13,15 @@ setup({
     }
 });
 
-import {test, expect}        from '@playwright/test';
-import Neo                   from 'neo.mjs/src/Neo.mjs';
-import * as core             from 'neo.mjs/src/core/_export.mjs';
-import fs                    from 'fs-extra';
-import os                    from 'os';
-import path                  from 'path';
-import RequestContextService from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import fs                          from 'fs-extra';
+import os                          from 'os';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import RequestContextService       from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 /**
  * @summary Fail-closed tenant-isolation suite for the Knowledge Base read side.
@@ -149,8 +151,8 @@ function chunk({id, tenantId, source, name, type = 'guide', content, repoSlug}) 
 
 test.describe('KnowledgeBase — fail-closed tenant isolation (#11632)', () => {
     let ChromaManager, DocumentService, QueryService, SearchService, VectorService;
-    let TextEmbeddingService, aiConfig;
-    let originalGetCollection, originalEmbedText, originalModel, originalDefaultTenantId;
+    let TextEmbeddingService;
+    let originalGetCollection, originalEmbedText, originalModel;
     let spy;
 
     // Canonical fixtures: a chunk owned by tenant-a, a private chunk owned by tenant-b, and a
@@ -186,12 +188,10 @@ test.describe('KnowledgeBase — fail-closed tenant isolation (#11632)', () => {
         SearchService        = (await import('../../../../../../ai/services/knowledge-base/SearchService.mjs')).default;
         VectorService        = (await import('../../../../../../ai/services/knowledge-base/VectorService.mjs')).default;
         TextEmbeddingService = (await import('../../../../../../ai/services/memory-core/TextEmbeddingService.mjs')).default;
-        aiConfig             = (await import('../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
 
-        originalGetCollection   = ChromaManager.getKnowledgeBaseCollection;
-        originalEmbedText       = TextEmbeddingService.embedText;
-        originalModel           = SearchService.model;
-        originalDefaultTenantId = aiConfig.defaultTenantId;
+        originalGetCollection = ChromaManager.getKnowledgeBaseCollection;
+        originalEmbedText     = TextEmbeddingService.embedText;
+        originalModel         = SearchService.model;
     });
 
     test.beforeEach(() => {
@@ -203,16 +203,23 @@ test.describe('KnowledgeBase — fail-closed tenant isolation (#11632)', () => {
         SearchService.model                      = {
             generateContent: async () => ({response: {text: () => 'stub-synthesis'}})
         };
-        // A local operator overlay may predate the tenant keys — pin the value so the
-        // suite is deterministic regardless of local config staleness.
-        aiConfig.defaultTenantId = 'neo-shared';
+        // A local operator overlay may predate the tenant keys — pin the value via
+        // per-service config snapshots so the suite is deterministic without mutating shared config.
+        for (const svc of [DocumentService, QueryService, SearchService, VectorService]) {
+            const snapshot = svc.createConfigSnapshot();
+            snapshot.defaultTenantId = 'neo-shared';
+            svc.configSnapshot = snapshot;
+        }
     });
 
     test.afterEach(() => {
         ChromaManager.getKnowledgeBaseCollection = originalGetCollection;
         TextEmbeddingService.embedText           = originalEmbedText;
         SearchService.model                      = originalModel;
-        aiConfig.defaultTenantId                 = originalDefaultTenantId;
+        DocumentService.configSnapshot           = null;
+        QueryService.configSnapshot              = null;
+        SearchService.configSnapshot             = null;
+        VectorService.configSnapshot             = null;
     });
 
     test('no request context → no tenant filter (single-tenant fallthrough, pre-#11632 behavior)', async () => {
@@ -264,18 +271,13 @@ test.describe('KnowledgeBase — fail-closed tenant isolation (#11632)', () => {
 
     test('case 4 — write-side spoof: a forged client tenantId is rejected in reject mode', () => {
         // Write-side anchor — full coverage in VectorService.tenantStamping.spec.mjs.
-        const originalMode = aiConfig.spoofRejectionMode;
-        aiConfig.spoofRejectionMode = 'reject';
+        VectorService.configSnapshot.spoofRejectionMode = 'reject';
 
-        try {
-            const forged      = {hash: 'h', type: 'guide', name: 'Doc', source: 's', tenantId: 'tenant-victim'};
-            const serverStamp = {tenantId: 'tenant-attacker', repoSlug: 'repo', visibility: 'team'};
+        const forged      = {hash: 'h', type: 'guide', name: 'Doc', source: 's', tenantId: 'tenant-victim'};
+        const serverStamp = {tenantId: 'tenant-attacker', repoSlug: 'repo', visibility: 'team'};
 
-            expect(() => VectorService.validateTenantStamp(forged, serverStamp, 'chunk-id'))
-                .toThrow(/KB_TENANT_SPOOF_REJECTED/);
-        } finally {
-            aiConfig.spoofRejectionMode = originalMode;
-        }
+        expect(() => VectorService.validateTenantStamp(forged, serverStamp, 'chunk-id'))
+            .toThrow(/KB_TENANT_SPOOF_REJECTED/);
     });
 
     test('case 5 — read-side spoof: a forged client tenantId query argument is ignored', async () => {
@@ -384,8 +386,7 @@ test.describe('KnowledgeBase — fail-closed tenant isolation (#11632)', () => {
                 'Neo.component.Base': 'Neo.core.Base',
                 'Neo.button.Base'   : 'Neo.component.Base'
             });
-            const originalHierarchyPath = aiConfig.hierarchyPath;
-            aiConfig.hierarchyPath = tmpHierarchy;
+            QueryService.configSnapshot.hierarchyPath = tmpHierarchy;
 
             try {
                 const asTenantA = await RequestContextService.run({userId: 'tenant-a'}, () =>
@@ -403,9 +404,14 @@ test.describe('KnowledgeBase — fail-closed tenant isolation (#11632)', () => {
                 expect(spy.calls.query).toHaveLength(0);
                 expect(spy.calls.get).toHaveLength(0);
             } finally {
-                aiConfig.hierarchyPath = originalHierarchyPath;
                 await fs.remove(tmpHierarchy).catch(() => {});
             }
         });
+    });
+
+    test('uses per-test config snapshots instead of mutating shared config', async () => {
+        const specSource = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(specSource)).toEqual([]);
     });
 });

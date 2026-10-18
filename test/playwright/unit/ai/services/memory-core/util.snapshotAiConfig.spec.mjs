@@ -53,30 +53,40 @@ test.describe('Neo.ai test-isolation — snapshotAiConfig (#12435)', () => {
     });
 });
 
-test.describe('Neo.ai test-isolation — snapshotAiConfig on the real aiConfig Provider', () => {
-    let aiConfig;
+test.describe('Neo.ai test-isolation — snapshotAiConfig on an isolated ConfigBase Provider', () => {
+    let provider, providerInstance;
 
-    test.beforeAll(async () => {
-        aiConfig = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
+    test.beforeEach(async () => {
+        await import('../../../../../../ai/config.template.mjs');
+        const
+            {default: ConfigBase} = await import('../../../../../../ai/mcp/server/memory-core/configBase.mjs'),
+            {createConfigProxy}   = await import('../../../../../../ai/ConfigProvider.mjs');
+
+        providerInstance = Neo.create(ConfigBase);
+        provider         = createConfigProxy(providerInstance);
     });
 
-    test('restores an existing leaf on the real Provider singleton via the set trap', () => {
-        // handoffFilePathProd is a declared scalar leaf (the formula's prod input), not a storage/DB
-        // path, so this snapshot→mutate→restore round-trip cannot bleed test state into a live DB
-        // (B4). The active `handoffFilePath` is now a read-only computed formula, so the set trap is
-        // exercised on its writable underlying leaf. restore() runs in `finally`, so the shared
-        // singleton returns to its captured value even if the mid-flight assertion throws.
-        const original = aiConfig.handoffFilePathProd,
-              restore  = snapshotAiConfig(aiConfig, ['handoffFilePathProd']);
+    test.afterEach(() => {
+        providerInstance?.destroy();
+        providerInstance = null;
+        provider         = null;
+    });
+
+    test('restores an existing leaf on the Provider proxy via the set trap', () => {
+        // handoffFilePathProd is a declared scalar leaf (the formula's prod input) on an isolated
+        // ConfigBase Provider instance, so this snapshot→mutate→restore round-trip exercises the real
+        // createConfigProxy set/get traps without mutating the shared aiConfig singleton (B4).
+        const original = provider.handoffFilePathProd,
+              restore  = snapshotAiConfig(provider, ['handoffFilePathProd']);
 
         try {
-            aiConfig.handoffFilePathProd = '/tmp/__neo_probe_handoff__.md';
-            expect(aiConfig.handoffFilePathProd).toBe('/tmp/__neo_probe_handoff__.md') // set trap wrote through
+            provider.handoffFilePathProd = '/tmp/__neo_probe_handoff__.md';
+            expect(provider.handoffFilePathProd).toBe('/tmp/__neo_probe_handoff__.md') // set trap wrote through
         } finally {
             restore()
         }
 
-        expect(aiConfig.handoffFilePathProd).toBe(original) // get trap reads the restored value
+        expect(provider.handoffFilePathProd).toBe(original) // get trap reads the restored value
     });
 
     test('refuses an absent leaf it cannot undo, instead of returning a leaky restore', () => {
@@ -84,7 +94,7 @@ test.describe('Neo.ai test-isolation — snapshotAiConfig on the real aiConfig P
         // adds, so the helper throws at capture rather than hand back a restore() that leaks.
         const probe = '__neoAbsentLeafProbe__';
 
-        expect(aiConfig[probe]).toBeUndefined(); // absent on the real Provider
-        expect(() => snapshotAiConfig(aiConfig, [probe])).toThrow(/does not resolve to a value/)
+        expect(provider[probe]).toBeUndefined(); // absent on the Provider
+        expect(() => snapshotAiConfig(provider, [probe])).toThrow(/does not resolve to a value/)
     });
 });

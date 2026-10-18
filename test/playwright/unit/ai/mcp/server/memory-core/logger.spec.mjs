@@ -43,79 +43,72 @@ const __dirname  = path.dirname(__filename);
  */
 test.describe('MC MCP server logger — always-on file sink (#10582)', () => {
     let logger;
-    let aiConfig;
     let tmpLogDir;
-    let originalLogPath;
 
     test.beforeAll(async () => {
-        aiConfig = (await import('../../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
+        tmpLogDir = path.resolve(os.tmpdir(), `mc-logger-test-${process.pid}-${Date.now()}`);
+        logger    = (await import('../../../../../../../ai/mcp/server/memory-core/logger.mjs')).default;
+    });
 
-        tmpLogDir       = path.resolve(os.tmpdir(), `mc-logger-test-${process.pid}-${Date.now()}`);
-        originalLogPath = aiConfig.data.logPath;
-        aiConfig.data.logPath = tmpLogDir;
-
-        logger = (await import('../../../../../../../ai/mcp/server/memory-core/logger.mjs')).default;
+    test.afterEach(() => {
+        logger.configSnapshot = null;
     });
 
     test.afterAll(() => {
-        aiConfig.data.logPath = originalLogPath;
+        logger.configSnapshot = null;
         if (tmpLogDir && fs.existsSync(tmpLogDir)) {
             fs.rmSync(tmpLogDir, {recursive: true, force: true});
         }
     });
 
     test('writes log entries to daily-rotated mc-server file regardless of debug flag', async () => {
-        const wasDebug = aiConfig.data.debug;
-        aiConfig.data.debug = false;
+        logger.configSnapshot = logger.createConfigSnapshot({
+            debug  : false,
+            logPath: tmpLogDir
+        });
 
-        try {
-            const today    = new Date().toISOString().slice(0, 10);
-            const expected = path.join(tmpLogDir, `mc-server-${today}.log`);
+        const today    = new Date().toISOString().slice(0, 10);
+        const expected = path.join(tmpLogDir, `mc-server-${today}.log`);
 
-            logger.log('mc-hello-world');
-            logger.info('mc-info-line');
-            logger.warn('mc-warn-line');
-            logger.error('mc-error-line');
+        logger.log('mc-hello-world');
+        logger.info('mc-info-line');
+        logger.warn('mc-warn-line');
+        logger.error('mc-error-line');
 
-            await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 100));
 
-            expect(fs.existsSync(expected)).toBe(true);
-            const content = fs.readFileSync(expected, 'utf8');
-            expect(content).toContain('[LOG] mc-hello-world');
-            expect(content).toContain('[INFO] mc-info-line');
-            expect(content).toContain('[WARN] mc-warn-line');
-            expect(content).toContain('[ERROR] mc-error-line');
+        expect(fs.existsSync(expected)).toBe(true);
+        const content = fs.readFileSync(expected, 'utf8');
+        expect(content).toContain('[LOG] mc-hello-world');
+        expect(content).toContain('[INFO] mc-info-line');
+        expect(content).toContain('[WARN] mc-warn-line');
+        expect(content).toContain('[ERROR] mc-error-line');
 
-            const firstLine = content.split('\n')[0];
-            expect(firstLine).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[LOG\]/);
-        } finally {
-            aiConfig.data.debug = wasDebug;
-        }
+        const firstLine = content.split('\n')[0];
+        expect(firstLine).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[LOG\]/);
     });
 
     test('preserves Error stack/message in the durable log', async () => {
-        const wasDebug = aiConfig.data.debug;
-        aiConfig.data.debug = false;
+        logger.configSnapshot = logger.createConfigSnapshot({
+            debug  : false,
+            logPath: tmpLogDir
+        });
 
-        try {
-            const today    = new Date().toISOString().slice(0, 10);
-            const expected = path.join(tmpLogDir, `mc-server-${today}.log`);
+        const today    = new Date().toISOString().slice(0, 10);
+        const expected = path.join(tmpLogDir, `mc-server-${today}.log`);
 
-            const err = new Error('mc summarization failed at session 7');
-            logger.error('summary batch failed', err);
+        const err = new Error('mc summarization failed at session 7');
+        logger.error('summary batch failed', err);
 
-            const circular = {};
-            circular.self = circular;
-            logger.warn('circular sample', circular);
+        const circular = {};
+        circular.self = circular;
+        logger.warn('circular sample', circular);
 
-            await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 100));
 
-            const content = fs.readFileSync(expected, 'utf8');
-            expect(content).toContain('mc summarization failed at session 7');
-            expect(content).toContain('at '); // V8 stack frame marker
-            expect(content).toContain('circular sample');
-        } finally {
-            aiConfig.data.debug = wasDebug;
-        }
+        const content = fs.readFileSync(expected, 'utf8');
+        expect(content).toContain('mc summarization failed at session 7');
+        expect(content).toContain('at '); // V8 stack frame marker
+        expect(content).toContain('circular sample');
     });
 });

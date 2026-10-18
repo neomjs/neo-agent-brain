@@ -65,7 +65,7 @@ test.describe('Neo.ai.mcp.server.shared.Logger', () => {
             return true;
         };
 
-        const aiConfig = {
+        const configFixture = {
             debug   : false,
             logLevel: 'warn',
             logger  : {
@@ -75,7 +75,7 @@ test.describe('Neo.ai.mcp.server.shared.Logger', () => {
             }
         };
 
-        const logger = createLogger(aiConfig);
+        const logger = createLogger(configFixture);
 
         logger.debug('debug-muted');
         logger.info('info-muted');
@@ -88,7 +88,7 @@ test.describe('Neo.ai.mcp.server.shared.Logger', () => {
         expect(stderrCalls[0]).toEqual(['[WARN]', 'warn-visible']);
         expect(stderrCalls[1]).toEqual(['[ERROR]', 'error-visible']);
 
-        aiConfig.debug = true;
+        configFixture.debug = true;
         logger.debug('debug-visible');
 
         expect(stderrCalls.at(-1)).toEqual(['[DEBUG]', 'debug-visible']);

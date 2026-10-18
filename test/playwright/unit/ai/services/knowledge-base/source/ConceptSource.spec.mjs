@@ -13,12 +13,13 @@ setup({
     }
 });
 
-import {test, expect}  from '@playwright/test';
-import fs              from 'fs-extra';
-import path            from 'path';
-import {fileURLToPath} from 'url';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}              from '@playwright/test';
+import fs                          from 'fs-extra';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations} from '../../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -26,15 +27,10 @@ const repoRoot   = path.resolve(__dirname, '../../../../../../..');
 
 test.describe('Neo.ai.services.knowledge-base.source.ConceptSource', () => {
     let ConceptSource;
-    let aiConfig;
-    let originalProjectRoot;
     let mockRoot;
 
     test.beforeAll(async () => {
-        aiConfig    = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
         ConceptSource = (await import('../../../../../../../ai/services/knowledge-base/source/ConceptSource.mjs')).default;
-
-        originalProjectRoot = aiConfig.projectRoot;
 
         const tmpDir = path.resolve(process.cwd(), 'tmp');
         fs.ensureDirSync(tmpDir);
@@ -51,11 +47,13 @@ tier: 1
 
 Neo.mjs distributes application logic across dedicated Web Workers.`);
 
-        aiConfig.projectRoot = mockRoot;
+        const snapshot = ConceptSource.createConfigSnapshot();
+        snapshot.projectRoot    = mockRoot;
+        ConceptSource.configSnapshot = snapshot;
     });
 
     test.afterAll(() => {
-        aiConfig.projectRoot = originalProjectRoot;
+        ConceptSource.configSnapshot = null;
         if (mockRoot && fs.existsSync(mockRoot)) fs.removeSync(mockRoot);
     });
 
@@ -89,5 +87,10 @@ Neo.mjs distributes application logic across dedicated Web Workers.`);
             description: 'Neo.mjs distributes application logic across dedicated Web Workers.',
             content    : 'Multi-Threading Architecture: Neo.mjs distributes application logic across dedicated Web Workers.'
         });
+    });
+
+    test('uses ConceptSource.configSnapshot instead of mutating shared config singletons', async () => {
+        const source = await fs.readFile(__filename, 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });

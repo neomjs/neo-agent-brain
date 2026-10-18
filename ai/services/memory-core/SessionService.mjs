@@ -1,4 +1,5 @@
 import aiConfig                                      from '../../mcp/server/memory-core/config.mjs';
+import {cloneConfigSubtree, validateConfigSnapshot}  from '../shared/configSnapshot.mjs';
 import {readSecretCarrier}                           from '../shared/secretCarrier.mjs';
 import Base                                          from 'neo.mjs/src/core/Base.mjs';
 import {buildChatModel}                              from '../../provider/buildChatModel.mjs';
@@ -64,6 +65,12 @@ const CHROMA_SESSION_READ_TIMEOUT_MS = 10000;
  * @singleton
  */
 class SessionService extends Base {
+    /**
+     * Private backing field for the optional test-scoped config snapshot.
+     * @type {Object|null}
+     */
+    #configSnapshot = null;
+
     static config = {
         /**
          * @member {String} className='Neo.ai.services.memory-core.SessionService'
@@ -98,6 +105,66 @@ class SessionService extends Base {
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * @param {Object|null} value
+     * @returns {Object|null}
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            requiredSubtrees: ['localModels', 'localModels.chat', 'memoryWal', 'ollama', 'openAiCompatible', 'orchestrator', 'orchestrator.swarmHeartbeat'],
+            serviceName     : 'SessionService'
+        });
+    }
+
+    /**
+     * @summary Builds a mutable, structurally complete snapshot of the session service config
+     * surface so tests can override provider/summarization leaves without mutating `aiConfig` in place.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        return {
+            embeddingProvider          : aiConfig.embeddingProvider,
+            geminiApiKey               : aiConfig.geminiApiKey,
+            geminiApiKeyFile           : aiConfig.geminiApiKeyFile,
+            localModels                : cloneConfigSubtree(aiConfig, ['localModels']),
+            maxSessionsPerSummarySweep : aiConfig.maxSessionsPerSummarySweep,
+            memoryWal                  : cloneConfigSubtree(aiConfig, ['memoryWal']),
+            modelName                  : aiConfig.modelName,
+            modelProvider              : aiConfig.modelProvider,
+            ollama                     : cloneConfigSubtree(aiConfig, ['ollama']),
+            openAiCompatible           : cloneConfigSubtree(aiConfig, ['openAiCompatible']),
+            orchestrator               : cloneConfigSubtree(aiConfig, ['orchestrator']),
+            sessionSummaryTimeoutMs    : aiConfig.sessionSummaryTimeoutMs,
+            summarizationBatchLimit    : aiConfig.summarizationBatchLimit,
+            summaryFailureBackoffBaseMs: aiConfig.summaryFailureBackoffBaseMs,
+            summaryFailureBackoffMaxMs : aiConfig.summaryFailureBackoffMaxMs,
+            vectorDimension            : aiConfig.vectorDimension,
+            ...overrides
+        };
+    }
+
+    /**
+     * @returns {Object}
+     */
+    #getConfig() {
+        return this.#configSnapshot ?? aiConfig;
     }
 
     static identityTrustTiers = new Map(IDENTITIES.map(identity => [identity.id, identity.properties?.trustTier || TRUST_TIERS.UNCLASSIFIED]))
@@ -168,8 +235,10 @@ class SessionService extends Base {
 
         logger.info(`[SessionService] Initialized new fallback session: ${this._legacySessionId}`);
 
-        if (aiConfig.modelProvider === 'gemini') {
-            const GEMINI_API_KEY = aiConfig.geminiApiKey;
+        const cfg = this.#getConfig();
+
+        if (cfg.modelProvider === 'gemini') {
+            const GEMINI_API_KEY = cfg.geminiApiKey;
             if (!GEMINI_API_KEY) {
                 logger.warn('⚠️  [Startup] GEMINI_API_KEY not set for generation model.');
                 return;
@@ -178,20 +247,20 @@ class SessionService extends Base {
 
         // Delegate to `buildChatModel` so the dispatch is testable + unknown
         // provider names throw loudly rather than silently fall through to Gemini.
-        if (aiConfig.modelProvider === 'openAiCompatible') {
-            logger.info(`[SessionService] Initializing generation model via OpenAI-Compatible API (${aiConfig.openAiCompatible.model})`);
-        } else if (aiConfig.modelProvider === 'ollama') {
-            logger.info(`[SessionService] Initializing generation model via native Ollama (${aiConfig.ollama.model})`);
-        } else if (aiConfig.modelProvider === 'gemini') {
-            logger.info(`[SessionService] Initializing generation model via Gemini (${aiConfig.modelName})`);
+        if (cfg.modelProvider === 'openAiCompatible') {
+            logger.info(`[SessionService] Initializing generation model via OpenAI-Compatible API (${cfg.openAiCompatible.model})`);
+        } else if (cfg.modelProvider === 'ollama') {
+            logger.info(`[SessionService] Initializing generation model via native Ollama (${cfg.ollama.model})`);
+        } else if (cfg.modelProvider === 'gemini') {
+            logger.info(`[SessionService] Initializing generation model via Gemini (${cfg.modelName})`);
         }
 
         this.model = buildChatModel({
-            modelProvider           : aiConfig.modelProvider,
-            openAiCompatibleConfig  : aiConfig.openAiCompatible,
-            ollamaConfig            : aiConfig.ollama,
-            geminiApiKey            : readSecretCarrier({value: aiConfig.geminiApiKey, file: aiConfig.geminiApiKeyFile, valueName: 'geminiApiKey', fileName: 'geminiApiKeyFile'}),
-            geminiModelName         : aiConfig.modelName,
+            modelProvider           : cfg.modelProvider,
+            openAiCompatibleConfig  : cfg.openAiCompatible,
+            ollamaConfig            : cfg.ollama,
+            geminiApiKey            : readSecretCarrier({value: cfg.geminiApiKey, file: cfg.geminiApiKeyFile, valueName: 'geminiApiKey', fileName: 'geminiApiKeyFile'}),
+            geminiModelName         : cfg.modelName,
             providerActivityRecorder: MemoryCoreRecorderService,
             providerActivityService : 'memory-core'
         });
@@ -245,7 +314,7 @@ class SessionService extends Base {
         const nowMs = typeof now === 'number' ? now : new Date(now).getTime();
         if (!Number.isFinite(nowMs)) return new Set();
 
-        const thresholdMs = aiConfig.orchestrator.swarmHeartbeat.idleThresholdMs;
+        const thresholdMs = this.#getConfig().orchestrator.swarmHeartbeat.idleThresholdMs;
         const cutoffMs    = nowMs - thresholdMs;
 
         try {
@@ -358,7 +427,8 @@ class SessionService extends Base {
     async findSessionsToSummarize({now = Date.now()} = {}) {
         // 1. Get metadata for memories — all-time scope. (The prior 30-day window was an obsolete
         // boot/healthcheck-timeout safeguard from when MC summarized on server boot.)
-        const limit         = aiConfig.summarizationBatchLimit;
+        const cfg           = this.#getConfig();
+        const limit         = cfg.summarizationBatchLimit;
         const maxIterations = 1000; // Safety break: max 2M records (2000 * 1000)
 
         let offset              = 0;
@@ -465,7 +535,7 @@ class SessionService extends Base {
         // Re-summary churn-gate threshold. Reuses the swarm idle definition — one idle
         // concept, no new config leaf. A session whose newest memory is within this window
         // is still actively receiving turns, so summarizing it now is stale-on-write and re-churns.
-        const churnCooldownMs            = aiConfig.orchestrator.swarmHeartbeat.idleThresholdMs;
+        const churnCooldownMs            = cfg.orchestrator.swarmHeartbeat.idleThresholdMs;
         const externallyActiveSessionIds = this.getExternallyActiveSessionIds({now: nowMs});
         const sessionsToUpdate           = [];
 
@@ -541,8 +611,9 @@ class SessionService extends Base {
         // to the first page). Real Chroma respects offset, so this gathers the full set; dedup-by-id +
         // stop-when-a-page-adds-nothing-new is a defensive guard that safely terminates even if a backing
         // collection (e.g. an offset-blind mock) repeats a page, instead of looping forever.
+        const cfg        = this.#getConfig();
         const memories   = {ids: [], documents: [], metadatas: []};
-        const pageLimit  = aiConfig.summarizationBatchLimit;
+        const pageLimit  = cfg.summarizationBatchLimit;
         const seenIds    = new Set();
         let   pageOffset = 0;
 
@@ -676,18 +747,18 @@ ${sessionContent}
         // `GoldenPathSynthesizer.synthesizeGoldenPath`. Consumer model naming covers all three
         // active providers for guardrail/log surfaces.
         const consumerModel =
-            aiConfig.modelProvider === 'openAiCompatible' ? aiConfig.openAiCompatible.model :
-            aiConfig.modelProvider === 'ollama'           ? aiConfig.ollama.model :
-            aiConfig.modelName;
-        const consumerContextTokens = aiConfig.localModels.chat.contextLimitTokens;
-        const consumerSafeTokens    = aiConfig.localModels.chat.safeProcessingLimitTokens;
-        const summaryTimeoutMs      = aiConfig.sessionSummaryTimeoutMs;
+            cfg.modelProvider === 'openAiCompatible' ? cfg.openAiCompatible.model :
+            cfg.modelProvider === 'ollama'           ? cfg.ollama.model :
+            cfg.modelName;
+        const consumerContextTokens = cfg.localModels.chat.contextLimitTokens;
+        const consumerSafeTokens    = cfg.localModels.chat.safeProcessingLimitTokens;
+        const summaryTimeoutMs      = cfg.sessionSummaryTimeoutMs;
 
         // Per-task no-think + grammar-constrained structured output for the summary.
         // `summaryReasoningEffort` (default 'none') disables the gemma MoE's hidden thinking pass
         // (~2× faster, no measured quality loss). `summarySchema` enforces valid, fence-free JSON via
         // the provider's json_schema path. Passing `undefined` effort omits the param (model default).
-        const summaryReasoningEffort = aiConfig.localModels.chat.summaryReasoningEffort;
+        const summaryReasoningEffort = cfg.localModels.chat.summaryReasoningEffort;
         const summarySchema          = {
             type      : 'object',
             properties: {
@@ -730,7 +801,7 @@ ${sessionContent}
             summaryDegraded   = false,
             guardrailed       = await runGuardrailed(
                 buildSummaryPrompt(aggregatedContent),
-                `summarizationBatchLimit=${aiConfig.summarizationBatchLimit}`
+                `summarizationBatchLimit=${cfg.summarizationBatchLimit}`
             );
 
         // The RAW synthesis can fail two recoverable ways: an oversized prompt is pre-check-skipped
@@ -762,7 +833,7 @@ ${sessionContent}
                       degradedContent = degradedEntries.map((entry, index) => `Turn ${index + 1}: ${entry}`).join('\n'),
                       degradedResult  = await runGuardrailed(
                           buildSummaryPrompt(degradedContent),
-                          `summarizationBatchLimit=${aiConfig.summarizationBatchLimit}; sourceTier=${usedTier}`
+                          `summarizationBatchLimit=${cfg.summarizationBatchLimit}; sourceTier=${usedTier}`
                       );
                 if (degradedResult.result) {
                     guardrailed       = degradedResult;
@@ -828,7 +899,7 @@ ${sessionContent}
         // Atomic-write Prevent floor: the upsert relies on Chroma auto-embed (no explicit vector), so confirm
         // a vector actually persisted. A metadata-only summary is logged loud for the recovery actuator; the
         // row is expected data so it is never deleted, and a verify failure never breaks the persist.
-        await verifyPersistedVector(this.sessionsCollection, summaryId, aiConfig.vectorDimension, logger, 'session summary');
+        await verifyPersistedVector(this.sessionsCollection, summaryId, cfg.vectorDimension, logger, 'session summary');
 
         // --- 1. Topological Ingestion (Graph Mapping) ---
         GraphService.upsertNode({
@@ -982,7 +1053,7 @@ ${sessionContent}
 
                             // Atomic-write Prevent floor: confirm the auto-embed actually persisted a vector;
                             // a metadata-only plan is logged for the recovery actuator (never deleted/thrown).
-                            await verifyPersistedVector(this.memoryCollection, artifactId, aiConfig.vectorDimension, logger, 'antigravity plan');
+                            await verifyPersistedVector(this.memoryCollection, artifactId, this.#getConfig().vectorDimension, logger, 'antigravity plan');
                         } catch (e) {
                             logger.warn(`[SessionService] Failed to vector-upsert plan: ${e.message}`);
                         }
@@ -1362,7 +1433,7 @@ ${sessionContent}
             db               : GraphService.db?.storage?.db,
             collection       : this.sessionsCollection,
             sessionId,
-            expectedDimension: aiConfig.vectorDimension,
+            expectedDimension: this.#getConfig().vectorDimension,
             log              : logger
         });
     }
@@ -1480,6 +1551,7 @@ ${sessionContent}
         const db = GraphService.db?.storage?.db;
         if (!db) return;
         try {
+            const cfg = this.#getConfig();
             // The doubling stops at the fewest steps that reach the cap, so the cap binds for any
             // declared policy and the shift cannot overflow.
             db.prepare(`
@@ -1490,9 +1562,9 @@ ${sessionContent}
                 WHERE session_id = ?
             `).run(
                 now,
-                aiConfig.summaryFailureBackoffBaseMs,
-                Math.max(0, Math.ceil(Math.log2(aiConfig.summaryFailureBackoffMaxMs / aiConfig.summaryFailureBackoffBaseMs))),
-                aiConfig.summaryFailureBackoffMaxMs,
+                cfg.summaryFailureBackoffBaseMs,
+                Math.max(0, Math.ceil(Math.log2(cfg.summaryFailureBackoffMaxMs / cfg.summaryFailureBackoffBaseMs))),
+                cfg.summaryFailureBackoffMaxMs,
                 sessionId
             );
         } catch (e) {
@@ -1554,15 +1626,16 @@ ${sessionContent}
                 // than waiting out the whole drift list. The next sweep re-derives the remainder.
                 // Sessions inside their failure backoff are dropped BEFORE the cap, so the slots go to
                 // sessions that can run.
-                const driftCandidates     = await this.findSessionsToSummarize(),
+                const cfg                 = this.#getConfig(),
+                      driftCandidates     = await this.findSessionsToSummarize(),
                       backedOff           = this.getSessionIdsInFailureBackoff(),
                       eligible            = driftCandidates.filter(id => !backedOff.has(id)),
                       backoffCount        = driftCandidates.length - eligible.length,
-                      sessionsToSummarize = capSessionsForSweep(eligible, aiConfig.maxSessionsPerSummarySweep);
+                      sessionsToSummarize = capSessionsForSweep(eligible, cfg.maxSessionsPerSummarySweep);
 
                 // Hardware concurrency scaling
                 let batchSize;
-                if (aiConfig.modelProvider === 'gemini') {
+                if (cfg.modelProvider === 'gemini') {
                     // Gemini (Cloud) scales over parallel network connections based on host CPU
                     batchSize = Math.max(1, Math.floor(os.cpus().length * 0.75));
                 } else {
@@ -1659,7 +1732,7 @@ ${sessionContent}
             // If the delete ran first, a daemon add landing in between would resurrect purged
             // data with no tombstone left to detect it (see `ai/daemons/embed/drainCycle.mjs`).
             try {
-                const walDir = aiConfig.memoryWal.dir;
+                const walDir = this.#getConfig().memoryWal.dir;
 
                 for (const record of await readPendingWalRecords({dir: walDir})) {
                     const meta = record.metadata || {};

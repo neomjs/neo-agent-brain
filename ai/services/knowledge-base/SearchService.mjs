@@ -3,6 +3,7 @@ import Base                                                                     
 import {buildChatModel}                                                              from '../../provider/buildChatModel.mjs';
 import {PROVIDER_TIMEOUT_CODE}                                                       from '../../provider/createTimeoutError.mjs';
 import ChromaManager                                                                 from './ChromaManager.mjs';
+import {cloneConfigSubtree, validateConfigSnapshot}                                  from '../shared/configSnapshot.mjs';
 import fs                                                                            from 'fs-extra';
 import logger                                                                        from '../../mcp/server/knowledge-base/logger.mjs';
 import path                                                                          from 'path';
@@ -166,10 +167,71 @@ class SearchService extends Base {
          */
         className: 'Neo.ai.services.knowledge-base.SearchService',
         /**
+         * @member {Object|null} configSnapshot_=null
+         * @summary Optional isolated config snapshot for deterministic RAG synthesis tests.
+         * @reactive
+         */
+        configSnapshot_: null,
+        /**
          * @member {Boolean} singleton=true
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @summary Validates reactive config snapshots before assignment.
+     * @param {Object|null} value
+     * @returns {Object|null}
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            serviceName     : 'KB_SearchService',
+            requiredSubtrees: ['askSynthesis', 'ollama', 'openAiCompatible']
+        });
+    }
+
+    /**
+     * @summary Creates a plain config snapshot cloned from the KB AiConfig provider.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            askSynthesis    : cloneConfigSubtree(aiConfig, ['askSynthesis']),
+            defaultRepoSlug : aiConfig.defaultRepoSlug,
+            defaultTenantId : aiConfig.defaultTenantId,
+            neoRootDir      : aiConfig.neoRootDir,
+            ollama          : cloneConfigSubtree(aiConfig, ['ollama']),
+            openAiCompatible: cloneConfigSubtree(aiConfig, ['openAiCompatible']),
+            projectRoot     : aiConfig.projectRoot,
+            transport       : aiConfig.transport
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            askSynthesis: {
+                ...snapshot.askSynthesis,
+                ...(overrides.askSynthesis || {})
+            },
+            ollama: {
+                ...snapshot.ollama,
+                ...(overrides.ollama || {})
+            },
+            openAiCompatible: {
+                ...snapshot.openAiCompatible,
+                ...(overrides.openAiCompatible || {})
+            }
+        };
+    }
+
+    /**
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.configSnapshot || aiConfig;
     }
 
     /**
@@ -237,20 +299,6 @@ class SearchService extends Base {
         // stays local. `apiKey` resolves NEO_KB_ASK_API_KEY (env-only) read at the use site — never
         // inlined. For a local provider, `baseUrl` overrides the host (own-endpoint setups); null falls
         // through to the provider's configured host, and `model` selects the per-task model name.
-        const ask = aiConfig.askSynthesis;
-
-        // Each provider config is assembled by READING the four leaves `buildChatModel` consumes
-        // (`apiKey` / `host` / `model` / `keep_alive`), never by spreading the AiConfig node.
-        //
-        // `{...aiConfig.openAiCompatible}` here was measurably `{}`. An AiConfig node is a
-        // `Neo.state.Provider` proxy whose `get` trap walks the parent chain but whose `ownKeys`
-        // trap (`Provider#getTopLevelDataKeys`) enumerates LOCAL `#dataConfigs` only — and these
-        // leaves live on the Tier-1 root, so from the Knowledge Base child every named read is
-        // correct and every enumeration is empty. The spread silently dropped `host`, leaving the
-        // provider to fall back to its class default of `http://127.0.0.1:8000` — Chroma's port,
-        // not a chat endpoint. It went unnoticed because the ask path defaulted to `gemini`, which
-        // ignores this object entirely; pointing the default at a local provider is exactly what
-        // would have surfaced it, as a chat request POSTed at a vector database.
         const
             {openAiCompatibleConfig, ollamaConfig} = buildAskProviderConfigs(aiConfig),
             chatModelOptions                       = buildAskChatModelOptions(aiConfig, {openAiCompatibleConfig, ollamaConfig});
@@ -291,8 +339,9 @@ class SearchService extends Base {
      * @returns {Boolean} True when local filesystem hydration is unsafe for this reference.
      */
     isNonLocalTenantReference(metadata = {}) {
-        const defaultTenantId = aiConfig.defaultTenantId;
-        const defaultRepoSlug = aiConfig.defaultRepoSlug;
+        const config          = this.#getConfig();
+        const defaultTenantId = config.defaultTenantId;
+        const defaultRepoSlug = config.defaultRepoSlug;
 
         if (metadata.repoSlug && metadata.repoSlug !== defaultRepoSlug) {
             return true;
@@ -321,21 +370,22 @@ class SearchService extends Base {
      * @returns {String} Absolute local root that owns the relative source path.
      */
     resolveLocalReferenceRoot(ref = {}) {
-        const source = String(ref.source || '').replaceAll('\\', '/'),
+        const config = this.#getConfig(),
+              source = String(ref.source || '').replaceAll('\\', '/'),
               type   = ref.metadata?.type;
 
         if (
             ref.metadata?.rootKind === 'neo-workspace'
-            && ref.metadata?.tenantId === aiConfig.defaultTenantId
-            && ref.metadata?.repoSlug === aiConfig.defaultRepoSlug
+            && ref.metadata?.tenantId === config.defaultTenantId
+            && ref.metadata?.repoSlug === config.defaultRepoSlug
         ) {
-            return aiConfig.neoRootDir
+            return config.neoRootDir
         }
 
         return primaryRepoHydrationTypes.has(type) ||
             source.startsWith('.github/RELEASE_NOTES/')
-            ? aiConfig.projectRoot
-            : aiConfig.neoRootDir
+            ? config.projectRoot
+            : config.neoRootDir
     }
 
     /**
@@ -347,7 +397,7 @@ class SearchService extends Base {
      * @returns {String} The empty-collection remediation message.
      */
     getEmptyCollectionAnswer() {
-        return isRemoteKnowledgeBaseDeployment(aiConfig)
+        return isRemoteKnowledgeBaseDeployment(this.#getConfig())
             ? REMOTE_EMPTY_COLLECTION_ANSWER
             : LOCAL_EMPTY_COLLECTION_ANSWER;
     }
@@ -594,51 +644,16 @@ class SearchService extends Base {
                 .forEach(ref => contextReferences.push({...ref, metadata: ref.metadata || {}}));
         }
 
-        // 2. Read source contents for context.
-        //
-        // Source loaders store `metadata.source` as a portable relative path. Brain-owned paths
-        // resolve against `neoRootDir`; synchronized primary-repository corpus paths resolve against
-        // `projectRoot`. New Engine core-profile rows carry a package-prefixed legacy `source` and
-        // repo-relative `sourcePath`, so their `neo-workspace` root resolves against `neoRootDir`
-        // even when their type formerly chose `projectRoot`.
-        // Before the relative-source fix, this branch did a bare `fs.pathExists(ref.source)`
-        // which silently succeeded for legacy absolute-path chunks but failed for the
-        // relative-path chunks emitted by ApiSource / TestSource — producing phantom
-        // `No Content (File missing or empty)` context. The synthesis LLM then saw
-        // empty documents and returned placeholder "I don't have enough information"
-        // answers for every `type='src'` / `type='ai-infrastructure'` query. The
-        // `path.isAbsolute` short-circuit keeps legacy absolute-path chunks working
-        // during the grace period when a consumer has not yet re-synced.
-        //
-        // Tenant content uses metadata-embedded hydration. The measured chunk distribution
-        // keeps the V1 storage cost acceptable, while
-        // avoiding server-mirror infrastructure. Non-local tenants may use the same
-        // relative `source` strings as Neo itself, so those references hydrate from
-        // metadata.content and never fall through to the host checkout.
         const contextPromises = contextReferences.map(async ref => ({
             name   : ref.name,
             source : ref.source,
             content: await this.hydrateReferenceContent(ref)
         }));
 
-        // The budget leaves are read HERE, at the use site, with NO local fallback.
-        //
-        // An earlier revision wrote `|| 0`, reasoning that an overlay predating the leaves should keep
-        // today's unbounded behaviour. @neo-opus-ada's review showed that is a silent no-op on exactly
-        // the deployments this bound exists for, and the resolution settles it: the generated
-        // `config.mjs` is a THIN SINGLETON that `extends ConfigBase` and declares no data of its own —
-        // "Defaults and formulas live in ConfigBase; this class only claims the runtime namespace."
-        // Our own overlay is three weeks old, contains zero occurrences of `askSynthesis`, and ask
-        // synthesis works, so a newly declared leaf reaches every overlay through the tracked base.
-        // The fallback could therefore never fire for its stated purpose and could only disable the
-        // bound if something else went wrong — a hazard with no upside. A genuinely missing block is
-        // already handled loudly upstream by `getMissingAskSynthesisLeaves` in `construct`, which
-        // degrades to references before this line runs.
-        //
-        // `0` remains the operator's explicit disable knob, and now it means only that.
         const
-            askBudget = aiConfig.askSynthesis,
-            assembled = assembleAskContext({
+            activeConfig = this.#getConfig(),
+            askBudget    = activeConfig.askSynthesis,
+            assembled    = assembleAskContext({
                 documents          : await Promise.all(contextPromises),
                 budgetChars        : askBudget.contextBudgetChars,
                 maxCharsPerDocument: askBudget.contextMaxCharsPerDocument
@@ -669,13 +684,13 @@ Instructions:
         // return the degraded references instead of issuing the (costly) remote call. State lives on the
         // singleton; the rate check is a pure helper (`checkAskRateLimit`) for isolated, mutation-free testing.
         const nowMs           = Date.now();
-        const {limited, kept} = checkAskRateLimit(this.askCallTimestamps, nowMs, aiConfig.askSynthesis.maxCallsPerMinute);
+        const {limited, kept} = checkAskRateLimit(this.askCallTimestamps, nowMs, askBudget.maxCallsPerMinute);
         this.askCallTimestamps = kept;
         if (limited) {
-            logger.warn(`[SearchService] ask synthesis rate cap (${aiConfig.askSynthesis.maxCallsPerMinute}/min) hit; returning degraded references without calling the provider.`);
+            logger.warn(`[SearchService] ask synthesis rate cap (${askBudget.maxCallsPerMinute}/min) hit; returning degraded references without calling the provider.`);
             return withWalk(this.#createDegradedSynthesisResponse({
                 references: responseReferences,
-                error     : `ask synthesis rate limit (${aiConfig.askSynthesis.maxCallsPerMinute}/min) exceeded`,
+                error     : `ask synthesis rate limit (${askBudget.maxCallsPerMinute}/min) exceeded`,
                 code      : 'rate_limited'
             }));
         }
@@ -685,17 +700,8 @@ Instructions:
         let result, answer;
 
         try {
-            // Provider-class timeout selection: `gemini` is the only always-remote class (~5-10s
-            // typical → 60s flags a hang); `ollama`/`openAiCompatible` get the local-class ceiling —
-            // a 31B-class local synthesis empirically approaches 5 minutes, and `openAiCompatible`
-            // may point at exactly such a model, so false-long (a hung self-hosted endpoint waits
-            // longer) is the safe direction over false-short (a working local model gets cut off).
-            const ask = aiConfig.askSynthesis;
+            const ask = askBudget;
 
-            // `reasoning_effort` is omitted when the leaf is empty rather than sent as an empty string:
-            // an overlay predating this leaf must keep the provider's own default, and a provider that
-            // does not understand the param must not receive a value it has to reject. Same `|| undefined`
-            // idiom the summary path uses (`SessionService.summarizeSession`).
             result = await this.model.generateContent(prompt, {
                 timeoutMs       : ask.provider === 'gemini' ? ask.timeoutMsRemote : ask.timeoutMs,
                 operationLabel  : 'ask_knowledge_base synthesis',
@@ -712,10 +718,6 @@ Instructions:
             return withWalk(degraded);
         }
 
-        // The truncation notice is appended by US, never requested of the model in the prompt. An
-        // instruction to "say if context was truncated" is advisory — the model may drop it, and a
-        // caller would then read a confidently-scoped answer built from material it never saw. The
-        // guarantee has to live on this side of the provider call.
         return withWalk({
             answer    : assembled.truncated ? `${answer}\n\n${assembled.notice}` : answer,
             references: responseReferences

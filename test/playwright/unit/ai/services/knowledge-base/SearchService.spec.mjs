@@ -13,13 +13,15 @@ setup({
     }
 });
 
-import {test, expect}          from '@playwright/test';
-import Neo                     from 'neo.mjs/src/Neo.mjs';
-import * as core               from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager         from 'neo.mjs/src/manager/Instance.mjs';
-import fs                      from 'fs-extra';
-import path                    from 'path';
-import {PROVIDER_TIMEOUT_CODE} from '../../../../../../ai/provider/createTimeoutError.mjs';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager             from 'neo.mjs/src/manager/Instance.mjs';
+import fs                          from 'fs-extra';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import {PROVIDER_TIMEOUT_CODE}     from '../../../../../../ai/provider/createTimeoutError.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 /**
  * @summary Regression coverage for the SearchService type-filter synthesis bug.
@@ -37,7 +39,6 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
     let aiConfig;
     let originalQueryDocuments;
     let originalModel;
-    let originalTransport;
     let tmpFilePath;
     let tmpFileRelativeToRoot;
     const tmpFileContents = 'MOCK_FILE_CONTENT_abc123 — the SearchService should read this verbatim';
@@ -56,13 +57,12 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
 
         originalQueryDocuments = QueryService.queryDocuments.bind(QueryService);
         originalModel          = SearchService.model;
-        originalTransport      = aiConfig.transport;
     });
 
     test.afterAll(async () => {
-        QueryService.queryDocuments = originalQueryDocuments;
-        SearchService.model         = originalModel;
-        aiConfig.transport          = originalTransport;
+        QueryService.queryDocuments  = originalQueryDocuments;
+        SearchService.model          = originalModel;
+        SearchService.configSnapshot = null;
         if (tmpFilePath) await fs.remove(path.dirname(tmpFilePath)).catch(() => {});
     });
 
@@ -471,7 +471,9 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
 
         QueryService.queryDocuments = async () => ({results: []});
         ChromaManager.getKnowledgeBaseCollection = async () => ({count: async () => 0});
-        aiConfig.transport = 'streamable-http';
+        const snapshot = SearchService.createConfigSnapshot();
+        snapshot.transport = 'streamable-http';
+        SearchService.configSnapshot = snapshot;
 
         try {
             const result = await SearchService.ask({query: 'anything'});
@@ -485,7 +487,7 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
             expect(result.references).toEqual([]);
         } finally {
             ChromaManager.getKnowledgeBaseCollection = originalGetCollection;
-            aiConfig.transport = originalTransport;
+            SearchService.configSnapshot             = null;
         }
     });
 
@@ -698,5 +700,11 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
         // fails loudly instead of quietly serializing a deployment that asked for parallelism.
         expect(() => buildAskRequestQueue({askSynthesis: {maxParallel: 0}}))
             .toThrow(/capacity must be an integer >= 1/)
+    });
+
+    test('uses per-test config snapshots instead of mutating shared config', async () => {
+        const specSource = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(specSource)).toEqual([]);
     });
 });

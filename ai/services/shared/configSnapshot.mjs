@@ -126,7 +126,7 @@ export function cloneConfigSubtree(provider, pathParts) {
     const keys = new Set();
 
     for (let current = provider; current; current = typeof current.getParent === 'function' ? current.getParent() : null) {
-        let node = current.data;
+        let node = current.data && typeof current.data === 'object' ? current.data : current;
 
         for (const key of pathParts) {
             if (!node || typeof node !== 'object') {
@@ -143,10 +143,10 @@ export function cloneConfigSubtree(provider, pathParts) {
         }
     }
 
-    let liveNode = provider;
+    let liveNode = provider?.data && typeof provider.data === 'object' ? provider.data : provider;
 
     for (const key of pathParts) {
-        liveNode = liveNode[key];
+        liveNode = liveNode?.[key];
     }
 
     const snapshot = {};

@@ -45,15 +45,13 @@ test.describe('SessionService.summarizeSession — memory-fetch pagination (clos
 
     test('paginates the fetch, writes the full memoryCount, and the drift selector stops returning the session', async () => {
         const svc          = SDK.Memory_SessionService,
-              aiConfig     = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default,
               origMemGet   = svc.memoryCollection.get,
               origModel    = svc.model,
-              origSessions = svc.sessionsCollection,
-              origLimit    = aiConfig.summarizationBatchLimit;
+              origSessions = svc.sessionsCollection;
 
         // Shrink the per-get batch to 2 so a 5-turn session forces multiple pages. Both summarizeSession
         // (advance-by-actual-page) and findSessionsToSummarize (advance-by-limit) read with THIS limit.
-        aiConfig.summarizationBatchLimit = 2;
+        svc.configSnapshot = svc.createConfigSnapshot({summarizationBatchLimit: 2});
 
         const SESSION = 'pg-pagination';
 
@@ -127,10 +125,10 @@ test.describe('SessionService.summarizeSession — memory-fetch pagination (clos
             const toSummarize = await svc.findSessionsToSummarize();
             expect(toSummarize).not.toContain(SESSION);
         } finally {
-            svc.memoryCollection.get         = origMemGet;
-            svc.model                        = origModel;
-            svc.sessionsCollection           = origSessions;
-            aiConfig.summarizationBatchLimit = origLimit;
+            svc.memoryCollection.get = origMemGet;
+            svc.model                = origModel;
+            svc.sessionsCollection   = origSessions;
+            svc.configSnapshot       = null;
         }
     });
 
@@ -243,13 +241,11 @@ test.describe('SessionService.summarizeSession — memory-fetch pagination (clos
 
     test('reconstructs a dropped turn-document from split metadata before synthesis (#14211 de-dup read)', async () => {
         const svc        = SDK.Memory_SessionService,
-              aiConfig   = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default,
               origMemGet = svc.memoryCollection.get,
               origModel  = svc.model,
-              origSess   = svc.sessionsCollection,
-              origLimit  = aiConfig.summarizationBatchLimit;
+              origSess   = svc.sessionsCollection;
 
-        aiConfig.summarizationBatchLimit = 10;
+        svc.configSnapshot = svc.createConfigSnapshot({summarizationBatchLimit: 10});
 
         const SESSION = 'pg-dropped-doc';
 
@@ -291,10 +287,10 @@ test.describe('SessionService.summarizeSession — memory-fetch pagination (clos
             expect(synthesisPrompt).toContain('Agent Thought: THOUGHT-Y');
             expect(synthesisPrompt).toContain('Agent Response: RESPONSE-Z');
         } finally {
-            svc.memoryCollection.get         = origMemGet;
-            svc.model                        = origModel;
-            svc.sessionsCollection           = origSess;
-            aiConfig.summarizationBatchLimit = origLimit;
+            svc.memoryCollection.get = origMemGet;
+            svc.model                = origModel;
+            svc.sessionsCollection   = origSess;
+            svc.configSnapshot       = null;
         }
     });
 });

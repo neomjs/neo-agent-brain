@@ -15,24 +15,23 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import fs             from 'fs-extra';
-import os             from 'os';
-import path           from 'path';
-import aiConfig       from '../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs';
-import RawRepoSource  from '../../../../../../../ai/services/knowledge-base/source/RawRepoSource.mjs';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import fs                          from 'fs-extra';
+import os                          from 'os';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import RawRepoSource               from '../../../../../../../ai/services/knowledge-base/source/RawRepoSource.mjs';
+import {findSharedConfigMutations} from '../../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 /**
  * @summary Unit coverage for the explicit raw repository Source fallback.
  */
 test.describe('Neo.ai.services.knowledge-base.source.RawRepoSource (#12029)', () => {
-    let originalProjectRoot, originalSourcePaths, tempDir;
+    let tempDir;
 
     test.beforeEach(async () => {
-        originalProjectRoot = aiConfig.projectRoot;
-        originalSourcePaths = aiConfig.sourcePaths;
         tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-raw-repo-source-'));
 
         await fs.outputFile(path.join(tempDir, 'repo/README.md'), '# Tenant Repo\n');
@@ -44,17 +43,18 @@ test.describe('Neo.ai.services.knowledge-base.source.RawRepoSource (#12029)', ()
         await fs.outputFile(path.join(tempDir, 'repo/resources/images/logo.png'), 'not really png\n');
         await fs.outputFile(path.join(tempDir, 'repo/assets/logo.png'), 'not really png\n');
 
-        aiConfig.projectRoot = tempDir;
-        aiConfig.sourcePaths = {
+        const snapshot = RawRepoSource.createConfigSnapshot();
+        snapshot.projectRoot = tempDir;
+        snapshot.sourcePaths = {
             RawRepoSource: {
                 root: 'repo'
             }
         };
+        RawRepoSource.configSnapshot = snapshot;
     });
 
     test.afterEach(async () => {
-        aiConfig.projectRoot = originalProjectRoot;
-        aiConfig.sourcePaths = originalSourcePaths;
+        RawRepoSource.configSnapshot = null;
         await fs.remove(tempDir);
     });
 
@@ -83,7 +83,7 @@ test.describe('Neo.ai.services.knowledge-base.source.RawRepoSource (#12029)', ()
     });
 
     test('includeExtensions narrows the raw fallback to an explicit allowlist', async () => {
-        aiConfig.sourcePaths.RawRepoSource = {
+        RawRepoSource.configSnapshot.sourcePaths.RawRepoSource = {
             root             : 'repo',
             includeExtensions: ['md']
         };
@@ -147,5 +147,10 @@ test.describe('Neo.ai.services.knowledge-base.source.RawRepoSource (#12029)', ()
             rootKind     : 'bare-repo',
             hash         : 'hash:README.md'
         });
+    });
+
+    test('uses RawRepoSource.configSnapshot instead of mutating shared config singletons', async () => {
+        const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });

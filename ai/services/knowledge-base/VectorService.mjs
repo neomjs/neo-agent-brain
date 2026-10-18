@@ -223,6 +223,7 @@ function resolveEmbeddingInputStrategyVersion(guardrail) {
 }
 
 const VECTOR_SERVICE_SNAPSHOT_SUBTREES = Object.freeze([
+    'engines.chroma',
     'localModels',
     'localModels.embedding',
     'ollama',
@@ -310,18 +311,31 @@ class VectorService extends Base {
      * Tests inject the returned snapshot into `VectorService.configSnapshot` and mutate its
      * leaves freely without touching the shared `aiConfig` / `KB_Config` / `MC_Config` singletons.
      *
+     * @param {Object} [overrides={}]
      * @returns {Object}
      */
-    createConfigSnapshot() {
-        return {
+    createConfigSnapshot(overrides = {}) {
+        const
+            baseChroma      = cloneConfigSubtree(aiConfig, ['engines', 'chroma']),
+            chromaOverrides = overrides.engines?.chroma,
+            chroma          = chromaOverrides ? {...baseChroma, ...chromaOverrides} : baseChroma;
+
+        if (chromaOverrides && !Object.hasOwn(chromaOverrides, 'dataDir')) {
+            const useTestDatabase = Boolean(chroma.useUnitTestDatabase || chroma.useTestHarness);
+            chroma.dataDir = useTestDatabase ? chroma.dataDirTest : chroma.dataDirProd;
+        }
+
+        const snapshot = {
             backoffBaseMs    : aiConfig.backoffBaseMs,
             batchDelay       : aiConfig.batchDelay,
             batchSize        : aiConfig.batchSize,
+            collectionName   : aiConfig.collectionName,
             defaultRepoSlug  : aiConfig.defaultRepoSlug,
             defaultTenantId  : aiConfig.defaultTenantId,
             defaultVisibility: aiConfig.defaultVisibility,
             embeddingModel   : aiConfig.embeddingModel,
             embeddingProvider: aiConfig.embeddingProvider,
+            engines          : {chroma},
             knowledgeBase    : null,
             localModels      : {
                 embedding: cloneConfigSubtree(aiConfig, ['localModels', 'embedding'])
@@ -329,11 +343,20 @@ class VectorService extends Base {
             logPath                    : aiConfig.logPath,
             maxRetries                 : aiConfig.maxRetries,
             mcpSyncMaxChunks           : aiConfig.mcpSyncMaxChunks,
+            neoRootDir                 : aiConfig.neoRootDir,
             ollama                     : cloneConfigSubtree(aiConfig, ['ollama']),
             openAiCompatible           : cloneConfigSubtree(aiConfig, ['openAiCompatible']),
             spoofRejectionMode         : aiConfig.spoofRejectionMode,
             undeliverableTimeoutStrikes: aiConfig.undeliverableTimeoutStrikes,
             vectorDimension            : aiConfig.vectorDimension
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            engines: overrides.engines
+                ? {...snapshot.engines, ...overrides.engines, chroma}
+                : snapshot.engines
         };
     }
 
@@ -355,7 +378,10 @@ class VectorService extends Base {
      * @returns {Promise<object>} A promise that resolves to a success message.
      */
     async deleteCollection({confirmation} = {}) {
-        const collectionName = aiConfig.collectionName;
+        const
+            cfg            = this.#getConfig(),
+            collectionName = cfg.collectionName;
+
         try {
             await DestructiveOperationGuard.assertDestructiveTargetAllowed({
                 operation: 'knowledge-base.chroma.delete',
@@ -364,12 +390,12 @@ class VectorService extends Base {
                 target   : {
                     collectionName,
                     chroma: {
-                        host: aiConfig.engines.chroma.host,
-                        port: aiConfig.engines.chroma.port,
-                        path: aiConfig.engines.chroma.dataDir
+                        host: cfg.engines.chroma.host,
+                        port: cfg.engines.chroma.port,
+                        path: cfg.engines.chroma.dataDir
                     },
-                    path    : aiConfig.engines.chroma.dataDir,
-                    repoRoot: aiConfig.neoRootDir
+                    path    : cfg.engines.chroma.dataDir,
+                    repoRoot: cfg.neoRootDir
                 },
                 confirmation
             });

@@ -13,14 +13,14 @@ setup({
     }
 });
 
-import {test, expect}                          from '@playwright/test';
-import Neo                                     from 'neo.mjs/src/Neo.mjs';
-import * as core                               from 'neo.mjs/src/core/_export.mjs';
-import fs                                      from 'fs';
-import path                                    from 'path';
-import os                                      from 'os';
-import {createRequire}                         from 'module';
-import {snapshotAiConfig, TestLifecycleHelper} from '../../services/memory-core/util.mjs';
+import {test, expect}        from '@playwright/test';
+import Neo                   from 'neo.mjs/src/Neo.mjs';
+import * as core             from 'neo.mjs/src/core/_export.mjs';
+import fs                    from 'fs';
+import path                  from 'path';
+import os                    from 'os';
+import {createRequire}       from 'module';
+import {TestLifecycleHelper} from '../../services/memory-core/util.mjs';
 
 test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
     let GraphService;
@@ -30,25 +30,14 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
     let SystemLifecycleService;
 
     let tmpConceptsDir;
-    let restoreAiConfig;
 
     let originalWarn;
     let warnMessages = [];
 
     test.beforeAll(async () => {
-        const aiConfig = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
-
-        const tmpDir = path.resolve(process.cwd(), 'tmp');
-        if (!fs.existsSync(tmpDir)) {
-            fs.mkdirSync(tmpDir, {recursive: true});
-        }
-        restoreAiConfig = snapshotAiConfig(aiConfig, ['handoffFilePath']);
-
         // Isolation is by construction: `storagePaths.graph` is a formula resolving `graphTest`
         // (`:memory:`) under `UNIT_TEST_MODE`, and a `:memory:` store is process-local — stronger
         // than the shared tmp file this suite used to repoint it at.
-        aiConfig.handoffFilePath    = path.join(tmpDir, 'mock_sandman_handoff_concept_ingestor.md');
-
         GraphService           = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
         ConceptIngestor        = (await import('../../../../../../ai/services/ingestion/ConceptIngestor.mjs')).default;
         ConceptService         = (await import('../../../../../../ai/services/ConceptService.mjs')).default;
@@ -60,10 +49,6 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
         } else {
             await SystemLifecycleService.ready();
         }
-    });
-
-    test.afterAll(() => {
-        restoreAiConfig?.();
     });
 
     test.beforeEach(() => {

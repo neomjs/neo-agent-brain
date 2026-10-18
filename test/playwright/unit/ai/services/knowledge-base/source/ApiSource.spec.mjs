@@ -9,21 +9,28 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import fs             from 'fs-extra';
-import os             from 'node:os';
-import path           from 'node:path';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}              from '@playwright/test';
+import fs                          from 'fs-extra';
+import os                          from 'node:os';
+import path                        from 'node:path';
+import {fileURLToPath}             from 'node:url';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations} from '../../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 test.describe('ApiSource repository port (#261)', () => {
     let ApiSource;
-    let aiConfig;
-    let original;
     let root;
 
+    function applyFixtureSnapshot(overrides = {}) {
+        const snapshot = ApiSource.createConfigSnapshot();
+        snapshot.neoRootDir          = overrides.neoRootDir ?? root;
+        snapshot.hierarchyPath       = overrides.hierarchyPath ?? path.join(root, 'hierarchy.json');
+        snapshot.sourcePaths.ApiSource = overrides.sourceEntries ?? [{path: 'src', type: 'src'}];
+        ApiSource.configSnapshot     = snapshot;
+    }
+
     test.beforeAll(async () => {
-        aiConfig  = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
         ApiSource = (await import('../../../../../../../ai/services/knowledge-base/source/ApiSource.mjs')).default;
         root      = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-api-source-port-'));
 
@@ -47,20 +54,11 @@ export default Foo;
             'Fixture.Foo': 'Neo.core.Base'
         });
 
-        original = {
-            hierarchyPath: aiConfig.hierarchyPath,
-            neoRootDir   : aiConfig.neoRootDir,
-            sourceEntries: aiConfig.sourcePaths.ApiSource
-        };
-        aiConfig.neoRootDir = root;
-        aiConfig.hierarchyPath = path.join(root, 'hierarchy.json');
-        aiConfig.sourcePaths.ApiSource = [{path: 'src', type: 'src'}];
+        applyFixtureSnapshot();
     });
 
     test.afterAll(async () => {
-        aiConfig.neoRootDir = original.neoRootDir;
-        aiConfig.hierarchyPath = original.hierarchyPath;
-        aiConfig.sourcePaths.ApiSource = original.sourceEntries;
+        ApiSource.configSnapshot = null;
         await fs.remove(root);
     });
 
@@ -76,9 +74,11 @@ export default Foo;
 
         // Poison every ambient location input after the legacy control. The injected port must not consult
         // either; a fallback to the old path would now fail or emit nothing.
-        aiConfig.sourcePaths.ApiSource = [];
-        aiConfig.hierarchyPath = path.join(root, 'missing-hierarchy.json');
-        aiConfig.neoRootDir = path.join(root, 'ambient-root-must-not-be-read');
+        applyFixtureSnapshot({
+            sourceEntries: [],
+            hierarchyPath: path.join(root, 'missing-hierarchy.json'),
+            neoRootDir   : path.join(root, 'ambient-root-must-not-be-read')
+        });
 
         try {
             const result = await ApiSource.extractFromRepository({
@@ -116,9 +116,7 @@ export default Foo;
             expect(result.yieldedSourcePaths).toEqual(['src/Foo.mjs']);
             expect(portWrites).toEqual(legacyWrites);
         } finally {
-            aiConfig.sourcePaths.ApiSource = [{path: 'src', type: 'src'}];
-            aiConfig.hierarchyPath = path.join(root, 'hierarchy.json');
-            aiConfig.neoRootDir = root;
+            applyFixtureSnapshot();
         }
     });
 
@@ -326,5 +324,10 @@ export default Neo.setupClass(MainContainer);`
             writeStream: {write: value => writes.push(value)}, createHashFn: () => 'hash'
         })).rejects.toMatchObject({code: 'KB_REPOSITORY_HIERARCHY_SOURCE_PATH_MISSING'});
         expect(writes).toEqual([]);
+    });
+
+    test('uses ApiSource.configSnapshot instead of mutating shared config singletons', async () => {
+        const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });

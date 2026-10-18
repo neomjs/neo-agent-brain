@@ -910,7 +910,7 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — setup state dis
 
     const logger = {info: () => {}, warn: () => {}, error: () => {}};
 
-    function createOptions({auth = {}, authMiddleware} = {}) {
+    function createOptions({auth = {}, authMiddleware, mcpListenHost} = {}) {
         const middlewares = [];
 
         return {
@@ -930,7 +930,8 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — setup state dis
                     trustProxyIdentity: false,
                     ...auth
                 },
-                authMiddleware
+                authMiddleware,
+                ...(mcpListenHost !== undefined ? {mcpListenHost} : {})
             },
             mcpServerUrl: new URL('http://127.0.0.1:3000'),
             logger,
@@ -976,19 +977,19 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — setup state dis
     test('pre-CORS phase suppresses built-in local guards when custom middleware owns auth', () => {
         const options = createOptions({
             auth          : {mode: 'local-bearer'},
-            authMiddleware: () => {}
+            authMiddleware: () => {},
+            mcpListenHost : '0.0.0.0'
         });
-
-        options.aiConfig.mcpListenHost = '0.0.0.0';
 
         expect(() => AuthService.setupPreCors(options)).not.toThrow();
         expect(options.app.middlewares).toEqual([])
     });
 
     test('pre-CORS local guard owns bind validation and present-Origin rejection', () => {
-        const options = createOptions({auth: {mode: 'local-bearer'}});
-
-        options.aiConfig.mcpListenHost = '127.0.0.1';
+        const options = createOptions({
+            auth         : {mode: 'local-bearer'},
+            mcpListenHost: '127.0.0.1'
+        });
         AuthService.setupPreCors(options);
 
         expect(options.app.middlewares).toHaveLength(1);
@@ -1304,8 +1305,14 @@ test.describe('Neo.ai.mcp.server.shared.services.AuthService — first provider 
             expect(options.app.middlewares).toHaveLength(0)
         }
 
-        const customOptions = createOptions();
-        customOptions.aiConfig.authMiddleware = () => {};
+        const baseOptions   = createOptions(),
+              customOptions = {
+                  ...baseOptions,
+                  aiConfig: {
+                      ...baseOptions.aiConfig,
+                      authMiddleware: () => {}
+                  }
+              };
 
         await expect(AuthService.setup(customOptions)).rejects.toThrow(/first-provider-subject/i);
         expect(customOptions.app.middlewares).toHaveLength(0)

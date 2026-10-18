@@ -38,15 +38,6 @@ test.describe('Neo.ai.daemons.services.AdrIngestor', () => {
     let warnMessages = [];
 
     test.beforeAll(async () => {
-        const aiConfig = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
-
-        const tmpDir = path.resolve(process.cwd(), 'tmp');
-        if (!fs.existsSync(tmpDir)) {
-            fs.mkdirSync(tmpDir, {recursive: true});
-        }
-        aiConfig.autoIngestFileSystem = false;
-        aiConfig.handoffFilePath      = path.join(tmpDir, 'mock_sandman_handoff_adr_ingestor.md');
-
         GraphService           = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
         AdrIngestor            = (await import('../../../../../../ai/services/ingestion/AdrIngestor.mjs')).default;
         logger                 = (await import('../../../../../../ai/mcp/server/memory-core/logger.mjs')).default;

@@ -1,4 +1,6 @@
-import CoreBase from 'neo.mjs/src/core/Base.mjs';
+import aiConfig                                     from '../../../mcp/server/knowledge-base/config.mjs';
+import CoreBase                                     from 'neo.mjs/src/core/Base.mjs';
+import {cloneConfigSubtree, validateConfigSnapshot} from '../../shared/configSnapshot.mjs';
 
 /**
  * @summary Abstract base class for Knowledge Base data sources.
@@ -40,7 +42,57 @@ class Base extends CoreBase {
          * @member {String} className='Neo.ai.services.knowledge-base.source.Base'
          * @protected
          */
-        className: 'Neo.ai.services.knowledge-base.source.Base'
+        className: 'Neo.ai.services.knowledge-base.source.Base',
+        /**
+         * @member {Object|null} configSnapshot_=null
+         * @summary Optional isolated config snapshot for deterministic source extraction tests.
+         * @reactive
+         */
+        configSnapshot_: null
+    }
+
+    /**
+     * @summary Validates reactive config snapshots before assignment.
+     * @param {Object|null} value
+     * @returns {Object|null}
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            serviceName     : this.className,
+            requiredSubtrees: ['sourcePaths']
+        });
+    }
+
+    /**
+     * @summary Creates a plain config snapshot cloned from the KB AiConfig provider.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            hierarchyPath: aiConfig.hierarchyPath,
+            neoRootDir   : aiConfig.neoRootDir,
+            projectRoot  : aiConfig.projectRoot,
+            sourcePaths  : cloneConfigSubtree(aiConfig, ['sourcePaths'])
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            sourcePaths: {
+                ...snapshot.sourcePaths,
+                ...(overrides.sourcePaths || {})
+            }
+        };
+    }
+
+    /**
+     * @summary Resolves the active source config authority (`configSnapshot` or `aiConfig`).
+     * @returns {Object}
+     * @protected
+     */
+    resolveConfig() {
+        return this.configSnapshot || aiConfig;
     }
 
     /**

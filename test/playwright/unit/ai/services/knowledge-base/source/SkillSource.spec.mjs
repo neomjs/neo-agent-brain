@@ -13,14 +13,15 @@ setup({
     }
 });
 
-import {test, expect}  from '@playwright/test';
-import {createHash}    from 'node:crypto';
-import fs              from 'fs-extra';
-import os              from 'node:os';
-import path            from 'path';
-import {fileURLToPath} from 'url';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}              from '@playwright/test';
+import {createHash}                from 'node:crypto';
+import fs                          from 'fs-extra';
+import os                          from 'node:os';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations} from '../../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -28,17 +29,17 @@ const repoRoot   = path.resolve(__dirname, '../../../../../../..');
 
 test.describe('Neo.ai.services.knowledge-base.source.SkillSource', () => {
     let SkillSource;
-    let aiConfig;
-    let originalRoot;
-    let originalSkillSourcePath;
     let mockRoot;
 
-    test.beforeAll(async () => {
-        aiConfig    = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
-        SkillSource = (await import('../../../../../../../ai/services/knowledge-base/source/SkillSource.mjs')).default;
+    function applyMockSnapshot(overrides = {}) {
+        const snapshot = SkillSource.createConfigSnapshot();
+        snapshot.neoRootDir              = overrides.neoRootDir ?? mockRoot;
+        snapshot.sourcePaths.SkillSource = overrides.skillSourcePath ?? '.agents/skills';
+        SkillSource.configSnapshot       = snapshot;
+    }
 
-        originalRoot = aiConfig.neoRootDir;
-        originalSkillSourcePath = aiConfig.sourcePaths.SkillSource;
+    test.beforeAll(async () => {
+        SkillSource = (await import('../../../../../../../ai/services/knowledge-base/source/SkillSource.mjs')).default;
 
         mockRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-source-mock-'));
 
@@ -83,13 +84,11 @@ Simple skill contents.`);
 `# Legacy
 Legacy skill payload.`);
 
-        aiConfig.neoRootDir = mockRoot;
-        aiConfig.sourcePaths.SkillSource = '.agents/skills';
+        applyMockSnapshot();
     });
 
     test.afterAll(() => {
-        aiConfig.neoRootDir = originalRoot;
-        aiConfig.sourcePaths.SkillSource = originalSkillSourcePath;
+        SkillSource.configSnapshot = null;
         if (mockRoot && fs.existsSync(mockRoot)) fs.removeSync(mockRoot);
     });
 
@@ -176,8 +175,10 @@ Legacy skill payload.`);
                 }
             }));
 
-        aiConfig.sourcePaths.SkillSource = 'does-not-exist';
-        aiConfig.neoRootDir = path.join(mockRoot, 'ambient-root-must-not-be-read');
+        applyMockSnapshot({
+            skillSourcePath: 'does-not-exist',
+            neoRootDir     : path.join(mockRoot, 'ambient-root-must-not-be-read')
+        });
 
         try {
             const result = await SkillSource.extractFromRepository({
@@ -199,8 +200,7 @@ Legacy skill payload.`);
                 .map(assignment => assignment.entry.sourcePath)
                 .sort());
         } finally {
-            aiConfig.sourcePaths.SkillSource = originalSkillSourcePath;
-            aiConfig.neoRootDir = mockRoot;
+            applyMockSnapshot();
         }
     });
 
@@ -309,7 +309,7 @@ Legacy skill payload.`);
 
     test('extract() returns 0 and writes nothing when the skills directory is absent', async () => {
         const missingRoot = path.join(mockRoot, 'does-not-exist');
-        aiConfig.neoRootDir = missingRoot;
+        applyMockSnapshot({neoRootDir: missingRoot});
         try {
             const written     = [];
             const writeStream = {
@@ -321,9 +321,12 @@ Legacy skill payload.`);
             expect(count).toBe(0);
             expect(written).toHaveLength(0);
         } finally {
-            aiConfig.neoRootDir = mockRoot;
+            applyMockSnapshot();
         }
     });
 
-
+    test('uses SkillSource.configSnapshot instead of mutating shared config singletons', async () => {
+        const source = await fs.readFile(__filename, 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
+    });
 });

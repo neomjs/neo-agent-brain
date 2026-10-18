@@ -1,8 +1,7 @@
-import Base     from './Base.mjs';
-import fs       from 'fs-extra';
-import path     from 'path';
-import fg       from 'fast-glob';
-import aiConfig from '../../../mcp/server/knowledge-base/config.mjs';
+import Base from './Base.mjs';
+import fs   from 'fs-extra';
+import path from 'path';
+import fg   from 'fast-glob';
 
 /**
  * @summary Indexes a skill document's trigger pointers by section.
@@ -75,8 +74,9 @@ class SkillSource extends Base {
      * @returns {Promise<Number>} The number of chunks extracted.
      */
     async extract(writeStream, createHashFn) {
+        const config = this.resolveConfig();
         // Per-source path from the `sourcePaths` config (SSOT).
-        const skillsBasePath = path.resolve(aiConfig.neoRootDir, aiConfig.sourcePaths.SkillSource);
+        const skillsBasePath = path.resolve(config.neoRootDir, config.sourcePaths.SkillSource);
 
         if (!await fs.pathExists(skillsBasePath)) {
             return 0
@@ -89,8 +89,8 @@ class SkillSource extends Base {
             skillFiles = (await fg(pattern)).sort(),
             documents  = await Promise.all(skillFiles.map(async filePath => ({
                 content          : await fs.readFile(filePath, 'utf8'),
-                root             : this.normalizeRelativePath(path.relative(aiConfig.neoRootDir, skillsBasePath)),
-                sourcePath       : this.normalizeRelativePath(path.relative(aiConfig.neoRootDir, filePath)),
+                root             : this.normalizeRelativePath(path.relative(config.neoRootDir, skillsBasePath)),
+                sourcePath       : this.normalizeRelativePath(path.relative(config.neoRootDir, filePath)),
                 skillRelativePath: this.normalizeRelativePath(path.relative(skillsBasePath, filePath))
             }))),
             result = this.createChunksFromDocuments({documents, createHashFn});
@@ -255,10 +255,11 @@ class SkillSource extends Base {
      * @returns {Promise<Map<String, Set<String>>>}
      */
     async collectTriggerTargetPathsBySkill(skillFiles, skillsBasePath) {
+        const config    = this.getConfig();
         const documents = await Promise.all(skillFiles.map(async filePath => ({
             content          : await fs.readFile(filePath, 'utf8'),
-            root             : this.normalizeRelativePath(path.relative(aiConfig.neoRootDir, skillsBasePath)),
-            sourcePath       : this.normalizeRelativePath(path.relative(aiConfig.neoRootDir, filePath)),
+            root             : this.normalizeRelativePath(path.relative(config.neoRootDir, skillsBasePath)),
+            sourcePath       : this.normalizeRelativePath(path.relative(config.neoRootDir, filePath)),
             skillRelativePath: this.normalizeRelativePath(path.relative(skillsBasePath, filePath))
         })));
 

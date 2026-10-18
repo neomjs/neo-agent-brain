@@ -214,19 +214,19 @@ test.describe('GitHub Workflow MCP Server Config Completeness', () => {
     });
 
     test('logger filters stderr by priority and always emits errors', async () => {
-        const aiConfig = (await import('../../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
-        const logger   = (await import('../../../../../../../ai/mcp/server/github-workflow/logger.mjs')).default;
-
-        const originalDebug    = aiConfig.data.debug;
-        const originalLogLevel = aiConfig.data.logLevel;
-        const originalError    = console.error;
-        const calls            = [];
+        const logger        = (await import('../../../../../../../ai/mcp/server/github-workflow/logger.mjs')).default;
+        const originalError = console.error;
+        const calls         = [];
 
         console.error = (...args) => calls.push(args.join(' '));
 
         try {
-            aiConfig.data.debug = false;
-            aiConfig.data.logLevel = 'warn';
+            const snapshot = logger.createConfigSnapshot({
+                debug   : false,
+                logLevel: 'warn'
+            });
+            logger.configSnapshot = snapshot;
+
             logger.debug('debug-hidden');
             logger.info('info-hidden');
             logger.log('log-hidden');
@@ -239,7 +239,7 @@ test.describe('GitHub Workflow MCP Server Config Completeness', () => {
             ]);
 
             calls.length = 0;
-            aiConfig.data.logLevel = 'info';
+            snapshot.logLevel = 'info';
             logger.debug('debug-hidden');
             logger.info('info-visible');
             logger.log('log-visible');
@@ -254,22 +254,21 @@ test.describe('GitHub Workflow MCP Server Config Completeness', () => {
             ]);
 
             calls.length = 0;
-            aiConfig.data.logLevel = 'error';
+            snapshot.logLevel = 'error';
             logger.warn('warn-hidden');
             logger.error('error-still-visible');
 
             expect(calls).toEqual(['[ERROR] error-still-visible']);
 
             calls.length = 0;
-            aiConfig.data.logLevel = 'warn';
-            aiConfig.data.debug = true;
+            snapshot.logLevel = 'warn';
+            snapshot.debug    = true;
             logger.debug('legacy-debug-visible');
 
             expect(calls).toEqual(['[DEBUG] legacy-debug-visible']);
         } finally {
-            console.error = originalError;
-            aiConfig.data.debug = originalDebug;
-            aiConfig.data.logLevel = originalLogLevel;
+            console.error         = originalError;
+            logger.configSnapshot = null;
         }
     });
 

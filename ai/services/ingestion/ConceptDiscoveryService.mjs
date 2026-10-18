@@ -11,6 +11,7 @@ import Json                                            from 'neo.mjs/src/util/Js
 import logger                                          from '../../mcp/server/memory-core/logger.mjs';
 import {buildGraphProvider, resolveGraphModelProvider} from '../graph/providerDispatch.mjs';
 import {assertTestWriteIsolated}                       from '../shared/storeWriteGuard.mjs';
+import {cloneConfigSubtree, validateConfigSnapshot}    from '../shared/configSnapshot.mjs';
 import {readSecretCarrier}                             from '../shared/secretCarrier.mjs';
 
 /**
@@ -194,6 +195,13 @@ function getMessageSortTimestamp(message) {
  * @singleton
  */
 class ConceptDiscoveryService extends Base {
+    /**
+     * Service-local test configuration snapshot seam.
+     * @type {Object|null}
+     * @private
+     */
+    #configSnapshot = null;
+
     static config = {
         /**
          * @member {String} className='Neo.ai.daemons.services.ConceptDiscoveryService'
@@ -205,6 +213,79 @@ class ConceptDiscoveryService extends Base {
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * Validates a service-local test snapshot before storing it.
+     *
+     * @param {Object|null} value
+     * @returns {Object|null}
+     * @protected
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            requiredSubtrees: ['conceptDiscovery', 'ollama', 'openAiCompatible', 'orchestrator'],
+            serviceName     : 'ConceptDiscoveryService'
+        });
+    }
+
+    /**
+     * Clones the live `aiConfig` leaves read by `ConceptDiscoveryService` into a
+     * plain object suitable for `ConceptDiscoveryService.configSnapshot` in unit tests.
+     *
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            conceptDiscovery: cloneConfigSubtree(aiConfig, ['conceptDiscovery']),
+            graphProvider   : aiConfig.graphProvider,
+            ollama          : cloneConfigSubtree(aiConfig, ['ollama']),
+            openAiCompatible: cloneConfigSubtree(aiConfig, ['openAiCompatible']),
+            orchestrator    : cloneConfigSubtree(aiConfig, ['orchestrator'])
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            conceptDiscovery: overrides.conceptDiscovery
+                ? {...snapshot.conceptDiscovery, ...overrides.conceptDiscovery}
+                : snapshot.conceptDiscovery,
+            ollama: overrides.ollama
+                ? {...snapshot.ollama, ...overrides.ollama}
+                : snapshot.ollama,
+            openAiCompatible: overrides.openAiCompatible
+                ? {...snapshot.openAiCompatible, ...overrides.openAiCompatible}
+                : snapshot.openAiCompatible,
+            orchestrator: overrides.orchestrator
+                ? {...snapshot.orchestrator, ...overrides.orchestrator}
+                : snapshot.orchestrator
+        };
+    }
+
+    /**
+     * Resolves the active configuration source: the test `configSnapshot` when
+     * installed, otherwise the live `aiConfig` singleton.
+     *
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.#configSnapshot || aiConfig;
     }
 
     /**
@@ -364,25 +445,31 @@ class ConceptDiscoveryService extends Base {
         failOnError       = false,
         buildProvider     = buildGraphProvider
     } = {}) {
-        const minSourceLength = aiConfig.conceptDiscovery.minSourceLength;
+        const cfg             = this.#getConfig();
+        const minSourceLength = cfg.conceptDiscovery.minSourceLength;
         if (!text || text.trim().length < minSourceLength) return [];
 
-        const graphProvider = resolveGraphModelProvider(aiConfig);
+        const graphProvider = this.#configSnapshot
+            ? resolveGraphModelProvider(cfg)
+            : (() => {
+                const graphProvider = resolveGraphModelProvider(aiConfig);
+                return graphProvider;
+            })();
         let provider;
         try {
             provider = buildProvider({
                 modelProvider: graphProvider,
                 ollamaConfig : {
-                    host          : aiConfig.ollama.host,
-                    model         : aiConfig.ollama.model,
-                    embeddingModel: aiConfig.ollama.embeddingModel,
-                    keep_alive    : aiConfig.ollama.keep_alive
+                    host          : cfg.ollama.host,
+                    model         : cfg.ollama.model,
+                    embeddingModel: cfg.ollama.embeddingModel,
+                    keep_alive    : cfg.ollama.keep_alive
                 },
                 openAiCompatibleConfig: {
-                    apiKey    : readSecretCarrier({value: aiConfig.openAiCompatible.apiKey, file: aiConfig.openAiCompatible.apiKeyFile, valueName: 'openAiCompatible.apiKey', fileName: 'openAiCompatible.apiKeyFile'}),
-                    host      : aiConfig.openAiCompatible.host,
-                    keep_alive: aiConfig.openAiCompatible.keep_alive,
-                    model     : aiConfig.openAiCompatible.model
+                    apiKey    : readSecretCarrier({value: cfg.openAiCompatible.apiKey, file: cfg.openAiCompatible.apiKeyFile, valueName: 'openAiCompatible.apiKey', fileName: 'openAiCompatible.apiKeyFile'}),
+                    host      : cfg.openAiCompatible.host,
+                    keep_alive: cfg.openAiCompatible.keep_alive,
+                    model     : cfg.openAiCompatible.model
                 }
             });
         } catch (e) {
@@ -447,15 +534,16 @@ class ConceptDiscoveryService extends Base {
      * @protected
      */
     async loadEpicSources() {
-        let issuesDir = this.issuesDir;
+        const cfg       = this.#getConfig();
+        let   issuesDir = this.issuesDir;
         if (!issuesDir) {
-            if (!aiConfig.orchestrator.corpusProjection.enabled || !aiConfig.orchestrator.corpusProjection.materializedRoot) {
+            if (!cfg.orchestrator.corpusProjection.enabled || !cfg.orchestrator.corpusProjection.materializedRoot) {
                 throw new Error(
                     'ConceptDiscoveryService#loadEpicSources: the core corpus projection is disabled on this plane ' +
                     '(orchestrator.corpusProjection.enabled); cannot resolve issues from orchestrator.corpusProjection.materializedRoot.'
                 );
             }
-            issuesDir = path.resolve(aiConfig.orchestrator.corpusProjection.materializedRoot, 'issues');
+            issuesDir = path.resolve(cfg.orchestrator.corpusProjection.materializedRoot, 'issues');
         }
 
         try {
@@ -508,15 +596,16 @@ class ConceptDiscoveryService extends Base {
      * @protected
      */
     async loadPullRequestSources() {
-        let pullsDir = this.pullsDir;
+        const cfg      = this.#getConfig();
+        let   pullsDir = this.pullsDir;
         if (!pullsDir) {
-            if (!aiConfig.orchestrator.corpusProjection.enabled || !aiConfig.orchestrator.corpusProjection.materializedRoot) {
+            if (!cfg.orchestrator.corpusProjection.enabled || !cfg.orchestrator.corpusProjection.materializedRoot) {
                 throw new Error(
                     'ConceptDiscoveryService#loadPullRequestSources: the core corpus projection is disabled on this plane ' +
                     '(orchestrator.corpusProjection.enabled); cannot resolve pulls from orchestrator.corpusProjection.materializedRoot.'
                 );
             }
-            pullsDir = path.resolve(aiConfig.orchestrator.corpusProjection.materializedRoot, 'pulls');
+            pullsDir = path.resolve(cfg.orchestrator.corpusProjection.materializedRoot, 'pulls');
         }
 
         try {
@@ -536,7 +625,7 @@ class ConceptDiscoveryService extends Base {
             return nb - na;
         });
 
-        const scanLimit   = this.prScanLimit ?? aiConfig.conceptDiscovery.prScanLimit;
+        const scanLimit   = this.prScanLimit ?? cfg.conceptDiscovery.prScanLimit;
         const cappedFiles = files.slice(0, scanLimit);
         const sources     = [];
 
@@ -612,10 +701,10 @@ class ConceptDiscoveryService extends Base {
      * processes that are not hot in this process' graph cache. Unit tests can pass explicit
      * messages to `runMessageConceptHarvest` and bypass the live graph read.
      * @param {Object} [options]
-     * @param {Number} [options.limit=aiConfig.conceptDiscovery.messageHarvestBatchLimit] Max messages.
+     * @param {Number} [options.limit=this.#getConfig().conceptDiscovery.messageHarvestBatchLimit] Max messages.
      * @returns {Object[]} Message records `{id, subject, bodyText, taggedConcepts, properties}`.
      */
-    loadUnharvestedMessages({limit = aiConfig.conceptDiscovery.messageHarvestBatchLimit} = {}) {
+    loadUnharvestedMessages({limit = this.#getConfig().conceptDiscovery.messageHarvestBatchLimit} = {}) {
         const db = GraphService.requireDb('ConceptDiscoveryService.loadUnharvestedMessages');
 
         if (db.storage?.db?.prepare) {
@@ -678,13 +767,13 @@ class ConceptDiscoveryService extends Base {
      * @summary Builds the cheap frequency pre-filter for message-derived process/MX concepts.
      * @param {Object[]} messages Message records.
      * @param {Object} [options]
-     * @param {Number} [options.topN=aiConfig.conceptDiscovery.messageHarvestTopN] Candidate cap.
-     * @param {Number} [options.minFrequency=aiConfig.conceptDiscovery.messageHarvestMinFrequency] Minimum count.
+     * @param {Number} [options.topN=this.#getConfig().conceptDiscovery.messageHarvestTopN] Candidate cap.
+     * @param {Number} [options.minFrequency=this.#getConfig().conceptDiscovery.messageHarvestMinFrequency] Minimum count.
      * @returns {Object} Frequency report.
      */
     buildMessageConceptFrequencyReport(messages, {
-        topN         = aiConfig.conceptDiscovery.messageHarvestTopN,
-        minFrequency = aiConfig.conceptDiscovery.messageHarvestMinFrequency
+        topN         = this.#getConfig().conceptDiscovery.messageHarvestTopN,
+        minFrequency = this.#getConfig().conceptDiscovery.messageHarvestMinFrequency
     } = {}) {
         const byKey = new Map();
 

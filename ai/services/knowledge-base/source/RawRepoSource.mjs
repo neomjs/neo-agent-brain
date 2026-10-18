@@ -1,7 +1,6 @@
-import Base     from './Base.mjs';
-import fs       from 'fs-extra';
-import path     from 'path';
-import aiConfig from '../../../mcp/server/knowledge-base/config.mjs';
+import Base from './Base.mjs';
+import fs   from 'fs-extra';
+import path from 'path';
 
 const DEFAULT_EXCLUDE_EXTENSIONS = Object.freeze([
     '.7z', '.avif', '.bin', '.bmp', '.bz2', '.class', '.dmg', '.eot', '.exe',
@@ -77,8 +76,9 @@ class RawRepoSource extends Base {
      * @returns {Promise<Number>} Number of file chunks extracted.
      */
     async extract(writeStream, createHashFn) {
-        const config   = this.normalizeConfig(aiConfig.sourcePaths.RawRepoSource),
-              rootPath = path.resolve(aiConfig.projectRoot, config.root);
+        const activeConfig = this.resolveConfig(),
+              config       = this.normalizeConfig(activeConfig.sourcePaths.RawRepoSource),
+              rootPath     = path.resolve(activeConfig.projectRoot, config.root);
 
         if (!await fs.pathExists(rootPath)) {
             return 0;
@@ -170,14 +170,15 @@ class RawRepoSource extends Base {
      * @protected
      */
     async indexRawDirectory({config, createHashFn, directoryPath, writeStream}) {
-        const entries = await fs.readdir(directoryPath, {withFileTypes: true});
+        const activeConfig = this.resolveConfig(),
+              entries      = await fs.readdir(directoryPath, {withFileTypes: true});
         entries.sort((a, b) => a.name.localeCompare(b.name));
 
         let count = 0;
 
         for (const entry of entries) {
             const absolutePath = path.join(directoryPath, entry.name),
-                  sourcePath   = this.toSourcePath(path.relative(aiConfig.projectRoot, absolutePath));
+                  sourcePath   = this.toSourcePath(path.relative(activeConfig.projectRoot, absolutePath));
 
             if (this.isPathExcluded(sourcePath, config.excludePaths)) {
                 continue;

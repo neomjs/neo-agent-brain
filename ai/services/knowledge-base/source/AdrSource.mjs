@@ -1,7 +1,6 @@
-import Base     from './Base.mjs';
-import fs       from 'fs-extra';
-import path     from 'path';
-import aiConfig from '../../../mcp/server/knowledge-base/config.mjs';
+import Base from './Base.mjs';
+import fs   from 'fs-extra';
+import path from 'path';
 
 /**
  * @summary Extracts knowledge chunks from Architecture Decision Records (ADRs).
@@ -34,10 +33,11 @@ class AdrSource extends Base {
      * @returns {Promise<Number>} The number of chunks extracted.
      */
     async extract(writeStream, createHashFn) {
-        let count = 0;
+        const config = this.resolveConfig();
+        let   count  = 0;
         // Per-source path from the `sourcePaths` config (SSOT — the leaf in the KB config template
         // defines every Source's default path).
-        const adrDir = path.resolve(aiConfig.neoRootDir, aiConfig.sourcePaths.AdrSource);
+        const adrDir = path.resolve(config.neoRootDir, config.sourcePaths.AdrSource);
 
         if (await fs.pathExists(adrDir)) {
             const files = await fs.readdir(adrDir);
@@ -55,7 +55,7 @@ class AdrSource extends Base {
                     kind   : 'adr',
                     name   : path.basename(file, '.md'),
                     content: rawContent.trim(),
-                    source : path.relative(aiConfig.neoRootDir, filePath)
+                    source : path.relative(config.neoRootDir, filePath)
                 };
 
                 chunk.hash = createHashFn(chunk);

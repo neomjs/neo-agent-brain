@@ -35,8 +35,6 @@ test.describe('Neo.ai.daemons.services.LazyEdgeDrainer', () => {
     let queuePath;
 
     test.beforeAll(async () => {
-        const aiConfig = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
-
         const tmpDir = path.resolve(process.cwd(), 'tmp');
         if (!fs.existsSync(tmpDir)) {
             fs.mkdirSync(tmpDir, {recursive: true});
@@ -46,7 +44,6 @@ test.describe('Neo.ai.daemons.services.LazyEdgeDrainer', () => {
         // Isolation is by construction: `storagePaths.graph` is a formula resolving `graphTest`
         // (`:memory:`) under `UNIT_TEST_MODE`, and a `:memory:` store is process-local — stronger
         // than the shared tmp file this suite used to repoint it at.
-        aiConfig.autoIngestFileSystem = false;
 
         LazyEdgeDrainer        = (await import('../../../../../../ai/services/graph/LazyEdgeDrainer.mjs')).default;
         GraphService           = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;

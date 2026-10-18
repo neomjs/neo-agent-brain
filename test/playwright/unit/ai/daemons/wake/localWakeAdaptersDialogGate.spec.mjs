@@ -20,7 +20,7 @@ import path                                  from 'node:path';
 
 const DIALOG_PENDING_MESSAGE = 'interactive dialog pending at phase before input';
 
-const baseRecord = subscriptionId => ({
+const baseRecord = (subscriptionId, adapterOverrides = {}) => ({
     subscriptionId,
     envelope: {
         payload : {totalEvents: 1, latestMessage: {subject: 'probe', priority: 'normal'}},
@@ -34,7 +34,7 @@ const baseRecord = subscriptionId => ({
             addressType    : 'pid',
             instanceAddress: '/Users/tobiasuhlig/Library/Application Support/Claude'
         },
-        adapterConfig: {attemptTimeoutMs: 10_000}
+        adapterConfig: {attemptTimeoutMs: 10_000, ...adapterOverrides}
     }
 });
 
@@ -110,9 +110,7 @@ test.describe('#17629 — wake vs pending interactive dialog', () => {
     test('the dialogProbe escape hatch disarms the gate — the probe never runs and delivery proceeds', async () => {
         let   pasteReached  = false;
         let   probeAttempts = 0;
-        const record        = baseRecord('WAKE_SUB:dialog-defer-d');
-
-        record.route.adapterConfig.dialogProbe = false;
+        const record        = baseRecord('WAKE_SUB:dialog-defer-d', {dialogProbe: false});
 
         const result = await dispatchLocalWake(record, baseEffects({
             spawnAsync: async (command, args) => {
@@ -132,9 +130,7 @@ test.describe('#17629 — wake vs pending interactive dialog', () => {
     });
 
     test('an explicit dialogProbe true is identical to the armed default', async () => {
-        const record = baseRecord('WAKE_SUB:dialog-defer-e');
-
-        record.route.adapterConfig.dialogProbe = true;
+        const record = baseRecord('WAKE_SUB:dialog-defer-e', {dialogProbe: true});
 
         const result = await dispatchLocalWake(record, baseEffects({
             spawnAsync: async (command, args) => {

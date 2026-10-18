@@ -1,5 +1,6 @@
-import fs   from 'fs';
-import path from 'path';
+import fs                                           from 'fs';
+import path                                         from 'path';
+import {cloneConfigSubtree, validateConfigSnapshot} from '../../../services/shared/configSnapshot.mjs';
 
 const LEVEL_PRIORITY = {
     error: 0,
@@ -202,8 +203,8 @@ export const listHistoricalLogFiles = ({
                 name: entry.name,
                 filePath,
                 date: match[1],
-                time    : Date.parse(`${match[1]}T00:00:00.000Z`),
-                size    : includeSize ? statFile(filePath).size : undefined
+                time: Date.parse(`${match[1]}T00:00:00.000Z`),
+                size: includeSize ? statFile(filePath).size : undefined
             };
         })
         .filter(Boolean)
@@ -224,7 +225,7 @@ export const selectPrunableLogFiles = ({files, retention, today}) => {
         return [];
     }
 
-    const prunable = new Set();
+    const prunable  = new Set();
     const todayTime = Date.parse(`${today}T00:00:00.000Z`);
 
     if (Number.isFinite(retention.maxAgeDays) && Number.isFinite(todayTime)) {
@@ -357,8 +358,11 @@ const getConfiguredLogLevel = (aiConfig, loggerConfig) => {
  * @returns {Object}
  */
 export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
+    let configSnapshot   = null;
     let currentStreamKey = null;
     let currentStream    = null;
+
+    const getActiveConfig = () => configSnapshot || aiConfig;
 
     const deadSinkKeys  = new Set();
     const announcedKeys = new Set();
@@ -373,7 +377,8 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
     };
 
     const resolveLogDir = loggerConfig => {
-        const logDir = loggerConfig.logPath || getConfigData(aiConfig).logPath;
+        const activeConfig = getActiveConfig(),
+              logDir       = loggerConfig.logPath || getConfigData(activeConfig).logPath;
 
         if (!logDir) {
             // No silent canonical-path fallback: a file-sink logger whose config resolves no
@@ -391,9 +396,10 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
     };
 
     const getStream = loggerConfig => {
-        const logDir = resolveLogDir(loggerConfig);
-        const today  = new Date().toISOString().slice(0, 10);
-        const key    = `${logDir}::${loggerConfig.filePrefix}::${today}`;
+        const activeConfig = getActiveConfig(),
+              logDir       = resolveLogDir(loggerConfig),
+              today        = new Date().toISOString().slice(0, 10),
+              key          = `${logDir}::${loggerConfig.filePrefix}::${today}`;
 
         if (deadSinkKeys.has(key)) return null;
 
@@ -406,7 +412,7 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
                 today,
                 loggerConfig,
                 filePrefix: loggerConfig.filePrefix,
-                retention : resolveLoggerRetention(aiConfig, loggerConfig)
+                retention : resolveLoggerRetention(activeConfig, loggerConfig)
             });
 
             currentStreamKey = key;
@@ -432,13 +438,15 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
     const writeFile = (level, args, loggerConfig) => {
         if (!loggerConfig.fileSink) return;
 
+        const activeConfig = getActiveConfig();
+
         // One-reality guard: while a Neo config provider is still booting (`isReady` false),
         // its leaves expose ANCHOR DEFAULTS — on an env-relocated deployment the first write
         // would land in the canonical plane. Pre-ready lines route to stderr; the file sink
         // starts with the resolved overlay. Plain-object configs carry no `isReady` and are
         // file-eligible immediately; the read is deliberately direct — a non-object caller is
         // a contract violation that fails loud here (no defensive `?.`).
-        if (aiConfig.isReady === false) {
+        if (activeConfig.isReady === false) {
             process.stderr.write(formatLogLine(level, args, loggerConfig));
             return;
         }
@@ -451,7 +459,7 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
             // Synchronous sink failure (unwritable dir, dangling symlink, unresolvable path
             // at runtime) must never kill a serving process — path validity is the
             // plane-coherence boot assertion's job.
-            announceSinkFailure(`${loggerConfig.logPath || getConfigData(aiConfig).logPath || ''}::${loggerConfig.filePrefix}`, e, loggerConfig);
+            announceSinkFailure(`${loggerConfig.logPath || getConfigData(activeConfig).logPath || ''}::${loggerConfig.filePrefix}`, e, loggerConfig);
         }
 
         if (stream) {
@@ -462,7 +470,8 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
     };
 
     const writeStderr = (level, args, loggerConfig) => {
-        const data = getConfigData(aiConfig);
+        const activeConfig = getActiveConfig(),
+              data         = getConfigData(activeConfig);
 
         if (loggerConfig.stderrMode === 'force') {
             process.stderr.write(formatLogLine(level, args, loggerConfig));
@@ -484,7 +493,7 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
         }
 
         if (loggerConfig.stderrMode === 'threshold') {
-            const configuredLevel = getConfiguredLogLevel(aiConfig, loggerConfig);
+            const configuredLevel = getConfiguredLogLevel(activeConfig, loggerConfig);
 
             if (level === 'error' || LEVEL_PRIORITY[level] <= LEVEL_PRIORITY[configuredLevel]) {
                 console.error(`[${level.toUpperCase()}]`, ...args);
@@ -493,7 +502,8 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
     };
 
     const createLogMethod = (level, options = {}) => (...args) => {
-        const loggerConfig = getLoggerConfig(aiConfig, fallbackLoggerConfig);
+        const activeConfig = getActiveConfig(),
+              loggerConfig = getLoggerConfig(activeConfig, fallbackLoggerConfig);
 
         writeFile(level, args, loggerConfig);
         if (options.fileOnly) return;
@@ -505,6 +515,45 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
     };
 
     const logger = {
+        get configSnapshot() {
+            return configSnapshot;
+        },
+
+        set configSnapshot(value) {
+            configSnapshot = logger.beforeSetConfigSnapshot(value);
+        },
+
+        /**
+         * @summary Rejects non-isolated config snapshots so `logger.configSnapshot` cannot be
+         * pointed at a shared `aiConfig` Provider singleton or any of its live subtrees.
+         * @param {Object|null} value Candidate snapshot or `null` to restore canonical `aiConfig`.
+         * @returns {Object|null}
+         */
+        beforeSetConfigSnapshot(value) {
+            return validateConfigSnapshot(value, {
+                serviceName: 'McpLogger'
+            });
+        },
+
+        /**
+         * @summary Builds an isolated plain-object snapshot of the logger-relevant config leaves.
+         * @param {Object} [overrides={}] Optional leaf overrides for test injection.
+         * @returns {Object}
+         */
+        createConfigSnapshot(overrides = {}) {
+            const data = getConfigData(aiConfig);
+
+            return {
+                debug   : data.debug,
+                isReady : aiConfig.isReady,
+                logLevel: data.logLevel,
+                logPath : data.logPath,
+                ...(data.logger && typeof data.logger === 'object' ? {logger: cloneConfigSubtree(aiConfig, ['logger'])} : {}),
+                ...(data.loggerRetention && typeof data.loggerRetention === 'object' ? {loggerRetention: cloneConfigSubtree(aiConfig, ['loggerRetention'])} : {}),
+                ...overrides
+            };
+        },
+
         debug       : createLogMethod('debug'),
         error       : createLogMethod('error'),
         fatalStartup: createLogMethod('error', {forceStderr: true}),

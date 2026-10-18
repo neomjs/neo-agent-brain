@@ -16,6 +16,7 @@ import {assertNoCoreCorpusAcquisitionOverlap}                                   
 import {RepositorySourcePathClassHierarchyResolver}                                                                        from './helpers/repositoryClassHierarchyResolver.mjs';
 import Base                                                                                                                from 'neo.mjs/src/core/Base.mjs';
 import ChromaManager                                                                                                       from './ChromaManager.mjs';
+import {cloneConfigSubtree, validateConfigSnapshot}                                                                        from '../shared/configSnapshot.mjs';
 import DestructiveOperationGuard                                                                                           from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import VectorService                                                                                                       from './VectorService.mjs';
 import crypto                                                                                                              from 'crypto';
@@ -127,10 +128,71 @@ class DatabaseService extends Base {
          */
         className: 'Neo.ai.services.knowledge-base.DatabaseService',
         /**
+         * @member {Object|null} configSnapshot_=null
+         * @summary Optional isolated config snapshot for deterministic database tests.
+         * @reactive
+         */
+        configSnapshot_: null,
+        /**
          * @member {Boolean} singleton=true
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @summary Validates reactive config snapshots before assignment.
+     * @param {Object|null} value
+     * @returns {Object|null}
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            serviceName     : 'KB_DatabaseService',
+            requiredSubtrees: ['engines', 'engines.chroma']
+        });
+    }
+
+    /**
+     * @summary Creates a plain config snapshot cloned from the KB AiConfig provider.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            backupPath       : aiConfig.backupPath,
+            collectionName   : aiConfig.collectionName,
+            dataPath         : aiConfig.dataPath,
+            defaultRepoSlug  : aiConfig.defaultRepoSlug,
+            defaultTenantId  : aiConfig.defaultTenantId,
+            defaultVisibility: aiConfig.defaultVisibility,
+            engines          : {
+                chroma: cloneConfigSubtree(aiConfig, ['engines', 'chroma'])
+            },
+            knowledgeBase  : null,
+            neoRootDir     : aiConfig.neoRootDir,
+            vectorDimension: aiConfig.vectorDimension
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            engines: {
+                ...snapshot.engines,
+                ...(overrides.engines || {}),
+                chroma: {
+                    ...snapshot.engines.chroma,
+                    ...(overrides.engines?.chroma || {})
+                }
+            }
+        };
+    }
+
+    /**
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.configSnapshot || aiConfig;
     }
 
     /**
@@ -144,15 +206,16 @@ class DatabaseService extends Base {
      * @private
      */
     createContentHash(chunk, context = {}) {
+        const config = this.#getConfig();
         // Prefer the nested tenant-shape only when it exposes a tenant field; Tier-1's inherited
         // `knowledgeBase` ops leaf is not one (see VectorService.getTenantIsolationConfig).
         // A wrong surface here would corrupt content-hash tenant collision-safety.
-        const nestedKb = aiConfig.knowledgeBase;
+        const nestedKb = config.knowledgeBase;
         const kbConfig = (nestedKb != null && (
             nestedKb.defaultTenantId   !== undefined ||
             nestedKb.defaultRepoSlug   !== undefined ||
             nestedKb.defaultVisibility !== undefined
-        )) ? nestedKb : aiConfig;
+        )) ? nestedKb : config;
         const contentString = JSON.stringify({
             tenantId          : context.tenantId ?? chunk.tenantId ?? kbConfig.defaultTenantId,
             repoSlug          : context.repoSlug ?? chunk.repoSlug ?? kbConfig.defaultRepoSlug,
@@ -197,7 +260,7 @@ class DatabaseService extends Base {
      *          degrades that axis to `unknown` rather than asserting continuity.
      *          See `ai/services/shared/captureReceipt.mjs`.
      */
-    async exportDatabase({backupPath = aiConfig.backupPath, payloadEncoding: requestedEncoding = 'jsonl'} = {}) {
+    async exportDatabase({backupPath = this.#getConfig().backupPath, payloadEncoding: requestedEncoding = 'jsonl'} = {}) {
         try {
             logger.log('Starting knowledge base export...');
             const collection                                     = await ChromaManager.getKnowledgeBaseCollection();
@@ -509,7 +572,7 @@ class DatabaseService extends Base {
                 // this pass, a corrupt final row would truncate the collection and only then be
                 // discovered by the per-batch write gate below.
                 for (const filePath of sourceFiles) {
-                    await validateJsonlSourceFile({filePath, expectedDimension: aiConfig.vectorDimension});
+                    await validateJsonlSourceFile({filePath, expectedDimension: this.#getConfig().vectorDimension});
                 }
 
                 logger.log('Replace mode: truncating Knowledge Base collection before import...');
@@ -642,7 +705,7 @@ class DatabaseService extends Base {
                     // without one is rejected fail-loud BEFORE any upsert, never half-persisted
                     // as metadata-only. Replace mode's pre-truncate source proof catches corrupt
                     // rows first; this is the merge path's own gate for direct import callers.
-                    const {valid, rejected} = partitionRowsByVectorValidity({rows: writeBatch, expectedDimension: aiConfig.vectorDimension});
+                    const {valid, rejected} = partitionRowsByVectorValidity({rows: writeBatch, expectedDimension: this.#getConfig().vectorDimension});
 
                     if (rejected.length > 0) {
                         const reasons = rejected.map(r => `${r.id ?? 'unknown'} (${r.reason})`).slice(0, 5).join(', ');
@@ -758,7 +821,8 @@ class DatabaseService extends Base {
      * @returns {Promise<{message: String}>}
      */
     async truncateDatabase({confirmation} = {}) {
-        const collectionName = aiConfig.collectionName;
+        const config         = this.#getConfig(),
+              collectionName = config.collectionName;
 
         try {
             await DestructiveOperationGuard.assertDestructiveTargetAllowed({
@@ -768,12 +832,12 @@ class DatabaseService extends Base {
                 target   : {
                     collectionName,
                     chroma: {
-                        host: aiConfig.engines.chroma.host,
-                        port: aiConfig.engines.chroma.port,
-                        path: aiConfig.engines.chroma.dataDir
+                        host: config.engines.chroma.host,
+                        port: config.engines.chroma.port,
+                        path: config.engines.chroma.dataDir
                     },
-                    path    : aiConfig.engines.chroma.dataDir,
-                    repoRoot: aiConfig.neoRootDir
+                    path    : config.engines.chroma.dataDir,
+                    repoRoot: config.neoRootDir
                 },
                 confirmation
             });
@@ -838,10 +902,12 @@ class DatabaseService extends Base {
      * @param {Function} [options.listConfiguredTenantRepos] Effective graph/YAML/Tier-1 repo reader test seam.
      * @returns {Promise<Object>} Published two-repository artifact manifest and chunk count.
      */
-    async createKnowledgeBase({brainRevision, dataPath = aiConfig.dataPath, listConfiguredTenantRepos} = {}) {
+    async createKnowledgeBase({brainRevision, dataPath, listConfiguredTenantRepos} = {}) {
         const
-            brainRoot = aiConfig.neoRootDir,
-            tenantId  = VectorService.resolveTenantStamp().tenantId;
+            config           = this.#getConfig(),
+            resolvedDataPath = dataPath ?? config.dataPath,
+            brainRoot        = config.neoRootDir,
+            tenantId         = VectorService.resolveTenantStamp().tenantId;
 
         await this.assertCoreCorpusAcquisitionOwnership({tenantId, listConfiguredTenantRepos});
 
@@ -854,7 +920,7 @@ class DatabaseService extends Base {
             });
 
         const result = await materializeCoreCorpusProfiles({
-            dataPath,
+            dataPath    : resolvedDataPath,
             prepared,
             tenantId,
             createHashFn: (chunk, context) => this.createContentHash(chunk, context)
@@ -895,15 +961,18 @@ class DatabaseService extends Base {
      * @returns {Promise<object>} A promise that resolves to a success message, OR a
      *     `{error, code: 'KB_SYNC_VOLUME_EXCEEDED', ...}` shape when the MCP gate fires.
      */
-    async embedKnowledgeBase({viaMcp = false, staleStrategy, shouldYield, brainRevision, dataPath = aiConfig.dataPath, listConfiguredTenantRepos} = {}) {
+    async embedKnowledgeBase({viaMcp = false, staleStrategy, shouldYield, brainRevision, dataPath, listConfiguredTenantRepos} = {}) {
+        const config           = this.#getConfig(),
+              resolvedDataPath = dataPath ?? config.dataPath;
+
         await this.assertCoreCorpusAcquisitionOwnership({
             tenantId: VectorService.resolveTenantStamp().tenantId,
             listConfiguredTenantRepos
         });
 
         return await embedCoreCorpusProfiles({
-            dataPath,
-            brainRoot    : aiConfig.neoRootDir,
+            dataPath     : resolvedDataPath,
+            brainRoot    : config.neoRootDir,
             brainRevision,
             vectorService: VectorService,
             viaMcp,
@@ -942,10 +1011,11 @@ class DatabaseService extends Base {
      * @param {Function} [opts.listConfiguredTenantRepos] Effective repo reader test seam.
      * @returns {Promise<object>} A promise that resolves to the final success message from the embedding step.
      */
-    async syncDatabase({viaMcp = false, staleStrategy, shouldYield, brainRevision, dataPath = aiConfig.dataPath, listConfiguredTenantRepos} = {}) {
+    async syncDatabase({viaMcp = false, staleStrategy, shouldYield, brainRevision, dataPath, listConfiguredTenantRepos} = {}) {
+        const resolvedDataPath = dataPath ?? this.#getConfig().dataPath;
         logger.log('Starting full database synchronization...');
-        await this.createKnowledgeBase({brainRevision, dataPath, listConfiguredTenantRepos});
-        return await this.embedKnowledgeBase({viaMcp, staleStrategy, shouldYield, brainRevision, dataPath, listConfiguredTenantRepos});
+        await this.createKnowledgeBase({brainRevision, dataPath: resolvedDataPath, listConfiguredTenantRepos});
+        return await this.embedKnowledgeBase({viaMcp, staleStrategy, shouldYield, brainRevision, dataPath: resolvedDataPath, listConfiguredTenantRepos});
     }
 
     /**

@@ -2,6 +2,7 @@ import aiConfig                                 from '../../mcp/server/knowledge
 import Base                                     from 'neo.mjs/src/core/Base.mjs';
 import ChromaManager                            from './ChromaManager.mjs';
 import RequestContextService, {normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
+import {validateConfigSnapshot}                 from '../shared/configSnapshot.mjs';
 
 /**
  * @summary Retrieves documents from the knowledge base.
@@ -21,10 +22,47 @@ class DocumentService extends Base {
          */
         className: 'Neo.ai.services.knowledge-base.DocumentService',
         /**
+         * @member {Object|null} configSnapshot_=null
+         * @summary Optional isolated config snapshot for deterministic document retrieval tests.
+         * @reactive
+         */
+        configSnapshot_: null,
+        /**
          * @member {Boolean} singleton=true
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @summary Validates reactive config snapshots before assignment.
+     * @param {Object|null} value
+     * @returns {Object|null}
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            serviceName: 'KB_DocumentService'
+        });
+    }
+
+    /**
+     * @summary Creates a plain config snapshot cloned from the KB AiConfig provider.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        return {
+            defaultTenantId: aiConfig.defaultTenantId,
+            ...overrides
+        };
+    }
+
+    /**
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.configSnapshot || aiConfig;
     }
 
     /**
@@ -54,7 +92,7 @@ class DocumentService extends Base {
         // QueryService.queryDocuments clause (inline per the memory-core MemoryService pattern).
         const requesterTenantId = normalizeUserId(RequestContextService.getUserId());
         if (requesterTenantId) {
-            getOptions.where = {tenantId: {$in: [requesterTenantId, aiConfig.defaultTenantId]}};
+            getOptions.where = {tenantId: {$in: [requesterTenantId, this.#getConfig().defaultTenantId]}};
         }
 
         const results = await collection.get(getOptions);
@@ -94,7 +132,7 @@ class DocumentService extends Base {
         // error leaks no cross-tenant existence signal. Mirrors QueryService.queryDocuments.
         const requesterTenantId = normalizeUserId(RequestContextService.getUserId());
         if (requesterTenantId) {
-            getOptions.where = {tenantId: {$in: [requesterTenantId, aiConfig.defaultTenantId]}};
+            getOptions.where = {tenantId: {$in: [requesterTenantId, this.#getConfig().defaultTenantId]}};
         }
 
         const result = await collection.get(getOptions);

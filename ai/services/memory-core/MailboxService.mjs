@@ -1,15 +1,19 @@
-import {resolveTicketReference}                       from '../graph/ticketReferences.mjs';
-import Base                                           from 'neo.mjs/src/core/Base.mjs';
-import aiConfig                                       from '../../mcp/server/memory-core/config.mjs';
-import logger                                         from '../../mcp/server/memory-core/logger.mjs';
-import RequestContextService, {normalizeUserId}       from '../../mcp/server/shared/services/RequestContextService.mjs';
-import {canonicalizeTaggedConceptIds}                 from '../graph/conceptSpineCanonicalization.mjs';
-import GraphService, {isRlsVisible, resolveRlsUserId} from './GraphService.mjs';
-import PermissionService                        from './PermissionService.mjs';
-import WakeSubscriptionService                  from './WakeSubscriptionService.mjs';
-import {inspectDefectNoteCapture}               from './helpers/defectObservationFold.mjs';
+import {resolveTicketReference} from '../graph/ticketReferences.mjs';
+import Base                     from 'neo.mjs/src/core/Base.mjs';
+import aiConfig                 from '../../mcp/server/memory-core/config.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+}                                                     from '../shared/configSnapshot.mjs';
+import logger                                             from '../../mcp/server/memory-core/logger.mjs';
+import RequestContextService, {normalizeUserId}           from '../../mcp/server/shared/services/RequestContextService.mjs';
+import {canonicalizeTaggedConceptIds}                     from '../graph/conceptSpineCanonicalization.mjs';
+import GraphService, {isRlsVisible, resolveRlsUserId}     from './GraphService.mjs';
+import PermissionService                                  from './PermissionService.mjs';
+import WakeSubscriptionService                            from './WakeSubscriptionService.mjs';
+import {inspectDefectNoteCapture}                         from './helpers/defectObservationFold.mjs';
 import {normalizeMailboxObserver, readMailboxObservation} from './helpers/mailboxObservation.mjs';
-import {resolveSharingPolicy} from './helpers/resolveSharingPolicy.mjs';
+import {resolveSharingPolicy}                             from './helpers/resolveSharingPolicy.mjs';
 import {
     TASK_ASSIGNMENT_AUTHORITY,
     TASK_STATES,
@@ -2633,6 +2637,13 @@ const MESSAGE_RETRACTED_PLACEHOLDER = '[retracted by sender]';
  * @see Neo.ai.mcp.server.shared.services.RequestContextService
  */
 class MailboxService extends Base {
+    /**
+     * Service-local test configuration snapshot seam.
+     * @type {Object|null}
+     * @private
+     */
+    #configSnapshot = null;
+
     static config = {
         /**
          * @member {String} className='Neo.ai.services.memory-core.MailboxService'
@@ -2644,6 +2655,71 @@ class MailboxService extends Base {
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * Validates a service-local test snapshot before storing it.
+     *
+     * @param {Object|null} value
+     * @returns {Object|null}
+     * @protected
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            requiredSubtrees: ['mailbox', 'orchestrator'],
+            serviceName     : 'MailboxService'
+        });
+    }
+
+    /**
+     * Clones the live `aiConfig` leaves read by `MailboxService` into a
+     * plain object suitable for `MailboxService.configSnapshot` in unit tests.
+     *
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            mailbox     : cloneConfigSubtree(aiConfig, ['mailbox']),
+            orchestrator: cloneConfigSubtree(aiConfig, ['orchestrator']),
+            projectRoot : aiConfig.projectRoot
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            mailbox: overrides.mailbox
+                ? {...snapshot.mailbox, ...overrides.mailbox}
+                : snapshot.mailbox,
+            orchestrator: overrides.orchestrator
+                ? {...snapshot.orchestrator, ...overrides.orchestrator}
+                : snapshot.orchestrator
+        };
+    }
+
+    /**
+     * Resolves the active configuration source: the test `configSnapshot` when
+     * installed, otherwise the live `aiConfig` singleton.
+     *
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.#configSnapshot || aiConfig;
     }
 
     static VALID_TASK_STATES = TASK_STATES;
@@ -2826,7 +2902,7 @@ class MailboxService extends Base {
         // `CAN_READ_SESSIONS_OF`) is NOT affected by this setting — reading someone's
         // inbox is categorically different from sending them a message; asymmetric treatment
         // is intentional.
-        const strictReplyPolicy = aiConfig.mailbox.defaultReplyPolicy === 'blocked';
+        const strictReplyPolicy = this.#getConfig().mailbox.defaultReplyPolicy === 'blocked';
 
         // @summary Defensive guard enforcing the "Block Wins" negative-intent primitive.
         // Fires in BOTH reply-policy modes ('open' and 'blocked').
@@ -3948,8 +4024,8 @@ class MailboxService extends Base {
         if (!boundIdentity) throw RequestContextService.unboundIdentityError('observe messages');
 
         const observer = normalizeMailboxObserver(args.observer),
-            viewer = normalizeMailboxIdentityForComparison(boundIdentity),
-            db = GraphService.requireDb('MailboxService.observeMessages');
+            viewer     = normalizeMailboxIdentityForComparison(boundIdentity),
+            db         = GraphService.requireDb('MailboxService.observeMessages');
 
         if (args.to !== undefined || (args.box !== undefined && !['inbox', 'all'].includes(args.box)) ||
             (args.status !== undefined && args.status !== 'all')) {
@@ -3969,7 +4045,7 @@ class MailboxService extends Base {
         return sqlite.transaction(() => {
             const sharing = resolveSharingPolicy({
                 configuredDefault: aiConfig.memorySharing.defaultPolicy,
-                requested: observer.memorySharing
+                requested        : observer.memorySharing
             }), permissions = sharing.policy !== 'team' && observer.scope === 'all'
                 ? PermissionService.readPermissions({}, {fromStorage: true}).capabilities
                 : [],
@@ -3978,8 +4054,8 @@ class MailboxService extends Base {
                 observation = {
                     viewer,
                     planeId: aiConfig.plane.id,
-                    scope: observer.scope,
-                    policy: sharing.policy,
+                    scope  : observer.scope,
+                    policy : sharing.policy,
                     clamped: sharing.clamped
                 };
             observation.admissionKey = crypto.createHash('sha256')
@@ -3987,18 +4063,18 @@ class MailboxService extends Base {
 
             const result = readMailboxObservation({
                 sqlite,
-                viewerVariants: getMailboxIdentityStorageVariants(viewer),
+                viewerVariants      : getMailboxIdentityStorageVariants(viewer),
                 grantedInboxVariants: grants.flatMap(getMailboxIdentityStorageVariants),
-                scope: observer.scope,
-                policy: sharing.policy,
-                limit: args.limit,
-                offset: args.offset,
-                taskStates: args.taskStates,
-                taskOrder: args.taskOrder,
-                fromVariants: args.fromIdentity ? getMailboxIdentityStorageVariants(args.fromIdentity) : [],
-                threadId: args.threadId,
-                taggedConceptGroups: buildTaggedConceptFilterGroups(args.taggedConcepts),
-                messageId: messageId === null ? undefined : messageId
+                scope               : observer.scope,
+                policy              : sharing.policy,
+                limit               : args.limit,
+                offset              : args.offset,
+                taskStates          : args.taskStates,
+                taskOrder           : args.taskOrder,
+                fromVariants        : args.fromIdentity ? getMailboxIdentityStorageVariants(args.fromIdentity) : [],
+                threadId            : args.threadId,
+                taggedConceptGroups : buildTaggedConceptFilterGroups(args.taggedConcepts),
+                messageId           : messageId === null ? undefined : messageId
             });
             if (messageId !== null && result === null) {
                 throw Object.assign(new Error('Message is absent or not admitted to this observer scope'),
@@ -4209,7 +4285,7 @@ class MailboxService extends Base {
      * @returns {Promise<Object|null>}
      */
     async resolvePullRequestStateCached(number) {
-        if (aiConfig.orchestrator.deploymentMode === 'cloud') return null;
+        if (this.#getConfig().orchestrator.deploymentMode === 'cloud') return null;
 
         const now  = Date.now(),
             cached = relatedPullRequestStateCache.get(number);
@@ -4249,11 +4325,12 @@ class MailboxService extends Base {
      * @returns {Promise<Object|null>}
      */
     async resolvePullRequestState(number) {
-        if (aiConfig.orchestrator.deploymentMode === 'cloud') return null;
+        const cfg = this.#getConfig();
+        if (cfg.orchestrator.deploymentMode === 'cloud') return null;
 
         try {
             const {stdout} = await execFileAsync('gh', ['pr', 'view', String(number), '--json', 'state,mergedAt'], {
-                cwd      : aiConfig.projectRoot,
+                cwd      : cfg.projectRoot,
                 timeout  : 5000,
                 maxBuffer: 1024 * 1024
             });

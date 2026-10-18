@@ -106,15 +106,14 @@ function makeFakeGraphDb(prepareImpl) {
 }
 
 test.describe('ai/services REM observability axis helpers (#12068 Sub 2 Part A)', () => {
-    let ChromaManager, GraphService, TopologyInferenceEngine;
-    let originalGetSummaryCollection, originalGraphDb, originalHandoffPath, originalRemRunStateDir, originalRemRunRecentLimit;
-    let aiConfig;
+    let ChromaManager, GraphService, HealthService, TopologyInferenceEngine;
+    let originalGetSummaryCollection, originalGraphDb;
 
     test.beforeAll(async () => {
         ChromaManager           = (await import('../../../../../ai/services/memory-core/managers/ChromaManager.mjs')).default;
         GraphService            = (await import('../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        HealthService           = (await import('../../../../../ai/services/memory-core/HealthService.mjs')).default;
         TopologyInferenceEngine = (await import('../../../../../ai/services/graph/TopologyInferenceEngine.mjs')).default;
-        aiConfig                = (await import('../../../../../ai/services.mjs')).Memory_Config;
 
         await mkdir(tmpRoot, {recursive: true});
     });
@@ -127,20 +126,18 @@ test.describe('ai/services REM observability axis helpers (#12068 Sub 2 Part A)'
     test.beforeEach(() => {
         originalGetSummaryCollection = ChromaManager.getSummaryCollection;
         originalGraphDb              = GraphService.db;
-        originalHandoffPath          = aiConfig.data.handoffFilePathTest;
-        originalRemRunStateDir       = aiConfig.remRunStateDir;
-        originalRemRunRecentLimit    = aiConfig.remRunRecentLimit;
 
-        aiConfig.remRunStateDir      = path.join(tmpRoot, `rem-runs-${crypto.randomUUID()}`);
-        aiConfig.remRunRecentLimit   = 5;
+        HealthService.configSnapshot = HealthService.createConfigSnapshot({
+            remRunRecentLimit: 5,
+            remRunStateDir   : path.join(tmpRoot, `rem-runs-${crypto.randomUUID()}`)
+        });
     });
 
     test.afterEach(() => {
-        ChromaManager.getSummaryCollection = originalGetSummaryCollection;
-        GraphService.db                    = originalGraphDb;
-        aiConfig.data.handoffFilePathTest  = originalHandoffPath;
-        aiConfig.remRunStateDir            = originalRemRunStateDir;
-        aiConfig.remRunRecentLimit         = originalRemRunRecentLimit;
+        ChromaManager.getSummaryCollection     = originalGetSummaryCollection;
+        GraphService.db                        = originalGraphDb;
+        HealthService.configSnapshot           = null;
+        TopologyInferenceEngine.configSnapshot = null;
     });
 
     test.describe('ChromaManager.getUndigestedSessionCount', () => {
@@ -373,18 +370,18 @@ test.describe('ai/services REM observability axis helpers (#12068 Sub 2 Part A)'
                 'Some Golden Path content here, no Source Session marker.',
                 ''
             ].join('\n'), 'utf8');
-            aiConfig.data.handoffFilePathTest = handoffPath;
+            TopologyInferenceEngine.configSnapshot = TopologyInferenceEngine.createConfigSnapshot({handoffFilePath: handoffPath});
 
             expect(await TopologyInferenceEngine.getTopologyConflictCount()).toBe(3);
         });
 
         test('returns 0 when handoff file does not exist (ENOENT)', async () => {
-            aiConfig.data.handoffFilePathTest = uniqueHandoffPath('never-existed');
+            TopologyInferenceEngine.configSnapshot = TopologyInferenceEngine.createConfigSnapshot({handoffFilePath: uniqueHandoffPath('never-existed')});
             expect(await TopologyInferenceEngine.getTopologyConflictCount()).toBe(0);
         });
 
         test('returns 0 when handoffFilePath is unset', async () => {
-            aiConfig.data.handoffFilePathTest = null;
+            TopologyInferenceEngine.configSnapshot = TopologyInferenceEngine.createConfigSnapshot({handoffFilePath: null});
             expect(await TopologyInferenceEngine.getTopologyConflictCount()).toBe(0);
         });
 
@@ -392,7 +389,7 @@ test.describe('ai/services REM observability axis helpers (#12068 Sub 2 Part A)'
             const handoffPath = uniqueHandoffPath('empty');
             await mkdir(tmpRoot, {recursive: true});
             await writeFile(handoffPath,'', 'utf8');
-            aiConfig.data.handoffFilePathTest = handoffPath;
+            TopologyInferenceEngine.configSnapshot = TopologyInferenceEngine.createConfigSnapshot({handoffFilePath: handoffPath});
 
             expect(await TopologyInferenceEngine.getTopologyConflictCount()).toBe(0);
         });
@@ -408,7 +405,7 @@ test.describe('ai/services REM observability axis helpers (#12068 Sub 2 Part A)'
                 'Some content, but zero conflict markers.',
                 ''
             ].join('\n'), 'utf8');
-            aiConfig.data.handoffFilePathTest = handoffPath;
+            TopologyInferenceEngine.configSnapshot = TopologyInferenceEngine.createConfigSnapshot({handoffFilePath: handoffPath});
 
             expect(await TopologyInferenceEngine.getTopologyConflictCount()).toBe(0);
         });
@@ -445,7 +442,7 @@ test.describe('ai/services REM observability axis helpers (#12068 Sub 2 Part A)'
                 '- **[DUPLICATE]** `issue-101`: bar (Source Session: s2)',
                 ''
             ].join('\n'), 'utf8');
-            aiConfig.data.handoffFilePathTest = handoffPath;
+            TopologyInferenceEngine.configSnapshot = TopologyInferenceEngine.createConfigSnapshot({handoffFilePath: handoffPath});
 
             const {callTool} = await import('../../../../../ai/mcp/server/memory-core/toolService.mjs');
             const state      = await callTool('get_rem_pipeline_state', {sessionId: 's1'});
@@ -505,7 +502,7 @@ test.describe('ai/services REM observability axis helpers (#12068 Sub 2 Part A)'
 
                 return {get: () => ({count: 0})};
             });
-            aiConfig.remRunRecentLimit = 1;
+            HealthService.configSnapshot.remRunRecentLimit = 1;
 
             await appendRemRunState(createRemRunStateEntry({
                 runId              : 'rem-old',
@@ -516,7 +513,7 @@ test.describe('ai/services REM observability axis helpers (#12068 Sub 2 Part A)'
                 overflowThreshold  : 0.8,
                 outcome            : 'completed',
                 reasonCode         : 'ok'
-            }), {dir: aiConfig.remRunStateDir});
+            }), {dir: HealthService.configSnapshot.remRunStateDir});
 
             await appendRemRunState(createRemRunStateEntry({
                 runId              : 'rem-new',
@@ -527,7 +524,7 @@ test.describe('ai/services REM observability axis helpers (#12068 Sub 2 Part A)'
                 overflowThreshold  : 0.8,
                 outcome            : 'skipped',
                 reasonCode         : 'no-undigested-sessions'
-            }), {dir: aiConfig.remRunStateDir});
+            }), {dir: HealthService.configSnapshot.remRunStateDir});
 
             const {callTool} = await import('../../../../../ai/mcp/server/memory-core/toolService.mjs');
             const state      = await callTool('get_rem_pipeline_state', {});

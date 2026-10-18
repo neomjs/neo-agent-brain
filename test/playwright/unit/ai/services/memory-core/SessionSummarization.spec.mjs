@@ -40,7 +40,7 @@ function createEmbeddingVector() {
 }
 
 test.describe('Memory Core Offline Summarization', () => {
-    // Bucket A (#10903): heavy SLM (gemma4) dependency — no local LM Studio / Ollama in CI. ticket-ref-ok: bucket taxonomy is defined in that ticket
+    // Bucket A: heavy SLM (gemma4) dependency — no local LM Studio / Ollama in CI.
     // The per-test `localModelActive` guard below stays as a defensive fallback for local-dev
     // without gemma4 running, but the CI-side skip is the early exit that prevents `beforeAll`
     // from probing a nonexistent endpoint.
@@ -57,33 +57,23 @@ test.describe('Memory Core Offline Summarization', () => {
     test.skip(!process.env.NEO_TEST_LIVE_MODELS,
         'live-model spec — set NEO_TEST_LIVE_MODELS=true to run against a real model server');
 
-    let SDK, TextEmbeddingService, dummySessionId, originalEmbedText, originalEmbedTexts, originalSessionModel, restoreAiConfig;
+    let SDK, TextEmbeddingService, dummySessionId, originalEmbedText, originalEmbedTexts, originalSessionModel;
     let localModelActive = false;
 
     // We must use dynamic imports in Playwright tests inside beforeAll or the test body
     // because Neo globals are established during setup()
     test.beforeAll(async () => {
-        // Load and snapshot config FIRST before starting any services. The template already owns
-        // the in-memory graph and per-worker Chroma names under UNIT_TEST_MODE, so this spec never
-        // replaces those safe-by-construction values.
-        const aiConfig = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
-        restoreAiConfig = snapshotAiConfig(aiConfig, [
-            'modelProvider',
-            'embeddingProvider',
-            'openAiCompatible.host',
-            'openAiCompatible.model',
-            'openAiCompatible.embeddingModel',
-            'summarizationBatchLimit'
-        ]);
-
         SDK                  = await import('../../../../../../ai/services.mjs');
         TextEmbeddingService = (await import('../../../../../../ai/services/memory-core/TextEmbeddingService.mjs')).default;
         originalSessionModel = SDK.Memory_SessionService.model;
 
-        // Force 'openAiCompatible' routing for this test
-        SDK.Memory_Config.data.modelProvider         = 'openAiCompatible';
-        SDK.Memory_Config.data.embeddingProvider     = 'openAiCompatible';
-        SDK.Memory_Config.data.openAiCompatible.host           = 'http://127.0.0.1:1234';
+        // Force 'openAiCompatible' routing for this test via SessionService's configSnapshot seam
+        const snapshot = SDK.Memory_SessionService.createConfigSnapshot({
+            modelProvider          : 'openAiCompatible',
+            embeddingProvider      : 'openAiCompatible',
+            summarizationBatchLimit: 5
+        });
+        snapshot.openAiCompatible.host           = 'http://127.0.0.1:1234';
         // The MODEL is deliberately NOT overridden: it resolves from the SSOT leaf
         // (`ai/configBase.mjs` -> `google/gemma-4-26b-a4b`), the deployment's agreed chat model.
         //
@@ -96,20 +86,19 @@ test.describe('Memory Core Offline Summarization', () => {
         //
         // Only `host` is overridden, because the leaf default points at the Ollama port and this
         // spec asserts the OpenAI-compatible route specifically.
-        SDK.Memory_Config.data.openAiCompatible.embeddingModel = 'text-embedding-qwen3-embedding-8b';
-        // Adjust batch limit to speed up test execution
-        SDK.Memory_Config.data.summarizationBatchLimit = 5;
+        snapshot.openAiCompatible.embeddingModel = 'text-embedding-qwen3-embedding-8b';
+        SDK.Memory_SessionService.configSnapshot = snapshot;
 
         // The shared Playwright worker may have constructed SessionService before this file's
         // provider leaves were applied. Rebuild the model from the explicit test config so the
         // assertion exercises the OpenAI-compatible path it names, independent of file order.
         const {buildChatModel} = await import('../../../../../../ai/provider/buildChatModel.mjs');
         SDK.Memory_SessionService.model = buildChatModel({
-            modelProvider         : SDK.Memory_Config.data.modelProvider,
-            openAiCompatibleConfig: SDK.Memory_Config.data.openAiCompatible,
-            ollamaConfig          : SDK.Memory_Config.data.ollama,
-            geminiApiKey          : SDK.Memory_Config.data.geminiApiKey,
-            geminiModelName       : SDK.Memory_Config.data.modelName
+            modelProvider         : snapshot.modelProvider,
+            openAiCompatibleConfig: snapshot.openAiCompatible,
+            ollamaConfig          : snapshot.ollama,
+            geminiApiKey          : snapshot.geminiApiKey,
+            geminiModelName       : snapshot.modelName
         });
 
         // Offline tests cannot hit APIs. Mock both embedding paths used by foreground writes and WAL drains.
@@ -121,7 +110,7 @@ test.describe('Memory Core Offline Summarization', () => {
 
         // Check if openAiCompatible daemon and gemma4 are available
         try {
-            const host = SDK.Memory_Config.data.openAiCompatible.host;
+            const host = snapshot.openAiCompatible.host;
             const res  = await fetch(`${host}/v1/models`);
             if (res.ok) {
                 const data      = await res.json();
@@ -150,10 +139,9 @@ test.describe('Memory Core Offline Summarization', () => {
             }
 
             if (SDK) {
-                SDK.Memory_SessionService.model = originalSessionModel;
+                SDK.Memory_SessionService.model          = originalSessionModel;
+                SDK.Memory_SessionService.configSnapshot = null;
             }
-
-            restoreAiConfig?.();
         }
     });
 
@@ -364,21 +352,22 @@ test.describe('Memory Core Offline Summarization', () => {
 
         const OpenAiCompatibleProvider = (await import('../../../../../../ai/provider/OpenAiCompatible.mjs')).default;
         const qwenSessionId            = crypto.randomUUID();
+        const snapshot                 = SDK.Memory_SessionService.configSnapshot;
         const originalProviderConfig   = {
-            apiKey       : SDK.Memory_Config.data.openAiCompatible.apiKey,
-            host         : SDK.Memory_Config.data.openAiCompatible.host,
-            model        : SDK.Memory_Config.data.openAiCompatible.model,
-            modelProvider: SDK.Memory_Config.data.modelProvider
+            apiKey       : snapshot.openAiCompatible.apiKey,
+            host         : snapshot.openAiCompatible.host,
+            model        : snapshot.openAiCompatible.model,
+            modelProvider: snapshot.modelProvider
         };
         const originalGenerate       = OpenAiCompatibleProvider.prototype.generate;
         let   capturedPrompt         = '';
         let   capturedProviderConfig = null;
 
         try {
-            SDK.Memory_Config.data.modelProvider = 'openAiCompatible';
-            SDK.Memory_Config.data.openAiCompatible.apiKey = 'qwen-secret';
-            SDK.Memory_Config.data.openAiCompatible.host = 'http://127.0.0.1:11434';
-            SDK.Memory_Config.data.openAiCompatible.model = 'qwen3-8b';
+            snapshot.modelProvider           = 'openAiCompatible';
+            snapshot.openAiCompatible.apiKey = 'qwen-secret';
+            snapshot.openAiCompatible.host   = 'http://127.0.0.1:11434';
+            snapshot.openAiCompatible.model  = 'qwen3-8b';
 
             OpenAiCompatibleProvider.prototype.generate = async function(prompt) {
                 capturedPrompt = prompt;
@@ -441,10 +430,10 @@ test.describe('Memory Core Offline Summarization', () => {
             expect(savedSummary.metadatas[0].models).toContain("qwen3-8b");
         } finally {
             OpenAiCompatibleProvider.prototype.generate = originalGenerate;
-            SDK.Memory_Config.data.modelProvider = originalProviderConfig.modelProvider;
-            SDK.Memory_Config.data.openAiCompatible.apiKey = originalProviderConfig.apiKey;
-            SDK.Memory_Config.data.openAiCompatible.host = originalProviderConfig.host;
-            SDK.Memory_Config.data.openAiCompatible.model = originalProviderConfig.model;
+            snapshot.modelProvider                      = originalProviderConfig.modelProvider;
+            snapshot.openAiCompatible.apiKey            = originalProviderConfig.apiKey;
+            snapshot.openAiCompatible.host              = originalProviderConfig.host;
+            snapshot.openAiCompatible.model             = originalProviderConfig.model;
         }
     });
 

@@ -112,12 +112,8 @@ test.describe('StorageRouter Query Re-Ranker Defensive Handling', () => {
     test.beforeAll(async () => {
         SDK                  = await import('../../../../../../ai/services.mjs');
         cleanupSDK           = SDK;
-        restoreAiConfig    ??= snapshotAiConfig(SDK.Memory_Config, ['embeddingProvider']);
         TextEmbeddingService = (await import('../../../../../../ai/services/memory-core/TextEmbeddingService.mjs')).default;
         embeddingService     = TextEmbeddingService;
-
-        // Force offline mode — mock embeddings with deterministic 4096D vectors
-        SDK.Memory_Config.data.embeddingProvider       = 'openAiCompatible';
 
         installEmbeddingMocks(TextEmbeddingService);
 
@@ -305,15 +301,12 @@ test.describe('SessionService Drift Detection — Timestamp Filtering', () => {
     test.beforeAll(async () => {
         SDK                   = await import('../../../../../../ai/services.mjs');
         cleanupSDK            = SDK;
-        restoreAiConfig     ??= snapshotAiConfig(SDK.Memory_Config, ['embeddingProvider']);
         TextEmbeddingService  = (await import('../../../../../../ai/services/memory-core/TextEmbeddingService.mjs')).default;
         embeddingService      = TextEmbeddingService;
         RequestContextService = (await import('../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs')).default;
         ({callTool}           = await import('../../../../../../ai/mcp/server/memory-core/toolService.mjs'));
         requestContextService = RequestContextService;
         memoryCallTool        = callTool;
-
-        SDK.Memory_Config.data.embeddingProvider       = 'openAiCompatible';
 
         installEmbeddingMocks(TextEmbeddingService);
 

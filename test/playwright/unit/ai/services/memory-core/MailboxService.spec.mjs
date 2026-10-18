@@ -61,13 +61,10 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         // config-gated default and assert `'blocked'`-mode behavior (Unauthorized
         // throws on ungranted DMs, reachable-counterparty trust-lift semantics).
         // Explicit pin preserves their invariants regardless of the library default
-        // shipped in the canonical template. Symmetric restore in afterAll per symmetric-cleanup
-        // discipline — Playwright `fullyParallel` interleaves across files even when
-        // describe mode is `serial`, so cross-file mutation of the singleton Config
-        // needs both-ends guards.
-        mailboxAiConfig.data.mailbox ??= {};
-        originalMailboxPolicy = mailboxAiConfig.data.mailbox.defaultReplyPolicy;
-        mailboxAiConfig.data.mailbox.defaultReplyPolicy = 'blocked';
+        // shipped in the canonical template.
+        MailboxService.configSnapshot = MailboxService.createConfigSnapshot({
+            mailbox: {defaultReplyPolicy: 'blocked'}
+        });
 
         if (!LifecycleService._initPromise) {
             await LifecycleService.initAsync();
@@ -82,11 +79,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         const { cleanupChromaManager } = await import('./util.mjs');
         await cleanupChromaManager();
         GraphService.db.autoSave = originalAutoSave;
-        // Symmetric restore of the mailbox policy to whatever the library default
-        // was before this suite ran.
-        if (mailboxAiConfig?.data?.mailbox) {
-            mailboxAiConfig.data.mailbox.defaultReplyPolicy = originalMailboxPolicy;
-        }
+        MailboxService.configSnapshot = null;
         fs.removeSync(messageWalDir);
     });
 
@@ -6107,9 +6100,9 @@ test.describe('Neo.ai.services.memory-core.MailboxService — open policy mode (
 
         mailboxAiConfig = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
 
-        mailboxAiConfig.data.mailbox ??= {};
-        originalMailboxPolicy = mailboxAiConfig.data.mailbox.defaultReplyPolicy;
-        mailboxAiConfig.data.mailbox.defaultReplyPolicy = 'open';
+        MailboxService.configSnapshot = MailboxService.createConfigSnapshot({
+            mailbox: {defaultReplyPolicy: 'open'}
+        });
 
         if (!LifecycleService._initPromise) {
             await LifecycleService.initAsync();
@@ -6124,9 +6117,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService — open policy mode (
         const { cleanupChromaManager } = await import('./util.mjs');
         await cleanupChromaManager();
         GraphService.db.autoSave = originalAutoSave;
-        if (mailboxAiConfig?.data?.mailbox) {
-            mailboxAiConfig.data.mailbox.defaultReplyPolicy = originalMailboxPolicy;
-        }
+        MailboxService.configSnapshot = null;
     });
 
     test.beforeEach(async () => {
@@ -6421,21 +6412,21 @@ test.describe('Neo.ai.services.memory-core.MailboxService — open policy mode (
 
     test('#13411 related PR state echo: cloud deployment mode skips GitHub CLI resolution', async () => {
         const originalResolvePullRequestState = MailboxService.resolvePullRequestState,
-            originalDeploymentMode            = mailboxAiConfig.orchestrator.deploymentMode;
+            originalDeploymentMode            = MailboxService.configSnapshot.orchestrator.deploymentMode;
         let calls = 0;
 
         MailboxService.resolvePullRequestState = async (number) => {
             calls++;
             return { ticket: `#${number}`, number, state: 'OPEN', mergedAt: null }
         };
-        mailboxAiConfig.orchestrator.deploymentMode = 'cloud';
+        MailboxService.configSnapshot.orchestrator.deploymentMode = 'cloud';
 
         try {
             const states = await MailboxService.resolveRelatedPullRequestStates(['#13411']);
             expect(states).toEqual([]);
             expect(calls).toBe(0);
         } finally {
-            mailboxAiConfig.orchestrator.deploymentMode = originalDeploymentMode;
+            MailboxService.configSnapshot.orchestrator.deploymentMode = originalDeploymentMode;
             MailboxService.resolvePullRequestState = originalResolvePullRequestState;
         }
     });

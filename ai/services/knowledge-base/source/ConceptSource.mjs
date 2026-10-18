@@ -1,8 +1,7 @@
-import Base     from './Base.mjs';
-import fs       from 'fs-extra';
-import path     from 'path';
-import matter   from 'gray-matter';
-import aiConfig from '../../../mcp/server/knowledge-base/config.mjs';
+import Base   from './Base.mjs';
+import fs     from 'fs-extra';
+import path   from 'path';
+import matter from 'gray-matter';
 
 /**
  * @summary Extracts knowledge chunks from Concept Ontology markdown files.
@@ -35,9 +34,10 @@ class ConceptSource extends Base {
      * @returns {Promise<Number>} The number of chunks extracted.
      */
     async extract(writeStream, createHashFn) {
-        let count = 0;
+        const config = this.resolveConfig();
+        let   count  = 0;
         // Per-source path from the `sourcePaths` config (SSOT).
-        const conceptsDir = path.resolve(aiConfig.projectRoot, aiConfig.sourcePaths.ConceptSource);
+        const conceptsDir = path.resolve(config.projectRoot, config.sourcePaths.ConceptSource);
 
         if (await fs.pathExists(conceptsDir)) {
             const files = await fs.readdir(conceptsDir);
@@ -57,7 +57,7 @@ class ConceptSource extends Base {
                     tier       : parsed.data.tier || 0,
                     description: parsed.content.trim(),
                     content    : `${parsed.data.name || path.basename(file, '.md')}: ${parsed.content.trim()}`,
-                    source     : path.relative(aiConfig.projectRoot, filePath)
+                    source     : path.relative(config.projectRoot, filePath)
                 };
 
                 chunk.hash = createHashFn(chunk);

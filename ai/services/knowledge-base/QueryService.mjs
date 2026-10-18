@@ -1,14 +1,15 @@
-import fs                                       from 'fs-extra';
-import TextEmbeddingService                     from '../memory-core/TextEmbeddingService.mjs';
-import mcConfig                                 from '../../mcp/server/memory-core/config.mjs';
-import aiConfig                                 from '../../mcp/server/knowledge-base/config.mjs';
-import Base                                     from 'neo.mjs/src/core/Base.mjs';
-import ChromaManager                            from './ChromaManager.mjs';
-import {describeRetrievalProvenance}            from './retrievalProvenance.mjs';
-import RequestContextService, {normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
-import dotenv                                   from 'dotenv';
-import path                                     from 'path';
-import KBRecorderService                        from './KBRecorderService.mjs';
+import fs                                           from 'fs-extra';
+import TextEmbeddingService                         from '../memory-core/TextEmbeddingService.mjs';
+import mcConfig                                     from '../../mcp/server/memory-core/config.mjs';
+import aiConfig                                     from '../../mcp/server/knowledge-base/config.mjs';
+import Base                                         from 'neo.mjs/src/core/Base.mjs';
+import ChromaManager                                from './ChromaManager.mjs';
+import {cloneConfigSubtree, validateConfigSnapshot} from '../shared/configSnapshot.mjs';
+import {describeRetrievalProvenance}                from './retrievalProvenance.mjs';
+import RequestContextService, {normalizeUserId}     from '../../mcp/server/shared/services/RequestContextService.mjs';
+import dotenv                                       from 'dotenv';
+import path                                         from 'path';
+import KBRecorderService                            from './KBRecorderService.mjs';
 
 const {queryScoreWeights} = aiConfig;
 
@@ -61,10 +62,62 @@ class QueryService extends Base {
          */
         className: 'Neo.ai.services.knowledge-base.QueryService',
         /**
+         * @member {Object|null} configSnapshot_=null
+         * @summary Optional isolated config snapshot for deterministic query tests.
+         * @reactive
+         */
+        configSnapshot_: null,
+        /**
          * @member {Boolean} singleton=true
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @summary Validates reactive config snapshots before assignment.
+     * @param {Object|null} value
+     * @returns {Object|null}
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            serviceName     : 'KB_QueryService',
+            requiredSubtrees: ['sourcePaths']
+        });
+    }
+
+    /**
+     * @summary Creates a plain config snapshot cloned from the KB AiConfig provider.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            defaultRepoSlug    : aiConfig.defaultRepoSlug,
+            defaultTenantId    : aiConfig.defaultTenantId,
+            hierarchyPath      : aiConfig.hierarchyPath,
+            neoRootDir         : aiConfig.neoRootDir,
+            nResults           : aiConfig.nResults,
+            queryCandidatePools: aiConfig.queryCandidatePools.map(pool => ({...pool})),
+            sourcePaths        : cloneConfigSubtree(aiConfig, ['sourcePaths'])
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            sourcePaths: {
+                ...snapshot.sourcePaths,
+                ...(overrides.sourcePaths || {})
+            }
+        };
+    }
+
+    /**
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.configSnapshot || aiConfig;
     }
 
     /**
@@ -87,20 +140,22 @@ class QueryService extends Base {
             throw new Error('The "root" parameter is required to prevent excessive context payload. Please specify a root class (e.g., "Neo.component.Base").');
         }
 
+        const hierarchyPath = this.#getConfig().hierarchyPath;
+
         // Named remedy, because the previous one ("sync the knowledge base first") pointed at the
         // wrong operation: a KB sync CONSUMES this file, it does not produce it. The producer is
         // `generate-docs-json`. And since the file is tracked (see `.gitignore`), absence is a
         // checkout or container-plane fault rather than a missing build step.
-        if (!await fs.pathExists(aiConfig.hierarchyPath)) {
+        if (!await fs.pathExists(hierarchyPath)) {
             throw new Error(
-                `Class hierarchy file not found at ${aiConfig.hierarchyPath}. It is tracked in git, so ` +
+                `Class hierarchy file not found at ${hierarchyPath}. It is tracked in git, so ` +
                 `absence indicates an incomplete checkout or a container plane that does not carry it. ` +
                 `Regenerate with \`npm run generate-docs-json\` — a knowledge-base sync consumes this file ` +
                 `and cannot create it.`
             );
         }
 
-        const hierarchy = await fs.readJson(aiConfig.hierarchyPath);
+        const hierarchy = await fs.readJson(hierarchyPath);
 
         // If a root is specified, find all subclasses recursively
         const subtree = {};
@@ -309,7 +364,7 @@ class QueryService extends Base {
                 queryEmbeddingValues,
                 requesterTenantId,
                 typeFilter: this.resolveTypeFilter(type),
-                nResults  : aiConfig.nResults
+                nResults  : this.#getConfig().nResults
             })
         ];
     }
@@ -320,7 +375,8 @@ class QueryService extends Base {
      * @returns {Object[]} Chroma query option objects.
      */
     createBroadQueryOptions({queryEmbeddingValues, requesterTenantId}) {
-        const pools = Array.isArray(aiConfig.queryCandidatePools) ? aiConfig.queryCandidatePools : [];
+        const config = this.#getConfig(),
+              pools  = Array.isArray(config.queryCandidatePools) ? config.queryCandidatePools : [];
 
         const activePools = pools.filter(pool => this.isCandidatePoolActive(pool));
 
@@ -329,12 +385,12 @@ class QueryService extends Base {
                 this.createQueryOption({
                     queryEmbeddingValues,
                     requesterTenantId,
-                    nResults: aiConfig.nResults
+                    nResults: config.nResults
                 })
             ];
         }
 
-        const total     = Math.max(1, Number(aiConfig.nResults) || 1);
+        const total     = Math.max(1, Number(config.nResults) || 1);
         let   allocated = 0;
 
         return activePools
@@ -443,7 +499,7 @@ class QueryService extends Base {
         }
 
         if (requesterTenantId) {
-            clauses.push({tenantId: {$in: [requesterTenantId, aiConfig.defaultTenantId]}});
+            clauses.push({tenantId: {$in: [requesterTenantId, this.#getConfig().defaultTenantId]}});
         }
 
         if (clauses.length === 0) {
@@ -547,9 +603,10 @@ class QueryService extends Base {
      * @returns {Promise<void>}
      */
     async addLexicalRescueScores({query, queryLower, queryWords, sourceMetadata, sourceScores, type}) {
-        const candidates = await this.getLexicalRescueCandidates({query, queryLower, queryWords, type});
-        const rescueBase = queryScoreWeights.lexicalRescueMatch || queryScoreWeights.sourcePathMatch * 80;
-        const typeFilter = this.resolveTypeFilter(type);
+        const config     = this.#getConfig(),
+              candidates = await this.getLexicalRescueCandidates({query, queryLower, queryWords, type}),
+              rescueBase = queryScoreWeights.lexicalRescueMatch || queryScoreWeights.sourcePathMatch * 80,
+              typeFilter = this.resolveTypeFilter(type);
 
         candidates.forEach(candidate => {
             if (!this.matchesTypeFilter(candidate.type, typeFilter)) {
@@ -563,8 +620,8 @@ class QueryService extends Base {
                     source              : candidate.source,
                     type                : candidate.type,
                     name                : candidate.name || path.basename(candidate.source),
-                    repoSlug            : aiConfig.defaultRepoSlug,
-                    tenantId            : aiConfig.defaultTenantId,
+                    repoSlug            : config.defaultRepoSlug,
+                    tenantId            : config.defaultTenantId,
                     inheritanceChain    : '[]',
                     lexicalRescueReasons: candidate.reasons.join(', ')
                 };
@@ -582,39 +639,40 @@ class QueryService extends Base {
      * @returns {Promise<Object[]>} Local rescue candidates.
      */
     async getLexicalRescueCandidates({query, queryLower, queryWords, type}) {
-        const candidateMap = new Map();
-        const typeFilter   = this.resolveTypeFilter(type);
-        const addCandidate = async (source, reason, score = 0) => {
-            const normalizedSource = this.normalizeSourcePath(source);
+        const config       = this.#getConfig(),
+              candidateMap = new Map(),
+              typeFilter   = this.resolveTypeFilter(type),
+              addCandidate = async (source, reason, score = 0) => {
+                  const normalizedSource = this.normalizeSourcePath(source);
 
-            if (!normalizedSource || !lexicalRescueExtensions.has(path.extname(normalizedSource).toLowerCase())) {
-                return;
-            }
+                  if (!normalizedSource || !lexicalRescueExtensions.has(path.extname(normalizedSource).toLowerCase())) {
+                      return;
+                  }
 
-            if (!this.matchesTypeFilter(this.inferSourceType(normalizedSource), typeFilter)) {
-                return;
-            }
+                  if (!this.matchesTypeFilter(this.inferSourceType(normalizedSource), typeFilter)) {
+                      return;
+                  }
 
-            const absoluteSource = path.resolve(aiConfig.neoRootDir, normalizedSource);
-            if (!absoluteSource.startsWith(path.resolve(aiConfig.neoRootDir)) || !await fs.pathExists(absoluteSource)) {
-                return;
-            }
+                  const absoluteSource = path.resolve(config.neoRootDir, normalizedSource);
+                  if (!absoluteSource.startsWith(path.resolve(config.neoRootDir)) || !await fs.pathExists(absoluteSource)) {
+                      return;
+                  }
 
-            const existing = candidateMap.get(normalizedSource) || {
-                source : normalizedSource,
-                type   : this.inferSourceType(normalizedSource),
-                name   : path.basename(normalizedSource),
-                reasons: [],
-                score  : 0
-            };
+                  const existing = candidateMap.get(normalizedSource) || {
+                      source : normalizedSource,
+                      type   : this.inferSourceType(normalizedSource),
+                      name   : path.basename(normalizedSource),
+                      reasons: [],
+                      score  : 0
+                  };
 
-            if (!existing.reasons.includes(reason)) {
-                existing.reasons.push(reason);
-            }
+                  if (!existing.reasons.includes(reason)) {
+                      existing.reasons.push(reason);
+                  }
 
-            existing.score += score;
-            candidateMap.set(normalizedSource, existing);
-        };
+                  existing.score += score;
+                  candidateMap.set(normalizedSource, existing);
+              };
 
         await this.addGuideTitleRescues({addCandidate, queryLower, queryWords});
         await this.addPathHintRescues({addCandidate, query});
@@ -630,13 +688,14 @@ class QueryService extends Base {
      * @returns {Promise<void>}
      */
     async addGuideTitleRescues({addCandidate, queryLower, queryWords}) {
-        const learnTreePath = path.resolve(aiConfig.neoRootDir, aiConfig.sourcePaths.LearningSource || 'learn/tree.json');
+        const config        = this.#getConfig(),
+              learnTreePath = path.resolve(config.neoRootDir, config.sourcePaths.LearningSource || 'learn/tree.json');
 
         if (!await fs.pathExists(learnTreePath)) {
             return;
         }
 
-        const learnBaseRelative = path.dirname(aiConfig.sourcePaths.LearningSource || 'learn/tree.json');
+        const learnBaseRelative = path.dirname(config.sourcePaths.LearningSource || 'learn/tree.json');
         const learnTree         = await fs.readJson(learnTreePath);
         const queryWordSet      = new Set(queryWords);
 
@@ -664,12 +723,13 @@ class QueryService extends Base {
      * @returns {Promise<void>}
      */
     async addPathHintRescues({addCandidate, query}) {
-        const pathHints = this.extractPathHints(query);
+        const config    = this.#getConfig(),
+              pathHints = this.extractPathHints(query);
 
         for (const hint of pathHints) {
-            const absolutePath = path.resolve(aiConfig.neoRootDir, hint);
+            const absolutePath = path.resolve(config.neoRootDir, hint);
 
-            if (!absolutePath.startsWith(path.resolve(aiConfig.neoRootDir)) || !await fs.pathExists(absolutePath)) {
+            if (!absolutePath.startsWith(path.resolve(config.neoRootDir)) || !await fs.pathExists(absolutePath)) {
                 continue;
             }
 
@@ -683,7 +743,7 @@ class QueryService extends Base {
                 // shifted the collected slice and lost a boundary anchor. The outer `limit` still bounds results.
                 const files = await this.collectFiles(absolutePath, {limit: 40});
                 for (const file of files) {
-                    await addCandidate(path.relative(aiConfig.neoRootDir, file), `path-dir:${hint}`, queryScoreWeights.sourcePathMatch);
+                    await addCandidate(path.relative(config.neoRootDir, file), `path-dir:${hint}`, queryScoreWeights.sourcePathMatch);
                 }
             }
         }
@@ -695,12 +755,13 @@ class QueryService extends Base {
      * @returns {Promise<void>}
      */
     async addFilenameHintRescues({addCandidate, query}) {
-        const fileNames = this.extractFilenameHints(query);
+        const config    = this.#getConfig(),
+              fileNames = this.extractFilenameHints(query);
 
         for (const fileName of fileNames) {
-            const files = await this.findFilesByBasename(path.resolve(aiConfig.neoRootDir), fileName, {limit: 6});
+            const files = await this.findFilesByBasename(path.resolve(config.neoRootDir), fileName, {limit: 6});
             for (const file of files) {
-                await addCandidate(path.relative(aiConfig.neoRootDir, file), `filename:${fileName}`, queryScoreWeights.fileNameMatch * 20);
+                await addCandidate(path.relative(config.neoRootDir, file), `filename:${fileName}`, queryScoreWeights.fileNameMatch * 20);
             }
         }
     }
@@ -760,8 +821,9 @@ class QueryService extends Base {
      * @returns {Promise<Array<{source: String, compact: String}>>} Source index entries.
      */
     async buildCodeTermRescueIndex() {
-        const entries = [];
-        const roots   = codeTermRescueRoots.map(root => path.resolve(aiConfig.neoRootDir, root));
+        const config  = this.#getConfig(),
+              entries = [],
+              roots   = codeTermRescueRoots.map(root => path.resolve(config.neoRootDir, root));
 
         for (const root of roots) {
             if (!await fs.pathExists(root)) {
@@ -775,7 +837,7 @@ class QueryService extends Base {
 
                 if (compact) {
                     entries.push({
-                        source: this.normalizeSourcePath(path.relative(aiConfig.neoRootDir, file)),
+                        source: this.normalizeSourcePath(path.relative(config.neoRootDir, file)),
                         compact
                     });
                 }
@@ -841,7 +903,7 @@ class QueryService extends Base {
         if (source.startsWith('test/')) return 'test';
         if (source.startsWith('.github/RELEASE_NOTES/')) return 'release';
 
-        const apiSources = aiConfig.sourcePaths.ApiSource || [];
+        const apiSources = this.#getConfig().sourcePaths.ApiSource || [];
         const match      = apiSources.find(({path: sourceRoot}) =>
             source === sourceRoot || source.startsWith(`${sourceRoot}/`)
         );

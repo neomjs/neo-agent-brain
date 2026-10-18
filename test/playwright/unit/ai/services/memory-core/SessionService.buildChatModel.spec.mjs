@@ -102,17 +102,17 @@ test.describe('buildChatModel provider selector (#11965 Sub-2)', () => {
         };
 
         // Pass a mutable ollamaConfig ref so we can change it between invocations.
-        const ollamaConfig = {host: 'http://v1.test', model: 'model-v1', keep_alive: -1};
-        const model        = buildChatModel({
+        const ollamaRef = {host: 'http://v1.test', model: 'model-v1', keep_alive: -1};
+        const model     = buildChatModel({
             modelProvider        : 'ollama',
-            ollamaConfig,
+            ollamaConfig         : ollamaRef,
             ollamaProviderFactory: () => fakeOllama
         });
 
         await model.generateContent('first');
-        ollamaConfig.host  = 'http://v2.test';
-        ollamaConfig.model = 'model-v2';
-        ollamaConfig.keep_alive = 0;
+        ollamaRef.host       = 'http://v2.test';
+        ollamaRef.model      = 'model-v2';
+        ollamaRef.keep_alive = 0;
         await model.generateContent('second');
 
         expect(captured).toEqual([

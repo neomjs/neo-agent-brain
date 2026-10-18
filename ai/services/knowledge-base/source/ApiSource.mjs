@@ -3,7 +3,6 @@ import SourceParser from '../parser/SourceParser.mjs';
 import fs           from 'fs-extra';
 import logger       from '../../../mcp/server/knowledge-base/logger.mjs';
 import path         from 'path';
-import aiConfig     from '../../../mcp/server/knowledge-base/config.mjs';
 
 import {assertCoverageBaseline, loadClassHierarchy} from '../helpers/classHierarchyContract.mjs';
 
@@ -44,9 +43,10 @@ class ApiSource extends Base {
      * @returns {Promise<Number>} The number of chunks extracted.
      */
     async extract(writeStream, createHashFn) {
+        const config = this.resolveConfig();
         // Ordered source rows keep dotted package paths as VALUES. Filesystem paths cannot be
         // reactive-namespace object keys: dots are structural separators in the config substrate.
-        const sourceEntries = aiConfig.sourcePaths.ApiSource;
+        const sourceEntries = config.sourcePaths.ApiSource;
 
         if (!Array.isArray(sourceEntries) || !sourceEntries.every(entry =>
             entry && typeof entry.path === 'string' && entry.path &&
@@ -61,7 +61,7 @@ class ApiSource extends Base {
         // it live in the helper's docblock. Refusal happens HERE, before the indexing loop below,
         // so no chunk is written under a degraded identity.
         const hierarchy = await loadClassHierarchy({
-            hierarchyPath  : aiConfig.hierarchyPath,
+            hierarchyPath  : config.hierarchyPath,
             sourcePathCount: sourceEntries.length
         });
 
@@ -284,7 +284,7 @@ class ApiSource extends Base {
      */
     async indexRawDirectory(writeStream, createHashFn, relativePath, defaultType, hierarchy, coverage) {
         let   count    = 0;
-        const fullPath = path.resolve(aiConfig.neoRootDir, relativePath);
+        const fullPath = path.resolve(this.resolveConfig().neoRootDir, relativePath);
 
         if (!await fs.pathExists(fullPath)) return 0;
 

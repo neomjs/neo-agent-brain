@@ -15,13 +15,14 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import fs             from 'fs-extra';
-import os             from 'os';
-import path           from 'path';
-import aiConfig       from '../../../../../../ai/mcp/server/knowledge-base/config.template.mjs';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import fs                          from 'fs-extra';
+import os                          from 'os';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {
     KB_VECTOR_EMBED_UNDELIVERABLE_AT_GEOMETRY,
     classifyEmbedFailureCode
@@ -207,6 +208,7 @@ test.describe('IngestionService.ingestSourceFiles', () => {
 
     test.afterEach(() => {
         Object.assign(Service, originals);
+        Service.configSnapshot = null;
     });
 
     test('replaces successful profile source revisions through ingestion and ordinary source lookup', async () => {
@@ -2588,7 +2590,6 @@ test.describe('IngestionService.listConfiguredTenantRepos (#12145)', () => {
     let Service;
     let originals;
     let graphStub;
-    let originalAiConfigRepos;
 
     test.beforeAll(async () => {
         Service = (await import('../../../../../../ai/services/knowledge-base/IngestionService.mjs')).default;
@@ -2600,7 +2601,7 @@ test.describe('IngestionService.listConfiguredTenantRepos (#12145)', () => {
             graphService               : Service.graphService,
             readKbConfigBootstrapResult: Service.readKbConfigBootstrapResult
         };
-        originalAiConfigRepos = aiConfig.tenantRepos;
+        Service.configSnapshot = Service.createConfigSnapshot();
 
         Service.graphService = graphStub;
         setBootstrapDiagnostic({
@@ -2614,7 +2615,7 @@ test.describe('IngestionService.listConfiguredTenantRepos (#12145)', () => {
 
     test.afterEach(() => {
         Object.assign(Service, originals);
-        aiConfig.tenantRepos = originalAiConfigRepos;
+        Service.configSnapshot = null;
     });
 
     function setBootstrapDiagnostic(diagnostic) {
@@ -2744,7 +2745,7 @@ test.describe('IngestionService.listConfiguredTenantRepos (#12145)', () => {
     });
 
     test('yaml tier with empty tenantRepos suppresses the aiConfig default tier for that tenant (presence-based winner)', async () => {
-        aiConfig.tenantRepos = [{tenantId: 'tenant-a', cloneUrl: 'https://github.com/neomjs/default.git', credentialRef: 'env:D'}];
+        Service.configSnapshot.tenantRepos = [{tenantId: 'tenant-a', cloneUrl: 'https://github.com/neomjs/default.git', credentialRef: 'env:D'}];
         setBootstrapDocument({
             tenants: {'tenant-a': {tenantRepos: []}}
         });
@@ -2754,7 +2755,7 @@ test.describe('IngestionService.listConfiguredTenantRepos (#12145)', () => {
     });
 
     test('preserves fallback repos while reporting a bounded bootstrap read failure', async () => {
-        aiConfig.tenantRepos = [{
+        Service.configSnapshot.tenantRepos = [{
             tenantId     : 'tenant-a',
             cloneUrl     : 'https://github.com/neomjs/default.git',
             credentialRef: 'env:D'
@@ -2786,5 +2787,11 @@ test.describe('IngestionService.listConfiguredTenantRepos (#12145)', () => {
         });
         expect(JSON.stringify(configDiagnostics)).not.toContain('token-secret');
         expect(JSON.stringify(configDiagnostics)).not.toContain('/srv/private');
+    });
+
+    test('uses per-test config snapshots instead of mutating shared config', async () => {
+        const specSource = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(specSource)).toEqual([]);
     });
 });

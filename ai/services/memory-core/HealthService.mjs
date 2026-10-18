@@ -1,12 +1,16 @@
-import fs                       from 'fs/promises';
-import fsExtra                  from 'fs-extra';
-import path                     from 'path';
-import {fileURLToPath}          from 'url';
-import aiConfig                 from '../../mcp/server/memory-core/config.mjs';
-import Base                     from 'neo.mjs/src/core/Base.mjs';
-import {isBundleRestorable}     from './helpers/bundleIntegrity.mjs';
-import {readWakeDelivery}       from './wakeDeliveryReader.mjs';
-import {readDeployedRevision}   from '../shared/deployedRevision.mjs';
+import fs                     from 'fs/promises';
+import fsExtra                from 'fs-extra';
+import path                   from 'path';
+import {fileURLToPath}        from 'url';
+import aiConfig               from '../../mcp/server/memory-core/config.mjs';
+import Base                   from 'neo.mjs/src/core/Base.mjs';
+import {isBundleRestorable}   from './helpers/bundleIntegrity.mjs';
+import {readWakeDelivery}     from './wakeDeliveryReader.mjs';
+import {readDeployedRevision} from '../shared/deployedRevision.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+}                               from '../shared/configSnapshot.mjs';
 import RuntimeFreshnessService  from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
 import ChromaManager            from './managers/ChromaManager.mjs';
 import StorageRouter            from './managers/StorageRouter.mjs';
@@ -900,6 +904,19 @@ export function buildChromaMigrationStats(metadatas, {summaryCollection = false}
     return stats;
 }
 
+let activeConfigSnapshot = null;
+
+/**
+ * Resolves the active configuration source: the test `configSnapshot` when
+ * installed on `HealthService`, otherwise the live `aiConfig` singleton.
+ *
+ * @returns {Object}
+ * @private
+ */
+function getActiveConfig() {
+    return activeConfigSnapshot || aiConfig;
+}
+
 /**
  * @summary Runs one REM observability axis probe with zero-value fallback.
  *
@@ -909,10 +926,10 @@ export function buildChromaMigrationStats(metadatas, {summaryCollection = false}
  *
  * @param {String} label Human-readable axis label for warning logs
  * @param {Function} fn Probe function returning the axis count
- * @param {Number} [timeoutMs=aiConfig.healthcheck.remAxisTimeoutMs] Max time to wait for the axis.
+ * @param {Number} [timeoutMs=getActiveConfig().healthcheck.remAxisTimeoutMs] Max time to wait for the axis.
  * @returns {Promise<{value: Number, error: String|null}>} Axis count and optional degradation reason
  */
-async function resolveRemAxis(label, fn, timeoutMs = aiConfig.healthcheck.remAxisTimeoutMs) {
+async function resolveRemAxis(label, fn, timeoutMs = getActiveConfig().healthcheck.remAxisTimeoutMs) {
     try {
         return {
             value: await withTimeout(Promise.resolve(fn()), timeoutMs, `REM axis ${label}`),
@@ -954,14 +971,15 @@ async function resolveRemBlock(label, fn, fallback) {
  *
  * @param {Object} [options]
  * @param {String} [options.sessionId] Optional session id for per-session entity yield
- * @param {Number} [options.axisTimeoutMs=aiConfig.healthcheck.remAxisTimeoutMs] Max time to wait for each axis.
+ * @param {Number} [options.axisTimeoutMs=getActiveConfig().healthcheck.remAxisTimeoutMs] Max time to wait for each axis.
  * @returns {Promise<Object>} REM pipeline state projection
  * @see ChromaManager#getUndigestedSessionCount
  * @see ChromaManager#getGraphDigestedCount
  * @see Neo.ai.services.memory-core.GraphService#getSessionNodeCount
  * @see Neo.ai.daemons.services.TopologyInferenceEngine#getTopologyConflictCount
  */
-export async function buildRemPipelineState({sessionId, axisTimeoutMs = aiConfig.healthcheck.remAxisTimeoutMs} = {}) {
+export async function buildRemPipelineState({sessionId, axisTimeoutMs = getActiveConfig().healthcheck.remAxisTimeoutMs} = {}) {
+    const cfg = getActiveConfig();
     const [
         {default: GraphService},
         {default: TopologyInferenceEngine}
@@ -989,8 +1007,8 @@ export async function buildRemPipelineState({sessionId, axisTimeoutMs = aiConfig
     let recentCycles = [], recentCyclesError;
     try {
         const entries = await readRecentRemRunStates({
-            dir  : aiConfig.remRunStateDir,
-            limit: aiConfig.remRunRecentLimit
+            dir  : cfg.remRunStateDir,
+            limit: cfg.remRunRecentLimit
         });
 
         recentCycles = entries.map(entry => ({
@@ -1289,6 +1307,57 @@ class HealthService extends Base {
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return activeConfigSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        activeConfigSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * Validates a service-local test snapshot before storing it.
+     *
+     * @param {Object|null} value
+     * @returns {Object|null}
+     * @protected
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            requiredSubtrees: ['healthcheck'],
+            serviceName     : 'HealthService'
+        });
+    }
+
+    /**
+     * Clones the live `aiConfig` leaves read by `HealthService` REM observability
+     * into a plain object suitable for `HealthService.configSnapshot` in unit tests.
+     *
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            healthcheck      : cloneConfigSubtree(aiConfig, ['healthcheck']),
+            remRunRecentLimit: aiConfig.remRunRecentLimit,
+            remRunStateDir   : aiConfig.remRunStateDir
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            healthcheck: overrides.healthcheck
+                ? {...snapshot.healthcheck, ...overrides.healthcheck}
+                : snapshot.healthcheck
+        };
     }
 
     /**

@@ -41,93 +41,84 @@ const __dirname  = path.dirname(__filename);
  */
 test.describe('KB MCP server logger — always-on file sink (#10576)', () => {
     let logger;
-    let aiConfig;
     let tmpLogDir;
-    let originalLogPath;
 
     test.beforeAll(async () => {
-        aiConfig = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
+        tmpLogDir = path.resolve(os.tmpdir(), `kb-logger-test-${process.pid}-${Date.now()}`);
+        logger    = (await import('../../../../../../../ai/mcp/server/knowledge-base/logger.mjs')).default;
+    });
 
-        tmpLogDir       = path.resolve(os.tmpdir(), `kb-logger-test-${process.pid}-${Date.now()}`);
-        originalLogPath = aiConfig.data.logPath;
-        aiConfig.data.logPath = tmpLogDir;
-
-        // Logger reads `aiConfig.logPath` lazily (per-write), so import order doesn't
-        // matter — the override applied above takes effect on the next stream open.
-        logger = (await import('../../../../../../../ai/mcp/server/knowledge-base/logger.mjs')).default;
+    test.afterEach(() => {
+        logger.configSnapshot = null;
     });
 
     test.afterAll(() => {
-        aiConfig.data.logPath = originalLogPath;
+        logger.configSnapshot = null;
         if (tmpLogDir && fs.existsSync(tmpLogDir)) {
             fs.rmSync(tmpLogDir, {recursive: true, force: true});
         }
     });
 
     test('preserves Error stack/message in the durable log (#10580 RA2)', async () => {
-        const wasDebug = aiConfig.data.debug;
-        aiConfig.data.debug = false;
+        logger.configSnapshot = logger.createConfigSnapshot({
+            debug  : false,
+            logPath: tmpLogDir
+        });
 
-        try {
-            const today    = new Date().toISOString().slice(0, 10);
-            const expected = path.join(tmpLogDir, `kb-server-${today}.log`);
+        const today    = new Date().toISOString().slice(0, 10);
+        const expected = path.join(tmpLogDir, `kb-server-${today}.log`);
 
-            const err = new Error('chroma upsert failed at chunk 42');
-            logger.error('embedding batch failed', err);
+        const err = new Error('chroma upsert failed at chunk 42');
+        logger.error('embedding batch failed', err);
 
-            // Also exercise circular-reference fallback so unhandled JSON throws can't
-            // crash the logger itself (defensive — see stringifyArg in logger.mjs).
-            const circular = {};
-            circular.self = circular;
-            logger.warn('circular sample', circular);
+        // Also exercise circular-reference fallback so unhandled JSON throws can't
+        // crash the logger itself (defensive — see stringifyArg in logger.mjs).
+        const circular = {};
+        circular.self = circular;
+        logger.warn('circular sample', circular);
 
-            await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 100));
 
-            const content = fs.readFileSync(expected, 'utf8');
+        const content = fs.readFileSync(expected, 'utf8');
 
-            // Error message + stack must both land in the file. JSON.stringify on an
-            // Error returns `{}`; without the special-case, the post-mortem log would
-            // be useless for the exact use case the file sink exists for.
-            expect(content).toContain('chroma upsert failed at chunk 42');
-            expect(content).toContain('at '); // stack frame marker (Node V8)
+        // Error message + stack must both land in the file. JSON.stringify on an
+        // Error returns `{}`; without the special-case, the post-mortem log would
+        // be useless for the exact use case the file sink exists for.
+        expect(content).toContain('chroma upsert failed at chunk 42');
+        expect(content).toContain('at '); // stack frame marker (Node V8)
 
-            // Circular ref must not throw inside the logger — falls back to String().
-            expect(content).toContain('circular sample');
-        } finally {
-            aiConfig.data.debug = wasDebug;
-        }
+        // Circular ref must not throw inside the logger — falls back to String().
+        expect(content).toContain('circular sample');
     });
 
     test('writes log entries to daily-rotated file regardless of debug flag', async () => {
-        const wasDebug = aiConfig.data.debug;
-        aiConfig.data.debug = false; // explicit: file sink must run with debug OFF.
+        logger.configSnapshot = logger.createConfigSnapshot({
+            debug  : false, // explicit: file sink must run with debug OFF.
+            logPath: tmpLogDir
+        });
 
-        try {
-            const today    = new Date().toISOString().slice(0, 10);
-            const expected = path.join(tmpLogDir, `kb-server-${today}.log`);
+        const today    = new Date().toISOString().slice(0, 10);
+        const expected = path.join(tmpLogDir, `kb-server-${today}.log`);
 
-            logger.log('hello-world');
-            logger.info('info-line');
-            logger.warn('warn-line');
-            logger.error('error-line');
+        logger.log('hello-world');
+        logger.info('info-line');
+        logger.warn('warn-line');
+        logger.error('error-line');
 
-            // Streams are async — wait for buffered writes to flush.
-            await new Promise(resolve => setTimeout(resolve, 100));
+        // Streams are async — wait for buffered writes to flush.
+        await new Promise(resolve => setTimeout(resolve, 100));
 
-            expect(fs.existsSync(expected)).toBe(true);
+        expect(fs.existsSync(expected)).toBe(true);
 
-            const content = fs.readFileSync(expected, 'utf8');
-            expect(content).toContain('[LOG] hello-world');
-            expect(content).toContain('[INFO] info-line');
-            expect(content).toContain('[WARN] warn-line');
-            expect(content).toContain('[ERROR] error-line');
+        const content = fs.readFileSync(expected, 'utf8');
+        expect(content).toContain('[LOG] hello-world');
+        expect(content).toContain('[INFO] info-line');
+        expect(content).toContain('[WARN] warn-line');
+        expect(content).toContain('[ERROR] error-line');
 
-            // Each line carries an ISO 8601 timestamp prefix.
-            const logLine = content.split('\n').find(line => line.includes('[LOG] hello-world'));
-            expect(logLine).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[LOG\] hello-world/);
-        } finally {
-            aiConfig.data.debug = wasDebug;
-        }
+        // Each line carries an ISO 8601 timestamp prefix.
+        const logLine = content.split('\n').find(line => line.includes('[LOG] hello-world'));
+        expect(logLine).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \[LOG\] hello-world/);
     });
 
 });
