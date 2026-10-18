@@ -1264,7 +1264,7 @@ class TenantRepoSyncService extends Base {
      */
     resolveEmbeddingProbeIdentity({episodeKeys, fraction}) {
         const
-            cfg       = this.#getConfig(),
+            cfg       = this.configSnapshot || AiConfig,
             probeSize = buildEmbeddingProbeInput({
                 estimateBandTokens: resolveEmbeddingAdmissionBand({
                     contextLimitTokens       : cfg.localModels.embedding.contextLimitTokens,
@@ -1293,7 +1293,7 @@ class TenantRepoSyncService extends Base {
      */
     createEmbeddingProbeFn({operationLabel, probeSize, timeoutMs}) {
         return () => buildEmbeddingProbeBlock({
-            cfg      : this.#getConfig(),
+            cfg      : this.configSnapshot || AiConfig,
             embedText: (text, explicitProvider, options) =>
                 TextEmbeddingService.embedText(text, explicitProvider, options),
             input    : probeSize.input,
@@ -1385,7 +1385,7 @@ class TenantRepoSyncService extends Base {
         runProbe,
         failureTtlMs    = EMBEDDING_RECOVERY_FAILURE_TTL_MS,
         failureTtlMaxMs = EMBEDDING_RECOVERY_FAILURE_TTL_MAX_MS,
-        deathTtlMs      = EMBEDDING_AUTHORIZATION_DEATH_TTL_CADENCES * this.#getConfig().data.orchestrator.intervals.tenantRepoSyncMs
+        deathTtlMs      = EMBEDDING_AUTHORIZATION_DEATH_TTL_CADENCES * (this.configSnapshot || AiConfig).orchestrator.intervals.tenantRepoSyncMs
     } = {}) {
         const request = this.embeddingAuthorizationRequest;
 

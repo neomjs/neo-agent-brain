@@ -159,7 +159,12 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         SwarmHeartbeatService.runScriptJson      = async () => null;
         SwarmHeartbeatService.runScript          = async () => '';
         SwarmHeartbeatService.runCmd             = async () => '[]';
-        delete SwarmHeartbeatService.getGraphDb;
+        SwarmHeartbeatService.getGraphDb         = () => ({
+            prepare: () => ({
+                all: () => [],
+                get: () => ({count: 0})
+            })
+        });
         SwarmHeartbeatService.getUnreadCount     = async () => 0;
         SwarmHeartbeatService.getIssuesCount     = async () => 0;
         SwarmHeartbeatService.isPushCapable      = async () => false;

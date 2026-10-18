@@ -197,8 +197,10 @@ function resolveDeploymentEnabled(key, config = AiConfig) {
 // point) can consult a cloudOnly mode-gate without scattering raw `deploymentMode` reads — the
 // reactive-config-as-single-source-of-truth pattern: read resolved leaves at the use site, never re-derive.
 export function resolveCloudOnlyEnabled(key, config = null) {
-    const cfg = config ?? AiConfig;
-    return resolveCloudOnlyDefault(cfg.orchestrator.cloudOnly[key], cfg.orchestrator.deploymentMode);
+    if (config) {
+        return resolveCloudOnlyDefault(config.orchestrator.cloudOnly[key], config.orchestrator.deploymentMode);
+    }
+    return resolveCloudOnlyDefault(AiConfig.orchestrator.cloudOnly[key], AiConfig.orchestrator.deploymentMode);
 }
 
 const LOG_RETENTION_DAYS = 30;
@@ -1054,11 +1056,7 @@ export class Orchestrator extends Base {
                 },
                 // Freeze-from-serving: the safe terminal for a systemic / dimension-systemic fault. Fences the
                 // served collections (mirrors quarantine) AND persists a freeze-record so the autonomous re-probe
-<<<<<<< HEAD
-                // cycle can auto-unfreeze when the fault clears — in cloud there is no operator (the top weeks-bar risk).
-=======
                 // cycle can auto-unfreeze when the fault clears — in cloud there is no operator.
->>>>>>> 4dd9884e (feat(ai): convert Orchestrator and daemon service B4 test writes (#1102))
                 freeze: createFreezeHealOperation({
                     freezeRecordsDir,
                     // Symmetric store-level fence (memory + session) — paired with the re-probe auto-unfence via the
