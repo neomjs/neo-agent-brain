@@ -1,9 +1,9 @@
-import aiConfig               from '../../mcp/server/knowledge-base/config.mjs';
-import {types as utilTypes}   from 'node:util';
+import aiConfig                 from '../../mcp/server/knowledge-base/config.mjs';
+import {validateConfigSnapshot} from '../shared/configSnapshot.mjs';
 import TextEmbeddingService, {
     getEmbeddingModel,
     isEmbeddingBatchYieldError
-}                             from '../memory-core/TextEmbeddingService.mjs';
+}                               from '../memory-core/TextEmbeddingService.mjs';
 import mcConfig                from '../../mcp/server/memory-core/config.mjs';
 import {isProviderTimeoutCode} from '../../provider/createTimeoutError.mjs';
 import Base                    from 'neo.mjs/src/core/Base.mjs';
@@ -221,24 +221,6 @@ function resolveEmbeddingInputStrategyVersion(guardrail) {
 }
 
 /**
- * @summary Verifies that a candidate config snapshot node is an isolated plain object rather than
- * a `ConfigProvider` instance or hierarchical data proxy.
- * @param {*} candidate Candidate object node.
- * @returns {Boolean}
- */
-function isPlainSnapshotObject(candidate) {
-    return Boolean(
-        candidate &&
-        typeof candidate === 'object' &&
-        !Array.isArray(candidate) &&
-        !utilTypes.isProxy(candidate) &&
-        !(candidate instanceof Base)
-    );
-}
-
-let activeConfigSnapshot = null;
-
-/**
  * @summary Manages vector database operations including embedding generation and storage.
  *
  * This service encapsulates all interactions with the vector database (ChromaDB) and the
@@ -278,13 +260,15 @@ class VectorService extends Base {
         singleton: true
     }
 
+    #configSnapshot = null;
+
     /**
      * @summary Returns the isolated configuration snapshot injected by unit tests, or `null` when
      * the service reads the canonical `aiConfig` singleton.
      * @returns {Object|null}
      */
     get configSnapshot() {
-        return activeConfigSnapshot;
+        return this.#configSnapshot;
     }
 
     /**
@@ -293,7 +277,7 @@ class VectorService extends Base {
      * @param {Object|null} value Candidate snapshot or `null`.
      */
     set configSnapshot(value) {
-        activeConfigSnapshot = this.beforeSetConfigSnapshot(value);
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
     }
 
     /**
@@ -304,20 +288,19 @@ class VectorService extends Base {
      * @protected
      */
     beforeSetConfigSnapshot(value) {
-        if (value === null || value === undefined) {
-            return null;
-        }
-
-        if (!isPlainSnapshotObject(value)) {
-            throw new TypeError('VectorService: configSnapshot must be an isolated snapshot, never the shared aiConfig singleton or a live subtree');
-        }
-
-        return value;
+        return validateConfigSnapshot(value, {
+            serviceName: 'VectorService'
+        });
     }
 
     /**
      * @summary Builds an isolated plain-object snapshot of the resolved `aiConfig` batch/retry
      * leaves consumed by `VectorService.embedChunks`.
+     *
+     * Scoped exclusively to `embedChunks` (`backoffBaseMs`, `batchDelay`, `batchSize`, `maxRetries`,
+     * `undeliverableTimeoutStrikes`). Any additional `VectorService` method migrated onto
+     * {@link #getConfig} must expand `createConfigSnapshot()` with the leaves it consumes.
+     *
      * @returns {Object}
      */
     createConfigSnapshot() {
@@ -331,12 +314,17 @@ class VectorService extends Base {
     }
 
     /**
-     * @summary Returns the active configuration tree (`configSnapshot` when injected, otherwise `aiConfig`).
+     * @summary Returns the active configuration source for `embedChunks` (`#configSnapshot` when
+     * injected, otherwise `aiConfig`).
+     *
+     * Currently scoped to `embedChunks`; any other `VectorService` method routed through
+     * `#getConfig()` must first add its consumed leaves to {@link #createConfigSnapshot}.
+     *
      * @returns {Object}
      * @private
      */
     #getConfig() {
-        return activeConfigSnapshot || aiConfig;
+        return this.#configSnapshot || aiConfig;
     }
 
     /**

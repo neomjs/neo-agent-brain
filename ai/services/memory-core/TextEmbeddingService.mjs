@@ -2,9 +2,12 @@ import {
     GoogleGenerativeAI,
     GoogleGenerativeAIAbortError
 }                           from '@google/generative-ai';
-import {types as utilTypes} from 'node:util';
-import aiConfig             from '../../mcp/server/memory-core/config.mjs';
-import Base                 from 'neo.mjs/src/core/Base.mjs';
+import aiConfig from '../../mcp/server/memory-core/config.mjs';
+import Base     from 'neo.mjs/src/core/Base.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+}                           from '../shared/configSnapshot.mjs';
 import {
     resolveCompletedPrefix,
     resolveDispatchPlan,
@@ -682,96 +685,15 @@ function assertPositiveTimeoutMs(value, label) {
     return value
 }
 
-/**
- * @summary Verifies that a candidate config snapshot node (and any nested object children) is an
- * isolated plain object rather than a `ConfigProvider` instance or hierarchical data proxy.
- * @param {*} candidate Candidate object node.
- * @returns {Boolean}
- */
-function isPlainSnapshotObject(candidate) {
-    if (
-        !candidate ||
-        typeof candidate !== 'object' ||
-        Array.isArray(candidate) ||
-        utilTypes.isProxy(candidate) ||
-        candidate instanceof Base
-    ) {
-        return false;
-    }
-
-    for (const value of Object.values(candidate)) {
-        if (value && typeof value === 'object') {
-            if (Array.isArray(value)) {
-                if (utilTypes.isProxy(value)) {
-                    return false;
-                }
-            } else if (!isPlainSnapshotObject(value)) {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-/**
- * @summary Resolves and deep-clones a hierarchical `ConfigProvider` subtree into an isolated plain
- * object across the provider parent chain.
- *
- * Hierarchical data proxies on a Tier-2 child `ConfigProvider` only enumerate keys owned by the
- * child layer in `ownKeys`, so `{...aiConfig.ollama}` would drop parent-owned leaves from Tier-1
- * `Neo.ai.Config`. Walking `current.getParent()` collects the union of keys across all ancestor
- * layers while reading each resolved value through the live proxy.
- *
- * @param {Neo.ai.ConfigProvider} provider Root config provider (`aiConfig`).
- * @param {String[]} pathParts Path segments from the provider root to the target subtree.
- * @returns {Object}
- */
-function cloneConfigSubtree(provider, pathParts) {
-    const keys = new Set();
-
-    for (let current = provider; current; current = typeof current.getParent === 'function' ? current.getParent() : null) {
-        let node = current.data;
-
-        for (const key of pathParts) {
-            if (!node || typeof node !== 'object') {
-                node = null;
-                break;
-            }
-            node = node[key];
-        }
-
-        if (node && typeof node === 'object' && !Array.isArray(node)) {
-            for (const key of Object.keys(node)) {
-                keys.add(key);
-            }
-        }
-    }
-
-    let liveNode = provider;
-
-    for (const key of pathParts) {
-        liveNode = liveNode[key];
-    }
-
-    const snapshot = {};
-
-    for (const key of keys) {
-        const value = liveNode[key];
-
-        if (Array.isArray(value)) {
-            snapshot[key] = [...value];
-        } else if (value && typeof value === 'object') {
-            snapshot[key] = cloneConfigSubtree(provider, [...pathParts, key]);
-        } else {
-            snapshot[key] = value;
-        }
-    }
-
-    return snapshot;
-}
-
-let activeConfigSnapshot = null;
+const TEXT_EMBEDDING_SNAPSHOT_SUBTREES = Object.freeze([
+    'openAiCompatible',
+    'localModels',
+    'localModels.embedding',
+    'orchestrator',
+    'orchestrator.lms',
+    'orchestrator.providerReadiness',
+    'ollama'
+]);
 
 /**
  * @summary Service for creating embedding vectors for text.
@@ -820,6 +742,7 @@ class TextEmbeddingService extends Base {
         openAiCompatibleLoadedModelsProbe: null
     }
 
+    #configSnapshot                   = null;
     #openAiCompatiblePostQueue        = [];
     // A COUNT, not a boolean. The boolean it replaces was a single-worker re-entrancy guard, and it
     // was the real concurrency bound on this path: the dispatch loop above could issue N requests and
@@ -872,30 +795,34 @@ class TextEmbeddingService extends Base {
      * @summary Returns the isolated configuration snapshot injected by unit tests, or `null` when
      * the service reads the canonical `aiConfig` singleton.
      *
-     * Kept as an explicit accessor pair over module-scoped singleton state rather than a reactive
-     * `configSnapshot_` slot or `#private` field: `Neo.mjs`'s reactive setter writes via `setRaw`
-     * before invoking `beforeSet*` and does not restore the prior value when `beforeSet*` throws, and
-     * `#private` fields reject writes through the `ai/services.mjs` `makeSafe` `Proxy`.
+     * Kept as an explicit private field with an accessor pair rather than a reactive `configSnapshot_`
+     * slot: `Neo.mjs`'s reactive setter writes via `setRaw` before invoking `beforeSet*` and does not
+     * restore the prior value when `beforeSet*` throws, so a reactive slot cannot host a throwing
+     * validator without leaving the rejected value installed.
      *
      * @returns {Object|null}
      */
     get configSnapshot() {
-        return activeConfigSnapshot;
+        return this.#configSnapshot;
     }
 
     /**
      * @summary Injects an isolated configuration snapshot for unit testing, or `null` to restore
      * the canonical `aiConfig` singleton.
      *
-     * Validates via {@link #beforeSetConfigSnapshot} before assigning `activeConfigSnapshot` so a
+     * Validates via {@link #beforeSetConfigSnapshot} before assigning `#configSnapshot` so a
      * rejected value never overwrites the prior snapshot (unlike a reactive `configSnapshot_` setter,
-     * which calls `setRaw` before `beforeSet*`), and clears any cached `ollamaProvider` instance bound
-     * to the previous configuration.
+     * which calls `setRaw` before `beforeSet*`).
+     *
+     * Changing or clearing `configSnapshot` unconditionally resets `this.ollamaProvider = null`,
+     * discarding any cached or previously injected `ollamaProvider` instance so the next native
+     * Ollama call re-binds to the active snapshot. Tests that inject a custom `ollamaProvider`
+     * double must assign `TextEmbeddingService.ollamaProvider` after setting `configSnapshot`.
      *
      * @param {Object|null} value Candidate snapshot or `null`.
      */
     set configSnapshot(value) {
-        activeConfigSnapshot = this.beforeSetConfigSnapshot(value);
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
         this.ollamaProvider  = null;
     }
 
@@ -907,24 +834,10 @@ class TextEmbeddingService extends Base {
      * @protected
      */
     beforeSetConfigSnapshot(value) {
-        if (value === null || value === undefined) {
-            return null;
-        }
-
-        if (
-            !isPlainSnapshotObject(value) ||
-            !isPlainSnapshotObject(value.openAiCompatible) ||
-            !isPlainSnapshotObject(value.localModels) ||
-            !isPlainSnapshotObject(value.localModels.embedding) ||
-            !isPlainSnapshotObject(value.orchestrator) ||
-            !isPlainSnapshotObject(value.orchestrator.lms) ||
-            !isPlainSnapshotObject(value.orchestrator.providerReadiness) ||
-            !isPlainSnapshotObject(value.ollama)
-        ) {
-            throw new TypeError('TextEmbeddingService: configSnapshot must be an isolated snapshot, never the shared aiConfig singleton or a live subtree');
-        }
-
-        return value;
+        return validateConfigSnapshot(value, {
+            serviceName     : 'TextEmbeddingService',
+            requiredSubtrees: TEXT_EMBEDDING_SNAPSHOT_SUBTREES
+        });
     }
 
     /**
@@ -956,12 +869,12 @@ class TextEmbeddingService extends Base {
     }
 
     /**
-     * @summary Returns the active configuration tree (`configSnapshot` when injected, otherwise `aiConfig`).
+     * @summary Returns the active configuration tree (`#configSnapshot` when injected, otherwise `aiConfig`).
      * @returns {Object}
      * @private
      */
     #getConfig() {
-        return activeConfigSnapshot || aiConfig;
+        return this.#configSnapshot || aiConfig;
     }
 
     /**

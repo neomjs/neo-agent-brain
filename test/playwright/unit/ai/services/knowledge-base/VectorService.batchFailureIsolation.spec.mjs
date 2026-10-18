@@ -163,7 +163,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
                       // Well-formed AND agreeing: `index` present, model echoing the request.
                       res.end(JSON.stringify({
                           model: aiConfig.openAiCompatible.embeddingModel,
-                          data  : [{index: 0, embedding: [0.1, 0.2, 0.3]}]
+                          data : [{index: 0, embedding: [0.1, 0.2, 0.3]}]
                       }))
                   })
               }),
@@ -201,10 +201,10 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         // The claim under test is unchanged and is the one that matters operationally: a wrong resident
         // must cost the corpus nothing. A served model that disagrees is refused BEFORE a vector
         // exists, so the collection never sees an upsert.
-        const spy      = createSpyCollection(),
-              chunks   = makeChunks(1),
-              before   = spy.upsertedIds.length,
-              server   = http.createServer((req, res) => {
+        const spy    = createSpyCollection(),
+              chunks = makeChunks(1),
+              before = spy.upsertedIds.length,
+              server = http.createServer((req, res) => {
                   let body = '';
 
                   req.on('data', chunk => body += chunk);

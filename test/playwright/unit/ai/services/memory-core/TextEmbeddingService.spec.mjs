@@ -13,15 +13,15 @@ setup({
     }
 });
 
-import {test, expect}              from '@playwright/test';
-import {execFile}                  from 'child_process';
-import {getEventListeners}         from 'node:events';
-import fs                          from 'node:fs';
-import {fileURLToPath}             from 'node:url';
+import {test, expect}                  from '@playwright/test';
+import {execFile}                      from 'child_process';
+import {getEventListeners}             from 'node:events';
+import fs                              from 'node:fs';
+import {fileURLToPath}                 from 'node:url';
 import {promisify, types as utilTypes} from 'util';
-import Neo                         from 'neo.mjs/src/Neo.mjs';
-import * as core                   from 'neo.mjs/src/core/_export.mjs';
-import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import Neo                             from 'neo.mjs/src/Neo.mjs';
+import * as core                       from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations}     from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {
     clearAggregatedFrictions,
     getAggregatedFrictions
@@ -1298,7 +1298,7 @@ test.describe.serial('TextEmbeddingService #15694 — provider-neutral cancellat
         // the request guards, with the SDK model stubbed AFTER construct so no request leaves the process
         const served = async () => {
             const {default: Service} = await import('./ai/services/memory-core/TextEmbeddingService.mjs');
-            const initialized = Boolean(Service.embeddingModel), calls = [];
+            const initialized        = Boolean(Service.embeddingModel), calls = [];
 
             Service.embeddingModel = {
                 model: 'stub-model',
@@ -1313,7 +1313,7 @@ test.describe.serial('TextEmbeddingService #15694 — provider-neutral cancellat
         };
         const refused = async () => {
             const {default: Service} = await import('./ai/services/memory-core/TextEmbeddingService.mjs');
-            const initialized = Boolean(Service.embeddingModel), reasons = [];
+            const initialized        = Boolean(Service.embeddingModel), reasons = [];
 
             Service.embeddingModel = {model: 'stub-model', async embedContent() { reasons.push('single ran') }, async batchEmbedContents() { reasons.push('batch ran') }};
 
@@ -1477,7 +1477,7 @@ test.describe.serial('TextEmbeddingService #15694 — provider-neutral cancellat
                 completeProviderActivity() {}
             };
 
-            const snapshot          = Service.createConfigSnapshot();
+            const snapshot = Service.createConfigSnapshot();
             snapshot.embeddingModel = 'live-config-model-b';
             Service.configSnapshot  = snapshot;
             Service.embeddingModel  = {
@@ -2463,12 +2463,19 @@ test.describe('TextEmbeddingService #1090 — configSnapshot subtree completenes
         expect(aiConfig.ollama.keepAlive).toBe(originalKeepAlive);
         expect(aiConfig.orchestrator.lms.loadFailureCircuit.failureThreshold).toBe(originalThreshold);
 
-        // Nested live proxies are rejected by beforeSetConfigSnapshot.
+        // Nested live proxies (including inside arrays) are rejected by beforeSetConfigSnapshot.
         const poisoned = TextEmbeddingService.createConfigSnapshot();
         poisoned.orchestrator.lms.loadFailureCircuit = aiConfig.orchestrator.lms.loadFailureCircuit;
 
         expect(() => {
             TextEmbeddingService.configSnapshot = poisoned;
+        }).toThrow(TypeError);
+
+        const arrayPoisoned = TextEmbeddingService.createConfigSnapshot();
+        arrayPoisoned.ollama.nestedProxies = [aiConfig.ollama];
+
+        expect(() => {
+            TextEmbeddingService.configSnapshot = arrayPoisoned;
         }).toThrow(TypeError);
     });
 
@@ -2497,7 +2504,7 @@ test.describe('TextEmbeddingService #1090 — configSnapshot subtree completenes
         await new Promise(resolve => serverB.listen(0, '127.0.0.1', resolve));
 
         try {
-            const snapshotA                 = TextEmbeddingService.createConfigSnapshot();
+            const snapshotA = TextEmbeddingService.createConfigSnapshot();
             snapshotA.ollama.host           = `http://127.0.0.1:${serverA.address().port}`;
             snapshotA.ollama.embeddingModel = 'ollama-embed-model-a';
 
@@ -2524,7 +2531,7 @@ test.describe('TextEmbeddingService #1090 — configSnapshot subtree completenes
             expect(TextEmbeddingService.ollamaProvider).toBe(cachedProviderA);
 
             // Installing a new snapshot resets ollamaProvider to null so lazy-init re-runs against serverB.
-            const snapshotB                 = TextEmbeddingService.createConfigSnapshot();
+            const snapshotB = TextEmbeddingService.createConfigSnapshot();
             snapshotB.ollama.host           = `http://127.0.0.1:${serverB.address().port}`;
             snapshotB.ollama.embeddingModel = 'ollama-embed-model-b';
 
