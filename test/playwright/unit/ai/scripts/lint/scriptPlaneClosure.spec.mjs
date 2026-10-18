@@ -65,8 +65,8 @@ const KNOWN_BACKUP_EDGES = [
  * entrypoint REACHES — and the moment you do that, the load-bearing question stops being "does this
  * file touch a shell" and becomes "does it REQUIRE one".
  *
- * ADR-0014 is the fixture that settles it — ticket-ref-ok: the ADR is the authority these arms
- * implement. `backup.mjs` stamps a bundle with `git rev-parse HEAD`
+ * ADR-0014 [not-ticket-ref: the decision record these arms implement] is the fixture that settles
+ * it. `backup.mjs` stamps a bundle with `git rev-parse HEAD`
  * inside a swallowing try, and the ADR rules that not a host dependency because it degrades to
  * `null`. Any predicate that convicts it is wrong against an accepted decision record — which is what
  * the retired token classifier did.
@@ -315,8 +315,8 @@ test.describe('scriptPlaneClosure', () => {
          *
          *   - `backup.mjs` reaches `spawn` inside service methods it never calls -> NOT host-required,
          *     which is what the bundle-stamp decision demands.
-         *   - `syncGithubWorkflow.mjs` calls `GH_SyncService.runFullSync()`, and that method spawns
-         *     git -> host-required, which is what its declared authority says.
+         *   - an entrypoint that CALLS a service method which spawns git -> host-required, which is
+         *     what a declared host authority says.
          *
          * Same import-graph shape, opposite verdicts. The only difference is whether the entrypoint
          * CALLS the binding.
@@ -464,7 +464,7 @@ export default {
             // 98 modules under `ai/` carry `if (process.argv[1] && … === __filename)`. Without this
             // test the walk concludes that importing a script runs its `main()`, which promoted
             // the former `lint-skill-manifest`'s git calls onto `backup.mjs`, convicting it against the
-            // bundle-stamp decision — ADR-0014, ticket-ref-ok: it is the authority contradicted.
+            // bundle-stamp decision of ADR-0014 [not-ticket-ref: the authority that was contradicted].
             const guarded = `import {spawn} from 'child_process';
 export function main() { return spawn('git', []) }
 if (process.argv[1] && process.argv[1] === 'x') { main() }`;
