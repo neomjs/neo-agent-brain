@@ -1,6 +1,6 @@
 import {test, expect}                                                                      from '@playwright/test';
 import {findAntipatterns, filterAllowlistedHits, ADR_0019_RULES, ALLOWLIST, ESCAPE_MARKER} from '../../../../../../ai/scripts/lint/check-aiconfig-antipatterns.mjs';
-import {A1_IMPORT_GATE}                                                                    from '../../../../../../ai/scripts/lint/check-aiconfig-antipatterns.mjs';
+import {A1_IMPORT_GATE, SCAN_ROOTS, collectDefaultFiles}                                    from '../../../../../../ai/scripts/lint/check-aiconfig-antipatterns.mjs';
 import {spawnSync}                                                                         from 'node:child_process';
 import fs                                                                                  from 'node:fs';
 import path                                                                                from 'node:path';
@@ -176,6 +176,33 @@ test.describe('check-aiconfig-antipatterns guard — rule-scoped allowlist compo
 
             expect(result.status).toBe(0);
             expect(result.stdout).toContain('0 new violations')
+        } finally {
+            fs.rmSync(tmpFile, {force: true})
+        }
+    });
+
+    test('the default scan covers src/ as well as ai/', () => {
+        const files = collectDefaultFiles(repoRoot);
+
+        expect(SCAN_ROOTS).toEqual(['ai', 'src']);
+        expect(files.some(file => file.startsWith('ai/')), 'ai/ stays in scope').toBe(true);
+        expect(files.some(file => file.startsWith('src/')), 'src/ is in scope').toBe(true)
+    });
+
+    test('CLI: a src/ file named on the command line is scanned, not dropped', () => {
+        const tmpFile = path.join(repoRoot, `src/.b3-src-scope-regression-${process.pid}.mjs`);
+
+        try {
+            fs.writeFileSync(tmpFile, 'const soft = aiConfig?.load;\n', 'utf-8');
+
+            const result = spawnSync(process.execPath, [checkerPath, tmpFile], {
+                cwd     : repoRoot,
+                encoding: 'utf-8'
+            });
+
+            expect(result.status).toBe(1);
+            expect(result.stderr).toContain('[B3]');
+            expect(result.stderr).toContain(`src/.b3-src-scope-regression-${process.pid}.mjs`)
         } finally {
             fs.rmSync(tmpFile, {force: true})
         }
