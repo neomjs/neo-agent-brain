@@ -624,7 +624,7 @@ export function findCeilingBreaches(counts, ceilings) {
 export function tightenCeilings(counts, ceilings) {
     const tightened = new Map();
 
-    [...ceilings].sort(([left], [right]) => left.localeCompare(right)).forEach(([file, ceiling]) => {
+    [...ceilings].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).forEach(([file, ceiling]) => {
         const next = Math.min(ceiling, counts.get(file) ?? 0);
 
         if (next > 0) tightened.set(file, next)

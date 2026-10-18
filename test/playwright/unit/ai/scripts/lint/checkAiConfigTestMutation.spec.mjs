@@ -577,12 +577,13 @@ test.describe('check-aiconfig-test-mutation per-file ceiling ratchet', () => {
     });
 
     test('tightening lowers to the measured count and drops zeros, but never raises or adds', () => {
-        const ceilings = new Map([['test/lowered.spec.mjs', 5], ['test/converted.spec.mjs', 4], ['test/grown.spec.mjs', 2]]),
-              counts   = new Map([['test/lowered.spec.mjs', 3], ['test/grown.spec.mjs', 7], ['test/new.spec.mjs', 1]]);
+        const ceilings = new Map([['test/Session.build.spec.mjs', 5], ['test/converted.spec.mjs', 4], ['test/Session.Summarize.spec.mjs', 2]]),
+              counts   = new Map([['test/Session.build.spec.mjs', 3], ['test/Session.Summarize.spec.mjs', 7], ['test/new.spec.mjs', 1]]);
 
-        // `converted` measured nothing and leaves; `grown` keeps its ceiling, so the breach still shows;
-        // `new` is not added, so its first write still breaches at ceiling 0.
-        expect([...tightenCeilings(counts, ceilings)]).toEqual([['test/grown.spec.mjs', 2], ['test/lowered.spec.mjs', 3]])
+        // `converted` measured nothing and leaves; `Summarize` keeps its ceiling, so the breach still shows;
+        // `new` is not added, so its first write still breaches at ceiling 0. Code-point sort (`Summarize`
+        // before `build`) matches `[...files].sort()` in the sidecar invariant below.
+        expect([...tightenCeilings(counts, ceilings)]).toEqual([['test/Session.Summarize.spec.mjs', 2], ['test/Session.build.spec.mjs', 3]])
     });
 
     test('the sidecar names only existing files, each with a positive whole ceiling, in sorted order', () => {

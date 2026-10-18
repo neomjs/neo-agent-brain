@@ -22,7 +22,8 @@ import fs                from 'fs';
 import path              from 'path';
 import os                from 'os';
 import {fileURLToPath}   from 'url';
-import {readResumeState} from '../../../../../../ai/services/knowledge-base/helpers/kbEmbeddingResumeStore.mjs';
+import {readResumeState}           from '../../../../../../ai/services/knowledge-base/helpers/kbEmbeddingResumeStore.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -1043,6 +1044,10 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
 
         expect(noop.deleted).toBe(0);
         expect(noop.message).toContain('No changes detected');
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(fs.readFileSync(__filename, 'utf8'))).toEqual([]);
     });
 
 });

@@ -15,9 +15,12 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import fs                          from 'node:fs';
+import {fileURLToPath}             from 'node:url';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 /**
  * Cooperative heavy-maintenance-lease yield-point coverage for `VectorService.embedChunks`.
@@ -483,5 +486,9 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
             preRepairIntervalMs,
             'the interval this repair removed was multiples of the bound, not a near miss'
         ).toBeGreaterThan(maxActiveHoldMs);
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'))).toEqual([]);
     });
 });

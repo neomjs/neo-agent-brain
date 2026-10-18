@@ -18,9 +18,11 @@ setup({
 import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
-import fs             from 'fs-extra';
-import os             from 'os';
-import path           from 'path';
+import fs                          from 'fs-extra';
+import os                          from 'os';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 /**
  * The undeliverable-at-geometry production-path proof, driven through `VectorService.embed()` — NOT
@@ -619,5 +621,9 @@ test.describe('VectorService.embed — DEATH-class graduation through the produc
         } finally {
             Object.assign(kbConfigSnapshot, {batchSize: 50, maxRetries: 3});
         }
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'))).toEqual([]);
     });
 });

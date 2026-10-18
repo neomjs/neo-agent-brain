@@ -15,9 +15,12 @@ setup({
     }
 });
 
+import fs                             from 'node:fs';
+import {fileURLToPath}                from 'node:url';
 import {test, expect}                 from '@playwright/test';
 import Neo                            from 'neo.mjs/src/Neo.mjs';
 import * as core                      from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations}    from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {EMBEDDING_BATCH_YIELDED_CODE} from '../../../../../../ai/services/memory-core/TextEmbeddingService.mjs';
 
 /**
@@ -745,5 +748,9 @@ test.describe('VectorService.embedChunks — failure-path work conservation (#17
 
         expect(generation.embedCallCeilingMs, 'suppression evidence is only valid under the ceiling it was gathered at').toBe(expectedCeiling);
         expect(Number.isFinite(generation.embedCallCeilingMs)).toBe(true);
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'))).toEqual([]);
     });
 });

@@ -232,7 +232,7 @@ class GoldenPathSynthesizer extends Base {
      * @returns {Object}
      */
     #getConfig() {
-        return GoldenPathSynthesizer.#configSnapshot ?? aiConfig
+        return this.constructor.#getStaticConfig()
     }
 
     /**
@@ -387,7 +387,7 @@ class GoldenPathSynthesizer extends Base {
 
         return renderIssueFocusStaleAssignmentCandidatesSection(candidates, {
             ...options,
-            limit: options?.limit ?? cfg.goldenPathStaleAssignmentRenderLimit
+            limit: options.limit ?? cfg.goldenPathStaleAssignmentRenderLimit
         })
     }
 
@@ -460,7 +460,7 @@ class GoldenPathSynthesizer extends Base {
 
         return renderIssueFocusSilentThreadCandidatesSection(candidates, {
             ...options,
-            limit: options?.limit ?? cfg.goldenPathSilentThreadRenderLimit
+            limit: options.limit ?? cfg.goldenPathSilentThreadRenderLimit
         })
     }
 
@@ -484,8 +484,8 @@ class GoldenPathSynthesizer extends Base {
 
         return renderIssueFocusWorkGraphStallFindingsSection(findings, {
             ...options,
-            limit        : options?.limit ?? cfg.goldenPathStallFindingRenderLimit,
-            renderEnabled: options?.renderEnabled ?? cfg.goldenPathStallFindingRenderEnabled
+            limit        : options.limit ?? cfg.goldenPathStallFindingRenderLimit,
+            renderEnabled: options.renderEnabled ?? cfg.goldenPathStallFindingRenderEnabled
         })
     }
 
@@ -1001,7 +1001,7 @@ class GoldenPathSynthesizer extends Base {
 
         return renderRecentOpenPrSummarySection(prs, {
             ...options,
-            limit: options?.limit ?? cfg.goldenPathRecentOpenPrRenderLimit
+            limit: options.limit ?? cfg.goldenPathRecentOpenPrRenderLimit
         })
     }
 
@@ -1027,8 +1027,8 @@ class GoldenPathSynthesizer extends Base {
 
         return renderActivePrCycleStateSection({
             ...options,
-            freshnessMs: options?.freshnessMs ?? cfg.goldenPathActivePrStateFreshnessMs,
-            limit      : options?.limit ?? cfg.goldenPathRecentOpenPrRenderLimit
+            freshnessMs: options.freshnessMs ?? cfg.goldenPathActivePrStateFreshnessMs,
+            limit      : options.limit ?? cfg.goldenPathRecentOpenPrRenderLimit
         })
     }
 

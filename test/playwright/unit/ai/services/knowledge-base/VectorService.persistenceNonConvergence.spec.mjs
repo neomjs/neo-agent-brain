@@ -15,13 +15,15 @@ setup({
     }
 });
 
-import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
-import os                                   from 'node:os';
-import path                                 from 'node:path';
-import {test, expect}                       from '@playwright/test';
-import Database                             from 'better-sqlite3';
-import Neo                                  from 'neo.mjs/src/Neo.mjs';
-import * as core                            from 'neo.mjs/src/core/_export.mjs';
+import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import os                                                 from 'node:os';
+import path                                               from 'node:path';
+import {fileURLToPath}                                    from 'node:url';
+import {test, expect}                                     from '@playwright/test';
+import Database                                           from 'better-sqlite3';
+import Neo                                                from 'neo.mjs/src/Neo.mjs';
+import * as core                                          from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations}                        from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 /**
  * @summary Persistence failure is an UNBOUNDED re-embed loop, proven through PRODUCTION's own selector.
@@ -606,5 +608,9 @@ test.describe('VectorService — persistence failure is an unbounded re-embed lo
         } finally {
             TextEmbeddingService.embedTexts = originalEmbedTexts;
         }
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(readFileSync(fileURLToPath(import.meta.url), 'utf8'))).toEqual([]);
     });
 });

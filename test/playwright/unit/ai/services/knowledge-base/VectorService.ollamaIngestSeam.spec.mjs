@@ -15,9 +15,12 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import fs                          from 'node:fs';
+import {fileURLToPath}             from 'node:url';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 /**
  * @summary The KB ingest path driven through the NATIVE OLLAMA provider seam.
@@ -214,5 +217,9 @@ test.describe('VectorService KB ingest — the native Ollama provider seam', () 
 
         expect(spy.upserts, 'nothing may be written from a response that carried no vectors').toEqual([]);
         expect(thrown, 'a malformed response must abort the sweep, not resolve it').toBeTruthy();
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'))).toEqual([]);
     });
 });

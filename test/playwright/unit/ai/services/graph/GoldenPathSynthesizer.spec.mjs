@@ -19,9 +19,11 @@ import * as core                   from 'neo.mjs/src/core/_export.mjs';
 import fs                          from 'fs';
 import path                        from 'path';
 import os                          from 'os';
+import {fileURLToPath}             from 'url';
 import child_process               from 'child_process';
 import Database                    from 'better-sqlite3';
 import {IDENTITIES}                from '../../../../../../ai/graph/identityRoots.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {resolveCrossFamilyVerdict} from '../../../../../../ai/services/graph/agentFamilyResolution.mjs';
 import {TestLifecycleHelper}       from '../../services/memory-core/util.mjs';
 
@@ -3664,5 +3666,9 @@ test.describe('GoldenPathSynthesizer.hasCrossFamilyReview — author family from
         } finally {
             await fs.rm(tmp, {recursive: true, force: true});
         }
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'))).toEqual([]);
     });
 });

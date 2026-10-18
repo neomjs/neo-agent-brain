@@ -20,10 +20,11 @@ import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 import {EMBEDDING_INPUT_FORMAT_ID, EMBEDDING_INPUT_FORMAT_METADATA_KEY}
                        from '../../../../../../ai/services/knowledge-base/helpers/embeddingInputFormat.mjs';
-import fs              from 'fs';
-import path            from 'path';
-import os              from 'os';
-import {fileURLToPath} from 'url';
+import fs                          from 'fs';
+import path                        from 'path';
+import os                          from 'os';
+import {fileURLToPath}             from 'url';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -507,5 +508,9 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
 
         expect(spy.calls.upsert).toBe(1); // still 1 — the re-push upserted nothing
         expect(getOnlyRow(spy).metadata.ingestedAt).toBe(firstIngestedAt);
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(fs.readFileSync(__filename, 'utf8'))).toEqual([]);
     });
 });
