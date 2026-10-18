@@ -786,35 +786,27 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
         expect(askSchema.properties.type.enum).toEqual(expectedTypes);
     });
 
-    test('ingest_source_files declares every param its in-process callers pass (#16577)', () => {
-        // The input-side twin of the additional-properties drift guarded above for outputs:
-        // `services.mjs` parses every call through this schema, and Zod DROPS undeclared keys
-        // silently. A service param the contract forgets is therefore not a documentation gap —
-        // it never reaches the method, with no error and no log. Both fields below were
-        // undeclared and stripped on every call, which is why pull-mode ingestion embedded
-        // correctly and then rejected itself: no receipt was ever minted, and bulk batches were
-        // forced through the MCP work-volume gate.
+    test('ingest_source_files declares the bulk opt-in and withholds the orchestrator-owned attempt', () => {
+        // `services.mjs` parses every SDK call through this schema, and Zod DROPS undeclared keys
+        // silently: a stripped `viaMcp: false` re-reads as true and sends tenant-scale batches into
+        // the MCP work-volume gate. `materializationAttempt` is the opposite case. That proof identity
+        // reaches the service only through the unwrapped, trusted `ingestSourceFilesForTenantSync`,
+        // so the public contract must strip it.
         const doc      = yaml.load(fs.readFileSync(path.join(repoRoot, 'ai/mcp/server/knowledge-base/openapi.yaml'), 'utf8')),
               ingestOp = getOperationsById(doc).ingest_source_files,
-              attempt  = {attemptId: 'a'.repeat(32), ingestContractVersion: 2},
               parsed   = buildZodSchema(doc, ingestOp).parse({
                   tenantId              : 'neo-shared',
                   repoSlug              : 'create-app',
                   files                 : [],
                   headRevision          : 'abc123',
                   manifestSnapshot      : {repoSlug: 'create-app', pathsAfterPush: ['x.md']},
-                  materializationAttempt: attempt,
+                  materializationAttempt: {attemptId: 'a'.repeat(32), ingestContractVersion: 2},
                   viaMcp                : false
               });
 
-        // Pull-mode proof identity: stripping this is what leaves a successful materialization
-        // with no receipt, so the orchestrator raises EMPTY_MATERIALIZATION against its own ingest.
-        expect(parsed.materializationAttempt, 'materializationAttempt survives the Zod gate').toEqual(attempt);
-
-        // Bulk opt-in: stripping this re-reads as `viaMcp !== false` -> true, so tenant-scale
-        // batches hit the MCP synchronous work-volume gate and fail with KB_VECTOR_EMBED_FAILED.
         expect(Object.hasOwn(parsed, 'viaMcp'), 'viaMcp survives the Zod gate').toBe(true);
         expect(parsed.viaMcp, 'an explicit false is preserved, not defaulted away').toBe(false);
+        expect(Object.hasOwn(parsed, 'materializationAttempt'), 'the public contract strips orchestrator-owned proof identity').toBe(false);
     });
 
     test('neural-link declares the harness-visible projection policy (#13064)', () => {
