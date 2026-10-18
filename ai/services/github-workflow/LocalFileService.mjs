@@ -3,6 +3,10 @@ import Base     from 'neo.mjs/src/core/Base.mjs';
 import fs       from 'fs-extra';
 import logger   from '../../mcp/server/github-workflow/logger.mjs';
 import {
+    createGitHubWorkflowConfigSnapshot,
+    validateGitHubWorkflowConfigSnapshot
+} from './shared/configSnapshot.mjs';
+import {
     findContentIndexEntry,
     readContentIndex,
     resolveIndexedPath
@@ -34,6 +38,51 @@ class LocalFileService extends Base {
     }
 
     /**
+     * Optional isolated configuration snapshot for unit testing.
+     * @member {Object|null} #configSnapshot=null
+     * @private
+     */
+    #configSnapshot = null;
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * @param {Object|null} value
+     * @returns {Object|null}
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateGitHubWorkflowConfigSnapshot(value, this.constructor.name);
+    }
+
+    /**
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        return createGitHubWorkflowConfigSnapshot(aiConfig, overrides);
+    }
+
+    /**
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.#configSnapshot || aiConfig;
+    }
+
+    /**
      * @summary Reads a content file through the `_index.json` lookup surface.
      *
      * Missing entries return `NOT_FOUND`; entries whose files no longer exist return `STALE_INDEX`, so
@@ -48,10 +97,11 @@ class LocalFileService extends Base {
      * @private
      */
     async #getByIndexedContentId(type, rawId, label) {
+        const config       = this.#getConfig();
         const idValue      = String(rawId);
         const normalizedId = idValue.startsWith('#') ? idValue.substring(1) : idValue;
 
-        if (!aiConfig.issueSync.contentRoot) {
+        if (!config.issueSync.contentRoot) {
             logger.warn(`[LocalFileService] No local corpus root configured for ${label} #${normalizedId}`);
             return {
                 error  : 'Content root not configured',
@@ -61,25 +111,25 @@ class LocalFileService extends Base {
         }
 
         try {
-            const index = await readContentIndex(aiConfig.issueSync);
-            const entry = findContentIndexEntry(index, {repoSlug: aiConfig.repo, type, id: normalizedId});
+            const index = await readContentIndex(config.issueSync);
+            const entry = findContentIndexEntry(index, {repoSlug: config.repo, type, id: normalizedId});
 
             if (!entry) {
                 logger.warn(`[LocalFileService] ${label} index entry not found for #${normalizedId}`);
                 return {
                     error  : 'File not found',
-                    message: `No local markdown index entry found for ${label.toLowerCase()} #${normalizedId} in ${aiConfig.issueSync.contentRoot}. Use live GitHub for current state; a local corpus root is only as current as its last publish or pull.`,
+                    message: `No local markdown index entry found for ${label.toLowerCase()} #${normalizedId} in ${config.issueSync.contentRoot}. Use live GitHub for current state; a local corpus root is only as current as its last publish or pull.`,
                     code   : 'NOT_FOUND'
                 };
             }
 
-            const filePath = resolveIndexedPath(aiConfig.issueSync, entry);
+            const filePath = resolveIndexedPath(config.issueSync, entry);
 
             if (!await fs.pathExists(filePath)) {
                 logger.warn(`[LocalFileService] ${label} indexed path is stale for #${normalizedId}: ${filePath}`);
                 return {
                     error  : 'Stale content index',
-                    message: `Indexed markdown file for ${label.toLowerCase()} #${normalizedId} does not exist under ${aiConfig.issueSync.contentRoot}. Use live GitHub for current state; a local corpus root is only as current as its last publish or pull.`,
+                    message: `Indexed markdown file for ${label.toLowerCase()} #${normalizedId} does not exist under ${config.issueSync.contentRoot}. Use live GitHub for current state; a local corpus root is only as current as its last publish or pull.`,
                     code   : 'STALE_INDEX'
                 };
             }

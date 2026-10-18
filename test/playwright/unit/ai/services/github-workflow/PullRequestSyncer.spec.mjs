@@ -13,60 +13,60 @@ setup({
     }
 });
 
-import {test, expect}     from '@playwright/test';
-import Neo                from 'neo.mjs/src/Neo.mjs';
-import * as core          from 'neo.mjs/src/core/_export.mjs';
-import fs                 from 'fs-extra';
-import fsPromises         from 'fs/promises';
-import matter             from 'gray-matter';
-import path               from 'path';
-import {readContentIndex} from '../../../../../../ai/services/github-workflow/shared/contentIndex.mjs';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import fs                          from 'fs-extra';
+import fsPromises                  from 'fs/promises';
+import matter                      from 'gray-matter';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {readContentIndex}          from '../../../../../../ai/services/github-workflow/shared/contentIndex.mjs';
 
 test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
     let aiConfig;
     let GraphqlService;
     let PullRequestSyncer;
     let ReleaseNotesSyncer;
-    let originalArchiveRoot;
-    let originalPullsDir;
-    let originalContentRootOverride;
     let originalQuery;
     let originalSortedReleases;
-    let originalVersionDirectoryPrefix;
-    let originalRouteByMilestone;
     let tmpRoot;
 
     test.beforeAll(async () => {
-        aiConfig          = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
-        GraphqlService    = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
-        PullRequestSyncer = (await import('../../../../../../ai/services/github-workflow/sync/PullRequestSyncer.mjs')).default;
+        GraphqlService     = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
+        PullRequestSyncer  = (await import('../../../../../../ai/services/github-workflow/sync/PullRequestSyncer.mjs')).default;
         ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
 
-        originalArchiveRoot            = aiConfig.issueSync.archiveRoot;
-        originalPullsDir               = aiConfig.issueSync.pullsDir;
-        originalContentRootOverride    = aiConfig.issueSync.contentRootOverride;
-        originalQuery                  = GraphqlService.query.bind(GraphqlService);
-        originalSortedReleases         = ReleaseNotesSyncer.sortedReleases;
-        originalVersionDirectoryPrefix = aiConfig.issueSync.versionDirectoryPrefix;
-        originalRouteByMilestone       = aiConfig.issueSync.routeByMilestone;
+        originalQuery          = GraphqlService.query.bind(GraphqlService);
+        originalSortedReleases = ReleaseNotesSyncer.sortedReleases;
     });
+
+    function applyConfigSnapshot(issueSyncOverrides = {}) {
+        aiConfig = PullRequestSyncer.createConfigSnapshot({
+            issueSync: {
+                contentRootOverride   : tmpRoot,
+                versionDirectoryPrefix: 'v',
+                routeByMilestone      : false,
+                ...issueSyncOverrides
+            }
+        });
+        PullRequestSyncer.configSnapshot = aiConfig;
+        return aiConfig;
+    }
 
     test.beforeEach(async () => {
         tmpRoot = path.resolve(process.cwd(), 'tmp', `pull-request-syncer-test-${process.pid}-${Date.now()}`);
         await fs.ensureDir(tmpRoot);
 
-        aiConfig.issueSync.contentRootOverride    = tmpRoot;
-        aiConfig.issueSync.versionDirectoryPrefix = 'v';
-        aiConfig.issueSync.routeByMilestone       = false;
-        ReleaseNotesSyncer.sortedReleases              = [];
+        applyConfigSnapshot();
+        ReleaseNotesSyncer.sortedReleases = [];
     });
 
     test.afterEach(async () => {
-        GraphqlService.query                       = originalQuery;
-        ReleaseNotesSyncer.sortedReleases              = originalSortedReleases;
-        aiConfig.issueSync.contentRootOverride    = originalContentRootOverride;
-        aiConfig.issueSync.versionDirectoryPrefix = originalVersionDirectoryPrefix;
-        aiConfig.issueSync.routeByMilestone       = originalRouteByMilestone;
+        GraphqlService.query              = originalQuery;
+        ReleaseNotesSyncer.sortedReleases = originalSortedReleases;
+        PullRequestSyncer.configSnapshot  = null;
 
         await fs.remove(tmpRoot).catch(() => {});
     });
@@ -234,7 +234,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         const cutBucketPr = buildPullRequest(3290);
         cutBucketPr.milestone = {title: 'v98.0.0'};
 
-        aiConfig.issueSync.routeByMilestone = true;
+        applyConfigSnapshot({routeByMilestone: true});
         await fs.ensureDir(path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v98.0.0'));
 
         GraphqlService.query = async () => ({
@@ -384,7 +384,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
     //     the existing copy instead of on it, and the two renderings diverge from there. ---
 
     test('refreshing an already-archived PR overwrites its artifact instead of creating a rival copy', async () => {
-        // The production shape, reproduced: PR 10124 lives at chunk-2 of a sealed bucket. The delta
+        // The production shape, reproduced: the archived record lives at chunk-2 of a sealed bucket. The delta
         // sync fetches it with NO cache entry — so the planner ranks it against the one PR it can
         // see, computes ordinal 0, and resolves chunk-1. Pre-fix that wrote a SECOND artifact and
         // left the first in place, because the unlink is gated on `cachedPull?.path`, which a cache
@@ -421,49 +421,43 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         expect(matter(await fs.readFile(occupied, 'utf8')).data.number).toBe(prNumber);
     });
 
-    test('an OPEN PR is ranked against the ACTIVE corpus on disk, not against the delta — RA-1 planner witness', async () => {
+    test('an OPEN PR is ranked against the ACTIVE corpus on disk, not against the delta — planner witness', async () => {
         // @neo-gpt-emmy is right that the scanner coverage never proved this: `contentInventory`
         // specs show the SCANNER finds active files, not that the PLANNER ranks against them. This
-        // asserts the rank itself, which is the thing RA-1 actually claimed.
+        // asserts the rank itself, which is the thing the review requirement actually claimed.
         //
         // Three OPEN PRs already on disk in active, none in metadata (the partial-metadata case), and
         // a fourth arriving. With a threshold of 2, complete active membership [100,200,300,400] puts
         // 400 at ordinal 3 → chunk-2. A planner ranking against the delta alone sees only 400,
         // ordinal 0 → chunk-1: confidently wrong, and silent.
-        const originalThreshold = aiConfig.issueSync.archiveChunkThreshold;
+        applyConfigSnapshot({archiveChunkThreshold: 2});
 
-        aiConfig.issueSync.archiveChunkThreshold = 2;
+        const activeDir = path.join(aiConfig.issueSync.pullsDir, 'chunk-1');
 
-        try {
-            const activeDir = path.join(aiConfig.issueSync.pullsDir, 'chunk-1');
-
-            await fs.ensureDir(activeDir);
-            for (const id of [100, 200, 300]) {
-                await fs.writeFile(path.join(activeDir, `pr-${id}.md`), `---\nnumber: ${id}\nstate: OPEN\n---\n`, 'utf-8');
-            }
-
-            // No releases → nothing archives; every PR resolves to the active tier.
-            ReleaseNotesSyncer.sortedReleases = [];
-
-            const arriving = buildPullRequest(400);
-
-            arriving.state    = 'OPEN';
-            arriving.mergedAt = null;
-            arriving.closedAt = null;
-
-            GraphqlService.query = async () => ({
-                repository: {pullRequests: {nodes: [arriving], pageInfo: {hasNextPage: false, endCursor: null}}}
-            });
-
-            await PullRequestSyncer.syncPullRequests({pulls: {}});
-
-            // Ordinal 3 of [100,200,300,400] at threshold 2 → chunk-2.
-            await expect(fs.pathExists(path.join(aiConfig.issueSync.pullsDir, 'chunk-2', 'pr-400.md'))).resolves.toBe(true);
-            // Not chunk-1, which is what ranking against the delta alone would have chosen.
-            await expect(fs.pathExists(path.join(activeDir, 'pr-400.md'))).resolves.toBe(false);
-        } finally {
-            aiConfig.issueSync.archiveChunkThreshold = originalThreshold;
+        await fs.ensureDir(activeDir);
+        for (const id of [100, 200, 300]) {
+            await fs.writeFile(path.join(activeDir, `pr-${id}.md`), `---\nnumber: ${id}\nstate: OPEN\n---\n`, 'utf-8');
         }
+
+        // No releases → nothing archives; every PR resolves to the active tier.
+        ReleaseNotesSyncer.sortedReleases = [];
+
+        const arriving = buildPullRequest(400);
+
+        arriving.state    = 'OPEN';
+        arriving.mergedAt = null;
+        arriving.closedAt = null;
+
+        GraphqlService.query = async () => ({
+            repository: {pullRequests: {nodes: [arriving], pageInfo: {hasNextPage: false, endCursor: null}}}
+        });
+
+        await PullRequestSyncer.syncPullRequests({pulls: {}});
+
+        // Ordinal 3 of [100,200,300,400] at threshold 2 → chunk-2.
+        await expect(fs.pathExists(path.join(aiConfig.issueSync.pullsDir, 'chunk-2', 'pr-400.md'))).resolves.toBe(true);
+        // Not chunk-1, which is what ranking against the delta alone would have chosen.
+        await expect(fs.pathExists(path.join(activeDir, 'pr-400.md'))).resolves.toBe(false);
     });
 
     test('a new archive arrival is ranked against the bucket ON DISK, not against the delta', async () => {
@@ -471,36 +465,30 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         // already sealed in v13.0.0, a third belongs in chunk-2. A planner that sees only the delta
         // ranks it 0 and resolves chunk-1 — confidently wrong, and it would land on top of an
         // existing chunk that the full ordering says is full.
-        const originalThreshold = aiConfig.issueSync.archiveChunkThreshold;
+        applyConfigSnapshot({archiveChunkThreshold: 2});
 
-        aiConfig.issueSync.archiveChunkThreshold = 2;
+        const sealedDir = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', 'chunk-1');
 
-        try {
-            const sealedDir = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', 'chunk-1');
+        await fs.ensureDir(sealedDir);
+        await fs.writeFile(path.join(sealedDir, 'pr-100.md'), 'sealed', 'utf8');
+        await fs.writeFile(path.join(sealedDir, 'pr-200.md'), 'sealed', 'utf8');
 
-            await fs.ensureDir(sealedDir);
-            await fs.writeFile(path.join(sealedDir, 'pr-100.md'), 'sealed', 'utf8');
-            await fs.writeFile(path.join(sealedDir, 'pr-200.md'), 'sealed', 'utf8');
+        ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-06-01T00:00:00Z'}];
 
-            ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-06-01T00:00:00Z'}];
-
-            GraphqlService.query = async () => ({
-                repository: {
-                    pullRequests: {
-                        nodes   : [buildPullRequest(300)],
-                        pageInfo: {hasNextPage: false, endCursor: null}
-                    }
+        GraphqlService.query = async () => ({
+            repository: {
+                pullRequests: {
+                    nodes   : [buildPullRequest(300)],
+                    pageInfo: {hasNextPage: false, endCursor: null}
                 }
-            });
+            }
+        });
 
-            await PullRequestSyncer.syncPullRequests({pulls: {}});
+        await PullRequestSyncer.syncPullRequests({pulls: {}});
 
-            // Complete membership [100, 200, 300] → 300 is ordinal 2 → chunk-2 at a threshold of 2.
-            await expect(fs.pathExists(path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', 'chunk-2', 'pr-300.md'))).resolves.toBe(true);
-            await expect(fs.pathExists(path.join(sealedDir, 'pr-300.md'))).resolves.toBe(false);
-        } finally {
-            aiConfig.issueSync.archiveChunkThreshold = originalThreshold;
-        }
+        // Complete membership [100, 200, 300] → 300 is ordinal 2 → chunk-2 at a threshold of 2.
+        await expect(fs.pathExists(path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', 'chunk-2', 'pr-300.md'))).resolves.toBe(true);
+        await expect(fs.pathExists(path.join(sealedDir, 'pr-300.md'))).resolves.toBe(false);
     });
 
     test('a PR owning two archived artifacts is REFUSED, not guessed at — and the sync survives it', async () => {
@@ -774,53 +762,47 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         //   membership [100, 200, 300] → 300 is ordinal 2 → chunk-2   (shared map intact)
         //   membership [100, 300]      → 300 is ordinal 1 → chunk-1   (poisoned: 200 deleted)
         // The chunk is the discriminator.
-        const originalThreshold = aiConfig.issueSync.archiveChunkThreshold;
+        applyConfigSnapshot({archiveChunkThreshold: 2});
 
-        aiConfig.issueSync.archiveChunkThreshold = 2;
+        const sealed = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', 'chunk-1');
 
+        await fs.ensureDir(sealed);
+        await fs.writeFile(path.join(sealed, 'pr-100.md'), 'sealed single', 'utf8');
+
+        await seedDivergentPair(200);
+        await seedDivergentPair(300);
+
+        ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-06-01T00:00:00Z'}];
+        GraphqlService.query = async (_q, vars) => ({repository: {pullRequest: buildPullRequest(vars.prNumber)}});
+
+        const originalWriteFile = fsPromises.writeFile;
+
+        // Fail ONLY 200's write. 300 must still rank against a corpus that contains 200.
+        fsPromises.writeFile = async (p, ...rest) => {
+            if (String(p).includes('pr-200.md')) throw new Error('ENOSPC: no space left on device');
+            return originalWriteFile(p, ...rest)
+        };
+
+        let stats;
         try {
-            const sealed = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', 'chunk-1');
-
-            await fs.ensureDir(sealed);
-            await fs.writeFile(path.join(sealed, 'pr-100.md'), 'sealed single', 'utf8');
-
-            await seedDivergentPair(200);
-            await seedDivergentPair(300);
-
-            ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-06-01T00:00:00Z'}];
-            GraphqlService.query = async (_q, vars) => ({repository: {pullRequest: buildPullRequest(vars.prNumber)}});
-
-            const originalWriteFile = fsPromises.writeFile;
-
-            // Fail ONLY 200's write. 300 must still rank against a corpus that contains 200.
-            fsPromises.writeFile = async (p, ...rest) => {
-                if (String(p).includes('pr-200.md')) throw new Error('ENOSPC: no space left on device');
-                return originalWriteFile(p, ...rest)
-            };
-
-            let stats;
-            try {
-                stats = await PullRequestSyncer.repairDuplicateArtifacts({pulls: {}});
-            } finally {
-                fsPromises.writeFile = originalWriteFile;
-            }
-
-            expect(stats.failed.map(f => f.id)).toEqual([200]);
-            expect(stats.repaired).toEqual([300]);
-
-            // THE DISCRIMINATOR: 300 lands at the ordinal complete membership chooses. A poisoned map
-            // would have ranked it one place earlier and written chunk-1.
-            await expect(fs.pathExists(path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', 'chunk-2', 'pr-300.md'))).resolves.toBe(true);
-            await expect(fs.pathExists(path.join(sealed, 'pr-300.md'))).resolves.toBe(false);
-
-            // And 200's copies both survive — the single-duplicate contract, unchanged.
-            for (const chunk of ['chunk-1', 'chunk-2']) {
-                const p = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', chunk, 'pr-200.md');
-
-                expect(await fs.readFile(p, 'utf8')).toBe(`divergent ${chunk}`);
-            }
+            stats = await PullRequestSyncer.repairDuplicateArtifacts({pulls: {}});
         } finally {
-            aiConfig.issueSync.archiveChunkThreshold = originalThreshold;
+            fsPromises.writeFile = originalWriteFile;
+        }
+
+        expect(stats.failed.map(f => f.id)).toEqual([200]);
+        expect(stats.repaired).toEqual([300]);
+
+        // THE DISCRIMINATOR: 300 lands at the ordinal complete membership chooses. A poisoned map
+        // would have ranked it one place earlier and written chunk-1.
+        await expect(fs.pathExists(path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', 'chunk-2', 'pr-300.md'))).resolves.toBe(true);
+        await expect(fs.pathExists(path.join(sealed, 'pr-300.md'))).resolves.toBe(false);
+
+        // And 200's copies both survive — the single-duplicate contract, unchanged.
+        for (const chunk of ['chunk-1', 'chunk-2']) {
+            const p = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', chunk, 'pr-200.md');
+
+            expect(await fs.readFile(p, 'utf8')).toBe(`divergent ${chunk}`);
         }
     });
 
@@ -959,11 +941,11 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         await fs.writeJson(path.join(aiConfig.issueSync.contentRoot, '_index.json'), [
             {
                 repoSlug: foreignSlug, type: 'pulls', id: 4040, version: null, chunkNumber: 1,
-                path: `${foreignSlug}/pulls/chunk-1/pr-4040.md`
+                path    : `${foreignSlug}/pulls/chunk-1/pr-4040.md`
             },
             {
                 repoSlug: foreignSlug, type: 'issues', id: 7, version: null, chunkNumber: 1,
-                path: `${foreignSlug}/issues/chunk-1/issue-7.md`
+                path    : `${foreignSlug}/issues/chunk-1/issue-7.md`
             }
         ]);
 
@@ -1067,6 +1049,12 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
 
         expect(stats.refetched).toEqual({count: 0, pulls: []});
         expect(metadata.pulls[prNumber]).toBeUndefined();
+    });
+
+    test('PullRequestSyncer spec uses PullRequestSyncer.configSnapshot instead of shared-config writes', async () => {
+        const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });
 

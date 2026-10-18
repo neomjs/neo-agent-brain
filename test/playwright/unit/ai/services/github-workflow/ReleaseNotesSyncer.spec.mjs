@@ -13,12 +13,14 @@ setup({
     }
 });
 
-import {test, expect}  from '@playwright/test';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
-import fs              from 'fs-extra';
-import path            from 'path';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager             from 'neo.mjs/src/manager/Instance.mjs';
+import fs                          from 'fs-extra';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
     let ReleaseNotesSyncer;
@@ -26,7 +28,6 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
     let issueSyncConfig;
     let aiConfig;
     let originalQuery;
-    let originalContentRootOverride;
     let tmpRoot;
     let logger;
 
@@ -34,17 +35,19 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
     const notePath = file => path.relative(issueSyncConfig.contentRoot, path.join(issueSyncConfig.releaseNotesDir, 'chunk-1', file)).split(path.sep).join('/');
 
     test.beforeAll(async () => {
-        aiConfig = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
-        issueSyncConfig = aiConfig.issueSync;
-        originalContentRootOverride = issueSyncConfig.contentRootOverride;
-
         tmpRoot = path.resolve(process.cwd(), 'tmp', `release-syncer-test-${process.pid}-${Date.now()}`);
         await fs.ensureDir(tmpRoot);
 
-        issueSyncConfig.contentRootOverride = tmpRoot;
-
         ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
         GraphqlService     = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
+
+        aiConfig = ReleaseNotesSyncer.createConfigSnapshot({
+            issueSync: {
+                contentRootOverride: tmpRoot
+            }
+        });
+        ReleaseNotesSyncer.configSnapshot = aiConfig;
+        issueSyncConfig                   = aiConfig.issueSync;
 
         logger = (await import('../../../../../../ai/mcp/server/github-workflow/logger.mjs')).default;
         logger.level = 'silent';
@@ -53,13 +56,18 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
     });
 
     test.afterAll(async () => {
-        issueSyncConfig.contentRootOverride = originalContentRootOverride;
+        ReleaseNotesSyncer.configSnapshot = null;
         GraphqlService.query = originalQuery;
         await fs.remove(tmpRoot);
     });
 
     test.afterEach(() => {
         GraphqlService.query = originalQuery;
+    });
+
+    test('ReleaseNotesSyncer spec does not mutate shared config singletons (ADR-0019 §4 B4)', async () => {
+        const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 
     test('warm-cache path properly hydrates sortedReleases and skips full fetch', async () => {

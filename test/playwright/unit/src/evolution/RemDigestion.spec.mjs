@@ -17,15 +17,18 @@ import {test, expect}                    from '@playwright/test';
 import Neo                               from 'neo.mjs/src/Neo.mjs';
 import * as core                         from 'neo.mjs/src/core/_export.mjs';
 import fs                                from 'fs';
-import {snapshotAiConfig}                from '../../ai/services/memory-core/util.mjs';
+import {fileURLToPath}                   from 'url';
 import {computeSessionTurnInputRevision} from '../../../../../ai/services/memory-core/helpers/turnDocumentText.mjs';
 import {NL_ACTION_TELEMETRY_NODE_TYPE}   from '../../../../../ai/services/memory-core/helpers/nlActionTelemetryStore.mjs';
+import {findSharedConfigMutations}       from '../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {
     beginCorpusProjection,
     commitCorpusProjectionFacet,
     CORPUS_PROJECTION_FACETS,
     createCorpusProjectionReceipt
 } from '../../../../../ai/services/graph/corpusProjectionContract.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
 
 test.describe('Neo.brain.evolution.RemDigestion', () => {
     let aiConfig;
@@ -35,11 +38,11 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
     let RemDigestion;
     let MemorySessionIngestor;
     let SemanticGraphExtractor;
+    let TopologyInferenceEngine;
     let StorageRouter;
     let OpenAiCompatible;
     let KBRecorderService;
     let logger;
-    let restoreAiConfig;
     let originalGenerate;
     let originalAppendFile;
     let graphEdgeIdsBeforeTest;
@@ -121,13 +124,11 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         aiConfig = (await import('../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
         evolutionConfig = (await import('../../../../../src/evolution/config.template.mjs')).default;
 
-        restoreAiConfig = snapshotAiConfig(evolutionConfig, ['remSleepBatchLimit', 'sessionScanPageLimit']);
-        evolutionConfig.remSleepBatchLimit ??= 10;
-
         GraphService = (await import('../../../../../ai/services/memory-core/GraphService.mjs')).default;
         RemDigestion = (await import('../../../../../src/evolution/createRemDigestion.mjs')).createRemDigestion();
         MemorySessionIngestor = (await import('../../../../../ai/services/ingestion/MemorySessionIngestor.mjs')).default;
         SemanticGraphExtractor = (await import('../../../../../ai/services/graph/SemanticGraphExtractor.mjs')).default;
+        TopologyInferenceEngine = (await import('../../../../../ai/services/graph/TopologyInferenceEngine.mjs')).default;
         StorageRouter = (await import('../../../../../ai/services/memory-core/managers/StorageRouter.mjs')).default;
         OpenAiCompatible       = (await import('../../../../../ai/provider/OpenAiCompatible.mjs')).default;
         SystemLifecycleService = (await import('../../../../../ai/services/memory-core/lifecycle/SystemLifecycleService.mjs')).default;
@@ -176,6 +177,9 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
     });
 
     test.afterEach(async () => {
+        RemDigestion.configSnapshot = null;
+        TopologyInferenceEngine.configSnapshot = null;
+        SemanticGraphExtractor.configSnapshot = null;
         // Telemetry rows are ordinary graph nodes now, so the fixture cleanup that already removes every
         // node this test created removes them too — the bespoke table create/delete/restore dance the
         // old `nl_action_log` fixture needed is simply gone.
@@ -194,7 +198,6 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         // Restore patches
         if (originalGenerate)   OpenAiCompatible.prototype.generate = originalGenerate;
         if (originalAppendFile) fs.writeFileSync = originalAppendFile;
-        restoreAiConfig?.();
     });
 
     test('should extract Graph nodes and flag deterministic capability gaps without mutating physical files', async () => {
@@ -607,24 +610,20 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
     });
 
     test('findUndigestedSessions fails loud when remSleepBatchLimit is malformed in the imported config', async () => {
-        const aiConfig                   = (await import('../../../../../ai/mcp/server/memory-core/config.template.mjs')).default,
-              originalRemSleepBatchLimit = evolutionConfig.remSleepBatchLimit;
-
-        evolutionConfig.remSleepBatchLimit = Number.NaN;
+        RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+            remSleepBatchLimit: Number.NaN
+        });
 
         try {
             await expect(RemDigestion.findUndigestedSessions()).rejects.toThrow(/Required EvolutionConfig leaf "remSleepBatchLimit"/);
         } finally {
-            evolutionConfig.remSleepBatchLimit = originalRemSleepBatchLimit ?? 10;
+            RemDigestion.configSnapshot = null;
         }
     });
 
     test('findUndigestedSessions mixes a fresh reserve with the aged Chroma tail (#13697)', async () => {
-        const aiConfig = (await import('../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
         const original = {
-            sessionScanPageLimit: evolutionConfig.sessionScanPageLimit,
-            remSleepBatchLimit  : evolutionConfig.remSleepBatchLimit,
-            sessionsCollection  : RemDigestion.sessionsCollection
+            sessionsCollection: RemDigestion.sessionsCollection
         };
 
         const rows = [
@@ -641,8 +640,10 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         ];
         const calls = [];
 
-        evolutionConfig.sessionScanPageLimit = 6;
-        evolutionConfig.remSleepBatchLimit      = 4;
+        RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+            sessionScanPageLimit: 6,
+            remSleepBatchLimit  : 4
+        });
         RemDigestion.sessionsCollection  = {
             async count() {
                 return rows.length
@@ -668,9 +669,8 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             expect(result.map(row => row.id)).toEqual(['fresh-5', 'fresh-4', 'old-1', 'old-2']);
             expect(result.map(row => row.meta.sessionId)).toEqual(['fresh-5', 'fresh-4', 'old-1', 'old-2']);
         } finally {
-            evolutionConfig.sessionScanPageLimit = original.sessionScanPageLimit ?? 2000;
-            evolutionConfig.remSleepBatchLimit   = original.remSleepBatchLimit ?? 10;
-            RemDigestion.sessionsCollection  = original.sessionsCollection;
+            RemDigestion.configSnapshot     = null;
+            RemDigestion.sessionsCollection = original.sessionsCollection;
         }
     });
 
@@ -875,8 +875,6 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         // The weight gate lives in config (not a file-local constant). Verifying that
         // GapInferenceEngine reads the live config value means curators can tune the handoff
         // silence level without code changes — the stated goal of the config-lift.
-        const aiConfig = (await import('../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
-        const original = aiConfig.data.guideGapWeightThreshold;
 
         // Plant a concept whose weight (0.5) is BELOW the default 0.8 — normally no gap emitted.
         GraphService.upsertNode({
@@ -890,7 +888,9 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             // Override the threshold below the concept's weight. The same concept must now pass
             // the gate and emit gaps through the same branch logic — proving the config is
             // actually consulted at gate time, not captured at module load.
-            aiConfig.data.guideGapWeightThreshold = 0.3;
+            RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+                guideGapWeightThreshold: 0.3
+            });
 
             await RemDigestion.inferConceptGraphGaps();
 
@@ -899,7 +899,7 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             expect(node.properties.capabilityGap).toContain('[GUIDE_GAP]');
             expect(node.properties.capabilityGap).toContain('[ORPHAN_CONCEPT]');
         } finally {
-            aiConfig.data.guideGapWeightThreshold = original;
+            RemDigestion.configSnapshot = null;
         }
     });
 
@@ -1527,26 +1527,25 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         const providerCalls = [];
 
         const orig = {
-            graphProvider : aiConfig.graphProvider,
-            chatContext   : aiConfig.localModels.chat.contextLimitTokens,
-            chatGraphChunk: aiConfig.localModels.chat.graphChunkLimitTokens,
-            chatGraphOut  : aiConfig.localModels.chat.graphOutputLimitTokens,
-            chatSafe      : aiConfig.localModels.chat.safeProcessingLimitTokens,
-            graphReasoning: aiConfig.localModels.chat.graphReasoningEffort,
-            openAiModel   : aiConfig.openAiCompatible.model,
-            generate      : OpenAiCompatible.prototype.generate,
-            loggerInfo    : logger.info
+            generate  : OpenAiCompatible.prototype.generate,
+            loggerInfo: logger.info
         };
         const infoCalls = [];
 
         try {
-            aiConfig.graphProvider                                = 'openAiCompatible';
-            aiConfig.openAiCompatible.model                       = 'topology-test-model';
-            aiConfig.localModels.chat.contextLimitTokens          = 8192;
-            aiConfig.localModels.chat.graphChunkLimitTokens       = 4800;
-            aiConfig.localModels.chat.graphOutputLimitTokens      = 512;
-            aiConfig.localModels.chat.safeProcessingLimitTokens   = 5000;
-            aiConfig.localModels.chat.graphReasoningEffort        = 'none';
+            TopologyInferenceEngine.configSnapshot = TopologyInferenceEngine.createConfigSnapshot({
+                graphProvider   : 'openAiCompatible',
+                openAiCompatible: {model: 'topology-test-model'},
+                localModels     : {
+                    chat: {
+                        contextLimitTokens       : 8192,
+                        graphChunkLimitTokens    : 4800,
+                        graphOutputLimitTokens   : 512,
+                        safeProcessingLimitTokens: 5000,
+                        graphReasoningEffort     : 'none'
+                    }
+                }
+            });
             logger.info = (...args) => infoCalls.push(args.join(' '));
             OpenAiCompatible.prototype.generate = async (prompt, providerOptions) => {
                 providerCalls.push({prompt, providerOptions});
@@ -1574,20 +1573,13 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             expect(providerCalls[0].providerOptions.responseSchema.properties.conflicts.maxItems).toBe(5);
             expect(infoCalls.some(line => line.includes('conflicts=0') && line.includes('outputLimitTokens=512'))).toBe(true);
         } finally {
-            aiConfig.graphProvider                              = orig.graphProvider;
-            aiConfig.localModels.chat.contextLimitTokens        = orig.chatContext;
-            aiConfig.localModels.chat.graphChunkLimitTokens     = orig.chatGraphChunk;
-            aiConfig.localModels.chat.graphOutputLimitTokens    = orig.chatGraphOut;
-            aiConfig.localModels.chat.safeProcessingLimitTokens = orig.chatSafe;
-            aiConfig.localModels.chat.graphReasoningEffort      = orig.graphReasoning;
-            aiConfig.openAiCompatible.model                     = orig.openAiModel;
-            OpenAiCompatible.prototype.generate                 = orig.generate;
-            logger.info                                         = orig.loggerInfo;
+            TopologyInferenceEngine.configSnapshot = null;
+            OpenAiCompatible.prototype.generate    = orig.generate;
+            logger.info                            = orig.loggerInfo;
         }
     });
 
     test('TopologyInferenceEngine classifies non-empty invalid topology output as parse failure (#13995)', async () => {
-        const aiConfig                = (await import('../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
         const TopologyInferenceEngine = (await import('../../../../../ai/services/graph/TopologyInferenceEngine.mjs')).default;
         const {
             clearAggregatedFrictions,
@@ -1595,28 +1587,27 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         } = await import('../../../../../ai/services/memory-core/helpers/consumerFrictionHelper.mjs');
 
         const orig = {
-            graphProvider : aiConfig.graphProvider,
-            chatContext   : aiConfig.localModels.chat.contextLimitTokens,
-            chatGraphChunk: aiConfig.localModels.chat.graphChunkLimitTokens,
-            chatGraphOut  : aiConfig.localModels.chat.graphOutputLimitTokens,
-            chatSafe      : aiConfig.localModels.chat.safeProcessingLimitTokens,
-            graphReasoning: aiConfig.localModels.chat.graphReasoningEffort,
-            openAiModel   : aiConfig.openAiCompatible.model,
-            generate      : OpenAiCompatible.prototype.generate,
-            loggerWarn    : logger.warn
+            generate  : OpenAiCompatible.prototype.generate,
+            loggerWarn: logger.warn
         };
         const warnCalls = [];
 
         try {
             clearAggregatedFrictions();
 
-            aiConfig.graphProvider                              = 'openAiCompatible';
-            aiConfig.openAiCompatible.model                     = 'topology-parse-test-model';
-            aiConfig.localModels.chat.contextLimitTokens        = 8192;
-            aiConfig.localModels.chat.graphChunkLimitTokens     = 4800;
-            aiConfig.localModels.chat.graphOutputLimitTokens    = 512;
-            aiConfig.localModels.chat.safeProcessingLimitTokens = 5000;
-            aiConfig.localModels.chat.graphReasoningEffort      = 'none';
+            TopologyInferenceEngine.configSnapshot = TopologyInferenceEngine.createConfigSnapshot({
+                graphProvider   : 'openAiCompatible',
+                openAiCompatible: {model: 'topology-parse-test-model'},
+                localModels     : {
+                    chat: {
+                        contextLimitTokens       : 8192,
+                        graphChunkLimitTokens    : 4800,
+                        graphOutputLimitTokens   : 512,
+                        safeProcessingLimitTokens: 5000,
+                        graphReasoningEffort     : 'none'
+                    }
+                }
+            });
             logger.warn = (...args) => warnCalls.push(args.join(' '));
             OpenAiCompatible.prototype.generate = async () => ({
                 content      : 'this is not json',
@@ -1643,15 +1634,9 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             )).toBe(true);
         } finally {
             clearAggregatedFrictions();
-            aiConfig.graphProvider                              = orig.graphProvider;
-            aiConfig.localModels.chat.contextLimitTokens        = orig.chatContext;
-            aiConfig.localModels.chat.graphChunkLimitTokens     = orig.chatGraphChunk;
-            aiConfig.localModels.chat.graphOutputLimitTokens    = orig.chatGraphOut;
-            aiConfig.localModels.chat.safeProcessingLimitTokens = orig.chatSafe;
-            aiConfig.localModels.chat.graphReasoningEffort      = orig.graphReasoning;
-            aiConfig.openAiCompatible.model                     = orig.openAiModel;
-            OpenAiCompatible.prototype.generate                 = orig.generate;
-            logger.warn                                         = orig.loggerWarn;
+            TopologyInferenceEngine.configSnapshot = null;
+            OpenAiCompatible.prototype.generate    = orig.generate;
+            logger.warn                            = orig.loggerWarn;
         }
     });
 
@@ -1764,11 +1749,8 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
     });
 
     test('findUndigestedSessions fences legacy and revision-aware cadence state (#13835, #16115)', async () => {
-        const aiConfig = (await import('../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
         const original = {
-            sessionScanPageLimit: evolutionConfig.sessionScanPageLimit,
-            remSleepBatchLimit  : evolutionConfig.remSleepBatchLimit,
-            sessionsCollection  : RemDigestion.sessionsCollection
+            sessionsCollection: RemDigestion.sessionsCollection
         };
 
         // Mix: a fresh undigested row, a legacy `deferred` row, a terminal `undigestible` row,
@@ -1790,8 +1772,10 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             {id: 'undigested-old', document: 'e', meta: {sessionId: 'undigested-old', timestamp: 1000}}
         ];
 
-        evolutionConfig.sessionScanPageLimit = 10;
-        evolutionConfig.remSleepBatchLimit      = 10;
+        RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+            sessionScanPageLimit: 10,
+            remSleepBatchLimit  : 10
+        });
         RemDigestion.sessionsCollection  = {
             async count() { return rows.length },
             async get({limit, offset = 0}) {
@@ -1818,14 +1802,12 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             expect(ids).toContain('undigested-new');
             expect(ids).toContain('undigested-old');
         } finally {
-            evolutionConfig.sessionScanPageLimit = original.sessionScanPageLimit ?? 2000;
-            evolutionConfig.remSleepBatchLimit   = original.remSleepBatchLimit ?? 10;
-            RemDigestion.sessionsCollection  = original.sessionsCollection;
+            RemDigestion.configSnapshot     = null;
+            RemDigestion.sessionsCollection = original.sessionsCollection;
         }
     });
 
     test('processUndigestedSessions bounds the re-serve immediately for skip-over-band parser failures (#13984)', async () => {
-        const aiConfig                = (await import('../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
         const AdrIngestor             = (await import('../../../../../ai/services/ingestion/AdrIngestor.mjs')).default;
         const ConceptIngestor         = (await import('../../../../../ai/services/ingestion/ConceptIngestor.mjs')).default;
         const FileSystemIngestor      = (await import('../../../../../ai/services/memory-core/FileSystemIngestor.mjs')).default;
@@ -1842,7 +1824,6 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
 
         const sessionUpdatePayloads = [];
         const orig                  = {
-            safeProcessing    : aiConfig.localModels.chat.safeProcessingLimitTokens,
             findUndigested    : RemDigestion.findUndigestedSessions,
             sessionsCollection: RemDigestion.sessionsCollection,
             inferTest         : RemDigestion.inferTestGapsFromSession,
@@ -1859,7 +1840,13 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         };
 
         try {
-            aiConfig.localModels.chat.safeProcessingLimitTokens      = 100_000;
+            RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+                localModels: {
+                    chat: {
+                        safeProcessingLimitTokens: 100_000
+                    }
+                }
+            });
             RemDigestion.isProcessing = false;
 
             RemDigestion.findUndigestedSessions = async () => [mockSession];
@@ -1895,7 +1882,7 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             expect(meta.digestAttempts).toBe(1);
             expect(meta.deferReason).toBe('skip-over-band');
         } finally {
-            aiConfig.localModels.chat.safeProcessingLimitTokens      = orig.safeProcessing;
+            RemDigestion.configSnapshot                       = null;
             RemDigestion.findUndigestedSessions               = orig.findUndigested;
             RemDigestion.sessionsCollection                   = orig.sessionsCollection;
             RemDigestion.inferTestGapsFromSession             = orig.inferTest;
@@ -2451,9 +2438,7 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
 
     test('should retry extraction on malformed JSON payload up to 3 times to fix #9913', async () => {
         let   executionCount = 0;
-        const aiConfig       = (await import('../../../../../ai/mcp/server/memory-core/config.template.mjs')).default,
-              baseGenerate = OpenAiCompatible.prototype.generate,
-              originalModelProvider = aiConfig.modelProvider;
+        const baseGenerate   = OpenAiCompatible.prototype.generate;
 
         // Mock to fail twice with invalid JSON, then succeed on the 3rd attempt
         OpenAiCompatible.prototype.generate = async function(messages) {
@@ -2482,7 +2467,9 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             };
         };
 
-        aiConfig.modelProvider = 'openAiCompatible';
+        SemanticGraphExtractor.configSnapshot = SemanticGraphExtractor.createConfigSnapshot({
+            graphProvider: 'openAiCompatible'
+        });
 
         try {
             const session = {
@@ -2504,8 +2491,13 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             expect(lastMessage.role).toBe('user');
             expect(lastMessage.content).toContain('failed internal schema validation');
         } finally {
-            aiConfig.modelProvider = originalModelProvider;
+            SemanticGraphExtractor.configSnapshot = null;
             OpenAiCompatible.prototype.generate = baseGenerate;
         }
+    });
+
+    test('spec has zero shared-config mutations under the B4 lint gate (#1098)', () => {
+        const source = fs.readFileSync(__filename, 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });

@@ -13,12 +13,14 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import fs             from 'fs-extra';
-import matter         from 'gray-matter';
-import path           from 'path';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import fs                          from 'fs-extra';
+import matter                      from 'gray-matter';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {
     FETCH_DISCUSSION_COMMENTS_PAGE,
     FETCH_DISCUSSION_REPLIES_PAGE,
@@ -31,47 +33,43 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
     let DiscussionSyncer;
     let GraphqlService;
     let ReleaseNotesSyncer;
-    let originalArchiveRoot;
-    let originalDiscussionsDir;
-    let originalIssuesDir;
-    let originalContentRootOverride;
     let originalQuery;
     let originalSortedReleases;
-    let originalDiscussionDenylist;
-    let originalDiscussionOuterPageSize;
     let tmpRoot;
 
     test.beforeAll(async () => {
-        aiConfig         = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
-        DiscussionSyncer = (await import('../../../../../../ai/services/github-workflow/sync/DiscussionSyncer.mjs')).default;
-        GraphqlService   = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
-        ReleaseNotesSyncer    = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
+        DiscussionSyncer   = (await import('../../../../../../ai/services/github-workflow/sync/DiscussionSyncer.mjs')).default;
+        GraphqlService     = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
+        ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
 
-        originalArchiveRoot    = aiConfig.issueSync.archiveRoot;
-        originalDiscussionsDir = aiConfig.issueSync.discussionsDir;
-        originalIssuesDir      = aiConfig.issueSync.issuesDir;
-        originalContentRootOverride = aiConfig.issueSync.contentRootOverride;
         originalQuery          = GraphqlService.query.bind(GraphqlService);
         originalSortedReleases = ReleaseNotesSyncer.sortedReleases;
-        originalDiscussionDenylist = aiConfig.issueSync.discussionDenylist;
-        originalDiscussionOuterPageSize = aiConfig.issueSync.discussionOuterPageSize;
     });
+
+    function applyConfigSnapshot(issueSyncOverrides = {}) {
+        aiConfig = DiscussionSyncer.createConfigSnapshot({
+            issueSync: {
+                contentRootOverride: tmpRoot,
+                discussionDenylist : {numbers: [], authors: []},
+                ...issueSyncOverrides
+            }
+        });
+        DiscussionSyncer.configSnapshot = aiConfig;
+        return aiConfig;
+    }
 
     test.beforeEach(async () => {
         tmpRoot = path.resolve(process.cwd(), 'tmp', `discussion-syncer-test-${process.pid}-${Date.now()}`);
         await fs.ensureDir(tmpRoot);
 
-        aiConfig.issueSync.contentRootOverride = tmpRoot;
-        ReleaseNotesSyncer.sortedReleases      = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
-        aiConfig.issueSync.discussionDenylist  = {numbers: [], authors: []};
+        applyConfigSnapshot();
+        ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
     });
 
     test.afterEach(async () => {
-        GraphqlService.query               = originalQuery;
-        ReleaseNotesSyncer.sortedReleases       = originalSortedReleases;
-        aiConfig.issueSync.contentRootOverride = originalContentRootOverride;
-        aiConfig.issueSync.discussionDenylist = originalDiscussionDenylist;
-        aiConfig.issueSync.discussionOuterPageSize = originalDiscussionOuterPageSize;
+        GraphqlService.query              = originalQuery;
+        ReleaseNotesSyncer.sortedReleases = originalSortedReleases;
+        DiscussionSyncer.configSnapshot   = null;
 
         await fs.remove(tmpRoot).catch(() => {});
     });
@@ -164,35 +162,29 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
         // The discriminating witness for the complete-membership fix. Two discussions already on disk are NOT in metadata (the
         // marooned backlog). With a chunk size of 2, a NEW discussion's ordinal MUST count them — landing it
         // in chunk-2 — instead of ranking against the delta alone (index 0 → chunk-1, the pre-fix defect).
-        const originalThreshold = aiConfig.issueSync.archiveChunkThreshold;
+        applyConfigSnapshot({archiveChunkThreshold: 2});
 
-        aiConfig.issueSync.archiveChunkThreshold = 2;
+        const chunk1 = path.join(aiConfig.issueSync.discussionsDir, 'chunk-1');
 
-        try {
-            const chunk1 = path.join(aiConfig.issueSync.discussionsDir, 'chunk-1');
+        await fs.ensureDir(chunk1);
+        await fs.writeFile(path.join(chunk1, 'discussion-24010.md'), '# marooned 24010\n');
+        await fs.writeFile(path.join(chunk1, 'discussion-24011.md'), '# marooned 24011\n');
 
-            await fs.ensureDir(chunk1);
-            await fs.writeFile(path.join(chunk1, 'discussion-24010.md'), '# marooned 24010\n');
-            await fs.writeFile(path.join(chunk1, 'discussion-24011.md'), '# marooned 24011\n');
+        const discussion = buildDiscussion(24012, {closed: false});
 
-            const discussion = buildDiscussion(24012, {closed: false});
+        GraphqlService.query = async () => ({
+            repository: {discussions: {nodes: [discussion], pageInfo: {hasNextPage: false, endCursor: null}}}
+        });
 
-            GraphqlService.query = async () => ({
-                repository: {discussions: {nodes: [discussion], pageInfo: {hasNextPage: false, endCursor: null}}}
-            });
+        await DiscussionSyncer.syncDiscussions({discussions: {}});
 
-            await DiscussionSyncer.syncDiscussions({discussions: {}});
+        // complete membership (24010 + 24011 on disk, then 24012) → itemIndex 2 → chunk-2; the partial
+        // ordinal (24012 alone) would be index 0 → chunk-1.
+        const correct = path.join(aiConfig.issueSync.discussionsDir, 'chunk-2', 'discussion-24012.md'),
+              wrong   = path.join(aiConfig.issueSync.discussionsDir, 'chunk-1', 'discussion-24012.md');
 
-            // complete membership (24010 + 24011 on disk, then 24012) → itemIndex 2 → chunk-2; the partial
-            // ordinal (24012 alone) would be index 0 → chunk-1.
-            const correct = path.join(aiConfig.issueSync.discussionsDir, 'chunk-2', 'discussion-24012.md'),
-                  wrong   = path.join(aiConfig.issueSync.discussionsDir, 'chunk-1', 'discussion-24012.md');
-
-            await expect(fs.pathExists(correct)).resolves.toBe(true);
-            await expect(fs.pathExists(wrong)).resolves.toBe(false)
-        } finally {
-            aiConfig.issueSync.archiveChunkThreshold = originalThreshold
-        }
+        await expect(fs.pathExists(correct)).resolves.toBe(true);
+        await expect(fs.pathExists(wrong)).resolves.toBe(false)
     });
 
     test('projects trusted lifecycle markers into typed source-owned routing frontmatter', async () => {
@@ -719,7 +711,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
     });
 
     test('rejects an outer page size above the production-proven ceiling (#15977)', async () => {
-        aiConfig.issueSync.discussionOuterPageSize = 31;
+        applyConfigSnapshot({discussionOuterPageSize: 31});
 
         await expect(DiscussionSyncer.syncDiscussions({discussions: {}, lastSync: null}))
             .rejects.toThrow('issueSync.discussionOuterPageSize must be an integer between 1 and 30.');
@@ -804,7 +796,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
             }
         });
 
-        aiConfig.issueSync.discussionDenylist = {numbers: [25002], authors: []};
+        applyConfigSnapshot({discussionDenylist: {numbers: [25002], authors: []}});
 
         const metadata = {discussions: {}};
         const stats    = await DiscussionSyncer.syncDiscussions(metadata);
@@ -834,7 +826,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
             }
         });
 
-        aiConfig.issueSync.discussionDenylist = {numbers: [], authors: ['astroturf-account']};
+        applyConfigSnapshot({discussionDenylist: {numbers: [], authors: ['astroturf-account']}});
 
         const stats      = await DiscussionSyncer.syncDiscussions({discussions: {}});
         const deniedPath = path.join(aiConfig.issueSync.discussionsDir, 'chunk-1', 'discussion-25003.md');
@@ -864,7 +856,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
         expect((await fs.readJson(indexPath)).some(e => e.type === 'discussions' && e.id === 25004)).toBe(true);
 
         // Second run: now denylisted → file, metadata, AND index entry are quarantined/removed.
-        aiConfig.issueSync.discussionDenylist = {numbers: [25004], authors: []};
+        applyConfigSnapshot({discussionDenylist: {numbers: [25004], authors: []}});
         const stats = await DiscussionSyncer.syncDiscussions(metadata);
 
         expect(stats.synced).toEqual([]);
@@ -892,7 +884,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
 
         // Run 2: 25006 is now denylisted AND GitHub no longer returns it in the list query.
         // The cached copy must still be quarantined by number — file + metadata + index entry.
-        aiConfig.issueSync.discussionDenylist = {numbers: [25006], authors: []};
+        applyConfigSnapshot({discussionDenylist: {numbers: [25006], authors: []}});
         GraphqlService.query = async () => ({
             repository: {discussions: {nodes: [], pageInfo: {hasNextPage: false, endCursor: null}}}
         });
@@ -915,7 +907,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
             }
         });
 
-        aiConfig.issueSync.discussionDenylist = {numbers: [], authors: []};
+        applyConfigSnapshot({discussionDenylist: {numbers: [], authors: []}});
 
         const stats      = await DiscussionSyncer.syncDiscussions({discussions: {}});
         const targetPath = path.join(aiConfig.issueSync.discussionsDir, 'chunk-1', 'discussion-25005.md');
@@ -1069,6 +1061,12 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
         });
         expect(parsed.content).toContain('Comment 50');
         expect(parsed.content).toContain('Reply 20')
+    });
+
+    test('DiscussionSyncer spec uses DiscussionSyncer.configSnapshot instead of shared-config writes', async () => {
+        const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });
 

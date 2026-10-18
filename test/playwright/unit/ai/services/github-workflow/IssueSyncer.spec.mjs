@@ -13,15 +13,17 @@ setup({
     }
 });
 
-import {test, expect}  from '@playwright/test';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
-import fs              from 'fs-extra';
-import fsp             from 'node:fs/promises';
-import matter          from 'gray-matter';
-import path            from 'path';
-import crypto          from 'crypto';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager             from 'neo.mjs/src/manager/Instance.mjs';
+import fs                          from 'fs-extra';
+import fsp                         from 'node:fs/promises';
+import matter                      from 'gray-matter';
+import path                        from 'path';
+import crypto                      from 'crypto';
+import {fileURLToPath}             from 'url';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 /**
  * @summary Regression coverage for IssueSyncer's timeline-based comment accounting.
@@ -46,49 +48,50 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
     let issueSyncConfig;
     let aiConfig;
     let originalQuery;
-    let originalArchiveRoot;
-    let originalIssuesDir;
-    let originalContentRootOverride;
-    let originalRouteByMilestone;
     let tmpRoot;
     let logger;
 
-    test.beforeAll(async () => {
-        aiConfig = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
-        issueSyncConfig = aiConfig.issueSync;
-        originalArchiveRoot = issueSyncConfig.archiveRoot;
-        originalIssuesDir   = issueSyncConfig.issuesDir;
-        originalContentRootOverride = issueSyncConfig.contentRootOverride;
-        originalRouteByMilestone = issueSyncConfig.routeByMilestone;
+    function applyConfigSnapshot(issueSyncOverrides = {}) {
+        aiConfig = IssueSyncer.createConfigSnapshot({
+            issueSync: {
+                contentRootOverride: tmpRoot,
+                ...issueSyncOverrides
+            }
+        });
+        IssueSyncer.configSnapshot        = aiConfig;
+        ReleaseNotesSyncer.configSnapshot = aiConfig;
+        issueSyncConfig                   = aiConfig.issueSync;
+        return aiConfig;
+    }
 
+    test.beforeAll(async () => {
         tmpRoot = path.resolve(process.cwd(), 'tmp', `issue-syncer-test-${process.pid}-${Date.now()}`);
         await fs.ensureDir(tmpRoot);
 
-        // Redirect local markdown writes to the tmp dir so the test does not pollute
-        // the real resources/content/issues tree.
-        issueSyncConfig.contentRootOverride = tmpRoot;
-
-        GraphqlService = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
-        IssueSyncer    = (await import('../../../../../../ai/services/github-workflow/sync/IssueSyncer.mjs')).default;
+        GraphqlService     = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
+        IssueSyncer        = (await import('../../../../../../ai/services/github-workflow/sync/IssueSyncer.mjs')).default;
         ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
-        logger         = (await import('../../../../../../ai/mcp/server/github-workflow/logger.mjs')).default;
+        logger             = (await import('../../../../../../ai/mcp/server/github-workflow/logger.mjs')).default;
+
+        // Redirect local markdown writes to the tmp dir via an isolated configSnapshot so the test
+        // does not mutate shared AiConfig or pollute the real resources/content/issues tree.
+        applyConfigSnapshot();
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
     });
 
     test.afterAll(async () => {
-        GraphqlService.query = originalQuery;
-        issueSyncConfig.contentRootOverride = originalContentRootOverride;
-        issueSyncConfig.routeByMilestone = originalRouteByMilestone;
+        GraphqlService.query              = originalQuery;
+        IssueSyncer.configSnapshot        = null;
+        ReleaseNotesSyncer.configSnapshot = null;
         await fs.remove(tmpRoot).catch(() => {});
     });
 
     test('COMPLETE-membership red-proof: a new issue ranks past the marooned on-disk backlog into chunk-2 (#15452)', async () => {
-        const originalThreshold = issueSyncConfig.archiveChunkThreshold,
-              originalReleases  = ReleaseNotesSyncer.sortedReleases;
+        const originalReleases = ReleaseNotesSyncer.sortedReleases;
 
-        issueSyncConfig.archiveChunkThreshold = 2;
-        ReleaseNotesSyncer.sortedReleases     = [];
+        applyConfigSnapshot({archiveChunkThreshold: 2});
+        ReleaseNotesSyncer.sortedReleases = [];
 
         try {
             const chunk1 = path.join(issueSyncConfig.issuesDir, 'chunk-1');
@@ -133,8 +136,8 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             await expect(fs.pathExists(correct)).resolves.toBe(true);
             await expect(fs.pathExists(wrong)).resolves.toBe(false)
         } finally {
-            issueSyncConfig.archiveChunkThreshold = originalThreshold;
-            ReleaseNotesSyncer.sortedReleases     = originalReleases
+            applyConfigSnapshot();
+            ReleaseNotesSyncer.sortedReleases = originalReleases
         }
     });
 
@@ -421,10 +424,9 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         mockIssue.closedAt  = '2026-01-15T00:00:00Z';
         mockIssue.milestone = {title: 'v99.0.0'};
 
-        const originalSorted           = ReleaseNotesSyncer.sortedReleases;
-        const originalRouteByMilestone = issueSyncConfig.routeByMilestone;
+        const originalSorted = ReleaseNotesSyncer.sortedReleases;
         ReleaseNotesSyncer.sortedReleases = [];
-        issueSyncConfig.routeByMilestone  = false;
+        applyConfigSnapshot({routeByMilestone: false});
         await fs.ensureDir(path.join(issueSyncConfig.archiveRoot, 'issues', 'v99.0.0'));
 
         GraphqlService.query = async (query) => {
@@ -445,7 +447,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             expect(path.relative(issueSyncConfig.issuesDir, path.resolve(aiConfig.issueSync.metadataBaseRoot, targetPath)).startsWith('..')).toBe(false);
         } finally {
             ReleaseNotesSyncer.sortedReleases = originalSorted;
-            issueSyncConfig.routeByMilestone  = originalRouteByMilestone;
+            applyConfigSnapshot();
         }
     });
 
@@ -472,10 +474,9 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         cutBucketIssue.closedAt  = '2026-01-15T00:00:00Z';
         cutBucketIssue.milestone = {title: 'v98.0.0'};
 
-        const originalSorted           = ReleaseNotesSyncer.sortedReleases;
-        const originalRouteByMilestone = issueSyncConfig.routeByMilestone;
+        const originalSorted = ReleaseNotesSyncer.sortedReleases;
         ReleaseNotesSyncer.sortedReleases = [];
-        issueSyncConfig.routeByMilestone  = true;
+        applyConfigSnapshot({routeByMilestone: true});
         await fs.ensureDir(path.join(issueSyncConfig.archiveRoot, 'issues', 'v98.0.0'));
 
         GraphqlService.query = async (query, variables) => {
@@ -501,7 +502,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             expect(metadata.issues[cutBucketIssue.number].path).toContain(path.join('archive', 'issues', 'v98.0.0'));
         } finally {
             ReleaseNotesSyncer.sortedReleases = originalSorted;
-            issueSyncConfig.routeByMilestone  = originalRouteByMilestone;
+            applyConfigSnapshot();
         }
     });
 
@@ -624,13 +625,12 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         // milestone issue only into an ALREADY-CUT bucket (existsSync). Before the hoist, the first move cut
         // the bucket and the next per-issue plan saw it; a plan computed once before any move would not.
         // Both issues must land: the pre-release close by date, the milestone issue by the bucket the pass cut.
-        const originalSorted           = ReleaseNotesSyncer.sortedReleases,
-              originalRouteByMilestone = issueSyncConfig.routeByMilestone,
-              version                  = 'v62.0.0',
-              bucketDir                = path.join(issueSyncConfig.archiveRoot, 'issues', version);
+        const originalSorted = ReleaseNotesSyncer.sortedReleases,
+              version        = 'v62.0.0',
+              bucketDir      = path.join(issueSyncConfig.archiveRoot, 'issues', version);
 
         ReleaseNotesSyncer.sortedReleases = [{tagName: version, publishedAt: '2026-05-10T00:00:00Z'}];
-        issueSyncConfig.routeByMilestone  = true;
+        applyConfigSnapshot({routeByMilestone: true});
 
         const seed = async (chunk, n, closedAt, milestone) => {
             const abs = path.join(issueSyncConfig.issuesDir, chunk, `issue-${n}.md`);
@@ -666,7 +666,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             expect(metadata.issues[6202].path).toContain(path.join('archive', 'issues', version));
         } finally {
             ReleaseNotesSyncer.sortedReleases = originalSorted;
-            issueSyncConfig.routeByMilestone  = originalRouteByMilestone;
+            applyConfigSnapshot();
         }
     });
 
@@ -674,14 +674,13 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         // The second differential: the refresh must key on the directory-state change, not
         // on the rename succeeding. `mkdir` cuts the bucket, the rename of the first issue fails and is caught,
         // and the milestone issue planned after it must still see the cut bucket and land there.
-        const originalSorted           = ReleaseNotesSyncer.sortedReleases,
-              originalRouteByMilestone = issueSyncConfig.routeByMilestone,
-              originalRename           = fsp.rename,
-              version                  = 'v63.0.0',
-              bucketDir                = path.join(issueSyncConfig.archiveRoot, 'issues', version);
+        const originalSorted = ReleaseNotesSyncer.sortedReleases,
+              originalRename = fsp.rename,
+              version        = 'v63.0.0',
+              bucketDir      = path.join(issueSyncConfig.archiveRoot, 'issues', version);
 
         ReleaseNotesSyncer.sortedReleases = [{tagName: version, publishedAt: '2026-05-10T00:00:00Z'}];
-        issueSyncConfig.routeByMilestone  = true;
+        applyConfigSnapshot({routeByMilestone: true});
 
         const seed = async (chunk, n, closedAt, milestone) => {
             const abs = path.join(issueSyncConfig.issuesDir, chunk, `issue-${n}.md`);
@@ -724,7 +723,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         } finally {
             fsp.rename                        = originalRename;
             ReleaseNotesSyncer.sortedReleases = originalSorted;
-            issueSyncConfig.routeByMilestone  = originalRouteByMilestone;
+            applyConfigSnapshot();
         }
     });
 
@@ -1106,21 +1105,20 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         await fs.writeFile(issueBOldAbsolutePath, 'mock content B', 'utf8');
 
         // Spy on logger.warn and logger.debug.
-        const warnCalls                = [];
-        const debugCalls               = [];
-        const originalWarn             = logger.warn;
-        const originalDebug            = logger.debug;
-        const originalRouteByMilestone = issueSyncConfig.routeByMilestone;
+        const warnCalls     = [];
+        const debugCalls    = [];
+        const originalWarn  = logger.warn;
+        const originalDebug = logger.debug;
         logger.warn  = (...args) => { warnCalls.push(args[0]); };
         logger.debug = (...args) => { debugCalls.push(args[0]); };
-        issueSyncConfig.routeByMilestone = true;
+        applyConfigSnapshot({routeByMilestone: true});
 
         try {
             await IssueSyncer.pullFromGitHub(metadata);
         } finally {
             logger.warn  = originalWarn;
             logger.debug = originalDebug;
-            issueSyncConfig.routeByMilestone = originalRouteByMilestone;
+            applyConfigSnapshot();
             await fs.unlink(issueAOldAbsolutePath).catch(() => {});
             await fs.unlink(issueBOldAbsolutePath).catch(() => {});
         }
@@ -1547,14 +1545,12 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
      * it would pass a unit test of the predicate alone.
      */
     async function withIssueDenylist(denylist, fn) {
-        const original = issueSyncConfig.issueDenylist;
-
-        issueSyncConfig.issueDenylist = denylist;
+        applyConfigSnapshot({issueDenylist: denylist});
 
         try {
             return await fn()
         } finally {
-            issueSyncConfig.issueDenylist = original
+            applyConfigSnapshot()
         }
     }
 
@@ -1907,6 +1903,12 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
 
         expect(copies).toHaveLength(1);
         expect(await fs.readFile(copies[0], 'utf8')).toContain('Fresh title from the refetch')
+    });
+
+    test('IssueSyncer spec uses IssueSyncer.configSnapshot instead of shared-config writes', async () => {
+        const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });
 

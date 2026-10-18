@@ -23,10 +23,12 @@ import {createContentTrustSummary, projectAuthoredNodeTrust} from '../shared/con
 import {classifyDiscussionRoutingDisposition}                from '../shared/discussionRoutingDisposition.mjs';
 import pruneEmptyDirs                                        from '../shared/pruneEmptyDirs.mjs';
 import {verifyDiscussionFrontmatter}                         from './verifyFrontmatterIntegrity.mjs';
+import {
+    createGitHubWorkflowConfigSnapshot,
+    validateGitHubWorkflowConfigSnapshot
+} from '../shared/configSnapshot.mjs';
 
-const
-    conversationPageSizes = Object.freeze({comments: 50, replies: 20}),
-    issueSyncConfig       = aiConfig.issueSync;
+const conversationPageSizes = Object.freeze({comments: 50, replies: 20});
 
 /**
  * @summary Handles the fetching and local synchronization of GitHub Discussions.
@@ -52,6 +54,51 @@ class DiscussionSyncer extends Base {
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * Optional isolated configuration snapshot for unit testing.
+     * @member {Object|null} #configSnapshot=null
+     * @private
+     */
+    #configSnapshot = null;
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * @param {Object|null} value
+     * @returns {Object|null}
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateGitHubWorkflowConfigSnapshot(value, this.constructor.name);
+    }
+
+    /**
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        return createGitHubWorkflowConfigSnapshot(aiConfig, overrides);
+    }
+
+    /**
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.#configSnapshot || aiConfig;
     }
 
     /**
@@ -84,7 +131,7 @@ class DiscussionSyncer extends Base {
     #resolvePath(p) {
         if (!p) return null;
         if (path.isAbsolute(p)) return p;
-        return path.resolve(aiConfig.issueSync.metadataBaseRoot, p);
+        return path.resolve(this.#getConfig().issueSync.metadataBaseRoot, p);
     }
 
     /**
@@ -95,7 +142,7 @@ class DiscussionSyncer extends Base {
      */
     #relativePath(p) {
         if (!p) return null;
-        return path.relative(aiConfig.issueSync.metadataBaseRoot, p);
+        return path.relative(this.#getConfig().issueSync.metadataBaseRoot, p);
     }
 
     /**
@@ -107,6 +154,8 @@ class DiscussionSyncer extends Base {
      * @private
      */
     #projectAuthoredNode(node, summary, signalPath) {
+        const issueSyncConfig = this.#getConfig().issueSync;
+
         return projectAuthoredNodeTrust(node, {
             summary,
             path               : signalPath,
@@ -123,7 +172,8 @@ class DiscussionSyncer extends Base {
      * @private
      */
     #planBuckets(metadata, fetchedDiscussions = [], inventory = null) {
-        const combined = new Map();
+        const issueSyncConfig = this.#getConfig().issueSync;
+        const combined        = new Map();
 
         for (const [idStr, discussion] of Object.entries(metadata.discussions || {})) {
             combined.set(parseInt(idStr, 10), {
@@ -232,13 +282,15 @@ class DiscussionSyncer extends Base {
      * @private
      */
     #getDiscussionPath(discussion, planBuckets) {
-        const filename    = `${issueSyncConfig.discussionFilenamePrefix}${discussion.number}.md`;
-        const contentRoot = issueSyncConfig.contentRoot;
-        const plan        = planBuckets.get(discussion.number);
+        const config          = this.#getConfig();
+        const issueSyncConfig = config.issueSync;
+        const filename        = `${issueSyncConfig.discussionFilenamePrefix}${discussion.number}.md`;
+        const contentRoot     = issueSyncConfig.contentRoot;
+        const plan            = planBuckets.get(discussion.number);
 
-        const config = {
+        const pathConfig = {
             contentRoot,
-            repoSlug     : aiConfig.repo,
+            repoSlug     : config.repo,
             originRoot   : issueSyncConfig.originRoot,
             type         : 'discussions',
             filename,
@@ -248,10 +300,10 @@ class DiscussionSyncer extends Base {
         };
 
         if (plan?.version) {
-            config.version = plan.version;
+            pathConfig.version = plan.version;
         }
 
-        return contentPath(config);
+        return contentPath(pathConfig);
     }
 
     /**
@@ -265,7 +317,8 @@ class DiscussionSyncer extends Base {
      * @returns {Boolean}
      */
     #isDenylisted(discussion) {
-        const denylist = issueSyncConfig.discussionDenylist || {};
+        const issueSyncConfig = this.#getConfig().issueSync;
+        const denylist        = issueSyncConfig.discussionDenylist || {};
         return (denylist.numbers || []).includes(discussion.number) ||
                (denylist.authors || []).includes(discussion.author?.login);
     }
@@ -361,6 +414,7 @@ class DiscussionSyncer extends Base {
      */
     async #hydrateDiscussionConversation(discussion) {
         const
+            config   = this.#getConfig(),
             comments = discussion.comments,
             label    = `Discussion #${discussion.number} comments`;
 
@@ -369,8 +423,8 @@ class DiscussionSyncer extends Base {
         while (comments.pageInfo.hasNextPage) {
             const cursor = comments.pageInfo.endCursor;
             const data   = await GraphqlService.query(FETCH_DISCUSSION_COMMENTS_PAGE, {
-                owner      : aiConfig.owner,
-                repo       : aiConfig.repo,
+                owner      : config.owner,
+                repo       : config.repo,
                 number     : discussion.number,
                 cursor,
                 maxComments: conversationPageSizes.comments,
@@ -549,6 +603,9 @@ class DiscussionSyncer extends Base {
      * @returns {Promise<object>} Statistics about the operation.
      */
     async syncDiscussions(metadata) {
+        const config          = this.#getConfig();
+        const issueSyncConfig = config.issueSync;
+
         logger.info('💭 Fetching discussions from GitHub via GraphQL...');
 
         let allDiscussions = [];
@@ -577,8 +634,8 @@ class DiscussionSyncer extends Base {
 
             try {
                 data = await GraphqlService.query(FETCH_DISCUSSIONS_FOR_SYNC, {
-                    owner      : aiConfig.owner,
-                    repo       : aiConfig.repo,
+                    owner      : config.owner,
+                    repo       : config.repo,
                     limit      : pageSize,
                     cursor,
                     maxComments: conversationPageSizes.comments,
@@ -644,7 +701,7 @@ class DiscussionSyncer extends Base {
             if (cachedPath) {
                 await fs.unlink(this.#resolvePath(cachedPath)).catch(() => {});
             }
-            quarantineRemovals.push({repoSlug: aiConfig.repo, type: 'discussions', id: number});
+            quarantineRemovals.push({repoSlug: config.repo, type: 'discussions', id: number});
 
             // Removed EXPLICITLY. Containment clears three surfaces — the file above, the content-index
             // entry via `quarantineRemovals`, and this metadata row — and the row used to disappear only
@@ -665,7 +722,7 @@ class DiscussionSyncer extends Base {
             await this.#hydrateDiscussionConversation(discussion)
         }
 
-        const inventory            = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'discussions', filePrefix: issueSyncConfig.discussionFilenamePrefix});
+        const inventory            = await buildContentInventory(issueSyncConfig, {repoSlug: config.repo, type: 'discussions', filePrefix: issueSyncConfig.discussionFilenamePrefix});
         const planBuckets          = this.#planBuckets(metadata, allDiscussions, inventory);
         let   shouldPruneEmptyDirs = false;
 
@@ -755,10 +812,10 @@ class DiscussionSyncer extends Base {
 
             indexEntries.push(createContentIndexEntry({
                 issueSyncConfig,
-                repoSlug : aiConfig.repo,
+                repoSlug : config.repo,
                 type     : 'discussions',
                 id       : d.number,
-                filePath : path.resolve(aiConfig.issueSync.metadataBaseRoot, d.relativeOutputPath),
+                filePath : path.resolve(issueSyncConfig.metadataBaseRoot, d.relativeOutputPath),
                 itemIndex: plan ? plan.itemIndex : 0,
                 version  : plan?.version || null,
                 bucket   : null
@@ -793,20 +850,22 @@ class DiscussionSyncer extends Base {
      * @returns {Promise<{refetched: {count: Number, discussions: Number[]}, errors: Array<{discussionNumber: Number, error: String}>}>}
      */
     async refetchDiscussionsByNumber(numbers, metadata, indexMutations = null) {
-        const stats = {refetched: {count: 0, discussions: []}, errors: []};
-        const list  = [...numbers];
+        const config          = this.#getConfig();
+        const issueSyncConfig = config.issueSync;
+        const stats           = {refetched: {count: 0, discussions: []}, errors: []};
+        const list            = [...numbers];
 
         // Build the complete-membership inventory ONCE for the whole refetch batch — a full corpus scan
         // per discussion would be pathological; every planned ordinal reads the same complete membership.
-        const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'discussions', filePrefix: issueSyncConfig.discussionFilenamePrefix});
+        const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: config.repo, type: 'discussions', filePrefix: issueSyncConfig.discussionFilenamePrefix});
 
         for (const discussionNumber of list) {
             try {
                 const data = await GraphqlService.query(
                     FETCH_SINGLE_DISCUSSION_FOR_SYNC,
                     {
-                        owner      : aiConfig.owner,
-                        repo       : aiConfig.repo,
+                        owner      : config.owner,
+                        repo       : config.repo,
                         number     : discussionNumber,
                         maxComments: conversationPageSizes.comments,
                         maxReplies : conversationPageSizes.replies
@@ -826,7 +885,7 @@ class DiscussionSyncer extends Base {
                 const targetPath  = this.#getDiscussionPath(discussion, planBuckets);
                 if (!targetPath) {
                     if (indexMutations) {
-                        indexMutations.remove.push({repoSlug: aiConfig.repo, type: 'discussions', id: discussionNumber});
+                        indexMutations.remove.push({repoSlug: config.repo, type: 'discussions', id: discussionNumber});
                     }
                     continue;
                 }
@@ -860,7 +919,7 @@ class DiscussionSyncer extends Base {
                     const plan = planBuckets.get(discussionNumber);
                     indexMutations.upsert.push(createContentIndexEntry({
                         issueSyncConfig,
-                        repoSlug : aiConfig.repo,
+                        repoSlug : config.repo,
                         type     : 'discussions',
                         id       : discussionNumber,
                         filePath : this.#resolvePath(this.#relativePath(targetPath)),

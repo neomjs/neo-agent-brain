@@ -13,37 +13,44 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import fs             from 'fs/promises';
-import path           from 'path';
-import os             from 'os';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}              from '@playwright/test';
+import fs                          from 'fs/promises';
+import path                        from 'path';
+import os                          from 'os';
+import {fileURLToPath}             from 'url';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 test.describe('Neo.ai.services.github-workflow.sync.MetadataManager', () => {
     test.describe.configure({mode: 'serial'});
 
     let MetadataManager;
-    let aiConfig;
-    let originalMetadataFileOverride;
     let testMetadataFile;
 
     test.beforeAll(async () => {
-        aiConfig = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
-        originalMetadataFileOverride = aiConfig.issueSync.metadataFileOverride;
         testMetadataFile = path.join(os.tmpdir(), `neo-metadata-manager-test-${Date.now()}.json`);
-        aiConfig.issueSync.metadataFileOverride = testMetadataFile;
 
         MetadataManager = (await import('../../../../../../ai/services/github-workflow/sync/MetadataManager.mjs')).default;
+        MetadataManager.configSnapshot = MetadataManager.createConfigSnapshot({
+            issueSync: {
+                metadataFileOverride: testMetadataFile
+            }
+        });
     });
 
     test.afterAll(async () => {
-        aiConfig.issueSync.metadataFileOverride = originalMetadataFileOverride;
+        MetadataManager.configSnapshot = null;
         try {
             await fs.unlink(testMetadataFile);
         } catch (e) {
             // ignore if not found
         }
+    });
+
+    test('MetadataManager spec does not mutate shared config singletons (ADR-0019 §4 B4)', async () => {
+        const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 
     test('save() preserves specific fields for discussions and pulls, and maintains backward compatibility', async () => {

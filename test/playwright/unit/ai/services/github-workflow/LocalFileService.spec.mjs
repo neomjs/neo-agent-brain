@@ -13,33 +13,41 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import fs             from 'fs-extra';
-import path           from 'path';
-import os             from 'os';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}              from '@playwright/test';
+import fs                          from 'fs-extra';
+import path                        from 'path';
+import os                          from 'os';
+import {fileURLToPath}             from 'url';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index-backed read-path (ADR 0004 / #11390)', () => {
     let LocalFileService;
     let aiConfig;
-    let originalContentRootOverride;
     let testRoot;
     let unconfiguredIssueResult;
     let unconfiguredDiscussionResult;
 
     test.beforeAll(async () => {
-        aiConfig         = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
+        testRoot = path.join(os.tmpdir(), `neo-localfileservice-test-${Date.now()}`);
+
         LocalFileService = (await import('../../../../../../ai/services/github-workflow/LocalFileService.mjs')).default;
 
-        // Capture original paths and verify unconfigured refusal before testRoot override is installed
-        originalContentRootOverride  = aiConfig.issueSync.contentRootOverride;
+        LocalFileService.configSnapshot = LocalFileService.createConfigSnapshot({
+            issueSync: {
+                contentRootOverride: null
+            }
+        });
         unconfiguredIssueResult      = await LocalFileService.getIssueById('11100');
         unconfiguredDiscussionResult = await LocalFileService.getDiscussionById('10137');
 
-        // Create isolated test root
-        testRoot = path.join(os.tmpdir(), `neo-localfileservice-test-${Date.now()}`);
-        aiConfig.issueSync.contentRootOverride = testRoot;
+        aiConfig = LocalFileService.createConfigSnapshot({
+            issueSync: {
+                contentRootOverride: testRoot
+            }
+        });
+        LocalFileService.configSnapshot = aiConfig;
 
         await fs.ensureDir(aiConfig.issueSync.issuesDir);
         await fs.ensureDir(aiConfig.issueSync.archiveRoot);
@@ -47,7 +55,7 @@ test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index
     });
 
     test.afterAll(async () => {
-        aiConfig.issueSync.contentRootOverride = originalContentRootOverride;
+        LocalFileService.configSnapshot = null;
 
         await fs.remove(testRoot).catch(() => {});
     });
@@ -58,6 +66,11 @@ test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index
         await fs.emptyDir(aiConfig.issueSync.archiveRoot).catch(() => {});
         await fs.emptyDir(aiConfig.issueSync.discussionsDir).catch(() => {});
         await fs.remove(path.join(testRoot, '_index.json')).catch(() => {});
+    });
+
+    test('LocalFileService spec does not mutate shared config singletons (ADR-0019 §4 B4)', async () => {
+        const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 
     test('refuses with CONTENT_ROOT_UNCONFIGURED naming issueSync.contentRootOverride / NEO_MCP_GITHUB_CONTENT_ROOT when no corpus root is configured', () => {

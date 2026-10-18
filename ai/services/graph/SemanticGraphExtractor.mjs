@@ -2,8 +2,12 @@ import crypto   from 'crypto';
 import fs       from 'fs';
 import path     from 'path';
 import AiConfig from '../../mcp/server/memory-core/config.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+}               from '../shared/configSnapshot.mjs';
 import {readSecretCarrier} from '../shared/secretCarrier.mjs';
-import Base     from 'neo.mjs/src/core/Base.mjs';
+import Base                from 'neo.mjs/src/core/Base.mjs';
 import {
     bytesToTokens,
     emitConsumerFriction,
@@ -29,8 +33,8 @@ const TRI_VECTOR_NODE_TYPES = Object.freeze([
     'SESSION', 'MEMORY', 'ARTIFACT_PLAN', 'ARTIFACT_TASK', 'ISSUE', 'STRATEGY', 'SYSTEM_ANCHOR',
     'CONCEPT', 'CLASS', 'METHOD', 'FILE', 'GUIDE', 'BLOG', 'TEST'
 ]);
-const TRI_VECTOR_LAYERS = Object.freeze(['Core', 'Build', 'UI', 'Docs', 'State', 'Network', 'Test', 'Unknown']);
-const TRI_VECTOR_STABILITIES = Object.freeze(['EXPERIMENTAL', 'STABLE', 'DEPRECATED', 'UNKNOWN']);
+const TRI_VECTOR_LAYERS        = Object.freeze(['Core', 'Build', 'UI', 'Docs', 'State', 'Network', 'Test', 'Unknown']);
+const TRI_VECTOR_STABILITIES   = Object.freeze(['EXPERIMENTAL', 'STABLE', 'DEPRECATED', 'UNKNOWN']);
 const TRI_VECTOR_RELATIONSHIPS = Object.freeze([
     'IMPLEMENTS', 'EXTENDS', 'DEPENDS_ON', 'BLOCKS', 'BLOCKED_BY', 'RELATES_TO', 'RESOLVES',
     'CAUSES_ISSUE', 'MENTIONED_IN', 'DISCUSSED_IN', 'REFERENCED_BY'
@@ -42,6 +46,13 @@ const TRI_VECTOR_RELATIONSHIPS = Object.freeze([
  * @singleton
  */
 class SemanticGraphExtractor extends Base {
+    /**
+     * Service-local test configuration snapshot seam.
+     * @type {Object|null}
+     * @private
+     */
+    #configSnapshot = null;
+
     static config = {
         /**
          * @member {String} className='Neo.ai.daemons.services.SemanticGraphExtractor'
@@ -53,6 +64,84 @@ class SemanticGraphExtractor extends Base {
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * Validates a service-local test snapshot before storing it.
+     *
+     * @param {Object|null} value
+     * @returns {Object|null}
+     * @protected
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            requiredSubtrees: ['localModels', 'ollama', 'openAiCompatible'],
+            serviceName     : 'SemanticGraphExtractor'
+        });
+    }
+
+    /**
+     * Clones the live `AiConfig` leaves read by `SemanticGraphExtractor` into a
+     * plain object suitable for `SemanticGraphExtractor.configSnapshot` in unit tests.
+     *
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            graphProvider     : AiConfig.graphProvider,
+            remRunStateDir    : AiConfig.remRunStateDir,
+            lazyEdgesQueuePath: AiConfig.lazyEdgesQueuePath,
+            localModels       : cloneConfigSubtree(AiConfig, ['localModels']),
+            ollama            : cloneConfigSubtree(AiConfig, ['ollama']),
+            openAiCompatible  : cloneConfigSubtree(AiConfig, ['openAiCompatible'])
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            localModels: overrides.localModels
+                ? {
+                    ...snapshot.localModels,
+                    ...overrides.localModels,
+                    chat: {
+                        ...snapshot.localModels.chat,
+                        ...(overrides.localModels.chat || {})
+                    }
+                }
+                : snapshot.localModels,
+            ollama: overrides.ollama
+                ? {...snapshot.ollama, ...overrides.ollama}
+                : snapshot.ollama,
+            openAiCompatible: overrides.openAiCompatible
+                ? {...snapshot.openAiCompatible, ...overrides.openAiCompatible}
+                : snapshot.openAiCompatible
+        };
+    }
+
+    /**
+     * Resolves the active configuration source: the test `configSnapshot` when
+     * installed, otherwise the live `AiConfig` singleton.
+     *
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.#configSnapshot || AiConfig;
     }
 
     /**
@@ -181,6 +270,8 @@ class SemanticGraphExtractor extends Base {
      * @protected
      */
     buildConfiguredGraphProvider(graphProvider) {
+        const AiConfig = this.#getConfig();
+
         return buildGraphProvider({
             modelProvider: graphProvider,
             ollamaConfig : {
@@ -339,7 +430,8 @@ class SemanticGraphExtractor extends Base {
      * @protected
      */
     createTriVectorChunks(session, systemInstruction) {
-        const turnDocuments = Array.isArray(session.turnDocuments) && session.turnDocuments.length > 0
+        const AiConfig      = this.#getConfig(),
+              turnDocuments = Array.isArray(session.turnDocuments) && session.turnDocuments.length > 0
                 ? session.turnDocuments
                 : [session.document],
               envelopeTokens = this.estimateChatMessagesPayload([
@@ -537,7 +629,8 @@ class SemanticGraphExtractor extends Base {
         turnIndices = [],
         chunkTokens = null
     }) {
-        const messages = [
+        const AiConfig = this.#getConfig(),
+              messages = [
             { role: 'system', content: systemInstruction },
             { role: 'user', content: `--- Session Episodic Memory ---\n${document}` }
         ];
@@ -825,6 +918,7 @@ class SemanticGraphExtractor extends Base {
      * @protected
      */
     async commitTriVectorPayload(payload, session, {excludedNodeTypes = []} = {}) {
+        const AiConfig      = this.#getConfig();
         const artifact      = payload.session_artifact;
         const excluded      = new Set(excludedNodeTypes.map(type => String(type).toUpperCase()));
         const excludedNodes = new Set();
@@ -961,6 +1055,8 @@ class SemanticGraphExtractor extends Base {
      * @returns {Promise<Object>} The extracted payload, or `{ok:false, ...}` on failure
      */
     async executeTriVectorExtraction(session, {beforeCommit = null} = {}) {
+        const AiConfig = this.#getConfig();
+
         logger.info(`[SemanticGraphExtractor] Extracting Tri-Vector Synthesis for session ID: ${session.meta.sessionId}`);
 
         const systemInstruction = `You are the Neo.mjs REM (Rapid Eye Movement) Sleep digestion agent.
@@ -1047,7 +1143,7 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
             // repair-retry loop below a safety net rather than the happy path. Schema mirrors the strict
             // shape declared in the systemInstruction above. Nullable fields are spelled as `anyOf`:
             // LM Studio's MLX structured-output engine rejects a union `type` for every model but Gemma 4.
-            const nullableString = {anyOf: [{type: 'string'}, {type: 'null'}]};
+            const nullableString  = {anyOf: [{type: 'string'}, {type: 'null'}]};
             const triVectorSchema = {
                 type      : 'object',
                 properties: {
@@ -1198,6 +1294,8 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
         if (!bodyText || typeof bodyText !== 'string' || bodyText.trim().length === 0) {
             return [];
         }
+
+        const AiConfig = this.#getConfig();
 
         logger.info(`[SemanticGraphExtractor] Extracting concepts from message body...`);
 

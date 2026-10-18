@@ -21,12 +21,6 @@
         "test/playwright/unit/ai/mcp/server/shared/AuthService.spec.mjs": 3,
         "test/playwright/unit/ai/mcp/server/shared/logger.spec.mjs": 1,
         "test/playwright/unit/ai/mcp/server/shared/services/DestructiveOperationGuard.spec.mjs": 12,
-        "test/playwright/unit/ai/services/github-workflow/DiscussionSyncer.spec.mjs": 13,
-        "test/playwright/unit/ai/services/github-workflow/IssueSyncer.spec.mjs": 17,
-        "test/playwright/unit/ai/services/github-workflow/LocalFileService.spec.mjs": 2,
-        "test/playwright/unit/ai/services/github-workflow/MetadataManager.spec.mjs": 2,
-        "test/playwright/unit/ai/services/github-workflow/PullRequestSyncer.spec.mjs": 13,
-        "test/playwright/unit/ai/services/github-workflow/ReleaseNotesSyncer.spec.mjs": 2,
         "test/playwright/unit/ai/services/graph/LazyEdgeDrainer.spec.mjs": 1,
         "test/playwright/unit/ai/services/ingestion/AdrIngestor.spec.mjs": 2,
         "test/playwright/unit/ai/services/ingestion/ConceptDiscoveryService.spec.mjs": 3,
@@ -47,8 +41,6 @@
         "test/playwright/unit/ai/services/memory-core/SessionService.buildChatModel.spec.mjs": 3,
         "test/playwright/unit/ai/services/memory-core/SessionSummarization.spec.mjs": 13,
         "test/playwright/unit/ai/services/memory-core/util.snapshotAiConfig.spec.mjs": 1,
-        "test/playwright/unit/ai/services/rem-observability.spec.mjs": 12,
-        "test/playwright/unit/src/evolution/RemDigestion.executeRemCycle.spec.mjs": 8,
-        "test/playwright/unit/src/evolution/RemDigestion.spec.mjs": 44
+        "test/playwright/unit/ai/services/rem-observability.spec.mjs": 12
     }
 }

@@ -1,12 +1,15 @@
 import {test, expect}                   from '@playwright/test';
+import {fileURLToPath}                  from 'url';
 import Neo                              from 'neo.mjs/src/Neo.mjs';
 import * as core                        from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations}      from '../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {createRemDigestion}             from '../../../../../src/evolution/createRemDigestion.mjs';
 import EvolutionConfig                  from '../../../../../src/evolution/config.template.mjs';
 import {mkdtemp, readdir, readFile, rm} from 'fs/promises';
 import os                               from 'os';
 import path                             from 'path';
 
+const __filename       = fileURLToPath(import.meta.url);
 const RemDigestion     = createRemDigestion();
 const EXECUTION_POLICY = {
     configuredCadenceMs: 1000,
@@ -42,7 +45,6 @@ const ORIGINAL_KEYS = [
 ];
 
 let originals;
-let configOriginals;
 let tmpDir;
 
 async function readOnlyRunStateEntry() {
@@ -56,14 +58,12 @@ async function readOnlyRunStateEntry() {
 
 test.beforeEach(async () => {
     originals = Object.fromEntries(ORIGINAL_KEYS.map(key => [key, RemDigestion[key]]));
-    configOriginals = {
-        remRunStateDir      : EvolutionConfig.remRunStateDir,
-        remRunRetentionLimit: EvolutionConfig.remRunRetentionLimit
-    };
     tmpDir = await mkdtemp(path.join(os.tmpdir(), 'neo-dream-cycle-state-'));
 
-    EvolutionConfig.remRunStateDir       = tmpDir;
-    EvolutionConfig.remRunRetentionLimit = 3;
+    RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+        remRunStateDir      : tmpDir,
+        remRunRetentionLimit: 3
+    });
 
     RemDigestion.isProcessing              = false;
     RemDigestion.findUndigestedSessions    = async () => [];
@@ -76,8 +76,7 @@ test.afterEach(async () => {
         RemDigestion[key] = originals[key];
     }
 
-    EvolutionConfig.remRunStateDir       = configOriginals.remRunStateDir;
-    EvolutionConfig.remRunRetentionLimit = configOriginals.remRunRetentionLimit;
+    RemDigestion.configSnapshot = null;
 
     await rm(tmpDir, {recursive: true, force: true});
 });
@@ -432,68 +431,71 @@ test.describe('RemDigestion.executeRemCycle typed outcome contract', () => {
         // is this mapping — proven-remaining work MUST surface as `remBatchSaturated` so the scheduler's
         // existing catch-up cooldown re-queues the deferred sessions instead of losing them until the
         // next periodic interval.
-        const originalBatchLimit = EvolutionConfig.remSleepBatchLimit;
-        EvolutionConfig.remSleepBatchLimit = 10; // count-saturation cannot fire with 3 sessions — saturation must come from the clip alone
+        RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+            remRunStateDir      : tmpDir,
+            remRunRetentionLimit: 3,
+            remSleepBatchLimit  : 10 // count-saturation cannot fire with 3 sessions — saturation must come from the clip alone
+        });
 
-        try {
-            RemDigestion.findUndigestedSessions    = async () => [{}, {}, {}];
-            RemDigestion.processUndigestedSessions = async options => {
-                expect(options.cycleBudgetMs).toBe(250);
-                return {
-                    perPhaseStates: [{
-                        phase  : 'cycleBudget',
-                        status : 'completed',
-                        details: {reasonCode: 'budget-exhausted', budgetMs: 250, elapsedMs: 260, sessionsDeferred: 2}
-                    }],
-                    perSessionStates : [],
-                    sessionsProcessed: 1,
-                    sessionsDeferred : 2
-                };
+        RemDigestion.findUndigestedSessions    = async () => [{}, {}, {}];
+        RemDigestion.processUndigestedSessions = async options => {
+            expect(options.cycleBudgetMs).toBe(250);
+            return {
+                perPhaseStates: [{
+                    phase  : 'cycleBudget',
+                    status : 'completed',
+                    details: {reasonCode: 'budget-exhausted', budgetMs: 250, elapsedMs: 260, sessionsDeferred: 2}
+                }],
+                perSessionStates : [],
+                sessionsProcessed: 1,
+                sessionsDeferred : 2
             };
+        };
 
-            const outcome = await executeRemCycle({
-                reason       : 'unit-test-budget',
-                includeDecay : false,
-                cycleBudgetMs: 250
-            });
+        const outcome = await executeRemCycle({
+            reason       : 'unit-test-budget',
+            includeDecay : false,
+            cycleBudgetMs: 250
+        });
 
-            expect(outcome.status).toBe('completed');
-            expect(outcome.reasonCode).toBe('budget-clipped');
-            expect(outcome.sessionsProcessed).toBe(1);
-            expect(outcome.sessionsDeferred).toBe(2);
-            expect(outcome.remBatchSaturated).toBe(true);
+        expect(outcome.status).toBe('completed');
+        expect(outcome.reasonCode).toBe('budget-clipped');
+        expect(outcome.sessionsProcessed).toBe(1);
+        expect(outcome.sessionsDeferred).toBe(2);
+        expect(outcome.remBatchSaturated).toBe(true);
 
-            const entry = await readOnlyRunStateEntry();
-            expect(entry.outcome).toBe('completed');
-            expect(entry.reasonCode).toBe('budget-clipped');
-            expect(entry.perPhaseStates.map(phase => phase.phase)).toContain('cycleBudget');
-        } finally {
-            EvolutionConfig.remSleepBatchLimit = originalBatchLimit;
-        }
+        const entry = await readOnlyRunStateEntry();
+        expect(entry.outcome).toBe('completed');
+        expect(entry.reasonCode).toBe('budget-clipped');
+        expect(entry.perPhaseStates.map(phase => phase.phase)).toContain('cycleBudget');
     });
 
     test('an unclipped completed cycle keeps reasonCode ok and honest actual counts (#17046)', async () => {
-        const originalBatchLimit = EvolutionConfig.remSleepBatchLimit;
-        EvolutionConfig.remSleepBatchLimit = 10;
+        RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+            remRunStateDir      : tmpDir,
+            remRunRetentionLimit: 3,
+            remSleepBatchLimit  : 10
+        });
 
-        try {
-            RemDigestion.findUndigestedSessions    = async () => [{}, {}];
-            RemDigestion.processUndigestedSessions = async () => ({
-                perPhaseStates   : [],
-                perSessionStates : [],
-                sessionsProcessed: 2,
-                sessionsDeferred : 0
-            });
+        RemDigestion.findUndigestedSessions    = async () => [{}, {}];
+        RemDigestion.processUndigestedSessions = async () => ({
+            perPhaseStates   : [],
+            perSessionStates : [],
+            sessionsProcessed: 2,
+            sessionsDeferred : 0
+        });
 
-            const outcome = await executeRemCycle({reason: 'unit-test-unclipped', includeDecay: false});
+        const outcome = await executeRemCycle({reason: 'unit-test-unclipped', includeDecay: false});
 
-            expect(outcome.status).toBe('completed');
-            expect(outcome.reasonCode).toBe('ok');
-            expect(outcome.sessionsProcessed).toBe(2);
-            expect(outcome.sessionsDeferred).toBe(0);
-            expect(outcome.remBatchSaturated).toBe(false);
-        } finally {
-            EvolutionConfig.remSleepBatchLimit = originalBatchLimit;
-        }
+        expect(outcome.status).toBe('completed');
+        expect(outcome.reasonCode).toBe('ok');
+        expect(outcome.sessionsProcessed).toBe(2);
+        expect(outcome.sessionsDeferred).toBe(0);
+        expect(outcome.remBatchSaturated).toBe(false);
+    });
+
+    test('spec has zero shared-config mutations under the B4 lint gate (#1098)', async () => {
+        const source = await readFile(__filename, 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });

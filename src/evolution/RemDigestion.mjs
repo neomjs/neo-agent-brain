@@ -21,6 +21,10 @@ import {
     CORPUS_PROJECTION_CONSUMER,
     evaluateCorpusProjectionAdmission
 } from '../../ai/services/graph/corpusProjectionContract.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+} from '../../ai/services/shared/configSnapshot.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -118,10 +122,11 @@ function isDreamDigestPending(meta) {
  *
  * @param {Object} collection Memory Chroma collection.
  * @param {String} sessionId Session id to fetch.
+ * @param {Number} [sessionScanPageLimit=EvolutionConfig.sessionScanPageLimit] Page size limit.
  * @returns {Promise<{ids:String[],documents:String[],metadatas:Object[]}>}
  */
-async function readSessionTurnInputSnapshot(collection, sessionId) {
-    const configuredLimit = EvolutionConfig.sessionScanPageLimit;
+async function readSessionTurnInputSnapshot(collection, sessionId, sessionScanPageLimit = EvolutionConfig.sessionScanPageLimit) {
+    const configuredLimit = sessionScanPageLimit;
     if (!Number.isFinite(configuredLimit)) {
         throw new Error('[RemDigestion] Required EvolutionConfig leaf "sessionScanPageLimit" is missing or invalid.');
     }
@@ -234,12 +239,10 @@ function addUndigestedRowsFromBatch(batch, byId) {
     }
 }
 
-function splitFreshAndAgedUndigested(rows, maxToProcess) {
+function splitFreshAndAgedUndigested(rows, maxToProcess, undigestedSessionFreshReserve = EvolutionConfig.undigestedSessionFreshReserve) {
     if (maxToProcess <= 0 || rows.length === 0) {
         return [];
     }
-
-    const undigestedSessionFreshReserve = EvolutionConfig.undigestedSessionFreshReserve;
 
     if (!Number.isFinite(undigestedSessionFreshReserve)) {
         throw new Error('[RemDigestion] Required EvolutionConfig leaf "undigestedSessionFreshReserve" is missing or invalid.');
@@ -267,6 +270,13 @@ function splitFreshAndAgedUndigested(rows, maxToProcess) {
  * @extends Neo.core.Base
  */
 class RemDigestion extends Base {
+    /**
+     * Service-local test configuration snapshot seam.
+     * @type {Object|null}
+     * @private
+     */
+    #configSnapshot = null;
+
     static config = {
         /**
          * @member {String} className='Neo.brain.evolution.RemDigestion'
@@ -301,6 +311,128 @@ class RemDigestion extends Base {
          * @reactive
          */
         isProcessing_: false
+    }
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        const next = this.beforeSetConfigSnapshot(value);
+        this.#configSnapshot = next;
+
+        for (const collaborator of [this.gapInferenceEngine, this.semanticGraphExtractor, this.topologyInferenceEngine]) {
+            if (collaborator && 'configSnapshot' in collaborator) {
+                collaborator.configSnapshot = next;
+            }
+        }
+    }
+
+    /**
+     * Validates a service-local test snapshot before storing it.
+     *
+     * @param {Object|null} value
+     * @returns {Object|null}
+     * @protected
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            requiredSubtrees: ['localModels', 'ollama', 'openAiCompatible', 'orchestrator'],
+            serviceName     : 'RemDigestion'
+        });
+    }
+
+    /**
+     * Clones the live `AiConfig` and `EvolutionConfig` leaves read by `RemDigestion`
+     * into a plain object suitable for `RemDigestion.configSnapshot` in unit tests.
+     *
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            graphProvider                : AiConfig.graphProvider,
+            handoffFilePath              : AiConfig.handoffFilePath,
+            remRunStateDir               : EvolutionConfig.remRunStateDir,
+            lazyEdgesQueuePath           : AiConfig.lazyEdgesQueuePath,
+            guideGapWeightThreshold      : AiConfig.guideGapWeightThreshold,
+            nlActionDigestLookbackMs     : AiConfig.nlActionDigestLookbackMs,
+            nlActionDigestSequenceLimit  : AiConfig.nlActionDigestSequenceLimit,
+            nlActionDigestMinSuccessRate : AiConfig.nlActionDigestMinSuccessRate,
+            nlActionDigestEvidenceWeight : AiConfig.nlActionDigestEvidenceWeight,
+            sessionScanPageLimit         : EvolutionConfig.sessionScanPageLimit,
+            remSleepBatchLimit           : EvolutionConfig.remSleepBatchLimit,
+            undigestedSessionFreshReserve: EvolutionConfig.undigestedSessionFreshReserve,
+            maxDigestAttempts            : EvolutionConfig.maxDigestAttempts,
+            remRunRetentionLimit         : EvolutionConfig.remRunRetentionLimit,
+            localModels                  : cloneConfigSubtree(AiConfig, ['localModels']),
+            ollama                       : cloneConfigSubtree(AiConfig, ['ollama']),
+            openAiCompatible             : cloneConfigSubtree(AiConfig, ['openAiCompatible']),
+            orchestrator                 : cloneConfigSubtree(AiConfig, ['orchestrator'])
+        };
+
+        return {
+            ...snapshot,
+            ...overrides,
+            localModels: overrides.localModels
+                ? {
+                    ...snapshot.localModels,
+                    ...overrides.localModels,
+                    chat: {
+                        ...snapshot.localModels.chat,
+                        ...(overrides.localModels.chat || {})
+                    }
+                }
+                : snapshot.localModels,
+            ollama: overrides.ollama
+                ? {...snapshot.ollama, ...overrides.ollama}
+                : snapshot.ollama,
+            openAiCompatible: overrides.openAiCompatible
+                ? {...snapshot.openAiCompatible, ...overrides.openAiCompatible}
+                : snapshot.openAiCompatible,
+            orchestrator: overrides.orchestrator
+                ? {
+                    ...snapshot.orchestrator,
+                    ...overrides.orchestrator,
+                    providerReadiness: {
+                        ...snapshot.orchestrator.providerReadiness,
+                        ...(overrides.orchestrator.providerReadiness || {})
+                    },
+                    corpusProjection: {
+                        ...snapshot.orchestrator.corpusProjection,
+                        ...(overrides.orchestrator.corpusProjection || {})
+                    }
+                }
+                : snapshot.orchestrator
+        };
+    }
+
+    /**
+     * Resolves the active Brain configuration source: the test `configSnapshot`
+     * when installed, otherwise the live `AiConfig` singleton.
+     *
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.#configSnapshot || AiConfig;
+    }
+
+    /**
+     * Resolves the active Evolution configuration source: the test `configSnapshot`
+     * when installed, otherwise the live `EvolutionConfig` singleton.
+     *
+     * @returns {Object}
+     * @private
+     */
+    #getEvolutionConfig() {
+        return this.#configSnapshot || EvolutionConfig;
     }
 
     /**
@@ -353,7 +485,8 @@ class RemDigestion extends Base {
         // Since ChromaDB filtering on missing attributes can be tricky depending on version,
         // filter in memory after sampling the collection head and tail. Chroma does not expose
         // SQL-style ORDER BY, so metadata timestamps define the fresh/aged split.
-        const sessionScanPageLimit = EvolutionConfig.sessionScanPageLimit,
+        const EvolutionConfig      = this.#getEvolutionConfig(),
+              sessionScanPageLimit = EvolutionConfig.sessionScanPageLimit,
               remSleepBatchLimit   = EvolutionConfig.remSleepBatchLimit;
 
         if (!Number.isFinite(sessionScanPageLimit)) {
@@ -398,7 +531,11 @@ class RemDigestion extends Base {
                 return [];
             }
 
-            return splitFreshAndAgedUndigested([...byId.values()], maxToProcess);
+            return splitFreshAndAgedUndigested(
+                [...byId.values()],
+                maxToProcess,
+                EvolutionConfig.undigestedSessionFreshReserve
+            );
         } catch (error) {
             this.logger.error('[RemDigestion] Error querying undigested sessions:', error);
             return [];
@@ -415,10 +552,12 @@ class RemDigestion extends Base {
      * @returns {Promise<Object>}
      */
     async getCorpusProjectionAdmission({
-        config = AiConfig.orchestrator.corpusProjection,
+        config,
         readReceipt = this.readCorpusProjectionReceiptFn
     } = {}) {
-        if (!config.enabled) {
+        const resolvedConfig = config || this.#getConfig().orchestrator.corpusProjection;
+
+        if (!resolvedConfig.enabled) {
             return {
                 admitted      : true,
                 fallback      : 'current',
@@ -431,7 +570,7 @@ class RemDigestion extends Base {
         let receipt = null;
 
         try {
-            receipt = await readReceipt(config.receiptPath)
+            receipt = await readReceipt(resolvedConfig.receiptPath)
         } catch (error) {
             this.logger.warn(`[RemDigestion] Corpus projection receipt unavailable at REM commit: ${error.message}`)
         }
@@ -439,8 +578,8 @@ class RemDigestion extends Base {
         return evaluateCorpusProjectionAdmission({
             consumer                : CORPUS_PROJECTION_CONSUMER.dreamRem,
             receipt,
-            expectedSourceRepository: config.sourceRepository,
-            expectedSourceRef       : config.sourceRef
+            expectedSourceRepository: resolvedConfig.sourceRepository,
+            expectedSourceRef       : resolvedConfig.sourceRef
         })
     }
 
@@ -469,6 +608,9 @@ class RemDigestion extends Base {
         cycleBudgetMs         = 0,
         nowFn                 = this.nowFn
     } = {}) {
+        const AiConfig        = this.#getConfig(),
+              EvolutionConfig = this.#getEvolutionConfig();
+
         if (this.isProcessing) {
             this.logger.debug('[RemDigestion] REM pipeline is already running. Skipping trigger.');
             return {
@@ -596,7 +738,8 @@ class RemDigestion extends Base {
                         if (memoryCollection) {
                             rawMemories = await readSessionTurnInputSnapshot(
                                 memoryCollection,
-                                session.meta.sessionId
+                                session.meta.sessionId,
+                                EvolutionConfig.sessionScanPageLimit
                             );
                             if (rawMemories?.documents?.length > 0) {
                                 // Send the full raw memory to the LLM. Lossless context tracking is required.
@@ -1006,7 +1149,8 @@ class RemDigestion extends Base {
         overflowThreshold,
         nowFn
     } = {}) {
-        const startedAtMs      = this.nowFn();
+        const EvolutionConfig = this.#getEvolutionConfig(),
+              startedAtMs     = this.nowFn();
         const startedAt        = new Date(startedAtMs);
         const runId            = `rem-${crypto.randomUUID()}`;
         const perPhaseStates   = [];
@@ -1061,7 +1205,10 @@ class RemDigestion extends Base {
                 outcome.overflowThreshold   = overflowThreshold;
                 outcome.wallClockMs         = stateEntry.wallClockMs;
 
-                await this.appendRemRunStateFn(stateEntry, {dir: AiConfig.remRunStateDir, retentionLimit: EvolutionConfig.remRunRetentionLimit});
+                await this.appendRemRunStateFn(stateEntry, {
+                    dir           : EvolutionConfig.remRunStateDir,
+                    retentionLimit: EvolutionConfig.remRunRetentionLimit
+                });
             } catch (e) {
                 this.logger.error('[RemDigestion] Failed to write REM run state:', e);
                 outcome.stateWriteError = toErrorMessage(e);
@@ -1247,8 +1394,9 @@ class RemDigestion extends Base {
      * @returns {Promise<{ready: true} | {ready: false, diagnostic: Object}>}
      */
     async checkProviderReadiness() {
-        const readinessConfig = this.providerReadiness.assertProviderReadinessConfig(AiConfig.orchestrator.providerReadiness);
-        const target          = this.providerReadiness.getGraphProviderReadinessTarget();
+        const AiConfig        = this.#getConfig(),
+              readinessConfig = this.providerReadiness.assertProviderReadinessConfig(AiConfig.orchestrator.providerReadiness);
+        const target = this.providerReadiness.getGraphProviderReadinessTarget();
 
         if (!target.supported) {
             return {
