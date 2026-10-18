@@ -39,7 +39,7 @@ import {generateOpenCodeSeatConfig}                                 from '../../
 import {createManagedAgentWorkspacePlan}                            from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {startAgentProvisioned}                                      from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
 import {writeFileAtomicSync}                                        from '../../../../ai/services/shared/atomicFileWrite.mjs';
-import {createAntigravityLaunchBinding, createDesktopLaunchBinding} from '../../../../ai/services/fleet/launchProfileCustody.mjs';
+import {createAntigravityLaunchBinding, createCodexLaunchBinding, createDesktopLaunchBinding} from '../../../../ai/services/fleet/launchProfileCustody.mjs';
 import {
     createLaunchRequest,
     mintLaunchGrant,
@@ -2282,13 +2282,13 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         return {spawn, home, profile: harnessType === 'codex-desktop' ? path.join(home, 'electron-profile') : home}
     }
 
-    for (const harnessType of ['claude-desktop', 'antigravity']) {
-        for (const control of ['success', 'birth', 'profile', 'runtime', 'protocol', ...(harnessType === 'antigravity' ? ['workspace'] : [])]) {
+    for (const harnessType of ['claude-desktop', 'antigravity', 'codex-desktop']) {
+        for (const control of ['success', 'birth', 'profile', 'runtime', 'protocol', ...(harnessType !== 'claude-desktop' ? ['workspace'] : [])]) {
             test(`original runtime recovery corroborates the lease, profile and input owners: ${harnessType}/${control}`, async () => {
                 const {spawn, home: initialHome} = installSeat(harnessType), service = McpLaunchAdmissionService;
                 const root                       = fs.realpathSync(FleetLifecycleService.instanceRoot), home = fs.realpathSync(initialHome), directory = path.join(root, 'custody');
                 FleetLifecycleService.instanceRoot = root;
-                const workspace = harnessType === 'antigravity' ? path.join(root, 'workspace') : CHECKOUT;
+                const workspace = harnessType === 'claude-desktop' ? CHECKOUT : path.join(root, 'workspace');
                 if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
                 service.httpServer = service.listening = service.issuerOrigin = null;
                 service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready';
@@ -2315,13 +2315,21 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                     let profile;
                     if (harnessType === 'antigravity') {
                         profile = writeAntigravityProfile({home, workspace, rows, identity: 'seat', issuer: reserved.issuer});
+                    } else if (harnessType === 'codex-desktop') {
+                        const codexHome = path.join(home, 'codex-home'), row = rows['neo-mjs-neural-link'];
+                        const source    = ['[mcp_servers."neo-mjs-neural-link"]', `command = ${JSON.stringify(row.command)}`, `args = ${JSON.stringify(row.args)}`,
+                            `env = { ${Object.entries(row.env).map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join(', ')} }`, ''].join('\n');
+                        fs.mkdirSync(codexHome, {recursive: true, mode: 0o700});
+                        fs.mkdirSync(workspace, {recursive: true, mode: 0o755});
+                        fs.writeFileSync(path.join(codexHome, 'config.toml'), source, {mode: 0o600});
+                        profile = createCodexLaunchBinding({identity: 'seat', issuer: reserved.issuer, codexHome, workspaceRoot: workspace, source});
                     } else {
                         profile = createDesktopLaunchBinding({identity: 'seat', issuer: reserved.issuer, rows});
                         fs.writeFileSync(path.join(home, 'claude_desktop_config.json'), JSON.stringify({mcpServers: rows}), {mode: 0o600});
                         fs.writeFileSync(path.join(home, '.neo-fleet-claude-desktop-profile.json'), JSON.stringify({version: 2,
                             artifact: 'claude_desktop_config.json', sha256: profile.projectionSha256}), {mode: 0o600});
                     }
-                    const carrier       = path.join(home, harnessType === 'antigravity' ? '.neo-fleet-mcp/neural-link.sh' : 'claude_desktop_config.json');
+                    const carrier       = path.join(home, {antigravity: '.neo-fleet-mcp/neural-link.sh', 'codex-desktop': 'codex-home/config.toml'}[harnessType] ?? 'claude_desktop_config.json');
                     const originalBytes = fs.readFileSync(carrier, 'utf8');
                     startWithRuntimeReferences('seat', {cwd: workspace, runtimeGeneration: generation, runtimePlan: plan,
                         resolvedResidentMcpEnv: captured.environment,
@@ -2343,11 +2351,16 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                     if (control === 'profile') {
                         fs.writeFileSync(carrier, originalBytes + '\n');
                         if (harnessType === 'claude-desktop') fs.writeFileSync(carrier, JSON.stringify({mcpServers: {}}));
+                        else if (harnessType === 'codex-desktop') fs.writeFileSync(carrier, originalBytes.replace(generation.executable, '/other/node'));
                         else fs.writeFileSync(path.join(home, '.neo-fleet-antigravity-neural-link.json'), JSON.stringify({
                             version: 1, artifact: 'neural-link.sh', sha256: createHash('sha256').update(originalBytes + '\n').digest('hex')
                         }));
                     }
-                    if (control === 'workspace') fs.writeFileSync(path.join(workspace, '.agents/mcp_config.json'), JSON.stringify({mcpServers: {}}));
+                    if (control === 'workspace' && harnessType === 'codex-desktop') {
+                        // a project table outranks the home one, so the seat would no longer run the bound row
+                        fs.mkdirSync(path.join(workspace, '.codex'), {recursive: true, mode: 0o755});
+                        fs.writeFileSync(path.join(workspace, '.codex/config.toml'), originalBytes.replace(generation.executable, '/other/node'), {mode: 0o600});
+                    } else if (control === 'workspace') fs.writeFileSync(path.join(workspace, '.agents/mcp_config.json'), JSON.stringify({mcpServers: {}}));
                     FleetLifecycleService.openRuntimeCustody({directory});
                     const result = await FleetLifecycleService.recoverRuntimeCustody({verifyRuntime: async () => control === 'runtime' ? null : ({...generation,
                         compatibility: {launchProtocol: control === 'protocol' ? 'unsupported' : 'neo-fleet-mcp-launch/v1'}})});
@@ -3891,6 +3904,70 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
         expect(spawn.calls).toHaveLength(1);
         expect(await github(grants[1]['github-workflow'])).toMatchObject({outcome: 'admitted', env: {GH_TOKEN: FIXTURE_PAT}});
         await FleetLifecycleService.stop('seat')
+    });
+
+    test('PRODUCTION COMPOSER: a Codex Desktop seat reserves and activates only Neural Link through the issuer', async () => {
+        const
+            root     = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-codex-launch-'))),
+            home     = path.join(root, 'seat', 'harness', 'codex-desktop'),
+            checkout = path.join(root, 'seat', 'neomjs-neo'),
+            issuer   = McpLaunchAdmissionService,
+            grants   = [],
+            matrix   = {'memory-core': true, 'knowledge-base': true, 'neural-link': true, 'github-workflow': true, 'gitlab-workflow': false};
+
+        const spawn = install({agents: {seat: {
+            id            : 'seat',
+            githubUsername: 'neo-gpt-fixture',
+            harnessType   : 'codex-desktop',
+            launchOwner   : 'fleet',
+            metadata      : {repo: {cloneUrl: 'https://github.com/neomjs/neo.git', repoSlug: 'neomjs/neo'}},
+            seatHome      : path.join(root, 'seat')
+        }}});
+        fs.mkdirSync(home, {recursive: true});
+        Object.assign(FleetLifecycleService, {
+            instanceRoot                 : root,
+            harnessBinaryPaths           : {'codex-desktop': process.execPath, codex: '/bin/sh'},
+            codexDesktopCapabilityProbeFn: () => ({available: true, reason: null, crashpadExecutable: '/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/browser_crashpad_handler'}),
+            processListFn                : () => [],
+            // the seat reads live as the exact command it was spawned with
+            processInspectFn             : () => ({startedAt: STARTED_AT, command: spawn.calls[0] ? [spawn.calls[0].command, ...spawn.calls[0].args].join(' ') : ''}),
+            processSignalFn              : () => {}
+        });
+        [issuer.generations, issuer.grants, issuer.revocations].forEach(map => map.clear());
+
+        try {
+            await startAgentProvisioned({
+                lifecycleService  : FleetLifecycleService,
+                agentId           : 'seat',
+                managedRoot       : root,
+                agentosRuntimeRoot: root,
+                ensureRepo        : async () => ({repoPath: checkout}),
+                prepareWorkspace  : async args => {
+                    grants.push(args.launchAdmission?.grants);
+
+                    return {
+                        agentosRuntimeRoot: args.agentosRuntimeRoot,
+                        targetRepoRoot    : args.targetRepoRoot,
+                        instanceHome      : home,
+                        mcpMatrix         : matrix,
+                        mcpPlan           : createManagedAgentWorkspacePlan({agent: {id: 'seat', harnessType: 'codex-desktop'}, mcpMatrix: matrix}).mcpServers
+                            .map(row => ({...row, command: process.execPath, sourceRoot: root, args: [path.join(root, row.entrypoint)]}))
+                    }
+                },
+                resolveGitIdentity : async () => ({state: 'derived', source: 'public', name: 'Fixture', email: 'fixture@example.test'}),
+                convergeGitIdentity: async () => ({state: 'converged', scope: 'local', action: 'kept'}),
+                readModelCatalog   : async () => null,
+                importMemory       : async () => ({state: 'none'}),
+                proveForgeAccount  : async () => ({ok: true})
+            });
+
+            expect(spawn.calls).toHaveLength(1);
+            expect(Object.keys(grants[0])).toEqual(['neural-link']);
+            expect(issuer.statusOf('seat')).toMatchObject({state: 'active', servers: [{key: 'neural-link', state: 'active'}]});
+        } finally {
+            await FleetLifecycleService.stop('seat');
+            fs.rmSync(root, {recursive: true, force: true});
+        }
     });
 
     test('Antigravity binding rejects non-curated seats and missing or mismatched reserved generations before spawn', () => {

@@ -389,15 +389,18 @@ async function provisionAgent({
         startSignal.throwIfAborted()
     }
 
-    // Non-Stop admission invalidations retain their mark; Stop is owned by the lifecycle signal.
+    // Non-Stop admission invalidations retain their mark; Stop is owned by the lifecycle signal. A Codex Desktop
+    // seat starts only Neural Link through the issuer, whose Bridge token renews at every launch; its other rows
+    // keep the seat env the Fleet spawns it with.
     const
         desktopRows    = Boolean(repo) && ['claude-desktop', 'antigravity'].includes(agent.harnessType),
-        admission      = desktopRows ? lifecycleService.getLaunchAdmission() : null,
+        launchedRows   = Boolean(repo) && agent.harnessType === 'codex-desktop' ? ['neural-link'] : null,
+        admission      = desktopRows || launchedRows ? lifecycleService.getLaunchAdmission() : null,
         admissionSince = admission ? admissionMark ?? admission.revocationMark(agentId) : null;
 
     // Resolve the resident child envelope and seat PAT before any checkout/config mutation.
     // The same resolved envelope names the rendered slots and supplies the eventual spawn.
-    const residentInputs         = installedRuntime && desktopRows ? lifecycleService.captureResidentMcpInputs(agent, {remote}) : null;
+    const residentInputs         = installedRuntime && admission ? lifecycleService.captureResidentMcpInputs(agent, {remote}) : null;
     const resolvedResidentMcpEnv = residentInputs?.environment ?? lifecycleService.resolveResidentMcpEnvironment(agent, {remote});
     const patOwner               = desktopRows ? createSeatPatOwner({registry, agent, proveForgeAccount}) : null;
     const resolvedCredential     = registry.resolveCredential(agentId);
@@ -675,7 +678,7 @@ async function provisionAgent({
         startSignal.throwIfAborted();
         if (installedRuntime) assertRuntimeGenerationReferences(runtimeReferenceGuard, path.dirname(installedRuntime.generation.directory));
         reservation = admission && await admission.reserve({agent, registry, since: admissionSince, startSignal,
-            runtimeGeneration: installedRuntime?.generation ?? null, runtimeReferenceGuard});
+            runtimeGeneration: installedRuntime?.generation ?? null, runtimeReferenceGuard, servers: launchedRows});
         // Import before create-only birth files: the adopted seat's own notes take precedence.
         memory = await importMemory({agent, instanceRoot: seatInstanceRoot});
         startSignal.throwIfAborted();
@@ -807,7 +810,10 @@ async function provisionAgent({
                     generation: reservation.generation,
                     plan      : prepared.mcpPlan,
                     ...(prepared.launchAdmissionBinding ? {profile: prepared.launchAdmissionBinding} : {}),
-                    ...(residentInputs ? {residentInputs: residentInputs.owners} : {}),
+                    // recovery holds each resident input against the servers the generation launches
+                    ...(residentInputs ? {residentInputs: launchedRows
+                        ? Object.fromEntries(Object.entries(residentInputs.owners).filter(([key]) => launchedRows.includes(key)))
+                        : residentInputs.owners} : {}),
                     owners    : {
                         pat: patOwner,
                         ...(planeOwner ? {plane: planeOwner} : {})
