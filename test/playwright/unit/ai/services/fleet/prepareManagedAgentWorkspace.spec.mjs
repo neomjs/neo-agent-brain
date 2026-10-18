@@ -964,6 +964,40 @@ test.describe('prepareManagedAgentWorkspace', () => {
             expect(tomlMcpTable(home, 'neo-mjs-neural-link')).toContain('fleetMcpLauncher.mjs');
         });
 
+        test('the seat\'s switch survives Fleet switching Neural Link off and on again', async () => {
+            const opts     = options(makeAgent('codex-desktop')), header = '[mcp_servers."neo-mjs-neural-link"]';
+            const nlOff    = makeAgent('codex-desktop', {mcpServers: {'memory-core': true, 'knowledge-base': true, 'neural-link': false, 'github-workflow': true}});
+            const prepared = await prepareManagedAgentWorkspace({...opts, launchAdmission: desktopAdmission()});
+
+            await fs.writeFile(homeFile(prepared), (await read(homeFile(prepared))).replace(header, `${header}\nenabled = false`));
+            await prepareManagedAgentWorkspace({...opts, agent: nlOff, launchAdmission: desktopAdmission()});
+            expect(tomlMcpTable(await read(homeFile(prepared)), 'neo-mjs-neural-link').trim(), 'the grant leaves, the switch stays').toBe(`${header}\nenabled = false`);
+
+            await prepareManagedAgentWorkspace({...opts, launchAdmission: desktopAdmission()});
+
+            const home = await read(homeFile(prepared)), table = tomlMcpTable(home, 'neo-mjs-neural-link');
+            expect(table).toContain('fleetMcpLauncher.mjs');
+            expect(table).toContain('enabled = false');
+            expect(home.split(header)).toHaveLength(2);
+        });
+
+        test('the seat\'s switch survives a Start without admission and the next one with it', async () => {
+            const opts     = options(makeAgent('codex-desktop')), header = '[mcp_servers."neo-mjs-neural-link"]';
+            const prepared = await prepareManagedAgentWorkspace({...opts, launchAdmission: desktopAdmission()});
+
+            await fs.writeFile(homeFile(prepared), (await read(homeFile(prepared))).replace(header, `${header}\nenabled = false`));
+            await prepareManagedAgentWorkspace(opts);
+            expect(tomlMcpTable(await read(homeFile(prepared)), 'neo-mjs-neural-link').trim(), 'the home keeps only the switch').toBe(`${header}\nenabled = false`);
+            expect(tomlMcpTable(await read(projectFile(opts)), 'neo-mjs-neural-link')).toContain('mcp-server.mjs');
+
+            await prepareManagedAgentWorkspace({...opts, launchAdmission: desktopAdmission()});
+
+            const home = await read(homeFile(prepared)), table = tomlMcpTable(home, 'neo-mjs-neural-link');
+            expect(table).toContain('fleetMcpLauncher.mjs');
+            expect(table).toContain('enabled = false');
+            expect(home.split(header)).toHaveLength(2);
+        });
+
         test('a launcher table Fleet did not write refuses before a byte changes', async () => {
             const opts     = options(makeAgent('codex-desktop'));
             const prepared = await prepareManagedAgentWorkspace({...opts, launchAdmission: desktopAdmission()});

@@ -1343,11 +1343,14 @@ async function convergeCodexHomeLaunchTables({filePath, tables, trustedRoot, fil
     }
 
     // A table's `enabled` line is the seat's own switch: it moves into the new table, and a table holding only
-    // the switch merges into it rather than leaving a second header behind.
-    const switches = {};
-    let   output   = source;
+    // the switch merges into it rather than leaving a second header behind. A table that retires leaves its
+    // switch behind on its own, so the opt-out still holds when the table returns.
+    const
+        desired  = codexProfileProjection(tables || ''),
+        switches = {};
+    let output = source;
 
-    for (const name of new Set([...Object.keys(actual), ...Object.keys(codexProfileProjection(tables || ''))])) {
+    for (const name of new Set([...Object.keys(actual), ...Object.keys(desired)])) {
         const table = findTomlMcpTable(output, name);
         if (!table) continue;
         const line = table.value.split('\n').slice(1).find(entry => /^\s*enabled\s*=/.test(entry));
@@ -1355,9 +1358,15 @@ async function convergeCodexHomeLaunchTables({filePath, tables, trustedRoot, fil
         output = output.slice(0, table.start) + output.slice(table.end);
     }
 
+    const retiredSwitches = Object.keys(switches).filter(name => !(name in desired))
+        .map(name => `[mcp_servers."${name}"]\n${switches[name]}`);
+
     output = output.replace(/\n{3,}/g, '\n\n').replace(/\s*$/, '\n');
     if (tables) {
         output += '\n' + tables.replace(/^\[mcp_servers\."([^"]+)"\]$/gm, (header, name) => switches[name] ? `${header}\n${switches[name]}` : header) + '\n';
+    }
+    if (retiredSwitches.length) {
+        output += '\n' + retiredSwitches.join('\n\n') + '\n';
     }
 
     let written;
