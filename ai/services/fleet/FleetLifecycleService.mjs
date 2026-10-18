@@ -1279,7 +1279,7 @@ class FleetLifecycleService extends Base {
                 [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                      : owners.plane
             };
         if (record.runtimeGeneration && launchAdmission?.plan.some(row => row.key === 'neural-link' && row.enabled)) {
-            slots[this.bridgeTokenEnvVar] = createBridgeTokenOwner({registry: this.registry, agent, authority: record.bridgeAuthority});
+            slots[this.bridgeTokenEnvVar] = createBridgeTokenOwner({registry: this.getRegistry(), agent, authority: record.bridgeAuthority});
         }
         return slots;
     }

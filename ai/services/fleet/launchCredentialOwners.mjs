@@ -150,7 +150,7 @@ export function createSeatPatOwner({registry, agent, proveForgeAccount: prove = 
  */
 export function createBridgeTokenOwner({registry, agent, authority, probeVerifier = probeBridgeVerifier}) {
     if (!agent || !isBridgeSigningAuthority(authority)) throw new Error('Original Bridge signing authority is invalid.');
-    const binding = {version: 1, kind: 'bridge-token', storeRoot: authority.registryRoot, agentId: agent.id,
+    const binding = {version: 1, kind: 'bridge-token', storeRoot: storeRoot(registry), agentId: agent.id,
         identity: agent.githubUsername?.trim().replace(/^@/, ''), authority: structuredClone(authority)};
     return owner({
         credential: CREDENTIALS.BRIDGE_TOKEN, binding,

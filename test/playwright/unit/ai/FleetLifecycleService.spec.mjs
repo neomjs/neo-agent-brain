@@ -4362,6 +4362,35 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
         expect(activation.env).toHaveProperty('NEO_FLEET_BRIDGE_TOKEN')
     });
 
+    test('launchAdmissionOwners binds the Bridge-token owner to getRegistry() when the registry test seam is null (#1140)', () => {
+        install();
+        const
+            authority = {version: 1, source: 'registry-file', registryRoot: fs.realpathSync(DESKTOP_ROOT), publicKeySha256: 'e'.repeat(64)},
+            agent     = {id: 'seat', githubUsername: 'neo-opus-ada', harnessType: 'antigravity'},
+            registry  = {
+                ...FleetLifecycleService.registry,
+                getDefinition            : id => id === 'seat' ? agent : null,
+                getBridgeSigningAuthority: () => authority,
+                renewBridgeToken         : () => ({token: 'fresh-start-bridge-token'})
+            },
+            getRegistry = FleetLifecycleService.getRegistry;
+
+        FleetLifecycleService.registry    = null;
+        FleetLifecycleService.getRegistry = () => registry;
+
+        try {
+            const slots = FleetLifecycleService.launchAdmissionOwners({
+                agent,
+                record         : {runtimeGeneration: {id: 'a'.repeat(64)}, bridgeAuthority: authority},
+                launchAdmission: {plan: [{key: 'neural-link', enabled: true}]}
+            });
+
+            expect(slots[FleetLifecycleService.bridgeTokenEnvVar].resolve()).toBe('fresh-start-bridge-token')
+        } finally {
+            FleetLifecycleService.getRegistry = getRegistry
+        }
+    });
+
     test('a seat that cannot be leased revokes its generation before it is stopped, and never activates it', () => {
         const {calls, events} = installDesktopSeat();
 
