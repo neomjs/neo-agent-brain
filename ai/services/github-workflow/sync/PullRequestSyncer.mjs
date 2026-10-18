@@ -335,7 +335,7 @@ class PullRequestSyncer extends Base {
     #getPullRequestPath(pr, planBuckets = new Map(), inventory = null) {
         const config          = this.#getConfig();
         const issueSyncConfig = config.issueSync;
-        const filename        = `${issueSyncConfig.pullFilenamePrefix || 'pr-'}${pr.number}.md`;
+        const filename        = `${config.issueSync.pullFilenamePrefix || 'pr-'}${pr.number}.md`;
 
         const plan = planBuckets.get(pr.number);
 
@@ -465,7 +465,7 @@ class PullRequestSyncer extends Base {
         const inventory = await buildContentInventory(issueSyncConfig, {
             repoSlug  : config.repo,
             type      : 'pulls',
-            filePrefix: issueSyncConfig.pullFilenamePrefix || 'pr-'
+            filePrefix: config.issueSync.pullFilenamePrefix || 'pr-'
         });
         const planBuckets  = this.#planBuckets(metadata, scanned, inventory),
               indexUpserts = [];
@@ -685,7 +685,7 @@ class PullRequestSyncer extends Base {
         const inventory = await buildContentInventory(issueSyncConfig, {
             repoSlug  : config.repo,
             type      : 'pulls',
-            filePrefix: issueSyncConfig.pullFilenamePrefix || 'pr-'
+            filePrefix: config.issueSync.pullFilenamePrefix || 'pr-'
         });
         const planBuckets          = this.#planBuckets(metadata, allPullRequests, inventory);
         let   shouldPruneEmptyDirs = false;
@@ -824,7 +824,7 @@ class PullRequestSyncer extends Base {
         const inventory         = await buildContentInventory(issueSyncConfig, {
             repoSlug  : config.repo,
             type      : 'pulls',
-            filePrefix: issueSyncConfig.pullFilenamePrefix || 'pr-'
+            filePrefix: config.issueSync.pullFilenamePrefix || 'pr-'
         });
 
         const ambiguous = [...inventory.entries()].filter(([, copies]) => copies.length > 1),
@@ -959,7 +959,7 @@ class PullRequestSyncer extends Base {
         return validateContentIntegrity(issueSyncConfig, {
             repoSlug  : config.repo,
             type      : 'pulls',
-            filePrefix: issueSyncConfig.pullFilenamePrefix || 'pr-'
+            filePrefix: config.issueSync.pullFilenamePrefix || 'pr-'
         });
     }
 
@@ -995,7 +995,7 @@ class PullRequestSyncer extends Base {
         const corpus          = inventory || await buildContentInventory(issueSyncConfig, {
             repoSlug  : config.repo,
             type      : 'pulls',
-            filePrefix: issueSyncConfig.pullFilenamePrefix || 'pr-'
+            filePrefix: config.issueSync.pullFilenamePrefix || 'pr-'
         });
 
         const existing = new Map(
@@ -1098,7 +1098,7 @@ class PullRequestSyncer extends Base {
         const inventory = await buildContentInventory(issueSyncConfig, {
             repoSlug  : config.repo,
             type      : 'pulls',
-            filePrefix: issueSyncConfig.pullFilenamePrefix || 'pr-'
+            filePrefix: config.issueSync.pullFilenamePrefix || 'pr-'
         });
 
         for (const prNumber of list) {
