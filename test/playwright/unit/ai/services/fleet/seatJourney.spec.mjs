@@ -167,6 +167,7 @@ test.describe('ai/services/fleet/seatJourney — end to end against a fleet serv
             {privateKey, publicKey} = crypto.generateKeyPairSync('ed25519'),
             agentsRoot              = path.join(root, 'fleet', 'agents'),
             standIn                 = writeStandInLauncher({directory: path.join(root, 'bin')}),
+            codex                   = writeCodexStandInBundle({directory: path.join(root, 'apps')}),
             base                    = {PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: os.tmpdir(), LANG: 'C.UTF-8'},
             profile                 = {
                 ...base,
@@ -190,7 +191,9 @@ test.describe('ai/services/fleet/seatJourney — end to end against a fleet serv
                 NEO_AGENT_IDENTITY          : VIEWER,
                 NEO_NL_PORT                 : String(nlPort),
                 NEO_FLEET_CLAUDE_DESKTOP_BIN: standIn,
-                NEO_FLEET_CODEX_DESKTOP_BIN : writeCodexStandInBundle({directory: path.join(root, 'apps')}),
+                // pinned on every host: an installed ChatGPT app must not be what makes Codex Desktop start
+                NEO_FLEET_CODEX_DESKTOP_BIN: codex.binary,
+                NEO_FLEET_CODEX_BIN        : codex.cli,
                 ...(process.env.NEO_CHROMA_PORT_TEST ? {NEO_CHROMA_PORT_TEST: process.env.NEO_CHROMA_PORT_TEST} : {})
             };
 

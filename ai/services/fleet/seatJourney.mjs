@@ -70,28 +70,32 @@ export function writeStandInLauncher({directory, runtime = process.execPath}) {
 /**
  * @summary Wraps the stand-in in the app-bundle shape Codex Desktop's capability probe requires
  * (`probeCodexDesktopCapabilities`): the launcher as `Contents/MacOS/Codex`, an `app.asar` and a Chromium framework
- * carrying the contract markers the probe scans for, and an executable Crashpad helper. Should the probe's contract
- * move, the Start refuses with the probe's named reason, and the journey reports that row.
+ * carrying the contract markers the probe scans for, and an executable Crashpad helper. The bundle also carries the
+ * Codex CLI a Codex Desktop Start requires as its auth command. A resident Start never runs it, so the stand-in
+ * refuses any call. Should the probe's contract move, the Start refuses with the probe's named reason, and the
+ * journey reports that row.
  * @param {Object} options
  * @param {String} options.directory Where `Codex.app` goes.
  * @param {String} [options.runtime=process.execPath]
- * @returns {String} The bundle's main binary, for `NEO_FLEET_CODEX_DESKTOP_BIN`.
+ * @returns {{binary: String, cli: String}} For `NEO_FLEET_CODEX_DESKTOP_BIN` and `NEO_FLEET_CODEX_BIN`.
  */
 export function writeCodexStandInBundle({directory, runtime = process.execPath}) {
     const
         contents  = path.join(directory, 'Codex.app', 'Contents'),
         framework = path.join(contents, 'Frameworks', 'Codex Framework.framework'),
-        main      = path.join(contents, 'MacOS', 'Codex'),
-        launcher  = writeStandInLauncher({directory: path.dirname(main), runtime});
+        binary    = path.join(contents, 'MacOS', 'Codex'),
+        cli       = path.join(contents, 'Resources', 'codex'),
+        launcher  = writeStandInLauncher({directory: path.dirname(binary), runtime});
 
-    fs.renameSync(launcher, main);
+    fs.renameSync(launcher, binary);
     fs.mkdirSync(path.join(contents, 'Resources'), {recursive: true});
     fs.writeFileSync(path.join(contents, 'Resources', 'app.asar'),
         'CODEX_ELECTRON_USER_DATA_PATH --open-project shouldIncludeSparkle enableUpdater CODEX_SPARKLE_ENABLED==="false"\n');
+    fs.writeFileSync(cli, '#!/bin/sh\necho "seat journey: the Codex CLI stand-in answers no call: $*" >&2\nexit 1\n', {mode: 0o755});
     fs.mkdirSync(path.join(framework, 'Helpers'), {recursive: true});
     fs.writeFileSync(path.join(framework, 'Codex Framework'), 'user-data-dir\n');
     fs.writeFileSync(path.join(framework, 'Helpers', 'browser_crashpad_handler'), '#!/bin/sh\n', {mode: 0o755});
-    return main
+    return {binary, cli}
 }
 
 /**
