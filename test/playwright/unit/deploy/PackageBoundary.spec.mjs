@@ -110,12 +110,12 @@ test('the Brain root contains no Engine compatibility projection', () => {
 
     const
         manifest       = readJson(path.join(repoRoot, 'package.json')),
+        engineTestRoot = path.join(repoRoot, 'test/playwright/unit/ai/buildScripts'),
         prepareSource  = ['ai/scripts/setup/prepare.mjs', 'ai/scripts/setup/initServerConfigs.mjs']
-            .map(file => fs.readFileSync(path.join(repoRoot, file), 'utf8')).join('\n'),
-        engineTestRoot = path.join(repoRoot, 'test/playwright/unit/ai/buildScripts');
+            .map(file => fs.readFileSync(path.join(repoRoot, file), 'utf8')).join('\n');
 
-    // #482: the lifecycle runs from `prepare` (the config bootstrap, then the materializer guarded
-    // to this checkout), never from `postinstall`, which npm runs inside every consumer's install.
+    // The lifecycle runs from `prepare` (the config bootstrap, then the materializer guarded to this
+    // checkout), never from `postinstall`, which npm runs inside every consumer's install.
     expect(manifest.scripts.prepare).toBe('node ./ai/scripts/setup/prepare.mjs');
     expect(manifest.scripts).not.toHaveProperty('postinstall');
     expect(manifest.scripts).not.toHaveProperty('cockpit');
@@ -276,7 +276,7 @@ test('every Compose build and non-dev bind resolves inside its owning deployment
 test('integration installs the independent package and then tests the exact checkout', () => {
     const
         workflow = loadYaml(fs.readFileSync(path.join(repoRoot, '.github/workflows/brain-integration.yml'), 'utf8')),
-        setup    = workflow.jobs.test.steps.find(step => step.uses === 'actions/setup-node@v6'),
+        setup    = workflow.jobs.test.steps.find(step => step.uses?.startsWith('actions/setup-node@')),
         commands = workflow.jobs.test.steps.filter(step => step.run).map(step => ({
             cwd: step['working-directory'] || '.',
             run: step.run
