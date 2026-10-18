@@ -3,12 +3,15 @@ import {execFileSync}   from 'node:child_process';
 import fs               from 'fs/promises';
 import os               from 'os';
 import path             from 'path';
+import vm               from 'node:vm';
+import {parse}          from 'acorn';
 import Neo              from 'neo.mjs/src/Neo.mjs';
 import 'neo.mjs/src/core/_export.mjs';
 import ConfigProvider, {createConfigProxy, leaf} from '../../../../ai/ConfigProvider.mjs';
 import RootConfigBase                            from '../../../../ai/configBase.mjs';
 import {CHROMA_TEST_DATABASE}                    from '../../../../ai/services/shared/vector/chromaTestIsolation.mjs';
 import Env                                       from '../../../../ai/Env.mjs';
+import {CONTINUOUS_TASK_REGISTRY, isTaskOwnedByProfile} from '../../../../ai/daemons/orchestrator/taskAuthority.mjs';
 
 test.describe('Tier 1 Config Immutability', () => {
     let Config;
@@ -396,6 +399,53 @@ test.describe('Tier 1 Config Immutability', () => {
         }
     });
 
+    test('the graph-attached wake gate preserves explicit OFF and ON without mutating shared config', async () => {
+        // Importing the full Orchestrator initializes graph-backed singletons. Execute its exact
+        // gate and continuous-dispatch statements with a private provider and a stub supervisor.
+        const source = await fs.readFile(new URL('../../../../ai/daemons/orchestrator/Orchestrator.mjs', import.meta.url), 'utf8'),
+            tree = parse(source, {ecmaVersion: 'latest', sourceType: 'module'}),
+            one = nodes => { expect(nodes).toHaveLength(1); return nodes[0] },
+            text = node => source.slice(node.start, node.end),
+            owner = one(tree.body.map(node => node.type === 'ExportNamedDeclaration' ? node.declaration : node)
+                .filter(node => node?.type === 'ClassDeclaration' && node.id?.name === 'Orchestrator')),
+            method = name => one(owner.body.body.filter(node => node.key?.name === name)),
+            helpers = ['resolveLocalDeploymentDefault', 'resolveDeploymentEnabled'].map(name =>
+                text(one(tree.body.filter(node => node.type === 'FunctionDeclaration' && node.id.name === name)))).join('\n'),
+            methods = ['bridgeDaemonEnabled', 'getResolvedAuthorityProfile', 'isTaskAuthorityOwned', 'getEnabledContinuousTaskNames']
+                .map(name => text(method(name))).join('\n'),
+            statements = method('poll').value.body.body,
+            start = statements.findIndex(node => node.type === 'VariableDeclaration' && node.declarations.some(entry => entry.id.name === 'continuousTasks'));
+        expect(start).toBeGreaterThanOrEqual(0);
+        expect(statements[start + 2].type).toBe('ForOfStatement');
+        const loop = statements.slice(start, start + 3).map(text).join('\n'),
+            isolated = createIsolatedConfig(), shared = Config.orchestrator.localOnly.bridgeDaemonEnabled, calls = [];
+        try {
+            const run = vm.runInNewContext(`${helpers}\nclass Gate {${methods}}\nconst gate = new Gate();
+                gate.taskDefinitions = {bridgeDaemon: {}};
+                gate.processSupervisorService = supervisor;
+                gate.taskStateService = states;
+                const run = function () {${loop}}; () => run.call(gate)`, {
+                AiConfig: isolated, CONTINUOUS_TASK_REGISTRY, isTaskOwnedByProfile, now: 123456,
+                supervisor: {reconcileSingletonPort() {}, superviseTask(name) { calls.push(name) }},
+                states: {getTaskState() { return {running: false, lastRunAt: 0} }}
+            });
+            isolated.setEnvOverride('NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE', 'host-edge');
+            for (const mode of ['local', 'cloud']) for (const enabled of [false, true]) {
+                isolated.setEnvOverride('NEO_AI_DEPLOYMENT_MODE', mode);
+                isolated.setEnvOverride('NEO_ORCHESTRATOR_BRIDGE_DAEMON_ENABLED', enabled);
+                calls.length = 0;
+                run();
+                expect(calls, `${mode}: ${enabled}`).toEqual(enabled ? ['bridgeDaemon'] : []);
+                expect(Config.orchestrator.localOnly.bridgeDaemonEnabled).toBe(shared)
+            }
+            // An enable flag cannot transfer a host-edge lane to the plane role.
+            isolated.setEnvOverride('NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE', 'container-plane');
+            calls.length = 0;
+            run();
+            expect(calls).toEqual([])
+        } finally { isolated.destroy() }
+    });
+
     test('ships top-level deployment and maintenance policy defaults', async () => {
         expect(Config.orchestrator.deploymentMode).toBe(process.env.NEO_AI_DEPLOYMENT_MODE || 'cloud');
 
@@ -436,8 +486,7 @@ test.describe('Tier 1 Config Immutability', () => {
             embedDaemonEnabled             : null,
             messageDaemonEnabled           : null,
             goldenPathRepoEnrichmentEnabled: null,
-            swarmHeartbeatEnabled          : false,
-            wakeDispatchEnabled            : null
+            swarmHeartbeatEnabled          : false
         });
         // Their new home. `null` here resolves the OPPOSITE way from `localOnly` — cloud enables,
         // local opts in — which is what puts them on the role that owns them.

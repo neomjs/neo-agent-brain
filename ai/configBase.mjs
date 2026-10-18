@@ -2168,8 +2168,9 @@ class ConfigBase extends ConfigProvider {
                  * `null` means "use the deployment profile default" (`local` enables,
                  * `cloud` disables); set `true` only when explicitly opting a lane back in.
                  * Exceptions default `false`: `bridgeDaemonEnabled` and
-                 * `swarmHeartbeatEnabled` because the Stop hook makes wake + heartbeat redundant
-                 * flood. All remain env-overridable to re-enable.
+                 * `swarmHeartbeatEnabled`. These control the graph-attached wake child and
+                 * heartbeat lane respectively; the separately supervised graphless receiver
+                 * has its own lifecycle. All remain env-overridable to re-enable.
                  * @type {Object}
                  */
                 localOnly: {
@@ -2177,10 +2178,9 @@ class ConfigBase extends ConfigProvider {
                     // Local profile may supervise a child Chroma process; cloud profile
                     // reaches the compose-owned `chroma` peer container instead.
                     chromaDaemonEnabled    : leaf(null, 'NEO_ORCHESTRATOR_CHROMA_DAEMON_ENABLED', 'boolean'),
-                    // Desktop wake-DELIVERY gate. Defaults OFF: the lane-state Stop hook forces turn
-                    // continuation, so wake interrupts are redundant duplicate-flood at multi-peer
-                    // scale (A2A messages still persist + surface on the next list_messages).
-                    // Set `true` (or `NEO_ORCHESTRATOR_BRIDGE_DAEMON_ENABLED=true`) to restore delivery.
+                    // Gates the Orchestrator's graph-attached wake/daemon.mjs child, which matches,
+                    // coalesces and delivers GraphLog events. Defaults OFF. The separately supervised
+                    // graphless wake/receiver.mjs final mile is outside this gate.
                     bridgeDaemonEnabled    : leaf(false, 'NEO_ORCHESTRATOR_BRIDGE_DAEMON_ENABLED', 'boolean'),
                     neuralLinkBridgeEnabled: leaf(null, 'NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED', 'boolean'),
                     // The embed daemon durably drains the add_memory WAL into the content store
@@ -2200,10 +2200,7 @@ class ConfigBase extends ConfigProvider {
                     // (GraphLog compaction, integrity sweep, embed/message daemons) runs via its own
                     // separate task toggles and is unaffected. Set `true` (or
                     // `NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED=true`) to restore.
-                    swarmHeartbeatEnabled          : leaf(false, 'NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED', 'boolean'),
-                    // Reserved policy placeholder: no runtime consumer yet.
-                    // `bridgeDaemonEnabled` is the active scheduler gate for desktop wake delivery.
-                    wakeDispatchEnabled            : leaf(null)
+                    swarmHeartbeatEnabled          : leaf(false, 'NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED', 'boolean')
                 },
                 /**
                  * Cloud-only maintenance lane switches (mirror of `localOnly` with inverted
