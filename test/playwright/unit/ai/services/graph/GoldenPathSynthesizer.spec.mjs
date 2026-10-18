@@ -3100,13 +3100,29 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             'labels:',
             '  - enhancement',
             'assignees:',
-            '  - neo-gemini-pro',
+            '  - neo-benched-owner',
             "createdAt: '2026-06-01T00:00:00Z'",
             "updatedAt: '2026-07-02T11:00:00Z'",
             "githubUrl: 'https://github.com/neomjs/neo/issues/9701'",
             '---',
             '# Benched owner render lane'
         ].join('\n'));
+
+        // The lane's owner is seeded here, not borrowed from the roster: the detector reads participation
+        // from this worker's graph store, where sibling specs seed and clear AgentIdentity nodes, so a
+        // roster resident's recorded status is not this arm's to assume.
+        GraphService.upsertNode({
+            id        : '@neo-benched-owner',
+            type      : 'AgentIdentity',
+            name      : 'Benched Owner',
+            properties: {
+                githubLogin        : '@neo-benched-owner',
+                displayName        : 'Benched Owner',
+                family             : 'claude',
+                participationStatus: 'operator_benched',
+                since              : '2026-06-15T00:00:00Z'
+            }
+        });
 
         StorageRouter.getGraphCollection = async () => ({query: async () => ({ids: [[]], distances: [[]]})});
         StorageRouter.getSummaryCollection = async () => ({get: async () => ({documents: ['mock document']})});
