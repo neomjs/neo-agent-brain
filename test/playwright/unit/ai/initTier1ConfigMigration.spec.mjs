@@ -9,8 +9,11 @@ import {assertConfigFresh, collectStaleOverlayFindings, detectTier1OverlayDrift,
         projectSourceShape, projectTier1DefaultsShape, stripSourceComments} from '../../../../ai/scripts/setup/initServerConfigs.mjs';
 import {renderOverlayModule, writeMigratedOverlay} from '../../../../ai/scripts/setup/migrateConfigOverlay.mjs';
 
+// The engine is a dependency, not part of this tree: fixtures written to a temp root import it by URL
 const repoRoot      = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../..'),
-      converterPath = path.join(repoRoot, 'ai/scripts/setup/migrateConfigOverlay.mjs');
+      converterPath = path.join(repoRoot, 'ai/scripts/setup/migrateConfigOverlay.mjs'),
+      neoUrl        = import.meta.resolve('neo.mjs/src/Neo.mjs'),
+      coreUrl       = import.meta.resolve('neo.mjs/src/core/_export.mjs');
 
 /**
  * Transition-owner coverage for the Tier-1 template/base split: the sync-pipeline cascade
@@ -34,8 +37,8 @@ test.describe('ai/scripts/setup — Tier-1 overlay migration cascade (template/b
         const aiRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tier1-migration-'));
 
         const baseSrc = [
-            `import Neo from '${repoRoot}/src/Neo.mjs';`,
-            `import '${repoRoot}/src/core/_export.mjs';`,
+            `import Neo from '${neoUrl}';`,
+            `import '${coreUrl}';`,
             `import ConfigProvider, {createConfigProxy, leaf} from '${repoRoot}/ai/ConfigProvider.mjs';`,
             '',
             'class FixtureConfigBase extends ConfigProvider {',
@@ -80,8 +83,8 @@ test.describe('ai/scripts/setup — Tier-1 overlay migration cascade (template/b
     /** Legacy snapshot shape: full copy carrying one operator delta (the sentinel). */
     function snapshotOverlaySrc() {
         return [
-            `import Neo from '${repoRoot}/src/Neo.mjs';`,
-            `import '${repoRoot}/src/core/_export.mjs';`,
+            `import Neo from '${neoUrl}';`,
+            `import '${coreUrl}';`,
             `import ConfigProvider, {createConfigProxy, leaf} from '${repoRoot}/ai/ConfigProvider.mjs';`,
             '',
             'class Config extends ConfigProvider {',
@@ -229,8 +232,8 @@ test.describe('ai/scripts/setup — per-server overlay declaration-level convers
         fs.mkdirSync(serverRoot);
 
         const rootConfig = marker => [
-            `import Neo from '${repoRoot}/src/Neo.mjs';`,
-            `import '${repoRoot}/src/core/_export.mjs';`,
+            `import Neo from '${neoUrl}';`,
+            `import '${coreUrl}';`,
             `import ConfigProvider, {createConfigProxy, leaf} from '${repoRoot}/ai/ConfigProvider.mjs';`,
             '',
             'class Config extends ConfigProvider {',
@@ -266,8 +269,8 @@ test.describe('ai/scripts/setup — per-server overlay declaration-level convers
         ];
 
         const baseSource = [
-            `import Neo from '${repoRoot}/src/Neo.mjs';`,
-            `import '${repoRoot}/src/core/_export.mjs';`,
+            `import Neo from '${neoUrl}';`,
+            `import '${coreUrl}';`,
             `import ConfigProvider, {leaf} from '${repoRoot}/ai/ConfigProvider.mjs';`,
             '',
             'class ConfigBase extends ConfigProvider {',
@@ -285,8 +288,8 @@ test.describe('ai/scripts/setup — per-server overlay declaration-level convers
 
         const legacySource = [
             boundParent ? "import AiConfig from '../config.mjs';" : "import '../config.mjs';",
-            `import Neo from '${repoRoot}/src/Neo.mjs';`,
-            `import '${repoRoot}/src/core/_export.mjs';`,
+            `import Neo from '${neoUrl}';`,
+            `import '${coreUrl}';`,
             `import ConfigProvider, {createConfigProxy, leaf} from '${repoRoot}/ai/ConfigProvider.mjs';`,
             '',
             'class Config extends ConfigProvider {',

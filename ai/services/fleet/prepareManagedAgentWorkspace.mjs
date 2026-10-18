@@ -11,6 +11,7 @@ import {hydrateCurrentWorktree}                       from '../../scripts/migrat
 import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
 import {applyCodexSeatSettings, parseTomlTableHeader} from './codexConfigToml.mjs';
 import {deriveNodeRuntimeEnv}                         from './deriveNodeRuntimeEnv.mjs';
+import {PACKAGE_RECEIPT_PATH}                         from './runtimeGeneration.mjs';
 import {
     DESKTOP_PROFILE_RECEIPT,
     createDesktopLaunchBinding,
@@ -51,7 +52,9 @@ const
     CLAUDE_MEMORY_SETTING    = 'autoMemoryDirectory',
     // What a Claude Desktop profile row runs, and what a tenant row's launcher hands to.
     LAUNCHER_ENTRYPOINT      = 'ai/mcp/client/fleetMcpLauncher.mjs',
-    BRIDGE_ENTRYPOINT        = 'ai/mcp/client/stdioToStreamableHttp.mjs';
+    BRIDGE_ENTRYPOINT        = 'ai/mcp/client/stdioToStreamableHttp.mjs',
+    // A packaged runtime's organism root inside its bundle: an app bundle, or a generation's host.runtime.
+    PACKAGED_ORGANISM        = path.dirname(PACKAGE_RECEIPT_PATH);
 
 /**
  * @summary Convergence states for Fleet-owned workspace artifacts. `DIVERGENT` is emitted on the
@@ -225,6 +228,26 @@ function validateManagedAgentWorkspacePlan(plan) {
 }
 
 /**
+ * @summary One server's host invocation: the executable, the AgentOS root it runs from, and the entrypoint
+ * arguments (Neural Link's package/Bridge cwd included).
+ * @param {Object} server Logical or bound server row.
+ * @param {String} agentosRuntimeRoot
+ * @param {String} nodePath
+ * @returns {{command: String, sourceRoot: String, args: String[]}}
+ * @private
+ */
+function runtimeInvocation(server, agentosRuntimeRoot, nodePath) {
+    return {
+        command   : nodePath,
+        sourceRoot: agentosRuntimeRoot,
+        args      : [
+            path.join(agentosRuntimeRoot, server.entrypoint),
+            ...(server.key === 'neural-link' ? ['--cwd', agentosRuntimeRoot] : [])
+        ]
+    }
+}
+
+/**
  * @summary Binds a logical seat plan to the two explicit host roots. Local server entrypoints and
  * Neural Link's package/Bridge cwd are AgentOS-owned; target-repository ownership starts at generated
  * artifacts and harness execution, never at the MCP executable edge.
@@ -243,12 +266,7 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
     return logicalPlan.mcpServers.map(server => ({
         ...server,
         ...(Object.keys(environment).length ? {environment: {...environment}} : {}),
-        command   : nodePath,
-        sourceRoot: agentosRuntimeRoot,
-        args      : [
-            path.join(agentosRuntimeRoot, server.entrypoint),
-            ...(server.key === 'neural-link' ? ['--cwd', agentosRuntimeRoot] : [])
-        ],
+        ...runtimeInvocation(server, agentosRuntimeRoot, nodePath),
         runtimeEnv        : [...new Set([...server.runtimeEnv, ...Object.keys(residentMcpEnv[server.key] || {})])],
         requiredRuntimeEnv: [...new Set([...server.requiredRuntimeEnv, ...Object.keys(residentMcpEnv[server.key] || {})])],
         secretEnv         : [...server.secretEnv],
@@ -1150,15 +1168,16 @@ function parseJsonObject(source) {
  */
 async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan, previous, fileSystem}) {
     const
-        projectPath     = path.join(targetRepoRoot, '.codex', 'config.toml'),
-        legacyContent   = renderCodexProjectConfig(localizePlan(plan)),
-        runtimePrevious = previousNodeRuntimePlan(plan),
-        homeRoot        = harnessHomeRoot(agent.harnessType, instanceHome),
-        homePath        = path.join(homeRoot, 'config.toml'),
-        memoriesPath    = path.join(homeRoot, 'memories'),
-        homeContent     = renderCodexHomeConfig(),
-        remote          = plan.some(server => server.target === 'tenant'),
-        artifacts       = [];
+        projectPath        = path.join(targetRepoRoot, '.codex', 'config.toml'),
+        legacyContent      = renderCodexProjectConfig(localizePlan(plan)),
+        runtimePrevious    = previousNodeRuntimePlan(plan),
+        vocabularyPrevious = previousVocabularyPlan(plan),
+        homeRoot           = harnessHomeRoot(agent.harnessType, instanceHome),
+        homePath           = path.join(homeRoot, 'config.toml'),
+        memoriesPath       = path.join(homeRoot, 'memories'),
+        homeContent        = renderCodexHomeConfig(),
+        remote             = plan.some(server => server.target === 'tenant'),
+        artifacts          = [];
     const switched = await convergeCodexProjectSwitches({
         filePath   : projectPath,
         plan,
@@ -1173,16 +1192,21 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
         filePath                 : projectPath,
         desiredContent           : contextSeed + renderCodexProjectConfig(plan),
         legacyContent,
-        placementLegacyContent   : renderCodexProjectConfig(previousPlacementPlan(plan)),
+        placementLegacyContent   : [previousPlacementPlan(plan), vocabularyPrevious].filter(Boolean).map(rows => renderCodexProjectConfig(rows)),
         runtimeLegacyContent     : runtimePrevious && renderCodexProjectConfig(runtimePrevious),
         runtimeLegacyStdioContent: runtimePrevious && renderCodexProjectConfig(localizePlan(runtimePrevious)),
-        ownedProjection          : projectCodexOwnedProjection,
-        mergeTransport           : mergeCodexTransport,
-        adapter                  : agent.harnessType,
+        priorRuntimeContent      : existing => {
+            const prior = priorPackagedCodexRuntime(existing, plan);
+
+            return prior ? [plan, vocabularyPrevious].filter(Boolean).map(rows => renderCodexProjectConfig(rebindRuntime(rows, prior))) : []
+        },
+        ownedProjection: projectCodexOwnedProjection,
+        mergeTransport : mergeCodexTransport,
+        adapter        : agent.harnessType,
         instanceHome,
         remote,
-        ownedLabel               : 'mcp_servers.\"neo-mjs-*\"',
-        trustedRoot              : targetRepoRoot,
+        ownedLabel     : 'mcp_servers.\"neo-mjs-*\"',
+        trustedRoot    : targetRepoRoot,
         fileSystem
     }));
 
@@ -2850,6 +2874,84 @@ function previousPlacementPlan(plan) {
     }))
 }
 
+/**
+ * @summary The current plan in each server's vocabulary before its latest addition (`previousRuntimeEnv`):
+ * the added names leave the row and the resident names stay, so a row Fleet rendered before the addition
+ * is recognised exactly.
+ * @param {Object[]} plan Bound current plan.
+ * @returns {Object[]|null} `null` when the plan carries no declared addition.
+ * @private
+ */
+function previousVocabularyPlan(plan) {
+    const added = server => {
+        const {previousRuntimeEnv, runtimeEnv} = MCP_SERVER_DESCRIPTORS[server.key];
+
+        return previousRuntimeEnv ? runtimeEnv.filter(name => !previousRuntimeEnv.includes(name)) : []
+    };
+
+    if (!plan.some(server => added(server).some(name => server.runtimeEnv.includes(name)))) return null;
+
+    return plan.map(server => {
+        const dropped = added(server);
+
+        return dropped.length ? {...server,
+            runtimeEnv        : server.runtimeEnv.filter(name => !dropped.includes(name)),
+            requiredRuntimeEnv: server.requiredRuntimeEnv.filter(name => !dropped.includes(name))
+        } : server
+    })
+}
+
+/**
+ * @summary The packaged runtime a seat's existing Codex project rows run, when an install has since moved
+ * it and this Start selects the installed one: every stdio row names one executable and its entrypoint under
+ * one root, and that pair has the current runtime's packaged shape — the organism at `PACKAGED_ORGANISM`
+ * inside a bundle, the executable at the current executable's place in it. A hand-pointed executable,
+ * another root shape, two runtimes or the current runtime answer `null`.
+ * @param {String} source The existing project config.
+ * @param {Object[]} plan Bound current plan.
+ * @returns {{agentosRuntimeRoot: String, nodePath: String}|null}
+ * @private
+ */
+function priorPackagedCodexRuntime(source, plan) {
+    const
+        bundleOf = root => root.endsWith(path.sep + PACKAGED_ORGANISM) ? root.slice(0, -(PACKAGED_ORGANISM.length + 1)) : null,
+        stdio    = plan.filter(server => server.transport === 'stdio'),
+        bundle   = stdio.length ? bundleOf(stdio[0].sourceRoot) : null;
+
+    if (!bundle) return null;
+
+    let servers, prior = null;
+
+    try {
+        servers = parseToml(source).mcp_servers
+    } catch {
+        return null
+    }
+
+    for (const server of stdio) {
+        const row = servers?.[server.name], entry = row?.args?.[0];
+
+        if (typeof row?.command !== 'string' || typeof entry !== 'string') continue;
+
+        const root = entry.slice(0, -(server.entrypoint.length + 1));
+
+        if (path.join(root, server.entrypoint) !== entry ||
+            (prior && (prior.agentosRuntimeRoot !== root || prior.nodePath !== row.command))) return null;
+
+        prior = {agentosRuntimeRoot: root, nodePath: row.command}
+    }
+
+    const priorBundle = prior && bundleOf(prior.agentosRuntimeRoot);
+
+    return priorBundle && prior.agentosRuntimeRoot !== stdio[0].sourceRoot &&
+        prior.nodePath === path.join(priorBundle, path.relative(bundle, stdio[0].command)) ? prior : null
+}
+
+/** @summary The bound plan as another runtime ran it: only each row's invocation moves. @private */
+function rebindRuntime(plan, {agentosRuntimeRoot, nodePath}) {
+    return plan.map(server => ({...server, ...runtimeInvocation(server, agentosRuntimeRoot, nodePath)}))
+}
+
 /** @private */
 function localizePlan(plan) {
     return plan.map(server => server.target === 'tenant'
@@ -2870,9 +2972,11 @@ function createRemoteServerMap(plan) {
 /**
  * @summary Converge the one transport-bearing artifact with an authenticated transition receipt.
  * Markerless legacy stdio may move once; later changes require the receipt hash to match the
- * current MC/KB projection. Other managed entries must match, except the exact prior runtime
- * projection supplied by the renderer. That one upgrade changes child Node mode without accepting
- * unrelated edits; resident tables and login state remain outside the owned projection.
+ * current MC/KB projection. Other managed entries must match, except an exact earlier projection
+ * supplied by the renderer: the prior child Node mode, an earlier vocabulary, or — from
+ * `priorRuntimeContent(existing)` — the current plan as the packaged runtime an install has since
+ * moved ran it. Those upgrades accept no unrelated edit; resident tables and login state remain
+ * outside the owned projection.
  * @private
  */
 async function convergeTransportArtifact({
@@ -2882,6 +2986,7 @@ async function convergeTransportArtifact({
     runtimeLegacyContent,
     runtimeLegacyStdioContent,
     placementLegacyContent,
+    priorRuntimeContent = null,
     ownedProjection,
     mergeTransport,
     adapter,
@@ -2915,9 +3020,11 @@ async function convergeTransportArtifact({
         artifactStatus = WORKSPACE_ARTIFACT_STATES.CREATED
     }
 
-    const actual         = splitTransportProjection(ownedProjection(existing));
+    const actual     = splitTransportProjection(ownedProjection(existing));
+    const recognised = [...placementPrevious,
+        ...[].concat(priorRuntimeContent?.(existing) ?? []).map(content => splitTransportProjection(ownedProjection(content)))];
     const runtimeUpgrade = JSON.stringify(actual.other) !== JSON.stringify(desired.other)
-        && [runtimePrevious, ...placementPrevious].some(previous => previous && !previous.invalid
+        && [runtimePrevious, ...recognised].some(previous => previous && !previous.invalid
             && JSON.stringify(actual.other) === JSON.stringify(previous.other));
 
     if (actual.invalid || desired.invalid || legacy.invalid ||
@@ -2932,7 +3039,7 @@ async function convergeTransportArtifact({
         const authorized = receipt
             ? receipt.projectionSha256 === hashProjection(actual.transport)
             : JSON.stringify(actual.transport) === JSON.stringify(legacy.transport)
-                || placementPrevious.some(previous => !previous.invalid
+                || recognised.some(previous => !previous.invalid
                     && JSON.stringify(actual.transport) === JSON.stringify(previous.transport))
                 || (runtimePreviousStdio && !runtimePreviousStdio.invalid
                     && JSON.stringify(actual.transport) === JSON.stringify(runtimePreviousStdio.transport));

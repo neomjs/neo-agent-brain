@@ -10,7 +10,6 @@ import semver                                                                 fr
 import GraphqlService                                                         from '../GraphqlService.mjs';
 import ReleaseNotesSyncer                                                     from './ReleaseNotesSyncer.mjs';
 import {FETCH_ISSUE_TIMELINE_PAGE, FETCH_ISSUES_FOR_SYNC, FETCH_SINGLE_ISSUE} from '../queries/issueQueries.mjs';
-import {GET_ISSUE_FOR_PUSH, UPDATE_ISSUE}                                     from '../queries/mutations.mjs';
 import contentPath                                                            from '../shared/contentPath.mjs';
 import {buildContentInventory}                                                from '../shared/contentInventory.mjs';
 import {createContentIndexEntry, updateContentIndex}                          from '../shared/contentIndex.mjs';
@@ -30,8 +29,9 @@ const lineBreaksRegex = /[\r\n]+/g;
  * the local Markdown format with frontmatter. It handles the logic for:
  * - Formatting issue bodies and comments
  * - Archiving closed issues based on milestones or release dates
- * - Detecting content changes via hashing
- * - Pushing local edits back to GitHub
+ * - Recording a content hash of each rendering
+ *
+ * It only reads from GitHub: nothing local is written back.
  *
  * @class Neo.ai.services.github-workflow.sync.IssueSyncer
  * @extends Neo.core.Base
@@ -114,29 +114,6 @@ class IssueSyncer extends Base {
      */
     #calculateContentHash(content) {
         return crypto.createHash('sha256').update(content).digest('hex');
-    }
-
-    /**
-     * @summary Extracts the only Markdown fields that can be pushed back to GitHub.
-     *
-     * The local issue file also contains generated frontmatter and a read-only timeline.
-     * Those sections are useful for pull-side rendering and metadata checks, but GitHub's
-     * updateIssue mutation only accepts title/body. Keeping this projection explicit prevents
-     * generated-only drift from masquerading as local edit intent.
-     *
-     * @param {object} parsed Gray-matter parsed issue Markdown.
-     * @returns {{title: string, body: string}} Pushable issue title/body.
-     * @private
-     */
-    #getPushPayloadFromMarkdown(parsed) {
-        const bodyContent = parsed.content.split('## Timeline')[0].trim(),
-            titleMatch    = bodyContent.match(/^#\s+(.+)$/m),
-            title         = titleMatch ? titleMatch[1] : parsed.data.title,
-            body          = bodyContent
-                .replace(/^#\s+.+$/m, '')
-                .trim();
-
-        return {title, body};
     }
 
     /**
@@ -819,9 +796,8 @@ class IssueSyncer extends Base {
         logger.info(`Found ${allIssues.length} issues updated since last sync`);
 
         const newMetadata = {
-            issues      : { ...metadata.issues }, // Start with existing metadata
-            pushFailures: metadata.pushFailures || [],
-            lastSync    : new Date().toISOString()
+            issues  : { ...metadata.issues }, // Start with existing metadata
+            lastSync: new Date().toISOString()
         };
 
         const stats = {
@@ -948,7 +924,7 @@ class IssueSyncer extends Base {
                 closedAt : issue.closedAt || null,
                 milestone: issue.milestone?.title || null,
                 title    : issue.title,
-                contentHash,                                    // Store hash for push comparison
+                contentHash,                                    // Hash of the rendered Markdown
                 commentsTotal: this.#countTimelineComments(issue) // Derived from the exhausted timeline.
             };
 
@@ -1155,125 +1131,6 @@ class IssueSyncer extends Base {
                 logger.error(`Failed to refetch issue #${issueNumber}: ${e.message}`);
                 stats.errors.push({issueNumber, error: e.message});
             }
-        }
-
-        return stats;
-    }
-
-    /**
-     * Pushes local changes to GitHub using GraphQL mutations.
-     * Uses content hash comparison to detect actual changes and prevent false updates.
-     * @param {object} metadata
-     * @returns {Promise<object>}
-     */
-    async pushToGitHub(metadata) {
-        const config = this.#getConfig();
-
-        logger.info('📤 Checking for local changes to push via GraphQL...');
-        const stats = {
-            count        : 0,
-            issues       : [],
-            failures     : [],
-            generatedOnly: {count: 0, issues: []}
-        };
-
-        if (!metadata.lastSync) {
-            logger.info('✨ No previous sync found, skipping push.');
-            return stats;
-        }
-
-        const localFiles       = await this.#scanLocalFiles();
-        const previousFailures = metadata.pushFailures || [];
-
-        logger.debug(`Scanning ${localFiles.length} local files for changes...`);
-
-        for (const filePath of localFiles) {
-            try {
-                const content     = await fs.readFile(filePath, 'utf-8');
-                const parsed      = matter(content);
-                const issueNumber = parsed.data.id;
-
-                if (!issueNumber) {
-                    logger.debug(`Skipping file without issue number: ${path.basename(filePath)}`);
-                    continue;
-                }
-
-                // Calculate current content hash
-                const currentHash = this.#calculateContentHash(content);
-                const oldIssue    = metadata.issues[issueNumber];
-
-                // Skip if no metadata exists (shouldn't happen, but be safe)
-                if (!oldIssue) {
-                    logger.debug(`No metadata for #${issueNumber}, skipping push`);
-                    continue;
-                }
-
-                // Compare content hash - skip if unchanged
-                if (oldIssue.contentHash && oldIssue.contentHash === currentHash) {
-                    logger.debug(`No content change for #${issueNumber}, skipping`);
-                    continue;
-                }
-
-                // Skip previously failed pushes
-                if (previousFailures.includes(issueNumber)) {
-                    logger.debug(`Skipping previously failed push for issue #${issueNumber}`);
-                    stats.failures.push(issueNumber);
-                    continue;
-                }
-
-                logger.debug(`📝 Content changed for #${issueNumber}`);
-
-                const localPayload = this.#getPushPayloadFromMarkdown(parsed);
-
-                // Step 1: Get the issue's current pushable fields.
-                const issueData = await GraphqlService.query(GET_ISSUE_FOR_PUSH, {
-                    owner : config.owner,
-                    repo  : config.repo,
-                    number: issueNumber
-                });
-
-                const remoteIssue = issueData.repository.issue;
-
-                if (remoteIssue.title === localPayload.title &&
-                    (remoteIssue.body || '') === localPayload.body) {
-                    oldIssue.contentHash = currentHash;
-                    logger.debug(`🩹 Generated-only drift for #${issueNumber}; metadata hash healed without GitHub mutation`);
-                    stats.generatedOnly.count++;
-                    stats.generatedOnly.issues.push(issueNumber);
-                    continue;
-                }
-
-                // Step 3: Execute the mutation
-                const updateData = await GraphqlService.query(UPDATE_ISSUE, {
-                    issueId: remoteIssue.id,
-                    title  : localPayload.title,
-                    body   : localPayload.body
-                });
-
-                oldIssue.contentHash = currentHash;
-                oldIssue.title       = localPayload.title;
-                oldIssue.updatedAt   = updateData.updateIssue?.issue?.updatedAt || oldIssue.updatedAt;
-
-                logger.debug(`✅ Updated GitHub issue #${issueNumber} via GraphQL`);
-                stats.count++;
-                stats.issues.push(issueNumber);
-            } catch (e) {
-                logger.warn(`⚠️ Could not push changes for file ${path.basename(filePath)}. Error: ${e.message}`);
-                const parsed = matter(await fs.readFile(filePath, 'utf-8'));
-                if (parsed.data.id) {
-                    stats.failures.push(parsed.data.id);
-                }
-            }
-        }
-
-        if (stats.count > 0) {
-            logger.info(`📤 Pushed ${stats.count} local change(s) to GitHub`);
-        }
-        if (stats.generatedOnly.count > 0) {
-            logger.info(`🩹 Healed ${stats.generatedOnly.count} generated-only issue drift(s) without GitHub mutation`);
-        }
-        if (stats.failures.length > 0) {
-            logger.warn(`⚠️ Encountered ${stats.failures.length} push failure(s).`);
         }
 
         return stats;
@@ -1509,38 +1366,6 @@ class IssueSyncer extends Base {
 
         logger.info(`[REBUCKET] moved ${moves.length} issue(s), ${unchanged} unchanged. Distribution: ${JSON.stringify(byVersion)}`);
         return summary;
-    }
-
-    /**
-     * Recursively scans the configured issue directory to find all local .md issue files.
-     * This operation is intentionally limited to the active issues directory as a performance
-     * optimization, based on the assumption that closed/archived issues are immutable and
-     * do not need to be checked for local changes to push.
-     * @returns {Promise<string[]>} A flat list of absolute file paths for all found issue files.
-     * @private
-     */
-    async #scanLocalFiles() {
-        const issueSyncConfig = this.#getConfig().issueSync;
-        const localFiles      = [];
-        const scanDir         = async (dir) => {
-            try {
-                const entries = await fs.readdir(dir, { withFileTypes: true });
-                for (const entry of entries) {
-                    const fullPath = path.join(dir, entry.name);
-                    if (entry.isDirectory()) {
-                        await scanDir(fullPath);
-                    } else if (entry.isFile() && entry.name.endsWith('.md')) {
-                        localFiles.push(fullPath);
-                    }
-                }
-            } catch (e) {
-                // Directory doesn't exist yet, which is fine.
-            }
-        };
-
-        await scanDir(issueSyncConfig.issuesDir);
-
-        return localFiles;
     }
 }
 

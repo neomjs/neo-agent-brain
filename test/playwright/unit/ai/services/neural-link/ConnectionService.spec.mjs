@@ -636,6 +636,36 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         expect(spawned).toBe(true);
     });
 
+    test('ensureBridgeAndConnect short-circuits when bridgeSocket is already open and coalesces concurrent callers', async () => {
+        let attempts = 0,
+            spawned  = false,
+            releaseConnect;
+
+        ConnectionService.bridgeSocket    = {readyState: 1, close() {}};
+        ConnectionService.connectToBridge = async () => { attempts++ };
+        ConnectionService.spawnBridge     = async () => { spawned = true };
+
+        await ConnectionService.ensureBridgeAndConnect();
+        expect(attempts).toBe(0);
+        expect(spawned).toBe(false);
+
+        ConnectionService.bridgeSocket    = null;
+        ConnectionService.connectToBridge = async () => {
+            attempts++;
+            await new Promise(resolve => { releaseConnect = resolve });
+            ConnectionService.bridgeSocket = {readyState: 1, close() {}};
+        };
+
+        const first  = ConnectionService.ensureBridgeAndConnect(),
+              second = ConnectionService.ensureBridgeAndConnect();
+
+        expect(attempts).toBe(1);
+        releaseConnect();
+        await Promise.all([first, second]);
+        expect(attempts).toBe(1);
+        expect(spawned).toBe(false);
+    });
+
     test('fails loudly instead of spawning over a reachable stale Bridge', async () => {
         let   spawned    = false;
         const staleError = new Error('Stale Neural Link Bridge on port 8081: missing bridge_info freshness handshake.');

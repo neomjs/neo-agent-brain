@@ -82,10 +82,12 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
             file           : 'maintenance/syncGithubWorkflow.mjs',
             owner          : 'syncGithubWorkflow',
             invocation     : 'withHeavyMaintenanceLease(',
-            // Corpus emission writes an external corpus, so it serializes on that corpus's own lease;
-            // the manual modes keep the shared heavy-maintenance lease.
-            leasePath      : `corpusOnly\\s*\\?\\s*GH_Config\\.issueSync\\.corpusLeaseFile\\s*:\\s*${HEAVY_LEASE_PATH}`,
-            heldExitPattern: /process\.exit\(0\)/
+            // Corpus emission writes an external corpus, so it serializes on that corpus's own lease
+            // and never resolves the shared one. A held corpus lease fails the run, because a nonzero
+            // exit is what forbids the publisher from publishing the attempt.
+            leasePath      : 'GH_Config\\.issueSync\\.corpusLeaseFile',
+            sharedLeasePath: false,
+            heldExitPattern: /outcome\.status === 'held'\) \{[\s\S]*?process\.exit\(1\)/
         },
         {
             file           : 'maintenance/ingestTenant.mjs',
@@ -112,6 +114,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
         reason = 'manual-cli',
         invocation,
         leasePath = HEAVY_LEASE_PATH,
+        sharedLeasePath = true,
         heldExitPattern,
         heldDiagnosticPattern = /Deferred:.*lease held by/i
     } of SCRIPTS) {
@@ -121,7 +124,8 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
 
             expect(source).toMatch(canonicalImport);
             expect(source.match(canonicalImport)[0]).toContain('withHeavyMaintenanceLease');
-            expect(source.match(canonicalImport)[0]).toContain('resolveHeavyMaintenanceLeasePath');
+            // Both directions: a script on its own lease must not carry the shared resolver either.
+            expect(source.match(canonicalImport)[0].includes('resolveHeavyMaintenanceLeasePath')).toBe(sharedLeasePath);
         });
 
         test(`${file}: wraps heavy work with withHeavyMaintenanceLease + correct owner '${owner}'`, async () => {

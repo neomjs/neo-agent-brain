@@ -77,6 +77,8 @@ test('Bridge renewal keeps its original signer and re-proves the captured port w
     expect(await restored.prove('fresh-token-2', {port: 12345})).toEqual({verdict: 'refused'});
     expect(renewals).toHaveLength(2);
     expect(probes).toHaveLength(1);
+    expect(() => createBridgeTokenOwner({registry: null, agent: state.agent, authority: original})).toThrow(TypeError);
+    expect(() => createBridgeTokenOwner({registry: {...state.registry, getDataDir: () => path.dirname(root)}, agent: state.agent, authority: original})).toThrow(/Launch credential owner binding is invalid/);
     expect(() => restoreLaunchCredentialOwner(owner.binding, {registry: state.registry, probeVerifier})).toThrow(/changed or is unavailable/);
 });
 

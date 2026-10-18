@@ -1294,7 +1294,19 @@ test.describe('Wake Daemon', () => {
         });
 
         await deliveryPromise;
-        await new Promise(resolve => setTimeout(resolve, 250)); // watermark persistence follows the delivery log
+
+        // The suppression line and the watermark both land after the delivery: wait on them, not on a clock
+        const watermarkIds = () => {
+            try {
+                return JSON.parse(fs.readFileSync(path.join(DAEMON_DIR, 'woken-watermark.json'), 'utf8')).__messageIdsByIdentity?.[agentId] ?? []
+            } catch {
+                return []
+            }
+        };
+
+        await expect.poll(() => fs.readFileSync(path.join(DAEMON_DIR, 'wake-daemon.log'), 'utf8'), {timeout: 10000})
+            .toContain(`Suppressed 1 stale/invalid message wake event(s) for ${agentId} at initial delivery`);
+        await expect.poll(watermarkIds, {timeout: 10000}).toEqual(expect.arrayContaining([stale.msgId, fresh.msgId]));
 
         let logContents = fs.readFileSync(path.join(DAEMON_DIR, 'wake-daemon.log'), 'utf8');
         expect(logContents).toContain('[WAKE][priority:normal] 1 events');

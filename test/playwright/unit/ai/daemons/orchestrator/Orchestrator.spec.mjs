@@ -15,6 +15,10 @@ import {
     DEFAULT_HEAVY_MAINTENANCE_TASK_NAMES
 } from '../../../../../../ai/daemons/orchestrator/services/MaintenanceBackpressureService.mjs';
 import {
+    acquireHeavyMaintenanceLease,
+    releaseHeavyMaintenanceLease
+} from '../../../../../../ai/daemons/orchestrator/services/heavyMaintenanceLeasePrimitives.mjs';
+import {
     buildChromaHealthUrl,
     buildTaskDefinitions,
     classifyChromaHealth
@@ -359,10 +363,11 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
     });
 
     test('host-edge poll cannot execute container-plane internal effects (#16166)', async () => {
-        const runPoll = authorityProfile => {
+        const runPoll = (authorityProfile, {tenantRepoSyncEnabled = true} = {}) => {
             const calls        = [];
             const orchestrator = createTestOrchestrator({authorityProfile});
 
+            Object.defineProperty(orchestrator, 'tenantRepoSyncEnabled', {get: () => tenantRepoSyncEnabled, configurable: true});
             orchestrator.getEnabledContinuousTaskNames  = () => [];
             orchestrator.getAuthorityScheduledRegistry  = () => [];
             orchestrator.recordBootIdentityFactFn       = () => {
@@ -379,6 +384,10 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
                 calls.push('freeze-reprobe');
                 return Promise.resolve();
             };
+            orchestrator.runEmbeddingAuthorizationProofIfNeeded = () => {
+                calls.push('embedding-authorization-proof');
+                return Promise.resolve();
+            };
 
             orchestrator.poll();
 
@@ -389,10 +398,58 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
         expect(runPoll(ORCHESTRATOR_AUTHORITY_PROFILE.containerPlane)).toEqual([
             'boot-identity-fact',
             'deployment-state-bridge',
-            'freeze-reprobe'
+            'freeze-reprobe',
+            'embedding-authorization-proof'
         ]);
+        expect(runPoll(ORCHESTRATOR_AUTHORITY_PROFILE.containerPlane, {tenantRepoSyncEnabled: false}))
+            .not.toContain('embedding-authorization-proof');
 
         await Promise.resolve();
+    });
+
+    test('the embedding authorization proof runs under the heavy-maintenance lease, one flight at a time, only when due', async () => {
+        const
+            orchestrator = createTestOrchestrator({authorityProfile: ORCHESTRATOR_AUTHORITY_PROFILE.containerPlane}),
+            leasePath    = orchestrator.maintenanceBackpressureService.resolveHeavyMaintenanceLeasePath(),
+            timeouts     = [];
+        let needed  = false,
+            release = null;
+
+        orchestrator.tenantRepoSyncService = {
+            needsEmbeddingAuthorizationProof   : () => needed,
+            proveEmbeddingRecoveryAuthorization: ({timeoutMs}) => {
+                timeouts.push(timeoutMs);
+                return new Promise(resolve => { release = () => resolve({status: 'healthy'}) })
+            }
+        };
+
+        expect(await orchestrator.runEmbeddingAuthorizationProofIfNeeded(), 'nothing due: no lease, no proof').toBeNull();
+        expect(fs.existsSync(leasePath)).toBe(false);
+
+        needed = true;
+        const flight = orchestrator.runEmbeddingAuthorizationProofIfNeeded();
+
+        await expect.poll(() => timeouts.length).toBe(1);
+        expect(fs.existsSync(leasePath), 'the full-band embed runs inside the lease').toBe(true);
+        expect(await orchestrator.runEmbeddingAuthorizationProofIfNeeded(), 'a second poll starts no second flight').toBeNull();
+
+        release();
+        expect(await flight).toMatchObject({status: 'completed', result: {status: 'healthy'}});
+        expect(timeouts, 'the deadline is the lease budget').toEqual([AiConfig.orchestrator.heavyMaintenanceLease.fairnessYieldAfterMs]);
+        expect(orchestrator.embeddingAuthorizationFlight).toBeNull();
+
+        const holder = await acquireHeavyMaintenanceLease({
+            owner       : 'test-holder',
+            leasePath,
+            staleAfterMs: AiConfig.orchestrator.heavyMaintenanceLease.staleAfterMs
+        });
+
+        try {
+            expect((await orchestrator.runEmbeddingAuthorizationProofIfNeeded()).status, 'a held lease defers').toBe('held');
+            expect(timeouts).toHaveLength(1);
+        } finally {
+            await releaseHeavyMaintenanceLease({leasePath, token: holder.lease.token});
+        }
     });
 
     test('community reconciliation is plane-owned and the host facade refuses before loading it', async () => {
@@ -573,7 +630,7 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
             neuralLinkBridgeLivenessTimeoutMs: 50
         }));
 
-        expect(Object.keys(state)).toEqual(['chroma', 'bridgeDaemon', 'neuralLinkBridge', 'embedDaemon', 'messageDaemon', 'summary', 'memory-summary-backfill', 'kbSync', 'core-corpus-projection', 'backup', 'graphlog-compaction', 'temporal-summary', 'defect-ledger-digest', 'ci-failure-ingest', 'chromaDefrag', 'primary-dev-sync', 'tenant-repo-sync', 'dream', 'message-concept-harvest', 'golden-path', 'swarm-heartbeat', 'embed-drain-liveness-watchdog', 'rem-consolidation-liveness-watchdog', 'heavy-maintenance-starvation-watchdog']);
+        expect(Object.keys(state)).toEqual(['chroma', 'bridgeDaemon', 'neuralLinkBridge', 'embedDaemon', 'messageDaemon', 'summary', 'memory-summary-backfill', 'kbSync', 'core-corpus-projection', 'backup', 'graphlog-compaction', 'temporal-summary', 'defect-ledger-digest', 'ci-failure-ingest', 'chromaDefrag', 'primary-dev-sync', 'tenant-repo-sync', 'community-reconciliation', 'dream', 'message-concept-harvest', 'golden-path', 'swarm-heartbeat', 'embed-drain-liveness-watchdog', 'rem-consolidation-liveness-watchdog', 'heavy-maintenance-starvation-watchdog']);
         expect(state.mlx).toBeUndefined();
         expect(state.memoryCoreChroma).toBeUndefined();
         expect(state.summary).toMatchObject({

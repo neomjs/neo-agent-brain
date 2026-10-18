@@ -1257,11 +1257,9 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                         errorClassification: 'connection-refused',
                         errorCode          : 'EMBEDDING_CONNECTION_REFUSED'
                     }
-                    // FULL coverage, because the shipped recovery probe now exercises the whole
-                    // admitted band. `{status: 'healthy'}` alone is what eligibility used to accept,
-                    // and this arm is now the POSITIVE control for the coverage guard: a verdict
-                    // that bounds the re-dispatch still authorizes it, end to end through runTask.
-                    : {status: 'healthy', probeBandFraction: 1, probeEstimateTokens: 21238, probeSized: true}
+                    // The cadence probe's honest coverage: a quarter band says the lane answers, and
+                    // never authorizes the re-dispatch on its own. The full-band proof below does.
+                    : {status: 'healthy', probeBandFraction: 0.25, probeEstimateTokens: 5310, probeSized: true}
             },
             embeddingRecoveryClock          : () => probeNow,
             embeddingRecoveryFailureTtlMs   : 60_000,
@@ -1331,13 +1329,25 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(probeCallCount, 'the failed canary is cached inside its bounded backoff').toBe(1);
         expect(ingestCallCount).toBe(1);
 
+        // What the orchestrator's poll cycle does between sweeps: prove the requested cohort at the
+        // full band, off the sweep's awaited path.
+        const proveFullBand = () => TenantRepoSyncService.proveEmbeddingRecoveryAuthorization({
+            timeoutMs: 1_000,
+            runProbe : () => ({status: 'healthy', probeBandFraction: 1, probeEstimateTokens: 21238, probeSized: true})
+        });
+
         probeNow = startedAt + 60_001;
+        await TenantRepoSyncService.runTask(options);
+        expect(probeCallCount).toBe(2);
+        expect(ingestCallCount, 'a healthy quarter band only requests the proof').toBe(1);
+
+        await proveFullBand();
         const failedRecoveryRetry = await TenantRepoSyncService.runTask(options);
 
         persisted = (await fs.readJson(revisionsFile)).revisions;
         const rearmed = persisted[`t1/${embeddingSlug}`].embeddingRecovery;
 
-        expect(probeCallCount).toBe(2);
+        expect(probeCallCount).toBe(3);
         expect(ingestCallCount).toBe(2);
         expect(failedRecoveryRetry.details.repos.find(repo => repo.repoSlug === embeddingSlug).recoveryState)
             .toBe('still-failing');
@@ -1356,17 +1366,242 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(rearmed.lastConsumedGenerationId).toMatch(/^[a-f0-9]{32}$/u);
 
         probeNow = startedAt + 60_002;
+        await TenantRepoSyncService.runTask(options);
+        expect(probeCallCount, 'consumption history rotates the gate key immediately').toBe(4);
+        expect(ingestCallCount, 'the rotated key voids the proof that authorized the consumed generation').toBe(2);
+
+        await proveFullBand();
         const recovered = await TenantRepoSyncService.runTask(options);
 
         persisted = (await fs.readJson(revisionsFile)).revisions;
 
         expect(recovered.status).toBe('completed');
-        expect(probeCallCount, 'consumption history rotates the gate key immediately').toBe(3);
+        expect(probeCallCount).toBe(5);
         expect(ingestCallCount).toBe(3);
         expect(persisted[`t1/${embeddingSlug}`].consecutiveFailures).toBe(0);
         expect(persisted[`t1/${embeddingSlug}`].embeddingRecovery).toBeUndefined();
         expect(persisted[`t1/${ordinarySlug}`].consecutiveFailures).toBe(7);
         expect(mirrorCalls.filter(call => call.args.repoSlug === ordinarySlug)).toHaveLength(0);
+    });
+
+    test.describe('the full-band authorization proof is produced off the sweep and consumed by it', () => {
+        const startedAt = Date.now();
+        let episodeSeq  = 0,
+            now         = startedAt;
+
+        // One configured repo whose embedding episode awaits a generation. Its ordinary backoff is an
+        // hour, so every sweep runs the cadence probe and only a bypass can dispatch it. `join` adds it
+        // to the repos already awaiting instead of replacing them.
+        async function seedAwaitingRepo(slug, {join = false} = {}) {
+            const
+                episodeId = (++episodeSeq).toString(16).padStart(32, 'e'),
+                awaiting  = join ? (await fs.readJson(revisionsFile)).revisions : {};
+
+            await provisionMirrorDir({tenantId: 't1', repoSlug: slug});
+            await TenantRepoSyncService.writePersistedRevisions({
+                filePath : revisionsFile,
+                revisions: {...awaiting, [`t1/${slug}`]: {
+                    lastIngestedRev                   : null,
+                    lastRunAttemptAt                  : startedAt,
+                    consecutiveFailures               : 10,
+                    ingestContractVersion             : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                    lastAttemptedIngestContractVersion: TENANT_REPO_INGEST_CONTRACT_VERSION,
+                    lastErrorCode                     : 'KB_TENANT_REPO_SYNC_SYNC_FAILED',
+                    lastSourceErrorCode               : 'KB_VECTOR_EMBED_CONNECTION_REFUSED',
+                    lastErrorAt                       : startedAt,
+                    embeddingRecovery                 : {
+                        episodeId,
+                        causeCode               : 'KB_VECTOR_EMBED_CONNECTION_REFUSED',
+                        detectedAt              : startedAt,
+                        generationId            : null,
+                        observedAt              : null,
+                        bypassConsumedAt        : null,
+                        lastConsumedGenerationId: null,
+                        lastConsumedAt          : null
+                    }
+                }}
+            });
+
+            return [`${episodeId}:initial`]
+        }
+
+        function sweepOptions(slugs, taskStateService, embeddingRecoveryProbe) {
+            return {
+                reason           : 'periodic-sweep:60000',
+                taskStateService,
+                tenantReposConfig: {tenantRepos: [].concat(slugs).map(repoSlug => ({
+                    tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`
+                }))},
+                gitMirror                    : makeFakeGitMirror(),
+                envelopeBuilder              : makeFakeEnvelopeBuilder(),
+                knowledgeBaseIngestionService: makeFakeIngestionService({
+                    summaryFactory: () => ({ingested: 1, deleted: 0, errors: []})
+                }),
+                revisionsFilePath     : revisionsFile,
+                globalCadenceMs       : 60_000,
+                jitterRatio           : 0,
+                backoffCapMs          : 60 * 60_000,
+                seedBootstrap         : false,
+                embeddingRecoveryProbe,
+                embeddingRecoveryClock: () => now
+            }
+        }
+
+        const readRecovery = async slug => (await fs.readJson(revisionsFile)).revisions[`t1/${slug}`].embeddingRecovery;
+
+        test.beforeEach(() => {
+            now = startedAt;
+        });
+
+        test('a healthy quarter band never mints, and the full band the provider actually received does', async () => {
+            const
+                slug          = 'org/proof-witness',
+                episodeKeys   = await seedAwaitingRepo(slug),
+                options       = sweepOptions(slug, createTaskStateService()),
+                cadenceSize   = TenantRepoSyncService.resolveEmbeddingProbeIdentity({episodeKeys, fraction: 0.25}).probeSize,
+                fullBandSize  = TenantRepoSyncService.resolveEmbeddingProbeIdentity({episodeKeys, fraction: 1}).probeSize,
+                received      = [],
+                originalEmbed = TextEmbeddingService.embedText;
+
+            expect(fullBandSize.sized, 'the template config resolves a band to compare against').toBe(true);
+            expect(fullBandSize.input.length).toBeGreaterThan(3 * cadenceSize.input.length);
+
+            // The fake provider records the input it was HANDED. A fixture that declared its own
+            // fraction would pass on a sweep that never sent the full band.
+            TextEmbeddingService.embedText = async text => {
+                received.push(text.length);
+                return new Array(AiConfig.vectorDimension).fill(0.5)
+            };
+
+            try {
+                for (let sweep = 0; sweep < 3; sweep++) {
+                    await TenantRepoSyncService.runTask(options);
+                }
+
+                expect((await readRecovery(slug)).generationId, 'the cadence probe alone never mints').toBeNull();
+                expect(received, 'runTask sent only the quarter band, three times').toEqual(Array(3).fill(cadenceSize.input.length));
+                expect(TenantRepoSyncService.needsEmbeddingAuthorizationProof(now)).toBe(true);
+
+                const proof = await TenantRepoSyncService.proveEmbeddingRecoveryAuthorization({timeoutMs: 1_000});
+
+                expect(received.at(-1), 'the proof sent the full band').toBe(fullBandSize.input.length);
+                expect(proof).toMatchObject({status: 'healthy', probeBandFraction: 1, probeSized: true});
+
+                const recovered = await TenantRepoSyncService.runTask(options);
+
+                expect(recovered.status).toBe('completed');
+                expect(await readRecovery(slug), 'the bypass re-dispatched and the repo recovered').toBeUndefined();
+                expect(received.at(-1), 'the consuming sweep still sent only the quarter band').toBe(cadenceSize.input.length);
+                expect(TenantRepoSyncService.embeddingAuthorizationProof, 'a consumed proof is spent').toBeNull();
+            } finally {
+                TextEmbeddingService.embedText = originalEmbed;
+            }
+        });
+
+        test('a failed, unsized, fraction-less, sub-band, aged or lane-contradicted proof never mints', async () => {
+            const
+                slug             = 'org/proof-refusals',
+                quarterBand      = {status: 'healthy', probeBandFraction: 0.25, probeEstimateTokens: 5310, probeSized: true},
+                fullBand         = {status: 'healthy', probeBandFraction: 1, probeEstimateTokens: 21238, probeSized: true},
+                taskStateService = createTaskStateService();
+            let cadence = quarterBand;
+
+            await seedAwaitingRepo(slug);
+
+            const
+                options   = sweepOptions(slug, taskStateService, () => cadence),
+                // Each case starts from a restarted process: request, prove, then the consuming sweep.
+                attempt   = async (proofOutcome, before = () => {}) => {
+                    TenantRepoSyncService.clearEmbeddingRecoveryProbeState();
+                    cadence = quarterBand;
+                    await TenantRepoSyncService.runTask(options);
+                    await TenantRepoSyncService.proveEmbeddingRecoveryAuthorization({timeoutMs: 1_000, runProbe: () => proofOutcome});
+                    before();
+                    await TenantRepoSyncService.runTask(options);
+                    return readRecovery(slug)
+                };
+
+            // Still awaiting means no generation was minted; a minted bypass would have recovered the repo.
+            const awaiting = {generationId: null};
+
+            expect(await attempt({status: 'failed', errorClassification: 'provider-unreachable', errorCode: 'ECONNREFUSED', probeBandFraction: 1, probeSized: true}), 'failed').toMatchObject(awaiting);
+            expect(await attempt({...fullBand, probeSized: false}), 'unsized').toMatchObject(awaiting);
+            expect(await attempt({status: 'healthy', probeSized: true}), 'no fraction').toMatchObject(awaiting);
+            expect(await attempt({...fullBand, probeBandFraction: 0.5}), 'sub-band').toMatchObject(awaiting);
+            expect(await attempt(fullBand, () => { now += 2 * 60_000 + 1 }), 'older than two sweep cadences').toMatchObject(awaiting);
+            now = startedAt;
+            expect(await attempt(fullBand, () => {
+                cadence = {status: 'failed', errorClassification: 'provider-unreachable', errorCode: 'ECONNREFUSED'}
+            }), 'the lane failed after the proof').toMatchObject(awaiting);
+
+            // CONTROL: the same harness mints for a current healthy full-band proof, so every refusal
+            // above is the guard's, not the fixture's.
+            expect(await attempt(fullBand), 'the control minted, and its bypass recovered the repo').toBeUndefined();
+        });
+
+        test('a full-band death refuses for the lane, whichever cohort asks, until it expires', async () => {
+            const
+                slug       = 'org/proof-death',
+                joiner     = 'org/proof-death-joiner',
+                quarter    = () => ({status: 'healthy', probeBandFraction: 0.25, probeEstimateTokens: 5310, probeSized: true}),
+                proveDying = () => TenantRepoSyncService.proveEmbeddingRecoveryAuthorization({timeoutMs: 1_000, runProbe: () => {
+                    attempts++;
+                    return {status: 'failed', errorClassification: 'provider-died', errorCode: 'EMBEDDING_PROVIDER_DIED'}
+                }});
+            let attempts = 0;
+
+            await seedAwaitingRepo(slug);
+            await TenantRepoSyncService.runTask(sweepOptions(slug, createTaskStateService(), quarter));
+            await proveDying();
+            now += 11 * 60_000;
+
+            expect(await proveDying()).toMatchObject({status: 'failed', errorClassification: 'provider-died', cached: true});
+            expect(attempts, 'the same cohort asking again is the death cache, not another engine').toBe(1);
+
+            // A repo joins the awaiting cohort: a new cohort key, the same lane. At the band ceiling one
+            // more attempt costs about four times the request that killed the engine.
+            await seedAwaitingRepo(joiner, {join: true});
+            await TenantRepoSyncService.runTask(sweepOptions([slug, joiner], createTaskStateService(), quarter));
+            expect(TenantRepoSyncService.embeddingAuthorizationRequest.episodeKeys).toHaveLength(2);
+            await proveDying();
+            expect(attempts, 'a joining repo buys no second attempt at the band ceiling').toBe(1);
+
+            now += 12 * AiConfig.data.orchestrator.intervals.tenantRepoSyncMs + 1;
+            await proveDying();
+            expect(attempts, 'the death expires, so a lane given more memory is asked again').toBe(2);
+        });
+
+        test('the poll cycle is due only while a requested proof is missing and its gate allows an attempt', async () => {
+            const
+                slug    = 'org/proof-due',
+                options = sweepOptions(slug, createTaskStateService(), () => ({
+                    status: 'healthy', probeBandFraction: 0.25, probeEstimateTokens: 5310, probeSized: true
+                }));
+
+            await seedAwaitingRepo(slug);
+            expect(TenantRepoSyncService.needsEmbeddingAuthorizationProof(now), 'nothing requested').toBe(false);
+
+            await TenantRepoSyncService.runTask(options);
+            expect(TenantRepoSyncService.needsEmbeddingAuthorizationProof(now), 'requested, not proved').toBe(true);
+
+            await TenantRepoSyncService.proveEmbeddingRecoveryAuthorization({timeoutMs: 1_000, runProbe: () => ({
+                status: 'failed', errorClassification: 'provider-unreachable', errorCode: 'ECONNREFUSED'
+            })});
+            expect(TenantRepoSyncService.needsEmbeddingAuthorizationProof(now), 'inside the failure backoff').toBe(false);
+            expect(TenantRepoSyncService.needsEmbeddingAuthorizationProof(now + 30_001), 'past the backoff floor').toBe(true);
+
+            now += 30_001;
+            await TenantRepoSyncService.proveEmbeddingRecoveryAuthorization({timeoutMs: 1_000, runProbe: () => ({
+                status: 'healthy', probeBandFraction: 1, probeEstimateTokens: 21238, probeSized: true
+            })});
+            expect(TenantRepoSyncService.needsEmbeddingAuthorizationProof(now), 'a healthy proof answers the request').toBe(false);
+
+            // The producer never reads the sweep's cadence: the sweep refuses the aged proof and asks
+            // again, and the newer request is what makes the cycle due.
+            now += 2 * 60_000 + 1;
+            await TenantRepoSyncService.runTask(options);
+            expect(TenantRepoSyncService.needsEmbeddingAuthorizationProof(now), 'the sweep re-requested past an aged proof').toBe(true);
+        });
     });
 
     test('a recovery bypass without a durable write-ahead receipt is deferred unconsumed (#16692)', async () => {
@@ -1727,9 +1962,9 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
 
     // The SERVICE-level witnesses. The pure predicates prove classification and suppression as
-    // functions; these prove the wiring, which an earlier version shipped without. It froze the
-    // failure counter and left `isRepoDue` admitting the repo every cadence, so the
-    // clone/fetch/envelope work ran forever and merely rediscovered the same cause.
+    // functions; these prove the wiring. A stop that only froze the failure counter would leave
+    // `isRepoDue` admitting the repo every cadence, so the clone/fetch/envelope work would run
+    // forever and merely rediscover the same cause.
     test.describe('terminal stop: no attempt, exact ref, honest sweep status (#238)', () => {
         const REF = 'refs/heads/gone';
 

@@ -7,10 +7,6 @@ import process         from 'node:process';
 import {promisify}     from 'node:util';
 import {pathToFileURL} from 'node:url';
 
-import {
-    buildSyncGithubWorkflowDevBranchGuard
-} from '../../../../../../ai/scripts/maintenance/syncGithubWorkflowBranchGuard.mjs';
-
 const cliScriptPath      = path.resolve(process.cwd(), 'ai/scripts/maintenance/syncGithubWorkflow.mjs');
 const configResolverPath = path.resolve(process.cwd(), 'test/playwright/configTemplateResolver.mjs');
 const execFileAsync      = promisify(execFile);
@@ -111,7 +107,8 @@ function issueNode(overrides = {}) {
 }
 
 /**
- * @summary Controls remote acquisition while exercising the actual CLI and filesystem writers.
+ * @summary Controls remote acquisition while exercising the actual CLI and filesystem writers. With
+ * `fail`, every request throws a marker, so a run that must not reach GitHub can prove it did not.
  * @param {Object} [options]
  * @param {Boolean} [options.fail=false] Refuse all acquisition for the failure control.
  * @param {Boolean} [options.releases=true] False answers as a repository that has never cut a release.
@@ -137,10 +134,6 @@ function corpusAcquisitionPreload({fail = false, releases = true, issues = [issu
         if (query.includes('FetchPullRequestsForSync')) return {repository:{pullRequests:{nodes:[${JSON.stringify(pull)}],pageInfo:{hasNextPage:false,endCursor:null}}}};
         throw new Error('unexpected acquisition query');
       };`}
-      const {default: SyncService} = await import(${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'ai/services/github-workflow/SyncService.mjs')).href)});
-      SyncService.autoPushGeneratedContent = async () => { throw new Error('autoPushGeneratedContent must not run') };
-      const {default: IssueSyncer} = await import(${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'ai/services/github-workflow/sync/IssueSyncer.mjs')).href)});
-      IssueSyncer.pushToGitHub = async () => { throw new Error('pushToGitHub must not run') };
     `;
     return `data:text/javascript,${encodeURIComponent(source)}`;
 }
@@ -186,122 +179,64 @@ async function withOwnedFixture(callback) {
 }
 
 /**
- * @summary Regression coverage for the manual GitHub Workflow sync CLI branch guard.
+ * @summary Regression coverage for the corpus emission CLI.
  *
- * The behavior tests exercise the pure guard helper with injected branch detectors so the
- * suite never runs the full GitHub sync. The wiring test source-checks the heavy CLI script
- * because importing it boots the canonical AI services SDK and is intentionally expensive.
+ * Every arm runs the real script or its pure destination guard in a fresh process, with acquisition
+ * controlled by a preload, so the suite never reaches GitHub. Corpus emission is the CLI's one mode,
+ * and a run without `--corpus-only` must refuse before it takes a lease or makes a request.
  */
-test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
-    test('delegates when the active branch is dev', async () => {
-        let   delegateCalls = 0;
-        const guarded       = buildSyncGithubWorkflowDevBranchGuard(async (...args) => {
-            delegateCalls++;
-            return {args};
-        }, async () => 'dev');
+test.describe('syncGithubWorkflow CLI', () => {
+    for (const args of [[], ['--verbose'], ['--emit-only'], ['--corpus-only', '--emit-only'], ['--refetch-issues=5']]) {
+        test(`refuses ${JSON.stringify(args)} before the lease or any request, naming --corpus-only`, async () => {
+            await withOwnedFixture(async ({corpusRoot}) => {
+                await fs.mkdir(corpusRoot);
+                const result = await runCliChild({args, contentRoot: corpusRoot, preload: corpusAcquisitionPreload({fail: true})});
+                const output = `${result.stdout}\n${result.stderr}`;
 
-        const result = await guarded('full-sync');
-
-        expect(delegateCalls).toBe(1);
-        expect(result).toEqual({args: ['full-sync']});
-    });
-
-    test('rejects feature branches before delegate work begins', async () => {
-        let   delegateCalls = 0;
-        const guarded       = buildSyncGithubWorkflowDevBranchGuard(async () => {
-            delegateCalls++;
-        }, async () => 'codex/feature');
-
-        await expect(guarded()).rejects.toThrow(/syncGithubWorkflow REJECTED.*codex\/feature.*not 'dev'/);
-        expect(delegateCalls).toBe(0);
-    });
-
-    test('rejects main before delegate work begins', async () => {
-        let   delegateCalls = 0;
-        const guarded       = buildSyncGithubWorkflowDevBranchGuard(async () => {
-            delegateCalls++;
-        }, async () => 'main');
-
-        await expect(guarded()).rejects.toThrow(/syncGithubWorkflow REJECTED.*main.*not 'dev'/);
-        expect(delegateCalls).toBe(0);
-    });
-
-    test('names the scheduled Data Sync pipeline in remediation', async () => {
-        const guarded = buildSyncGithubWorkflowDevBranchGuard(async () => {}, async () => 'codex/feature');
-
-        await expect(guarded()).rejects.toThrow(/scheduled Data Sync pipeline/);
-    });
-
-    test('rejects detached HEAD before delegate work begins', async () => {
-        const guarded = buildSyncGithubWorkflowDevBranchGuard(async () => {
-            throw new Error('delegate must not run');
-        }, async () => '');
-
-        await expect(guarded()).rejects.toThrow(/syncGithubWorkflow REJECTED.*\(detached\)/);
-    });
-
-    test('preserves root-mismatch rejections from the branch detector', async () => {
-        const guarded = buildSyncGithubWorkflowDevBranchGuard(async () => {
-            throw new Error('delegate must not run');
-        }, async () => {
-            throw new Error('syncGithubWorkflow REJECTED: Root mismatch. CLI projectRoot ...');
+                expect(result.code).toBe(1);
+                expect(output).toContain('run it with --corpus-only');
+                expect(output).not.toContain('controlled acquisition failure');
+                expect(output).not.toContain('Starting');
+                expect(await fs.readdir(corpusRoot)).toEqual([]);
+            });
         });
+    }
 
-        await expect(guarded()).rejects.toThrow(/syncGithubWorkflow REJECTED: Root mismatch/);
-    });
-
-    test('wraps generic detector errors with a syncGithubWorkflow rejection', async () => {
-        const guarded = buildSyncGithubWorkflowDevBranchGuard(async () => {
-            throw new Error('delegate must not run');
-        }, async () => {
-            throw new Error('git: not a git repository');
-        });
-
-        await expect(guarded()).rejects.toThrow(/could not determine current branch.*not a git repository/);
-    });
-
-    test('wires both CLI guards before dynamic emitter import and lease acquisition', async () => {
+    test('validates before it loads the emitter, and loads it before the lease', async () => {
         const source = await fs.readFile(cliScriptPath, 'utf8');
 
         const
-            branchGuardIndex = source.indexOf('await assertSyncGithubWorkflowDevBranch();'),
-            corpusGuardIndex = source.indexOf('if (corpusOnly) await assertCorpusDestination();'),
+            refusalIndex     = source.indexOf("throw new Error('syncGithubWorkflow emits the corpus only"),
+            corpusGuardIndex = source.indexOf('await assertCorpusDestination();'),
             importIndex      = source.indexOf(
                 "const {default: GH_SyncService} = await import('../../services/github-workflow/SyncService.mjs');"
             ),
-            startIndex       = source.indexOf('Starting full GitHub Workflow sync'),
-            leaseIndex       = source.indexOf('outcome = await withHeavyMaintenanceLease('),
-            corpusSyncIndex  = source.indexOf('? GH_SyncService.emitConversationCorpus({refetchIssues})', leaseIndex),
-            syncIndex        = source.indexOf(': GH_SyncService.runFullSync()', leaseIndex),
-            emitIndex        = source.indexOf(
-                'GH_SyncService.emitGeneratedContent({pushLocalChanges: false})',
-                leaseIndex
-            ),
-            autorunGate      = source.indexOf("if (import.meta.url === pathToFileURL(process.argv[1] || '').href)");
+            leaseIndex       = source.indexOf('outcome = await withHeavyMaintenanceLease(');
 
-        expect(branchGuardIndex, 'branch guard call must exist').toBeGreaterThan(-1);
+        expect(refusalIndex, 'mode refusal must exist').toBeGreaterThan(-1);
         expect(corpusGuardIndex, 'corpus destination guard call must exist').toBeGreaterThan(-1);
         expect(importIndex, 'SyncService must load dynamically after validation').toBeGreaterThan(-1);
-        expect(startIndex, 'start log must exist').toBeGreaterThan(-1);
-        expect(leaseIndex, 'heavy-maintenance lease call must exist').toBeGreaterThan(-1);
-        expect(corpusSyncIndex, 'corpus-only emitter must exist').toBeGreaterThan(-1);
-        expect(syncIndex, 'real sync delegate must exist').toBeGreaterThan(-1);
-        expect(emitIndex, 'pull-only emission delegate must exist').toBeGreaterThan(-1);
-        expect(autorunGate, 'import-safe CLI autorun gate must exist').toBeGreaterThan(-1);
+        expect(leaseIndex, 'lease call must exist').toBeGreaterThan(-1);
 
-        expect(branchGuardIndex).toBeLessThan(importIndex);
+        expect(refusalIndex).toBeLessThan(corpusGuardIndex);
         expect(corpusGuardIndex).toBeLessThan(importIndex);
-        expect(importIndex).toBeLessThan(startIndex);
         expect(importIndex).toBeLessThan(leaseIndex);
-        expect(importIndex).toBeLessThan(corpusSyncIndex);
-        expect(importIndex).toBeLessThan(syncIndex);
-        expect(importIndex).toBeLessThan(emitIndex);
     });
 
-    test('a held lease fails scheduled emission but keeps manual deferral non-erroring', async () => {
+    test('keeps the literals the corpus publisher greps for before it invokes the CLI', async () => {
         const source = await fs.readFile(cliScriptPath, 'utf8');
 
-        expect(source).toContain('process.exit(emitOnly || corpusOnly ? 1 : 0)')
+        // neomjs/github-content-sync publish-corpus.yml refuses a Brain whose CLI lacks either flag.
+        expect(source).toContain('corpus-only');
+        expect(source).toContain('--refetch-issues');
+    });
+
+    test('a held lease fails the run', async () => {
+        const
+            source = await fs.readFile(cliScriptPath, 'utf8'),
+            held   = source.match(/outcome\.status === 'held'\) \{[\s\S]*?process\.exit\((\d)\)/);
+
+        expect(held?.[1], 'the held branch must exit nonzero').toBe('1')
     });
 
     test('refuses an absent corpus root in the CLI child before importing the emitter', async () => {
@@ -494,15 +429,6 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
                 .map(token => `--refetch-issues takes positive issue numbers, not "${token}".`),
             ...Array(2).fill('--refetch-issues takes one comma-separated list: --refetch-issues=<n,…>.')
         ]);
-    });
-
-    test('refuses --refetch-issues without --corpus-only before either guard', async () => {
-        const result = await runCliChild({args: ['--refetch-issues=5']});
-        const output = `${result.stdout}\n${result.stderr}`;
-
-        expect(result.code).toBe(1);
-        expect(output).toContain('--refetch-issues needs --corpus-only.');
-        expect(output).not.toContain('Starting');
     });
 
     test('refuses a non-integer --refetch-issues token in the CLI child before importing the emitter', async () => {

@@ -2,10 +2,9 @@
 import {execFileSync} from 'child_process';
 import path           from 'path';
 import Base           from 'neo.mjs/src/core/Base.mjs';
-const DEV_BRANCH     = 'dev';
-const REMOTE_NAME    = 'origin';
-const REMOTE_REF     = `${REMOTE_NAME}/${DEV_BRANCH}`;
-const META_SYNC_PATH = 'resources/content/.sync-metadata.json';
+const DEV_BRANCH  = 'dev';
+const REMOTE_NAME = 'origin';
+const REMOTE_REF  = `${REMOTE_NAME}/${DEV_BRANCH}`;
 export const DEV_SYNC_ROOTS_ENV_VAR = 'NEO_ORCHESTRATOR_DEV_SYNC_ROOTS';
 
 /**
@@ -19,16 +18,16 @@ export const KB_SYNC_UNAUTHORIZED_REASON_CODE = 'kbsync-unauthorized';
  *
  * The scheduled `kbSync` task is gated by `enables.kbSync` in `../scheduling/registry.mjs`;
  * the `primary-dev-sync` cascade reaches the same work by a second route and consulted no
- * enable at all, so disabling `kbSync` suppressed only one of two convergent paths (#251).
+ * enable at all, so disabling `kbSync` suppressed only one of two convergent paths.
  * Both consumers must now read one resolved value.
  *
  * **Fail-closed by construction.** Only an explicit `true` authorizes. `undefined` — the shape
- * every pre-#251 caller passes — refuses, because a permissive default would reinstate exactly
+ * every caller written before this guard passes — refuses, because a permissive default would reinstate exactly
  * the bypass this guard closes. An unwired caller must lose its cascade loudly rather than
  * keep it silently.
  *
- * Orthogonal to the `runKbSync` **ownership** flag threaded through `syncDevRoot()` /
- * `resolveMetaAndPull()`: ownership answers *which root drives the cascade*, authorization
+ * Orthogonal to the `runKbSync` **ownership** flag threaded through `syncDevRoot()`:
+ * ownership answers *which root drives the cascade*, authorization
  * answers *whether kbSync may run at all*. Conflating them re-opens the hole, because
  * ownership defaults to `true`.
  *
@@ -47,17 +46,13 @@ const KB_RELEVANT_PATH_PREFIXES = Object.freeze([
     'docs/app/',
     'examples/',
     'learn/',
-    'resources/content/',
+    'resources/content/concepts/',
     'src/',
     'test/playwright/'
 ]);
 
 const KB_RELEVANT_PATHS = Object.freeze(new Set([
     'docs/output/class-hierarchy.json'
-]));
-
-const KB_IRRELEVANT_PATHS = Object.freeze(new Set([
-    META_SYNC_PATH
 ]));
 
 /**
@@ -73,7 +68,7 @@ const KB_IRRELEVANT_PATHS = Object.freeze(new Set([
 export function isKbRelevantChangePath(filePath) {
     const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
 
-    if (!normalized || KB_IRRELEVANT_PATHS.has(normalized)) {
+    if (!normalized) {
         return false;
     }
 
@@ -183,8 +178,7 @@ export function parseDevSyncRoots(value, source=DEV_SYNC_ROOTS_ENV_VAR) {
  *
  * The service owns the primary-checkout pull ladder:
  * 1. fetch + fast-forward pull when the primary checkout is clean;
- * 2. narrow local reset for `resources/content/.sync-metadata.json` only;
- * 3. skip with an operator-visible warning for every broader local divergence.
+ * 2. skip with an operator-visible warning for any local divergence.
  *
  * @class Neo.ai.daemons.services.PrimaryRepoSyncService
  * @extends Neo.core.Base
@@ -217,7 +211,7 @@ class PrimaryRepoSyncService extends Base {
      * @param {String} [options.cwd=process.cwd()] Invocation directory.
      * @param {Function} [options.execFileSyncFn=execFileSync] Test seam.
      * @param {String[]|String|undefined|null} options.devSyncRootsConfig Configured roots. Callers (Orchestrator) resolve from `AiConfig.orchestrator.devSyncRoots` (env-applied via `envBindings.orchestrator.devSyncRoots → NEO_ORCHESTRATOR_DEV_SYNC_ROOTS`); the service does not read env directly.
-     * @param {Boolean} [options.kbSyncAuthorized] Authorizes the KB cascade. Callers resolve from `AiConfig.orchestrator.kbSyncEnabled` — the SAME resolution `../scheduling/registry.mjs` reads as `enables.kbSync`, deliberately not `primaryDevSyncEnabled`; the service does not read config directly. **Explicit `true` only** — `undefined` refuses, so an unwired caller loses its cascade loudly instead of silently keeping it (#251). See {@link isKbSyncAuthorized}.
+     * @param {Boolean} [options.kbSyncAuthorized] Authorizes the KB cascade. Callers resolve from `AiConfig.orchestrator.kbSyncEnabled` — the SAME resolution `../scheduling/registry.mjs` reads as `enables.kbSync`, deliberately not `primaryDevSyncEnabled`; the service does not read config directly. **Explicit `true` only** — `undefined` refuses, so an unwired caller loses its cascade loudly instead of silently keeping it. See {@link isKbSyncAuthorized}.
      * @returns {Object} Execution result.
      */
     runTask({
@@ -275,7 +269,7 @@ class PrimaryRepoSyncService extends Base {
      * @param {String[]|String|undefined|null} options.devSyncRootsConfig Configured roots. Callers resolve from `AiConfig.orchestrator.devSyncRoots`; service does not read env directly.
      * @param {Object} [options.taskStateService] Optional `TaskStateService` forwarded to the eventual `runKbSync()` cascade so the nested KB sync is observable as a first-class `kbSync` task lifecycle event. Pass-through only; this method does not consume the service directly.
      * @param {Object} [options.healthService] Optional `HealthService` forwarded to the eventual `runKbSync()` cascade for `recordTaskOutcome('kbSync', ..., {parent: 'primary-dev-sync', ...})` observability. Pass-through only; this method does not consume the service directly.
-     * @param {Boolean} [options.kbSyncAuthorized] KB-cascade authorization, forwarded to BOTH branches below. The `unset`-roots fallthrough is not a cascade suppressor — it reaches `syncDevRoot()` whose `runKbSync` ownership flag defaults `true` — so the authorization must ride that branch too. Explicit `true` only; see {@link isKbSyncAuthorized} (#251).
+     * @param {Boolean} [options.kbSyncAuthorized] KB-cascade authorization, forwarded to BOTH branches below. The `unset`-roots fallthrough is not a cascade suppressor — it reaches `syncDevRoot()` whose `runKbSync` ownership flag defaults `true` — so the authorization must ride that branch too. Explicit `true` only; see {@link isKbSyncAuthorized}.
      * @returns {Object}
      */
     syncPrimaryDev({
@@ -313,7 +307,7 @@ class PrimaryRepoSyncService extends Base {
 
         // `unset` is NOT a cascade suppressor: it falls through to the primary-root ladder, whose
         // `runKbSync` ownership flag defaults true. Unsetting the roots reaches the cascade by a
-        // different door, so the authorization must ride this branch too (#251).
+        // different door, so the authorization must ride this branch too.
         return this.syncDevRoot({root: primaryRoot, rootKey: 'primaryRoot', execFileSyncFn, writeLog, taskStateService, healthService, kbSyncAuthorized});
     }
 
@@ -323,7 +317,7 @@ class PrimaryRepoSyncService extends Base {
      * @param {String} options.root Configured repo root.
      * @param {Function} options.execFileSyncFn Command execution seam.
      * @param {Function} [options.writeLog] Optional logger.
-     * @param {Boolean} [options.kbSyncAuthorized] KB-cascade authorization, forwarded to `syncDevRoot()`. This path passes `runKbSync: false` (the owner root drives the cascade), so the authorization is inert for the ff-pull leg — it is threaded because the metadata-reset leg can still reach `runKbSync()`. Explicit `true` only; see {@link isKbSyncAuthorized} (#251).
+     * @param {Boolean} [options.kbSyncAuthorized] KB-cascade authorization, forwarded to `syncDevRoot()`. This path passes `runKbSync: false` (the owner root drives the cascade), so the authorization is inert here; it is forwarded so every `syncDevRoot()` call carries it. Explicit `true` only; see {@link isKbSyncAuthorized}.
      * @returns {Object}
      */
     syncConfiguredDevRoot({root, execFileSyncFn, writeLog, taskStateService, healthService, kbSyncAuthorized}) {
@@ -363,7 +357,7 @@ class PrimaryRepoSyncService extends Base {
      * @param {Function} [options.writeLog] Optional logger.
      * @param {Object} [options.taskStateService] Optional `TaskStateService` forwarded to the `runKbSync()` cascade for first-class `kbSync` lifecycle annotation. Direct consumer of the pass-through.
      * @param {Object} [options.healthService] Optional `HealthService` forwarded to the `runKbSync()` cascade for `recordTaskOutcome('kbSync', ..., {parent: 'primary-dev-sync', ...})` observability. Direct consumer of the pass-through.
-     * @param {Boolean} [options.kbSyncAuthorized] KB-cascade authorization for the owner-root cascade this method drives. Refusal outranks every other cascade reason and records `KB_SYNC_UNAUTHORIZED_REASON_CODE` on `details.reasonCode` rather than skipping silently. Explicit `true` only; see {@link isKbSyncAuthorized} (#251).
+     * @param {Boolean} [options.kbSyncAuthorized] KB-cascade authorization for the owner-root cascade this method drives. Refusal outranks every other cascade reason and records `KB_SYNC_UNAUTHORIZED_REASON_CODE` on `details.reasonCode` rather than skipping silently. Explicit `true` only; see {@link isKbSyncAuthorized}.
      * @returns {Object}
      */
     syncConfiguredDevRoots({primaryRoot, roots, execFileSyncFn, writeLog, taskStateService, healthService, kbSyncAuthorized}) {
@@ -429,7 +423,7 @@ class PrimaryRepoSyncService extends Base {
      * @param {Boolean} [options.runKbSync=true] Whether this root owns the KB cascade.
      * @param {Object} [options.taskStateService] Optional `TaskStateService` forwarded to `runKbSync()` for first-class `kbSync` lifecycle annotation when this root triggers the cascade. No-op when `runKbSync: false` (the singular configured-root path).
      * @param {Object} [options.healthService] Optional `HealthService` forwarded to `runKbSync()` for cascade `recordTaskOutcome` events with `{parent: 'primary-dev-sync'}` annotation.
-     * @param {Boolean} [options.kbSyncAuthorized] KB-cascade authorization. **Orthogonal to `runKbSync`**, which is the OWNERSHIP flag (*which root drives the cascade*, defaulting `true`); this answers *whether kbSync may run at all*. Conflating the two re-opens the hole through that default. Also outranks the fail-open fallback: when the changed-path probe fails, `kbSyncRequired` escalates to a FULL cascade, and refusal still wins. Explicit `true` only; see {@link isKbSyncAuthorized} (#251).
+     * @param {Boolean} [options.kbSyncAuthorized] KB-cascade authorization. **Orthogonal to `runKbSync`**, which is the OWNERSHIP flag (*which root drives the cascade*, defaulting `true`); this answers *whether kbSync may run at all*. Conflating the two re-opens the hole through that default. Also outranks the fail-open fallback: when the changed-path probe fails, `kbSyncRequired` escalates to a FULL cascade, and refusal still wins. Explicit `true` only; see {@link isKbSyncAuthorized}.
      * @returns {Object}
      */
     syncDevRoot({root, rootKey='primaryRoot', execFileSyncFn, writeLog, fetchBeforeBranch=false, runKbSync=true, taskStateService, healthService, kbSyncAuthorized}) {
@@ -461,10 +455,6 @@ class PrimaryRepoSyncService extends Base {
 
         const status = this.git(['status', '--porcelain'], root, execFileSyncFn);
         if (status.trim()) {
-            if (this.isOnlyMetaSyncStatus(status)) {
-                return this.resolveMetaAndPull({root, rootKey, behind, execFileSyncFn, writeLog, runKbSync, taskStateService, healthService, kbSyncAuthorized});
-            }
-
             return this.skip('local-divergence', {
                 ...rootDetails,
                 behind,
@@ -502,9 +492,6 @@ class PrimaryRepoSyncService extends Base {
             };
         } catch (e) {
             const postPullStatus = this.git(['status', '--porcelain'], root, execFileSyncFn);
-            if (this.isOnlyMetaSyncStatus(postPullStatus)) {
-                return this.resolveMetaAndPull({root, rootKey, behind, execFileSyncFn, writeLog, runKbSync, taskStateService, healthService, kbSyncAuthorized});
-            }
 
             return this.skip('non-FF-divergence', {
                 ...rootDetails,
@@ -539,57 +526,6 @@ class PrimaryRepoSyncService extends Base {
     }
 
     /**
-     * Handles the narrow metadata-only local reset before a fast-forward pull.
-     * @param {Object} options
-     * @param {String} [options.primaryRoot] Primary checkout path.
-     * @param {String} [options.root=options.primaryRoot] Repo root.
-     * @param {String} [options.rootKey='primaryRoot'] Details key for the root.
-     * @param {Number} options.behind Commit lag behind origin/dev.
-     * @param {Function} options.execFileSyncFn Command execution seam.
-     * @param {Function} [options.writeLog] Optional logger.
-     * @param {Boolean} [options.runKbSync=true] Whether this root owns the KB cascade.
-     * @param {Object} [options.taskStateService] Optional `TaskStateService` forwarded to `runKbSync()` for first-class `kbSync` lifecycle annotation when this root triggers the cascade.
-     * @param {Object} [options.healthService] Optional `HealthService` forwarded to `runKbSync()` for cascade `recordTaskOutcome` events with `{parent: 'primary-dev-sync'}` annotation.
-     * @param {Boolean} [options.kbSyncAuthorized] KB-cascade authorization for the metadata-reset path. This is the fourth cascade door and the easiest to miss, because the method is reached only after a `.sync-metadata.json`-only divergence — a KB-relevant path riding along with that reset still cascades. Explicit `true` only; see {@link isKbSyncAuthorized} (#251).
-     * @returns {Object}
-     */
-    resolveMetaAndPull({primaryRoot, root=primaryRoot, rootKey='primaryRoot', behind, execFileSyncFn, writeLog, runKbSync=true, taskStateService, healthService, kbSyncAuthorized}) {
-        const rootDetails = {[rootKey]: root};
-
-        writeLog?.('INFO', `[PrimaryRepoSync] Resetting ${META_SYNC_PATH} before fast-forward pull.`);
-        const oldHead = this.resolveOptionalHead(root, execFileSyncFn);
-        this.git(['checkout', '--', META_SYNC_PATH], root, execFileSyncFn);
-        this.git(['pull', '--ff-only', REMOTE_NAME, DEV_BRANCH], root, execFileSyncFn);
-        const newHead        = this.resolveOptionalHead(root, execFileSyncFn);
-        const kbSyncDecision = this.resolveKbSyncDecision({root, oldHead, newHead, execFileSyncFn});
-        if (kbSyncDecision.configMigrateRequired) {
-            this.runConfigMigrate(root, execFileSyncFn, {taskStateService, healthService});
-        }
-        const cascadeWanted  = runKbSync && kbSyncDecision.kbSyncRequired;
-        const cascadeAllowed = cascadeWanted && isKbSyncAuthorized(kbSyncAuthorized);
-
-        if (cascadeAllowed) {
-            this.runKbSync(root, execFileSyncFn, {taskStateService, healthService});
-        } else if (cascadeWanted) {
-            writeLog?.('INFO', `[PrimaryRepoSync] KB cascade refused: kbSync is not authorized.`);
-        }
-
-        return {
-            status : 'completed',
-            details: {
-                ...rootDetails,
-                behind,
-                layer        : 'meta-sync-reset',
-                resolved     : 'meta-sync',
-                kbSync       : cascadeAllowed,
-                configMigrate: kbSyncDecision.configMigrateRequired,
-                ...kbSyncDecision,
-                ...(cascadeWanted && !cascadeAllowed ? {reasonCode: KB_SYNC_UNAUTHORIZED_REASON_CODE} : {})
-            }
-        };
-    }
-
-    /**
      * Runs `npm run ai:sync-kb` from the primary checkout, annotating the
      * cascade as a first-class `kbSync` task lifecycle event so the nested
      * KB sync becomes observable in `TaskStateService` + `HealthService`
@@ -604,8 +540,7 @@ class PrimaryRepoSyncService extends Base {
      * Both service injections are optional-chained for backward compatibility:
      * callers (tests, ad-hoc tooling) that don't supply them get the prior
      * behavior unchanged. The orchestrator-side wiring threads them through
-     * `runTask` → `syncPrimaryDev` → `syncConfiguredDevRoots` / `syncDevRoot`
-     * / `resolveMetaAndPull` → here.
+     * `runTask` → `syncPrimaryDev` → `syncConfiguredDevRoots` / `syncDevRoot` → here.
      *
      * The annotation `reason` string carries the durable convention
      * `cascaded-from-<parentTaskName>` so operator dashboards + Memory Core
@@ -930,17 +865,6 @@ class PrimaryRepoSyncService extends Base {
             configChangedPathCount : configChangedPaths.length,
             configChangedPathSample: configChangedPaths.slice(0, 10)
         };
-    }
-
-    /**
-     * Returns true when every status entry is the generated metadata file.
-     * @param {String} statusOutput Git porcelain output.
-     * @returns {Boolean}
-     */
-    isOnlyMetaSyncStatus(statusOutput) {
-        const paths = this.parseStatusPaths(statusOutput);
-
-        return paths.length > 0 && paths.every(item => item === META_SYNC_PATH);
     }
 
     /**

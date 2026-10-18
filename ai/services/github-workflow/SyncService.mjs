@@ -8,45 +8,24 @@ import ReleaseNotesSyncer                           from './sync/ReleaseNotesSyn
 import DiscussionSyncer                             from './sync/DiscussionSyncer.mjs';
 import PullRequestSyncer                            from './sync/PullRequestSyncer.mjs';
 import reconcileActiveChunks                        from './shared/reconcileActiveChunks.mjs';
-import RepositoryService                            from './RepositoryService.mjs';
 import {
     collectWrittenArchiveTargets,
     findLogicalIdentityCollisions,
     formatIntegrityReport,
     snapshotArchiveTree
 } from './shared/contentInventory.mjs';
-import {exec}      from 'child_process';
-import path        from 'path';
-import {promisify} from 'util';
-
-const execAsync = promisify(exec);
-
-const generatedSyncPaths = [
-    'resources/content/issues/',
-    'resources/content/discussions/',
-    'resources/content/pulls/',
-    'resources/content/release-notes/',
-    'resources/content/archive/',
-    'resources/content/_index.json',
-    'resources/content/.sync-metadata.json'
-];
-
-const isGeneratedSyncFile = file => generatedSyncPaths.some(item =>
-    item.endsWith('/') ? file.startsWith(item) : file === item
-);
-
-const generatedSyncStatusPaths = generatedSyncPaths.join(' ');
 
 /**
- * @summary Orchestrates the bi-directional synchronization of GitHub issues and releases with local Markdown files.
+ * @summary Emits one origin's GitHub conversation corpus — issues, pull requests, discussions and
+ * release notes — as Markdown into the declared corpus root. The emission is pull-only.
  *
  * This service is the core engine for the GitHub sync workflow. Its primary responsibilities include:
- * - **Orchestration:** It calls specialized syncer modules (`IssueSyncer`, `ReleaseNotesSyncer`, `DiscussionSyncer`) in the
- *   correct order to ensure data integrity and minimize conflicts (e.g., push-then-pull).
- * - **Metadata Management:** It uses the `MetadataManager` to load metadata at the start of a sync
- *   and save the updated metadata at the end.
+ * - **Orchestration:** It calls the specialized syncers (`ReleaseNotesSyncer`, `IssueSyncer`,
+ *   `DiscussionSyncer`, `PullRequestSyncer`) in dependency order, releases first.
+ * - **Metadata Management:** It uses the `MetadataManager` to load metadata at the start of a run,
+ *   and each facet saves it as that facet completes.
  *
- * The main entry point is the `runFullSync` method, which executes the entire orchestration sequence.
+ * The entry point is `emitConversationCorpus`, which the corpus CLI runs under its lease.
  *
  * @class Neo.ai.services.github-workflow.SyncService
  * @extends Neo.core.Base
@@ -107,10 +86,8 @@ class SyncService extends Base {
      */
     createConfigSnapshot() {
         return {
-            issueSync          : cloneConfigSubtree(aiConfig, ['issueSync']),
-            projectRoot        : aiConfig.projectRoot,
-            pushToRepoAfterSync: aiConfig.pushToRepoAfterSync,
-            repo               : aiConfig.repo
+            issueSync: cloneConfigSubtree(aiConfig, ['issueSync']),
+            repo     : aiConfig.repo
         };
     }
 
@@ -124,25 +101,13 @@ class SyncService extends Base {
     }
 
     /**
-     * @summary Executes a git command inside the sync checkout.
-     * @param {String} command Git command to run.
-     * @param {String} cwd Working directory for the command.
-     * @returns {Promise<{stdout: String, stderr: String}>}
-     */
-    async execGit(command, cwd) {
-        return execAsync(command, {cwd});
-    }
-
-    /**
      * @summary Emits the generated GitHub Workflow content.
      *
      * Portal indexes and SEO are not derived here: the Portal's deploy derives them from the published
-     * corpus.
+     * corpus. Nothing is written back to GitHub, and nothing is committed: the corpus publisher owns
+     * publication.
      *
-     * This method orchestrates the generated-content half of the full sync in a specific order
-     * to ensure data integrity and minimize conflicts. It is intentionally separated from the
-     * git delivery step so a failed rebase can reset the checkout, re-emit the generated files,
-     * and retry without leaving the repository mid-rebase.
+     * This method orchestrates the emission in a specific order to ensure data integrity.
      *
      * **The facets are ISOLATED and persist independently.** Each runs through `#runFacet`, which saves
      * metadata the moment that facet completes and rolls back only that facet's own slices when it does
@@ -160,9 +125,8 @@ class SyncService extends Base {
      * 1. Loads the persistent metadata via `MetadataManager` — one accumulator every facet mutates.
      * 2. Prerequisite `releases`: fetches release data and caches it (`ReleaseNotesSyncer`). Dependent
      *    facets run only if this advanced or a non-empty cached bucketing reference survived.
-     * 3. Facet `issues`: reconciles closed issue locations, optionally **pushes** local changes, then
-     *    **pulls** remote changes, merging the returned metadata into the accumulator (`IssueSyncer`).
-     *    Scheduled CI emission disables the push half explicitly; the manual full-sync keeps it.
+     * 3. Facet `issues`: reconciles closed issue locations, then **pulls** remote changes, merging the
+     *    returned metadata into the accumulator (`IssueSyncer`).
      * 4. Facet `releaseNotes`: syncs release notes into local Markdown (`ReleaseNotesSyncer`).
      * 5. Facet `discussions`: syncs discussions into local Markdown (`DiscussionSyncer`).
      * 6. Facet `pulls`: reconciles closed pull locations, syncs pulls, repairs duplicates, realigns
@@ -172,16 +136,13 @@ class SyncService extends Base {
      * 8. Throws one aggregate verdict naming every facet that did not advance — partial progress must
      *    never report as a clean run.
      * @param {Object} [options]
-     * @param {Boolean} [options.pushLocalChanges=true] Whether locally-authored issue changes may
-     * be pushed to GitHub before the pull. Scheduled CI emission passes `false` and remains read-only.
      * @param {Number[]} [options.refetchIssues=[]] Issues the `issues` facet force-refetches in this run,
      * failing the facet unless each comes back (`IssueSyncer#pullFromGitHub`).
-     * @param {String} [options.contentRoot=aiConfig.issueSync.contentRoot] Configured corpus root; an
-     * undeclared root throws naming `NEO_MCP_GITHUB_CONTENT_ROOT` before loading metadata or fetching.
      * @returns {Promise<object>} Statistics for the emitted generated content, plus `facetOutcomes`.
+     * @throws {Error} When no corpus root is declared, before any metadata loads or request is made.
      */
-    async emitGeneratedContent({pushLocalChanges = true, refetchIssues = [], contentRoot = this.#getConfig().issueSync.contentRoot} = {}) {
-        if (!contentRoot) {
+    async emitGeneratedContent({refetchIssues = []} = {}) {
+        if (!this.#getConfig().issueSync.contentRoot) {
             throw new Error(
                 'SyncService#emitGeneratedContent: no GitHub workflow contentRoot is configured ' +
                 '(set issueSync.contentRootOverride / NEO_MCP_GITHUB_CONTENT_ROOT).'
@@ -252,37 +213,25 @@ class SyncService extends Base {
             : Promise.resolve(skip(name, 'release history unavailable and no cached bucketing reference — ' +
                 'closed artifacts would be placed in the active bucket'));
 
-        // 2 + 3 + 4. Reconcile closed issue locations (archiving stale closed issues BEFORE the pull),
-        //     push local changes, then pull remote changes. One facet, because the ordering between them
-        //     is load-bearing: splitting them would let a run persist a pull whose reconcile never ran.
+        // 2 + 3. Reconcile closed issue locations (archiving stale closed issues BEFORE the pull), then
+        //     pull remote changes. One facet, because the ordering between them is load-bearing:
+        //     splitting them would let a run persist a pull whose reconcile never ran.
         let reconcileStats = null,
-            pushStats      = null,
             pullStats      = null;
 
-        await dependentFacet('issues', ['issues', 'pushFailures', 'lastSync'], async () => {
+        await dependentFacet('issues', ['issues', 'lastSync'], async () => {
             reconcileStats = await IssueSyncer.reconcileClosedIssueLocations(metadata);
-            if (pushLocalChanges) {
-                pushStats = await IssueSyncer.pushToGitHub(metadata)
-            } else {
-                pushStats = {skipped: true, reason: 'pull-only generated-content emission'};
-                logger.info('[SyncService] Pull-only emission: skipping local-to-GitHub issue push.')
-            }
 
             const {newMetadata, stats} = await IssueSyncer.pullFromGitHub(metadata, {refetchIssues});
 
             pullStats = stats;
 
             // MERGED into the accumulator rather than replacing it. `pullFromGitHub` returns a fresh
-            // object carrying only `{issues, pushFailures, lastSync}`, and the old chain saved THAT
-            // object at the very end — so discussion and pull populations had to be hand-copied back
-            // onto it or they were silently dropped. Merging makes the carry-over structural: a syncer
-            // that populates a new slice cannot lose it to a save that does not know the slice exists.
+            // object carrying only `{issues, lastSync}`, and the old chain saved THAT object at the
+            // very end — so discussion and pull populations had to be hand-copied back onto it or they
+            // were silently dropped. Merging makes the carry-over structural: a syncer that populates
+            // a new slice cannot lose it to a save that does not know the slice exists.
             Object.assign(metadata, newMetadata);
-
-            // Self-heal push failures: a previously failed issue that pulled successfully is not failing.
-            if (metadata.pushFailures?.length > 0) {
-                metadata.pushFailures = metadata.pushFailures.filter(failedId => !metadata.issues[failedId])
-            }
         });
 
         // 5. Sync release notes, in every mode: a reader of the corpus alone has them too. The release
@@ -333,10 +282,10 @@ class SyncService extends Base {
             //      degrades softly on its own terms, which is exactly how a corpus reaches the commit with
             //      each step reporting success and the whole known-broken: a repair that fails logs and
             //      returns, an unrepaired duplicate stays unindexed, and nothing downstream asks. So the
-            //      verdict is taken AFTER placement, restoration and projection are final, and it aborts —
-            //      before this facet's metadata save, before the derive, before the auto-push. Committing
-            //      a corpus we have already measured as broken is worse than failing the run: the run can
-            //      be retried, but a generated commit is what every consumer then reads as truth.
+            //      verdict is taken AFTER placement, restoration and projection are final, and it aborts
+            //      before this facet's metadata save. Publishing a corpus we have already measured as
+            //      broken is worse than failing the run: the run can be retried, but a published corpus
+            //      is what every consumer then reads as truth.
             //
             //      What ISOLATION changed and did not change: the abort no longer discards the issue,
             //      release and discussion facets that already succeeded. It still prevents this facet
@@ -350,7 +299,7 @@ class SyncService extends Base {
                 logger.error(formatIntegrityReport(pullIntegrity));
 
                 throw new Error(
-                    'Pull corpus integrity is not clean after repair — refusing to commit generated content. ' +
+                    'Pull corpus integrity is not clean after repair — refusing to advance the pull facet. ' +
                     `stale=${pullIntegrity.staleIndexEntries.length} ` +
                     `inconsistent=${pullIntegrity.inconsistentIndexEntries.length} ` +
                     `duplicateIndexRows=${pullIntegrity.duplicateIndexEntryIds.length} ` +
@@ -395,7 +344,6 @@ class SyncService extends Base {
         return {
             reconcileStats,
             pullReconcileStats,
-            pushStats,
             pullStats,
             releaseStats,
             discussionStats,
@@ -413,19 +361,18 @@ class SyncService extends Base {
      *
      * Release history remains the prerequisite for issue, discussion and pull bucketing, and the
      * notes are written beside the conversations, so a reader of the corpus alone has them. Portal/SEO
-     * output, local-to-GitHub issue pushes and git publication stay outside this producer-only boundary.
+     * output and git publication stay outside this producer-only boundary.
      * @param {Object} [options]
      * @param {Number[]} [options.refetchIssues=[]] Issues to force-refetch in this emission, for corpus files
      * that drifted from GitHub without an `updatedAt` change.
-     * @param {String} [options.contentRoot] Optional explicit corpus root forwarded to `emitGeneratedContent`.
      * @returns {Promise<object>} Facet statistics and truthful aggregate outcome.
      * @throws {Error} When a facet fails to advance or this run writes a logical-identity collision in the archive.
      */
-    async emitConversationCorpus({refetchIssues = [], contentRoot} = {}) {
+    async emitConversationCorpus({refetchIssues = []} = {}) {
         const
             archiveRoot     = this.#getConfig().issueSync.archiveRoot,
             baselineArchive = snapshotArchiveTree(archiveRoot),
-            result          = await this.emitGeneratedContent({pushLocalChanges: false, refetchIssues, contentRoot}),
+            result          = await this.emitGeneratedContent({refetchIssues}),
             targets         = collectWrittenArchiveTargets(archiveRoot, baselineArchive),
             collisions      = findLogicalIdentityCollisions({archiveRoot, targets});
 
@@ -493,201 +440,6 @@ class SyncService extends Base {
     }
 
     /**
-     * @summary Commits, rebases, and pushes generated GitHub Workflow content changes.
-     * @param {String} cwd Git checkout root.
-     * @returns {Promise<Boolean>} `true` when a generated-data commit was pushed.
-     */
-    async commitRebaseAndPushGeneratedContent(cwd) {
-        const {stdout} = await this.execGit(`git status --porcelain ${generatedSyncStatusPaths}`, cwd);
-        const lines    = stdout.trim().split('\n').filter(Boolean);
-
-        if (lines.length === 0) {
-            return false;
-        }
-
-        // A metadata-only diff is SEMANTIC state, not churn, so it is delivered like any other change.
-        //
-        // Telemetry suppression has exactly one owner: `MetadataManager.save()` returns without writing
-        // when the only difference is root-level `lastSync` / `releasesLastFetched`. So a dirty
-        // `.sync-metadata.json` differs in something beyond telemetry BY CONSTRUCTION — a facet
-        // high-water mark, a rebucketed path, a content hash. A second guard here that rolled the file
-        // back could only ever discard that, and it did: the rollback predates the `save()` suppression
-        // and was never retired once the suppression subsumed its purpose.
-        //
-        // The case it stranded is not an edge case, it is the FIRST run of any new high-water field. The
-        // corpus is already current, so no Markdown moves and the metadata carries the whole advance
-        // alone — a metadata-only diff. Rolling it back means the next run recomputes the cutoff from
-        // nothing and re-pages the entire history, forever, because every run reproduces that state.
-        logger.info(`[SyncService] Detected ${lines.length} generated-content change(s). Committing and pushing.`);
-        await this.execGit(`git add ${generatedSyncStatusPaths}`, cwd);
-        const {stdout: stagedStdout} = await this.execGit('git diff --cached --name-only', cwd);
-        const nonSyncFiles           = stagedStdout.trim().split('\n').filter(Boolean).filter(file =>
-            !isGeneratedSyncFile(file)
-        );
-
-        if (nonSyncFiles.length > 0) {
-            throw new Error(`Automated sync commit rejected: non-sync files are staged: ${nonSyncFiles.join(', ')}`);
-        }
-
-        // The logical-identity invariant has to be asserted HERE, and this is the only place it can be.
-        // The `lint-staged` guard cannot see this commit: the `--no-verify` below is load-bearing and
-        // correct — generated content legitimately carries trailing whitespace that the whitespace hook
-        // rejects — so it disables every git hook, this one included. A corpus invariant enforced only
-        // by a hook the sole automated committer bypasses is not enforced at all.
-        //
-        // Scoped to the STAGED set, not the whole corpus: a collision this run did not touch is not this
-        // commit's to fix, and a full-corpus assertion would refuse every sync until an unrelated repair
-        // lands — turning a guard against new damage into a block on all progress.
-        const collisions = findLogicalIdentityCollisions({
-            archiveRoot: path.join(cwd, 'resources/content/archive'),
-            targets    : stagedStdout.trim().split('\n').filter(Boolean).map(file => path.join(cwd, file))
-        });
-
-        if (collisions.length > 0) {
-            throw new Error(
-                'Automated sync commit rejected: this run would commit two artifacts claiming one logical ' +
-                `name — ${collisions.map(item => `${item.key} (${item.paths.length} copies)`).join('; ')}. ` +
-                'Embedding refuses this state, so committing it stalls Knowledge Base ingestion for the ' +
-                'whole corpus. Repair via PullRequestSyncer.repairDuplicateArtifacts before retrying.'
-            );
-        }
-
-        // Automated generated-data commits (neo repo): --no-verify because generated content fails whitespace
-        // hooks. NEO_SKIP_TICKET_ARCHAEOLOGY=1 is the explicit archaeology-gate exemption for this generated-data
-        // class — declares intent + future-proofs (co-exists with --no-verify, still required for whitespace).
-        await this.execGit('NEO_SKIP_TICKET_ARCHAEOLOGY=1 git commit --no-verify -m "chore: ticket sync [skip ci]"', cwd);
-
-        try {
-            await this.execGit('git pull --rebase --autostash', cwd);
-            await this.execGit('git push', cwd);
-        } catch (error) {
-            error.generatedSyncDeliveryFailure = true;
-            throw error;
-        }
-
-        logger.info('[SyncService] Successfully pushed changes to GitHub.');
-
-        return true;
-    }
-
-    /**
-     * @summary Restores the generated-data checkout to the latest remote `dev` after delivery failure.
-     * @param {String} cwd Git checkout root.
-     * @returns {Promise<void>}
-     */
-    async recoverGeneratedContentCheckout(cwd) {
-        try {
-            await this.execGit('git rebase --abort', cwd);
-        } catch (error) {
-            logger.warn(`[SyncService] git rebase --abort did not complete: ${error.message}`);
-        }
-
-        await this.execGit('git fetch origin dev:refs/remotes/origin/dev', cwd);
-        await this.execGit('git reset --hard origin/dev', cwd);
-    }
-
-    /**
-     * @summary Delivers generated GitHub Workflow content to git with bounded rebase recovery.
-     * @param {Function} rerunEmission Re-emits generated content after a reset.
-     * @param {Number}   [maxAttempts=2] Maximum commit/rebase/push attempts.
-     * @returns {Promise<void>}
-     */
-    async autoPushGeneratedContent({rerunEmission, maxAttempts = 2}) {
-        const cfg = this.#getConfig();
-
-        if (cfg.pushToRepoAfterSync) {
-            const {permission}     = await RepositoryService.getViewerPermission();
-            const writePermissions = ['ADMIN', 'MAINTAIN', 'WRITE'];
-
-            if (writePermissions.includes(permission)) {
-                const cwd = cfg.projectRoot;
-
-                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-                    try {
-                        await this.commitRebaseAndPushGeneratedContent(cwd);
-                        return;
-                    } catch (error) {
-                        if (!error.generatedSyncDeliveryFailure) {
-                            logger.error('[SyncService] Auto-commit and push failed:', error.message);
-                            return;
-                        }
-
-                        if (attempt >= maxAttempts) {
-                            logger.error(`[SyncService] Auto-push exhausted ${maxAttempts} attempts; recovering checkout before giving up: ${error.message}`);
-                            await this.recoverGeneratedContentCheckout(cwd);
-                            return;
-                        }
-
-                        logger.warn(`[SyncService] Auto-push attempt ${attempt} failed; aborting rebase, resetting to origin/dev, and re-emitting generated content before retry: ${error.message}`);
-                        await this.recoverGeneratedContentCheckout(cwd);
-                        await rerunEmission();
-                    }
-                }
-            } else {
-                logger.info(`[SyncService] Skipping auto-push. Viewer permission '${permission}' lacks write access.`);
-            }
-        }
-    }
-
-    /**
-     * The main public entry point for the synchronization process.
-     *
-     * @summary Runs full GitHub workflow synchronization and auto-pushes generated content.
-     * @param {Object} [options={}]
-     * @param {String} [options.contentRoot] Optional explicit content root forwarded to `emitGeneratedContent`.
-     * @returns {Promise<object>} A comprehensive object containing detailed statistics and timing
-     * information about all operations performed during the sync.
-     */
-    async runFullSync({contentRoot} = {}) {
-        const startTime = new Date();
-        let   syncStats = await this.emitGeneratedContent({contentRoot});
-
-        await this.autoPushGeneratedContent({
-            rerunEmission: async () => {
-                syncStats = await this.emitGeneratedContent({contentRoot});
-            }
-        });
-
-        const endTime    = new Date();
-        const durationMs = endTime - startTime;
-
-        const finalStats = {
-            reconciled     : syncStats.reconcileStats,
-            reconciledPulls: syncStats.pullReconcileStats,
-            pushed         : syncStats.pushStats,
-            pulled         : syncStats.pullStats.pulled,
-            dropped        : syncStats.pullStats.dropped,
-            releases       : syncStats.releaseStats,
-            discussions    : syncStats.discussionStats,
-            pulls          : syncStats.pullStats2
-        };
-
-        const timing = {
-            startTime: startTime.toISOString(),
-            endTime  : endTime.toISOString(),
-            durationMs
-        };
-
-        logger.info('✨ Sync Complete');
-        logger.info(`   Reconciled:  ${finalStats.reconciled.count} issues archived`);
-        logger.info(`   Reconciled:  ${finalStats.reconciledPulls.count} pull requests archived`);
-        logger.info(`   Pushed:      ${finalStats.pushed.count} issues`);
-        logger.info(`   Pulled:      ${finalStats.pulled.count} issues (${finalStats.pulled.created} new, ${finalStats.pulled.updated} updated, ${finalStats.pulled.moved} moved)`);
-        logger.info(`   Dropped:     ${finalStats.dropped.count} issues`);
-        logger.info(`   Releases:    ${finalStats.releases.count} synced`);
-        logger.info(`   Discussions: ${finalStats.discussions.count} synced`);
-        logger.info(`   Pulls:       ${finalStats.pulls.count} synced`);
-        logger.info(`   Duration:    ${Math.round(timing.durationMs / 1000)}s`);
-
-        return {
-            success   : true,
-            summary   : "Synchronization complete",
-            statistics: finalStats,
-            timing
-        };
-    }
-
-    /**
      * @summary Force-refetches the given issues from GitHub, bypassing delta-sync `updatedAt` gating.
      *
      * The sync engine normally relies on `issue.updatedAt` to decide which issues need a fresh
@@ -698,8 +450,8 @@ class SyncService extends Base {
      * timelineItems connection, rewrites the local markdown, and persists updated metadata.
      *
      * Intended callers: diagnostic scripts such as `ai/scripts/diagnostics/detectTruncatedTimelines.mjs` —
-     * not the normal `runFullSync` flow. Keeps the delta-sync cost model intact for routine
-     * syncs while giving admin tooling a narrow, auditable healing path.
+     * not the corpus emission. Keeps the delta-sync cost model intact for routine
+     * emissions while giving admin tooling a narrow, auditable healing path.
      *
      * @param {object}   params
      * @param {number[]} params.numbers Issue numbers to force-refetch.
@@ -726,7 +478,7 @@ class SyncService extends Base {
      * metadata. Bypasses the bulk delta-by-`updatedAt` gate so known-stale closed/merged PR mirrors
      * — which the pull-only bulk sync never re-pulls once their `updatedAt` is past the high-water
      * mark — can be re-rendered from current GitHub state. Invoked out-of-band by
-     * `ai/scripts/migrations/refetchStalePulls.mjs` — never the regular `runFullSync` loop.
+     * `ai/scripts/migrations/refetchStalePulls.mjs` — never the corpus emission.
      *
      * @param {object}   params
      * @param {number[]} params.numbers Pull-request numbers to force-refetch.
@@ -753,7 +505,7 @@ class SyncService extends Base {
      * metadata. Bypasses the bulk delta-by-`updatedAt` gate so known-stale discussion mirrors — which
      * the pull-only bulk sync never re-pulls once their `updatedAt` is past the high-water mark — can be
      * re-rendered from current GitHub state. Invoked out-of-band by
-     * `ai/scripts/migrations/refetchStaleDiscussions.mjs` — never the regular `runFullSync` loop.
+     * `ai/scripts/migrations/refetchStaleDiscussions.mjs` — never the corpus emission.
      *
      * @param {object}   params
      * @param {number[]} params.numbers Discussion numbers to force-refetch.

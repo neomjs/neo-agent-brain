@@ -145,7 +145,6 @@ class MetadataManager extends Base {
         const prunedMetadata  = {
             lastSync           : metadata.lastSync,
             releasesLastFetched: metadata.releasesLastFetched,
-            pushFailures       : metadata.pushFailures || [],
             issues             : {},
             releases           : {},
             pulls              : {},

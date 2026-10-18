@@ -148,7 +148,11 @@ export function seatRuntimeSnapshot(record) {
         ownershipUnresolved: Boolean(record.ownershipUnresolved || record.runtimeUnresolved), cleanupUnresolved: Boolean(record.cleanupUnresolved)}
 }
 
-/** @summary Validates the closed mutable retention envelope around an immutable Start binding. */
+/**
+ * @summary Validates the closed mutable retention envelope around an immutable Start binding.
+ * `exited` is only read: the first durable-custody builds wrote it, and recovery re-persists it as `stopped`.
+ * It leaves with the next snapshot version.
+ */
 export function isSeatRuntimeSnapshot(value) {
     return exact(value, ['start', 'state', 'ownershipUnresolved', 'cleanupUnresolved']) && isSeatRuntimeRecord(value.start) &&
         ['running', 'stopping', 'stopped', 'exited', 'failed', 'unavailable'].includes(value.state) &&

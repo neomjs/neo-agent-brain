@@ -63,23 +63,19 @@ The application logic is distributed across specialized services, all extending 
 *   **`GraphqlService`:** A centralized wrapper around the GitHub GraphQL API. It handles authentication via the `gh` CLI, token caching, and executes complex queries defined in `services/queries/`.
 *   **`HealthService`:** Acts as a gatekeeper, ensuring the `gh` CLI is installed, authenticated, and up-to-date. It implements intelligent caching (5-minute TTL for healthy results) to minimize overhead.
 
-### 3.2 The Bi-Directional Sync Workflow
+### 3.2 The Corpus Emission Workflow
 
-The core of the server is its ability to maintain state consistency between the local filesystem and GitHub. This isn't just downloading files; it's a true two-way synchronization engine:
+The sync is pull-only. It renders one origin's issues, pull requests, discussions and release notes from GitHub into the declared corpus root, and nothing flows back to GitHub.
 
-*   **Push (Local → Remote):** The server scans for modified local Markdown files. It uses **Content Hashing** (SHA-256) to detect actual changes. If a file has changed, the server pushes updates (Title, Body) to GitHub via GraphQL mutations.
-*   **Pull (Remote → Local):** The server fetches the latest data from GitHub. New issues are created locally, and updated issues overwrite local versions.
+`neomjs/github-content-sync`'s publisher runs `npm run ai:sync-github-workflow -- --corpus-only` once per origin, and `SyncService.emitConversationCorpus` executes these steps:
 
-When the scheduled Data Sync pipeline emits the corpus—or an operator invokes `npm run ai:sync-github-workflow`—`SyncService` executes a precise 8-step orchestration logic to ensure data integrity. Scheduled CI is pull-only; the manual command retains the full bi-directional issue sync:
-
-1.  **Load Metadata:** Reads `.sync-metadata.json` to understand the previous state.
-2.  **Fetch Releases:** `ReleaseSyncer` fetches the latest release data. This is done *first* because the archive logic depends on knowing available releases.
-3.  **Reconcile Archives:** `IssueSyncer` scans the active `.github/ISSUE` directory for closed issues. It compares their `closedAt` date with release dates to move them to the correct archive folder (e.g., `.github/ISSUE_ARCHIVE/v10.5.0/`).
-4.  **Push Local Changes:** `IssueSyncer` scans the active directory for modified Markdown files. It compares content hashes with the metadata. If changed, it pushes updates (title, body) to GitHub via the `UPDATE_ISSUE` GraphQL mutation.
-5.  **Pull Remote Changes:** `IssueSyncer` executes the `FETCH_ISSUES_FOR_SYNC` GraphQL query. This powerful query fetches issues, comments, labels, assignees, and relationships in a single request. New issues are created locally; updated issues are overwritten.
-6.  **Sync Release Notes:** `ReleaseSyncer` writes release notes to `.github/RELEASE_NOTES/`, ensuring the local documentation matches GitHub.
-7.  **Self-Heal:** The system checks for and clears any resolved push failures from the metadata.
-8.  **Save Metadata:** The new state, including updated content hashes and timestamps, is persisted to disk.
+1.  **Load Metadata:** Reads the origin's `.sync-metadata.json` to learn the previous state.
+2.  **Fetch Releases:** `ReleaseNotesSyncer` fetches release data *first*, because every closed artifact is bucketed by the release it closed in.
+3.  **Issues:** `IssueSyncer` moves closed issues into their release archive, then runs the `FETCH_ISSUES_FOR_SYNC` query, which fetches issues, comments, labels, assignees and relationships in one request. New and updated issues are written.
+4.  **Release Notes:** `ReleaseNotesSyncer` writes each release's note beside the conversations.
+5.  **Discussions and Pull Requests:** the sibling syncers do the same for their families. The pull facet ends with an integrity verdict.
+6.  **Re-chunk:** every family is re-ranked into its ordinal-100 folders.
+7.  **Verdict:** each facet saves its metadata as it completes. The run fails if any facet did not advance, or if it wrote two archive artifacts under one logical name, and a failed run is never published.
 
 ## 4. The Toolset
 
@@ -90,7 +86,7 @@ The server exposes a comprehensive suite of tools via the Model Context Protocol
 *   **`healthcheck`**: Verifies `gh` CLI status. Returns cached healthy results for speed, but performs immediate checks if the system was previously unhealthy.
 *   **`get_viewer_permission`**: Returns the bot's permission level (`ADMIN`, `WRITE`, `READ`).
 
-The full bi-directional sync is intentionally not an agent MCP tool. The Data Sync workflow owns scheduled pull-only corpus publication; operators retain `npm run ai:sync-github-workflow` as the canonical manual rebuild path.
+Corpus emission is intentionally not an agent MCP tool, because a clean-slate emission outlives any MCP request timeout. `neomjs/github-content-sync` owns scheduled publication. To rebuild a corpus by hand, run `npm run ai:sync-github-workflow -- --corpus-only` with `NEO_MCP_GITHUB_CONTENT_ROOT` naming the destination.
 
 ### 4.2 Issue Management
 
