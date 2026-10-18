@@ -168,31 +168,6 @@ export const GET_ISSUE_ID = `
 `;
 
 /**
- * Query to fetch the issue fields needed before deciding whether a local
- * Markdown hash mismatch is a real pushable edit or generated-only drift.
- *
- * Variables required:
- * - $owner: String!
- * - $repo: String!
- * - $number: Int!
- */
-export const GET_ISSUE_FOR_PUSH = `
-  query GetIssueForPush(
-    $owner: String!
-    $repo: String!
-    $number: Int!
-  ) {
-    repository(owner: $owner, name: $repo) {
-      issue(number: $number) {
-        id
-        title
-        body
-      }
-    }
-  }
-`;
-
-/**
  * Builds a query that resolves several issues' open/closed state in ONE round trip.
  *
  * Aliased per number rather than issued per issue, because the cost objection to checking A+FU
@@ -406,34 +381,6 @@ export const UPDATE_DISCUSSION = `
       discussion {
         id
         url
-        updatedAt
-      }
-    }
-  }
-`;
-
-/**
- * Mutation to update an issue's title and body.
- *
- * Variables required:
- * - $issueId: ID! - The global GraphQL ID of the issue
- * - $title: String - New title (optional, omit to keep current)
- * - $body: String - New body (optional, omit to keep current)
- */
-export const UPDATE_ISSUE = `
-  mutation UpdateIssue(
-    $issueId: ID!
-    $title: String
-    $body: String
-  ) {
-    updateIssue(input: {
-      id: $issueId
-      title: $title
-      body: $body
-    }) {
-      issue {
-        number
-        title
         updatedAt
       }
     }

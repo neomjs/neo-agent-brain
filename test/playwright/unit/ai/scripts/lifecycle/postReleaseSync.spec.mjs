@@ -28,7 +28,7 @@ test.describe('postReleaseSync — the Brain half of the release writes nothing 
     });
 
     test('it neither syncs nor stages, commits or pushes', () => {
-        expect(source).not.toMatch(/runFullSync\(/);
+        expect(source).not.toMatch(/emitConversationCorpus\(|sync-github-workflow|syncGithubWorkflow/);
         expect(source).not.toMatch(/['"`]git (add|commit|push)\b/);
         expect(source).not.toMatch(/check-content-logical-identity/)
     });
