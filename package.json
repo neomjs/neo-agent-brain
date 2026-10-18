@@ -75,6 +75,7 @@
         "ai:lint-openapi-service-parity": "node ./ai/scripts/lint/lint-openapi-service-parity.mjs",
         "ai:lint-retry-bounds": "node ./ai/scripts/lint/lint-retry-bounds.mjs",
         "ai:host-edge": "node ./ai/daemons/orchestrator/hostEdge.mjs",
+        "ai:pin-drift": "node ./ai/scripts/diagnostics/pinDrift.mjs",
         "ai:post-release-sync": "node ./ai/scripts/lifecycle/postReleaseSync.mjs",
         "ai:wake-manifest": "node ./ai/daemons/wake/buildReceiverManifest.mjs",
         "ai:wake-receiver": "node ./ai/daemons/wake/receiver.mjs",
