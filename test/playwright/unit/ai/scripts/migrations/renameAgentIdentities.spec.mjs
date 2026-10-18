@@ -34,7 +34,10 @@ import {
 } from '../../../../../../ai/graph/identitySchema.mjs';
 
 /**
- * @summary Creates the minimal SQLite graph schema used by the identity rename runner.
+ * @summary Creates the SQLite graph schema the identity rename runner migrates, with the production
+ * `Edges` foreign keys (`ai/graph/storage/SQLite.mjs`: `REFERENCES Nodes(id) ON DELETE CASCADE`, no
+ * `ON UPDATE`) and enforcement on, so a re-key that updates a connected row's primary key fails here
+ * the way it fails on the plane.
  * @param {Object} db Open better-sqlite3 connection.
  */
 function createGraphSchema(db) {
@@ -50,9 +53,12 @@ function createGraphSchema(db) {
             source TEXT NOT NULL,
             target TEXT NOT NULL,
             type TEXT NOT NULL,
-            data TEXT NOT NULL
+            data TEXT NOT NULL,
+            FOREIGN KEY (source) REFERENCES Nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY (target) REFERENCES Nodes(id) ON DELETE CASCADE
         );
     `);
+    db.pragma('foreign_keys = ON');
 }
 
 /**
@@ -574,6 +580,59 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
             edgeMetadataRowsUpdated: 0,
             edgesRekeyed           : 0,
             nodeMetadataRowsUpdated: 0,
+            nodesRekeyed           : 0
+        });
+        expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+
+        db.close();
+    });
+
+    test('when old and new compound ids coexist, the old row merges into the surviving one: edges move, JSON mirrors SQL, keys hold, a second apply is a no-op', () => {
+        // Sophie's falsifier on the third head: the node pass skipped the collision while the edge pass
+        // still rewrote the JSON endpoint — a committed row with two names for its source.
+        const db = new Database(':memory:');
+        createGraphSchema(db);
+
+        const oldState = createIdentityStateNode({identityKey: '@neo-gpt'}).node;
+        const newState = createIdentityStateNode({identityKey: '@neo-gpt-euclid'}).node;
+        const episode  = createEmbodiedEpisodeNode({identityKey: '@neo-gpt', model: 'GPT-5.5', family: 'gpt', since: '2026-01-01T00:00:00Z'}).node;
+        const edgeId   = 'edge-state-episode';
+
+        insertNode(db, {id: '@neo-gpt', user_id: 'neo-gpt', data: {id: '@neo-gpt', label: 'AgentIdentity', properties: {githubLogin: '@neo-gpt', userId: 'neo-gpt'}}});
+        insertNode(db, {id: oldState.id, user_id: 'neo-gpt',        data: oldState});
+        insertNode(db, {id: newState.id, user_id: 'neo-gpt-euclid', data: newState});
+        insertNode(db, {id: episode.id,  user_id: 'neo-gpt',        data: episode});
+        insertEdge(db, {
+            id     : edgeId,
+            user_id: 'neo-gpt',
+            source : oldState.id,
+            target : episode.id,
+            type   : 'HAS_EPISODE',
+            data   : {id: edgeId, source: oldState.id, target: episode.id, type: 'HAS_EPISODE', properties: {}}
+        });
+
+        const first = runGraphMigration(db, true);
+        expect(first).toMatchObject({nodesMerged: 1, nodesRekeyed: 1, duplicateCollisions: 0, edgesDropped: 0});
+
+        const episodeNewId = 'embodied-episode-@neo-gpt-euclid-2026-01-01T00:00:00Z';
+        expect(db.prepare('SELECT id FROM Nodes WHERE id IN (?, ?)').all(oldState.id, episode.id)).toEqual([]);
+        expect(db.prepare('SELECT id FROM Nodes WHERE id IN (?, ?)').all(newState.id, episodeNewId)).toHaveLength(2);
+
+        const edge     = db.prepare('SELECT user_id, source, target, data FROM Edges WHERE id = ?').get(edgeId);
+        const edgeData = JSON.parse(edge.data);
+        expect([edge.source, edge.target]).toEqual([newState.id, episodeNewId]);
+        expect([edgeData.source, edgeData.target]).toEqual([newState.id, episodeNewId]);
+        expect(edge.user_id).toBe('neo-gpt-euclid');
+        expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+        expect(db.prepare('SELECT COUNT(*) AS n FROM Edges e JOIN Nodes s ON s.id = e.source JOIN Nodes t ON t.id = e.target').get().n).toBe(1);
+
+        const second = runGraphMigration(db, true);
+        expect(second).toMatchObject({
+            duplicateCollisions    : 0,
+            edgeMetadataRowsUpdated: 0,
+            edgesRekeyed           : 0,
+            nodeMetadataRowsUpdated: 0,
+            nodesMerged            : 0,
             nodesRekeyed           : 0
         });
 

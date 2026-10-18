@@ -472,15 +472,52 @@ function rewriteIdentityEdges(db, rename, apply, stats) {
 const STRUCTURAL_NODE_IDS = new Set(IDENTITY_RENAMES.map(rename => rename.fromNodeId));
 
 /**
+ * @summary Moves every edge that names `fromId` onto `toId`; an edge that would duplicate one already
+ * on the surviving row is dropped, as in {@link rewriteIdentityEdges}.
+ * @param {Object} db Open better-sqlite3 connection.
+ * @param {String} fromId The row id the edges still name.
+ * @param {String} toId The surviving row id.
+ * @param {Boolean} apply True to write, false for dry-run.
+ * @param {Object} stats Mutable stats object.
+ */
+function moveEdges(db, fromId, toId, apply, stats) {
+    for (const edge of db.prepare('SELECT id, source, target, type FROM Edges WHERE source = ? OR target = ?').all(fromId, fromId)) {
+        const nextSource = edge.source === fromId ? toId : edge.source;
+        const nextTarget = edge.target === fromId ? toId : edge.target;
+        const duplicate  = db.prepare('SELECT id FROM Edges WHERE source = ? AND target = ? AND type = ? AND id != ?')
+            .get(nextSource, nextTarget, edge.type, edge.id);
+
+        if (duplicate) {
+            if (apply) {
+                db.prepare('DELETE FROM Edges WHERE id = ?').run(edge.id);
+            }
+            stats.graph.edgesDropped++;
+            stats.graph.duplicateCollisions++;
+            continue;
+        }
+        if (apply) {
+            db.prepare('UPDATE Edges SET source = ?, target = ? WHERE id = ?').run(nextSource, nextTarget, edge.id);
+        }
+    }
+}
+
+/**
  * @summary Rewrites identity metadata in all graph rows after structural node moves. A row whose id
- * embeds a handle (`identity-state-@…`, `embodied-episode-@…-<since>`, `AGENT:@…`) is re-keyed, and
- * every edge endpoint that named the old id follows, so the SQLite id, the JSON id and the edge
- * endpoints never disagree. The AgentIdentity rows themselves moved structurally above.
+ * embeds a handle (`identity-state-@…`, `embodied-episode-@…-<since>`, `AGENT:@…`) is re-keyed as
+ * insert, move, delete: the `Edges` foreign keys (`REFERENCES Nodes(id) ON DELETE CASCADE`, no
+ * `ON UPDATE`) refuse a primary-key update on a connected row, so the surviving row exists before any
+ * edge names it and nothing still names the old row when it goes. When both ids already exist, the
+ * row under the new id is the live one: the old row's edges move onto it and the old row goes. The
+ * edge pass mirrors the moved SQL columns into the JSON, never an independent rewrite, so the SQLite
+ * id, the JSON id and the edge endpoints never disagree. The AgentIdentity rows themselves moved
+ * structurally above.
  * @param {Object} db Open better-sqlite3 connection.
  * @param {Boolean} apply True to write, false for dry-run.
  * @param {Object} stats Mutable stats object.
  */
 function rewriteGraphMetadataRows(db, apply, stats) {
+    const moved = new Map(); // old row id → surviving row id
+
     for (const row of db.prepare('SELECT id, user_id, data FROM Nodes').all()) {
         if (STRUCTURAL_NODE_IDS.has(row.id)) continue;
 
@@ -490,17 +527,25 @@ function rewriteGraphMetadataRows(db, apply, stats) {
         const nextId     = rewriteNodeId(row.id);
 
         if (nextId !== row.id) {
+            moved.set(row.id, nextId);
+
             if (db.prepare('SELECT id FROM Nodes WHERE id = ?').get(nextId)) {
-                stats.graph.duplicateCollisions++;
-                stats.graph.skipped.push(`collision:${row.id}→${nextId}`);
+                moveEdges(db, row.id, nextId, apply, stats);
+                if (apply) {
+                    db.prepare('DELETE FROM Nodes WHERE id = ?').run(row.id);
+                }
+                stats.graph.nodesMerged++;
                 continue;
             }
+
             if (data.id === row.id) nextData.id = nextId;
             if (apply) {
-                db.prepare('UPDATE Nodes SET id = ?, user_id = ?, data = ? WHERE id = ?')
-                    .run(nextId, nextUserId, JSON.stringify(nextData), row.id);
-                db.prepare('UPDATE Edges SET source = ? WHERE source = ?').run(nextId, row.id);
-                db.prepare('UPDATE Edges SET target = ? WHERE target = ?').run(nextId, row.id);
+                db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)')
+                    .run(nextId, nextUserId, JSON.stringify(nextData));
+            }
+            moveEdges(db, row.id, nextId, apply, stats);
+            if (apply) {
+                db.prepare('DELETE FROM Nodes WHERE id = ?').run(row.id);
             }
             stats.graph.nodesRekeyed++;
             continue;
@@ -521,9 +566,9 @@ function rewriteGraphMetadataRows(db, apply, stats) {
         const nextUserId = rewriteUserIdColumn(row.user_id);
         const nextId     = rewriteNodeId(row.id);
 
-        // Endpoints mirror the (already re-keyed) node ids, era-chain shapes included.
-        if (typeof data.source === 'string') nextData.source = rewriteNodeId(data.source);
-        if (typeof data.target === 'string') nextData.target = rewriteNodeId(data.target);
+        // Endpoints mirror the SQL columns after the node moves (in a dry run, the moves they would make).
+        if (typeof data.source === 'string') nextData.source = moved.get(row.source) ?? row.source;
+        if (typeof data.target === 'string') nextData.target = moved.get(row.target) ?? row.target;
         if (data.id === row.id) nextData.id = nextId;
 
         if (nextId !== row.id && db.prepare('SELECT id FROM Edges WHERE id = ?').get(nextId)) {
