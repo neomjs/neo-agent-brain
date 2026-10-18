@@ -1,8 +1,9 @@
-import aiConfig             from '../../mcp/server/knowledge-base/config.mjs';
+import aiConfig                 from '../../mcp/server/knowledge-base/config.mjs';
+import {validateConfigSnapshot} from '../shared/configSnapshot.mjs';
 import TextEmbeddingService, {
     getEmbeddingModel,
     isEmbeddingBatchYieldError
-}                             from '../memory-core/TextEmbeddingService.mjs';
+}                               from '../memory-core/TextEmbeddingService.mjs';
 import mcConfig                from '../../mcp/server/memory-core/config.mjs';
 import {isProviderTimeoutCode} from '../../provider/createTimeoutError.mjs';
 import Base                    from 'neo.mjs/src/core/Base.mjs';
@@ -257,6 +258,73 @@ class VectorService extends Base {
          * @protected
          */
         singleton: true
+    }
+
+    #configSnapshot = null;
+
+    /**
+     * @summary Returns the isolated configuration snapshot injected by unit tests, or `null` when
+     * the service reads the canonical `aiConfig` singleton.
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @summary Injects an isolated configuration snapshot for unit testing, or `null` to restore
+     * the canonical `aiConfig` singleton.
+     * @param {Object|null} value Candidate snapshot or `null`.
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * @summary Rejects non-isolated config snapshots so `VectorService.configSnapshot` cannot be
+     * pointed at the shared `aiConfig` singleton or any of its live subtrees.
+     * @param {Object|null} value Candidate snapshot or `null` to restore canonical `aiConfig`.
+     * @returns {Object|null}
+     * @protected
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            serviceName: 'VectorService'
+        });
+    }
+
+    /**
+     * @summary Builds an isolated plain-object snapshot of the resolved `aiConfig` batch/retry
+     * leaves consumed by `VectorService.embedChunks`.
+     *
+     * Scoped exclusively to `embedChunks` (`backoffBaseMs`, `batchDelay`, `batchSize`, `maxRetries`,
+     * `undeliverableTimeoutStrikes`). Any additional `VectorService` method migrated onto
+     * {@link #getConfig} must expand `createConfigSnapshot()` with the leaves it consumes.
+     *
+     * @returns {Object}
+     */
+    createConfigSnapshot() {
+        return {
+            backoffBaseMs              : aiConfig.backoffBaseMs,
+            batchDelay                 : aiConfig.batchDelay,
+            batchSize                  : aiConfig.batchSize,
+            maxRetries                 : aiConfig.maxRetries,
+            undeliverableTimeoutStrikes: aiConfig.undeliverableTimeoutStrikes
+        };
+    }
+
+    /**
+     * @summary Returns the active configuration source for `embedChunks` (`#configSnapshot` when
+     * injected, otherwise `aiConfig`).
+     *
+     * Currently scoped to `embedChunks`; any other `VectorService` method routed through
+     * `#getConfig()` must first add its consumed leaves to {@link #createConfigSnapshot}.
+     *
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.#configSnapshot || aiConfig;
     }
 
     /**
@@ -1281,7 +1349,7 @@ class VectorService extends Base {
         logger.log(`Using TextEmbeddingService with provider: ${mcConfig.embeddingProvider}.`);
         logger.log('Embedding chunks...');
 
-        const {backoffBaseMs, batchSize, batchDelay, maxRetries, undeliverableTimeoutStrikes} = aiConfig;
+        const {backoffBaseMs, batchSize, batchDelay, maxRetries, undeliverableTimeoutStrikes} = this.#getConfig();
         const guardrail                                                                       = this.resolveEmbeddingGuardrail();
         const failedBatches                                                                   = [];
         // Death-class graduation receipts for this sweep. Separate from

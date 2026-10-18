@@ -15,11 +15,14 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import http           from 'http';
-import aiConfig       from '../../../../../../ai/mcp/server/memory-core/config.template.mjs';
+import {test, expect}              from '@playwright/test';
+import fs                          from 'node:fs';
+import {fileURLToPath}             from 'node:url';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import http                        from 'http';
+import aiConfig                    from '../../../../../../ai/mcp/server/memory-core/config.template.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {
     OPENAI_COMPATIBLE_REQUEST_TIMEOUT_CODE,
     PROVIDER_TIMEOUT_CODE
@@ -49,8 +52,8 @@ import {EMBEDDING_INPUT_TRUNCATED_CODE}
  * outage into a full-corpus walk at `maxRetries * timeout` per batch — strictly worse than the bug. That case
  * must still stop at the first batch, and must still THROW, so a total outage cannot report as a clean run.
  *
- * Serial mode: specs mutate the shared `KB_Config.data` batch leaves and the `TextEmbeddingService.embedTexts`
- * singleton.
+ * Serial mode: specs inject isolated `KB_VectorService.configSnapshot` / `TextEmbeddingService.configSnapshot`
+ * snapshots and replace the `TextEmbeddingService.embedTexts` singleton method.
  */
 test.describe.configure({mode: 'serial'});
 
@@ -83,35 +86,32 @@ function makeChunks(count) {
 }
 
 test.describe('VectorService.embedChunks — one failing batch must not strand the remainder (#16843)', () => {
-    let SDK, KB_VectorService, KB_Config, TextEmbeddingService, ChromaManager;
-    let originalEmbedTexts, originalBatchConfig;
+    let SDK, KB_VectorService, TextEmbeddingService, ChromaManager;
+    let originalEmbedTexts, kbConfigSnapshot;
 
     test.beforeAll(async () => {
         SDK                  = await import('../../../../../../ai/services.mjs');
-        KB_Config            = SDK.KB_Config;
         TextEmbeddingService = SDK.Memory_TextEmbeddingService;
 
         const VectorServiceModule = await import('../../../../../../ai/services/knowledge-base/VectorService.mjs');
         KB_VectorService          = VectorServiceModule.default;
         ChromaManager             = (await import('../../../../../../ai/services/knowledge-base/ChromaManager.mjs')).default;
 
-        originalEmbedTexts  = TextEmbeddingService.embedTexts.bind(TextEmbeddingService);
-        originalBatchConfig = {
-            batchSize : KB_Config.data.batchSize,
-            batchDelay: KB_Config.data.batchDelay,
-            maxRetries: KB_Config.data.maxRetries
-        };
+        originalEmbedTexts = TextEmbeddingService.embedTexts.bind(TextEmbeddingService);
     });
 
     test.afterAll(() => {
-        TextEmbeddingService.embedTexts = originalEmbedTexts;
-        Object.assign(KB_Config.data, originalBatchConfig);
+        TextEmbeddingService.embedTexts     = originalEmbedTexts;
+        TextEmbeddingService.configSnapshot = null;
+        KB_VectorService.configSnapshot     = null;
     });
 
     test.beforeEach(() => {
         // `maxRetries: 1` deliberately: the retry arm backs off `2 ** retries` seconds, so a larger value buys
         // no coverage and spends real wall-clock. One attempt per batch is enough to reach exhaustion.
-        Object.assign(KB_Config.data, {batchSize: 50, batchDelay: 0, maxRetries: 1});
+        kbConfigSnapshot = KB_VectorService.createConfigSnapshot();
+        Object.assign(kbConfigSnapshot, {batchSize: 50, batchDelay: 0, maxRetries: 1});
+        KB_VectorService.configSnapshot = kbConfigSnapshot;
         TextEmbeddingService.embedTexts = async texts => texts.map(() => new Array(384).fill(0));
     });
 
@@ -163,19 +163,20 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
                       // Well-formed AND agreeing: `index` present, model echoing the request.
                       res.end(JSON.stringify({
                           model: aiConfig.openAiCompatible.embeddingModel,
-                          data  : [{index: 0, embedding: [0.1, 0.2, 0.3]}]
+                          data : [{index: 0, embedding: [0.1, 0.2, 0.3]}]
                       }))
                   })
               }),
-              originalHostFn      = TextEmbeddingService.openAiCompatibleHostFn,
               originalUnitTestMode = Neo.config.unitTestMode;
 
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 
         try {
-            TextEmbeddingService.openAiCompatibleHostFn = () => `http://127.0.0.1:${server.address().port}`;
-            TextEmbeddingService.embedTexts = originalEmbedTexts;
-            Neo.config.unitTestMode          = false;
+            const embeddingSnapshot = TextEmbeddingService.createConfigSnapshot();
+            embeddingSnapshot.openAiCompatible.host = `http://127.0.0.1:${server.address().port}`;
+            TextEmbeddingService.configSnapshot     = embeddingSnapshot;
+            TextEmbeddingService.embedTexts         = originalEmbedTexts;
+            Neo.config.unitTestMode                 = false;
 
             const result = await KB_VectorService.embedChunks({collection: spy, chunksToProcess: chunks});
 
@@ -183,8 +184,8 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
             expect(spy.calls.upsert).toBeGreaterThan(0);
             expect(result.embedded).toBeGreaterThan(0)
         } finally {
-            Neo.config.unitTestMode       = originalUnitTestMode;
-            TextEmbeddingService.openAiCompatibleHostFn = originalHostFn;
+            Neo.config.unitTestMode             = originalUnitTestMode;
+            TextEmbeddingService.configSnapshot = null;
             server.close()
         }
     });
@@ -200,10 +201,10 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         // The claim under test is unchanged and is the one that matters operationally: a wrong resident
         // must cost the corpus nothing. A served model that disagrees is refused BEFORE a vector
         // exists, so the collection never sees an upsert.
-        const spy      = createSpyCollection(),
-              chunks   = makeChunks(1),
-              before   = spy.upsertedIds.length,
-              server   = http.createServer((req, res) => {
+        const spy    = createSpyCollection(),
+              chunks = makeChunks(1),
+              before = spy.upsertedIds.length,
+              server = http.createServer((req, res) => {
                   let body = '';
 
                   req.on('data', chunk => body += chunk);
@@ -215,17 +216,18 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
                       // is ever reached, so the model-AGREES control below would have been proving
                       // the wrong thing: the zero-upsert assertion would hold while the identity
                       // guard was bypassed entirely. A witness that cannot fail for the right reason
-                      // is not a witness (@480 RA-2).
+                      // is not a witness.
                       res.writeHead(200, {'Content-Type': 'application/json'});
                       res.end(JSON.stringify({model: 'other', data: [{index: 0, embedding: [0.1, 0.2, 0.3]}]}))
                   })              }),
-              originalHostFn       = TextEmbeddingService.openAiCompatibleHostFn,
               originalUnitTestMode  = Neo.config.unitTestMode;
 
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 
         try {
-            TextEmbeddingService.openAiCompatibleHostFn = () => `http://127.0.0.1:${server.address().port}`;
+            const embeddingSnapshot = TextEmbeddingService.createConfigSnapshot();
+            embeddingSnapshot.openAiCompatible.host = `http://127.0.0.1:${server.address().port}`;
+            TextEmbeddingService.configSnapshot     = embeddingSnapshot;
 
             // The real singleton, not a stub: this is the arm's whole point. `originalEmbedTexts` is the
             // describe-scope capture of the untouched method, so restoring it here undoes the `beforeEach`
@@ -251,8 +253,8 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
             expect(spy.upsertedIds).toHaveLength(before);
             expect(spy.calls.upsert).toBe(0)
         } finally {
-            Neo.config.unitTestMode       = originalUnitTestMode;
-            TextEmbeddingService.openAiCompatibleHostFn = originalHostFn;
+            Neo.config.unitTestMode             = originalUnitTestMode;
+            TextEmbeddingService.configSnapshot = null;
             server.close()
         }
     });
@@ -268,7 +270,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         // by paired isolation, and isolation can only PROVE a poison when a control outside the failed
         // batch exists — without one it returns `unproved` and the first-batch abort raises, which
         // would let this arm pass while the isolation path was never exercised at all.
-        Object.assign(KB_Config.data, {batchSize: 2, batchDelay: 0, maxRetries: 4});
+        Object.assign(kbConfigSnapshot, {batchSize: 2, batchDelay: 0, maxRetries: 4});
 
         const spy       = createSpyCollection(),
               chunks    = makeChunks(4),
@@ -321,7 +323,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         // circuit-open — so it proves nothing about this guard. An error carrying no code is the
         // honest "unlucky, not futile" case: it maps to `KB_VECTOR_EMBED_FAILED`, sits outside the
         // rejected set, and its retries are the recovery path this guard must leave alone.
-        Object.assign(KB_Config.data, {batchSize: 50, batchDelay: 0, maxRetries: 3});
+        Object.assign(kbConfigSnapshot, {batchSize: 50, batchDelay: 0, maxRetries: 3});
 
         const spy    = createSpyCollection(),
               chunks = makeChunks(3);
@@ -373,7 +375,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
     });
 
     test('#17017: paired first-batch isolation fences one poison and lands every recoverable chunk', async () => {
-        Object.assign(KB_Config.data, {batchSize: 2, batchDelay: 0, maxRetries: 1});
+        Object.assign(kbConfigSnapshot, {batchSize: 2, batchDelay: 0, maxRetries: 1});
 
         const spy           = createSpyCollection();
         const chunks        = makeChunks(4);
@@ -412,7 +414,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
     });
 
     test('#17017: a dead provider costs one bounded control after first-batch retries, never a corpus walk', async () => {
-        Object.assign(KB_Config.data, {batchSize: 2, batchDelay: 0, maxRetries: 1});
+        Object.assign(kbConfigSnapshot, {batchSize: 2, batchDelay: 0, maxRetries: 1});
 
         const spy           = createSpyCollection();
         const chunks        = makeChunks(8);
@@ -436,7 +438,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
     });
 
     test('#17017: A-B-A recovers a one-off first-input failure instead of minting poison', async () => {
-        Object.assign(KB_Config.data, {batchSize: 1, batchDelay: 0, maxRetries: 1});
+        Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 1});
 
         const spy           = createSpyCollection();
         const chunks        = makeChunks(2);
@@ -470,7 +472,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         const originalIsolate    = KB_VectorService.isolateFirstFailedBatch.bind(KB_VectorService);
 
         globalThis.setTimeout = (fn, ms, ...args) => originalSetTimeout(fn, 0, ...args);
-        Object.assign(KB_Config.data, {batchSize: 1, batchDelay: 0, maxRetries: 2});
+        Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 2});
 
         let providerCalls  = 0,
             isolationCalls = 0,
@@ -607,7 +609,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         globalThis.setTimeout = (fn, ms, ...args) => originalSetTimeout(fn, 0, ...args);
 
         try {
-            Object.assign(KB_Config.data, {batchSize: 1, batchDelay: 0, maxRetries: 5});
+            Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 5});
 
             for (const code of [
                 PROVIDER_TIMEOUT_CODE,
@@ -669,7 +671,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         globalThis.setTimeout = (fn, ms, ...args) => originalSetTimeout(fn, 0, ...args);
 
         try {
-            Object.assign(KB_Config.data, {batchSize: 1, batchDelay: 0, maxRetries: 2});
+            Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 2});
 
             const chunks        = makeChunks(1);
             let   providerCalls = 0,
@@ -705,7 +707,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
     });
 
     test('#16995: circuit-open is provider-phase terminal and preserves the exact controls', async () => {
-        Object.assign(KB_Config.data, {batchSize: 1, batchDelay: 0, maxRetries: 5});
+        Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 5});
 
         const
             spy               = createSpyCollection(),
@@ -905,5 +907,12 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         expect(thrown).toBeTruthy();
         expect(thrown.residencyDisposition,
             'absent upstream must stay absent downstream').toBeUndefined();
+    });
+
+    test('zero shared-config mutations and retired openAiCompatibleHostFn seam (#1090)', () => {
+        const source = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(source)).toEqual([]);
+        expect('openAiCompatibleHostFn' in TextEmbeddingService).toBe(false);
     });
 });
