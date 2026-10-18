@@ -259,6 +259,38 @@ test.describe('pruneHealLedger + self-bounding append — bounded retention (#14
         }
     });
 
+    test('a reader holding the ledger open across a prune reads the whole old file; the path then holds only the tail', async () => {
+        const dir = await tmpDir();
+        try {
+            for (let i = 0; i < 6; i++) {
+                await appendHealEvent({type: 'heal', collection: 'c1', status: 'healed', at: i}, {dir, triggerBytes: Infinity});
+            }
+            const filePath = getHealLedgerFilePath(dir);
+            await fs.chmod(filePath, 0o640);
+
+            const before = await fs.readFile(filePath, 'utf8'),
+                  held   = await fs.open(filePath, 'r');
+
+            try {
+                await pruneHealLedger({dir, maxEvents: 2});
+
+                const {size} = await held.stat(),
+                      buffer = Buffer.alloc(size);
+
+                await held.read(buffer, 0, size, 0);
+                expect(buffer.toString('utf8'), 'a copy opened before the prune sees the old file, never a splice').toBe(before)
+            } finally {
+                await held.close()
+            }
+
+            expect((await readHealLedger({dir})).map(event => event.at)).toEqual([4, 5]);
+            expect((await fs.readdir(dir)).filter(name => name !== 'heal-events.jsonl'), 'no scratch file remains').toEqual([]);
+            expect((await fs.stat(filePath)).mode & 0o777, 'the prune keeps the ledger\'s mode').toBe(0o640)
+        } finally {
+            await fs.rm(dir, {recursive: true, force: true});
+        }
+    });
+
     test('no-op at/under the cap and on a missing ledger (pruned: 0)', async () => {
         const dir = await tmpDir(), emptyDir = await tmpDir();
         try {

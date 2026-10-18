@@ -1,5 +1,6 @@
-import {appendFile, mkdir, readFile, stat, writeFile} from 'fs/promises';
-import path                                           from 'path';
+import {appendFile, mkdir, readFile, stat} from 'fs/promises';
+import path                                from 'path';
+import {writeFileAtomic}                   from '../../shared/atomicFileWrite.mjs';
 
 /**
  * @module ai/services/memory-core/helpers/healEventLedgerStore
@@ -190,10 +191,12 @@ export async function readHealLedger({dir} = {}) {
 }
 
 /**
- * @summary Bounds the durable ledger to the newest `maxEvents` entries (keep-most-recent), rewriting the file
- * in place. Pure keep-most-recent is correct because the ledger is append-only telemetry — no entry's removal
- * changes a heal decision (the anti-thrash gate reads only a recent window, far inside the retained set). A
- * corrupt line is dropped on rewrite (it was already unreadable). I/O at the edge only.
+ * @summary Bounds the durable ledger to the newest `maxEvents` entries (keep-most-recent), replacing the file
+ * atomically with the ledger's own mode. A reader that opened the ledger before the prune — a backup copying it
+ * — reads the whole old file, one that opens after reads the whole new one, and a failed write leaves the old
+ * ledger as it was. Pure keep-most-recent is correct because the ledger is append-only telemetry — no entry's
+ * removal changes a heal decision (the anti-thrash gate reads only a recent window, far inside the retained
+ * set). A corrupt line is dropped on rewrite (it was already unreadable). I/O at the edge only.
  * @param {Object} options
  * @param {String} options.dir The durable state directory.
  * @param {Number} options.maxEvents Max entries to retain (the AiConfig retention leaf; no helper-owned default).
@@ -213,8 +216,12 @@ export async function pruneHealLedger({dir, maxEvents} = {}) {
         return {pruned: 0, retained: events.length};
     }
 
-    const retained = events.slice(events.length - maxEvents); // append order is oldest→newest; keep the tail
-    await writeFile(getHealLedgerFilePath(dir), retained.map(event => JSON.stringify(event)).join('\n') + '\n', 'utf8');
+    const
+        filePath = getHealLedgerFilePath(dir),
+        retained = events.slice(events.length - maxEvents), // append order is oldest→newest; keep the tail
+        {mode}   = await stat(filePath);
+
+    await writeFileAtomic(filePath, retained.map(event => JSON.stringify(event)).join('\n') + '\n', {mode: mode & 0o777});
 
     return {pruned: events.length - retained.length, retained: retained.length};
 }
