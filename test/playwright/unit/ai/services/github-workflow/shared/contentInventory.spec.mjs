@@ -1,12 +1,17 @@
-import {test, expect}                            from '@playwright/test';
-import fs                                        from 'fs/promises';
-import os                                        from 'os';
-import path                                      from 'path';
+import {test, expect}                                                      from '@playwright/test';
+import fs                                                                  from 'fs/promises';
+import os                                                                  from 'os';
+import path                                                                from 'path';
 import {parseContentPath as parseSourceContentPath, pathSegmentOptionsFor} from '../../../../../../../ai/services/github-workflow/shared/contentPath.mjs';
-import {writeContentIndex}                       from '../../../../../../../ai/services/github-workflow/shared/contentIndex.mjs';
+import {writeContentIndex}                                                 from '../../../../../../../ai/services/github-workflow/shared/contentIndex.mjs';
 import {
     buildContentInventory,
+    buildLogicalIndex,
+    collectWrittenArchiveTargets,
+    findLogicalIdentityCollisions,
+    listArchiveFamilies,
     resolveArchivedLocation,
+    snapshotArchiveTree,
     validateContentIntegrity
 } from '../../../../../../../ai/services/github-workflow/shared/contentInventory.mjs';
 
@@ -277,7 +282,7 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
                 {repoSlug: otherSlug, type: 'pulls', id: 10, version: null, chunkNumber: 1, path: otherPath}
             ]);
 
-            const neoResult = await validateContentIntegrity(config, inventoryOpts);
+            const neoResult   = await validateContentIntegrity(config, inventoryOpts);
             const otherResult = await validateContentIntegrity(config, {
                 repoSlug: otherSlug, type: 'pulls', filePrefix: 'pr-'
             });
@@ -434,6 +439,76 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
 
             expect(result.ok).toBe(true);
             expect(result.corpusTotal).toBe(1)
+        })
+    });
+
+    test.describe('findLogicalIdentityCollisions — the archive logical-identity invariant (#457)', () => {
+        const archiveRootFor = () => path.join(contentRoot, repoSlug, 'archive');
+
+        const writeFamilyArchived = async (family, version, chunk, name, body = `# ${name}\n`) => {
+            const dir  = path.join(archiveRootFor(), family, version, `chunk-${chunk}`),
+                  full = path.join(dir, name);
+
+            await fs.mkdir(dir, {recursive: true});
+            await fs.writeFile(full, body, 'utf8');
+            return full
+        };
+
+        test('a clean archive reports no collisions', async () => {
+            await writeArchived('v13.0.0', 1, 1);
+            await writeArchived('v13.0.0', 2, 2);
+
+            expect(findLogicalIdentityCollisions({archiveRoot: archiveRootFor()})).toEqual([])
+        });
+
+        test('detects a duplicate across chunks or across version buckets within a family', async () => {
+            const first  = await writeFamilyArchived('pulls', 'v13.0.0', 1, 'pr-11982.md'),
+                  second = await writeFamilyArchived('pulls', 'v13.0.0', 10, 'pr-11982.md');
+
+            await writeFamilyArchived('issues', 'v13.0.0', 1, 'issue-7.md');
+            await writeFamilyArchived('issues', 'v13.1.0', 1, 'issue-7.md');
+
+            const findings = findLogicalIdentityCollisions({archiveRoot: archiveRootFor()});
+
+            expect(findings.map(item => item.key)).toEqual(['issues/issue-7.md', 'pulls/pr-11982.md']);
+            expect(findings[1].paths.sort()).toEqual([first, second].sort())
+        });
+
+        test('targets scope reporting to touched artifacts and ignore untouched pre-existing collisions', async () => {
+            const archiveRoot = archiveRootFor();
+
+            await writeFamilyArchived('pulls', 'v13.0.0', 1, 'pr-100.md');
+            await writeFamilyArchived('pulls', 'v13.0.0', 9, 'pr-100.md');
+
+            const baseline  = snapshotArchiveTree(archiveRoot),
+                  untouched = await writeFamilyArchived('pulls', 'v13.0.0', 3, 'pr-200.md'),
+                  targets   = collectWrittenArchiveTargets(archiveRoot, baseline);
+
+            expect(targets).toEqual([path.resolve(untouched)]);
+            expect(findLogicalIdentityCollisions({archiveRoot, targets})).toEqual([]);
+
+            const secondBaseline = snapshotArchiveTree(archiveRoot),
+                  collidingWrite = await writeFamilyArchived('pulls', 'v13.0.0', 4, 'pr-200.md'),
+                  secondTargets  = collectWrittenArchiveTargets(archiveRoot, secondBaseline);
+
+            expect(secondTargets).toEqual([path.resolve(collidingWrite)]);
+            expect(findLogicalIdentityCollisions({archiveRoot, targets: secondTargets}).map(item => item.key))
+                .toEqual(['pulls/pr-200.md'])
+        });
+
+        test('derives archive families from disk and degrades cleanly when the archive root is absent', async () => {
+            const archiveRoot = archiveRootFor();
+
+            expect(listArchiveFamilies(path.join(archiveRoot, 'missing'))).toEqual([]);
+            expect(findLogicalIdentityCollisions({archiveRoot: path.join(archiveRoot, 'missing')})).toEqual([]);
+
+            await writeFamilyArchived('custom-family', 'v14.0.0', 1, 'item-1.md');
+            await writeFamilyArchived('custom-family', 'v14.0.0', 2, 'item-1.md');
+
+            expect(listArchiveFamilies(archiveRoot)).toEqual(['custom-family']);
+            expect(buildLogicalIndex(archiveRoot).get('custom-family/item-1.md')).toHaveLength(2);
+            expect(findLogicalIdentityCollisions({archiveRoot}).map(item => item.key))
+                .toEqual(['custom-family/item-1.md'])
         })
     })
 });

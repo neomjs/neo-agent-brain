@@ -1,21 +1,22 @@
-import aiConfig                from '../../mcp/server/github-workflow/config.mjs';
-import Base                    from 'neo.mjs/src/core/Base.mjs';
-import logger                  from '../../mcp/server/github-workflow/logger.mjs';
-import IssueSyncer             from './sync/IssueSyncer.mjs';
-import MetadataManager         from './sync/MetadataManager.mjs';
-import ReleaseNotesSyncer      from './sync/ReleaseNotesSyncer.mjs';
-import DiscussionSyncer        from './sync/DiscussionSyncer.mjs';
-import PullRequestSyncer       from './sync/PullRequestSyncer.mjs';
-import reconcileActiveChunks   from './shared/reconcileActiveChunks.mjs';
-import RepositoryService       from './RepositoryService.mjs';
-import {formatIntegrityReport} from './shared/contentInventory.mjs';
-import {exec}                  from 'child_process';
-import path                    from 'path';
-import {promisify}             from 'util';
-// Pure predicate shared with the `lint-staged` guard, so the invariant has ONE definition and the two
-// enforcement points cannot drift. Same direction as the `buildScripts/util/sanitizer.mjs` import in
-// every `ai/mcp/server/*/mcp-server.mjs`.
-import {findLogicalIdentityCollisions} from 'neo.mjs/buildScripts/util/check-content-logical-identity.mjs';
+import aiConfig              from '../../mcp/server/github-workflow/config.mjs';
+import Base                  from 'neo.mjs/src/core/Base.mjs';
+import logger                from '../../mcp/server/github-workflow/logger.mjs';
+import IssueSyncer           from './sync/IssueSyncer.mjs';
+import MetadataManager       from './sync/MetadataManager.mjs';
+import ReleaseNotesSyncer    from './sync/ReleaseNotesSyncer.mjs';
+import DiscussionSyncer      from './sync/DiscussionSyncer.mjs';
+import PullRequestSyncer     from './sync/PullRequestSyncer.mjs';
+import reconcileActiveChunks from './shared/reconcileActiveChunks.mjs';
+import RepositoryService     from './RepositoryService.mjs';
+import {
+    collectWrittenArchiveTargets,
+    findLogicalIdentityCollisions,
+    formatIntegrityReport,
+    snapshotArchiveTree
+} from './shared/contentInventory.mjs';
+import {exec}      from 'child_process';
+import path        from 'path';
+import {promisify} from 'util';
 
 const execAsync = promisify(exec);
 
@@ -339,7 +340,7 @@ class SyncService extends Base {
 
     /**
      * @summary Emits one origin-qualified corpus — the conversations and the release notes — without
-     * consumer derivation or delivery.
+     * consumer derivation or delivery, and asserts logical identity over the archive files this run wrote.
      *
      * Release history remains the prerequisite for issue, discussion and pull bucketing, and the
      * notes are written beside the conversations, so a reader of the corpus alone has them. Portal/SEO
@@ -348,9 +349,26 @@ class SyncService extends Base {
      * @param {Number[]} [options.refetchIssues=[]] Issues to force-refetch in this emission, for corpus files
      * that drifted from GitHub without an `updatedAt` change.
      * @returns {Promise<object>} Facet statistics and truthful aggregate outcome.
+     * @throws {Error} When a facet fails to advance or this run writes a logical-identity collision in the archive.
      */
     async emitConversationCorpus({refetchIssues = []} = {}) {
-        return this.emitGeneratedContent({pushLocalChanges: false, refetchIssues});
+        const
+            archiveRoot     = aiConfig.issueSync.archiveRoot,
+            baselineArchive = snapshotArchiveTree(archiveRoot),
+            result          = await this.emitGeneratedContent({pushLocalChanges: false, refetchIssues}),
+            targets         = collectWrittenArchiveTargets(archiveRoot, baselineArchive),
+            collisions      = findLogicalIdentityCollisions({archiveRoot, targets});
+
+        if (collisions.length > 0) {
+            throw new Error(
+                'Conversation corpus emission rejected: this run wrote two artifacts claiming one logical ' +
+                `name — ${collisions.map(item => `${item.key} (${item.paths.length} copies)`).join('; ')}. ` +
+                'Publishing this state would hand duplicate logical identities to downstream corpus consumers. ' +
+                'Repair via PullRequestSyncer.repairDuplicateArtifacts before retrying.'
+            );
+        }
+
+        return result;
     }
 
     /**

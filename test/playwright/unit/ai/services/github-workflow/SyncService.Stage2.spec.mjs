@@ -22,6 +22,7 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 test.describe('SyncService — Stage 2 Ingestion', () => {
     test.describe.configure({mode: 'serial'});
 
+    let aiConfig;
     let SyncService;
     let IssueSyncer;
     let ReleaseNotesSyncer;
@@ -67,6 +68,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         // and avoid ReferenceErrors from circular dependencies in dynamic imports.
         await import('../../../../../../ai/services.mjs');
 
+        aiConfig = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
         SyncService = (await import('../../../../../../ai/services/github-workflow/SyncService.mjs')).default;
         IssueSyncer = (await import('../../../../../../ai/services/github-workflow/sync/IssueSyncer.mjs')).default;
         ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
@@ -880,6 +882,69 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
 
             expect(commands.some(command => command.includes('git commit'))).toBe(true);
             expect(commands.some(command => command.includes('git push'))).toBe(true)
+        })
+    });
+
+    test.describe('the corpus emit path enforces one artifact per logical name (#457)', () => {
+        let tempRoot,
+            originalContentRootOverride;
+
+        const writeOriginArchived = async (relative, body = '# artifact\n') => {
+            const absolute = path.join(aiConfig.issueSync.archiveRoot, relative);
+
+            await fs.mkdir(path.dirname(absolute), {recursive: true});
+            await fs.writeFile(absolute, body, 'utf8');
+            return absolute
+        };
+
+        test.beforeEach(async () => {
+            tempRoot                    = await fs.mkdtemp(path.join(await fs.realpath('/tmp'), 'neo-emit-corpus-'));
+            originalContentRootOverride = aiConfig.issueSync.contentRootOverride;
+            aiConfig.issueSync.contentRootOverride = tempRoot;
+            ReleaseNotesSyncer.sortedReleases      = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}]
+        });
+
+        test.afterEach(async () => {
+            aiConfig.issueSync.contentRootOverride = originalContentRootOverride;
+            await fs.rm(tempRoot, {force: true, recursive: true})
+        });
+
+        test('AC-1: an emit run that writes a second artifact under an existing logical name rejects', async () => {
+            await writeOriginArchived('issues/v13.0.0/chunk-1/issue-42.md');
+
+            IssueSyncer.pullFromGitHub = async metadata => {
+                await writeOriginArchived('issues/v13.0.0/chunk-2/issue-42.md');
+                return {
+                    newMetadata: metadata,
+                    stats      : {pulled: {count: 1, created: 0, updated: 1, moved: 0}, dropped: {count: 0}}
+                }
+            };
+
+            await expect(SyncService.emitConversationCorpus())
+                .rejects.toThrow(/two artifacts claiming one logical name — issues\/issue-42\.md \(2 copies\)/)
+        });
+
+        test('AC-2: a clean emit run passes, and a pre-existing collision outside the files this run wrote passes', async () => {
+            await writeOriginArchived('pulls/v13.0.0/chunk-1/pr-100.md');
+            await writeOriginArchived('pulls/v13.0.0/chunk-9/pr-100.md');
+
+            IssueSyncer.pullFromGitHub = async metadata => {
+                await writeOriginArchived('issues/v13.0.0/chunk-1/issue-200.md');
+                return {
+                    newMetadata: metadata,
+                    stats      : {pulled: {count: 1, created: 1, updated: 0, moved: 0}, dropped: {count: 0}}
+                }
+            };
+
+            const result = await SyncService.emitConversationCorpus();
+
+            expect(result.facetOutcomes.every(outcome => outcome.advanced)).toBe(true)
+        });
+
+        test('AC-3: SyncService no longer imports check-content-logical-identity from neo.mjs', async () => {
+            const source = await fs.readFile(path.resolve(process.cwd(), 'ai/services/github-workflow/SyncService.mjs'), 'utf8');
+
+            expect(source).not.toMatch(/check-content-logical-identity/)
         })
     })
 });
