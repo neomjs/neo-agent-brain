@@ -948,6 +948,38 @@ class TenantRepoSyncService extends Base {
     embeddingRecoveryClock = Date.now
 
     /**
+     * Process-owned retry gate for the full-band authorization proof. Separate from the cadence
+     * gate: one gate holds one generation, so sharing it would let each key rotate the other's
+     * backoff away.
+     * @member {Object|null} embeddingAuthorizationGate
+     * @protected
+     */
+    embeddingAuthorizationGate = null
+
+    /**
+     * Mutable attempt seam for the authorization proof, read by its gate closure.
+     * @member {Function|null} embeddingAuthorizationProbeFn
+     * @protected
+     */
+    embeddingAuthorizationProbeFn = null
+
+    /**
+     * The proof the sweep last requested: `{key, episodeKeys, requestedAt}`. Written by the sweep,
+     * read by the poll cycle that produces the proof.
+     * @member {Object|null} embeddingAuthorizationRequest
+     * @protected
+     */
+    embeddingAuthorizationRequest = null
+
+    /**
+     * The latest authorization proof: the probe outcome plus `{key, checkedAt}`. Process-local by
+     * design: a restart loses it, and the next cycle proves again.
+     * @member {Object|null} embeddingAuthorizationProof
+     * @protected
+     */
+    embeddingAuthorizationProof = null
+
+    /**
      * @summary Returns a bounded readiness result for one effective repository.
      * @param {Object} repo Tenant and repository identity.
      * @param {Object} [options]
@@ -991,10 +1023,14 @@ class TenantRepoSyncService extends Base {
      * @protected
      */
     clearEmbeddingRecoveryProbeState() {
-        this.embeddingRecoveryGate       = null;
-        this.embeddingRecoveryLastResult = null;
-        this.embeddingRecoveryProbeFn    = null;
-        this.embeddingRecoveryClock      = Date.now;
+        this.embeddingRecoveryGate         = null;
+        this.embeddingRecoveryLastResult   = null;
+        this.embeddingRecoveryProbeFn      = null;
+        this.embeddingRecoveryClock        = Date.now;
+        this.embeddingAuthorizationGate    = null;
+        this.embeddingAuthorizationProbeFn = null;
+        this.embeddingAuthorizationRequest = null;
+        this.embeddingAuthorizationProof   = null;
     }
 
     /**
@@ -1068,123 +1104,215 @@ class TenantRepoSyncService extends Base {
 
         this.embeddingRecoveryClock = clock;
 
-        // The band is read HERE, at the use site that owns the decision, and injected into the pure
-        // builder — the sanctioned shape for an `ai/` consumer, and the reason `embeddingProbe.mjs`
-        // stays Neo-free. Resolved per call, so a deployment that narrows its slot mid-run is probed
-        // against the ceiling it actually has.
-        //
-        // Resolved BEFORE the gate key, not inside the probe: the key NAMES this geometry, so a
-        // value produced by the run the key admits can only describe the PREVIOUS run's bound.
-        //
-        // A 44-byte canary certified a property nobody needed. Peak memory for one non-causal
-        // embedding request scales with the SQUARE of its token count, so a probe three orders
-        // of magnitude under the workload cannot fail the way the lane fails — and its `healthy`
-        // was the green light that re-dispatched the batch that killed the engine, 36 times.
-        const probeSize = buildEmbeddingProbeInput({
-            estimateBandTokens: resolveEmbeddingAdmissionBand({
-                contextLimitTokens       : AiConfig.localModels.embedding.contextLimitTokens,
-                safeProcessingLimitTokens: AiConfig.localModels.embedding.safeProcessingLimitTokens
-            }).estimateBandTokens,
-            // The recovery probe is NOT full-band, and that is a measured retreat rather than
-            // a preference. A full-band probe genuinely bounds the re-dispatch it authorizes —
-            // the call site cannot see the cohort's input sizes, so the band ceiling is the only
-            // available dominating bound — but the SWEEP AWAITS this probe, and the suite priced
-            // it: the same `runTask` arm passes in 12.7 s at a quarter band and exceeds 30 s at
-            // the full one. In production that latency is a held lease against a dead provider.
-            //
-            // So neither published fork survives contact: the cheap probe does not bound the
-            // authorization, and the bounding probe blocks the sweep. The shape that works is
-            // one neither of us had — obtain the full-size proof OUT of the sweep's critical
-            // path, and let eligibility consume it — and that is open on the PR rather than
-            // guessed at here.
-            fraction: EMBEDDING_PROBE_BAND_FRACTION
+        // The cadence probe stays at its declared fraction because the sweep awaits it: the suite
+        // priced the same `runTask` arm at 12.7 s for a quarter band and over 30 s for the full one.
+        // Its `healthy` says the lane answers NOW. Whether it is healthy at the size a bypass
+        // re-dispatches is `proveEmbeddingRecoveryAuthorization`'s question, answered off this path.
+        const {probeSize, key} = this.resolveEmbeddingProbeIdentity({episodeKeys, fraction: EMBEDDING_PROBE_BAND_FRACTION});
+
+        this.embeddingRecoveryProbeFn = runProbe || this.createEmbeddingProbeFn({
+            operationLabel: 'Tenant repo sync embedding recovery probe',
+            probeSize,
+            timeoutMs
         });
 
-        this.embeddingRecoveryProbeFn = runProbe || (() => {
-            // NOT scaled to the size, and that is currently a KNOWN DEFECT rather than a decision.
-            //
-            // The reviewer is right that a 30 s ceiling under a full-band probe makes a HEALTHY lane
-            // report `consumer-probe-timeout` — the incident's 13,980-token request took ~180 s and
-            // this probe is larger. But scaling it naively is worse in a way only the suite showed:
-            // the sweep AWAITS this probe, so a size-derived 411 s deadline blocks `runTask` for
-            // roughly seven minutes against a dead provider, once per backoff. A spec driving the
-            // real sweep times out at 30 s, which is the operational consequence in miniature.
-            //
-            // Both numbers are wrong and the third is not a number: the deadline has to be bounded by
-            // what the CALLER can afford to wait, which is the lease budget, not by what the request
-            // needs. That is a design decision on a recovery path, and it is open on the PR rather
-            // than picked here.
-            const sizedTimeoutMs = timeoutMs;
-
-            return buildEmbeddingProbeBlock({
-                cfg      : AiConfig,
-                embedText: (text, explicitProvider, options) =>
-                    TextEmbeddingService.embedText(text, explicitProvider, options),
-                input         : probeSize.input,
-                operationLabel: 'Tenant repo sync embedding recovery probe',
-                now           : this.embeddingRecoveryClock,
-                probeSize,
-                timeoutMs     : sizedTimeoutMs
-            })
+        this.embeddingRecoveryGate ??= this.createEmbeddingProbeGate({
+            probe: context => this.embeddingRecoveryProbeFn(context),
+            failureTtlMs,
+            failureTtlMaxMs
         });
-
-        if (!this.embeddingRecoveryGate) {
-            this.embeddingRecoveryGate = createBoundedRetryGate({
-                run: async context => {
-                    // ONE destructive attempt per proof identity. A full-band probe against a lane
-                    // that OOMs is itself the killing request, and the gate's default budget is
-                    // `Infinity` — so without this the repair reproduces the loop it exists to stop,
-                    // at 30 s → 10 min backoff, forever. The docblock beside the sizing claimed "one
-                    // request"; the mechanism said otherwise, which is the defect this whole ticket
-                    // is about, written into its own fix.
-                    //
-                    // Recorded against the KEY, so the refusal lasts exactly as long as the question
-                    // does: rotate the episode, the generation or the geometry and the identity
-                    // changes, which is the only honest reason to spend another engine.
-                    const died = this.embeddingRecoveryDeaths?.get(context?.key);
-
-                    if (died) {
-                        return {...died, cached: true}
-                    }
-
-                    try {
-                        const outcome = await this.embeddingRecoveryProbeFn(context);
-
-                        // Only DEATH is recorded. `provider-unreachable` is ambient and deserves the
-                        // ordinary bounded retry; a process that accepted the request and went away
-                        // has answered the question this probe asks, and asking again costs another
-                        // engine to learn the same thing.
-                        if (outcome?.errorClassification === 'provider-died') {
-                            (this.embeddingRecoveryDeaths ??= new Map()).set(context?.key, outcome)
-                        }
-
-                        return outcome;
-                    } catch {
-                        return {
-                            status             : 'failed',
-                            error              : 'probe-could-not-run:EMBEDDING_PROBE_EXECUTION_ERROR',
-                            errorClassification: 'probe-could-not-run',
-                            errorCode          : 'EMBEDDING_PROBE_EXECUTION_ERROR'
-                        };
-                    }
-                },
-                failureTtlMs,
-                failureTtlMaxMs,
-                now: () => this.embeddingRecoveryClock()
-            });
-        }
-
-        // Geometry is part of the proof's IDENTITY, not metadata about it. A cached quarter-band
-        // `healthy` cannot answer a full-band question, and a key that omits the bound lets it —
-        // the proof would satisfy a question it never bounded, which is RA-1 one layer along.
-        //
-        // `sized` is the builder's own word for a band it could not resolve. Read that, rather than
-        // inferring absence from a null fraction: the two are the same today only by coincidence.
-        const geometry = probeSize.sized ? `${probeSize.estimateTokens}:${probeSize.fraction}` : 'unsized',
-              key      = `${AiConfig.embeddingProvider}:${AiConfig.vectorDimension}:${geometry}:${[...episodeKeys].sort().join(',')}`;
 
         this.embeddingRecoveryLastResult = await this.embeddingRecoveryGate.tick({key});
         return this.embeddingRecoveryLastResult;
+    }
+
+    /**
+     * @summary Sizes one embedding recovery probe and names the identity its gate and death cache key on.
+     *
+     * The band is read HERE, at the use site that owns the decision, and injected into the pure
+     * builder, which is why `embeddingProbe.mjs` stays Neo-free. It is resolved per call, so a
+     * deployment that narrows its slot mid-run is probed against the ceiling it actually has, and
+     * BEFORE the key: the key names this geometry, so a value produced by the run the key admits
+     * could only describe the previous run's bound.
+     *
+     * Size is the point. Peak memory for one non-causal embedding request scales with the SQUARE of
+     * its token count, so a probe far under the workload cannot fail the way the lane fails: a
+     * 44-byte canary's `healthy` once re-dispatched the batch that killed the engine, 36 times. So
+     * geometry is part of the IDENTITY, not metadata about it, and `sized` is the builder's own word
+     * for a band it could not resolve.
+     *
+     * @param {Object} options
+     * @param {String[]} options.episodeKeys Awaiting durable episode/generation-history keys.
+     * @param {Number} options.fraction Share of the admission band the probe exercises.
+     * @returns {{probeSize: Object, key: String}}
+     * @protected
+     */
+    resolveEmbeddingProbeIdentity({episodeKeys, fraction}) {
+        const
+            probeSize = buildEmbeddingProbeInput({
+                estimateBandTokens: resolveEmbeddingAdmissionBand({
+                    contextLimitTokens       : AiConfig.localModels.embedding.contextLimitTokens,
+                    safeProcessingLimitTokens: AiConfig.localModels.embedding.safeProcessingLimitTokens
+                }).estimateBandTokens,
+                fraction
+            }),
+            geometry  = probeSize.sized ? `${probeSize.estimateTokens}:${probeSize.fraction}` : 'unsized';
+
+        return {
+            probeSize,
+            key: `${AiConfig.embeddingProvider}:${AiConfig.vectorDimension}:${geometry}:${[...episodeKeys].sort().join(',')}`
+        }
+    }
+
+    /**
+     * @summary Builds the default attempt for one sized probe against the configured provider.
+     * @param {Object} options
+     * @param {String} options.operationLabel Bounded diagnostic label.
+     * @param {Object} options.probeSize `buildEmbeddingProbeInput` result.
+     * @param {Number} options.timeoutMs Provider deadline.
+     * @returns {Function}
+     * @protected
+     */
+    createEmbeddingProbeFn({operationLabel, probeSize, timeoutMs}) {
+        return () => buildEmbeddingProbeBlock({
+            cfg      : AiConfig,
+            embedText: (text, explicitProvider, options) =>
+                TextEmbeddingService.embedText(text, explicitProvider, options),
+            input    : probeSize.input,
+            operationLabel,
+            now      : this.embeddingRecoveryClock,
+            probeSize,
+            timeoutMs
+        })
+    }
+
+    /**
+     * @summary Creates one process-owned retry gate over an embedding probe attempt.
+     *
+     * Both probes share ONE death cache, so recovery keeps a single refusal authority. One
+     * destructive attempt per proof identity: a full-band probe against a lane that OOMs is itself
+     * the killing request, and the gate's default budget is `Infinity`, so without the cache the
+     * repair would reproduce the loop it exists to stop, at 30 s → 10 min backoff, forever. The
+     * refusal is recorded against the KEY, so it lasts exactly as long as the question does:
+     * rotate the episode, the generation or the geometry and the identity changes.
+     *
+     * Only DEATH is recorded. `provider-unreachable` is ambient and gets the ordinary bounded
+     * retry; a process that accepted the request and went away has answered the question.
+     *
+     * @param {Object} options
+     * @param {Function} options.probe Attempt, called with the gate context.
+     * @param {Number} options.failureTtlMs Failure backoff floor.
+     * @param {Number} options.failureTtlMaxMs Failure backoff ceiling.
+     * @returns {Object}
+     * @protected
+     */
+    createEmbeddingProbeGate({probe, failureTtlMs, failureTtlMaxMs}) {
+        return createBoundedRetryGate({
+            run: async context => {
+                const died = this.embeddingRecoveryDeaths?.get(context?.key);
+
+                if (died) {
+                    return {...died, cached: true}
+                }
+
+                try {
+                    const outcome = await probe(context);
+
+                    if (outcome?.errorClassification === 'provider-died') {
+                        (this.embeddingRecoveryDeaths ??= new Map()).set(context?.key, outcome)
+                    }
+
+                    return outcome;
+                } catch {
+                    return {
+                        status             : 'failed',
+                        error              : 'probe-could-not-run:EMBEDDING_PROBE_EXECUTION_ERROR',
+                        errorClassification: 'probe-could-not-run',
+                        errorCode          : 'EMBEDDING_PROBE_EXECUTION_ERROR'
+                    };
+                }
+            },
+            failureTtlMs,
+            failureTtlMaxMs,
+            now: () => this.embeddingRecoveryClock()
+        })
+    }
+
+    /**
+     * @summary Proves the lane healthy at the full admission band, off the sweep's awaited path.
+     *
+     * The sweep only REQUESTS this proof and later consumes it; it never awaits a full-band embed.
+     * The orchestrator's poll cycle calls this under the heavy-maintenance lease, so `timeoutMs` is
+     * that lease's budget rather than a deadline derived from the input size: the size-derived one
+     * would be ~411 s, held once per backoff against a dead provider.
+     *
+     * @param {Object} options
+     * @param {Number} options.timeoutMs Provider deadline: the caller's lease budget.
+     * @param {Function} [options.runProbe] Attempt seam.
+     * @param {Number} [options.failureTtlMs=30000] Proof failure backoff floor.
+     * @param {Number} [options.failureTtlMaxMs=600000] Proof failure backoff ceiling.
+     * @returns {Promise<Object|null>} The recorded proof, or `null` when none is requested.
+     */
+    async proveEmbeddingRecoveryAuthorization({
+        timeoutMs,
+        runProbe,
+        failureTtlMs    = EMBEDDING_RECOVERY_FAILURE_TTL_MS,
+        failureTtlMaxMs = EMBEDDING_RECOVERY_FAILURE_TTL_MAX_MS
+    } = {}) {
+        const request = this.embeddingAuthorizationRequest;
+
+        if (!request) return null;
+
+        const {probeSize, key} = this.resolveEmbeddingProbeIdentity({episodeKeys: request.episodeKeys, fraction: 1});
+
+        this.embeddingAuthorizationProbeFn = runProbe || this.createEmbeddingProbeFn({
+            operationLabel: 'Tenant repo sync embedding authorization proof',
+            probeSize,
+            timeoutMs
+        });
+
+        this.embeddingAuthorizationGate ??= this.createEmbeddingProbeGate({
+            probe: context => this.embeddingAuthorizationProbeFn(context),
+            failureTtlMs,
+            failureTtlMaxMs
+        });
+
+        const outcome = await this.embeddingAuthorizationGate.tick({key});
+
+        this.embeddingAuthorizationProof = {
+            ...outcome,
+            key,
+            checkedAt: outcome.gate?.checkedAt ?? this.embeddingRecoveryClock()
+        };
+
+        return this.embeddingAuthorizationProof
+    }
+
+    /**
+     * @summary Reports whether the poll cycle has a proof to produce: one is requested, no healthy
+     * proof answers the latest request, and the proof gate for that key is neither terminal nor
+     * backing off. Lets the cycle skip the lease on the common path.
+     *
+     * The sweep re-requests every time it refuses a proof, aged or for another cohort, so "at least
+     * as new as the request" is the whole freshness test here: the producer never needs to know
+     * the sweep's cadence.
+     * @param {Number} [now] Epoch ms.
+     * @returns {Boolean}
+     */
+    needsEmbeddingAuthorizationProof(now = this.embeddingRecoveryClock()) {
+        const
+            request = this.embeddingAuthorizationRequest,
+            proof   = this.embeddingAuthorizationProof;
+
+        if (!request) return false;
+
+        if (proof?.status === 'healthy' && proof.key === request.key && proof.checkedAt >= request.requestedAt) {
+            return false
+        }
+
+        const gate = this.embeddingAuthorizationGate?.snapshot();
+
+        return !gate || gate.key !== request.key || (!gate.terminal && !(gate.nextAttemptAt > now))
     }
 
     /**
@@ -2057,31 +2185,43 @@ class TenantRepoSyncService extends Base {
                     );
 
         if (awaitingRecoveryEntries.length > 0) {
-            const observation = await this.probeEmbeddingRecovery({
-                episodeKeys: awaitingRecoveryEntries.map(([, state]) => {
+            const
+                episodeKeys      = awaitingRecoveryEntries.map(([, state]) => {
                     const recovery = state.embeddingRecovery;
 
                     return `${recovery.episodeId}:${recovery.lastConsumedGenerationId || 'initial'}`;
                 }),
-                runProbe       : embeddingRecoveryProbe,
-                clock          : embeddingRecoveryClock,
-                timeoutMs      : embeddingRecoveryProbeTimeoutMs,
-                failureTtlMs   : embeddingRecoveryFailureTtlMs,
-                failureTtlMaxMs: embeddingRecoveryFailureTtlMaxMs
-            });
+                observation      = await this.probeEmbeddingRecovery({
+                    episodeKeys,
+                    runProbe       : embeddingRecoveryProbe,
+                    clock          : embeddingRecoveryClock,
+                    timeoutMs      : embeddingRecoveryProbeTimeoutMs,
+                    failureTtlMs   : embeddingRecoveryFailureTtlMs,
+                    failureTtlMaxMs: embeddingRecoveryFailureTtlMaxMs
+                }),
+                authorizationKey = this.resolveEmbeddingProbeIdentity({episodeKeys, fraction: 1}).key,
+                recordedProof    = this.embeddingAuthorizationProof,
+                // A proof is current for exactly this cohort and band, and for two sweep cadences: it
+                // lands between sweeps, so the sweep that reads it can come up to one cadence later,
+                // plus jitter. Past that it describes a lane nobody has re-checked. The key rotates
+                // by itself when a generation is consumed or a repo joins the cohort.
+                proof            = recordedProof?.key === authorizationKey
+                    && embeddingRecoveryClock() - recordedProof.checkedAt <= 2 * globalCadenceMs
+                    ? recordedProof
+                    : null;
 
-            // `healthy` is not sufficient — `healthy AT THE SIZE THIS AUTHORIZES` is. The verdict
-            // below mints a bypass generation that re-dispatches the whole awaiting cohort, and a
-            // probe that exercised a quarter of the admitted band never bounded that work. Reading
-            // `status` alone is how a 44-byte canary greenlit the batch that killed the engine.
+            // `healthy` is not sufficient; `healthy AT THE SIZE THIS AUTHORIZES` is. The verdict below
+            // mints a bypass generation that re-dispatches the whole awaiting cohort, and the
+            // quarter-band cadence probe above never bounded that work. So the cadence probe only says
+            // the lane answers NOW, and the size comes from the full-band proof the poll cycle
+            // produced for exactly this cohort and band.
             //
-            // Asserted HERE as well as sized at the probe call site, deliberately: the call site can
-            // be changed by anyone tuning cadence cost, and this is the decision that spends the
-            // compute. If a future fraction drops below the band, recovery refuses rather than
-            // silently over-authorizing again — the failure mode returns as a stall, which is
-            // visible, instead of as a loop, which is what it was.
-            const coverageBoundsAuthorization = observation?.probeSized === true
-                && observation?.probeBandFraction >= 1;
+            // Asserted HERE, at the decision that spends the compute, not only at the producer: a
+            // missing, unsized or sub-band proof refuses, and the failure mode stays a stall, which is
+            // visible, instead of a loop, which is what it was.
+            const coverageBoundsAuthorization = proof?.status === 'healthy'
+                && proof.probeSized === true
+                && proof.probeBandFraction >= 1;
 
             if (observation?.status === 'healthy' && coverageBoundsAuthorization) {
                 const
@@ -2115,8 +2255,15 @@ class TenantRepoSyncService extends Base {
                         persistedRevisions[label].embeddingRecovery = recovery;
                     }
                 } else {
+                    this.embeddingAuthorizationRequest = null;
+                    this.embeddingAuthorizationProof   = null;
                     writeLog?.('INFO', `[TenantRepoSync] Embedding recovery observed; committed one due-bypass generation for ${awaitingRecoveryEntries.length} scoped repo(s).`);
                 }
+            } else if (observation?.status === 'healthy') {
+                // A healthy sub-band answer is not a provider fault: the refusal is coverage. Ask the
+                // poll cycle for the proof this cohort needs, and say so.
+                this.embeddingAuthorizationRequest = {key: authorizationKey, episodeKeys, requestedAt: embeddingRecoveryClock()};
+                writeLog?.('INFO', `[TenantRepoSync] Embedding recovery answers at ${observation.probeBandFraction ?? 'an unsized'} band; awaiting a full-band authorization proof${proof ? ` (last proof: ${proof.errorCode || proof.status})` : ''}.`);
             } else if (observation) {
                 writeLog?.('INFO', `[TenantRepoSync] Embedding recovery not yet observed (${observation.errorCode || 'EMBEDDING_PROVIDER_ERROR'}; ${observation.gate?.cached ? 'probe backoff retained' : 'provider still failing'}).`);
             }
@@ -2348,7 +2495,7 @@ class TenantRepoSyncService extends Base {
             // input already produced a terminal verdict is suppressed outright. Placing this after
             // `isRepoDue` would be a slower retry, not a stop — the cadence would admit it, the work
             // would run, and the catch below would rediscover the same cause. The counter would stay
-            // frozen while the retry continued forever, which is exactly the shape round 1 shipped.
+            // frozen while the retry continued forever.
             //
             // Keyed on the INPUT, never on elapsed time: a repo repointed at a different `branchRef`
             // no longer matches its fingerprint and resumes on the next sweep with no reset command,
@@ -2820,7 +2967,7 @@ class TenantRepoSyncService extends Base {
                         lastSourceErrorCode               : deferredCauseCode,
                         lastErrorAt                       : startedMs,
                         corpusOutstanding                 : deferredOutstanding,
-                        // A deferral retains a cause; the clean-partial resume marker does not survive it (#430).
+                        // A deferral retains a cause; the clean-partial resume marker does not survive it.
                         partialProgressAt                 : null,
                         undeliverableChunks               : deferredCensus,
                         contentPoisonChunks               : deferredPoisonCensus,
@@ -2959,7 +3106,7 @@ class TenantRepoSyncService extends Base {
                         corpusOutstanding                 : partialOutstanding,
                         // The resume marker `isRepoDue` reads as `partial-resume`: a clean slice that
                         // ran out of budget is due at the next sweep, not after the global cadence.
-                        // Measured before it existed (#430): a 47k-chunk first ingest landed one
+                        // Measured before it existed: a 47k-chunk first ingest landed one
                         // embedding batch per 30-minute cadence, every cycle re-materializing the
                         // whole envelope first. Fairness toward the heavy-maintenance waiters is not
                         // this cadence's job — the lease gate yields to a starving waiter on the
@@ -3071,7 +3218,7 @@ class TenantRepoSyncService extends Base {
                         || priorState?.lastCommittedMaterializationAttemptId
                         || null,
                     extractionIdentity                   : committedExtractionIdentity,
-                    // The corpus is whole, so the clean-partial resume marker is spent (#430).
+                    // The corpus is whole, so the clean-partial resume marker is spent.
                     partialProgressAt                    : null,
                     // Cleared explicitly, not merely omitted. The retained cause is now durable, so a
                     // repo that heals would otherwise keep publishing the reason it used to fail —
@@ -3201,7 +3348,7 @@ class TenantRepoSyncService extends Base {
                         lastErrorCode                     : code,
                         lastSourceErrorCode               : sourceErrorCode,
                         lastErrorAt                       : startedMs,
-                        // A stopped lane has nothing to resume; the marker is cleared with the streak held (#430).
+                        // A stopped lane has nothing to resume; the marker is cleared with the streak held.
                         partialProgressAt                 : null,
                         // The fingerprint the pre-work gate reads. Without it the stop lasts exactly
                         // one sweep: nothing durable distinguishes "same terminal input" from "input
@@ -3252,7 +3399,7 @@ class TenantRepoSyncService extends Base {
                     lastAttemptedIngestContractVersion   : TENANT_REPO_INGEST_CONTRACT_VERSION,
                     lastCommittedMaterializationAttemptId: priorState?.lastCommittedMaterializationAttemptId || null,
                     extractionIdentity                   : priorState?.extractionIdentity || null,
-                    // A failed slice ends the clean-partial resume; the backoff below paces the retry (#430).
+                    // A failed slice ends the clean-partial resume; the backoff below paces the retry.
                     partialProgressAt                    : null,
                     // PERSIST the cause, not just the count. Before this, `lastErrorCode` existed only
                     // on the in-memory record for the sweep that failed: it was published for one
@@ -3749,7 +3896,7 @@ class TenantRepoSyncService extends Base {
                 lastAccessCode   : priorState?.lastAccessCode ?? null,
                 lastErrorAt      : startedMs,
                 embeddingRecovery: foldedRecovery,
-                // A crashed attempt is a failure for pacing purposes; the resume marker does not outlive it (#430).
+                // A crashed attempt is a failure for pacing purposes; the resume marker does not outlive it.
                 partialProgressAt: null
             };
 
