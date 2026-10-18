@@ -610,6 +610,26 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
         expect(fs.readJsonSync(path.join(directory, 'issuer.json')).snapshot.generations[0].state).toBe('active');
     });
 
+    test('a per-server revocation names its generation, persists, and a lost write still refuses the handoff that needed it', async () => {
+        let fail = false;
+        service.openJournal({directory, writeAtomic: (file, source, options) => {
+            if (fail) throw Error('fixture lost write');
+            return writeFileAtomicSync(file, source, options);
+        }});
+        const reservation = await activeSeat();
+
+        expect(service.revokeServerGrant('seat', 'memory-core', 'recovery-unverified', {generation: 'another-generation'}), 'a newer Start is never hit').toBe(false);
+        expect(service.revokeServerGrant('seat', 'memory-core', 'recovery-unverified', {generation: reservation.generation})).toBe(true);
+        const saved = fs.readJsonSync(path.join(directory, 'issuer.json')).snapshot.generations[0];
+        expect([saved.state, saved.servers.find(row => row.key === 'memory-core').state]).toEqual(['active', 'revoked']);
+        expect(await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).toMatchObject({outcome: 'refused'});
+        expect(await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'}), 'the other server stays admitted').toMatchObject({outcome: 'admitted'});
+
+        fail = true;
+        await expect(service.handoff({verifySeats: () => service.revokeServerGrant('seat', 'github-workflow', 'recovery-unverified', {generation: reservation.generation})}))
+            .rejects.toThrow(/Fleet continuity refused/);
+    });
+
     test('a failed activation cannot publish a successful Start or admit a waiting child', async () => {
         let fail = false;
         service.openJournal({directory, writeAtomic: (file, source, options) => {
@@ -1061,10 +1081,11 @@ test.describe('McpLaunchAdmissionService — seat credentials, redeemed from the
         ])
     });
 
-    test('the checks after the proof decide: a Stop, a switch-off or the process ending while it runs refuses', async () => {
+    test('the checks after the proof decide: a Stop, a switch-off, a handoff revocation or the process ending while it runs refuses', async () => {
         for (const [interrupt, reason] of [
             [() => service.revoke('seat', 'stop-requested'), 'stop-requested'],
             [registry => registry.fire('definitionChange', {id: 'seat', previous: null, next: seatDefinition({mcpServers: {'github-workflow': false}})}), 'server-disabled'],
+            [(registry, seat, reservation) => service.revokeServerGrant('seat', 'github-workflow', 'recovery-unverified', {generation: reservation.generation}), 'recovery-unverified'],
             [(registry, seat) => seat.observed = 'gone', 'process-exited']
         ]) {
             const
@@ -1076,7 +1097,7 @@ test.describe('McpLaunchAdmissionService — seat credentials, redeemed from the
                 answer      = redeem(reservation.grants['github-workflow'], {server: 'github-workflow'});
 
             await expect.poll(() => owners.proofs.length).toBe(1);
-            interrupt(registry, seat);
+            interrupt(registry, seat, reservation);
             proof.resolve(true);
 
             expect(await answer, reason).toEqual({outcome: 'refused', code: 'revoked', reason})

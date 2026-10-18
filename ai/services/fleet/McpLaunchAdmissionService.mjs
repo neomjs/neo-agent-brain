@@ -694,6 +694,29 @@ class McpLaunchAdmissionService extends Base {
     }
 
     /**
+     * @summary Revoke one server of an active generation, leaving the generation and its other servers active.
+     * A surviving seat that cannot prove one server at handoff loses only that server's launch admission. The
+     * persisted disposition then outlives any later observation of the seat.
+     * @param {String} agentId
+     * @param {String} key The server's catalog key.
+     * @param {String} reason A `LAUNCH_ADMISSION_REASONS` value.
+     * @param {Object} options
+     * @param {String} options.generation Revoke only in this generation, never a newer one.
+     * @returns {Boolean} Whether a grant was revoked by this call.
+     */
+    revokeServerGrant(agentId, key, reason, {generation: id}) {
+        const generation = this.generations.get(agentId), server = generation?.servers.get(key);
+
+        if (!server || generation.id !== id || generation.state !== STATES.ACTIVE || server.state === STATES.REVOKED) return false;
+
+        revokeServer(server, reason);
+        this.grants.delete(server.grantId);
+        this.persistAdmission();
+
+        return true
+    }
+
+    /**
      * @summary End a seat's generation for good: no grant of it admits again, and the values and owners it
      * held are dropped. Waiting redemptions are answered with the refusal. A non-Stop seat-wide revocation
      * is also counted when no generation takes it ({@link reserve}); Stop intent cancels through the
