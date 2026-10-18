@@ -255,6 +255,18 @@ test.describe('ai/services/fleet/seatJourney — end to end against a fleet serv
 
         expect(result.ok, `${JSON.stringify(result.rows, null, 2)}\n--- fleet output ---\n${fleetProcess.output.join('').slice(-4000)}`).toBe(true);
         seats.forEach(seat => expect(result.rows.filter(row => row.seat === seat.definition.id).map(row => row.step))
-            .toEqual(['define', 'start', 'stop', 'start-again', 'operator-content', 'recover', 'start-after-recovery']))
+            .toEqual(['define', 'start', 'stop', 'start-again', 'operator-content', 'recover', 'start-after-recovery']));
+
+        // the journey's closing Stop leaves no seat process behind
+        const seatPids = result.rows.map(row => row.detail?.pid).filter(Boolean);
+        expect(seatPids).toHaveLength(6);
+        await expect.poll(() => seatPids.filter(pid => {
+            try {
+                process.kill(pid, 0);
+                return true
+            } catch {
+                return false
+            }
+        }), {timeout: 30_000}).toEqual([])
     })
 });
