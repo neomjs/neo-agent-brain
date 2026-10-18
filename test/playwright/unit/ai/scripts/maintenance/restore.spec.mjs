@@ -1184,9 +1184,19 @@ test.describe('verifyLatestBackupRestorable — read-only restorability probe (#
         expect(brokenRun.code).toBe('BUNDLE_INVALID');
         expect(brokenRun.reason).toMatch(/recovery-runs\/run-bad\.jsonl/);
 
+        // (3) a torn TOP-LEVEL heal-event row, the member a backup can copy mid-prune
+        fs.writeFileSync(path.join(bundle, 'ledgers', 'recovery-runs', 'run-bad.jsonl'), `${JSON.stringify({recoveryRunId: 'ok'})}\n`);
+        fs.writeFileSync(path.join(bundle, 'ledgers', 'heal-events.jsonl'), '{"type":"freeze"}\n{"type":"he{"type":"heal"}\n');
+
+        const brokenEvents = await verifyLatestBackupRestorable({backupRoot: probeRoot, logger: silent});
+
+        expect(brokenEvents.restorable).toBe(false);
+        expect(brokenEvents.code).toBe('BUNDLE_INVALID');
+        expect(brokenEvents.reason).toMatch(/ledgers\/heal-events\.jsonl \(line 2\)/);
+
         // POSITIVE CONTROL: well-formed ledgers restore the RESTORABLE verdict, so the new validation
         // discriminates rather than rejecting any bundle that carries ledgers at all.
-        fs.writeFileSync(path.join(bundle, 'ledgers', 'recovery-runs', 'run-bad.jsonl'), `${JSON.stringify({recoveryRunId: 'ok'})}\n`);
+        fs.writeFileSync(path.join(bundle, 'ledgers', 'heal-events.jsonl'), '{"type":"freeze"}\n');
 
         expect((await verifyLatestBackupRestorable({backupRoot: probeRoot, logger: silent})).code).toBe('RESTORABLE');
     });

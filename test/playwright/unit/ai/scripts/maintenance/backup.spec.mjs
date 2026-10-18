@@ -844,6 +844,31 @@ test.describe('backup.mjs orchestrator — atomic bundle assembly (#10129 Phase 
         expect(fs.existsSync(path.join(altBundleRoot, 'ledgers'))).toBe(true);
     });
 
+    test('a torn heal-event ledger copy is refused before publication, and the predecessor stays newest', async () => {
+        const silentLogger  = {error: () => {}, log: () => {}, warn: () => {}},
+              root          = path.join(workRoot, 'torn-ledger-root'),
+              predecessor   = 'backup-2026-10-18T13-00-00.000Z',
+              target        = path.join(root, 'backup-2026-10-18T13-27-49.135Z'),
+              ledgerRoot    = path.join(workRoot, 'torn-ledger-src', 'orchestrator-daemon'),
+              ledgerSources = {
+                  healAttemptsFile: path.join(ledgerRoot, 'heal-attempts.json'),
+                  healEventsDir   : path.join(ledgerRoot, 'data-heal-events'),
+                  recoveryRunsDir : path.join(ledgerRoot, 'recovery-runs')
+              };
+
+        fs.mkdirSync(path.join(root, predecessor), {recursive: true});
+        fs.mkdirSync(ledgerSources.healEventsDir, {recursive: true});
+        // The observed shape: a splice mid-file, then a short last line.
+        fs.writeFileSync(path.join(ledgerSources.healEventsDir, 'heal-events.jsonl'), '{"type":"freeze"}\n{"type":"he{"type":"heal"}\n{"type":"heal","at":');
+
+        const error = await runBackup({bundleRoot: target, conceptsSourceDir, ledgerSources, logger: silentLogger, trajectoriesSourceFile})
+            .then(() => null, e => e);
+
+        expect(error?.code).toBe('INCIDENT_LEDGER_INVALID');
+        expect(error.message).toMatch(/ledgers\/heal-events\.jsonl \(line 2\)/);
+        expect(fs.readdirSync(root), 'nothing published, no staging left, the predecessor still newest').toEqual([predecessor]);
+    });
+
     test.describe('a capture that collapsed against its predecessor never publishes (#270)', () => {
         // Driven through `runBackup`, not through the collapse predicate. The predicate answers "do
         // these three facts describe a collapse"; the property this ticket is about is "such a bundle

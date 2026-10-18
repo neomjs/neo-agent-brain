@@ -531,6 +531,74 @@ async function pathIsProvablyAbsent(target) {
 }
 
 /**
+ * @summary Parses every non-blank row of one bundle JSONL payload.
+ * @param {String} filePath The payload file.
+ * @param {String} label    The bundle-relative name the error reports.
+ * @returns {Promise<void>}
+ * @throws {BundleContentError} At the first row that does not parse.
+ * @private
+ */
+async function parseJsonlRows(filePath, label) {
+    const rl     = openBundlePayload(filePath);
+    let   lineNo = 0;
+
+    for await (const line of rl) {
+        if (!line.trim()) continue;
+        lineNo++;
+
+        try {
+            JSON.parse(line)
+        } catch (err) {
+            throw bundleContentError(`Bundle JSONL parse error at ${label} (line ${lineNo}): ${err.message}`);
+        }
+    }
+
+    rl.close()
+}
+
+/**
+ * @summary Restore's acceptance rule for a bundle's incident ledgers: every row of each top-level ledger
+ * payload, `heal-attempts.json`, and every row of each nested `recovery-runs/*.jsonl` must parse.
+ *
+ * Absent ledgers pass, as a legacy bundle has none. Exported so a backup can refuse, before it publishes, the
+ * bundle this rule would reject: one rule, owned here, so the two can never disagree about a ledger.
+ * @param {String} ledgersDir The bundle's `ledgers/` directory.
+ * @returns {Promise<void>}
+ * @throws {BundleContentError} At the first member that does not parse, naming it and, for JSONL, the line.
+ */
+export async function validateIncidentLedgers(ledgersDir) {
+    if (await pathIsProvablyAbsent(ledgersDir)) return;
+
+    for (const file of (await fs.readdir(ledgersDir)).filter(isBundlePayload)) {
+        await parseJsonlRows(path.join(ledgersDir, file), `ledgers/${file}`)
+    }
+
+    // The two members a top-level scan cannot reach: `heal-attempts.json` is not `.jsonl`, and the
+    // recovery-run files are NESTED. Both were once accepted malformed while the verdict still read
+    // `RESTORABLE`. A probe may only attest what it has actually parsed.
+    const attemptsPath = path.join(ledgersDir, INCIDENT_LEDGER_BUNDLE_MEMBERS.healAttempts);
+
+    if (!await pathIsProvablyAbsent(attemptsPath)) {
+        // The read sits outside the try, so an unreadable file cannot masquerade as a parse error.
+        const rawAttempts = await fs.readFile(attemptsPath, 'utf8');
+
+        try {
+            JSON.parse(rawAttempts)
+        } catch (err) {
+            throw bundleContentError(`Bundle JSON parse error at ledgers/${INCIDENT_LEDGER_BUNDLE_MEMBERS.healAttempts}: ${err.message}`);
+        }
+    }
+
+    const runsDir = path.join(ledgersDir, INCIDENT_LEDGER_BUNDLE_MEMBERS.recoveryRuns);
+
+    if (!await pathIsProvablyAbsent(runsDir)) {
+        for (const file of (await fs.readdir(runsDir)).filter(name => name.endsWith('.jsonl'))) {
+            await parseJsonlRows(path.join(runsDir, file), `ledgers/${INCIDENT_LEDGER_BUNDLE_MEMBERS.recoveryRuns}/${file}`)
+        }
+    }
+}
+
+/**
  * Validates the bundle directory layout and every JSONL row without writing any state.
  *
  * Required subdirs (`kb`, `mc`, `graph`, `concepts`, `trajectories`) MUST exist; missing
@@ -581,7 +649,8 @@ export async function validateBundle(bundleRoot, layout, logger = console, expec
     // BEFORE any mutation. Line-1 sampling cannot satisfy the gate — a corrupt final row is the
     // exact shape this closes. Streamed totals are keyed per actual vector collection (kb chunks,
     // Memory Core memories, summaries, temporal summaries) and feed the declared-count check below.
-    const allSubdirs     = [...REQUIRED_BUNDLE_SUBDIRS, ...OPTIONAL_BUNDLE_SUBDIRS];
+    // `ledgers` has its own rule, {@link validateIncidentLedgers}, run below.
+    const allSubdirs     = [...REQUIRED_BUNDLE_SUBDIRS, ...OPTIONAL_BUNDLE_SUBDIRS].filter(subdir => subdir !== 'ledgers');
     const streamedCounts = {};
 
     const collectionOf = (subdir, file) => {
@@ -632,6 +701,8 @@ export async function validateBundle(bundleRoot, layout, logger = console, expec
         }
     }
 
+    await validateIncidentLedgers(layout.ledgers);
+
     const metaPath = path.join(bundleRoot, 'bundle-meta.json');
     let   meta     = null;
 
@@ -655,44 +726,6 @@ export async function validateBundle(bundleRoot, layout, logger = console, expec
     // evidence the bundle itself proves (schema shape, declared-vs-streamed counts, declared-vs-
     // expected dimension, per-row vectors). Provider/model identity is advisory: no write-time
     // vector provenance exists in the substrate, and admission never contacts a provider.
-    // The two ledger members the top-level scan cannot reach: `heal-attempts.json` is not `.jsonl`, and
-    // the recovery-run files are NESTED. Both were accepted malformed while the verdict still read
-    // `RESTORABLE`. A probe may only attest what it has actually parsed.
-    if (!await pathIsProvablyAbsent(layout.ledgers)) {
-        const attemptsPath = path.join(layout.ledgers, INCIDENT_LEDGER_BUNDLE_MEMBERS.healAttempts);
-
-        if (!await pathIsProvablyAbsent(attemptsPath)) {
-            // Same split as the receipt above: the read must not be able to masquerade as a parse.
-            const rawAttempts = await fs.readFile(attemptsPath, 'utf8');
-
-            try {
-                JSON.parse(rawAttempts)
-            } catch (err) {
-                throw bundleContentError(`Bundle JSON parse error at ledgers/${INCIDENT_LEDGER_BUNDLE_MEMBERS.healAttempts}: ${err.message}`);
-            }
-        }
-
-        const runsDir = path.join(layout.ledgers, INCIDENT_LEDGER_BUNDLE_MEMBERS.recoveryRuns);
-
-        if (!await pathIsProvablyAbsent(runsDir)) {
-            for (const file of (await fs.readdir(runsDir)).filter(name => name.endsWith('.jsonl'))) {
-                const rl     = openBundlePayload(path.join(runsDir, file));
-                let   lineNo = 0;
-
-                for await (const line of rl) {
-                    if (!line.trim()) continue;
-                    lineNo++;
-
-                    try {
-                        JSON.parse(line)
-                    } catch (err) {
-                        throw bundleContentError(`Bundle JSONL parse error at ledgers/${INCIDENT_LEDGER_BUNDLE_MEMBERS.recoveryRuns}/${file} (line ${lineNo}): ${err.message}`);
-                    }
-                }
-            }
-        }
-    }
-
     validateEmbeddingContractSchema({expectedDimension, meta, streamedCounts});
     const embeddingAdvisories = assessEmbeddingCompatibility({expectedDimension, logger, meta});
 

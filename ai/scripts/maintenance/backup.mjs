@@ -29,10 +29,11 @@ import {
     resolveHeavyMaintenanceLeasePath,
     withHeavyMaintenanceLease
 } from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
-import {resolveCloudOnlyDefault}                from '../../daemons/orchestrator/services/deploymentDurabilityPosture.mjs';
-import {cleanStagingResidue, createStagingRoot} from './backupStagingResidueCore.mjs';
-import {HEAL_LEDGER_DIR_NAME}                   from '../../services/memory-core/helpers/healEventLedgerStore.mjs';
-import {INCIDENT_LEDGER_BUNDLE_MEMBERS}         from '../../services/memory-core/helpers/incidentLedgerBundle.mjs';
+import {resolveCloudOnlyDefault}                   from '../../daemons/orchestrator/services/deploymentDurabilityPosture.mjs';
+import {cleanStagingResidue, createStagingRoot}    from './backupStagingResidueCore.mjs';
+import {BundleContentError, validateIncidentLedgers} from './restore.mjs';
+import {HEAL_LEDGER_DIR_NAME}                      from '../../services/memory-core/helpers/healEventLedgerStore.mjs';
+import {INCIDENT_LEDGER_BUNDLE_MEMBERS}            from '../../services/memory-core/helpers/incidentLedgerBundle.mjs';
 import {
     buildBackupReceipt,
     buildSyncChildEnv,
@@ -675,6 +676,25 @@ async function captureBackup({
         logger,
         sources: resolvedLedgerSources
     });
+
+    // Restore's own ledger rule, run before publication: a copy restore would reject leaves this bundle no
+    // recovery source, whatever its receipt would say. Throwing publishes nothing, as the capture-collapse
+    // gate below explains, so the previous bundle stays newest.
+    try {
+        await validateIncidentLedgers(layout.ledgers)
+    } catch (cause) {
+        if (!(cause instanceof BundleContentError)) throw cause;
+
+        const error = new Error(
+            `Backup refused: a copied incident ledger does not parse, so restore would reject this bundle (${cause.message}). ` +
+            'The previous bundle remains the newest; the next run copies the ledgers again.'
+        );
+
+        error.code  = 'INCIDENT_LEDGER_INVALID';
+        error.cause = cause;
+
+        throw error
+    }
 
     // Resolve retention while the bundle is still private so a missing policy fails before
     // publication. The actual sweep runs after rename: a failed capture must retain the full
