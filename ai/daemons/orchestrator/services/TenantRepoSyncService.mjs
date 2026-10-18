@@ -917,20 +917,20 @@ class TenantRepoSyncService extends Base {
      * Test-scoped config snapshot override.
      * @type {Object|null}
      */
-    #configSnapshot = null
+    _configSnapshot = null
 
     /**
      * @returns {Object|null}
      */
     get configSnapshot() {
-        return this.#configSnapshot;
+        return this._configSnapshot ?? null;
     }
 
     /**
      * @param {Object|null} value
      */
     set configSnapshot(value) {
-        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+        this._configSnapshot = this.beforeSetConfigSnapshot(value);
     }
 
     /**
@@ -1009,14 +1009,6 @@ class TenantRepoSyncService extends Base {
 
         snapshot.data = snapshot;
         return snapshot;
-    }
-
-    /**
-     * Resolves active config source (`this.#configSnapshot || AiConfig`).
-     * @returns {Object}
-     */
-    #getConfig() {
-        return this.#configSnapshot || AiConfig;
     }
 
     /**
@@ -3779,7 +3771,7 @@ class TenantRepoSyncService extends Base {
      * @throws {TypeError} When the resolved Tier-1 mirror root is not a non-empty string.
      */
     async resolveTenantReposConfig({tier1MirrorRoot, ingestionService} = {}) {
-        const tier1Default = tier1MirrorRoot ?? this.#getConfig().orchestrator.tenantRepoMirrorRoot;
+        const tier1Default = tier1MirrorRoot ?? (this.configSnapshot || AiConfig).orchestrator.tenantRepoMirrorRoot;
 
         if (typeof tier1Default !== 'string' || tier1Default.trim() === '') {
             throw new TypeError('AiConfig.orchestrator.tenantRepoMirrorRoot must resolve to a non-empty string.');
@@ -3816,7 +3808,7 @@ class TenantRepoSyncService extends Base {
      * @returns {String}
      */
     defaultRevisionsFilePath() {
-        return path.join(this.#getConfig().orchestrator.dataDir, PERSISTED_REVISIONS_FILE_NAME);
+        return path.join((this.configSnapshot || AiConfig).orchestrator.dataDir, PERSISTED_REVISIONS_FILE_NAME);
     }
 
     /**

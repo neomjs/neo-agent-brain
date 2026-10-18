@@ -136,12 +136,16 @@ export async function initializeDatabaseSelfBootstrap(dbPath) {
  * @param {String} key
  * @returns {Boolean}
  */
-function resolveLocalDeploymentDefault(cfg, deploymentMode = (OrchestratorInstance?.configSnapshot || AiConfig).orchestrator.deploymentMode) {
+function resolveOrchestratorConfig(instance) {
+    return instance?.configSnapshot || OrchestratorInstance?.configSnapshot || AiConfig;
+}
+
+function resolveLocalDeploymentDefault(cfg, deploymentMode = AiConfig.orchestrator.deploymentMode) {
     if (cfg != null) return cfg;
     return deploymentMode !== 'cloud';
 }
 
-function resolveDeploymentEnabled(key, config = (OrchestratorInstance?.configSnapshot || AiConfig)) {
+function resolveDeploymentEnabled(key, config = AiConfig) {
     return resolveLocalDeploymentDefault(config.orchestrator.localOnly[key], config.orchestrator.deploymentMode);
 }
 
@@ -275,20 +279,20 @@ export class Orchestrator extends Base {
      * the snapshot reference when tests mutate `snapshot.*` after assignment.
      * @type {Object|null}
      */
-    #configSnapshot = null
+    _configSnapshot = null
 
     /**
      * @returns {Object|null}
      */
     get configSnapshot() {
-        return this.#configSnapshot;
+        return this._configSnapshot ?? null;
     }
 
     /**
      * @param {Object|null} value
      */
     set configSnapshot(value) {
-        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+        this._configSnapshot = this.beforeSetConfigSnapshot(value);
     }
 
     /**
@@ -378,14 +382,6 @@ export class Orchestrator extends Base {
             return null;
         }
         return value.orchestrator ? value : Orchestrator.createConfigSnapshot(value);
-    }
-
-    /**
-     * @summary Returns the active B4 config snapshot or the live AiConfig provider.
-     * @returns {Object}
-     */
-    #getConfig() {
-        return this.configSnapshot || OrchestratorInstance?.configSnapshot || AiConfig;
     }
 
     primaryRepoSyncService   = PrimaryRepoSyncService
@@ -572,7 +568,7 @@ export class Orchestrator extends Base {
      * @returns {String}
      */
     beforeGetDataDir(value) {
-        return value ?? this.#getConfig().orchestrator.dataDir
+        return value ?? resolveOrchestratorConfig(this).orchestrator.dataDir
     }
 
     /**
@@ -582,7 +578,7 @@ export class Orchestrator extends Base {
      * @returns {String}
      */
     beforeGetDbPath(value) {
-        return value ?? this.#getConfig().orchestrator.dbPath
+        return value ?? resolveOrchestratorConfig(this).orchestrator.dbPath
     }
 
     /**
@@ -591,15 +587,9 @@ export class Orchestrator extends Base {
      */
     beforeSetProcessSupervisorService(value) {
         return ClassSystemUtil.beforeSetInstance(value, ProcessSupervisorService, {
-<<<<<<< HEAD
-            // Resolved at the use site and injected across the narrow construction seam
-            // (ADR-0019 [not-ticket-ref: decision-record authority] §5.1/§5.5). The supervisor never reads the env var itself.
-            supervisedTaskHeapMb   : AiConfig.orchestrator.supervisedTaskHeapMb,
-=======
             // Resolved at the use site and injected across the narrow construction seam.
             // The supervisor never reads the env var itself.
-            supervisedTaskHeapMb   : this.#getConfig().orchestrator.supervisedTaskHeapMb,
->>>>>>> 4dd9884e (feat(ai): convert Orchestrator and daemon service B4 test writes (#1102))
+            supervisedTaskHeapMb   : resolveOrchestratorConfig(this).orchestrator.supervisedTaskHeapMb,
             dataDir                : this.dataDir,
             taskDefinitions        : this.getAuthorityScopedTaskDefinitions(),
             taskStateService       : this.taskStateService,
@@ -627,11 +617,7 @@ export class Orchestrator extends Base {
      */
     beforeSetContainerHealthDiagnosisService(value) {
         // Resolved at the use site and injected — the service holds no env reader of its own.
-<<<<<<< HEAD
-        const {deploymentStateBridge, memorySaturation, restartChurn} = AiConfig.orchestrator;
-=======
-        const {deploymentStateBridge, memorySaturation, restartChurn} = this.#getConfig().orchestrator;
->>>>>>> 4dd9884e (feat(ai): convert Orchestrator and daemon service B4 test writes (#1102))
+        const {deploymentStateBridge, memorySaturation, restartChurn} = resolveOrchestratorConfig(this).orchestrator;
 
         // An unspannable memory window is not a tuning choice — it is a detector that cannot fire on
         // any scheduling path, and it looks identical from the outside to a service that is never
@@ -689,7 +675,7 @@ export class Orchestrator extends Base {
             // Preserve AiConfig as the source of truth while keeping this service free of a
             // non-entrypoint config import. A reader rather than a snapshot keeps a reactive
             // endpoint override visible at the diagnosis use site.
-            ollamaHostReader: () => this.#getConfig().ollama.host
+            ollamaHostReader: () => resolveOrchestratorConfig(this).ollama.host
         });
     }
 
@@ -704,7 +690,7 @@ export class Orchestrator extends Base {
      * @returns {Neo.ai.daemons.services.ContainerHealthControllerService}
      */
     beforeSetContainerHealthControllerService(value) {
-        const {healLedger} = this.#getConfig().orchestrator.recoveryActuator;
+        const {healLedger} = resolveOrchestratorConfig(this).orchestrator.recoveryActuator;
 
         return ClassSystemUtil.beforeSetInstance(value, ContainerHealthControllerService, {
             recoveryActuator   : this.recoveryActuatorService,
@@ -1475,28 +1461,28 @@ export class Orchestrator extends Base {
     get swarmHeartbeatIdentity()      { return process.env.NEO_AGENT_IDENTITY?.trim() || undefined; }
     get swarmHeartbeatExplicitTargets() {
         const raw = (this.configSnapshot || OrchestratorInstance?.configSnapshot)
-            ? this.#getConfig().orchestrator.swarmHeartbeat.targets
+            ? resolveOrchestratorConfig(this).orchestrator.swarmHeartbeat.targets
             : AiConfig.orchestrator.swarmHeartbeat.targets;
         if (!raw) return null;
         const list = String(raw).split(',').map(s => s.trim()).filter(Boolean);
         return list.length > 0 ? list : null;
     }
 
-    get kbSyncEnabled()                  { return resolveCloudOnlyEnabled('kbSyncEnabled', this.#getConfig());                   }
-    get corpusProjectionEnabled()        { return this.#getConfig().orchestrator.corpusProjection.enabled;             }
-    get primaryDevSyncEnabled()          { return resolveDeploymentEnabled('primaryDevSyncEnabled', this.#getConfig());          }
-    get tenantRepoSyncEnabled()          { return resolveCloudOnlyEnabled('tenantRepoSyncEnabled', this.#getConfig());           }
-    get composeServiceRecoveryEnabled()  { return resolveCloudOnlyEnabled('composeServiceRecoveryEnabled', this.#getConfig());   }
-    get chromaDaemonEnabled()            { return resolveDeploymentEnabled('chromaDaemonEnabled', this.#getConfig());            }
-    get bridgeDaemonEnabled()            { return resolveDeploymentEnabled('bridgeDaemonEnabled', this.#getConfig());            }
-    get neuralLinkBridgeEnabled()        { return resolveDeploymentEnabled('neuralLinkBridgeEnabled', this.#getConfig());        }
-    get embedDaemonEnabled()             { return resolveDeploymentEnabled('embedDaemonEnabled', this.#getConfig());             }
-    get messageDaemonEnabled()           { return resolveDeploymentEnabled('messageDaemonEnabled', this.#getConfig());           }
+    get kbSyncEnabled()                  { return resolveCloudOnlyEnabled('kbSyncEnabled', resolveOrchestratorConfig(this));                   }
+    get corpusProjectionEnabled()        { return resolveOrchestratorConfig(this).orchestrator.corpusProjection.enabled;             }
+    get primaryDevSyncEnabled()          { return resolveDeploymentEnabled('primaryDevSyncEnabled', resolveOrchestratorConfig(this));          }
+    get tenantRepoSyncEnabled()          { return resolveCloudOnlyEnabled('tenantRepoSyncEnabled', resolveOrchestratorConfig(this));           }
+    get composeServiceRecoveryEnabled()  { return resolveCloudOnlyEnabled('composeServiceRecoveryEnabled', resolveOrchestratorConfig(this));   }
+    get chromaDaemonEnabled()            { return resolveDeploymentEnabled('chromaDaemonEnabled', resolveOrchestratorConfig(this));            }
+    get bridgeDaemonEnabled()            { return resolveDeploymentEnabled('bridgeDaemonEnabled', this.configSnapshot || AiConfig);            }
+    get neuralLinkBridgeEnabled()        { return resolveDeploymentEnabled('neuralLinkBridgeEnabled', resolveOrchestratorConfig(this));        }
+    get embedDaemonEnabled()             { return resolveDeploymentEnabled('embedDaemonEnabled', resolveOrchestratorConfig(this));             }
+    get messageDaemonEnabled()           { return resolveDeploymentEnabled('messageDaemonEnabled', resolveOrchestratorConfig(this));           }
     get embedDrainLivenessWatchdogWalDir()      { return memoryCoreConfig.memoryWal.dir; }
     get embedDrainLivenessWatchdogThresholdMs() { return memoryCoreConfig.memoryWal.embedDrainStallThresholdMs; }
     get remConsolidationWatchdogRunStateDir()   { return memoryCoreConfig.remRunStateDir; }
     get remConsolidationWatchdogThresholdMs()   { return memoryCoreConfig.remConsolidationStallThresholdMs; }
-    get heavyMaintenanceStarvationDegradeAfterMs() { return this.#getConfig().orchestrator.heavyMaintenanceLease.starvationDegradeAfterMs; }
+    get heavyMaintenanceStarvationDegradeAfterMs() { return resolveOrchestratorConfig(this).orchestrator.heavyMaintenanceLease.starvationDegradeAfterMs; }
     /** @summary The Memory Core compose-service id targeted by data-integrity diagnoses. */
     get dataIntegrityServiceId() { return 'mc-server'; }
     /**
@@ -1506,7 +1492,7 @@ export class Orchestrator extends Base {
      * @returns {Function} `() => Promise<{collections:Object[]}>`
      */
     get dataIntegrityCoverageGatherer() {
-        const dataDir = this.#getConfig().engines.chroma.dataDir;
+        const dataDir = resolveOrchestratorConfig(this).engines.chroma.dataDir;
         return () => auditChromaVectorCoverage({
             snapshotPath   : path.join(dataDir, 'chroma.sqlite3'),
             persistDir     : dataDir,
@@ -1527,7 +1513,7 @@ export class Orchestrator extends Base {
         const coverageGatherer  = this.dataIntegrityCoverageGatherer,
               dimensionGatherer = createLiveDimensionConsistencyGatherer({
                   storageRouter    : StorageRouter,
-                  expectedDimension: this.#getConfig().vectorDimension,
+                  expectedDimension: resolveOrchestratorConfig(this).vectorDimension,
                   serviceId        : this.dataIntegrityServiceId
               }),
               serviceId         = this.dataIntegrityServiceId;
@@ -1540,14 +1526,14 @@ export class Orchestrator extends Base {
             return assembleDataIntegrityEvidence({diagnoses, serviceId});
         };
     }
-    get swarmHeartbeatEnabled()          { return resolveDeploymentEnabled('swarmHeartbeatEnabled', this.#getConfig());          }
-    get goldenPathRepoEnrichmentEnabled(){ return resolveDeploymentEnabled('goldenPathRepoEnrichmentEnabled', this.#getConfig());}
-    get graphLogCompactionEnabled()      { return this.#getConfig().orchestrator.graphLogCompaction.enabled;      }
+    get swarmHeartbeatEnabled()          { return resolveDeploymentEnabled('swarmHeartbeatEnabled', resolveOrchestratorConfig(this));          }
+    get goldenPathRepoEnrichmentEnabled(){ return resolveDeploymentEnabled('goldenPathRepoEnrichmentEnabled', resolveOrchestratorConfig(this));}
+    get graphLogCompactionEnabled()      { return resolveOrchestratorConfig(this).orchestrator.graphLogCompaction.enabled;      }
     // local-only lane: the aggregation reads checkout-bound sources (resources/content, git log origin/dev,
     // learn/agentos/decisions), so it is disabled in a cloud profile. Runs only when the deployment allows it
     // AND the opt-in is set — both resolved leaves read at the use site.
-    get temporalSummaryEnabled()         { return resolveCloudOnlyEnabled('temporalSummaryEnabled', this.#getConfig()) && this.#getConfig().temporalSummary.aggregationEnabled; }
-    get neuralLinkBridgeLivenessTimeoutMs() { return this.#getConfig().orchestrator.neuralLinkBridge.livenessProbeTimeoutMs; }
+    get temporalSummaryEnabled()         { return resolveCloudOnlyEnabled('temporalSummaryEnabled', resolveOrchestratorConfig(this)) && resolveOrchestratorConfig(this).temporalSummary.aggregationEnabled; }
+    get neuralLinkBridgeLivenessTimeoutMs() { return resolveOrchestratorConfig(this).orchestrator.neuralLinkBridge.livenessProbeTimeoutMs; }
 
     /**
      * @summary Returns the entrypoint-resolved authority profile. Before `start()` captures
@@ -1555,7 +1541,7 @@ export class Orchestrator extends Base {
      * @returns {String}
      */
     getResolvedAuthorityProfile() {
-        return this.authorityProfile ?? this.#getConfig().orchestrator.authorityProfile
+        return this.authorityProfile ?? (this.configSnapshot || AiConfig).orchestrator.authorityProfile
     }
 
     /**
@@ -1801,7 +1787,7 @@ export class Orchestrator extends Base {
             return;
         }
 
-        const config = this.#getConfig();
+        const config = resolveOrchestratorConfig(this);
 
         this.authorityProfile = config.orchestrator.authorityProfile;
         this.authorityReceipt = this.createAuthorityReceipt();
@@ -1913,7 +1899,7 @@ export class Orchestrator extends Base {
      * @param {Number} [deadlineMs] Bound on the boot-path wait. Defaults to the provider-readiness timeout.
      * @returns {Promise<void>}
      */
-    async observeProviderLaneShapeBeforeFirstPoll(deadlineMs = this.#getConfig().orchestrator.providerReadiness.timeoutMs) {
+    async observeProviderLaneShapeBeforeFirstPoll(deadlineMs = resolveOrchestratorConfig(this).orchestrator.providerReadiness.timeoutMs) {
         if (!this.isTaskAuthorityOwned('deployment-state-bridge') || this.authorityLeaseLost) {
             return;
         }
@@ -2128,7 +2114,7 @@ export class Orchestrator extends Base {
     /** @summary Returns true when the Chroma supervised process exceeds max runtime. */
     isChromaRecycleDue(state, now) {
         const maxRuntimeMs = (this.configSnapshot || OrchestratorInstance?.configSnapshot)
-            ? this.#getConfig().orchestrator.chroma.maxRuntimeMs
+            ? resolveOrchestratorConfig(this).orchestrator.chroma.maxRuntimeMs
             : AiConfig.orchestrator.chroma.maxRuntimeMs;
         const lastRunAt = state?.lastRunAt || 0;
         return Boolean(state?.running) && maxRuntimeMs > 0 && lastRunAt > 0 && (now - lastRunAt) > maxRuntimeMs;
@@ -2156,7 +2142,7 @@ export class Orchestrator extends Base {
 
     /** @summary Resolves true when Chroma's TCP port accepts a connection. */
     probeChromaReady({timeoutMs = 2000} = {}) {
-        const config = this.#getConfig();
+        const config = resolveOrchestratorConfig(this);
         return new Promise(resolve => {
             const socket = net.connect({host: 'localhost', port: config.engines.chroma.port});
             const finish = result => { socket.destroy(); resolve(result); };
@@ -2172,7 +2158,7 @@ export class Orchestrator extends Base {
      * @returns {void}
      */
     poll() {
-        const config     = this.#getConfig();
+        const config     = resolveOrchestratorConfig(this);
         const leaseState = this.pulseAuthorityLease();
 
         if (leaseState === 'lost') {

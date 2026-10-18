@@ -90,25 +90,25 @@ const REQUIRED = [{
     service : 'orchestrator',
     env     : 'NEO_ORCHESTRATOR_PROVIDER_READY_ATTEMPTS',
     consumer: CTDS,
-    anchors : ['attempts                : AiConfig.orchestrator.providerReadiness.attempts,'],
+    anchors : ['attempts                : cfg.orchestrator.providerReadiness.attempts,'],
     why     : 'the configured readiness task and the recovery actuator both retry on this count'
 }, {
     service : 'orchestrator',
     env     : 'NEO_ORCHESTRATOR_PROVIDER_READY_DELAY_MS',
     consumer: CTDS,
-    anchors : ['delayMs                 : AiConfig.orchestrator.providerReadiness.delayMs,'],
+    anchors : ['delayMs                 : cfg.orchestrator.providerReadiness.delayMs,'],
     why     : 'the inter-attempt delay for the same retry loop; attempts without delay is not a policy'
 }, {
     service : 'orchestrator',
     env     : 'NEO_ORCHESTRATOR_PROVIDER_READY_TIMEOUT_MS',
     consumer: CTDS,
-    anchors : ['timeoutMs : AiConfig.orchestrator.providerReadiness.timeoutMs,'],
+    anchors : ['timeoutMs : cfg.orchestrator.providerReadiness.timeoutMs,'],
     why     : 'the readiness probe deadline, also read by DeploymentStateBridgeService and DreamService'
 }, {
     service : 'orchestrator',
     env     : 'NEO_ORCHESTRATOR_PROVIDER_READY_ROUTINE_CACHE_TTL_MS',
     consumer: CTDS,
-    anchors : ['cacheTtlMs: AiConfig.orchestrator.providerReadiness.routineCacheTtlMs'],
+    anchors : ['cacheTtlMs: cfg.orchestrator.providerReadiness.routineCacheTtlMs'],
     why     : 'model-discovery cache TTL for the routine readiness path'
 }];
 

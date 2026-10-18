@@ -251,7 +251,7 @@ class SwarmHeartbeatService extends Base {
      * Test-scoped config snapshot override.
      * @type {Object|null}
      */
-    #configSnapshot = null
+    _configSnapshot = null
 
     /**
      * Resolved wake-daemon data member injected by the Orchestrator composition root.
@@ -268,14 +268,14 @@ class SwarmHeartbeatService extends Base {
      * @returns {Object|null}
      */
     get configSnapshot() {
-        return this.#configSnapshot;
+        return this._configSnapshot ?? null;
     }
 
     /**
      * @param {Object|null} value
      */
     set configSnapshot(value) {
-        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+        this._configSnapshot = this.beforeSetConfigSnapshot(value);
     }
 
     /**
@@ -333,14 +333,6 @@ class SwarmHeartbeatService extends Base {
         }
 
         return snapshot;
-    }
-
-    /**
-     * Resolves active config source (`this.#configSnapshot || AiConfig`).
-     * @returns {Object}
-     */
-    #getConfig() {
-        return this.#configSnapshot || AiConfig;
     }
 
     /**
@@ -670,7 +662,7 @@ class SwarmHeartbeatService extends Base {
         }
 
         return resumeHarnessScript(identity, reason, originSessionId, abandonedCount, {
-            deploymentMode : this.#getConfig().orchestrator.deploymentMode,
+            deploymentMode : (this.configSnapshot || AiConfig).orchestrator.deploymentMode,
             env            : {},
             harnessStateDir: this.harnessStateDir,
             harnessTargetMetadata,

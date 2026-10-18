@@ -205,6 +205,10 @@ const EMBEDDING_RECOVERY_PROBE_STATUSES = new Set([
     'terminal'
 ]);
 
+function resolveBridgeConfig(instance) {
+    return instance?.configSnapshot || DeploymentStateBridgeService.configSnapshot || AiConfig;
+}
+
 /**
  * @summary Writes a bounded, graph-independent deployment-state snapshot for KB/MC tools.
  *
@@ -358,20 +362,20 @@ export class DeploymentStateBridgeService extends Base {
      * the snapshot reference when tests mutate `testSnapshot.*` after service construction.
      * @type {Object|null}
      */
-    #configSnapshot = null
+    _configSnapshot = null
 
     /**
      * @returns {Object|null}
      */
     get configSnapshot() {
-        return this.#configSnapshot;
+        return this._configSnapshot ?? null;
     }
 
     /**
      * @param {Object|null} value
      */
     set configSnapshot(value) {
-        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+        this._configSnapshot = this.beforeSetConfigSnapshot(value);
     }
 
     lastWriteAt           = 0
@@ -509,13 +513,6 @@ export class DeploymentStateBridgeService extends Base {
     }
 
     /**
-     * @returns {Object}
-     */
-    #getConfig() {
-        return this.configSnapshot || this.constructor.configSnapshot || AiConfig;
-    }
-
-    /**
      * Writes a snapshot when enabled and due.
      * @param {Object} [options]
      * @param {Boolean} [options.force=false] Bypass interval gate.
@@ -523,7 +520,7 @@ export class DeploymentStateBridgeService extends Base {
      */
     async writeSnapshotIfDue({force = false, shouldWrite} = {}) {
         const now          = this.now(),
-              bridgeConfig = this.#getConfig().orchestrator.deploymentStateBridge;
+              bridgeConfig = resolveBridgeConfig(this).orchestrator.deploymentStateBridge;
 
         if (!bridgeConfig.enabled) {
             return {ok: true, status: 'disabled'};
@@ -688,7 +685,7 @@ export class DeploymentStateBridgeService extends Base {
      * service or the probe itself could not run.
      */
     async collectDirectProbe({serviceKey}) {
-        const bridgeConfig = this.#getConfig().orchestrator.deploymentStateBridge,
+        const bridgeConfig = resolveBridgeConfig(this).orchestrator.deploymentStateBridge,
               urls         = Array.isArray(bridgeConfig.directProbeUrls) ? bridgeConfig.directProbeUrls : [],
               // The URL's hostname IS the compose service key, so the declared list is self-describing
               // and cannot drift out of step with a parallel key list.
@@ -895,7 +892,7 @@ export class DeploymentStateBridgeService extends Base {
         stats   = await read('stats');
         const statsObservedAt = observationNow();
 
-        const cfg          = this.#getConfig(),
+        const cfg          = resolveBridgeConfig(this),
               bridgeConfig = cfg.orchestrator.deploymentStateBridge;
 
         if (bridgeConfig.includeLogs) {
@@ -1261,7 +1258,7 @@ export class DeploymentStateBridgeService extends Base {
                 ? 'broad-service-lookup-failure'
                 : degradedServices.length > 0 ? 'partial-service-observation-failure' : null;
 
-        const cfg = this.#getConfig();
+        const cfg = resolveBridgeConfig(this);
 
         return {
             schemaVersion: 1,
@@ -1342,7 +1339,7 @@ export class DeploymentStateBridgeService extends Base {
         try {
             const probe  = this.providerResidencyProbe || probeProviderParallelModelCapacity,
                   result = await probe({
-                      timeoutMs: this.#getConfig().orchestrator.providerReadiness.timeoutMs,
+                      timeoutMs: resolveBridgeConfig(this).orchestrator.providerReadiness.timeoutMs,
                       serviceKey,
                       observedAt
                   });
@@ -1412,7 +1409,7 @@ export class DeploymentStateBridgeService extends Base {
             return this.providerLaneShapeReceipt;
         }
 
-        const cfg  = this.#getConfig(),
+        const cfg  = resolveBridgeConfig(this),
               host = getOpenAiCompatibleHost(cfg);
 
         if (!host) {
@@ -1458,7 +1455,7 @@ export class DeploymentStateBridgeService extends Base {
      * @returns {Boolean}
      */
     isProviderLaneShapeServiceKey(serviceKey) {
-        return this.#getConfig().orchestrator.deploymentStateBridge.providerLaneShapeServiceKeys.includes(serviceKey);
+        return resolveBridgeConfig(this).orchestrator.deploymentStateBridge.providerLaneShapeServiceKeys.includes(serviceKey);
     }
 
     /**
@@ -1475,7 +1472,7 @@ export class DeploymentStateBridgeService extends Base {
      * @returns {Boolean}
      */
     isProviderModelIdentityServiceKey(serviceKey) {
-        return this.#getConfig().orchestrator.deploymentStateBridge.providerModelIdentityServiceKeys.includes(serviceKey);
+        return resolveBridgeConfig(this).orchestrator.deploymentStateBridge.providerModelIdentityServiceKeys.includes(serviceKey);
     }
 
     /**
@@ -1503,7 +1500,7 @@ export class DeploymentStateBridgeService extends Base {
      *     — `null` only when no OpenAI-compatible host is configured at all.
      */
     async collectProviderModelIdentity({observedAt = this.now()} = {}) {
-        const cfg  = this.#getConfig(),
+        const cfg  = resolveBridgeConfig(this),
               host = getOpenAiCompatibleHost(cfg);
 
         if (!host) {
@@ -1577,7 +1574,7 @@ export class DeploymentStateBridgeService extends Base {
     }
 
     isProviderResidencyServiceKey(serviceKey) {
-        return this.#getConfig().orchestrator.deploymentStateBridge.providerResidencyServiceKeys.includes(serviceKey);
+        return resolveBridgeConfig(this).orchestrator.deploymentStateBridge.providerResidencyServiceKeys.includes(serviceKey);
     }
 
     /**
@@ -1602,7 +1599,7 @@ export class DeploymentStateBridgeService extends Base {
      * @returns {String[]} Configured residency keys the enumeration does not cover.
      */
     collectUnobservableResidencyKeys() {
-        const configured = this.#getConfig().orchestrator.deploymentStateBridge.providerResidencyServiceKeys,
+        const configured = resolveBridgeConfig(this).orchestrator.deploymentStateBridge.providerResidencyServiceKeys,
               enumerated = new Set(this.getServiceKeys());
 
         return Array.isArray(configured) ? configured.filter(key => !enumerated.has(key)) : []
@@ -1687,7 +1684,7 @@ export class DeploymentStateBridgeService extends Base {
      */
     resolveEventWindow({serviceKey, observedAt}) {
         const
-            lookbackMs = this.#getConfig().orchestrator.deploymentStateBridge.eventLookbackMs,
+            lookbackMs = resolveBridgeConfig(this).orchestrator.deploymentStateBridge.eventLookbackMs,
             now        = Number.isFinite(observedAt) ? observedAt : this.now(),
             cursorMs   = Date.parse(this.eventCursorByService.get(serviceKey) || ''),
             sinceMs    = Number.isFinite(cursorMs)
@@ -1709,7 +1706,7 @@ export class DeploymentStateBridgeService extends Base {
      * @returns {String[]}
      */
     getServiceKeys() {
-        const cfg             = this.#getConfig(),
+        const cfg             = resolveBridgeConfig(this),
               allowedServices = cfg.orchestrator.deploymentStateBridge.allowedServices;
 
         if (allowedServices.length > 0) {
@@ -1786,7 +1783,7 @@ export class DeploymentStateBridgeService extends Base {
      * @param {Object}      [options.config]     Resolved `heapObservation` leaves.
      * @returns {Object} Always an envelope; `observation` is `null` whenever `status` is `unavailable`.
      */
-    readHeapObservation({serviceKey, nodeCommand, observedAt, config = this.#getConfig().heapObservation}) {
+    readHeapObservation({serviceKey, nodeCommand, observedAt, config = resolveBridgeConfig(this).heapObservation}) {
         const
             maxSkewMs    = config.maxSkewMs,
             staleAfterMs = config.staleAfterMs,
@@ -1918,7 +1915,7 @@ export class DeploymentStateBridgeService extends Base {
      * @param {Object}     [options.config]              Resolved `deploymentStateBridge` leaves.
      * @returns {Promise<Object>} Always an envelope; `text` is `null` whenever `status` is `unavailable`.
      */
-    async readStartupLogHead({serviceKey, incarnationStartedAt, config = this.#getConfig().orchestrator.deploymentStateBridge}) {
+    async readStartupLogHead({serviceKey, incarnationStartedAt, config = resolveBridgeConfig(this).orchestrator.deploymentStateBridge}) {
         const unavailable = reason => ({
             schemaVersion       : 1,
             recordType          : 'deployment-startup-log-head',
@@ -2100,7 +2097,7 @@ export class DeploymentStateBridgeService extends Base {
      * @param {Object}       [options.config]               Resolved self-report channel leaves.
      * @returns {Object} Always an envelope; `disclosed` is `null` whenever `status` is `unavailable`.
      */
-    readResolvedConfig({serviceKey, nodeCommand, incarnationStartedAt, config = this.#getConfig().heapObservation}) {
+    readResolvedConfig({serviceKey, nodeCommand, incarnationStartedAt, config = resolveBridgeConfig(this).heapObservation}) {
         const unavailable = reason => ({
             schemaVersion    : 1,
             recordType       : 'deployment-resolved-config',
@@ -2272,7 +2269,7 @@ export class DeploymentStateBridgeService extends Base {
             return {count: 0, reason: null, status: 'available'};
         }
 
-        const cfg = this.#getConfig();
+        const cfg = resolveBridgeConfig(this);
 
         // The store's OWN retention bound, not the snapshot's publication cap (`recoveryRunLimit`).
         // Reading fewer entries than the store retains would silently under-subtract.
@@ -2447,7 +2444,7 @@ export class DeploymentStateBridgeService extends Base {
             ? {...stats, observedAtMs: observedAt, heapObservation, containerId}
             : {...stats, heapObservation, containerId});
 
-        this.statsSamplesByService.set(serviceKey, samples.slice(-this.#getConfig().orchestrator.deploymentStateBridge.statsSampleWindow));
+        this.statsSamplesByService.set(serviceKey, samples.slice(-resolveBridgeConfig(this).orchestrator.deploymentStateBridge.statsSampleWindow));
     }
 
     /**
@@ -2465,7 +2462,7 @@ export class DeploymentStateBridgeService extends Base {
      */
     async collectRecoveryRunSnapshot() {
         const
-            cfg          = this.#getConfig(),
+            cfg          = resolveBridgeConfig(this),
             bridgeConfig = cfg.orchestrator.deploymentStateBridge,
             limit        = bridgeConfig.recoveryRunLimit,
             source       = 'orchestrator-recovery-run-ledger';
@@ -2521,7 +2518,7 @@ export class DeploymentStateBridgeService extends Base {
      */
     async collectSelfHealSnapshot() {
         const
-            cfg    = this.#getConfig(),
+            cfg    = resolveBridgeConfig(this),
             limit  = cfg.orchestrator.deploymentStateBridge.selfHealRecentEventLimit,
             source = 'orchestrator-heal-event-ledger';
 
@@ -2584,7 +2581,7 @@ export class DeploymentStateBridgeService extends Base {
      */
     async collectTenantRepoSyncSnapshot({observedAt}) {
         const
-            cfg       = this.#getConfig(),
+            cfg       = resolveBridgeConfig(this),
             taskName  = 'tenant-repo-sync',
             source    = 'orchestrator-tenant-repo-sync',
             scheduler = {
