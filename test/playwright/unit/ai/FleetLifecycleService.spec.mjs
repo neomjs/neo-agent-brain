@@ -19,7 +19,8 @@ import os                                from 'os';
 import path                              from 'path';
 import {WebSocketServer}                 from 'ws';
 import {once}                            from 'node:events';
-import {createHash}                      from 'node:crypto';
+import {createHash, generateKeyPairSync, sign as cryptoSign} from 'node:crypto';
+import {verifyBridgeToken}               from '../../../../ai/mcp/server/neural-link/verifyBridgeToken.mjs';
 import {generateAntigravityMcpFiles}     from '../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
 import {createBridgeVerifierPayload}     from '../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
 import {holdRuntimeGenerationReferences} from '../../../../ai/services/fleet/runtimeGenerationLease.mjs';
@@ -2443,6 +2444,85 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             const request = createLaunchRequest({grant, identity: 'seat', server: 'neural-link'});
             expect(verifyLaunchResponse(grant.secret, request, await service.redeem(request))).toMatchObject({outcome: 'admitted',
                 env: {NEO_FLEET_BRIDGE_TOKEN: 'renewed-fixture-token'}});
+        } finally {
+            service.journal?.close(); service.journal = null; service.journalFailed = false; service.readSeatStarts = null;
+            service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready';
+            if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+            service.httpServer = service.listening = service.issuerOrigin = null;
+            FleetLifecycleService.processes.clear();
+            server.clients.forEach(socket => socket.terminate());
+            await new Promise(resolve => server.close(resolve));
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
+
+    // A Codex seat's Neural Link outlives a token's lifetime: every launch redeems a token minted then, never at Start.
+    test('a Codex Desktop seat redeems a Bridge token the verifier accepts more than a token lifetime after Start', async () => {
+        const {spawn, home: initialHome} = installSeat('codex-desktop'), service = McpLaunchAdmissionService;
+        const root                       = fs.realpathSync(FleetLifecycleService.instanceRoot), home = fs.realpathSync(initialHome), directory = path.join(root, 'custody');
+        const workspace                  = path.join(root, 'workspace'), codexHome = path.join(home, 'codex-home');
+        const {publicKey, privateKey}    = generateKeyPairSync('ed25519');
+        const ttl = 60 * 60 * 1000, started = Date.now(), later = started + ttl + 60_000;
+        const sign = (agentId, at) => {
+            const payload = Buffer.from(JSON.stringify({agentId, expiresAt: at + ttl}));
+            return `${payload.toString('base64url')}.${cryptoSign(null, payload, privateKey).toString('base64url')}`
+        };
+        FleetLifecycleService.instanceRoot = root;
+        if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+        service.httpServer = service.listening = service.issuerOrigin = null;
+        service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready';
+        const id         = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
+        const generation = {id, directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
+            runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
+        const server = new WebSocketServer({host: '127.0.0.1', port: 0});
+        server.on('connection', socket => { socket.send(JSON.stringify(createBridgeVerifierPayload('e'.repeat(64)))); socket.close(); });
+        await once(server, 'listening');
+        const agent = FleetLifecycleService.registry.getDefinition('seat');
+        agent.mcpServers = {'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': false, 'gitlab-workflow': false};
+        const plan = createManagedAgentWorkspacePlan({agent: {id: 'seat', harnessType: 'codex-desktop'}, mcpMatrix: agent.mcpServers}).mcpServers.map(row => ({...row,
+            sourceRoot: generation.runtimeRoot, command: generation.executable,
+            args      : [path.join(generation.runtimeRoot, row.entrypoint), ...(row.key === 'neural-link' ? ['--cwd', generation.runtimeRoot] : [])]}));
+        FleetLifecycleService.installedRuntime     = {...generation, generation};
+        FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_ID: 'fixture-plane', NEO_PLANE_DATA_ROOT: path.join(root, 'plane'), NEO_NL_PORT: String(server.address().port)});
+        const captured = FleetLifecycleService.captureResidentMcpInputs(agent);
+        try {
+            FleetLifecycleService.openRuntimeCustody({directory});
+            const reserved = await reserveWithRuntimeReferences({agent, runtimeGeneration: generation, servers: ['neural-link']});
+            const env      = {NEO_AGENT_IDENTITY: 'seat', NEO_FLEET_LAUNCH_ISSUER: reserved.issuer, NEO_FLEET_LAUNCH_GRANT: reserved.grants['neural-link']};
+            const source   = ['[mcp_servers."neo-mjs-neural-link"]', `command = ${JSON.stringify(generation.executable)}`,
+                `args = ${JSON.stringify([path.join(generation.runtimeRoot, 'ai/mcp/client/fleetMcpLauncher.mjs'), '--server', 'neural-link'])}`,
+                `env = { ${Object.entries(env).map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join(', ')} }`, ''].join('\n');
+            fs.mkdirSync(codexHome, {recursive: true, mode: 0o700});
+            fs.mkdirSync(workspace, {recursive: true, mode: 0o755});
+            fs.writeFileSync(path.join(codexHome, 'config.toml'), source, {mode: 0o600});
+            const profile = createCodexLaunchBinding({identity: 'seat', issuer: reserved.issuer, codexHome, workspaceRoot: workspace, source});
+            // the seat reads live as the exact command it was spawned with
+            FleetLifecycleService.processSignalFn  = () => {};
+            FleetLifecycleService.processInspectFn = () => ({startedAt: STARTED_AT,
+                command: spawn.calls[0] ? [spawn.calls[0].command, ...spawn.calls[0].args].join(' ') : ''});
+            startWithRuntimeReferences('seat', {cwd: workspace, runtimeGeneration: generation, runtimePlan: plan,
+                resolvedResidentMcpEnv: captured.environment,
+                launchAdmission       : {generation: reserved.generation, plan, profile, residentInputs: {'neural-link': captured.owners['neural-link']}}});
+
+            expect(Object.hasOwn(spawn.calls[0].opts.env, 'NEO_FLEET_BRIDGE_TOKEN')).toBe(false);
+
+            // the launch comes a token lifetime after Start; its owner mints for that moment
+            const original = FleetLifecycleService.processes.get('seat');
+            FleetLifecycleService.registry.getBridgeSigningAuthority = () => original.bridgeAuthority;
+            FleetLifecycleService.registry.renewBridgeToken          = agentId => ({token: sign(agentId, later)});
+            const grant    = parseLaunchCapability(reserved.grants['neural-link']);
+            const request  = createLaunchRequest({grant, identity: 'seat', server: 'neural-link'});
+            const response = verifyLaunchResponse(grant.secret, request, await service.redeem(request));
+            const realNow  = Date.now;
+
+            try {
+                Date.now = () => later;
+                expect(verifyBridgeToken(response.env.NEO_FLEET_BRIDGE_TOKEN, publicKey)).toBe('seat');
+                // the control: what a token minted at Start answers at that moment
+                expect(verifyBridgeToken(sign('seat', started), publicKey)).toBeNull();
+            } finally {
+                Date.now = realNow
+            }
         } finally {
             service.journal?.close(); service.journal = null; service.journalFailed = false; service.readSeatStarts = null;
             service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready';
