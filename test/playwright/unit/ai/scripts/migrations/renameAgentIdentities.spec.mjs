@@ -599,9 +599,9 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
         const edgeId   = 'edge-state-episode';
 
         insertNode(db, {id: '@neo-gpt', user_id: 'neo-gpt', data: {id: '@neo-gpt', label: 'AgentIdentity', properties: {githubLogin: '@neo-gpt', userId: 'neo-gpt'}}});
-        // The old row is older and carries a key the surviving row lacks; the surviving row's own values win.
-        insertNode(db, {id: oldState.id, user_id: 'neo-gpt',        data: {...oldState, properties: {createdAt: '2026-01-01T00:00:00.000Z', note: 'from the old row', shared: 'old'}}});
-        insertNode(db, {id: newState.id, user_id: 'neo-gpt-euclid', data: {...newState, properties: {createdAt: '2026-06-01T00:00:00.000Z', shared: 'new'}}});
+        // The old row is older and carries a key the surviving row lacks; the shared key agrees — a compatible merge.
+        insertNode(db, {id: oldState.id, user_id: 'neo-gpt',        data: {...oldState, properties: {createdAt: '2026-01-01T00:00:00.000Z', note: 'from the old row', shared: 'same'}}});
+        insertNode(db, {id: newState.id, user_id: 'neo-gpt-euclid', data: {...newState, properties: {createdAt: '2026-06-01T00:00:00.000Z', shared: 'same'}}});
         insertNode(db, {id: episode.id,  user_id: 'neo-gpt',        data: episode});
         insertEdge(db, {
             id     : edgeId,
@@ -622,7 +622,7 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
         // The merge keeps the older age and the old row's extra key; the surviving row's values win.
         const survivor = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(newState.id).data);
         expect([survivor.id, survivor.identityKey]).toEqual([newState.id, '@neo-gpt-euclid']);
-        expect(survivor.properties).toEqual({createdAt: '2026-01-01T00:00:00.000Z', note: 'from the old row', shared: 'new'});
+        expect(survivor.properties).toEqual({createdAt: '2026-01-01T00:00:00.000Z', note: 'from the old row', shared: 'same'});
 
         const edge     = db.prepare('SELECT user_id, source, target, data FROM Edges WHERE id = ?').get(edgeId);
         const edgeData = JSON.parse(edge.data);
@@ -641,6 +641,41 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
             nodesMerged            : 0,
             nodesRekeyed           : 0
         });
+
+        db.close();
+    });
+
+    test('a coexisting compound row whose value disagrees with the survivor fails closed: no writes for it, the plan names the key, keys hold', () => {
+        const db = new Database(':memory:');
+        createGraphSchema(db);
+
+        const oldState = createIdentityStateNode({identityKey: '@neo-gpt'}).node;
+        const newState = createIdentityStateNode({identityKey: '@neo-gpt-euclid'}).node;
+        const edgeId   = 'edge-old-state';
+
+        insertNode(db, {id: '@neo-gpt', user_id: 'neo-gpt', data: {id: '@neo-gpt', label: 'AgentIdentity', properties: {githubLogin: '@neo-gpt', userId: 'neo-gpt'}}});
+        insertNode(db, {id: oldState.id, user_id: 'neo-gpt',        data: {...oldState, properties: {salute: 'Euclid of Alexandria'}}});
+        insertNode(db, {id: newState.id, user_id: 'neo-gpt-euclid', data: {...newState, properties: {salute: 'Euclid'}}});
+        insertEdge(db, {id: edgeId, user_id: 'neo-gpt', source: '@neo-gpt', target: oldState.id, type: 'HAS_IDENTITY_STATE', data: {id: edgeId, source: '@neo-gpt', target: oldState.id, type: 'HAS_IDENTITY_STATE', properties: {}}});
+
+        const first = runGraphMigration(db, true);
+        expect(first).toMatchObject({nodesMerged: 0, nodesRekeyed: 0, duplicateCollisions: 1});
+        expect(first.skipped).toContain(`conflict:${oldState.id}→${newState.id} [properties.salute]`);
+
+        // Both rows stand as they were; the edge still ends on the old row, SQL and JSON alike.
+        const oldRow = db.prepare('SELECT user_id, data FROM Nodes WHERE id = ?').get(oldState.id);
+        expect(oldRow.user_id).toBe('neo-gpt');
+        expect(JSON.parse(oldRow.data)).toEqual({...oldState, properties: {salute: 'Euclid of Alexandria'}});
+        expect(JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(newState.id).data).properties).toEqual({salute: 'Euclid'});
+
+        const edge = db.prepare('SELECT source, target, data FROM Edges WHERE id = ?').get(edgeId);
+        expect([edge.source, edge.target]).toEqual(['@neo-gpt-euclid', oldState.id]);
+        expect(JSON.parse(edge.data)).toMatchObject({id: edgeId, source: '@neo-gpt-euclid', target: oldState.id});
+        expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+
+        // Reported again on every run, written never.
+        const second = runGraphMigration(db, true);
+        expect(second).toMatchObject({duplicateCollisions: 1, edgeMetadataRowsUpdated: 0, nodeMetadataRowsUpdated: 0, nodesMerged: 0, nodesRekeyed: 0});
 
         db.close();
     });

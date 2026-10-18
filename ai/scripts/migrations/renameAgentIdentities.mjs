@@ -530,21 +530,27 @@ function rewriteGraphMetadataRows(db, apply, stats) {
         const nextId     = rewriteNodeId(row.id);
 
         if (nextId !== row.id) {
-            moved.set(row.id, nextId);
-
             const survivor = db.prepare('SELECT user_id, data FROM Nodes WHERE id = ?').get(nextId);
             if (survivor) {
-                const mergedData = mergeCompoundNodeData(nextData, rewriteIdentityFields(parseGraphData(survivor.data)));
+                const {merged, conflicts} = mergeCompoundNodeData(nextData, rewriteIdentityFields(parseGraphData(survivor.data)));
+                if (conflicts.length > 0) {
+                    // Fail closed for this row: nothing moves, nothing is written, the plan names the keys.
+                    stats.graph.duplicateCollisions++;
+                    stats.graph.skipped.push(`conflict:${row.id}→${nextId} [${conflicts.join(', ')}]`);
+                    continue;
+                }
+                moved.set(row.id, nextId);
                 moveEdges(db, row.id, nextId, apply, stats);
                 if (apply) {
                     db.prepare('UPDATE Nodes SET user_id = ?, data = ? WHERE id = ?')
-                        .run(survivor.user_id ?? nextUserId, JSON.stringify(mergedData), nextId);
+                        .run(survivor.user_id ?? nextUserId, JSON.stringify(merged), nextId);
                     db.prepare('DELETE FROM Nodes WHERE id = ?').run(row.id);
                 }
                 stats.graph.nodesMerged++;
                 continue;
             }
 
+            moved.set(row.id, nextId);
             if (data.id === row.id) nextData.id = nextId;
             if (apply) {
                 db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)')
@@ -598,27 +604,38 @@ function rewriteGraphMetadataRows(db, apply, stats) {
 }
 
 /**
- * @summary Merges an old compound row into the row already living under its new id: the surviving
- * row's values win on conflict, the old row fills every gap, and `properties.createdAt` keeps the
- * older of the two — a merge loses no key and no age, and the rule is total, so a collision never
- * leaves the run undecided.
+ * @summary Merges an old compound row into the row already living under its new id under one explicit
+ * policy: a key present on one row only is kept, a key present on both must agree, and
+ * `properties.createdAt` keeps the older value. A disagreement is a conflict the caller fails closed
+ * on — nothing is written and the plan names the keys — because deleting the old row would discard
+ * a value nobody reconciled.
  * @param {Object} oldData The old row's data, identity tokens already rewritten.
  * @param {Object} survivingData The surviving row's data.
- * @returns {Object}
+ * @returns {{merged: Object, conflicts: String[]}}
  */
 function mergeCompoundNodeData(oldData, survivingData) {
-    const merged = {
-        ...oldData,
-        ...survivingData,
-        properties: {...(oldData.properties || {}), ...(survivingData.properties || {})}
-    };
-    const oldAt = oldData.properties?.createdAt;
-    const newAt = survivingData.properties?.createdAt;
+    const conflicts = [];
 
-    if (oldAt && (!newAt || oldAt < newAt)) {
-        merged.properties.createdAt = oldAt;
-    }
-    return merged;
+    const mergeLevel = (a, b, prefix) => {
+        const out = {...a, ...b};
+
+        for (const key of Object.keys(a)) {
+            if (!(key in b) || key === 'properties') continue;
+            if (prefix === 'properties.' && key === 'createdAt') {
+                out.createdAt = a.createdAt < b.createdAt ? a.createdAt : b.createdAt;
+                continue;
+            }
+            if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) {
+                conflicts.push(`${prefix}${key}`);
+            }
+        }
+        return out;
+    };
+
+    const merged = mergeLevel(oldData, survivingData, '');
+    merged.properties = mergeLevel(oldData.properties || {}, survivingData.properties || {}, 'properties.');
+
+    return {merged, conflicts};
 }
 
 /**
