@@ -13,12 +13,15 @@ setup({
     }
 });
 
-import {test, expect}      from '@playwright/test';
-import {execFile}          from 'child_process';
-import {getEventListeners} from 'node:events';
-import {promisify}         from 'util';
-import Neo                 from 'neo.mjs/src/Neo.mjs';
-import * as core           from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}              from '@playwright/test';
+import {execFile}                  from 'child_process';
+import {getEventListeners}         from 'node:events';
+import fs                          from 'node:fs';
+import {fileURLToPath}             from 'node:url';
+import {promisify, types as utilTypes} from 'util';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {
     clearAggregatedFrictions,
     getAggregatedFrictions
@@ -113,22 +116,23 @@ test.describe('TextEmbeddingService #10804 — shouldInitializeGeminiEmbeddingCl
 test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', () => {
     let TextEmbeddingService;
     let aiConfig;
-    let originalEmbeddingTimeoutMs;
-    let originalMaxInFlightEmbeddings;
+    let configSnapshot;
 
     test.beforeAll(async () => {
         const mod = await import('../../../../../../ai/services/memory-core/TextEmbeddingService.mjs');
         TextEmbeddingService = mod.default;
         aiConfig             = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
-        originalEmbeddingTimeoutMs    = aiConfig.ollama.embeddingTimeoutMs;
-        originalMaxInFlightEmbeddings = aiConfig.ollama.maxInFlightEmbeddings;
+    });
+
+    test.beforeEach(() => {
+        configSnapshot                      = TextEmbeddingService.createConfigSnapshot();
+        TextEmbeddingService.configSnapshot = configSnapshot;
     });
 
     test.afterEach(() => {
-        // Restore singleton ollamaProvider slot — fake injection across tests must not leak.
+        // Restore singleton configSnapshot and ollamaProvider slots — fake injection across tests must not leak.
+        TextEmbeddingService.configSnapshot = null;
         TextEmbeddingService.ollamaProvider = null;
-        aiConfig.ollama.embeddingTimeoutMs  = originalEmbeddingTimeoutMs;
-        aiConfig.ollama.maxInFlightEmbeddings = originalMaxInFlightEmbeddings;
         clearAggregatedFrictions();
     });
 
@@ -186,7 +190,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
         // Run FIRST and deliberately at 2. If only the cap-of-1 case existed, accidentally-serial
         // code would pass it and the suite would certify a cap that does nothing. Raising the number
         // must raise observed overlap, or the mechanism under test is not the mechanism at work.
-        aiConfig.ollama.maxInFlightEmbeddings = 2;
+        configSnapshot.ollama.maxInFlightEmbeddings = 2;
 
         const harness = makeBlockingOllama();
         TextEmbeddingService.ollamaProvider = harness.provider;
@@ -211,7 +215,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
         // The path had no admission control at all: it reached the provider through
         // `observeUnqueuedProviderActivity`, which observes and does not admit. Three callers meant
         // three simultaneous requests against one resident model.
-        aiConfig.ollama.maxInFlightEmbeddings = 1;
+        configSnapshot.ollama.maxInFlightEmbeddings = 1;
 
         const harness = makeBlockingOllama();
         TextEmbeddingService.ollamaProvider = harness.provider;
@@ -243,7 +247,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
         // applies to the next request rather than the next process start". The peak-overlap tests do
         // not prove that clause: they set the cap BEFORE any call, so a value captured once at
         // construction would satisfy every one of them. This is the mutation they cannot see.
-        aiConfig.ollama.maxInFlightEmbeddings = 1;
+        configSnapshot.ollama.maxInFlightEmbeddings = 1;
 
         const harness = makeBlockingOllama();
         TextEmbeddingService.ollamaProvider = harness.provider;
@@ -254,7 +258,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
 
         // Raise the cap with one request in flight and NOTHING released. A value captured at
         // construction would still read 1 here, so the next caller would queue and peak would stay 1.
-        aiConfig.ollama.maxInFlightEmbeddings = 2;
+        configSnapshot.ollama.maxInFlightEmbeddings = 2;
 
         const second = TextEmbeddingService.embedTexts(['b'], 'ollama');
 
@@ -274,7 +278,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
         // behind it stalls until some unrelated release happens.
         //
         // The throw must still reach its own caller loudly. It must not take the queue with it.
-        aiConfig.ollama.maxInFlightEmbeddings = 1;
+        configSnapshot.ollama.maxInFlightEmbeddings = 1;
 
         const harness = makeBlockingOllama();
         TextEmbeddingService.ollamaProvider = harness.provider;
@@ -287,13 +291,13 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
         expect(harness.peak, 'one dispatched, two queued behind the single slot').toBe(1);
 
         // Invalidate the cap, then release so a waiter wakes into the throwing re-check.
-        aiConfig.ollama.maxInFlightEmbeddings = 0;
+        configSnapshot.ollama.maxInFlightEmbeddings = 0;
         harness.releaseAll();
 
         const secondResult = await second;
 
         expect(secondResult, 'the woken waiter learns loudly').toBeTruthy();
-        expect(secondResult.message).toContain('must be a positive integer');
+        expect(secondResult.message).toContain('must yield a positive integer');
 
         // The load-bearing half: the caller BEHIND it must also settle rather than hang forever.
         const thirdResult = await Promise.race([
@@ -303,7 +307,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
 
         expect(thirdResult, 'the wake was handed on, not consumed').not.toBe('STRANDED');
 
-        aiConfig.ollama.maxInFlightEmbeddings = 1;
+        configSnapshot.ollama.maxInFlightEmbeddings = 1;
         harness.releaseAll();
         await first.catch(() => {});
     });
@@ -312,7 +316,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
         // The leak that would turn admission control into an outage: release only on success, and the
         // cap walks down to zero after `cap` failures while every surface reports a healthy service
         // with no requests in flight. Silent, permanent, and indistinguishable from an idle plane.
-        aiConfig.ollama.maxInFlightEmbeddings = 1;
+        configSnapshot.ollama.maxInFlightEmbeddings = 1;
 
         TextEmbeddingService.ollamaProvider = {
             embed() { return Promise.reject(new Error('provider refused')) }
@@ -340,7 +344,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
         // A zero cap blocks every caller permanently. An indefinitely-held embedding request is the
         // exact state this admission control exists to prevent, so manufacturing one from a config typo would
         // be this ticket's own defect wearing the fix's clothes.
-        aiConfig.ollama.maxInFlightEmbeddings = 0;
+        configSnapshot.ollama.maxInFlightEmbeddings = 0;
 
         TextEmbeddingService.ollamaProvider = {
             embed() { return Promise.resolve({embeddings: [[0.1]]}) }
@@ -349,14 +353,14 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
         const error = await TextEmbeddingService.embedTexts(['a'], 'ollama').then(() => null, observed => observed);
 
         expect(error, 'it must reject, not hang').toBeTruthy();
-        expect(error.message).toContain('must be a positive integer');
+        expect(error.message).toContain('must yield a positive integer');
     });
 
     test('a FRACTIONAL cap fails LOUD rather than reporting less concurrency than it admits (#16780 AC-5)', async () => {
         // With a bare numeric leaf, 1.5 admits two requests because the comparison is `inFlight < cap`.
         // The reporter would then claim cap=1.5 while showing inFlight=2. A cap is a count: reject a
         // fractional runtime mutation at the use-site even though ConfigProvider also warns on it.
-        aiConfig.ollama.maxInFlightEmbeddings = 1.5;
+        configSnapshot.ollama.maxInFlightEmbeddings = 1.5;
 
         TextEmbeddingService.ollamaProvider = {
             embed() { return Promise.resolve({embeddings: [[0.1]]}) }
@@ -365,7 +369,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
         const error = await TextEmbeddingService.embedTexts(['a'], 'ollama').then(() => null, observed => observed);
 
         expect(error, 'it must reject, not round the declared cap up').toBeTruthy();
-        expect(error.message).toContain('must be a positive integer');
+        expect(error.message).toContain('must yield a positive integer');
     });
 
     /**
@@ -382,7 +386,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
      * the PRODUCER rather than on a lifecycle stubbed to say what the test wants.
      */
     test('#16880: a caller BLOCKED behind the cap records neo-queued with a positive measured wait', async () => {
-        aiConfig.ollama.maxInFlightEmbeddings = 1;
+        configSnapshot.ollama.maxInFlightEmbeddings = 1;
 
         const
             activities = [],
@@ -503,7 +507,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
      * would itself report a permanent phantom backlog.
      */
     test('#16880: a caller abandoned WHILE QUEUED closes its row at a ledger-supported stage', async () => {
-        aiConfig.ollama.maxInFlightEmbeddings = 1;
+        configSnapshot.ollama.maxInFlightEmbeddings = 1;
 
         const
             activities = [],
@@ -579,7 +583,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
     });
 
     test('#16995: a provider timeout opens the sweep circuit before the queued caller can dispatch', async () => {
-        aiConfig.ollama.maxInFlightEmbeddings = 1;
+        configSnapshot.ollama.maxInFlightEmbeddings = 1;
 
         const
             activities = [],
@@ -680,7 +684,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
         // contention — which would make the queue look like it materializes at load rather than
         // being a property of the path. An uncontended call has a MEASURED near-zero wait; that is a
         // fact, not an absence, and `not-applicable` would erase the distinction again.
-        aiConfig.ollama.maxInFlightEmbeddings = 4;
+        configSnapshot.ollama.maxInFlightEmbeddings = 4;
 
         const
             activities = [],
@@ -708,7 +712,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
         // The provider can remain alive after caller abort, but no provider work exists for a caller
         // still waiting at admission. It must therefore leave the queue immediately. Waiting for the
         // occupied request to settle would turn its timeout/cancellation into a second indefinite wait.
-        aiConfig.ollama.maxInFlightEmbeddings = 1;
+        configSnapshot.ollama.maxInFlightEmbeddings = 1;
 
         const
             harness    = makeBlockingOllama(),
@@ -929,7 +933,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
     });
 
     test('native Ollama timeout errors emit provider-scoped ConsumerFriction (#14052)', async () => {
-        aiConfig.ollama.embeddingTimeoutMs = 25;
+        configSnapshot.ollama.embeddingTimeoutMs = 25;
         TextEmbeddingService.ollamaProvider = {
             async embed() {
                 const err = new Error('[Ollama] native embed timed out after 25ms');
@@ -959,7 +963,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
     });
 
     test('native Ollama embedding timeout config fails loud when invalid (#14052)', async () => {
-        aiConfig.ollama.embeddingTimeoutMs = 0;
+        configSnapshot.ollama.embeddingTimeoutMs = 0;
         TextEmbeddingService.ollamaProvider = {
             async embed() { return {embeddings: [[0.1]], raw: {}}; }
         };
@@ -971,7 +975,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
     test('invalid native Ollama batch configuration records no admitted identities', async () => {
         const identities = [];
 
-        aiConfig.ollama.embeddingTimeoutMs = 0;
+        configSnapshot.ollama.embeddingTimeoutMs = 0;
         TextEmbeddingService.ollamaProvider = {
             async embed() { return {embeddings: [[0.1]], raw: {}}; }
         };
@@ -1464,18 +1468,19 @@ test.describe.serial('TextEmbeddingService #15694 — provider-neutral cancellat
 
     test('attributes Gemini embeddings to the cached SDK endpoint model under config drift', async () => {
         const evidence = await runIsolatedEmbeddingProbe(async () => {
-            const {default: Service}  = await import('./ai/services/memory-core/TextEmbeddingService.mjs');
-            const {default: aiConfig} = await import('./ai/mcp/server/memory-core/config.template.mjs');
-            const activities          = [];
-            const requestModels       = [];
-            const recorder            = {
+            const {default: Service} = await import('./ai/services/memory-core/TextEmbeddingService.mjs');
+            const activities         = [];
+            const requestModels      = [];
+            const recorder           = {
                 beginProviderActivity(entry) { activities.push(entry); return `activity-${activities.length}` },
                 startProviderActivity() {},
                 completeProviderActivity() {}
             };
 
-            aiConfig.embeddingModel = 'live-config-model-b';
-            Service.embeddingModel = {
+            const snapshot          = Service.createConfigSnapshot();
+            snapshot.embeddingModel = 'live-config-model-b';
+            Service.configSnapshot  = snapshot;
+            Service.embeddingModel  = {
                 model: 'models/cached-sdk-model-a',
                 async embedContent() {
                     return {embedding: {values: [0.1]}};
@@ -2398,3 +2403,158 @@ test.describe.serial('TextEmbeddingService #15694 — provider-neutral cancellat
         })
     });
 });
+
+test.describe('TextEmbeddingService #1090 — configSnapshot subtree completeness, Ollama cache reset, and B4 zero-mutation gate', () => {
+    let TextEmbeddingService;
+    let aiConfig;
+
+    test.beforeAll(async () => {
+        TextEmbeddingService = (await import('../../../../../../ai/services/memory-core/TextEmbeddingService.mjs')).default;
+        aiConfig             = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
+    });
+
+    test.afterEach(() => {
+        TextEmbeddingService.configSnapshot = null;
+        TextEmbeddingService.ollamaProvider = null;
+    });
+
+    test('createConfigSnapshot copies full resolved plain-object subtrees across the ConfigProvider hierarchy (AC-1)', () => {
+        const collectHierarchyKeys = pathParts => {
+            const keys = new Set();
+
+            for (let current = aiConfig; current; current = typeof current.getParent === 'function' ? current.getParent() : null) {
+                const node = pathParts.reduce((acc, key) => acc?.[key], current.data);
+
+                if (node && typeof node === 'object' && !Array.isArray(node)) {
+                    for (const key of Object.keys(node)) {
+                        keys.add(key);
+                    }
+                }
+            }
+
+            return [...keys].sort();
+        };
+
+        const snapshot = TextEmbeddingService.createConfigSnapshot();
+
+        for (const pathParts of [
+            ['localModels', 'embedding'],
+            ['ollama'],
+            ['openAiCompatible'],
+            ['orchestrator', 'lms'],
+            ['orchestrator', 'lms', 'loadFailureCircuit'],
+            ['orchestrator', 'providerReadiness'],
+            ['orchestrator', 'providerReadiness', 'stuckRunner']
+        ]) {
+            const subtree = pathParts.reduce((acc, key) => acc?.[key], snapshot);
+
+            expect(subtree, `missing snapshot subtree at ${pathParts.join('.')}`).toBeTruthy();
+            expect(utilTypes.isProxy(subtree), `${pathParts.join('.')} must not be a proxy`).toBe(false);
+            expect(Object.keys(subtree).sort()).toEqual(collectHierarchyKeys(pathParts));
+        }
+
+        // Mutating nested subtrees on the snapshot never writes through to aiConfig.
+        const originalKeepAlive = aiConfig.ollama.keepAlive;
+        const originalThreshold = aiConfig.orchestrator.lms.loadFailureCircuit.failureThreshold;
+
+        snapshot.ollama.keepAlive                                      = '99m';
+        snapshot.orchestrator.lms.loadFailureCircuit.failureThreshold = 999;
+
+        expect(aiConfig.ollama.keepAlive).toBe(originalKeepAlive);
+        expect(aiConfig.orchestrator.lms.loadFailureCircuit.failureThreshold).toBe(originalThreshold);
+
+        // Nested live proxies are rejected by beforeSetConfigSnapshot.
+        const poisoned = TextEmbeddingService.createConfigSnapshot();
+        poisoned.orchestrator.lms.loadFailureCircuit = aiConfig.orchestrator.lms.loadFailureCircuit;
+
+        expect(() => {
+            TextEmbeddingService.configSnapshot = poisoned;
+        }).toThrow(TypeError);
+    });
+
+    test('set configSnapshot resets cached ollamaProvider so native Ollama lazy-init binds the new host and model (AC-2)', async () => {
+        const http     = await import('node:http');
+        const requests = {a: [], b: []};
+
+        const makeOllamaServer = (bucket, vector) => http.createServer((req, res) => {
+            let body = '';
+
+            req.on('data', chunk => { body += chunk; });
+            req.on('end', () => {
+                requests[bucket].push({
+                    url : req.url,
+                    body: JSON.parse(body || '{}')
+                });
+                res.writeHead(200, {'Content-Type': 'application/json'});
+                res.end(JSON.stringify({embeddings: [vector], model: requests[bucket].at(-1).body.model}));
+            });
+        });
+
+        const serverA = makeOllamaServer('a', [0.11, 0.22]);
+        const serverB = makeOllamaServer('b', [0.33, 0.44]);
+
+        await new Promise(resolve => serverA.listen(0, '127.0.0.1', resolve));
+        await new Promise(resolve => serverB.listen(0, '127.0.0.1', resolve));
+
+        try {
+            const snapshotA                 = TextEmbeddingService.createConfigSnapshot();
+            snapshotA.ollama.host           = `http://127.0.0.1:${serverA.address().port}`;
+            snapshotA.ollama.embeddingModel = 'ollama-embed-model-a';
+
+            TextEmbeddingService.configSnapshot = snapshotA;
+            expect(TextEmbeddingService.ollamaProvider).toBeNull();
+
+            const firstVector = await TextEmbeddingService.embedText('first-input', 'ollama');
+
+            expect(firstVector).toEqual([0.11, 0.22]);
+            expect(TextEmbeddingService.ollamaProvider).toBeTruthy();
+            expect(requests.a).toHaveLength(1);
+            expect(requests.a[0].body).toMatchObject({
+                model: 'ollama-embed-model-a',
+                input: 'first-input'
+            });
+
+            const cachedProviderA = TextEmbeddingService.ollamaProvider;
+
+            // A rejected snapshot must not clobber the active snapshot or cached provider.
+            expect(() => {
+                TextEmbeddingService.configSnapshot = aiConfig;
+            }).toThrow(TypeError);
+            expect(TextEmbeddingService.configSnapshot).toBe(snapshotA);
+            expect(TextEmbeddingService.ollamaProvider).toBe(cachedProviderA);
+
+            // Installing a new snapshot resets ollamaProvider to null so lazy-init re-runs against serverB.
+            const snapshotB                 = TextEmbeddingService.createConfigSnapshot();
+            snapshotB.ollama.host           = `http://127.0.0.1:${serverB.address().port}`;
+            snapshotB.ollama.embeddingModel = 'ollama-embed-model-b';
+
+            TextEmbeddingService.configSnapshot = snapshotB;
+            expect(TextEmbeddingService.ollamaProvider).toBeNull();
+
+            const secondVector = await TextEmbeddingService.embedText('second-input', 'ollama');
+
+            expect(secondVector).toEqual([0.33, 0.44]);
+            expect(TextEmbeddingService.ollamaProvider).toBeTruthy();
+            expect(TextEmbeddingService.ollamaProvider).not.toBe(cachedProviderA);
+            expect(requests.a).toHaveLength(1);
+            expect(requests.b).toHaveLength(1);
+            expect(requests.b[0].body).toMatchObject({
+                model: 'ollama-embed-model-b',
+                input: 'second-input'
+            });
+        } finally {
+            serverA.closeAllConnections?.();
+            serverB.closeAllConnections?.();
+            await new Promise(resolve => serverA.close(resolve));
+            await new Promise(resolve => serverB.close(resolve));
+        }
+    });
+
+    test('zero shared-config mutations in TextEmbeddingService.spec.mjs and retired openAiCompatibleHostFn seam (AC-3)', () => {
+        const source = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(source)).toEqual([]);
+        expect('openAiCompatibleHostFn' in TextEmbeddingService).toBe(false);
+    });
+});
+

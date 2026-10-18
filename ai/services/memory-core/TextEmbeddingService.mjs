@@ -683,20 +683,95 @@ function assertPositiveTimeoutMs(value, label) {
 }
 
 /**
- * @summary Verifies that a candidate config snapshot node is an isolated plain object rather than
- * a `ConfigProvider` instance or hierarchical data proxy.
+ * @summary Verifies that a candidate config snapshot node (and any nested object children) is an
+ * isolated plain object rather than a `ConfigProvider` instance or hierarchical data proxy.
  * @param {*} candidate Candidate object node.
  * @returns {Boolean}
  */
 function isPlainSnapshotObject(candidate) {
-    return Boolean(
-        candidate &&
-        typeof candidate === 'object' &&
-        !Array.isArray(candidate) &&
-        !utilTypes.isProxy(candidate) &&
-        !(candidate instanceof Base)
-    );
+    if (
+        !candidate ||
+        typeof candidate !== 'object' ||
+        Array.isArray(candidate) ||
+        utilTypes.isProxy(candidate) ||
+        candidate instanceof Base
+    ) {
+        return false;
+    }
+
+    for (const value of Object.values(candidate)) {
+        if (value && typeof value === 'object') {
+            if (Array.isArray(value)) {
+                if (utilTypes.isProxy(value)) {
+                    return false;
+                }
+            } else if (!isPlainSnapshotObject(value)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
 }
+
+/**
+ * @summary Resolves and deep-clones a hierarchical `ConfigProvider` subtree into an isolated plain
+ * object across the provider parent chain.
+ *
+ * Hierarchical data proxies on a Tier-2 child `ConfigProvider` only enumerate keys owned by the
+ * child layer in `ownKeys`, so `{...aiConfig.ollama}` would drop parent-owned leaves from Tier-1
+ * `Neo.ai.Config`. Walking `current.getParent()` collects the union of keys across all ancestor
+ * layers while reading each resolved value through the live proxy.
+ *
+ * @param {Neo.ai.ConfigProvider} provider Root config provider (`aiConfig`).
+ * @param {String[]} pathParts Path segments from the provider root to the target subtree.
+ * @returns {Object}
+ */
+function cloneConfigSubtree(provider, pathParts) {
+    const keys = new Set();
+
+    for (let current = provider; current; current = typeof current.getParent === 'function' ? current.getParent() : null) {
+        let node = current.data;
+
+        for (const key of pathParts) {
+            if (!node || typeof node !== 'object') {
+                node = null;
+                break;
+            }
+            node = node[key];
+        }
+
+        if (node && typeof node === 'object' && !Array.isArray(node)) {
+            for (const key of Object.keys(node)) {
+                keys.add(key);
+            }
+        }
+    }
+
+    let liveNode = provider;
+
+    for (const key of pathParts) {
+        liveNode = liveNode[key];
+    }
+
+    const snapshot = {};
+
+    for (const key of keys) {
+        const value = liveNode[key];
+
+        if (Array.isArray(value)) {
+            snapshot[key] = [...value];
+        } else if (value && typeof value === 'object') {
+            snapshot[key] = cloneConfigSubtree(provider, [...pathParts, key]);
+        } else {
+            snapshot[key] = value;
+        }
+    }
+
+    return snapshot;
+}
+
+let activeConfigSnapshot = null;
 
 /**
  * @summary Service for creating embedding vectors for text.
@@ -742,18 +817,9 @@ class TextEmbeddingService extends Base {
          * @member {Function|null} openAiCompatibleLoadedModelsProbe=null
          * @protected
          */
-        openAiCompatibleLoadedModelsProbe: null,
-        /**
-         * Resolver seam for the OpenAI-compatible endpoint. Defaults to reading `openAiCompatible.host`
-         * from the active config source (`configSnapshot ?? aiConfig`).
-         * @member {Function|null} openAiCompatibleHostFn_=null
-         * @protected
-         * @reactive
-         */
-        openAiCompatibleHostFn_: null
+        openAiCompatibleLoadedModelsProbe: null
     }
 
-    #configSnapshot                   = null;
     #openAiCompatiblePostQueue        = [];
     // A COUNT, not a boolean. The boolean it replaces was a single-worker re-entrancy guard, and it
     // was the real concurrency bound on this path: the dispatch loop above could issue N requests and
@@ -789,8 +855,6 @@ class TextEmbeddingService extends Base {
     construct(config) {
         super.construct(config);
 
-        this.openAiCompatibleHostFn ??= () => this.#getConfig().openAiCompatible.host;
-
         const cfg = this.#getConfig();
 
         if (shouldInitializeGeminiEmbeddingClient(cfg)) {
@@ -808,29 +872,31 @@ class TextEmbeddingService extends Base {
      * @summary Returns the isolated configuration snapshot injected by unit tests, or `null` when
      * the service reads the canonical `aiConfig` singleton.
      *
-     * Kept as an explicit private field with an accessor pair rather than a reactive `configSnapshot_`
-     * slot: `Neo.mjs`'s reactive setter writes via `setRaw` before invoking `beforeSet*` and does not
-     * restore the prior value when `beforeSet*` throws, so a reactive slot cannot host a throwing
-     * validator without leaving the rejected value installed.
+     * Kept as an explicit accessor pair over module-scoped singleton state rather than a reactive
+     * `configSnapshot_` slot or `#private` field: `Neo.mjs`'s reactive setter writes via `setRaw`
+     * before invoking `beforeSet*` and does not restore the prior value when `beforeSet*` throws, and
+     * `#private` fields reject writes through the `ai/services.mjs` `makeSafe` `Proxy`.
      *
      * @returns {Object|null}
      */
     get configSnapshot() {
-        return this.#configSnapshot;
+        return activeConfigSnapshot;
     }
 
     /**
      * @summary Injects an isolated configuration snapshot for unit testing, or `null` to restore
      * the canonical `aiConfig` singleton.
      *
-     * Validates via {@link #beforeSetConfigSnapshot} before assigning `#configSnapshot` so a rejected
-     * value never overwrites the prior snapshot (unlike a reactive `configSnapshot_` setter, which
-     * calls `setRaw` before `beforeSet*`).
+     * Validates via {@link #beforeSetConfigSnapshot} before assigning `activeConfigSnapshot` so a
+     * rejected value never overwrites the prior snapshot (unlike a reactive `configSnapshot_` setter,
+     * which calls `setRaw` before `beforeSet*`), and clears any cached `ollamaProvider` instance bound
+     * to the previous configuration.
      *
      * @param {Object|null} value Candidate snapshot or `null`.
      */
     set configSnapshot(value) {
-        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+        activeConfigSnapshot = this.beforeSetConfigSnapshot(value);
+        this.ollamaProvider  = null;
     }
 
     /**
@@ -878,41 +944,13 @@ class TextEmbeddingService extends Base {
             geminiApiKey     : aiConfig.geminiApiKey,
             geminiApiKeyFile : aiConfig.geminiApiKeyFile,
             localModels      : {
-                embedding: {
-                    contextLimitTokens       : aiConfig.localModels.embedding.contextLimitTokens,
-                    parallel                 : aiConfig.localModels.embedding.parallel,
-                    safeProcessingLimitTokens: aiConfig.localModels.embedding.safeProcessingLimitTokens
-                }
+                embedding: cloneConfigSubtree(aiConfig, ['localModels', 'embedding'])
             },
-            ollama: {
-                embeddingModel       : aiConfig.ollama.embeddingModel,
-                embeddingTimeoutMs   : aiConfig.ollama.embeddingTimeoutMs,
-                host                 : aiConfig.ollama.host,
-                maxInFlightEmbeddings: aiConfig.ollama.maxInFlightEmbeddings,
-                model                : aiConfig.ollama.model
-            },
-            openAiCompatible: {
-                apiKey                 : aiConfig.openAiCompatible.apiKey,
-                batchEmbeddingChunkSize: aiConfig.openAiCompatible.batchEmbeddingChunkSize,
-                batchEmbeddingTimeoutMs: aiConfig.openAiCompatible.batchEmbeddingTimeoutMs,
-                batchEmbeddingYieldMs  : aiConfig.openAiCompatible.batchEmbeddingYieldMs,
-                contentionRetryCount   : aiConfig.openAiCompatible.contentionRetryCount,
-                contentionRetryDelayMs : aiConfig.openAiCompatible.contentionRetryDelayMs,
-                contentionTimeoutMs    : aiConfig.openAiCompatible.contentionTimeoutMs,
-                embeddingModel         : aiConfig.openAiCompatible.embeddingModel,
-                host                   : aiConfig.openAiCompatible.host,
-                model                  : aiConfig.openAiCompatible.model,
-                unloadRetryCount       : aiConfig.openAiCompatible.unloadRetryCount,
-                unloadRetryDelayMs     : aiConfig.openAiCompatible.unloadRetryDelayMs
-            },
-            orchestrator: {
-                lms: {
-                    enabled: aiConfig.orchestrator.lms.enabled,
-                    port   : aiConfig.orchestrator.lms.port
-                },
-                providerReadiness: {
-                    timeoutMs: aiConfig.orchestrator.providerReadiness.timeoutMs
-                }
+            ollama          : cloneConfigSubtree(aiConfig, ['ollama']),
+            openAiCompatible: cloneConfigSubtree(aiConfig, ['openAiCompatible']),
+            orchestrator    : {
+                lms              : cloneConfigSubtree(aiConfig, ['orchestrator', 'lms']),
+                providerReadiness: cloneConfigSubtree(aiConfig, ['orchestrator', 'providerReadiness'])
             }
         };
     }
@@ -923,7 +961,7 @@ class TextEmbeddingService extends Base {
      * @private
      */
     #getConfig() {
-        return this.configSnapshot || aiConfig;
+        return activeConfigSnapshot || aiConfig;
     }
 
     /**
@@ -1263,7 +1301,7 @@ class TextEmbeddingService extends Base {
         // the LM Studio gate. Normalised to the same row shape so the identity comparison below is
         // one code path rather than two.
         const ids = await helper.fetchOpenAiCompatibleModelIds({
-            host: this.openAiCompatibleHostFn(),
+            host: this.#getConfig().openAiCompatible.host,
             timeoutMs
         });
 
@@ -1346,7 +1384,9 @@ class TextEmbeddingService extends Base {
             return false;
         }
 
-        return Boolean(this.openAiCompatibleHostFn() && this.#getConfig().openAiCompatible.embeddingModel);
+        const cfg = this.#getConfig();
+
+        return Boolean(cfg.openAiCompatible.host && cfg.openAiCompatible.embeddingModel);
     }
 
     /**
@@ -1376,7 +1416,7 @@ class TextEmbeddingService extends Base {
         }
 
         const
-            host    = this.openAiCompatibleHostFn(),
+            host    = cfg.openAiCompatible.host,
             lmsPort = cfg.orchestrator.lms.port;
 
         let endpointUrl;
@@ -1637,11 +1677,10 @@ class TextEmbeddingService extends Base {
             unloadRetryDelayMs     = 500,
             contentionRetryDelayMs = 1000
         } = cfg.openAiCompatible;
-        // Through the seam, not destructured off the config block: a destructuring read binds a bare
-        // `host` that never reads as a member expression, so it slips past a grep for the leaf — which
-        // is how the one site that actually issues the request stayed invisible behind three that
-        // only looked like the whole surface.
-        const host           = this.openAiCompatibleHostFn();
+        // Read as an explicit member expression rather than destructured off the config block: a
+        // destructuring read binds a bare `host` that never reads as `openAiCompatible.host`, so it
+        // slips past a grep for the leaf.
+        const host           = cfg.openAiCompatible.host;
         const embeddingModel = cfg.openAiCompatible.embeddingModel;
 
         try {

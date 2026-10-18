@@ -1,4 +1,5 @@
-import aiConfig             from '../../mcp/server/knowledge-base/config.mjs';
+import aiConfig               from '../../mcp/server/knowledge-base/config.mjs';
+import {types as utilTypes}   from 'node:util';
 import TextEmbeddingService, {
     getEmbeddingModel,
     isEmbeddingBatchYieldError
@@ -220,6 +221,24 @@ function resolveEmbeddingInputStrategyVersion(guardrail) {
 }
 
 /**
+ * @summary Verifies that a candidate config snapshot node is an isolated plain object rather than
+ * a `ConfigProvider` instance or hierarchical data proxy.
+ * @param {*} candidate Candidate object node.
+ * @returns {Boolean}
+ */
+function isPlainSnapshotObject(candidate) {
+    return Boolean(
+        candidate &&
+        typeof candidate === 'object' &&
+        !Array.isArray(candidate) &&
+        !utilTypes.isProxy(candidate) &&
+        !(candidate instanceof Base)
+    );
+}
+
+let activeConfigSnapshot = null;
+
+/**
  * @summary Manages vector database operations including embedding generation and storage.
  *
  * This service encapsulates all interactions with the vector database (ChromaDB) and the
@@ -257,6 +276,67 @@ class VectorService extends Base {
          * @protected
          */
         singleton: true
+    }
+
+    /**
+     * @summary Returns the isolated configuration snapshot injected by unit tests, or `null` when
+     * the service reads the canonical `aiConfig` singleton.
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return activeConfigSnapshot;
+    }
+
+    /**
+     * @summary Injects an isolated configuration snapshot for unit testing, or `null` to restore
+     * the canonical `aiConfig` singleton.
+     * @param {Object|null} value Candidate snapshot or `null`.
+     */
+    set configSnapshot(value) {
+        activeConfigSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * @summary Rejects non-isolated config snapshots so `VectorService.configSnapshot` cannot be
+     * pointed at the shared `aiConfig` singleton or any of its live subtrees.
+     * @param {Object|null} value Candidate snapshot or `null` to restore canonical `aiConfig`.
+     * @returns {Object|null}
+     * @protected
+     */
+    beforeSetConfigSnapshot(value) {
+        if (value === null || value === undefined) {
+            return null;
+        }
+
+        if (!isPlainSnapshotObject(value)) {
+            throw new TypeError('VectorService: configSnapshot must be an isolated snapshot, never the shared aiConfig singleton or a live subtree');
+        }
+
+        return value;
+    }
+
+    /**
+     * @summary Builds an isolated plain-object snapshot of the resolved `aiConfig` batch/retry
+     * leaves consumed by `VectorService.embedChunks`.
+     * @returns {Object}
+     */
+    createConfigSnapshot() {
+        return {
+            backoffBaseMs              : aiConfig.backoffBaseMs,
+            batchDelay                 : aiConfig.batchDelay,
+            batchSize                  : aiConfig.batchSize,
+            maxRetries                 : aiConfig.maxRetries,
+            undeliverableTimeoutStrikes: aiConfig.undeliverableTimeoutStrikes
+        };
+    }
+
+    /**
+     * @summary Returns the active configuration tree (`configSnapshot` when injected, otherwise `aiConfig`).
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return activeConfigSnapshot || aiConfig;
     }
 
     /**
@@ -1281,7 +1361,7 @@ class VectorService extends Base {
         logger.log(`Using TextEmbeddingService with provider: ${mcConfig.embeddingProvider}.`);
         logger.log('Embedding chunks...');
 
-        const {backoffBaseMs, batchSize, batchDelay, maxRetries, undeliverableTimeoutStrikes} = aiConfig;
+        const {backoffBaseMs, batchSize, batchDelay, maxRetries, undeliverableTimeoutStrikes} = this.#getConfig();
         const guardrail                                                                       = this.resolveEmbeddingGuardrail();
         const failedBatches                                                                   = [];
         // Death-class graduation receipts for this sweep. Separate from
