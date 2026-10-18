@@ -82,20 +82,20 @@ test.describe('resolveTargets — deployment-portable swarm-heartbeat target res
     test('explicit null targetSource defaults to self', async () => {
         const logger = captureLogger();
         const result = await resolveTargets({
-            selfIdentity: '@neo-gpt',
+            selfIdentity: '@neo-gpt-euclid',
             targetSource: null,
             logger
         });
-        expect(result).toEqual(['@neo-gpt']);
+        expect(result).toEqual(['@neo-gpt-euclid']);
         expect(logger.calls).toEqual([]);
     });
 
     test('self targetSource excludes an identity its node benches', async () => {
         const logger = captureLogger();
         const result = await resolveTargets({
-            selfIdentity         : '@neo-gemini-pro',
+            selfIdentity         : '@neo-gemini-julia',
             targetSource         : 'self',
-            participationProvider: nodeBench('@neo-gemini-pro'),
+            participationProvider: nodeBench('@neo-gemini-julia'),
             logger
         });
         expect(result).toEqual([]);
@@ -107,10 +107,10 @@ test.describe('resolveTargets — deployment-portable swarm-heartbeat target res
         const result = await resolveTargets({
             selfIdentity   : '@neo-opus-4-7',
             targetSource   : 'active-local-team',   // would normally be honored
-            explicitTargets: ['@some-external-agent', 'neo-gpt', '@neo-gemini-pro'],  // wins; gets normalized
+            explicitTargets: ['@some-external-agent', 'neo-gpt-euclid', '@neo-gemini-julia'],  // wins; gets normalized
             logger
         });
-        expect(result).toEqual(['@some-external-agent', '@neo-gpt', '@neo-gemini-pro']);
+        expect(result).toEqual(['@some-external-agent', '@neo-gpt-euclid', '@neo-gemini-julia']);
         expect(logger.calls).toEqual([]);
     });
 
@@ -134,18 +134,18 @@ test.describe('resolveTargets — deployment-portable swarm-heartbeat target res
     test('active-local-team takes the team from identityRoots and participation from the nodes: a node bench excludes, a root bench the node contradicts does not', async () => {
         const team = IDENTITIES.filter(i => i.type === 'AgentIdentity').map(i => i.id);
 
-        // neo-gpt's root reads active and neo-gemini-pro's benched; the nodes say the opposite
-        expect(IDENTITIES.find(i => i.id === '@neo-gpt').properties.participationStatus).toBe('active');
-        expect(IDENTITIES.find(i => i.id === '@neo-gemini-pro').properties.participationStatus).toBe('operator_benched');
+        // neo-gpt-euclid's root reads active and neo-gemini-julia's benched; the nodes say the opposite
+        expect(IDENTITIES.find(i => i.id === '@neo-gpt-euclid').properties.participationStatus).toBe('active');
+        expect(IDENTITIES.find(i => i.id === '@neo-gemini-julia').properties.participationStatus).toBe('operator_benched');
 
         const result = await resolveTargets({
             selfIdentity         : '@neo-opus-4-7',
             targetSource         : 'active-local-team',
-            participationProvider: () => new Map([['@neo-gpt', 'operator_benched'], ['@neo-gemini-pro', 'active']])
+            participationProvider: () => new Map([['@neo-gpt-euclid', 'operator_benched'], ['@neo-gemini-julia', 'active']])
         });
 
-        expect(result).toEqual(team.filter(id => id !== '@neo-gpt'));
-        expect(result).toContain('@neo-gemini-pro')
+        expect(result).toEqual(team.filter(id => id !== '@neo-gpt-euclid'));
+        expect(result).toContain('@neo-gemini-julia')
     });
 
     test('a participation read that cannot answer is named by the caller, never replaced by the roots; an explicit list and disabled never ask it', async () => {
@@ -155,7 +155,7 @@ test.describe('resolveTargets — deployment-portable swarm-heartbeat target res
             await expect(resolveTargets({selfIdentity: '@neo-opus-4-7', targetSource, participationProvider: unread}), targetSource).rejects.toThrow('graph store closed');
         }
 
-        expect(await resolveTargets({selfIdentity: '@neo-opus-4-7', explicitTargets: ['@neo-gpt'], participationProvider: unread})).toEqual(['@neo-gpt']);
+        expect(await resolveTargets({selfIdentity: '@neo-opus-4-7', explicitTargets: ['@neo-gpt-euclid'], participationProvider: unread})).toEqual(['@neo-gpt-euclid']);
         expect(await resolveTargets({selfIdentity: '@neo-opus-4-7', targetSource: 'disabled', participationProvider: unread, logger: captureLogger()})).toEqual([])
     });
 
@@ -163,8 +163,8 @@ test.describe('resolveTargets — deployment-portable swarm-heartbeat target res
         let selfStatus = 'active';
 
         const
-            candidates    = async () => ['@neo-opus-4-7', '@neo-gpt', '@neo-gemini-pro', '@neo-opus-4-7'],
-            participation = () => new Map([['@neo-opus-4-7', selfStatus], ['@neo-gpt', 'active'], ['@neo-gemini-pro', 'operator_benched']]),
+            candidates    = async () => ['@neo-opus-4-7', '@neo-gpt-euclid', '@neo-gemini-julia', '@neo-opus-4-7'],
+            participation = () => new Map([['@neo-opus-4-7', selfStatus], ['@neo-gpt-euclid', 'active'], ['@neo-gemini-julia', 'operator_benched']]),
             resolve       = targetSource => resolveTargets({
                 selfIdentity                 : '@neo-opus-4-7',
                 targetSource,
@@ -175,10 +175,10 @@ test.describe('resolveTargets — deployment-portable swarm-heartbeat target res
 
         for (const targetSource of ['active-subscribers', 'active-a2a-participants']) {
             selfStatus = 'active';
-            expect(await resolve(targetSource), targetSource).toEqual(['@neo-opus-4-7', '@neo-gpt']);
+            expect(await resolve(targetSource), targetSource).toEqual(['@neo-opus-4-7', '@neo-gpt-euclid']);
 
             selfStatus = 'operator_benched';
-            expect(await resolve(targetSource), targetSource).toEqual(['@neo-gpt'])
+            expect(await resolve(targetSource), targetSource).toEqual(['@neo-gpt-euclid'])
         }
     });
 
@@ -211,17 +211,17 @@ test.describe('resolveTargets — deployment-portable swarm-heartbeat target res
 
     test('active-subscribers — unions self with eligible provider output', async () => {
         const logger      = captureLogger();
-        const subscribers = ['@neo-gpt', '@neo-opus-4-7', '@neo-gemini-pro', '@custom-local-agent'];
+        const subscribers = ['@neo-gpt-euclid', '@neo-opus-4-7', '@neo-gemini-julia', '@custom-local-agent'];
         const result      = await resolveTargets({
             selfIdentity             : '@neo-opus-4-7',
             targetSource             : 'active-subscribers',
             activeSubscribersProvider: async () => subscribers,
-            participationProvider    : nodeBench('@neo-gemini-pro'),
+            participationProvider    : nodeBench('@neo-gemini-julia'),
             logger
         });
         // Self appears first; subscribers union (no duplicates); known benched identities are
         // filtered, while unknown local/fork identities remain eligible.
-        expect(result).toEqual(['@neo-opus-4-7', '@neo-gpt', '@custom-local-agent']);
+        expect(result).toEqual(['@neo-opus-4-7', '@neo-gpt-euclid', '@custom-local-agent']);
         expect(logger.calls).toEqual([]);
     });
 
@@ -307,17 +307,17 @@ test.describe('resolveTargets — deployment-portable swarm-heartbeat target res
 
     test('active-a2a-participants — unions self with eligible provider output (3h A2A activity)', async () => {
         const logger       = captureLogger();
-        const participants = ['@neo-gpt', '@neo-opus-4-7', '@neo-gemini-pro', '@custom-local-agent'];
+        const participants = ['@neo-gpt-euclid', '@neo-opus-4-7', '@neo-gemini-julia', '@custom-local-agent'];
         const result       = await resolveTargets({
             selfIdentity                 : '@neo-opus-4-7',
             targetSource                 : 'active-a2a-participants',
             activeA2aParticipantsProvider: async () => participants,
-            participationProvider        : nodeBench('@neo-gemini-pro'),
+            participationProvider        : nodeBench('@neo-gemini-julia'),
             logger
         });
         // Self appears first; participants union (no duplicates); known benched identities are
         // filtered, while unknown local/fork identities remain eligible.
-        expect(result).toEqual(['@neo-opus-4-7', '@neo-gpt', '@custom-local-agent']);
+        expect(result).toEqual(['@neo-opus-4-7', '@neo-gpt-euclid', '@custom-local-agent']);
         expect(logger.calls).toEqual([]);
     });
 

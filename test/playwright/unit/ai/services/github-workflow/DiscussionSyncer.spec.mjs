@@ -189,7 +189,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
 
     test('projects trusted lifecycle markers into typed source-owned routing frontmatter', async () => {
         const discussion = buildDiscussion(24007, {category: 'Ideas'});
-        discussion.author = {login: 'neo-gpt'};
+        discussion.author = {login: 'neo-gpt-euclid'};
         discussion.body   = 'OQ1 [RESOLVED_TO_AC]\nOQ2 [OQ_RESOLUTION_PENDING]';
 
         GraphqlService.query = async () => ({
@@ -224,7 +224,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
                     createdAt: '2026-05-02T01:00:00Z',
                     replies  : {nodes: []}
                 }, {
-                    author   : {login: 'neo-gpt'},
+                    author   : {login: 'neo-gpt-euclid'},
                     body     : '[OQ_RESOLUTION_PENDING] trusted comment only',
                     createdAt: '2026-05-02T02:00:00Z',
                     replies  : {nodes: []}
@@ -232,7 +232,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
                 pageInfo: {hasNextPage: false, endCursor: null}
             }
         });
-        discussion.author = {login: 'neo-gpt'};
+        discussion.author = {login: 'neo-gpt-euclid'};
         discussion.body   = 'Marker-free authoritative root body.';
 
         GraphqlService.query = async () => ({
@@ -502,7 +502,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
                 }]}
             }, {
                 id       : 'DC_trusted',
-                author   : {login: 'neo-gpt'},
+                author   : {login: 'neo-gpt-euclid'},
                 body     : 'Trusted discussion link remains raw https://github.com/neomjs/neo',
                 createdAt: '2026-05-02T03:00:00Z',
                 replies  : {nodes: []}

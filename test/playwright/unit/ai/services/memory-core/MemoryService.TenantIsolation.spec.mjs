@@ -462,7 +462,7 @@ test.describe('MemoryService — raw-memory trust-tier filtering (#10292)', () =
         spyCollection.rows.set('m-peer', {
             id      : 'm-peer',
             metadata: {
-                agentIdentity: '@neo-gpt',
+                agentIdentity: '@neo-gpt-euclid',
                 prompt       : 'peer',
                 sessionId    : 's',
                 timestamp    : 200
@@ -492,7 +492,7 @@ test.describe('MemoryService — raw-memory trust-tier filtering (#10292)', () =
             trustTier    : 'owner'
         });
         expect(view.results.find(result => result.prompt === 'peer')).toMatchObject({
-            agentIdentity: '@neo-gpt',
+            agentIdentity: '@neo-gpt-euclid',
             trustTier    : 'peer-trusted'
         });
 

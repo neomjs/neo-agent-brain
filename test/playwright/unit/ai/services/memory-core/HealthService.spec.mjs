@@ -1575,7 +1575,7 @@ test.describe('HealthService #11181 — buildChromaMigrationStats', () => {
             {},
             {userId: ''},
             {userId: 'shared'},
-            {userId: 'neo-gpt'}
+            {userId: 'neo-gpt-euclid'}
         ]);
 
         expect(result.totalRecords).toBe(4);
@@ -1584,17 +1584,17 @@ test.describe('HealthService #11181 — buildChromaMigrationStats', () => {
         expect(result.migrationDebt).toBe(2);
         expect(result.perUserId).toEqual({
             shared   : 1,
-            'neo-gpt': 1
+            'neo-gpt-euclid': 1
         });
     });
 
     test('summary metadata flags core-swarm participants not shared as visibility debt', () => {
         const result = buildChromaMigrationStats([
             {},
-            {userId: 'neo-gemini-pro', participatingAgents: '@neo-gpt'},
+            {userId: 'neo-gemini-julia', participatingAgents: '@neo-gpt-euclid'},
             {userId: 'shared', participatingAgents: '@neo-opus-ada'},
             {userId: 'alice', participatingAgents: '@alice'},
-            {userId: '', participatingAgents: '@neo-gemini-pro'}
+            {userId: '', participatingAgents: '@neo-gemini-julia'}
         ], {summaryCollection: true});
 
         expect(result.totalRecords).toBe(5);

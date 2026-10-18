@@ -447,7 +447,7 @@ test.describe('SessionService Drift Detection — Timestamp Filtering', () => {
 
     test('#9959: findSessionsToSummarize should exclude externally active peer sessions from drift detection', async () => {
         const activeSessionId = `external-active-${crypto.randomUUID()}`;
-        const agentIdentity   = '@neo-gpt';
+        const agentIdentity   = '@neo-gpt-euclid';
         const now             = Date.now();
 
         await seedExternallyActiveSession({

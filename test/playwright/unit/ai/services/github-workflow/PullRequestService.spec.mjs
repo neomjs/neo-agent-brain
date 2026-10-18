@@ -375,9 +375,9 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
     const HEAD       = 'a'.repeat(40);
     const NEXT_HEAD  = 'b'.repeat(40);
     const PRINCIPALS = {
-        agentIdentity     : '@neo-gpt',
-        githubLogin       : 'neo-gpt',
-        memoryCoreIdentity: '@neo-gpt'
+        agentIdentity     : '@neo-gpt-euclid',
+        githubLogin       : 'neo-gpt-euclid',
+        memoryCoreIdentity: '@neo-gpt-euclid'
     };
     const IDENTITY = {ok: true, code: 'OK', reason: null, principals: PRINCIPALS};
     const RULES    = [{
@@ -1067,7 +1067,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
                         pullRequest: {
                             title   : 'Conversation',
                             body    : 'Body',
-                            author  : {login: 'neo-gpt'},
+                            author  : {login: 'neo-gpt-euclid'},
                             comments: {nodes: []}
                         }
                     }
@@ -1445,7 +1445,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — getConvers
 
     test('comment_id accepts every spelling, and a scoped request omits the PR body (#17142)', async () => {
         // The PR path had no service-level selector arms at all — only the pure helper and the
-        // Discussion path were covered, so this surface's wiring was asserted nowhere (@neo-gpt).
+        // Discussion path were covered, so this surface's wiring was asserted nowhere (@neo-gpt-euclid).
         // `5301283039` is a real PR-comment databaseId shape; the legacy base64 form is the
         // regression case strict equality used to accept.
         for (const spelling of [
@@ -1741,7 +1741,7 @@ function getAgentPrReviewBodyLintScript() {
  * @param {String} options.body Review body to validate.
  * @param {Object|null} [options.activationIssue] Activation issue GraphQL projection.
  * @param {String} [options.createdAt='2026-07-16T13:57:02Z'] Reviewed PR creation timestamp.
- * @param {String} [options.reviewer='neo-gpt'] GitHub login for the simulated reviewer.
+ * @param {String} [options.reviewer='neo-gpt-euclid'] GitHub login for the simulated reviewer.
  * @param {String} [options.state='approved'] GitHub webhook review state.
  * @returns {Promise<Object>} Captured workflow comments, failures, and log lines.
  */
@@ -1749,7 +1749,7 @@ async function runAgentPrReviewBodyLintWorkflow({
     activationIssue,
     body,
     createdAt = '2026-07-16T13:57:02Z',
-    reviewer = 'neo-gpt',
+    reviewer = 'neo-gpt-euclid',
     state = 'approved'
 } = {}) {
     const
@@ -1996,7 +1996,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     // valid shape is the canonical full Round-1 review — the budget still sees it and still refuses it.
     //
     // The comment that stood here claimed ordinary `REQUEST_CHANGES` reviews are "precisely this
-    // [Round-2 disposition] shape". That was my false premise, and @neo-gpt named it: once Round 2
+    // [Round-2 disposition] shape". That was my false premise, and @neo-gpt-euclid named it: once Round 2
     // became disposition-only it can never BE a Request Changes, so pointing the budget cases at the
     // disposition body made their vehicle semantically stale rather than corrected.
     const VALID_ORDINARY_REQUEST_CHANGES_BODY = VALID_REVIEW_BODY
@@ -2084,7 +2084,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         body=['# PR Review Summary', '', '### 📋 Required Actions', '', '- [ ] prior template miss'].join('\n'),
         commit='1111111111111111111111111111111111111111',
         id='PRR_123', // the review VALID_ROUND_2_REVIEW_BODY cites, since the relation selects the cited round
-        reviewer='neo-gpt',
+        reviewer='neo-gpt-euclid',
         state='CHANGES_REQUESTED',
         submittedAt='2026-07-16T16:40:00Z'
     } = {}) => ({
@@ -2491,7 +2491,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
      * declaration EXISTS. The first revision deferred a missing Status to the structural anchor
      * layer in a code comment — and never checked that the anchor layer refuses it. It does not: a
      * Round 2 with no Status at all returned `valid: true`, so the rule silently did not apply to
-     * the one body that most needed it. Found in review by @neo-gpt.
+     * the one body that most needed it. Found in review by @neo-gpt-euclid.
      *
      * `Request Changes` is likewise not a legal Round-2 Status: every branch of the coherence rule
      * refuses it — with a STILL_OPEN row it must be Comment, and without one a fully dispositioned
@@ -2735,14 +2735,14 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                                     submittedAt: '2026-07-03T01:34:00Z',
                                     url        : 'https://github.com/neomjs/neo/pull/14527#pullrequestreview-1',
                                     databaseId : 1,
-                                    author     : {login: 'neo-gpt'},
+                                    author     : {login: 'neo-gpt-euclid'},
                                     commit     : {oid: PR_HEAD_OID}
                                 }, {
                                     state      : 'COMMENTED',
                                     submittedAt: '2026-07-03T02:00:00Z',
                                     url        : 'https://github.com/neomjs/neo/pull/14527#pullrequestreview-2',
                                     databaseId : 2,
-                                    author     : {login: 'neo-gpt'},
+                                    author     : {login: 'neo-gpt-euclid'},
                                     commit     : {oid: PR_HEAD_OID}
                                 }]
                             }
@@ -2768,10 +2768,10 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         expect(result.error).toBe('PR Review State Validation Failed');
         expect(result.code).toBe('PR_REVIEW_STATE_VALIDATION_FAILED');
-        expect(result.message).toContain('@neo-gpt');
+        expect(result.message).toContain('@neo-gpt-euclid');
         expect(result.message).toContain(PR_HEAD_OID);
         expect(result.message).toContain('pr-review §9.1 Reviewer-Yield');
-        expect(result.outstandingRequestChanges.map(({reviewer}) => reviewer)).toEqual(['neo-gpt']);
+        expect(result.outstandingRequestChanges.map(({reviewer}) => reviewer)).toEqual(['neo-gpt-euclid']);
         expect(mutationCallCount).toBe(0);
     });
 
@@ -2792,7 +2792,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                                     submittedAt: '2026-07-03T01:34:00Z',
                                     url        : 'https://github.com/neomjs/neo/pull/14527#pullrequestreview-1',
                                     databaseId : 1,
-                                    author     : {login: 'neo-gpt'},
+                                    author     : {login: 'neo-gpt-euclid'},
                                     commit     : {oid: PR_HEAD_OID}
                                 }]
                             }
@@ -2811,7 +2811,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         const result = await PullRequestService.managePrReview({
             acknowledgedRequestChanges: {
-                'neo-gpt': `addressed-by-${PR_HEAD_OID.slice(0, 12)}`
+                'neo-gpt-euclid': `addressed-by-${PR_HEAD_OID.slice(0, 12)}`
             },
             action   : 'create',
             pr_number: 14527,
@@ -2836,7 +2836,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                             reviews       : {
                                 nodes: [{
                                     state : 'CHANGES_REQUESTED',
-                                    author: {login: 'neo-gpt'},
+                                    author: {login: 'neo-gpt-euclid'},
                                     commit: {oid: PR_HEAD_OID}
                                 }]
                             }
@@ -2850,7 +2850,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         const result = await PullRequestService.managePrReview({
             acknowledgedRequestChanges: {
-                'neo-gpt': 'addressed-by-deadbee'
+                'neo-gpt-euclid': 'addressed-by-deadbee'
             },
             action   : 'create',
             pr_number: 14527,
@@ -2859,7 +2859,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         });
 
         expect(result.code).toBe('PR_REVIEW_STATE_VALIDATION_FAILED');
-        expect(result.message).toContain('Invalid acknowledgment disposition(s): @neo-gpt');
+        expect(result.message).toContain('Invalid acknowledgment disposition(s): @neo-gpt-euclid');
     });
 
     test('action:create + state:REQUEST_CHANGES → state enum maps to REQUEST_CHANGES event', async () => {
@@ -2993,7 +2993,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 id         : 'PRR_retraction',
                 state      : 'APPROVED',
                 submittedAt: '2026-07-16T16:45:00Z',
-                author     : {login: 'neo-gpt'},
+                author     : {login: 'neo-gpt-euclid'},
                 commit     : {oid: '2222222222222222222222222222222222222222'}
             },
             priorRequestChanges({
@@ -3048,7 +3048,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 return pullRequestLookup({
                     createdAt: '2026-07-16T13:57:04Z',
                     reviews  : {
-                        nodes   : [priorRequestChanges({reviewer: 'neo-gpt'})],
+                        nodes   : [priorRequestChanges({reviewer: 'neo-gpt-euclid'})],
                         pageInfo: {hasPreviousPage: false}
                     }
                 })
@@ -3197,7 +3197,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     });
 
     test('#17141: a re-entry cannot borrow another family\'s Round-1 head, and refuses when its own is unrecorded', async () => {
-        // Two holes @neo-gpt found by execution, both of which my earlier arm could not reach: it used
+        // Two holes @neo-gpt-euclid found by execution, both of which my earlier arm could not reach: it used
         // ONE same-family prior review WITH a commit oid, so the head set was never foreign and never
         // empty. A fixture that cannot produce the failing shape cannot falsify it.
         //
@@ -4979,7 +4979,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         return {mutationCallCount, result}
     };
 
-    // A body that raises its demand as RA-N PROSE rather than as a checkbox. @neo-gpt submitted exactly
+    // A body that raises its demand as RA-N PROSE rather than as a checkbox. @neo-gpt-euclid submitted exactly
     // this shape at the exact head and it was admitted: the first detector read the measured checkbox
     // population as the whole grammar.
     const RA_PROSE_BODY = VALID_ORDINARY_REQUEST_CHANGES_BODY.replace(
@@ -5001,7 +5001,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
     // THE DEFECT THE FIRST VERSION SHIPPED, and the reason this guard is now stateless. It refused a
     // demand COMMENT only once the family had spent an ordinary CHANGES_REQUESTED round — so a family
-    // that never chose that enum was never "post-budget" and could demand forever. @neo-gpt admitted
+    // that never chose that enum was never "post-budget" and could demand forever. @neo-gpt-euclid admitted
     // the same packet after 0, 1 and 2 prior same-family demand COMMENTs at the exact head.
     test('#17214: the 0 -> 1 -> 2 prior-demand-COMMENT sequence refuses at every step', async () => {
         const demandComment = index => ({
@@ -5009,7 +5009,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             id         : `PRR_demand_${index}`,
             state      : 'COMMENTED',
             submittedAt: `2026-07-16T1${index}:00:00Z`,
-            author     : {login: 'neo-gpt'},
+            author     : {login: 'neo-gpt-euclid'},
             commit     : {oid: '1111111111111111111111111111111111111111'}
         });
 
@@ -5143,7 +5143,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
     // INDEPENDENT is the load-bearing word, and this suite originally proved the opposite: its positive
     // fixture cited the very issue the PR closes as evidence of independent follow-up ownership.
-    // @neo-gpt caught it — an item pointing at the close target names work the merge is about to
+    // @neo-gpt-euclid caught it — an item pointing at the close target names work the merge is about to
     // declare finished. The anti-pattern was shipped as its own proof.
     //
     // `line #N` is the second non-owner: a coordinate names a place, not a ticket accepting work.
@@ -5200,7 +5200,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     });
 
     // A citation is only ownership if it resolves. I argued this belonged in the post-submit audit
-    // rather than at admission, because admission should not make network round trips; @neo-gpt held
+    // rather than at admission, because admission should not make network round trips; @neo-gpt-euclid held
     // that admission is the layer and showed why at the exact head — a CLOSED issue and a NONEXISTENT
     // one both satisfied the lexical check and reached the mutation. The cost objection is answered
     // rather than overruled: ONE batched request for any number of citations, issued only when the
@@ -5239,7 +5239,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     };
 
     test('#17214: a closed or nonexistent follow-up owner is refused', async () => {
-        // @neo-gpt's two exact specimens.
+        // @neo-gpt-euclid's two exact specimens.
         const closed = await approveWithOwners('— #15257', {15257: 'CLOSED'});
 
         expect(closed.result.code).toBe('PR_REVIEW_FOLLOW_UP_OWNERSHIP_FAILED');

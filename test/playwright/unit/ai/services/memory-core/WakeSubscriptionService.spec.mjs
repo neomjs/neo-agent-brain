@@ -556,7 +556,7 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
 
         test('recovers template from durable AgentIdentity row when cache is stale', async () => {
             GraphService.upsertNode({
-                id        : '@neo-gpt',
+                id        : '@neo-gpt-euclid',
                 type      : 'AgentIdentity',
                 name      : 'Codex',
                 properties: {
@@ -576,12 +576,12 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 }
             });
 
-            const cachedIdentity = GraphService.db.nodes.get('@neo-gpt');
+            const cachedIdentity = GraphService.db.nodes.get('@neo-gpt-euclid');
             cachedIdentity.properties = {
                 displayName: 'Codex stripped cache stub'
             };
 
-            await RequestContextService.run({agentIdentityNodeId: '@neo-gpt'}, async () => {
+            await RequestContextService.run({agentIdentityNodeId: '@neo-gpt-euclid'}, async () => {
                 const res = await WakeSubscriptionService.manage({action: 'bootstrap', overrideMetadata: {url: BOOT_URL}});
                 expect(res.status).toBe('created');
                 // Recovered from the durable row, but the transport is still derived — the durable
@@ -595,7 +595,7 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 expect(subscriptionNode.properties.harnessTargetMetadata.appName).toBe('Codex');
                 expect(subscriptionNode.properties.harnessTargetMetadata.focusSeedKey).toBe('r');
 
-                const hydratedIdentity = GraphService.db.nodes.get('@neo-gpt');
+                const hydratedIdentity = GraphService.db.nodes.get('@neo-gpt-euclid');
                 expect(hydratedIdentity.properties.subscriptionTemplate.filters.priority).toBe('high');
                 expect(hydratedIdentity.properties.subscriptionTemplate.harnessTargetMetadata.adapter).toBe('osascript');
                 expect(hydratedIdentity.properties.subscriptionTemplate.harnessTargetMetadata.appName).toBe('Codex');
@@ -3080,16 +3080,16 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             // A rostered resident's graph node carries a WRONG flat family. Both the family
             // FILTER and the liveness PROJECTION must read through the identity trail, so the
             // true family finds it, the spoofed family does not, and the report tells the truth.
-            seedAgent('@neo-gemini-pro', {family: 'spoofed-fam'});
+            seedAgent('@neo-gemini-julia', {family: 'spoofed-fam'});
 
             const trueFamily = await WakeSubscriptionService.whoIsOnline({family: 'gemini', verbose: true, now: new Date(T0)});
-            const entry      = trueFamily.agents.find(a => a.identity === '@neo-gemini-pro');
+            const entry      = trueFamily.agents.find(a => a.identity === '@neo-gemini-julia');
 
             expect(entry).toBeTruthy();
             expect(entry.family).toBe('gemini');
 
             const spoofFamily = await WakeSubscriptionService.whoIsOnline({family: 'spoofed-fam', verbose: true, now: new Date(T0)});
-            expect(spoofFamily.agents.find(a => a.identity === '@neo-gemini-pro')).toBeUndefined();
+            expect(spoofFamily.agents.find(a => a.identity === '@neo-gemini-julia')).toBeUndefined();
         });
 
         test('#14750 runtime-provisioned identities (unrostered) keep filtering via the flat node property — the retirement witness', async () => {

@@ -457,9 +457,9 @@ test.describe('SessionService summary provenance (#10292)', () => {
                     ],
                     metadatas: [{
                         timestamp    : 10,
-                        agent        : 'neo-gpt',
+                        agent        : 'neo-gpt-euclid',
                         model        : 'gpt-5.5',
-                        agentIdentity: '@neo-gpt'
+                        agentIdentity: '@neo-gpt-euclid'
                     }, {
                         timestamp    : 20,
                         agent        : 'external-contributor',
@@ -517,12 +517,12 @@ test.describe('SessionService summary provenance (#10292)', () => {
     test('resolveSummarySourceProvenance uses the most restrictive source tier', () => {
         const result = SessionService.constructor.resolveSummarySourceProvenance([
             {agentIdentity: '@tobiu'},
-            {agentIdentity: '@neo-gpt'},
+            {agentIdentity: '@neo-gpt-euclid'},
             {agentIdentity: '@external-contributor'},
             {}
         ]);
 
-        expect(result.sourceAgentIdentities).toEqual(['@tobiu', '@neo-gpt', '@external-contributor']);
+        expect(result.sourceAgentIdentities).toEqual(['@tobiu', '@neo-gpt-euclid', '@external-contributor']);
         expect(result.sourceTrustTier).toBe('unclassified');
         expect(result.unclassifiedSourceCount).toBe(2);
     });
@@ -540,14 +540,14 @@ test.describe('SessionService summary provenance (#10292)', () => {
         expect(sessionUpserts).toHaveLength(1);
         const metadata = sessionUpserts[0].metadatas[0];
 
-        expect(metadata.sourceAgentIdentities).toBe('@neo-gpt,@external-contributor');
+        expect(metadata.sourceAgentIdentities).toBe('@neo-gpt-euclid,@external-contributor');
         expect(metadata.sourceTrustTier).toBe('unclassified');
         expect(metadata.provenancePolicy).toBe('most-restrictive-source');
         expect(metadata.unclassifiedSourceCount).toBe(2);
 
         const summaryNode = upsertNodeCalls.find(node => node.id === result.summaryId);
         expect(summaryNode.properties).toMatchObject({
-            sourceAgentIdentities: ['@neo-gpt', '@external-contributor'],
+            sourceAgentIdentities: ['@neo-gpt-euclid', '@external-contributor'],
             sourceTrustTier      : 'unclassified',
             provenancePolicy     : 'most-restrictive-source'
         });
@@ -555,9 +555,9 @@ test.describe('SessionService summary provenance (#10292)', () => {
         const authoredByEdges = linkNodesCalls.filter(([, , relationship]) => relationship === 'AUTHORED_BY');
         expect(authoredByEdges).toHaveLength(1);
         expect(authoredByEdges[0][0]).toBe(result.summaryId);
-        expect(authoredByEdges[0][1]).toBe('@neo-gpt');
+        expect(authoredByEdges[0][1]).toBe('@neo-gpt-euclid');
         expect(authoredByEdges[0][4]).toMatchObject({
-            userId          : 'neo-gpt',
+            userId          : 'neo-gpt-euclid',
             sharedEntity    : true,
             provenancePolicy: 'most-restrictive-source'
         });
@@ -570,9 +570,9 @@ test.describe('SessionService summary provenance (#10292)', () => {
         const stagedReceipts = [], originalGet = SessionService.memoryCollection.get;
         SessionService.memoryCollection.get = async () => ({
             ...await originalGet(),
-            metadatas: [{timestamp: 10, agent: 'neo-gpt', model: 'unit-model', agentIdentity: '@neo-gpt'},
+            metadatas: [{timestamp: 10, agent: 'neo-gpt-euclid', model: 'unit-model', agentIdentity: '@neo-gpt-euclid'},
                 {timestamp: 20, agent: 'neo-opus-ada', model: 'unit-model', agentIdentity: '@neo-opus-ada'},
-                {timestamp: 30, agent: 'neo-gpt', model: 'unit-model', agentIdentity: '@neo-gpt'}]
+                {timestamp: 30, agent: 'neo-gpt-euclid', model: 'unit-model', agentIdentity: '@neo-gpt-euclid'}]
         });
         SessionService.stageSessionSummaryReceipt = receipt => stagedReceipts.push(receipt);
 
@@ -595,10 +595,10 @@ test.describe('SessionService summary provenance (#10292)', () => {
         for (const output of [metadata, receipt.metadata]) {
             expect(output).toMatchObject({
                 userId               : 'shared',
-                sourceAgentIdentities: '@neo-gpt,@neo-opus-ada',
+                sourceAgentIdentities: '@neo-gpt-euclid,@neo-opus-ada',
                 sourceTrustTier      : 'peer-trusted',
                 provenancePolicy     : 'most-restrictive-source',
-                participatingAgents  : 'neo-gpt,neo-opus-ada',
+                participatingAgents  : 'neo-gpt-euclid,neo-opus-ada',
                 rawCanonical         : true
             });
         }

@@ -948,28 +948,28 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         registryStub.listAgents = () => {
             calls.push(['listAgents']);
             return [
-                {id: 'neo-gpt', githubUsername: 'neo-gpt', harnessType: 'codex'},
+                {id: 'neo-gpt-euclid', githubUsername: 'neo-gpt-euclid', harnessType: 'codex'},
                 {id: 'guest-agent', githubUsername: 'guest-agent', harnessType: 'claude-code'}
             ];
         };
-        managerStub.fleetRepoStatus    = () => { calls.push(['fleetRepoStatus']); return [{agentId: 'neo-gpt', state: 'checkout'}]; };
-        managerStub.fleetRuntimeStatus = () => { calls.push(['fleetRuntimeStatus']); return [{agentId: 'neo-gpt', state: 'running', running: true, confidence: 'observed'}]; };
+        managerStub.fleetRepoStatus    = () => { calls.push(['fleetRepoStatus']); return [{agentId: 'neo-gpt-euclid', state: 'checkout'}]; };
+        managerStub.fleetRuntimeStatus = () => { calls.push(['fleetRuntimeStatus']); return [{agentId: 'neo-gpt-euclid', state: 'running', running: true, confidence: 'observed'}]; };
 
         // the ONE join seam — injected here, so the spec pins the SEAM without depending on live root values
         FleetControlBridge.identityResolver = (login, options) => {
             calls.push(['resolveIdentityDisplay', login, options]);
-            return login === 'neo-gpt' ? {family: 'gpt', engineTag: 'GPT-5.6 Sol'} : {family: null, engineTag: null};
+            return login === 'neo-gpt-euclid' ? {family: 'gpt', engineTag: 'GPT-5.6 Sol'} : {family: null, engineTag: null};
         };
 
         const dto = await FleetControlBridge.fleetRoster();
 
         // the resolver was consulted once per agent, keyed by githubUsername
-        expect(calls).toContainEqual(['resolveIdentityDisplay', 'neo-gpt', {harnessType: 'codex'}]);
+        expect(calls).toContainEqual(['resolveIdentityDisplay', 'neo-gpt-euclid', {harnessType: 'codex'}]);
         expect(calls).toContainEqual(['resolveIdentityDisplay', 'guest-agent', {harnessType: 'claude-code'}]);
 
         expect(dto.rows).toHaveLength(2);
         expect(dto.rows[0]).toMatchObject({
-            id       : 'neo-gpt',
+            id       : 'neo-gpt-euclid',
             family   : 'gpt',
             engineTag: 'GPT-5.6 Sol',
             lifecycle: {state: 'running', confidence: 'observed'},
@@ -990,7 +990,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
     });
 
     test('fleetRoster defaults the resolver to the identity-roots join when not injected — family real, engineTag honestly null', async () => {
-        registryStub.listAgents        = () => [{id: 'neo-gpt', githubUsername: 'neo-gpt', harnessType: 'codex'}];
+        registryStub.listAgents        = () => [{id: 'neo-gpt-euclid', githubUsername: 'neo-gpt-euclid', harnessType: 'codex'}];
         managerStub.fleetRepoStatus    = () => [];
         managerStub.fleetRuntimeStatus = () => [];
 
@@ -1007,7 +1007,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         registryStub.listAgents = () => [
             guest,
             {id: 'any-provider', githubUsername: 'unseeded-open', harnessType: 'opencode'},
-            {id: 'known', githubUsername: 'neo-gpt', harnessType: 'claude-desktop'}
+            {id: 'known', githubUsername: 'neo-gpt-euclid', harnessType: 'claude-desktop'}
         ];
         managerStub.fleetRepoStatus    = () => [];
         managerStub.fleetRuntimeStatus = () => [];
@@ -1023,9 +1023,9 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
     });
 
     test('fleetRoster takes participation from the identity node, never the roots (#874)', async () => {
-        // neo-gpt's root reads active and Iris's root reads benched: the node says the opposite for both
+        // neo-gpt-euclid's root reads active and Iris's root reads benched: the node says the opposite for both
         registryStub.listAgents = () => [
-            {id: 'gpt',  githubUsername: 'neo-gpt',       harnessType: 'codex'},
+            {id: 'gpt',  githubUsername: 'neo-gpt-euclid',       harnessType: 'codex'},
             {id: 'iris', githubUsername: 'neo-kimi-iris', harnessType: 'opencode'}
         ];
         managerStub.fleetRepoStatus     = () => [];
@@ -1033,7 +1033,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         managerStub.fleetPresenceStatus = () => readFleetPresenceSnapshot({
             agents      : registryStub.listAgents(),
             readPresence: async () => ({agents: [
-                {identity: '@neo-gpt', state: 'benched', reason: 'roster: generic', signals: {participationStatus: 'operator_benched', statusReason: 'the flatrate ended', participationSince: '2026-10-01T00:00:00.000Z', activityRecency: null}},
+                {identity: '@neo-gpt-euclid', state: 'benched', reason: 'roster: generic', signals: {participationStatus: 'operator_benched', statusReason: 'the flatrate ended', participationSince: '2026-10-01T00:00:00.000Z', activityRecency: null}},
                 {identity: '@neo-kimi-iris', state: 'idle', reason: null, signals: {participationStatus: 'active', statusReason: null, participationSince: null, activityRecency: null}}
             ]})
         });

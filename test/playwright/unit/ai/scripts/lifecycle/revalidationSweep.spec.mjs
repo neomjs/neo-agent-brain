@@ -98,7 +98,7 @@ test.describe('Neo.ai.scripts.revalidationSweep', () => {
         test('does not match when family is only in Signal Ledger, not Liveness', () => {
             const body = [
                 '## Signal Ledger',
-                '- `gemini`: APPROVED by @neo-gemini-pro',
+                '- `gemini`: APPROVED by @neo-gemini-julia',
                 '',
                 '## Unresolved Liveness',
                 '(empty)'
@@ -123,9 +123,9 @@ test.describe('Neo.ai.scripts.revalidationSweep', () => {
     });
 
     test.describe('resolveIdentityForFamily', () => {
-        test('resolves gemini family to @neo-gemini-pro', () => {
+        test('resolves gemini family to @neo-gemini-julia', () => {
             const identity = resolveIdentityForFamily('gemini');
-            expect(identity.id).toBe('@neo-gemini-pro');
+            expect(identity.id).toBe('@neo-gemini-julia');
             expect(identity.properties.modelFamily).toBe('gemini');
         });
 
@@ -153,14 +153,14 @@ test.describe('Neo.ai.scripts.revalidationSweep', () => {
                 '@neo-opus-ada',
                 '@neo-opus-grace',
                 '@neo-opus-vega',
-                '@neo-fable',
+                '@neo-fable-mnemosyne',
                 '@neo-fable-clio'
             ]);
             expect(claudeIdentities.find(identity => identity.id === '@neo-opus-grace')?.properties.participationStatus)
                 .toBe('active');
             expect(claudeIdentities.find(identity => identity.id === '@neo-opus-vega')?.properties.participationStatus)
                 .toBe('active');
-            expect(claudeIdentities.find(identity => identity.id === '@neo-fable')?.properties.participationStatus)
+            expect(claudeIdentities.find(identity => identity.id === '@neo-fable-mnemosyne')?.properties.participationStatus)
                 .toBe('active');
             expect(claudeIdentities.find(identity => identity.id === '@neo-fable-clio')?.properties.participationStatus)
                 .toBe('active');
@@ -175,11 +175,11 @@ test.describe('Neo.ai.scripts.revalidationSweep', () => {
         test('includes identity + family + since + signal options + version', () => {
             const body = buildNotificationBody({
                 family       : 'gemini',
-                identityLogin: '@neo-gemini-pro',
+                identityLogin: '@neo-gemini-julia',
                 since        : '2026-05-18T00:00:00.000Z',
                 sweepAt      : '2026-06-01T12:00:00.000Z'
             });
-            expect(body).toContain('@neo-gemini-pro');
+            expect(body).toContain('@neo-gemini-julia');
             expect(body).toContain('`gemini`');
             expect(body).toContain('2026-05-18T00:00:00.000Z');
             expect(body).toContain('2026-06-01T12:00:00.000Z');
@@ -234,7 +234,7 @@ test.describe('Neo.ai.scripts.revalidationSweep', () => {
                 ],
                 postComment : ({ number, body }) => {
                     postedNumbers.push(number);
-                    expect(body).toContain('@neo-gemini-pro');
+                    expect(body).toContain('@neo-gemini-julia');
                 }
             };
             const result = await revalidationSweep({
@@ -292,8 +292,8 @@ test.describe('Neo.ai.scripts.revalidationSweep', () => {
             expect(result.identityLogin).toBe('@neo-opus-ada');
             // Active claude fan-out: the two fable-family identities were reactivated 2026-07-02, so
             // they are now notified alongside ada/grace/vega in a multi-active family sweep.
-            expect(result.identityLogins).toEqual(['@neo-opus-ada', '@neo-opus-grace', '@neo-opus-vega', '@neo-fable', '@neo-fable-clio']);
-            expect(result.results[0].notification).toContain('@neo-opus-ada, @neo-opus-grace, @neo-opus-vega, @neo-fable, @neo-fable-clio');
+            expect(result.identityLogins).toEqual(['@neo-opus-ada', '@neo-opus-grace', '@neo-opus-vega', '@neo-fable-mnemosyne', '@neo-fable-clio']);
+            expect(result.results[0].notification).toContain('@neo-opus-ada, @neo-opus-grace, @neo-opus-vega, @neo-fable-mnemosyne, @neo-fable-clio');
         });
 
         test('returns empty results when no candidates match', async () => {

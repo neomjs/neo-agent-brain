@@ -404,10 +404,10 @@ test.describe('Wake Daemon', () => {
     });
 
     test('a seat is woken by what its identity node records, not by the roots (#879)', async () => {
-        // Iris's root reads benched and neo-gpt's reads active: the nodes say the opposite
+        // Iris's root reads benched and neo-gpt-euclid's reads active: the nodes say the opposite
         const seats = [
             {identity: '@neo-kimi-iris', participationStatus: 'active',           subject: 'to the node-active seat'},
-            {identity: '@neo-gpt',       participationStatus: 'operator_benched', subject: 'to the node-benched seat'}
+            {identity: '@neo-gpt-euclid',       participationStatus: 'operator_benched', subject: 'to the node-benched seat'}
         ];
 
         for (const {identity, participationStatus} of seats) {
@@ -504,7 +504,7 @@ test.describe('Wake Daemon', () => {
     });
 
     test('an unread participation defers a queued wake until a read answers, then delivers it once', async () => {
-        const identity = '@neo-gpt';
+        const identity = '@neo-gpt-euclid';
 
         insertWakeSubscription(db, {agentId: identity, harnessTargetMetadata: {adapter: 'test', coalesceWindow: 1}});
         setIdentity(identity, 'active');
@@ -1802,7 +1802,7 @@ test.describe('Wake Daemon', () => {
     });
 
     test('does not queue wake delivery for known non-active identities (#13456)', async () => {
-        const agentId = '@neo-gemini-pro';
+        const agentId = '@neo-gemini-julia';
         const subId   = insertWakeSubscription(db, {
             agentId,
             harnessTargetMetadata: {
@@ -4277,7 +4277,7 @@ test.describe('Wake Daemon', () => {
         // primitive only) — refusing to proceed past the destructive Cmd+A / Cmd+X clear
         // sequence — until either operator opts in via verified single-key metadata, OR
         // the Codex app-server adapter supersedes UI-keystroke delivery. The
-        // probe-and-undo candidate `r → Cmd+Z → Cmd+A → Cmd+X` under @neo-gpt's 5-row
+        // probe-and-undo candidate `r → Cmd+Z → Cmd+A → Cmd+X` under @neo-gpt-euclid's 5-row
         // matrix investigation is a multi-step SEQUENCE, NOT a single-key seed; if it
         // proves safe it needs a distinct implementation path (sequence primitive or
         // app-server route), NOT a `focusSeedKey: 'r'` opt-in.

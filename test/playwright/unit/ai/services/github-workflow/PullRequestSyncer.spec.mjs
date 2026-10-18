@@ -190,7 +190,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
             createdAt: '2026-05-02T01:00:00Z'
         }, {
             id       : 'PC_trusted',
-            author   : {login: 'neo-gpt'},
+            author   : {login: 'neo-gpt-euclid'},
             body     : 'Trusted maintainer link remains raw https://github.com/neomjs/neo',
             createdAt: '2026-05-02T02:00:00Z'
         }]};

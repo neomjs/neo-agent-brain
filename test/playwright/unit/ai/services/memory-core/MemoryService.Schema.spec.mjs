@@ -80,7 +80,7 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
 
     test('addMemory canonicalizes profile-string agent to node-id graph identity', async () => {
         await MemoryService.addMemory({
-            agent    : 'neo-gemini-pro',
+            agent    : 'neo-gemini-julia',
             sessionId: 'session-xyz',
             prompt   : 'hello',
             thought  : 'thinking',
@@ -96,15 +96,15 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
 
         // Ensure the structured properties are present and correctly named
         expect(node.properties).toBeDefined();
-        // Profile string 'neo-gemini-pro' should be canonicalized to '@neo-gemini-pro'
-        expect(node.properties.agentIdentity).toBe('@neo-gemini-pro');
+        // Profile string 'neo-gemini-julia' should be canonicalized to '@neo-gemini-julia'
+        expect(node.properties.agentIdentity).toBe('@neo-gemini-julia');
         expect(node.properties.sessionId).toBe('session-xyz');
         expect(typeof node.properties.timestamp).toBe('string');
     });
 
     test('addMemory preserves canonical node-id graph identity', async () => {
         await MemoryService.addMemory({
-            agent    : '@neo-gemini-pro',
+            agent    : '@neo-gemini-julia',
             sessionId: 'session-xyz',
             prompt   : 'hello',
             thought  : 'thinking',
@@ -117,7 +117,7 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
         const node = upsertNodeCalls[0];
 
         expect(node.type).toBe('AGENT_MEMORY');
-        expect(node.properties.agentIdentity).toBe('@neo-gemini-pro');
+        expect(node.properties.agentIdentity).toBe('@neo-gemini-julia');
     });
 
     test('identity roots expose the 8-tier trust taxonomy required by #10292', () => {
@@ -139,16 +139,16 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
 
         expect(IDENTITIES.find(identity => identity.id === '@tobiu').properties.trustTier).toBe(TRUST_TIERS.OWNER);
         expect(IDENTITIES.find(identity => identity.id === '@system').properties.trustTier).toBe(TRUST_TIERS.SYSTEM);
-        expect(IDENTITIES.find(identity => identity.id === '@neo-gpt').properties.trustTier).toBe(TRUST_TIERS.PEER_TRUSTED);
+        expect(IDENTITIES.find(identity => identity.id === '@neo-gpt-euclid').properties.trustTier).toBe(TRUST_TIERS.PEER_TRUSTED);
         expect(IDENTITIES.find(identity => identity.id === '@neo-opus-ada').properties.trustTier).toBe(TRUST_TIERS.PEER_TRUSTED);
         expect(IDENTITIES.find(identity => identity.id === 'AGENT:*').properties.trustTier).toBe(TRUST_TIERS.UNCLASSIFIED);
     });
 
     test('addMemory stamps request-bound AgentIdentity into Chroma metadata and AUTHORED_BY edge', async () => {
         const result = await RequestContextService.run({
-            userId             : 'neo-gpt',
-            username           : 'neo-gpt',
-            agentIdentityNodeId: '@neo-gpt',
+            userId             : 'neo-gpt-euclid',
+            username           : 'neo-gpt-euclid',
+            agentIdentityNodeId: '@neo-gpt-euclid',
             source             : 'env-var'
         }, () => MemoryService.addMemory({
             sessionId: 'session-abc',
@@ -162,19 +162,19 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
         await flushGraphProjection();
 
         expect(collectionAddCalls).toHaveLength(1);
-        expect(collectionAddCalls[0].metadatas[0].userId).toBe('neo-gpt');
-        expect(collectionAddCalls[0].metadatas[0].agentIdentity).toBe('@neo-gpt');
+        expect(collectionAddCalls[0].metadatas[0].userId).toBe('neo-gpt-euclid');
+        expect(collectionAddCalls[0].metadatas[0].agentIdentity).toBe('@neo-gpt-euclid');
 
         expect(upsertNodeCalls).toHaveLength(1);
-        expect(upsertNodeCalls[0].properties.agentIdentity).toBe('@neo-gpt');
+        expect(upsertNodeCalls[0].properties.agentIdentity).toBe('@neo-gpt-euclid');
 
         const authoredBy = linkNodesCalls.find(([, , relationship]) => relationship === 'AUTHORED_BY');
         expect(authoredBy).toBeDefined();
         expect(authoredBy[0]).toBe(result.id);
-        expect(authoredBy[1]).toBe('@neo-gpt');
+        expect(authoredBy[1]).toBe('@neo-gpt-euclid');
         expect(authoredBy[3]).toBe(1.0);
         expect(authoredBy[4]).toMatchObject({
-            userId      : 'neo-gpt',
+            userId      : 'neo-gpt-euclid',
             sharedEntity: true
         });
 

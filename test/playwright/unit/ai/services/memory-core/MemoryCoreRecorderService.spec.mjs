@@ -967,12 +967,12 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
             expect(metrics.walDrain.drainedClean).toBe(true);
             // `counts` describes ONE latest cycle and is not the comparable denominator. The earlier
             // version of this test asserted that a timestamp inside the lookback made it comparable;
-            // @neo-gpt falsified that with two healthy sequences, so the claim — and this assertion —
+            // @neo-gpt-euclid falsified that with two healthy sequences, so the claim — and this assertion —
             // are gone. Comparability now lives in `window`, which covers the same interval.
             expect(metrics.walDrain).not.toHaveProperty('withinWindow');
         });
 
-        test('a cycle still waiting on the provider is VISIBLE as selected work (@neo-gpt falsifier 1)', () => {
+        test('a cycle still waiting on the provider is VISIBLE as selected work (@neo-gpt-euclid falsifier 1)', () => {
             // The healthy sequence that defeated the first implementation: the last completed cycle was
             // idle, a new cycle has legitimately selected one item, and its provider call is in flight.
             // The tracker cannot speak about that cycle until the call returns, so the receipt alone
@@ -996,7 +996,7 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
             expect(walDrain.inProgress.selectedCount).toBe(1);
         });
 
-        test('work completed inside the lookback survives an idle poll overwriting the receipt (@neo-gpt falsifier 2)', () => {
+        test('work completed inside the lookback survives an idle poll overwriting the receipt (@neo-gpt-euclid falsifier 2)', () => {
             // The second healthy sequence: a work-bearing cycle embedded one item, then the next idle
             // poll overwrote the latest receipt while that completion was still inside the 60s provider
             // lookback. `counts` now reads 0/0 and is TRUE of its own cycle — the window aggregate is
@@ -1110,7 +1110,7 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
             expect(reembedRatio.reason).toBeNull();
         });
 
-        test('EVERY status arm carries the required walDrain field (@neo-gpt contract break)', () => {
+        test('EVERY status arm carries the required walDrain field (@neo-gpt-euclid contract break)', () => {
             // The field is declared required on the response, but the telemetry-disabled and
             // db-unavailable arms returned early without it. OpenAPI and parity checks validate the
             // DECLARATION, not the runtime branch, so both passed green while the wire contract broke.

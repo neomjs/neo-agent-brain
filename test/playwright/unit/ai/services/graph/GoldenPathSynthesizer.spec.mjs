@@ -146,16 +146,16 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
 
         expect(Synthesizer.getCoreSwarmAgentFamilies()).toMatchObject({
             'neo-opus-grace': 'claude',
-            'neo-gemini-pro': 'gemini',
-            'neo-gpt'       : 'gpt',
+            'neo-gemini-julia': 'gemini',
+            'neo-gpt-euclid'       : 'gpt',
             'neo-opus-ada'  : 'claude',
             'neo-opus-vega' : 'claude'
         });
 
         expect(Synthesizer.getAgentLogins()).toEqual(expect.arrayContaining([
             'neo-opus-grace',
-            'neo-gemini-pro',
-            'neo-gpt',
+            'neo-gemini-julia',
+            'neo-gpt-euclid',
             'neo-opus-ada',
             'neo-opus-vega'
         ]));
@@ -163,8 +163,8 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
 
         expect(Synthesizer.getStaleAssignmentMaintainers()).toEqual(expect.arrayContaining([
             'neo-opus-grace',
-            'neo-gemini-pro',
-            'neo-gpt',
+            'neo-gemini-julia',
+            'neo-gpt-euclid',
             'neo-opus-ada',
             'neo-opus-vega',
             'tobiu'
@@ -352,8 +352,8 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
 
     test('findLastQualifyingAssignmentActivity treats owner identity comments as maintainer progress acknowledgements', () => {
         const activity = Synthesizer.findLastQualifyingAssignmentActivity({
-            assignees: ['neo-gpt'],
-            author   : 'neo-gpt',
+            assignees: ['neo-gpt-euclid'],
+            author   : 'neo-gpt-euclid',
             createdAt: '2026-05-01T00:00:00Z',
             content  : [
                 '### @tobiu - 2026-05-27T00:00:00Z',
@@ -382,7 +382,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             {
                 number        : 11178,
                 url           : "https://github.com/neomjs/neo/pull/11178",
-                author        : { login: "neo-gemini-pro" },
+                author        : { login: "neo-gemini-julia" },
                 title         : "feat(ai): Automate PR Cycle State Extraction",
                 body          : "lane-state: AWAITING_REVIEW\nCycle 2",
                 createdAt     : "2026-05-11T00:00:00Z",
@@ -420,7 +420,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect(handoffContent).toContain('cross-family reviewed: no');
         expect(handoffContent).toContain('- **PR #11178**: feat(ai): Automate PR Cycle State Extraction');
         expect(handoffContent).not.toContain('](https://github.com/');
-        expect(handoffContent).not.toContain('### @neo-gemini-pro');
+        expect(handoffContent).not.toContain('### @neo-gemini-julia');
         expect(handoffContent).not.toContain('- **Lane State**:');
         expect(handoffContent).not.toContain('- **Cycle**:');
         expect(handoffContent).not.toContain('- **Reviewers**:');
@@ -446,8 +446,8 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
                 ? {
                     ids      : ['abcdef1234567890', 'stale-session-id', 'undateable-id'],
                     metadatas: [
-                        {timestamp: now.getTime() - 2 * 3600 * 1000, agent: '@neo-fable'},
-                        {timestamp: now.getTime() - 500 * 3600 * 1000, agent: '@neo-gpt'},
+                        {timestamp: now.getTime() - 2 * 3600 * 1000, agent: '@neo-fable-mnemosyne'},
+                        {timestamp: now.getTime() - 500 * 3600 * 1000, agent: '@neo-gpt-euclid'},
                         {note: 'no timestamp keys'}
                     ]
                 }
@@ -458,7 +458,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const originalFetchOpenPRs = GoldenPathSynthesizer.fetchOpenPRs;
 
         GoldenPathSynthesizer.fetchOpenPRs = async () => [
-            {number: 14682, url: 'https://github.com/neomjs/neo/pull/14682', author: {login: 'neo-fable'}, title: 'registry snapshot clone', createdAt: hoursAgo(5), reviewRequests: [], reviews: [], comments: []}
+            {number: 14682, url: 'https://github.com/neomjs/neo/pull/14682', author: {login: 'neo-fable-mnemosyne'}, title: 'registry snapshot clone', createdAt: hoursAgo(5), reviewRequests: [], reviews: [], comments: []}
         ];
 
         try {
@@ -601,7 +601,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             '',
             '### Recent Open PRs',
             '',
-            '### @neo-gpt',
+            '### @neo-gpt-euclid',
             '',
             '- stale author-grouped PR entry',
             '',
@@ -617,7 +617,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             {
                 number        : 13962,
                 url           : 'https://github.com/neomjs/neo/pull/13962',
-                author        : {login: 'neo-gpt'},
+                author        : {login: 'neo-gpt-euclid'},
                 title         : 'fix(ai): overwrite stale Sandman handoff',
                 body          : '',
                 createdAt     : '2026-06-24T17:59:52Z',
@@ -645,7 +645,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect(handoffContent).toContain('## Computed Golden Path (Strategic Recommendation)');
         expect(handoffContent).toContain('No actionable computed recommendations survived the current Tri-Vector filter pass.');
         expect(handoffContent).toContain('- Semantic candidates: 0');
-        expect(handoffContent).not.toContain('### @neo-gpt');
+        expect(handoffContent).not.toContain('### @neo-gpt-euclid');
         expect(handoffContent).not.toContain('### @neo-opus-grace');
         expect(handoffContent).not.toContain('stale author-grouped PR entry');
     });
@@ -767,7 +767,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             '',
             '- **PR #13864**: stale lifecycle data',
             '',
-            '### @neo-gpt',
+            '### @neo-gpt-euclid',
             '',
             '- stale author-grouped PR entry'
         ].join('\n'));
@@ -797,7 +797,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect(handoffContent).toContain('Live PR fetch failed; stale PR data was intentionally not reused.');
         expect(handoffContent).toContain('- Error: gh pr list unavailable');
         expect(handoffContent).not.toContain('PR #13864');
-        expect(handoffContent).not.toContain('### @neo-gpt');
+        expect(handoffContent).not.toContain('### @neo-gpt-euclid');
         expect(handoffContent).not.toContain('stale author-grouped PR entry');
     });
 
@@ -915,17 +915,17 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             'labels:',
             '  - enhancement',
             'assignees:',
-            '  - neo-gpt',
+            '  - neo-gpt-euclid',
             "createdAt: '2026-05-01T00:00:00Z'",
             "updatedAt: '2026-05-27T00:00:00Z'",
             "githubUrl: 'https://github.com/neomjs/neo/issues/9002'",
-            'author: neo-gpt',
+            'author: neo-gpt-euclid',
             '---',
             '# Fresh assigned issue',
             '',
             '## Timeline',
             '',
-            '### @neo-gpt - 2026-05-27T00:00:00Z',
+            '### @neo-gpt-euclid - 2026-05-27T00:00:00Z',
             '',
             'still in progress'
         ].join('\n'));
@@ -938,11 +938,11 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             '  - enhancement',
             '  - needs-re-triage',
             'assignees:',
-            '  - neo-gpt',
+            '  - neo-gpt-euclid',
             "createdAt: '2026-05-01T00:00:00Z'",
             "updatedAt: '2026-05-01T00:00:00Z'",
             "githubUrl: 'https://github.com/neomjs/neo/issues/9003'",
-            'author: neo-gpt',
+            'author: neo-gpt-euclid',
             '---',
             '# Rejected assigned issue'
         ].join('\n'));
@@ -1001,7 +1001,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             "createdAt: '2026-04-01T00:00:00Z'",
             "updatedAt: '2026-05-01T00:00:00Z'",
             "githubUrl: 'https://github.com/neomjs/neo/issues/9401'",
-            'author: neo-gpt',
+            'author: neo-gpt-euclid',
             '---',
             '# Quiet unassigned issue'
         ].join('\n'));
@@ -1768,7 +1768,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             "createdAt: '2026-06-21T10:20:34Z'",
             "updatedAt: '2026-06-21T11:20:50Z'",
             'assignees:',
-            '  - neo-gpt',
+            '  - neo-gpt-euclid',
             '---',
             '# PRIO-ZERO: Golden Path release steering regression',
             '',
@@ -2559,15 +2559,15 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             'labels:',
             '  - enhancement',
             'assignees:',
-            '  - neo-gpt',
+            '  - neo-gpt-euclid',
             "createdAt: '2026-05-20T00:00:00Z'",
             "updatedAt: '2026-05-27T00:00:00Z'",
             "githubUrl: 'https://github.com/neomjs/neo/issues/9100'",
-            'author: neo-gpt',
+            'author: neo-gpt-euclid',
             '---',
             '# Fresh issue',
             '',
-            '### @neo-gpt - 2026-05-27T00:00:00Z',
+            '### @neo-gpt-euclid - 2026-05-27T00:00:00Z',
             '',
             'working'
         ].join('\n'));
@@ -2586,10 +2586,10 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
 
     test('renderStaleAssignmentCandidatesSection caps noisy local issue sync output', () => {
         const candidates = Array.from({length: 3}, (_, index) => ({
-            assignees     : ['neo-gpt'],
+            assignees     : ['neo-gpt-euclid'],
             daysIdle      : 10 + index,
             lastActivityAt: `2026-05-0${index + 1}T00:00:00.000Z`,
-            lastActivityBy: 'neo-gpt',
+            lastActivityBy: 'neo-gpt-euclid',
             number        : 9200 + index,
             reason        : 'assignee-comment',
             title         : `Candidate ${index + 1}`,
@@ -2629,7 +2629,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             "createdAt: '2026-04-01T00:00:00Z'",
             "updatedAt: '2026-05-08T00:00:00Z'",
             "githubUrl: 'https://github.com/neomjs/neo/issues/9301'",
-            'author: neo-gpt',
+            'author: neo-gpt-euclid',
             '---',
             '# Old unassigned fallback-weight issue'
         ]);
@@ -2641,7 +2641,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             'labels:',
             '  - enhancement',
             'assignees:',
-            '  - neo-gpt',
+            '  - neo-gpt-euclid',
             "createdAt: '2026-04-01T00:00:00Z'",
             "updatedAt: '2026-05-01T00:00:00Z'",
             '---',
@@ -2789,7 +2789,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             'labels:',
             '  - enhancement',
             'assignees:',
-            '  - neo-gemini-pro',
+            '  - neo-gemini-julia',
             "createdAt: '2026-06-01T00:00:00Z'",
             "updatedAt: '2026-07-02T11:00:00Z'",
             "githubUrl: 'https://github.com/neomjs/neo/issues/9501'",
@@ -2804,7 +2804,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             'labels:',
             '  - not-code-ready',
             'assignees:',
-            '  - neo-gemini-pro',
+            '  - neo-gemini-julia',
             "createdAt: '2026-06-01T00:00:00Z'",
             "updatedAt: '2026-07-02T11:00:00Z'",
             '---',
@@ -2818,7 +2818,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             'labels:',
             '  - epic',
             'assignees:',
-            '  - neo-gemini-pro',
+            '  - neo-gemini-julia',
             "createdAt: '2026-05-01T00:00:00Z'",
             "updatedAt: '2026-06-20T00:00:00Z'",
             'subIssuesCompleted: 3',
@@ -2835,7 +2835,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             'labels:',
             '  - epic',
             'assignees:',
-            '  - neo-gpt',
+            '  - neo-gpt-euclid',
             "createdAt: '2026-05-01T00:00:00Z'",
             "updatedAt: '2026-06-20T00:00:00Z'",
             'subIssuesCompleted: 2',
@@ -2891,15 +2891,15 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
                 title    : 'Parked approved PR',
                 body     : 'Parked-on: #14441 [OQ5] - governance hold',
                 createdAt: '2026-07-01T00:00:00Z',
-                reviews  : [{author: {login: 'neo-gpt'}, state: 'APPROVED', submittedAt: '2026-07-01T01:00:00Z'}]
+                reviews  : [{author: {login: 'neo-gpt-euclid'}, state: 'APPROVED', submittedAt: '2026-07-01T01:00:00Z'}]
             },
             {
                 number   : 9603,
                 title    : 'Required-change PR',
                 createdAt: '2026-07-01T00:00:00Z',
                 reviews  : [
-                    {author: {login: 'neo-gpt'}, state: 'APPROVED', submittedAt: '2026-07-01T01:00:00Z'},
-                    {author: {login: 'neo-gpt'}, state: 'CHANGES_REQUESTED', submittedAt: '2026-07-01T02:00:00Z'}
+                    {author: {login: 'neo-gpt-euclid'}, state: 'APPROVED', submittedAt: '2026-07-01T01:00:00Z'},
+                    {author: {login: 'neo-gpt-euclid'}, state: 'CHANGES_REQUESTED', submittedAt: '2026-07-01T02:00:00Z'}
                 ]
             }
         ];
@@ -2926,7 +2926,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
                 verificationSource: 'AgentIdentity node + local issue sync'
             });
             expect(ownerFinding.motionPredicate).toContain('participationStatus');
-            expect(ownerFinding.evidenceRefs).toContain('AgentIdentity:@neo-gemini-pro:operator_benched');
+            expect(ownerFinding.evidenceRefs).toContain('AgentIdentity:@neo-gemini-julia:operator_benched');
             expect(ownerFinding.waitingSince).toBe('2026-05-18T00:00:00.000Z');
             expect(ownerFinding.lastSeen).toBe('2026-07-02T12:00:00.000Z');
 
@@ -2957,14 +2957,14 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             "createdAt: '2026-06-01T00:00:00Z'", "updatedAt: '2026-07-02T11:00:00Z'", `githubUrl: 'https://github.com/neomjs/neo/issues/${number}'`, '---', `# Lane ${number}`
         ].join('\n'));
 
-        // neo-gpt's root reads active and neo-gemini-pro's benched: the nodes below say the opposite of both
-        writeIssue(9701, 'neo-gpt');
-        writeIssue(9702, 'neo-gemini-pro');
+        // neo-gpt-euclid's root reads active and neo-gemini-julia's benched: the nodes below say the opposite of both
+        writeIssue(9701, 'neo-gpt-euclid');
+        writeIssue(9702, 'neo-gemini-julia');
 
         store.exec('CREATE TABLE Nodes (id TEXT PRIMARY KEY, data TEXT)');
         [
-            {id: '@neo-gpt', label: 'AgentIdentity', properties: {githubLogin: 'neo-gpt', participationStatus: 'operator_benched', since: '2026-07-01T00:00:00Z'}},
-            {id: '@neo-gemini-pro', label: 'AgentIdentity', properties: {githubLogin: 'neo-gemini-pro', participationStatus: 'active'}}
+            {id: '@neo-gpt-euclid', label: 'AgentIdentity', properties: {githubLogin: 'neo-gpt-euclid', participationStatus: 'operator_benched', since: '2026-07-01T00:00:00Z'}},
+            {id: '@neo-gemini-julia', label: 'AgentIdentity', properties: {githubLogin: 'neo-gemini-julia', participationStatus: 'active'}}
         ].forEach(node => store.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(node.id, JSON.stringify(node)));
 
         const
@@ -2989,7 +2989,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
 
         // one open epic, every sub closed, one owner: only the owner's node changes between the cases
         fs.writeFileSync(path.join(chunkDir, 'issue-9801.md'), [
-            '---', 'id: 9801', "title: 'Closed-sub epic'", 'state: OPEN', 'labels:', '  - epic', 'assignees:', '  - neo-gpt',
+            '---', 'id: 9801', "title: 'Closed-sub epic'", 'state: OPEN', 'labels:', '  - epic', 'assignees:', '  - neo-gpt-euclid',
             "createdAt: '2026-05-01T00:00:00Z'", "updatedAt: '2026-06-20T00:00:00Z'", 'subIssuesCompleted: 3', 'subIssuesTotal: 3',
             "githubUrl: 'https://github.com/neomjs/neo/issues/9801'", '---', '# Closed-sub epic'
         ].join('\n'));
@@ -3001,7 +3001,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
                 store.exec('CREATE TABLE Nodes (id TEXT PRIMARY KEY, data TEXT)');
 
                 if (properties) {
-                    const node = {id: '@neo-gpt', label: 'AgentIdentity', properties: {githubLogin: 'neo-gpt', ...properties}};
+                    const node = {id: '@neo-gpt-euclid', label: 'AgentIdentity', properties: {githubLogin: 'neo-gpt-euclid', ...properties}};
                     store.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(node.id, JSON.stringify(node))
                 }
 
@@ -3022,7 +3022,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             const benched = findingsFor({participationStatus: 'operator_benched'});
             expect(classes(benched)).toEqual(['OWNER_BENCHED_LANE', 'RESOLUTION_PENDING']);
             expect(resolution(benched)).toMatchObject({grade: 'verified-stall', sourceFidelity: 'verified', verificationSource: 'AgentIdentity node + local issue sync'});
-            expect(resolution(benched).evidenceRefs).toContain('AgentIdentity:@neo-gpt:operator_benched');
+            expect(resolution(benched).evidenceRefs).toContain('AgentIdentity:@neo-gpt-euclid:operator_benched');
             expect(rendered(benched)).toContain('Verified Stalls (`2` of `2` items)');
 
             const noNode = findingsFor(null);
@@ -3434,7 +3434,7 @@ test.describe('GoldenPathSynthesizer.hasCrossFamilyReview — author family from
 
     // `@`-stripped login → modelFamily, matching getCoreSwarmAgentFamilies().
     const agentFamilies = {
-        'neo-gpt'       : 'gpt',
+        'neo-gpt-euclid'       : 'gpt',
         'neo-opus-grace': 'claude',
         'neo-opus-ada'  : 'claude',
         'neo-opus-vega' : 'claude'
@@ -3447,20 +3447,20 @@ test.describe('GoldenPathSynthesizer.hasCrossFamilyReview — author family from
 
     test('parseSelfIdLogin resolves the Social-Name-led form and the legacy @identity form', () => {
         // Legacy @identity form (transitional / pre-trim bodies).
-        expect(Synthesizer.parseSelfIdLogin('Authored by GPT-5 (Codex Desktop), @neo-gpt (Euclid). Session x.')).toBe('neo-gpt');
+        expect(Synthesizer.parseSelfIdLogin('Authored by GPT-5 (Codex Desktop), @neo-gpt-euclid (Euclid). Session x.')).toBe('neo-gpt-euclid');
         expect(Synthesizer.parseSelfIdLogin('Authored by Claude Opus 4.8 (Claude Code), @neo-opus-grace (Grace).')).toBe('neo-opus-grace');
         // Real PR bodies open with `Resolves #N`, so the self-id is mid-body — the /m anchor must still match it.
-        expect(Synthesizer.parseSelfIdLogin('Resolves #1\n\nAuthored by GPT-5 (Codex Desktop), @neo-gpt (Euclid).')).toBe('neo-gpt');
+        expect(Synthesizer.parseSelfIdLogin('Resolves #1\n\nAuthored by GPT-5 (Codex Desktop), @neo-gpt-euclid (Euclid).')).toBe('neo-gpt-euclid');
         // Current Social-Name-led form (post-trim): resolve the Social Name to a login via the roster.
-        expect(Synthesizer.parseSelfIdLogin('Authored by Euclid (GPT-5, Codex Desktop). Session x.')).toBe('neo-gpt');
+        expect(Synthesizer.parseSelfIdLogin('Authored by Euclid (GPT-5, Codex Desktop). Session x.')).toBe('neo-gpt-euclid');
         expect(Synthesizer.parseSelfIdLogin('Authored by Ada (Claude Opus 4.8, Claude Code).')).toBe('neo-opus-ada');
         expect(Synthesizer.parseSelfIdLogin('Resolves #1\n\nAuthored by Grace (Claude Opus 4.8, Claude Code).')).toBe('neo-opus-grace');
         expect(Synthesizer.parseSelfIdLogin('Authored by Unregistered Name (Some Model). Session x.')).toBe(null); // social name not in roster
         expect(Synthesizer.parseSelfIdLogin('Authored by GPT-5 (Codex Desktop). Session x.')).toBe(null); // model-led, no @identity; "GPT-5" not a social name
         // Overmatch guards: a `Co-Authored by` trailer or prose merely containing `Authored by` mid-line must NOT match.
         expect(Synthesizer.parseSelfIdLogin('Co-Authored by Claude Opus, @neo-opus-grace.')).toBe(null);
-        expect(Synthesizer.parseSelfIdLogin('Note: Authored by old session @neo-gpt in context.')).toBe(null);
-        expect(Synthesizer.parseSelfIdLogin('Body text\nCo-Authored by X, @neo-gpt\nmore')).toBe(null);
+        expect(Synthesizer.parseSelfIdLogin('Note: Authored by old session @neo-gpt-euclid in context.')).toBe(null);
+        expect(Synthesizer.parseSelfIdLogin('Body text\nCo-Authored by X, @neo-gpt-euclid\nmore')).toBe(null);
         expect(Synthesizer.parseSelfIdLogin(null)).toBe(null)
     });
 
@@ -3469,7 +3469,7 @@ test.describe('GoldenPathSynthesizer.hasCrossFamilyReview — author family from
         const pr = {
             number : 13233,
             author : {login: 'neo-opus-ada'}, // drifted (mis-resolved opener)
-            body   : 'Authored by GPT-5 (Codex Desktop), @neo-gpt (Euclid). Session x.',
+            body   : 'Authored by GPT-5 (Codex Desktop), @neo-gpt-euclid (Euclid). Session x.',
             reviews: [{author: {login: 'neo-opus-grace'}, state: 'APPROVED'}]
         };
         // Login-only reads author=claude, reviewer=claude -> false (the bug). The self-id reads author=gpt -> cross-family true.
@@ -3491,7 +3491,7 @@ test.describe('GoldenPathSynthesizer.hasCrossFamilyReview — author family from
     test('falls back to the GitHub login when the body carries no @identity self-id (legacy)', () => {
         const pr = {
             number : 1,
-            author : {login: 'neo-gpt'},
+            author : {login: 'neo-gpt-euclid'},
             body   : 'Authored by GPT-5 (Codex Desktop). Session x.', // no @identity → advisory login path
             reviews: [{author: {login: 'neo-opus-grace'}, state: 'APPROVED'}]
         };

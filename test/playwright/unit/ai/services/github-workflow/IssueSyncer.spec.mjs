@@ -266,7 +266,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
 
         const trustedComment = buildComment(2);
         trustedComment.id     = 'IC_trusted';
-        trustedComment.author = {login: 'neo-gpt'};
+        trustedComment.author = {login: 'neo-gpt-euclid'};
         trustedComment.body   = 'Trusted maintainer source link stays raw: https://github.com/neomjs/neo';
 
         const mockIssue = buildMockIssue({

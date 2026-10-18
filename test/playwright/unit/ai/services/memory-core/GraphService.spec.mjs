@@ -1364,7 +1364,7 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         expect(system).toBeTruthy();
         expect(system.type).toBe('System');
 
-        const geminiPro = await GraphService.getNode({id: '@neo-gemini-pro'});
+        const geminiPro = await GraphService.getNode({id: '@neo-gemini-julia'});
         expect(geminiPro).toBeTruthy();
         expect(geminiPro.type).toBe('AgentIdentity');
 

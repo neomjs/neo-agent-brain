@@ -895,7 +895,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
      * **Why these arms exist.** The coalescer's own spec hand-injects `{readAt}`, which exercises the
      * consumer branch and is structurally incapable of falsifying the PRODUCER. Under that fixture a
      * resolver reading only broadcast `DELIVERED_TO` edges looked correct, while every READ DIRECT DM
-     * came back `{}`, scored "unknown", and kept counting. @neo-gpt found it by tracing the reader
+     * came back `{}`, scored "unknown", and kept counting. @neo-gpt-euclid found it by tracing the reader
      * into the storage model instead of trusting its summary.
      *
      * The mailbox has two shapes and one rule: a per-recipient `DELIVERED_TO` edge carries broadcast
@@ -6019,13 +6019,13 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             // (b) the alias for the SPOOFED family does NOT match it (the flat property is
             //     no longer the read for rostered residents).
             GraphService.upsertNode({
-                id        : '@neo-gemini-pro',
+                id        : '@neo-gemini-julia',
                 type      : 'AgentIdentity',
                 name      : 'Gemini Pro',
                 properties: { modelFamily: 'spoofed-family', accountType: 'agent' }
             });
 
-            await RequestContextService.run({ agentIdentityNodeId: '@neo-gemini-pro' }, async () => {
+            await RequestContextService.run({ agentIdentityNodeId: '@neo-gemini-julia' }, async () => {
                 await PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'});
             });
 
@@ -6043,7 +6043,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
                         sentTo = edge.target;
                     }
                 }
-                expect(sentTo).toBe('@neo-gemini-pro');
+                expect(sentTo).toBe('@neo-gemini-julia');
 
                 await expect(MailboxService.addMessage({
                     to     : 'AGENT:spoofed-family/pro',

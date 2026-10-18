@@ -91,7 +91,7 @@ test.describe('Neo.ai.services.github-workflow.shared.conversationTrust — pure
             author  : {login: 'tobiu'},
             comments: {nodes: [{
                 id     : 'DC_1',
-                author : {login: 'neo-gpt'},
+                author : {login: 'neo-gpt-euclid'},
                 body   : 'Top-level by a peer.',
                 replies: {nodes: [{
                     id    : 'DC_1_R1',
@@ -151,7 +151,7 @@ test.describe('Neo.ai.services.github-workflow.shared.conversationTrust — pure
 
         const projectedTrusted = projectAuthoredNodeTrust({
             id    : 'trusted',
-            author: {login: 'neo-gpt'},
+            author: {login: 'neo-gpt-euclid'},
             body  : 'Trusted maintainer reference stays raw: https://github.com/neomjs/neo'
         }, {
             summary,
@@ -214,7 +214,7 @@ test.describe('Neo.ai.services.github-workflow — getConversation trust wiring'
             body    : 'Root body.',
             author  : {login: 'tobiu'},
             comments: {nodes: [
-                {id: 'IC_first', author: {login: 'neo-gpt'}, body: 'clean'},
+                {id: 'IC_first', author: {login: 'neo-gpt-euclid'}, body: 'clean'},
                 structuredClone(hostileComment)
             ]}
         }}});
@@ -232,7 +232,7 @@ test.describe('Neo.ai.services.github-workflow — getConversation trust wiring'
             body    : 'Root body.',
             author  : {login: 'tobiu'},
             comments: {nodes: [
-                {id: 'IC_first', author: {login: 'neo-gpt'}, body: 'clean'},
+                {id: 'IC_first', author: {login: 'neo-gpt-euclid'}, body: 'clean'},
                 structuredClone(hostileComment)
             ]}
         }}});
@@ -254,7 +254,7 @@ test.describe('Neo.ai.services.github-workflow — getConversation trust wiring'
             body    : 'Root body.',
             author  : {login: 'tobiu'},
             comments: {nodes: [
-                {id: 'IC_anchor', author: {login: 'neo-gpt'}, body: 'clean anchor'},
+                {id: 'IC_anchor', author: {login: 'neo-gpt-euclid'}, body: 'clean anchor'},
                 structuredClone(hostileComment)
             ]}
         }}});
@@ -273,7 +273,7 @@ test.describe('Neo.ai.services.github-workflow — getConversation trust wiring'
         GraphqlService.query = async () => ({repository: {pullRequest: {
             title   : 'A PR',
             body    : 'PR body.',
-            author  : {login: 'neo-gpt'},
+            author  : {login: 'neo-gpt-euclid'},
             comments: {nodes: [structuredClone(hostileComment)]}
         }}});
 
@@ -291,7 +291,7 @@ test.describe('Neo.ai.services.github-workflow — getConversation trust wiring'
             author  : {login: 'tobiu'},
             comments: {nodes: [{
                 id     : 'DC_top',
-                author : {login: 'neo-fable'},
+                author : {login: 'neo-fable-mnemosyne'},
                 body   : 'Peer comment.',
                 replies: {nodes: [structuredClone(hostileComment)]}
             }]}

@@ -17,7 +17,7 @@ test.describe('discussionRoutingDisposition', () => {
     test('classifies explicit trusted convergence and evergreen signals as active', () => {
         for (const marker of ['CONVERGING', 'GRADUATION_PROPOSED', 'OQ_RESOLUTION_PENDING', 'EVERGREEN', 'REVALIDATED']) {
             const result = classifyDiscussionRoutingDisposition({
-                author: 'neo-gpt',
+                author: 'neo-gpt-euclid',
                 body  : `[${marker}] live scope`,
                 closed: false
             });
@@ -32,7 +32,7 @@ test.describe('discussionRoutingDisposition', () => {
 
     test('gives explicit terminal state precedence over older active signals', () => {
         const result = classifyDiscussionRoutingDisposition({
-            author: 'neo-gpt',
+            author: 'neo-gpt-euclid',
             body  : [
                 '[CONVERGING] prior cycle',
                 '[GRADUATED_TO_TICKET: #15100]'
@@ -63,7 +63,7 @@ test.describe('discussionRoutingDisposition', () => {
             '## Signal Ledger (archived — nothing graduated)'
         ]) {
             const result = classifyDiscussionRoutingDisposition({
-                author: 'neo-gpt',
+                author: 'neo-gpt-euclid',
                 body  : [
                     nonAuthoritativeHeading,
                     '[SUPERSEDED] prior direction',
@@ -94,7 +94,7 @@ test.describe('discussionRoutingDisposition', () => {
         ].join('\n'))).toEqual(['CONVERGING']);
 
         expect(classifyDiscussionRoutingDisposition({
-            author: 'neo-gpt',
+            author: 'neo-gpt-euclid',
             body  : [
                 '### Examples',
                 '[SUPERSEDED] syntax example',
@@ -125,7 +125,7 @@ test.describe('discussionRoutingDisposition', () => {
                 '[CONVERGING] current direction'
             ].join('\n')
         ]) {
-            expect(classifyDiscussionRoutingDisposition({author: 'neo-gpt', body}), body).toEqual({
+            expect(classifyDiscussionRoutingDisposition({author: 'neo-gpt-euclid', body}), body).toEqual({
                 schemaVersion: 'discussion-routing-disposition.v1',
                 disposition  : 'active',
                 reasonCode   : 'explicit-active-marker',
@@ -140,7 +140,7 @@ test.describe('discussionRoutingDisposition', () => {
             '> ## Historical decisions\n[SUPERSEDED] current status',
             '## Current status\n[SUPERSEDED] current status'
         ]) {
-            expect(classifyDiscussionRoutingDisposition({author: 'neo-gpt', body}), body).toMatchObject({
+            expect(classifyDiscussionRoutingDisposition({author: 'neo-gpt-euclid', body}), body).toMatchObject({
                 disposition: 'terminal',
                 reasonCode : 'terminal-marker:superseded'
             })
@@ -149,11 +149,11 @@ test.describe('discussionRoutingDisposition', () => {
 
     test('keeps partially resolved scope active and never infers whole-Discussion terminal state from one resolved OQ', () => {
         const partial = classifyDiscussionRoutingDisposition({
-            author: 'neo-gpt',
+            author: 'neo-gpt-euclid',
             body  : 'OQ1 [RESOLVED_TO_AC]\nOQ2 [OQ_RESOLUTION_PENDING]'
         });
         const resolved = classifyDiscussionRoutingDisposition({
-            author: 'neo-gpt',
+            author: 'neo-gpt-euclid',
             body  : 'OQ1 [RESOLVED_TO_AC]'
         });
 
@@ -171,14 +171,14 @@ test.describe('discussionRoutingDisposition', () => {
         expect(findLifecycleMarkers('> **Update 2026-05-20 (Cycle-4 — `[GRADUATION_PROPOSED]`):** quorum remains open.'))
             .toContain('GRADUATION_PROPOSED');
         expect(classifyDiscussionRoutingDisposition({
-            author: 'neo-gpt',
+            author: 'neo-gpt-euclid',
             body  : '> **Update 2026-07-12:** [GRADUATED_TO_TICKET: #15100]'
         })).toMatchObject({
             disposition: 'terminal',
             reasonCode : 'graduated-to-ticket'
         });
         expect(classifyDiscussionRoutingDisposition({
-            author: 'neo-gpt',
+            author: 'neo-gpt-euclid',
             body  : '> **Update 2026-07-12:** [DECLINED] superseded by evidence.'
         })).toMatchObject({
             disposition: 'terminal',
@@ -231,18 +231,18 @@ test.describe('discussionRoutingDisposition', () => {
             'Valid lifecycle states include [CONVERGING] and [EVERGREEN].',
             'The marker [GRADUATION_PROPOSED] is recognized by tooling.'
         ]) {
-            expect(classifyDiscussionRoutingDisposition({author: 'neo-gpt', body}), body).toMatchObject({
+            expect(classifyDiscussionRoutingDisposition({author: 'neo-gpt-euclid', body}), body).toMatchObject({
                 disposition: 'undetermined',
                 reasonCode : 'no-authoritative-lifecycle-marker'
             })
         }
 
         expect(classifyDiscussionRoutingDisposition({
-            author: 'neo-gpt',
+            author: 'neo-gpt-euclid',
             body  : 'Status: [OQ_RESOLUTION_PENDING].'
         }).disposition).toBe('active');
         expect(classifyDiscussionRoutingDisposition({
-            author: 'neo-gpt',
+            author: 'neo-gpt-euclid',
             body  : '[SUPERSEDED] replaced by newer authority.'
         })).toMatchObject({
             disposition: 'terminal',
@@ -273,7 +273,7 @@ test.describe('discussionRoutingDisposition', () => {
 
     test('leaves comment touches and marker-free open Discussions undetermined', () => {
         const result = classifyDiscussionRoutingDisposition({
-            author   : 'neo-gpt',
+            author   : 'neo-gpt-euclid',
             body     : 'Open-ended exploration without a lifecycle marker.',
             closed   : false,
             updatedAt: '2099-01-01T00:00:00Z'

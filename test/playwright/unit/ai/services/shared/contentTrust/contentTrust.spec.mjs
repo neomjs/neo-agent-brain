@@ -23,7 +23,7 @@ test.describe('Neo.ai.services.shared.contentTrust.authorTrustClassifier', () =>
     test('a canonical roster login resolves to its seeded tier (@-prefix + case agnostic)', () => {
         expect(classifyAuthorTrust('@neo-opus-ada')).toBe(TRUST_TIERS.PEER_TRUSTED);
         expect(classifyAuthorTrust('neo-opus-ada')).toBe(TRUST_TIERS.PEER_TRUSTED);
-        expect(classifyAuthorTrust('Neo-GPT')).toBe(TRUST_TIERS.PEER_TRUSTED);
+        expect(classifyAuthorTrust('Neo-GPT-Euclid')).toBe(TRUST_TIERS.PEER_TRUSTED);
         expect(classifyAuthorTrust('tobiu')).toBe(TRUST_TIERS.OWNER)
     });
 
