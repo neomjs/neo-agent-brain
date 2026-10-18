@@ -1722,14 +1722,15 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — getPullReq
 });
 
 /**
- * @summary Returns the inline GitHub Script used by the agent PR review-body lint workflow.
+ * @summary Returns the inline GitHub Script used by the agent PR review-body lint workflow. The
+ * workflow is the engine's, so it is read from the engine this checkout installs.
  * @returns {String} The workflow script source.
  */
 function getAgentPrReviewBodyLintScript() {
     const
-        workflowPath = path.resolve(process.cwd(), '.github/workflows/agent-pr-review-body-lint.yml'),
-        workflow     = yaml.load(fs.readFileSync(workflowPath, 'utf8')),
-        step         = workflow.jobs['lint-pr-review-body'].steps.find(item => item.name === 'Validate PR Review Body');
+        workflowUrl = new URL(import.meta.resolve('neo.mjs/.github/workflows/agent-pr-review-body-lint.yml')),
+        workflow    = yaml.load(fs.readFileSync(workflowUrl, 'utf8')),
+        step        = workflow.jobs['lint-pr-review-body'].steps.find(item => item.name === 'Validate PR Review Body');
 
     return step.with.script;
 }
