@@ -39,10 +39,15 @@ class Bridge extends Base {
     }
 
     /**
-     * Active Agent sessions (MCP Servers).
+     * Active Agent sessions (MCP Servers) mapped to their newest open WebSocket.
      * Map<agentId, WebSocket>
      */
     agents = new Map()
+    /**
+     * All currently open WebSockets per Agent identity, in registration order.
+     * Map<agentId, Set<WebSocket>>
+     */
+    agentSockets = new Map()
     /**
      * Active App sessions (Browsers).
      * Map<appWorkerId, WebSocket>
@@ -62,6 +67,38 @@ class Bridge extends Base {
      * WebSocket Server instance.
      */
     wss = null
+
+    /**
+     * @summary Returns the live socket set for `id`, reconciled against `this.agents`.
+     * @param {String} id
+     * @returns {Set<WebSocket>}
+     */
+    #getAgentSocketSet(id) {
+        if (!this.agents.has(id)) {
+            this.agentSockets.delete(id);
+        }
+
+        let sockets = this.agentSockets.get(id);
+
+        if (!sockets) {
+            sockets = new Set();
+            this.agentSockets.set(id, sockets);
+        }
+
+        const current = this.agents.get(id);
+
+        if (current) {
+            sockets.add(current);
+        }
+
+        for (const candidate of sockets) {
+            if (candidate.closed != null || (typeof candidate.readyState === 'number' && candidate.readyState > 1)) {
+                sockets.delete(candidate);
+            }
+        }
+
+        return sockets;
+    }
 
     /**
      * @summary Completes class initialization without claiming a network listener.
@@ -122,9 +159,11 @@ class Bridge extends Base {
 
         logger.info('Bridge: Stopping server...');
 
+        this.agentSockets.forEach(sockets => sockets.forEach(ws => ws.terminate()));
         this.agents.forEach(ws => ws.terminate());
         this.apps.forEach(ws => ws.terminate());
 
+        this.agentSockets.clear();
         this.agents.clear();
         this.apps.clear();
         this.appState.clear();
@@ -240,15 +279,19 @@ class Bridge extends Base {
     }
 
     /**
-     * @summary Registers an Agent connection; the newest connection under an id is the one routed to. A seat running
-     * two sessions opens two connections under its id, and a reconnect can race its predecessor's close, so a replaced
-     * connection's close leaves its successor registered and announces nothing to Agents. Apps still hear every
-     * connection's close, keyed by its `sessionId`.
+     * @summary Registers an Agent connection; all live connections under an id remain routable and receive broadcasts,
+     * while `this.agents.get(id)` tracks the newest live connection. Closing any connection promotes the most recent
+     * remaining open connection under that id and announces `agent_disconnected` to Agents only when the last open
+     * connection for that id closes. Apps still hear every connection's close, keyed by its `sessionId`.
      * @param {String} id
      * @param {WebSocket} ws
      */
     registerAgent(id, ws) {
         logger.info(`Bridge: Agent connected [${id}]`);
+
+        const sockets = this.#getAgentSocketSet(id);
+        sockets.delete(ws);
+        sockets.add(ws);
         this.agents.set(id, ws);
 
         // A stable, Bridge-authoritative per-connection id (minted here, lives for the connection's
@@ -256,16 +299,34 @@ class Bridge extends Base {
         // write-guard can key locks on the (agentId, sessionId) pair.
         ws.sessionId = crypto.randomUUID();
 
-        ws.on('message', (data) => this.handleAgentMessage(id, data));
-        ws.on('close',   ()     => {
-            logger.info(`Bridge: Agent disconnected [${id}]`);
+        ws.on('message', (data)         => this.handleAgentMessage(id, data, ws));
+        ws.on('close',   (code, reason) => {
+            const reasonText = reason?.toString() || 'none';
+            logger.info(`Bridge: Agent disconnected [${id}] (code=${code ?? 'none'}, reason=${reasonText})`);
 
-            if (this.agents.get(id) === ws) {
-                this.agents.delete(id);
-                this.broadcastToAgents({
-                    type   : 'agent_disconnected',
-                    agentId: id
-                })
+            const activeSet = this.agentSockets.get(id);
+            activeSet?.delete(ws);
+
+            if (!this.agents.has(id)) {
+                this.agentSockets.delete(id);
+            } else {
+                const remaining = activeSet
+                    ? [...activeSet].filter(candidate => candidate !== ws && candidate.closed == null && !(typeof candidate.readyState === 'number' && candidate.readyState > 1))
+                    : [];
+                const nextActive = remaining.at(-1) || null;
+
+                if (nextActive) {
+                    this.agents.set(id, nextActive);
+                } else {
+                    this.agentSockets.delete(id);
+                    if (this.agents.get(id) === ws) {
+                        this.agents.delete(id);
+                        this.broadcastToAgents({
+                            type   : 'agent_disconnected',
+                            agentId: id
+                        });
+                    }
+                }
             }
 
             // Lets the app-side write-guard release locks held by the now-dead writer; idempotent so a
@@ -417,11 +478,12 @@ class Bridge extends Base {
 
         // Only the socket registered under an id speaks for that App. A socket replaced by a reconnect can still
         // deliver a message or its close after its successor registered: neither may overwrite or evict the successor
-        ws.on('message', (data) => this.apps.get(id) === ws && this.handleAppMessage(id, data));
-        ws.on('close',   ()     => {
+        ws.on('message', (data)         => this.apps.get(id) === ws && this.handleAppMessage(id, data));
+        ws.on('close',   (code, reason) => {
             if (this.apps.get(id) !== ws) return;
 
-            logger.info(`Bridge: App disconnected [${id}] (${appName})`);
+            const reasonText = reason?.toString() || 'none';
+            logger.info(`Bridge: App disconnected [${id}] (${appName}) (code=${code ?? 'none'}, reason=${reasonText})`);
             this.apps.delete(id);
             this.appState.delete(id);
             this.broadcastToAgents({
@@ -445,8 +507,9 @@ class Bridge extends Base {
      * Expects: { target: 'appWorkerId', message: { ... } }
      * @param {String} agentId
      * @param {Buffer} data
+     * @param {WebSocket} [senderWs=null]
      */
-    handleAgentMessage(agentId, data) {
+    handleAgentMessage(agentId, data, senderWs = null) {
         try {
             const payload = JSON.parse(data.toString());
 
@@ -455,7 +518,7 @@ class Bridge extends Base {
                 return;
             }
 
-            const agentWs = this.agents.get(agentId);
+            const agentWs = senderWs || this.agents.get(agentId);
             const appWs   = this.apps.get(payload.target);
 
             if (appWs) {
@@ -520,12 +583,28 @@ class Bridge extends Base {
     }
 
     /**
-     * Sends a message to all connected Agents.
+     * Sends a message to all connected Agent sockets across all active Agent identities.
      * @param {Object} payload
      */
     broadcastToAgents(payload) {
-        const data = JSON.stringify(payload);
-        for (const ws of this.agents.values()) {
+        const data       = JSON.stringify(payload),
+              recipients = new Set();
+
+        for (const [id, activeWs] of this.agents.entries()) {
+            if (activeWs) {
+                recipients.add(activeWs);
+            }
+            const sockets = this.agentSockets.get(id);
+            if (sockets) {
+                for (const ws of sockets) {
+                    if (ws.closed == null && !(typeof ws.readyState === 'number' && ws.readyState > 1)) {
+                        recipients.add(ws);
+                    }
+                }
+            }
+        }
+
+        for (const ws of recipients) {
             ws.send(data);
         }
     }

@@ -20,6 +20,7 @@ import {probeBridgeVerifier} from '../../../../../../../ai/services/fleet/probeB
 import Neo       from 'neo.mjs/src/Neo.mjs';
 import * as core from 'neo.mjs/src/core/_export.mjs';
 import Bridge    from '../../../../../../../ai/mcp/server/neural-link/Bridge.mjs';
+import logger    from '../../../../../../../ai/mcp/server/neural-link/logger.mjs';
 import {
     BRIDGE_INFO_TYPE,
     BRIDGE_PROTOCOL_FEATURES,
@@ -316,6 +317,62 @@ test.describe('Bridge — two agent sockets under one id', () => {
         expect(Bridge.agents.has('agent-a')).toBe(false);
         expect(framesOf(peer, 'agent_disconnected')).toEqual([{type: 'agent_disconnected', agentId: 'agent-a'}]);
         expect(framesOf(appWs, 'agent_disconnected')).toEqual([{type: 'agent_disconnected', agentId: 'agent-a', sessionId: only.sessionId}]);
+    });
+
+    test('the newer socket closing promotes the still-open older socket back to active and delivers app messages to both while open', () => {
+        const older = makeWs(), newer = makeWs(), peer = makeWs(), appWs = makeWs();
+
+        Bridge.apps.set('app-1', appWs);
+        Bridge.registerAgent('agent-peer', peer);
+        Bridge.registerAgent('agent-a', older);
+        Bridge.registerAgent('agent-a', newer);
+
+        Bridge.handleAppMessage('app-1', Buffer.from(JSON.stringify({jsonrpc: '2.0', method: 'window_connected', params: {windowId: 'w-both'}})));
+        expect(framesOf(older, 'app_message').at(-1)).toMatchObject({appWorkerId: 'app-1', message: {params: {windowId: 'w-both'}}});
+        expect(framesOf(newer, 'app_message').at(-1)).toMatchObject({appWorkerId: 'app-1', message: {params: {windowId: 'w-both'}}});
+
+        newer.handlers.close(1000, Buffer.from('done'));
+
+        expect(Bridge.agents.get('agent-a')).toBe(older);
+        expect(framesOf(peer, 'agent_disconnected')).toEqual([]);
+        expect(framesOf(appWs, 'agent_disconnected')).toEqual([{type: 'agent_disconnected', agentId: 'agent-a', sessionId: newer.sessionId}]);
+
+        Bridge.handleAppMessage('app-1', Buffer.from(JSON.stringify({jsonrpc: '2.0', method: 'window_connected', params: {windowId: 'w-after-newer-close'}})));
+        expect(framesOf(older, 'app_message').at(-1)).toMatchObject({appWorkerId: 'app-1', message: {params: {windowId: 'w-after-newer-close'}}});
+
+        older.handlers.message(Buffer.from(JSON.stringify({target: 'app-1', message: {id: 7, method: 'ping'}})));
+        expect(framesOf(appWs, 'agent_message').at(-1)).toMatchObject({
+            agentId  : 'agent-a',
+            sessionId: older.sessionId,
+            message  : {id: 7, method: 'ping'}
+        });
+
+        older.handlers.close(1000, Buffer.from('bye'));
+        expect(Bridge.agents.has('agent-a')).toBe(false);
+        expect(framesOf(peer, 'agent_disconnected')).toEqual([{type: 'agent_disconnected', agentId: 'agent-a'}]);
+        expect(framesOf(appWs, 'agent_disconnected').map(frame => frame.sessionId)).toEqual([newer.sessionId, older.sessionId]);
+    });
+
+    test('agent and app socket close handlers log the close code and reason via logger.info', () => {
+        const logged       = [],
+              originalInfo = logger.info,
+              agentWs      = makeWs(),
+              appWs        = makeWs();
+
+        logger.info = (...args) => logged.push(args.join(' '));
+
+        try {
+            Bridge.registerAgent('agent-a', agentWs);
+            Bridge.registerApp('app-1', appWs, 'portal');
+
+            agentWs.handlers.close(1006, Buffer.from('abnormal closure'));
+            appWs.handlers.close(1001, Buffer.from('going away'));
+
+            expect(logged.some(line => /Bridge: Agent disconnected \[agent-a\].*code=1006.*reason=abnormal closure/.test(line))).toBe(true);
+            expect(logged.some(line => /Bridge: App disconnected \[app-1\] \(portal\).*code=1001.*reason=going away/.test(line))).toBe(true);
+        } finally {
+            logger.info = originalInfo;
+        }
     });
 });
 

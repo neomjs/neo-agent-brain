@@ -245,6 +245,11 @@ class ConnectionService extends Base {
      */
     #cwdFinding = null
     /**
+     * In-flight ensureBridgeAndConnect() promise used to coalesce concurrent connection attempts.
+     * @member {Promise<void>|null} #ensureConnectPromise=null
+     */
+    #ensureConnectPromise = null
+    /**
      * Active Agents connected to the Bridge.
      * Set<agentId>
      */
@@ -448,8 +453,9 @@ class ConnectionService extends Base {
                 this.handleBridgeMessage(data)
             });
 
-            ws.on('close', () => {
-                logger.warn('Disconnected from Neural Link Bridge');
+            ws.on('close', (code, reason) => {
+                const reasonText = reason?.toString() || 'none';
+                logger.warn(`Disconnected from Neural Link Bridge (code=${code ?? 'none'}, reason=${reasonText})`);
                 if (this.bridgeSocket === ws) this.bridgeSocket = null;
                 for (const [id, pending] of this.pendingRequests) {
                     if (pending.socket === ws) {
@@ -474,35 +480,52 @@ class ConnectionService extends Base {
 
     /**
      * Ensures the Bridge is running and connects to it.
+     * Short-circuits when `bridgeSocket` is already open and coalesces concurrent callers onto one attempt.
      */
     async ensureBridgeAndConnect() {
-        let connected = false;
-
-        // 1. Try to connect to existing Bridge
-        try {
-            await this.connectToBridge();
-            connected = true;
-        } catch (e) {
-            if (e.code === STALE_BRIDGE_ERROR_CODE) {
-                logger.error(e.message);
-                throw e
-            }
-
-            logger.info('Failed to connect to existing bridge:', e.message);
-            logger.info('Assuming Bridge not running. Spawning new Bridge process...');
+        if (this.bridgeSocket?.readyState === WebSocket.OPEN) {
+            return;
         }
 
-        // 2. Spawn if missing
-        if (!connected) {
-            await this.spawnBridge();
+        if (this.#ensureConnectPromise) {
+            return this.#ensureConnectPromise;
+        }
 
+        this.#ensureConnectPromise = (async () => {
+            let connected = false;
+
+            // 1. Try to connect to existing Bridge
             try {
-                await this.connectToBridge()
-            } catch (error) {
-                // The refused socket is the symptom. A spawn that recorded why it died is the cause, and it used to
-                // reach `healthcheck` only, so `manage_connection start` answered ECONNREFUSED for a missing script.
-                throw this.lastSpawnFailure ? this.createSpawnFailureError(error) : error
+                await this.connectToBridge();
+                connected = true;
+            } catch (e) {
+                if (e.code === STALE_BRIDGE_ERROR_CODE) {
+                    logger.error(e.message);
+                    throw e
+                }
+
+                logger.info('Failed to connect to existing bridge:', e.message);
+                logger.info('Assuming Bridge not running. Spawning new Bridge process...');
             }
+
+            // 2. Spawn if missing
+            if (!connected) {
+                await this.spawnBridge();
+
+                try {
+                    await this.connectToBridge()
+                } catch (error) {
+                    // The refused socket is the symptom. A spawn that recorded why it died is the cause, and it used to
+                    // reach `healthcheck` only, so `manage_connection start` answered ECONNREFUSED for a missing script.
+                    throw this.lastSpawnFailure ? this.createSpawnFailureError(error) : error
+                }
+            }
+        })();
+
+        try {
+            return await this.#ensureConnectPromise;
+        } finally {
+            this.#ensureConnectPromise = null;
         }
     }
 
