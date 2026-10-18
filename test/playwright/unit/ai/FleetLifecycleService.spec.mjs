@@ -19,7 +19,8 @@ import os                                from 'os';
 import path                              from 'path';
 import {WebSocketServer}                 from 'ws';
 import {once}                            from 'node:events';
-import {createHash}                      from 'node:crypto';
+import {createHash, generateKeyPairSync, sign as cryptoSign} from 'node:crypto';
+import {verifyBridgeToken}               from '../../../../ai/mcp/server/neural-link/verifyBridgeToken.mjs';
 import {generateAntigravityMcpFiles}     from '../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
 import {createBridgeVerifierPayload}     from '../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
 import {holdRuntimeGenerationReferences} from '../../../../ai/services/fleet/runtimeGenerationLease.mjs';
@@ -39,7 +40,7 @@ import {generateOpenCodeSeatConfig}                                 from '../../
 import {createManagedAgentWorkspacePlan}                            from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {startAgentProvisioned}                                      from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
 import {writeFileAtomicSync}                                        from '../../../../ai/services/shared/atomicFileWrite.mjs';
-import {createAntigravityLaunchBinding, createDesktopLaunchBinding} from '../../../../ai/services/fleet/launchProfileCustody.mjs';
+import {createAntigravityLaunchBinding, createCodexLaunchBinding, createDesktopLaunchBinding} from '../../../../ai/services/fleet/launchProfileCustody.mjs';
 import {
     createLaunchRequest,
     mintLaunchGrant,
@@ -178,56 +179,88 @@ function tenantMcpPlan(resources, matrix) {
     })
 }
 
-/** Reset the singleton + inject fresh test doubles. Returns the spawn stub. */
-function install({agents = {}, creds = {}} = {}) {
-    const spawnStub = makeSpawnStub();
+/** The doubles {@link install} puts on the singleton's seams: the one list of what this file owns. */
+function testSeams({spawnStub, registry} = {}) {
+    return {
+        installedRuntime          : null,
+        spawnFn                   : spawnStub,
+        // Stub the version probe by default so no spec spawns a real auxiliary subprocess; the
+        // env-boundary test injects its own recorder.
+        execFileFn                : () => {},
+        residentMcpEnvSource      : () => ({NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane')}),
+        fetchFn                   : null,
+        openCodeHookExecFileFn    : null,
+        openCodeBootstrapTimeoutMs: 10000,
+        registry,
+        sigkillTimeoutMs          : 50,
+        // Reset the configurable env-key fields to their defaults so a collision test cannot bleed into
+        // the next serial sibling (singleton-stateful service).
+        credentialEnvVar          : 'GH_TOKEN',
+        bridgeTokenEnvVar         : 'NEO_FLEET_BRIDGE_TOKEN',
+        // Reset the curated-launch resolution fields too — fallback tests set them explicitly.
+        instanceRoot                 : null,
+        harnessBinaryPaths           : null,
+        codexDesktopCapabilityProbeFn: null,
+        antigravityRuntimeProbeFn    : null,
+        codexDesktopCleanupFn        : null,
+        // Seat-lease seams: no spec reads or signals a host process unless it opts in. Every stub child
+        // reads as born at one fixed time, so an app-bundle start can lease it.
+        processInspectFn: () => ({startedAt: 'Thu Oct  1 08:00:00 2026', command: ''}),
+        processSignalFn : () => { throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) },
+        // Window seams: no spec queries or moves a host window unless it opts in.
+        windowRectReadFn      : async () => null,
+        windowRectPlaceFn     : async () => null,
+        windowPlatform        : process.platform,
+        windowRestoreTimeoutMs: 20000,
+        windowRestorePollMs   : 500,
+        adoptedExitPollMs     : 5,
+        leasesAdopted         : false,
+        processListFn         : null,
+        launchAdmission       : null
+    }
+}
+
+/** The admission singleton's fields {@link install} resets beside them. */
+const ADMISSION_SEAMS = {handoffPromise: null, continuityPhase: 'ready'};
+
+/** The `keys` of `target`, by value. */
+function pick(target, keys) {
+    return Object.fromEntries(keys.map(key => [key, target[key]]))
+}
+
+// What the seams held before this file ran. install() resets BEFORE each test, so without the
+// hand-back below, the last test's doubles are what the next spec file in this worker reads.
+const SEAM_ORIGINALS = {
+    admission: pick(McpLaunchAdmissionService, Object.keys(ADMISSION_SEAMS)),
+    lifecycle: pick(FleetLifecycleService,     Object.keys(testSeams()))
+};
+
+/** Clear every process record's bootstrap timer, then drop the records. */
+function clearProcesses() {
     for (const record of FleetLifecycleService.processes.values()) {
         clearTimeout(record.openCodeBootstrapTimer);
     }
     FleetLifecycleService.processes.clear();
-    FleetLifecycleService.installedRuntime = null;
-    McpLaunchAdmissionService.handoffPromise = null;
-    McpLaunchAdmissionService.continuityPhase = 'ready';
-    FleetLifecycleService.spawnFn         = spawnStub;
-    // Stub the version probe by default so no spec spawns a real auxiliary subprocess; the
-    // env-boundary test injects its own recorder.
-    FleetLifecycleService.execFileFn      = () => {};
-    FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane')});
-    FleetLifecycleService.fetchFn         = null;
-    FleetLifecycleService.openCodeHookExecFileFn = null;
-    FleetLifecycleService.openCodeBootstrapTimeoutMs = 10000;
-    FleetLifecycleService.registry        = makeRegistry(agents, creds);
-    FleetLifecycleService.sigkillTimeoutMs = 50;
-    // Reset the configurable env-key fields to their defaults so a collision test cannot bleed into
-    // the next serial sibling (singleton-stateful service).
-    FleetLifecycleService.credentialEnvVar          = 'GH_TOKEN';
-    FleetLifecycleService.bridgeTokenEnvVar         = 'NEO_FLEET_BRIDGE_TOKEN';
-    // Reset the curated-launch resolution fields too — fallback tests set them explicitly.
-    FleetLifecycleService.instanceRoot       = null;
-    FleetLifecycleService.harnessBinaryPaths = null;
-    FleetLifecycleService.codexDesktopCapabilityProbeFn = null;
-    FleetLifecycleService.antigravityRuntimeProbeFn      = null;
-    FleetLifecycleService.codexDesktopCleanupFn         = null;
-    // Seat-lease seams: no spec reads or signals a host process unless it opts in. Every stub child
-    // reads as born at one fixed time, so an app-bundle start can lease it.
-    FleetLifecycleService.processInspectFn  = () => ({startedAt: 'Thu Oct  1 08:00:00 2026', command: ''});
-    FleetLifecycleService.processSignalFn   = () => { throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) };
-    // Window seams: no spec queries or moves a host window unless it opts in.
-    FleetLifecycleService.windowRectReadFn       = async () => null;
-    FleetLifecycleService.windowRectPlaceFn      = async () => null;
-    FleetLifecycleService.windowPlatform         = process.platform;
-    FleetLifecycleService.windowRestoreTimeoutMs = 20000;
-    FleetLifecycleService.windowRestorePollMs    = 500;
-    FleetLifecycleService.adoptedExitPollMs = 5;
-    FleetLifecycleService.leasesAdopted     = false;
-    FleetLifecycleService.processListFn     = null;
-    FleetLifecycleService.launchAdmission   = null;
+}
+
+/** Reset the singleton + inject fresh test doubles. Returns the spawn stub. */
+function install({agents = {}, creds = {}} = {}) {
+    const spawnStub = makeSpawnStub();
+    clearProcesses();
+    Object.assign(McpLaunchAdmissionService, ADMISSION_SEAMS);
+    Object.assign(FleetLifecycleService, testSeams({spawnStub, registry: makeRegistry(agents, creds)}));
     return spawnStub;
 }
 
 // Singleton-stateful service → run serially in one worker so per-test install() resets are not
 // raced by Playwright's parallel worker reuse.
 test.describe.configure({mode: 'serial'});
+
+test.afterAll(() => {
+    clearProcesses();
+    Object.assign(McpLaunchAdmissionService, SEAM_ORIGINALS.admission);
+    Object.assign(FleetLifecycleService,     SEAM_ORIGINALS.lifecycle)
+});
 
 test.describe('Neo.ai.services.fleet.FleetLifecycleService', () => {
     test('idle old and new runtime pins survive installed changes; unknown ownership retains its generation', () => {
@@ -2282,13 +2315,13 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         return {spawn, home, profile: harnessType === 'codex-desktop' ? path.join(home, 'electron-profile') : home}
     }
 
-    for (const harnessType of ['claude-desktop', 'antigravity']) {
-        for (const control of ['success', 'birth', 'profile', 'runtime', 'protocol', ...(harnessType === 'antigravity' ? ['workspace'] : [])]) {
+    for (const harnessType of ['claude-desktop', 'antigravity', 'codex-desktop']) {
+        for (const control of ['success', 'birth', 'profile', 'runtime', 'protocol', ...(harnessType !== 'claude-desktop' ? ['workspace'] : [])]) {
             test(`original runtime recovery corroborates the lease, profile and input owners: ${harnessType}/${control}`, async () => {
                 const {spawn, home: initialHome} = installSeat(harnessType), service = McpLaunchAdmissionService;
                 const root                       = fs.realpathSync(FleetLifecycleService.instanceRoot), home = fs.realpathSync(initialHome), directory = path.join(root, 'custody');
                 FleetLifecycleService.instanceRoot = root;
-                const workspace = harnessType === 'antigravity' ? path.join(root, 'workspace') : CHECKOUT;
+                const workspace = harnessType === 'claude-desktop' ? CHECKOUT : path.join(root, 'workspace');
                 if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
                 service.httpServer = service.listening = service.issuerOrigin = null;
                 service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready';
@@ -2315,13 +2348,21 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                     let profile;
                     if (harnessType === 'antigravity') {
                         profile = writeAntigravityProfile({home, workspace, rows, identity: 'seat', issuer: reserved.issuer});
+                    } else if (harnessType === 'codex-desktop') {
+                        const codexHome = path.join(home, 'codex-home'), row = rows['neo-mjs-neural-link'];
+                        const source    = ['[mcp_servers."neo-mjs-neural-link"]', `command = ${JSON.stringify(row.command)}`, `args = ${JSON.stringify(row.args)}`,
+                            `env = { ${Object.entries(row.env).map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join(', ')} }`, ''].join('\n');
+                        fs.mkdirSync(codexHome, {recursive: true, mode: 0o700});
+                        fs.mkdirSync(workspace, {recursive: true, mode: 0o755});
+                        fs.writeFileSync(path.join(codexHome, 'config.toml'), source, {mode: 0o600});
+                        profile = createCodexLaunchBinding({identity: 'seat', issuer: reserved.issuer, codexHome, workspaceRoot: workspace, source});
                     } else {
                         profile = createDesktopLaunchBinding({identity: 'seat', issuer: reserved.issuer, rows});
                         fs.writeFileSync(path.join(home, 'claude_desktop_config.json'), JSON.stringify({mcpServers: rows}), {mode: 0o600});
                         fs.writeFileSync(path.join(home, '.neo-fleet-claude-desktop-profile.json'), JSON.stringify({version: 2,
                             artifact: 'claude_desktop_config.json', sha256: profile.projectionSha256}), {mode: 0o600});
                     }
-                    const carrier       = path.join(home, harnessType === 'antigravity' ? '.neo-fleet-mcp/neural-link.sh' : 'claude_desktop_config.json');
+                    const carrier       = path.join(home, {antigravity: '.neo-fleet-mcp/neural-link.sh', 'codex-desktop': 'codex-home/config.toml'}[harnessType] ?? 'claude_desktop_config.json');
                     const originalBytes = fs.readFileSync(carrier, 'utf8');
                     startWithRuntimeReferences('seat', {cwd: workspace, runtimeGeneration: generation, runtimePlan: plan,
                         resolvedResidentMcpEnv: captured.environment,
@@ -2343,11 +2384,16 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                     if (control === 'profile') {
                         fs.writeFileSync(carrier, originalBytes + '\n');
                         if (harnessType === 'claude-desktop') fs.writeFileSync(carrier, JSON.stringify({mcpServers: {}}));
+                        else if (harnessType === 'codex-desktop') fs.writeFileSync(carrier, originalBytes.replace(generation.executable, '/other/node'));
                         else fs.writeFileSync(path.join(home, '.neo-fleet-antigravity-neural-link.json'), JSON.stringify({
                             version: 1, artifact: 'neural-link.sh', sha256: createHash('sha256').update(originalBytes + '\n').digest('hex')
                         }));
                     }
-                    if (control === 'workspace') fs.writeFileSync(path.join(workspace, '.agents/mcp_config.json'), JSON.stringify({mcpServers: {}}));
+                    if (control === 'workspace' && harnessType === 'codex-desktop') {
+                        // a project table outranks the home one, so the seat would no longer run the bound row
+                        fs.mkdirSync(path.join(workspace, '.codex'), {recursive: true, mode: 0o755});
+                        fs.writeFileSync(path.join(workspace, '.codex/config.toml'), originalBytes.replace(generation.executable, '/other/node'), {mode: 0o600});
+                    } else if (control === 'workspace') fs.writeFileSync(path.join(workspace, '.agents/mcp_config.json'), JSON.stringify({mcpServers: {}}));
                     FleetLifecycleService.openRuntimeCustody({directory});
                     const result = await FleetLifecycleService.recoverRuntimeCustody({verifyRuntime: async () => control === 'runtime' ? null : ({...generation,
                         compatibility: {launchProtocol: control === 'protocol' ? 'unsupported' : 'neo-fleet-mcp-launch/v1'}})});
@@ -2378,6 +2424,148 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             });
         }
     }
+
+    // Admission's owner renews the Bridge token at every launch, so a static copy in the seat's env would be the
+    // one credential there that stops working an hour after Start.
+    test('a Start whose admission owns the Neural Link bridge token puts no static copy in the seat env', async () => {
+        const {spawn, home: initialHome} = installSeat('claude-desktop'), service = McpLaunchAdmissionService;
+        const root                       = fs.realpathSync(FleetLifecycleService.instanceRoot), home = fs.realpathSync(initialHome), directory = path.join(root, 'custody');
+        FleetLifecycleService.instanceRoot = root;
+        if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+        service.httpServer = service.listening = service.issuerOrigin = null;
+        service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready';
+        const id         = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
+        const generation = {id, directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
+            runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
+        const server = new WebSocketServer({host: '127.0.0.1', port: 0});
+        server.on('connection', socket => { socket.send(JSON.stringify(createBridgeVerifierPayload('e'.repeat(64)))); socket.close(); });
+        await once(server, 'listening');
+        const agent = FleetLifecycleService.registry.getDefinition('seat');
+        agent.mcpServers = {'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': false, 'gitlab-workflow': false};
+        const plan = createManagedAgentWorkspacePlan({agent: {id: 'seat', harnessType: 'claude-desktop'}, mcpMatrix: agent.mcpServers}).mcpServers.map(row => ({...row,
+            sourceRoot: generation.runtimeRoot, command: generation.executable,
+            args      : [path.join(generation.runtimeRoot, row.entrypoint), ...(row.key === 'neural-link' ? ['--cwd', generation.runtimeRoot] : [])]}));
+        FleetLifecycleService.installedRuntime     = {...generation, generation};
+        FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_ID: 'fixture-plane', NEO_PLANE_DATA_ROOT: path.join(root, 'plane'), NEO_NL_PORT: String(server.address().port)});
+        const captured = FleetLifecycleService.captureResidentMcpInputs(agent);
+        try {
+            FleetLifecycleService.openRuntimeCustody({directory});
+            const reserved = await reserveWithRuntimeReferences({agent, runtimeGeneration: generation});
+            const rows     = {'neo-mjs-neural-link': {command: generation.executable,
+                args              : [path.join(generation.runtimeRoot, 'ai/mcp/client/fleetMcpLauncher.mjs'), '--server', 'neural-link'], env: {
+                NEO_AGENT_IDENTITY: 'seat', NEO_FLEET_LAUNCH_ISSUER: reserved.issuer, NEO_FLEET_LAUNCH_GRANT: reserved.grants['neural-link']}}};
+            const profile  = createDesktopLaunchBinding({identity: 'seat', issuer: reserved.issuer, rows});
+            fs.writeFileSync(path.join(home, 'claude_desktop_config.json'), JSON.stringify({mcpServers: rows}), {mode: 0o600});
+            fs.writeFileSync(path.join(home, '.neo-fleet-claude-desktop-profile.json'), JSON.stringify({version: 2,
+                artifact: 'claude_desktop_config.json', sha256: profile.projectionSha256}), {mode: 0o600});
+            // the seat reads live as the exact command it was spawned with
+            FleetLifecycleService.processSignalFn  = () => {};
+            FleetLifecycleService.processInspectFn = () => ({startedAt: STARTED_AT,
+                command: spawn.calls[0] ? [spawn.calls[0].command, ...spawn.calls[0].args].join(' ') : ''});
+            startWithRuntimeReferences('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: plan,
+                resolvedResidentMcpEnv: captured.environment,
+                launchAdmission       : {generation: reserved.generation, plan, profile, residentInputs: captured.owners}});
+
+            expect(Object.hasOwn(spawn.calls[0].opts.env, 'NEO_FLEET_BRIDGE_TOKEN')).toBe(false);
+
+            // the credential is the owner's: each launch redeems a token minted for it
+            const original = FleetLifecycleService.processes.get('seat');
+            FleetLifecycleService.registry.getBridgeSigningAuthority = () => original.bridgeAuthority;
+            FleetLifecycleService.registry.renewBridgeToken          = () => ({token: 'renewed-fixture-token'});
+            const grant   = parseLaunchCapability(reserved.grants['neural-link']);
+            const request = createLaunchRequest({grant, identity: 'seat', server: 'neural-link'});
+            expect(verifyLaunchResponse(grant.secret, request, await service.redeem(request))).toMatchObject({outcome: 'admitted',
+                env: {NEO_FLEET_BRIDGE_TOKEN: 'renewed-fixture-token'}});
+        } finally {
+            service.journal?.close(); service.journal = null; service.journalFailed = false; service.readSeatStarts = null;
+            service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready';
+            if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+            service.httpServer = service.listening = service.issuerOrigin = null;
+            FleetLifecycleService.processes.clear();
+            server.clients.forEach(socket => socket.terminate());
+            await new Promise(resolve => server.close(resolve));
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
+
+    // A Codex seat's Neural Link outlives a token's lifetime: every launch redeems a token minted then, never at Start.
+    test('a Codex Desktop seat redeems a Bridge token the verifier accepts more than a token lifetime after Start', async () => {
+        const {spawn, home: initialHome} = installSeat('codex-desktop'), service = McpLaunchAdmissionService;
+        const root                       = fs.realpathSync(FleetLifecycleService.instanceRoot), home = fs.realpathSync(initialHome), directory = path.join(root, 'custody');
+        const workspace                  = path.join(root, 'workspace'), codexHome = path.join(home, 'codex-home');
+        const {publicKey, privateKey}    = generateKeyPairSync('ed25519');
+        const ttl = 60 * 60 * 1000, started = Date.now(), later = started + ttl + 60_000;
+        const sign = (agentId, at) => {
+            const payload = Buffer.from(JSON.stringify({agentId, expiresAt: at + ttl}));
+            return `${payload.toString('base64url')}.${cryptoSign(null, payload, privateKey).toString('base64url')}`
+        };
+        FleetLifecycleService.instanceRoot = root;
+        if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+        service.httpServer = service.listening = service.issuerOrigin = null;
+        service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready';
+        const id         = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
+        const generation = {id, directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
+            runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
+        const server = new WebSocketServer({host: '127.0.0.1', port: 0});
+        server.on('connection', socket => { socket.send(JSON.stringify(createBridgeVerifierPayload('e'.repeat(64)))); socket.close(); });
+        await once(server, 'listening');
+        const agent = FleetLifecycleService.registry.getDefinition('seat');
+        agent.mcpServers = {'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': false, 'gitlab-workflow': false};
+        const plan = createManagedAgentWorkspacePlan({agent: {id: 'seat', harnessType: 'codex-desktop'}, mcpMatrix: agent.mcpServers}).mcpServers.map(row => ({...row,
+            sourceRoot: generation.runtimeRoot, command: generation.executable,
+            args      : [path.join(generation.runtimeRoot, row.entrypoint), ...(row.key === 'neural-link' ? ['--cwd', generation.runtimeRoot] : [])]}));
+        FleetLifecycleService.installedRuntime     = {...generation, generation};
+        FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_ID: 'fixture-plane', NEO_PLANE_DATA_ROOT: path.join(root, 'plane'), NEO_NL_PORT: String(server.address().port)});
+        const captured = FleetLifecycleService.captureResidentMcpInputs(agent);
+        try {
+            FleetLifecycleService.openRuntimeCustody({directory});
+            const reserved = await reserveWithRuntimeReferences({agent, runtimeGeneration: generation, servers: ['neural-link']});
+            const env      = {NEO_AGENT_IDENTITY: 'seat', NEO_FLEET_LAUNCH_ISSUER: reserved.issuer, NEO_FLEET_LAUNCH_GRANT: reserved.grants['neural-link']};
+            const source   = ['[mcp_servers."neo-mjs-neural-link"]', `command = ${JSON.stringify(generation.executable)}`,
+                `args = ${JSON.stringify([path.join(generation.runtimeRoot, 'ai/mcp/client/fleetMcpLauncher.mjs'), '--server', 'neural-link'])}`,
+                `env = { ${Object.entries(env).map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join(', ')} }`, ''].join('\n');
+            fs.mkdirSync(codexHome, {recursive: true, mode: 0o700});
+            fs.mkdirSync(workspace, {recursive: true, mode: 0o755});
+            fs.writeFileSync(path.join(codexHome, 'config.toml'), source, {mode: 0o600});
+            const profile = createCodexLaunchBinding({identity: 'seat', issuer: reserved.issuer, codexHome, workspaceRoot: workspace, source});
+            // the seat reads live as the exact command it was spawned with
+            FleetLifecycleService.processSignalFn  = () => {};
+            FleetLifecycleService.processInspectFn = () => ({startedAt: STARTED_AT,
+                command: spawn.calls[0] ? [spawn.calls[0].command, ...spawn.calls[0].args].join(' ') : ''});
+            startWithRuntimeReferences('seat', {cwd: workspace, runtimeGeneration: generation, runtimePlan: plan,
+                resolvedResidentMcpEnv: captured.environment,
+                launchAdmission       : {generation: reserved.generation, plan, profile, residentInputs: {'neural-link': captured.owners['neural-link']}}});
+
+            expect(Object.hasOwn(spawn.calls[0].opts.env, 'NEO_FLEET_BRIDGE_TOKEN')).toBe(false);
+
+            // the launch comes a token lifetime after Start; its owner mints for that moment
+            const original = FleetLifecycleService.processes.get('seat');
+            FleetLifecycleService.registry.getBridgeSigningAuthority = () => original.bridgeAuthority;
+            FleetLifecycleService.registry.renewBridgeToken          = agentId => ({token: sign(agentId, later)});
+            const grant    = parseLaunchCapability(reserved.grants['neural-link']);
+            const request  = createLaunchRequest({grant, identity: 'seat', server: 'neural-link'});
+            const response = verifyLaunchResponse(grant.secret, request, await service.redeem(request));
+            const realNow  = Date.now;
+
+            try {
+                Date.now = () => later;
+                expect(verifyBridgeToken(response.env.NEO_FLEET_BRIDGE_TOKEN, publicKey)).toBe('seat');
+                // the control: what a token minted at Start answers at that moment
+                expect(verifyBridgeToken(sign('seat', started), publicKey)).toBeNull();
+            } finally {
+                Date.now = realNow
+            }
+        } finally {
+            service.journal?.close(); service.journal = null; service.journalFailed = false; service.readSeatStarts = null;
+            service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready';
+            if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+            service.httpServer = service.listening = service.issuerOrigin = null;
+            FleetLifecycleService.processes.clear();
+            server.clients.forEach(socket => socket.terminate());
+            await new Promise(resolve => server.close(resolve));
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
 
     // A seat whose process is gone at the next boot reads `stopped`, the state the roster starts from;
     // `exited` is what the first durable-custody builds wrote for it.
@@ -3828,6 +4016,70 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
         expect(spawn.calls).toHaveLength(1);
         expect(await github(grants[1]['github-workflow'])).toMatchObject({outcome: 'admitted', env: {GH_TOKEN: FIXTURE_PAT}});
         await FleetLifecycleService.stop('seat')
+    });
+
+    test('PRODUCTION COMPOSER: a Codex Desktop seat reserves and activates only Neural Link through the issuer', async () => {
+        const
+            root     = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-codex-launch-'))),
+            home     = path.join(root, 'seat', 'harness', 'codex-desktop'),
+            checkout = path.join(root, 'seat', 'neomjs-neo'),
+            issuer   = McpLaunchAdmissionService,
+            grants   = [],
+            matrix   = {'memory-core': true, 'knowledge-base': true, 'neural-link': true, 'github-workflow': true, 'gitlab-workflow': false};
+
+        const spawn = install({agents: {seat: {
+            id            : 'seat',
+            githubUsername: 'neo-gpt-fixture',
+            harnessType   : 'codex-desktop',
+            launchOwner   : 'fleet',
+            metadata      : {repo: {cloneUrl: 'https://github.com/neomjs/neo.git', repoSlug: 'neomjs/neo'}},
+            seatHome      : path.join(root, 'seat')
+        }}});
+        fs.mkdirSync(home, {recursive: true});
+        Object.assign(FleetLifecycleService, {
+            instanceRoot                 : root,
+            harnessBinaryPaths           : {'codex-desktop': process.execPath, codex: '/bin/sh'},
+            codexDesktopCapabilityProbeFn: () => ({available: true, reason: null, crashpadExecutable: '/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/browser_crashpad_handler'}),
+            processListFn                : () => [],
+            // the seat reads live as the exact command it was spawned with
+            processInspectFn             : () => ({startedAt: STARTED_AT, command: spawn.calls[0] ? [spawn.calls[0].command, ...spawn.calls[0].args].join(' ') : ''}),
+            processSignalFn              : () => {}
+        });
+        [issuer.generations, issuer.grants, issuer.revocations].forEach(map => map.clear());
+
+        try {
+            await startAgentProvisioned({
+                lifecycleService  : FleetLifecycleService,
+                agentId           : 'seat',
+                managedRoot       : root,
+                agentosRuntimeRoot: root,
+                ensureRepo        : async () => ({repoPath: checkout}),
+                prepareWorkspace  : async args => {
+                    grants.push(args.launchAdmission?.grants);
+
+                    return {
+                        agentosRuntimeRoot: args.agentosRuntimeRoot,
+                        targetRepoRoot    : args.targetRepoRoot,
+                        instanceHome      : home,
+                        mcpMatrix         : matrix,
+                        mcpPlan           : createManagedAgentWorkspacePlan({agent: {id: 'seat', harnessType: 'codex-desktop'}, mcpMatrix: matrix}).mcpServers
+                            .map(row => ({...row, command: process.execPath, sourceRoot: root, args: [path.join(root, row.entrypoint)]}))
+                    }
+                },
+                resolveGitIdentity : async () => ({state: 'derived', source: 'public', name: 'Fixture', email: 'fixture@example.test'}),
+                convergeGitIdentity: async () => ({state: 'converged', scope: 'local', action: 'kept'}),
+                readModelCatalog   : async () => null,
+                importMemory       : async () => ({state: 'none'}),
+                proveForgeAccount  : async () => ({ok: true})
+            });
+
+            expect(spawn.calls).toHaveLength(1);
+            expect(Object.keys(grants[0])).toEqual(['neural-link']);
+            expect(issuer.statusOf('seat')).toMatchObject({state: 'active', servers: [{key: 'neural-link', state: 'active'}]});
+        } finally {
+            await FleetLifecycleService.stop('seat');
+            fs.rmSync(root, {recursive: true, force: true});
+        }
     });
 
     test('Antigravity binding rejects non-curated seats and missing or mismatched reserved generations before spawn', () => {

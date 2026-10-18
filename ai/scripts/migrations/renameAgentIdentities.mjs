@@ -3,12 +3,18 @@
  * @summary One-shot migration script that renames canonical Neo maintainer identities
  * across the SQLite Native Edge Graph and ChromaDB memory metadata.
  *
- * This handles stable GitHub handle de-versioning while preserving model-version
- * facts in `learn/agentos/ModelStats.md` and AgentIdentity capability fields:
+ * This handles GitHub handle renames while preserving model-version facts in
+ * `learn/agentos/ModelStats.md` and AgentIdentity capability fields:
  *
  * - `@neo-opus-4-7` → `@neo-opus-ada`
- * - `@neo-gemini-3-1-pro` → `@neo-gemini-pro`
+ * - `@neo-gemini-3-1-pro` → `@neo-gemini-pro` → `@neo-gemini-julia`
  * - `@neo-claude-opus` → `@neo-opus-grace`
+ * - `@neo-gpt` → `@neo-gpt-euclid`
+ * - `@neo-fable` → `@neo-fable-mnemosyne`
+ *
+ * A token is rewritten only where it is a whole handle: `@neo-gpt-emmy` keeps its prefix,
+ * `neo-fable@neomjs.com` keeps its address, and a chain resolves to its last handle in one
+ * pass, so a second run finds nothing left to do.
  *
  * The migration updates identity-keyed graph columns, mirrored JSON fields, and
  * Chroma metadata only. It deliberately does not rewrite memory documents,
@@ -60,6 +66,26 @@ export const IDENTITY_RENAMES = Object.freeze([
         toNodeId  : '@neo-opus-grace',
         fromUserId: 'neo-claude-opus',
         toUserId  : 'neo-opus-grace'
+    }),
+    // 2026-10-18: the first seat of each family carries its Social Name, like every seat hatched since.
+    // Listed after the pair it continues: a chain is walked in this order.
+    Object.freeze({
+        fromNodeId: '@neo-gpt',
+        toNodeId  : '@neo-gpt-euclid',
+        fromUserId: 'neo-gpt',
+        toUserId  : 'neo-gpt-euclid'
+    }),
+    Object.freeze({
+        fromNodeId: '@neo-gemini-pro',
+        toNodeId  : '@neo-gemini-julia',
+        fromUserId: 'neo-gemini-pro',
+        toUserId  : 'neo-gemini-julia'
+    }),
+    Object.freeze({
+        fromNodeId: '@neo-fable',
+        toNodeId  : '@neo-fable-mnemosyne',
+        fromUserId: 'neo-fable',
+        toUserId  : 'neo-fable-mnemosyne'
     })
 ]);
 
@@ -85,6 +111,7 @@ const IDENTITY_METADATA_KEYS = new Set([
     'grantedBy',
     'id',
     'identity',
+    'identityKey',
     'identityLogin',
     'identityLogins',
     'owner',
@@ -177,16 +204,79 @@ Options:
 }
 
 /**
- * @summary Rewrites identity tokens inside a string value.
+ * @summary Maps every rename token (`@` node id and bare user id) to the last handle of its chain,
+ * so `@neo-gemini-3-1-pro` resolves to `@neo-gemini-julia` in one step rather than stopping at the
+ * intermediate `@neo-gemini-pro`.
+ * @param {ReadonlyArray<Object>} renames Rename descriptors in chain order.
+ * @returns {Map<String,String>}
+ */
+export function buildRenameTargets(renames) {
+    const next = new Map();
+
+    for (const rename of renames) {
+        next.set(rename.fromNodeId, rename.toNodeId);
+        next.set(rename.fromUserId, rename.toUserId);
+    }
+
+    const resolve = token => {
+        let current = token;
+        for (let hops = 0; next.has(current) && hops < next.size; hops++) {
+            current = next.get(current);
+        }
+        return current;
+    };
+
+    return new Map([...next.keys()].map(token => [token, resolve(token)]));
+}
+
+/**
+ * @summary Builds one global alternation over every rename token, longest first, with the boundary
+ * rule in lookarounds so a rejected position is never consumed. A handle is made of `[A-Za-z0-9-]`;
+ * neither form may run on into a handle character or an `@`, which keeps `@neo-gpt-emmy` whole and
+ * `neo-fable@neomjs.com` untouched. The `@` form may follow any non-alphanumeric character
+ * (`AGENT:@neo-gpt`, `identity-state-@neo-fable`); the bare form may not follow `@` or a handle character.
+ * @param {Map<String,String>} targets Output of {@link buildRenameTargets}.
+ * @returns {RegExp}
+ */
+export function buildTokenPattern(targets) {
+    const escape  = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const tokens  = [...targets.keys()].sort((a, b) => b.length - a.length);
+    const nodeIds = tokens.filter(token => token.startsWith('@')).map(token => escape(token.slice(1)));
+    const userIds = tokens.filter(token => !token.startsWith('@')).map(escape);
+
+    return new RegExp(
+        `(?<![A-Za-z0-9])@(?:${nodeIds.join('|')})(?![A-Za-z0-9@-])` +
+        `|(?<![A-Za-z0-9@-])(?:${userIds.join('|')})(?![A-Za-z0-9@-])`,
+        'g'
+    );
+}
+
+const RENAME_TARGETS = buildRenameTargets(IDENTITY_RENAMES);
+const TOKEN_PATTERN  = buildTokenPattern(RENAME_TARGETS);
+
+/**
+ * @summary Rewrites whole-handle identity tokens inside a string value; applying it to its own output
+ * changes nothing.
  * @param {String} value Source string.
  * @returns {String}
  */
 export function rewriteIdentityString(value) {
-    return IDENTITY_RENAMES.reduce((text, rename) => {
-        return text
-            .replaceAll(rename.fromNodeId, rename.toNodeId)
-            .replaceAll(rename.fromUserId, rename.toUserId);
-    }, value);
+    return value.replace(TOKEN_PATTERN, token => RENAME_TARGETS.get(token));
+}
+
+/**
+ * @summary Rewrites a graph row id that embeds a handle: the whole-handle rule, plus the era-chain
+ * shape `embodied-episode-<key>-<since>`, whose ISO `since` suffix hides the handle's right boundary
+ * behind a hyphen. Row ids and the JSON `id` they mirror move together, never one without the other.
+ * @param {String} id Node or edge row id.
+ * @returns {String}
+ */
+export function rewriteNodeId(id) {
+    const eraShapesMoved = id.replace(
+        /embodied-episode-(.+?)(-\d{4}-\d{2}-\d{2}T[0-9:.Z+-]*)/g,
+        (match, key, since) => `embodied-episode-${rewriteIdentityString(key)}${since}`
+    );
+    return rewriteIdentityString(eraShapesMoved);
 }
 
 /**
@@ -253,9 +343,7 @@ function changedJson(before, after) {
  */
 function rewriteUserIdColumn(userId) {
     if (typeof userId !== 'string') return userId;
-    const match = IDENTITY_RENAMES.find(rename => userId === rename.fromUserId || userId === rename.fromNodeId);
-    if (!match) return userId;
-    return userId.startsWith('@') ? match.toNodeId : match.toUserId;
+    return RENAME_TARGETS.get(userId) ?? userId;
 }
 
 /**
@@ -369,9 +457,12 @@ function rewriteIdentityEdges(db, rename, apply, stats) {
             continue;
         }
 
-        const data = rewriteIdentityFields(parseGraphData(edge.data));
+        const original = parseGraphData(edge.data);
+        const data     = rewriteIdentityFields(original);
         data.source = nextSource;
         data.target = nextTarget;
+        // The JSON id mirrors the SQL id; the metadata pass re-keys both together or neither.
+        if (original.id === edge.id) data.id = edge.id;
 
         if (apply) {
             db.prepare('UPDATE Edges SET user_id = ?, source = ?, target = ?, data = ? WHERE id = ?')
@@ -381,17 +472,102 @@ function rewriteIdentityEdges(db, rename, apply, stats) {
     }
 }
 
+const STRUCTURAL_NODE_IDS = new Set(IDENTITY_RENAMES.map(rename => rename.fromNodeId));
+
 /**
- * @summary Rewrites identity metadata in all graph rows after structural node moves.
+ * @summary Moves every edge that names `fromId` onto `toId`; an edge that would duplicate one already
+ * on the surviving row is dropped, as in {@link rewriteIdentityEdges}.
+ * @param {Object} db Open better-sqlite3 connection.
+ * @param {String} fromId The row id the edges still name.
+ * @param {String} toId The surviving row id.
+ * @param {Boolean} apply True to write, false for dry-run.
+ * @param {Object} stats Mutable stats object.
+ */
+function moveEdges(db, fromId, toId, apply, stats) {
+    for (const edge of db.prepare('SELECT id, source, target, type FROM Edges WHERE source = ? OR target = ?').all(fromId, fromId)) {
+        const nextSource = edge.source === fromId ? toId : edge.source;
+        const nextTarget = edge.target === fromId ? toId : edge.target;
+        const duplicate  = db.prepare('SELECT id FROM Edges WHERE source = ? AND target = ? AND type = ? AND id != ?')
+            .get(nextSource, nextTarget, edge.type, edge.id);
+
+        if (duplicate) {
+            if (apply) {
+                db.prepare('DELETE FROM Edges WHERE id = ?').run(edge.id);
+            }
+            stats.graph.edgesDropped++;
+            stats.graph.duplicateCollisions++;
+            continue;
+        }
+        if (apply) {
+            db.prepare('UPDATE Edges SET source = ?, target = ? WHERE id = ?').run(nextSource, nextTarget, edge.id);
+        }
+    }
+}
+
+/**
+ * @summary Rewrites identity metadata in all graph rows after structural node moves. A row whose id
+ * embeds a handle (`identity-state-@…`, `embodied-episode-@…-<since>`, `AGENT:@…`) is re-keyed as
+ * insert, move, delete: the `Edges` foreign keys (`REFERENCES Nodes(id) ON DELETE CASCADE`, no
+ * `ON UPDATE`) refuse a primary-key update on a connected row, so the surviving row exists before any
+ * edge names it and nothing still names the old row when it goes. When both ids already exist, the
+ * old row merges into the surviving one ({@link mergeCompoundNodeData}): its edges move over and it
+ * goes. The edge pass mirrors the moved SQL columns into the JSON, never an independent rewrite, so
+ * the SQLite id, the JSON id and the edge endpoints never disagree. The AgentIdentity rows themselves
+ * moved structurally above.
  * @param {Object} db Open better-sqlite3 connection.
  * @param {Boolean} apply True to write, false for dry-run.
  * @param {Object} stats Mutable stats object.
  */
 function rewriteGraphMetadataRows(db, apply, stats) {
-    for (const row of db.prepare('SELECT id, user_id, data FROM Nodes').all()) {
+    const moved = new Map(); // old row id → surviving row id
+
+    for (const snapshot of db.prepare('SELECT id FROM Nodes').all()) {
+        if (STRUCTURAL_NODE_IDS.has(snapshot.id)) continue;
+
+        // Re-read before deciding: a merge earlier in this pass may have rewritten or removed this row,
+        // and the snapshot taken before the pass is no authority over merged data.
+        const row = db.prepare('SELECT id, user_id, data FROM Nodes WHERE id = ?').get(snapshot.id);
+        if (!row) continue;
+
         const data       = parseGraphData(row.data);
         const nextData   = rewriteIdentityFields(data);
         const nextUserId = rewriteUserIdColumn(row.user_id);
+        const nextId     = rewriteNodeId(row.id);
+
+        if (nextId !== row.id) {
+            const survivor = db.prepare('SELECT user_id, data FROM Nodes WHERE id = ?').get(nextId);
+            if (survivor) {
+                const {merged, conflicts} = mergeCompoundNodeData(nextData, rewriteIdentityFields(parseGraphData(survivor.data)));
+                if (conflicts.length > 0) {
+                    // Fail closed for this row: nothing moves, nothing is written, the plan names the keys.
+                    stats.graph.duplicateCollisions++;
+                    stats.graph.skipped.push(`conflict:${row.id}→${nextId} [${conflicts.join(', ')}]`);
+                    continue;
+                }
+                moved.set(row.id, nextId);
+                moveEdges(db, row.id, nextId, apply, stats);
+                if (apply) {
+                    db.prepare('UPDATE Nodes SET user_id = ?, data = ? WHERE id = ?')
+                        .run(rewriteUserIdColumn(survivor.user_id) ?? nextUserId, JSON.stringify(merged), nextId);
+                    db.prepare('DELETE FROM Nodes WHERE id = ?').run(row.id);
+                }
+                stats.graph.nodesMerged++;
+                continue;
+            }
+
+            moved.set(row.id, nextId);
+            if (data.id === row.id) nextData.id = nextId;
+            if (apply) {
+                db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)')
+                    .run(nextId, nextUserId, JSON.stringify(nextData));
+            }
+            moveEdges(db, row.id, nextId, apply, stats);
+            if (apply) {
+                db.prepare('DELETE FROM Nodes WHERE id = ?').run(row.id);
+            }
+            stats.graph.nodesRekeyed++;
+            continue;
+        }
 
         if (nextUserId !== row.user_id || changedJson(data, nextData)) {
             if (apply) {
@@ -402,19 +578,73 @@ function rewriteGraphMetadataRows(db, apply, stats) {
         }
     }
 
-    for (const row of db.prepare('SELECT id, user_id, data FROM Edges').all()) {
+    for (const snapshot of db.prepare('SELECT id FROM Edges').all()) {
+        // Re-read: the node moves above rewrote endpoints and dropped duplicates.
+        const row = db.prepare('SELECT id, user_id, source, target, data FROM Edges WHERE id = ?').get(snapshot.id);
+        if (!row) continue;
+
         const data       = parseGraphData(row.data);
         const nextData   = rewriteIdentityFields(data);
         const nextUserId = rewriteUserIdColumn(row.user_id);
+        let   nextId     = rewriteNodeId(row.id);
 
-        if (nextUserId !== row.user_id || changedJson(data, nextData)) {
+        if (nextId !== row.id && db.prepare('SELECT id FROM Edges WHERE id = ?').get(nextId)) {
+            // Another edge already carries the re-keyed id: this row keeps its own, and one mapping
+            // still governs its SQL id, its JSON id and its endpoints.
+            stats.graph.duplicateCollisions++;
+            stats.graph.skipped.push(`collision:${row.id}→${nextId}`);
+            nextId = row.id;
+        }
+
+        // Endpoints mirror the SQL columns after the node moves (in a dry run, the moves they would make).
+        if (typeof data.source === 'string') nextData.source = moved.get(row.source) ?? row.source;
+        if (typeof data.target === 'string') nextData.target = moved.get(row.target) ?? row.target;
+        if (data.id === row.id) nextData.id = nextId;
+
+        if (nextId !== row.id || nextUserId !== row.user_id || changedJson(data, nextData)) {
             if (apply) {
-                db.prepare('UPDATE Edges SET user_id = ?, data = ? WHERE id = ?')
-                    .run(nextUserId, JSON.stringify(nextData), row.id);
+                db.prepare('UPDATE Edges SET id = ?, user_id = ?, data = ? WHERE id = ?')
+                    .run(nextId, nextUserId, JSON.stringify(nextData), row.id);
             }
-            stats.graph.edgeMetadataRowsUpdated++;
+            if (nextId !== row.id) stats.graph.edgesRekeyed++;
+            else stats.graph.edgeMetadataRowsUpdated++;
         }
     }
+}
+
+/**
+ * @summary Merges an old compound row into the row already living under its new id under one explicit
+ * policy: a key present on one row only is kept, a key present on both must agree, and
+ * `properties.createdAt` keeps the older value. A disagreement is a conflict the caller fails closed
+ * on — nothing is written and the plan names the keys — because deleting the old row would discard
+ * a value nobody reconciled.
+ * @param {Object} oldData The old row's data, identity tokens already rewritten.
+ * @param {Object} survivingData The surviving row's data.
+ * @returns {{merged: Object, conflicts: String[]}}
+ */
+function mergeCompoundNodeData(oldData, survivingData) {
+    const conflicts = [];
+
+    const mergeLevel = (a, b, prefix) => {
+        const out = {...a, ...b};
+
+        for (const key of Object.keys(a)) {
+            if (!(key in b) || key === 'properties') continue;
+            if (prefix === 'properties.' && key === 'createdAt') {
+                out.createdAt = a.createdAt < b.createdAt ? a.createdAt : b.createdAt;
+                continue;
+            }
+            if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) {
+                conflicts.push(`${prefix}${key}`);
+            }
+        }
+        return out;
+    };
+
+    const merged = mergeLevel(oldData, survivingData, '');
+    merged.properties = mergeLevel(oldData.properties || {}, survivingData.properties || {}, 'properties.');
+
+    return {merged, conflicts};
 }
 
 /**
@@ -446,11 +676,13 @@ export function runGraphMigration(db, apply) {
             duplicateCollisions    : 0,
             edgeMetadataRowsUpdated: 0,
             edgesDropped           : 0,
+            edgesRekeyed           : 0,
             edgesRewritten         : 0,
             nodeMetadataRowsUpdated: 0,
             nodesDeleted           : 0,
             nodesInserted          : 0,
             nodesMerged            : 0,
+            nodesRekeyed           : 0,
             skipped                : []
         }
     };
@@ -639,6 +871,8 @@ async function main() {
             console.log(`  duplicate collisions:    ${graphStats.duplicateCollisions}`);
             console.log(`  node metadata updated:   ${graphStats.nodeMetadataRowsUpdated}`);
             console.log(`  edge metadata updated:   ${graphStats.edgeMetadataRowsUpdated}`);
+            console.log(`  nodes re-keyed:          ${graphStats.nodesRekeyed}`);
+            console.log(`  edges re-keyed:          ${graphStats.edgesRekeyed}`);
             console.log(`  skipped:                 ${graphStats.skipped.length}`);
         } finally {
             db.close();

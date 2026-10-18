@@ -7,6 +7,7 @@ import {
     DESKTOP_PROFILE_RECEIPT,
     createDesktopLaunchBinding,
     createAntigravityLaunchBinding,
+    createCodexLaunchBinding,
     isLaunchProfileBinding,
     recoverLaunchProfileGrants
 } from '../../../../../../ai/services/fleet/launchProfileCustody.mjs';
@@ -303,5 +304,102 @@ test.describe('Antigravity original profile custody', () => {
         }
         const wrong = {...binding, grants: {'memory-core': {...binding.grants['memory-core'], sha256: 'a'.repeat(64)}}};
         await expect(recover({binding: wrong})).rejects.toMatchObject({reason: 'grant-mismatch'});
+    });
+});
+
+test.describe('Codex original profile custody', () => {
+    let codexHome, homeConfig, projectConfig, row, homeSource;
+
+    /** @summary One Codex MCP table in the literal shape the Fleet renders. */
+    const table = (name, server) => [
+        `[mcp_servers."${name}"]`,
+        `command = ${JSON.stringify(server.command)}`,
+        `args = ${JSON.stringify(server.args)}`,
+        `env = { ${Object.entries(server.env).map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join(', ')} }`,
+        'startup_timeout_sec = 30'
+    ].join('\n');
+
+    test.beforeEach(async () => {
+        workspace     = path.join(root, 'workspace');
+        codexHome     = path.join(home, 'codex-home');
+        homeConfig    = path.join(codexHome, 'config.toml');
+        projectConfig = path.join(workspace, '.codex', 'config.toml');
+        await fs.mkdir(codexHome, {mode: 0o700});
+        await fs.mkdir(path.dirname(projectConfig), {recursive: true, mode: 0o700});
+        row = {command: '/runtime/host', args: ['/runtime/ai/mcp/client/fleetMcpLauncher.mjs', '--server', 'neural-link'],
+            env: {NEO_AGENT_IDENTITY: 'seat-login', NEO_FLEET_LAUNCH_ISSUER: 'http://127.0.0.1:47123', NEO_FLEET_LAUNCH_GRANT: grant.capability}};
+        homeSource = ['model = "gpt-test"', '', table('neo-mjs-neural-link', row), ''].join('\n');
+        binding    = createCodexLaunchBinding({identity: 'seat-login', issuer: 'http://127.0.0.1:47123', codexHome, workspaceRoot: workspace, source: homeSource});
+        await write(homeConfig, homeSource);
+        await write(projectConfig, [table('neo-mjs-memory-core', rows['neo-mjs-memory-core']), '', '[mcp_servers.personal]', 'command = "/operator/server"', ''].join('\n'));
+    });
+
+    test('the unchanged home tables recover the grant while the binding carries hashes only', async () => {
+        expect(isLaunchProfileBinding(binding)).toBe(true);
+        expect(await recover()).toEqual({'neural-link': grant.capability});
+        expect(JSON.stringify(binding)).not.toContain(grant.secret);
+        expect(JSON.stringify(binding)).not.toContain(grant.capability);
+    });
+
+    test('operator settings and foreign tables stay editable in both files', async () => {
+        await write(homeConfig, homeSource.replace('gpt-test', 'gpt-other') + '\n[mcp_servers.mine]\ncommand = "/operator/mine"\n');
+        await write(projectConfig, '[mcp_servers.personal]\ncommand = "/operator/new"\n');
+        expect(await recover()).toEqual({'neural-link': grant.capability});
+    });
+
+    test('the seat switching the bound table off or on keeps custody', async () => {
+        const switched = homeSource.replace('startup_timeout_sec = 30', 'startup_timeout_sec = 30\nenabled = false');
+        await write(homeConfig, switched);
+        expect(await recover()).toEqual({'neural-link': grant.capability});
+        await write(homeConfig, switched.replace('enabled = false', 'enabled = true'));
+        expect(await recover()).toEqual({'neural-link': grant.capability});
+    });
+
+    test('an edited Fleet table in the home config refuses', async () => {
+        await write(homeConfig, homeSource.replace('/runtime/host', '/other/runtime'));
+        await expect(recover()).rejects.toMatchObject({reason: 'projection-mismatch'});
+    });
+
+    test('a project table that would win over the bound home table refuses', async () => {
+        await write(projectConfig, table('neo-mjs-neural-link', {...row, command: '/operator/node'}) + '\n');
+        await expect(recover()).rejects.toMatchObject({reason: 'workspace-mismatch'});
+    });
+
+    test('no project config is no override, but one that appears during recovery refuses', async () => {
+        await fs.rm(path.dirname(projectConfig), {recursive: true});
+        expect(await recover()).toEqual({'neural-link': grant.capability});
+
+        let created = false;
+        const fileSystem = {...fs, lstat: async (file, ...rest) => {
+            try {
+                return await fs.lstat(file, ...rest)
+            } catch (error) {
+                if (file === path.dirname(projectConfig) && !created) {
+                    created = true;
+                    await fs.mkdir(file, {mode: 0o700});
+                }
+                throw error
+            }
+        }};
+        await expect(recover({fileSystem})).rejects.toMatchObject({reason: 'file-changed'});
+    });
+
+    test('another workspace or a home outside the seat profile refuses', async () => {
+        await expect(recover({workspaceRoot: root})).rejects.toMatchObject({reason: 'profile-binding-mismatch'});
+        const outside = createCodexLaunchBinding({identity: 'seat-login', issuer: 'http://127.0.0.1:47123',
+            codexHome: path.join(root, 'elsewhere'), workspaceRoot: workspace, source: homeSource});
+        await expect(recover({binding: outside})).rejects.toMatchObject({reason: 'profile-binding-mismatch'});
+    });
+
+    test('a home config others can read refuses', async () => {
+        await fs.chmod(homeConfig, 0o644);
+        await expect(recover()).rejects.toMatchObject({reason: 'file-custody'});
+    });
+
+    test('the closed codec refuses extra fields, a foreign kind and a relative home', async () => {
+        for (const invalid of [{...binding, capability: grant.capability}, {...binding, kind: 'desktop'}, {...binding, codexHome: 'relative'}]) {
+            expect(isLaunchProfileBinding(invalid)).toBe(false);
+            await expect(recover({binding: invalid})).rejects.toMatchObject({reason: 'invalid-binding'});
+        }
     });
 });

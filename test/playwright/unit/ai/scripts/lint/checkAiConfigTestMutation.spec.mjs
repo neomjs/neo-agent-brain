@@ -154,6 +154,21 @@ test.describe('check-aiconfig-test-mutation guard', () => {
         expect(findDbPathMutations('aiConfig.storagePaths["graph"] = testPath;').map(h => h.line)).toEqual([1])
     });
 
+    test('flags a host / port leaf under a chroma node — a re-pointed store is a DB path', () => {
+        expect(findDbPathMutations("aiConfig.engines.chroma.hostTest = 'localhost';").map(h => h.line)).toEqual([1]);
+        expect(findDbPathMutations('AiConfig.engines.chroma.portTest = 8000;').map(h => h.line)).toEqual([1]);
+        expect(findDbPathMutations('aiConfig.engines.chroma.port = port;').map(h => h.line)).toEqual([1]);
+        expect(findDbPathMutations("aiConfig['engines']['chroma']['host'] = h;").map(h => h.line)).toEqual([1]);
+        expect(findDbPathMutations("aiConfig.engines['chroma'].portProd = 1;").map(h => h.line)).toEqual([1])
+    });
+
+    test('does NOT flag a generic host leaf or a chroma endpoint read — a local stub is not a store', () => {
+        expect(findDbPathMutations("aiConfig.openAiCompatible.host = `http://127.0.0.1:${port}`;")).toEqual([]);
+        expect(findDbPathMutations("ollamaConfig.host = 'http://127.0.0.1:1';")).toEqual([]);
+        expect(findDbPathMutations('const port = aiConfig.engines.chroma.port;')).toEqual([]);
+        expect(findDbPathMutations('if (aiConfig.engines.chroma.port === 8000) {}')).toEqual([])
+    });
+
     // ───────── the root is matched by SHAPE, not by two literal names ─────────
 
     test('flags the PascalCase root — the approved rename must not silently retire this gate', () => {
@@ -617,7 +632,8 @@ test.describe('check-aiconfig-test-mutation per-file ceiling ratchet', () => {
 
             expect(result.status, 'growth past the ceiling must fail the build').toBe(1);
             expect(result.stderr).toContain(`${rel}: 2 write(s), ceiling 0`);
-            expect(result.stderr).toContain('configSnapshot')
+            expect(result.stderr, 'the remedy is the ADR\'s isolation ladder').toContain('ADR-0019 §5.4');
+            expect(result.stderr, 'never a second config authority').not.toContain('configSnapshot')
         } finally {
             rmSync(fixtureDir, {recursive: true, force: true})
         }

@@ -10,7 +10,7 @@ import {
     LAUNCH_ADMISSION_STATES   as STATES,
     isLaunchAdmissionProofReason
 }                                 from '../../../src/fleet/contract/launchAdmission.mjs';
-import {mcpCatalogFor, resolveMcpMatrix}                                                     from '../../../src/fleet/contract/mcpServers.mjs';
+import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}                                        from '../../../src/fleet/contract/mcpServers.mjs';
 import {launchRowEnvNames}                                                                   from './managedAgentWorkspacePlan.mjs';
 import {isAdmissionSnapshot, openLaunchAdmissionJournal, RUNTIME_REFERENCE_SNAPSHOT_VERSION} from './launchAdmissionJournal.mjs';
 import {runtimeGenerationPin}                                                                from './runtimeGeneration.mjs';
@@ -499,11 +499,13 @@ class McpLaunchAdmissionService extends Base {
      * @param {AbortSignal} [options.startSignal] The owning managed Start's cancellation signal.
      * @param {Object|null} [options.runtimeGeneration] The verified packaged runtime selected for this Start.
      * @param {Object} [options.runtimeReferenceGuard] Live parent exclusion for a packaged reservation.
+     * @param {String[]|null} [options.servers] The enabled servers this seat starts through the issuer, when not
+     *     all of them: a Codex Desktop seat starts only Neural Link this way and its other rows from its own env.
      * @returns {Promise<{generation: String, issuer: String, identity: String, grants: Object<String, String>}>}
-     *     `grants` maps each enabled server to the capability its profile row carries; `identity` is the
+     *     `grants` maps each such server to the capability its profile row carries; `identity` is the
      *     validated login the rows must name.
      */
-    async reserve({agent, registry = null, since = null, startSignal = null, runtimeGeneration = null, runtimeReferenceGuard = null}) {
+    async reserve({agent, registry = null, since = null, startSignal = null, runtimeGeneration = null, runtimeReferenceGuard = null, servers = null}) {
         if (this.continuityPhase !== 'ready') throw new Error('Fleet launch continuity is not ready.');
         if (this.journalFailed) throw new Error('Launch admission issuer is frozen after a failed durable transition.');
         if (startSignal && (
@@ -512,6 +514,9 @@ class McpLaunchAdmissionService extends Base {
             typeof startSignal.removeEventListener !== 'function'
         )) {
             throw new TypeError('McpLaunchAdmissionService.reserve: startSignal must be an AbortSignal.')
+        }
+        if (servers !== null && (!Array.isArray(servers) || !servers.every(key => MCP_SERVERS.some(row => row.key === key)))) {
+            throw new TypeError('McpLaunchAdmissionService.reserve: servers must name catalog servers.')
         }
 
         const identity = loginOf(agent);
@@ -557,7 +562,7 @@ class McpLaunchAdmissionService extends Base {
         }
 
         for (const [key, enabled] of Object.entries(definition.matrix)) {
-            if (!enabled) continue;
+            if (!enabled || servers?.includes(key) === false) continue;
 
             const grant = mintLaunchGrant();
 

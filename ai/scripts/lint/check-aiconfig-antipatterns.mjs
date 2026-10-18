@@ -1,6 +1,6 @@
 /**
  * @module ai/scripts/lint/check-aiconfig-antipatterns
- * @summary Enforces AiConfig A1/A5/B3 against Brain implementation source.
+ * @summary Enforces AiConfig A1/A5/B3 against Brain implementation source, in `ai/` and `src/`.
  *
  * Received with its parser-grade mutation-guard sibling from the Engine-side pre-split authority
  * at `c623b2f63c^`. Both guards now live with the Brain config substrate they protect.
@@ -76,8 +76,8 @@ export const A1_ENV_REDERIVATION = /^(?:const|let|var)\s[^;]*=\s*[^;]*\bprocess\
  * `path.resolve(__dirname, \`../../.neo-ai-data/wake-daemon/inflight-${mode}.txt\`)` is the one shape
  * a string-literal predicate misses, and it is a live site (`ai/scripts/lifecycle/inflightLock.mjs`).
  *
- * **Why a descriptive id and not the next A-number.** ADR-0019 §3 Group A already spends A1-A9, // ticket-ref-ok: the ADR IS the naming authority this choice defers to
- * so `A6` — the first free-looking slot — is `leaf+formula duplication` and would have given the
+ * **Why a descriptive id and not the next A-number.** The AiConfig ADR's catalog already spends A1-A9
+ * in Group A, so `A6` — the first free-looking slot — is `leaf+formula duplication` and would have given the
  * shared catalog vocabulary two meanings. This class is genuinely absent from that catalog (it
  * re-derives a ROOT, reading no config at all, which is why A1's two-signal rule structurally
  * cannot see it), so naming it would be a catalog amendment — a gate this rule does not own.
@@ -306,6 +306,31 @@ export function filterAllowlistedHits(hits, file, allowlist = ALLOWLIST) {
     })
 }
 
+/**
+ * The roots this guard scans. Brain implementation source lives in `ai/` and, as domains move out
+ * of it, in `src/`.
+ * @member {String[]} SCAN_ROOTS
+ */
+export const SCAN_ROOTS = Object.freeze(['ai', 'src']);
+
+const SCAN_SCOPE = SCAN_ROOTS.map(root => `${root}/`).join(' + ');
+
+/**
+ * @summary Every `.mjs` file under {@link SCAN_ROOTS}, as `find` lists it from `gitRoot`.
+ * @param {String} gitRoot The repository root the roots are relative to.
+ * @returns {String[]} Repo-relative paths.
+ * @throws {Error} When `find` fails, carrying its stderr.
+ */
+export function collectDefaultFiles(gitRoot) {
+    const result = spawnSync('find', [...SCAN_ROOTS, '-type', 'f', '-name', '*.mjs'], {cwd: gitRoot, encoding: 'utf-8'});
+
+    if (result.status !== 0) {
+        throw new Error(`find command failed: ${result.stderr}`)
+    }
+
+    return result.stdout.trim().split('\n').filter(Boolean)
+}
+
 function main() {
     let gitRoot;
     try {
@@ -342,24 +367,24 @@ function main() {
         ? {...ALLOWLIST, B3: new Set([...ALLOWLIST.B3, toRepoRelative(extraB3Raw, gitRoot)])}
         : ALLOWLIST;
 
-    function collectDefaultFiles() {
-        const result = spawnSync('find', ['ai', '-type', 'f', '-name', '*.mjs'], {cwd: gitRoot, encoding: 'utf-8'});
-        if (result.status !== 0) {
-            console.error('\x1b[31mError: find command failed.\x1b[0m');
-            console.error(result.stderr);
+    let rawFiles = argvFiles;
+
+    if (rawFiles.length === 0) {
+        try {
+            rawFiles = collectDefaultFiles(gitRoot)
+        } catch (e) {
+            console.error(`\x1b[31mError: ${e.message}\x1b[0m`);
             process.exit(1);
         }
-        return result.stdout.trim().split('\n').filter(Boolean);
     }
 
-    const rawFiles = argvFiles.length > 0 ? argvFiles : collectDefaultFiles();
-    const files    = rawFiles
+    const files = rawFiles
         .filter(f => f.endsWith('.mjs'))
         .map(f => toRepoRelative(f, gitRoot))
-        .filter(f => f.startsWith('ai/'));
+        .filter(f => SCAN_ROOTS.some(root => f.startsWith(`${root}/`)));
 
     if (files.length === 0) {
-        console.log('check-aiconfig-antipatterns: 0 ai/ .mjs files in scope, nothing to check.');
+        console.log(`check-aiconfig-antipatterns: 0 ${SCAN_SCOPE} .mjs files in scope, nothing to check.`);
         process.exit(0);
     }
 
@@ -378,7 +403,7 @@ function main() {
     }
 
     if (violations.length > 0) {
-        console.error(`\x1b[31mcheck-aiconfig-antipatterns: ${violations.length} ADR-0019 antipattern(s) in ai/:\x1b[0m`);
+        console.error(`\x1b[31mcheck-aiconfig-antipatterns: ${violations.length} ADR-0019 antipattern(s) in ${SCAN_SCOPE}:\x1b[0m`);
         if (!quiet) {
             violations.forEach(v => console.error('  ' + v));
             console.error('\nB3: never `?.` on an AiConfig read — the SSOT guarantees the tree; read the leaf and let it');
@@ -400,7 +425,7 @@ function main() {
         process.exit(1);
     }
 
-    console.log(`check-aiconfig-antipatterns: ${files.length} ai/ file(s) scanned, 0 new violations.`);
+    console.log(`check-aiconfig-antipatterns: ${files.length} ${SCAN_SCOPE} file(s) scanned, 0 new violations.`);
 }
 
 const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === __filename;

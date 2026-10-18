@@ -420,10 +420,10 @@ test.describe('fleetMailboxMirrorAdapter — real MailboxService producer contra
     })
 
     test.afterAll(async () => {
-        const {cleanupChromaManager} = await import('../memory-core/util.mjs')
+        const {cleanupChromaManager, TestLifecycleHelper} = await import('../memory-core/util.mjs')
         await cleanupChromaManager()
         GraphService.db.autoSave = originalAutoSave
-
+        await TestLifecycleHelper.cleanupGraphService(GraphService, LifecycleService, null, null, 'clear')
     })
 
     test.beforeEach(async () => {

@@ -33,11 +33,19 @@ export const ESCAPE_MARKER = 'aiconfig-mutation-ok';
  * arrows (`=>`), and a capture-read (`const x = aiConfig.storagePaths.graph`) has no `=` after the
  * leaf, so only true assignments match. A dangerous leaf is caught whether dot-accessed
  * (`.storagePaths`) or string-literal-bracket-accessed (`['storagePaths']`); a computed key
- * (`aiConfig[varName]`) is out of a static lint's reach — the escape marker + the by-construction
- * migration cover that residue. Config-VARYING leaves (retry / transport) are deliberately out of
- * scope here — that class has no by-construction story yet.
+ * (`aiConfig[varName]`) is out of a static lint's reach — the escape marker covers that residue.
+ * Config-VARYING leaves (retry / transport) are out of this rule's scope: {@link SHARED_CONFIG_MUTATION}
+ * counts them, and the isolation ladder it describes serves them.
  */
 const DB_PATH_LEAVES = '(?:storagePaths|database|collections|logPath)';
+
+/*
+ * Chroma's endpoint leaves (`engines.chroma.host*` / `port*`) are DB paths too: a write re-points the
+ * test's client at another store, and on a host the live one is a loopback port away.
+ * Scoped to a `chroma` node, because the generic `host` leaves (`openAiCompatible`, `ollama`) are local
+ * stubs, not stores.
+ */
+const CHROMA_ENDPOINT_LEAF = `(?:\\.chroma|\\[\\s*['"\`]chroma['"\`]\\s*\\])(?:\\.(?:host|port)\\w*|\\[\\s*['"\`](?:host|port)\\w*['"\`]\\s*\\])`;
 
 /*
  * The config ROOT is matched by SHAPE, not by two literal names, and that is the whole point.
@@ -73,7 +81,7 @@ export const DB_PATH_MUTATION = new RegExp(
     // real intent and closes that divergence in the fail-SAFE direction (catch it; a false positive costs one
     // escape marker, a false negative is the orphan incident).
     `(?<![\\w$])${CONFIG_ROOT}(?![\\w$])[\\w.$[\\]'"\`-]*` +                     // a config-shaped root, then any path chars
-    `(?:\\.${DB_PATH_LEAVES}\\b|\\[\\s*['"\`]${DB_PATH_LEAVES}['"\`]\\s*\\])` + // a dangerous leaf: dot OR string-literal bracket
+    `(?:\\.${DB_PATH_LEAVES}\\b|\\[\\s*['"\`]${DB_PATH_LEAVES}['"\`]\\s*\\]|${CHROMA_ENDPOINT_LEAF})` + // a dangerous leaf: dot OR string-literal bracket
     `[\\w.$[\\]'"\`]*\\s*=(?![=>])`                                             // optional trailing path, then assignment (not == / =>)
 );
 
@@ -100,8 +108,9 @@ export const DB_PATH_MUTATION = new RegExp(
  * blamed a zero-key clone. Both are retracted: the clone carries the key — it carries the WRONG VALUE.
  * The pattern therefore anchors on the capture and stays indifferent to whatever restores from it.
  *
- * `snapshotAiConfig` is the by-construction answer and already the majority idiom; its contract exists
- * precisely because it captures by RESOLVED value. This guard points at it rather than restating it.
+ * `snapshotAiConfig` is the isolation ladder's last rung, the one sanctioned mutate-and-restore, and
+ * already the majority idiom; its contract exists precisely because it captures by RESOLVED value. This guard points
+ * at it rather than restating it.
  *
  * Deliberately NOT guarded — measured, not assumed: whole-SUBTREE replacement
  * (`AiConfig.orchestrator.mlx = {...}`) restores correctly, on a node with 3 keys and on one with 16,
@@ -245,7 +254,7 @@ function sliceByLine(source, mask) {
  * slash/continuation grammar is a parser problem. Measured against an `acorn` oracle over 1911 files,
  * that scanner disagreed on **418,515 characters across 1152 files** — yet on **0 of 156** real
  * pattern-match sites, which is why this swap is behaviour-preserving on today's corpus while
- * eliminating the classes by construction. Two reproduced live defects it could not survive:
+ * eliminating the classes structurally. Two reproduced live defects it could not survive:
  * a multi-line template read as code (false POSITIVE — `inString` was function-local, so it reset at
  * every newline), and `const re = /["']/; aiConfig.database = 1;` read as string (false NEGATIVE — the
  * safety-critical direction, a silently missed Class-A mutation).
@@ -293,13 +302,13 @@ const DB_PATH_MUTATION_GLOBAL = new RegExp(DB_PATH_MUTATION.source, 'g');
  * which is worse than an absent guard — it converts an audit question into a wrong answer.
  *
  * The surface is real and concentrated: the dominant leaf class is config-VARYING tuning knobs —
- * `openAiCompatible.*` retry/timeout leaves, `vectorDimension`, `remSleepBatchLimit` — which is
- * precisely the class this file's own header already names as having no by-construction story yet. The
- * guard prints the current measured count on every run; that printout is the receipt, and no number
- * written here is one.
+ * `openAiCompatible.*` retry/timeout leaves, `vectorDimension`, `remSleepBatchLimit` — which the test-
+ * isolation ladder serves: a direct input to the pure operation, or a `snapshotAiConfig` window when the
+ * service's own read is under test. The guard prints the current measured count on every run; that
+ * printout is the receipt, and no number written here is one.
  *
  * **So the count is deliberately NOT gating — its growth is.** Turning the count on today would red
- * the files whose correct fix is an injected config snapshot, not an escape marker, and a gate that
+ * the files still waiting on that ladder, whose fix is not an escape marker, and a gate that
  * gets muted within a day teaches the next reader the gate is optional. Every hit is still detected
  * and printed, but what fails the build is a file holding more writes than its ceiling
  * ({@link loadCeilings}): the count it had when the ratchet was seeded, and none for a file the
@@ -341,8 +350,8 @@ const SHARED_CONFIG_MUTATION_GLOBAL   = new RegExp(SHARED_CONFIG_MUTATION.source
  *
  * **Out of static reach, deliberately.** A subtree bound to a local first (`const s = AiConfig.x;
  * s.y = 1`) and any computed key (`root[key] = 1`) are invisible here, exactly as they are for the
- * DB-path rule. A spec that wants to mutate config in isolation goes through an injected snapshot
- * instead; that is the sanctioned form, not a gap this detector is trying to close.
+ * DB-path rule. A spec that must vary config takes the isolation ladder instead; that is the
+ * sanctioned form, not a gap this detector is trying to close.
  *
  * Report-only per hit; `main()` gates a file only past its ceiling. Exported and unit-tested so the
  * promotion to a gating rule is a wiring change in one place rather than a re-derivation. Run it for
@@ -715,8 +724,8 @@ function main() {
     // because the whole defect this rule addresses was that the surface was INVISIBLE — a gate that says
     // "0 violations" while the real number of writes sits behind a narrower rule is a false assurance,
     // and printing the number is the cheapest way to stop it being one again. The count does not fail
-    // the build, because turning it on today would red the files whose correct fix is an injected
-    // config snapshot; a file's GROWTH past its ceiling does, below.
+    // the build, because turning it on today would red the files still waiting on the isolation
+    // ladder; a file's GROWTH past its ceiling does, below.
     const distinctLeaves = new Set(sharedConfigWrites.map(write => write.leaf)),
           assignCalls    = sharedConfigWrites.filter(write => write.form === 'assign-call').length,
           counts         = countWritesByFile(sharedConfigWrites);
@@ -785,8 +794,9 @@ function main() {
             ceilingBreaches.forEach(({file, count, ceiling}) => console.error(`  ${file}: ${count} write(s), ceiling ${ceiling}`));
             console.error('\nA test must not write the shared AiConfig singleton (ADR-0019 §4 B4), and a file may not');
             console.error(`hold more such writes than its ceiling in ${path.relative(gitRoot, CEILINGS_FILE)} (a file it`);
-            console.error('does not name: 0). Isolate by construction instead, through an injected config snapshot');
-            console.error('(ai/services/shared/configSnapshot.mjs).');
+            console.error('does not name: 0). Take ADR-0019 §5.4\'s ladder instead: delete an override UNIT_TEST_MODE');
+            console.error('already resolves, bind a worker-wide value in the harness env, pass a pure operation its');
+            console.error('input, or — only when the service\'s own read is under test — wrap the change in snapshotAiConfig.');
         }
     }
 

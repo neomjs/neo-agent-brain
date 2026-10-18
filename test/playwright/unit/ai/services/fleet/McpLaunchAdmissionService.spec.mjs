@@ -472,6 +472,17 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
             .toThrow(/snapshot-invalid/);
     });
 
+    test('a reservation names only the servers a seat starts through the issuer, and only catalog ones', async () => {
+        const all = await service.reserve({agent: seatDefinition()});
+        expect(Object.keys(all.grants).length).toBeGreaterThan(1);
+
+        const one = await service.reserve({agent: seatDefinition(), servers: ['neural-link']});
+        expect(Object.keys(one.grants)).toEqual(['neural-link']);
+        expect(service.statusOf('seat').servers.map(server => server.key)).toEqual(['neural-link']);
+
+        await expect(service.reserve({agent: seatDefinition(), servers: ['not-a-server']})).rejects.toThrow('servers must name catalog servers');
+    });
+
     test('resident redemption follows original config selection, current values and original absence without a held fallback', async () => {
         service.openJournal({directory});
         const binding = {version: 1, kind: 'resident-config', server: 'memory-core',
