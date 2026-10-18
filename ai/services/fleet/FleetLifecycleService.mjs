@@ -193,6 +193,9 @@ const SYSTEM_ERROR_CODE = /^E[A-Z0-9_]+$/;
 // The Codex Desktop cleanup's callers: their refusals are written for the operator, pids and counts only.
 const CODEX_CLEANUP_CALLERS = ['cleanupCodexDesktopCrashpad', 'inspectCodexDesktopCrashpadProcesses'];
 
+// Why a seat reads `stopped` when its process died with no Fleet server watching: lease adoption and runtime recovery.
+const UNSUPERVISED_EXIT = 'the seat exited while no Fleet server supervised it';
+
 /**
  * @summary The words a status may carry about a caught failure: a named caller's refusal without its
  * `<caller>: ` prefix, else the system error code. Anything else is `null` and the Fleet log keeps the
@@ -1661,7 +1664,7 @@ class FleetLifecycleService extends Base {
      */
     runtimeGenerationOf(record) {
         const pin = this.getLaunchAdmission().journalFailed || record.runtimeUnresolved || record.ownershipUnresolved || record.cleanupUnresolved ? 'unknown' :
-            ['stopped', 'exited'].includes(record.state) ? 'released' :
+            record.state === 'stopped' ? 'released' :
                 ['running', 'stopping'].includes(record.state) ? 'held' : 'unknown';
         return record.runtimeGeneration ? {...runtimeGenerationPin(record.runtimeGeneration), pin} :
             {id: null, directory: null, runtimeRoot: null, executable: null, payloadDigest: null, pin: 'unknown'}
@@ -2055,7 +2058,7 @@ class FleetLifecycleService extends Base {
         // reports an observed `stopped` with this reason, never an agent outside fleet supervision.
         if (seat === 'gone') {
             this.removeSeatLease(record);
-            this.processes.set(agent.id, {...record, pid: null, state: 'stopped', failureReason: 'the seat exited while no Fleet server supervised it'});
+            this.processes.set(agent.id, {...record, pid: null, state: 'stopped', failureReason: UNSUPERVISED_EXIT});
             return
         }
 
@@ -2291,7 +2294,8 @@ class FleetLifecycleService extends Base {
     /**
      * @summary Re-attach original runtime pins and reconstruct native admission without preparing a profile.
      * Lease adoption remains the process owner. A different or unobserved process retains an unknown pin;
-     * it cannot inherit the old Start's grants. Runtime verification uses this process's trusted reader.
+     * it cannot inherit the old Start's grants. A seat whose process is gone reads `stopped`, the reason
+     * naming an unsupervised exit only when it was saved running. Runtime verification uses this process's trusted reader.
      * @param {Object} options
      * @param {Object} options.tenantService Original plane/tenant credential owner.
      * @param {Function} [options.verifyRuntime=readRuntimeGeneration] Isolated-test seam for payload verification.
@@ -2328,7 +2332,8 @@ class FleetLifecycleService extends Base {
                 runtimeUnresolved: true, admissionGeneration: start.admissionGeneration,
                 cleanupUnresolved: Boolean(record.cleanupUnresolved || saved.cleanupUnresolved)});
             if (!record.adopted && this.probeSeat(start) === 'gone' && !record.cleanupUnresolved) {
-                Object.assign(record, {state: 'exited', ownershipUnresolved: false, runtimeUnresolved: false});
+                Object.assign(record, {state: 'stopped', ownershipUnresolved: false, runtimeUnresolved: false,
+                    failureReason: saved.state === 'running' ? UNSUPERVISED_EXIT : null});
             }
         }
 
@@ -2390,7 +2395,7 @@ class FleetLifecycleService extends Base {
             this.adoptLeasedSeats();
             const verified = new Map();
             for (const record of this.processes.values()) {
-                if (['stopped', 'exited'].includes(record.state) && !record.ownershipUnresolved && !record.cleanupUnresolved) continue;
+                if (record.state === 'stopped' && !record.ownershipUnresolved && !record.cleanupUnresolved) continue;
                 const start = record.runtimeStart;
                 if (!start || record.runtimeUnresolved || !this.matchesRuntimeStart(record, start, {adopted: false}) || this.probeSeat(record) !== 'live') throw new Error(`seat ${record.id} is not a live original Start`);
                 const key = JSON.stringify(start.runtime);

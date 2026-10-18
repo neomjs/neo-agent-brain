@@ -251,7 +251,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService', () => {
         old.ownershipUnresolved = true;
         expect(FleetLifecycleService.status('0').runtimeGeneration).toEqual({...generations[0], pin: 'unknown'});
         old.ownershipUnresolved = false;
-        old.state = 'exited';
+        old.state = 'stopped';
         expect(FleetLifecycleService.status('0').runtimeGeneration.pin).toBe('released');
         delete old.runtimeGeneration;
         expect(FleetLifecycleService.status('0').runtimeGeneration).toMatchObject({id: null, pin: 'unknown'});
@@ -2379,6 +2379,67 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         }
     }
 
+    // A seat whose process is gone at the next boot reads `stopped`, the state the roster starts from;
+    // `exited` is what the first durable-custody builds wrote for it.
+    for (const saved of ['stopped', 'exited', 'running']) {
+        test(`boot recovery reads a seat whose process is gone as stopped: saved ${saved}`, async () => {
+            const {spawn}    = installSeat('claude-desktop'), service = McpLaunchAdmissionService;
+            const root       = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody'), file = path.join(directory, 'issuer.json');
+            const id         = 'a'.repeat(64), runtimeDirectory = path.join(root, id);
+            const generation = {id, directory: runtimeDirectory, payloadDigest: 'b'.repeat(64),
+                runtimeRoot: `${runtimeDirectory}/host.runtime/organism`, executable: `${runtimeDirectory}/host.runtime/node`};
+            const agent = FleetLifecycleService.registry.getDefinition('seat');
+            agent.mcpServers = {'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': false, 'gitlab-workflow': false};
+            const plan = createManagedAgentWorkspacePlan({agent: {id: agent.id, harnessType: agent.harnessType}, mcpMatrix: agent.mcpServers}).mcpServers.map(row => ({...row,
+                sourceRoot: generation.runtimeRoot, command: generation.executable,
+                args      : [path.join(generation.runtimeRoot, row.entrypoint), ...(row.key === 'neural-link' ? ['--cwd', generation.runtimeRoot] : [])]}));
+            FleetLifecycleService.instanceRoot     = root;
+            FleetLifecycleService.installedRuntime = {...generation, generation};
+            try {
+                FleetLifecycleService.openRuntimeCustody({directory});
+                const reserved = await reserveWithRuntimeReferences({agent, runtimeGeneration: generation});
+                const profile  = createDesktopLaunchBinding({identity: 'seat', issuer: reserved.issuer, rows: {
+                    'neo-mjs-neural-link': {env: {NEO_AGENT_IDENTITY: 'seat', NEO_FLEET_LAUNCH_ISSUER: reserved.issuer,
+                        NEO_FLEET_LAUNCH_GRANT: reserved.grants['neural-link']}}
+                }});
+                startWithRuntimeReferences('seat', {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: plan,
+                    launchAdmission: {generation: reserved.generation, plan, profile}});
+                if (saved === 'running') {
+                    service.journal.close(); // the Fleet ends without a handoff while the seat runs
+                } else {
+                    await FleetLifecycleService.stop('seat');
+                    expect(await FleetLifecycleService.handoffRuntimeCustody()).toEqual({state: 'handed-off'});
+                }
+                if (saved === 'exited') {
+                    const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+                    state.snapshot.seats[0].state = 'exited';
+                    fs.writeFileSync(file, JSON.stringify(state) + '\n', {mode: 0o600});
+                }
+                expect(JSON.parse(fs.readFileSync(file, 'utf8')).snapshot.seats[0].state).toBe(saved);
+
+                // The next Fleet boot; the install() seams read every pid as gone.
+                if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+                service.httpServer = service.listening = service.issuerOrigin = service.journal = service.handoffPromise = null;
+                service.continuityPhase = 'ready'; service.generations.clear(); service.grants.clear();
+                FleetLifecycleService.processes.clear(); FleetLifecycleService.leasesAdopted = false;
+                FleetLifecycleService.openRuntimeCustody({directory});
+                await FleetLifecycleService.recoverRuntimeCustody({verifyRuntime: async () => null});
+
+                expect(FleetLifecycleService.status('seat')).toMatchObject({state: 'stopped', running: false,
+                    failureReason: saved === 'running' ? 'the seat exited while no Fleet server supervised it' : null});
+                expect(JSON.parse(fs.readFileSync(file, 'utf8')).snapshot.seats[0].state).toBe('stopped');
+                expect(spawn.calls).toHaveLength(1);
+            } finally {
+                service.journal?.close(); service.journal = null; service.journalFailed = false; service.readSeatStarts = null;
+                service.generations.clear(); service.grants.clear(); service.continuityPhase = 'ready'; service.handoffPromise = null;
+                if (service.httpServer) await new Promise(resolve => service.httpServer.close(resolve));
+                service.httpServer = service.listening = service.issuerOrigin = null;
+                FleetLifecycleService.processes.clear();
+                fs.rmSync(root, {recursive: true, force: true});
+            }
+        });
+    }
+
     test('Desktop activation commits its exact process/profile binding before admission; an exit write failure still completes physical cleanup', async () => {
         const {spawn}    = installSeat('claude-desktop'), service = McpLaunchAdmissionService;
         const root       = fs.realpathSync(FleetLifecycleService.instanceRoot), directory = path.join(root, 'custody');
@@ -3214,7 +3275,7 @@ test.describe('FleetLifecycleService.setPendingDependencies — a Start\'s depen
 
     test('an attempt that ends without a launch keeps its final rows, and no late report of it rewrites them', () => {
         // a seat that ran before: its old process record holds no rows of this attempt
-        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'exited', pid: 4202, startedAt: '2026-10-01T20:00:05.000Z'});
+        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'stopped', pid: 4202, startedAt: '2026-10-01T20:00:05.000Z'});
 
         const attempt = FleetLifecycleService.beginStart('seat');
 
