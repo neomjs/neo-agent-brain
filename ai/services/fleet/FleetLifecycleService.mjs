@@ -2398,7 +2398,14 @@ class FleetLifecycleService extends Base {
 
     /**
      * @summary Verify surviving runtime pins and current original-owner inputs before the issuer seals succession.
-     * Pending Starts, legacy seats and unproved inputs refuse handoff without preventing ordinary Quit.
+     *
+     * A pending Start or a legacy seat refuses the handoff without preventing ordinary Quit. Any other unprovable
+     * fact removes only the authority it would have carried, so one seat never blocks the update:
+     * - a server that cannot prove loses its grant;
+     * - a seat that cannot prove its original Start loses its generation and is carried unresolved;
+     * - a stale generation is carried stale.
+     *
+     * An unresolved seat keeps running and keeps its runtime retained; only its launch admission ends.
      * @param {Object} options Existing tenant owner, with isolated-test seams for runtime/profile reads.
      * @returns {Promise<Object>} The admission owner's terminal handoff disposition.
      */
@@ -2411,33 +2418,65 @@ class FleetLifecycleService extends Base {
             for (const record of this.processes.values()) {
                 if (record.state === 'stopped' && !record.ownershipUnresolved && !record.cleanupUnresolved) continue;
                 const start = record.runtimeStart;
-                if (!start || record.runtimeUnresolved || !this.matchesRuntimeStart(record, start, {adopted: false}) || this.probeSeat(record) !== 'live') throw new Error(`seat ${record.id} is not a live original Start`);
-                const key = JSON.stringify(start.runtime);
-                if (!verified.has(key)) verified.set(key, Promise.resolve().then(() => verifyRuntime({directory: start.runtime.directory})));
-                const runtime = await verified.get(key);
-                if (!runtime || !isDeepStrictEqual(runtimeGenerationPin(runtime), start.runtime) ||
-                    runtime.compatibility?.launchProtocol !== LAUNCH_ADMISSION_PROTOCOL) throw new Error(`runtime pin changed: ${record.id}`);
-                if (start.admissionGeneration) {
-                    const saved = admission.admissionSnapshot().generations.find(row => row.id === start.admissionGeneration);
-                    if (!saved || !['active', 'revoked'].includes(saved.state)) throw new Error(`admission generation missing: ${record.id}`);
-                    if (saved.state === 'revoked') continue;
-                    const recovered = await this.readOriginalRuntimeInputs(start, saved, {tenantService, readGrants, adopted: false});
-                    const servers   = admission.recoverServers({saved, start, recovered});
-                    for (const server of servers.values()) {
-                        if (server.state === 'revoked') continue;
-                        const resident = recovered.residentInputs[server.key], env = resident ? resident.read() : {};
-                        if (env === null || server.resident.some(name => server.required.includes(name) && typeof env[name] !== 'string')) throw new Error(`resident input missing: ${server.key}`);
-                        const values = server.owned.map(name => recovered.owners[name].resolve());
-                        if (values.some(value => typeof value !== 'string' || !value.trim())) throw new Error(`credential value missing: ${server.key}`);
-                        const port       = typeof env.NEO_NL_PORT === 'string' && /^[1-9][0-9]{0,4}$/.test(env.NEO_NL_PORT) ? Number(env.NEO_NL_PORT) : null;
-                        const generation = admission.generations.get(start.agentId);
-                        const proofs     = await Promise.all(server.owned.map((name, index) => admission.prove(generation, name, values[index], port)));
-                        if (proofs.some(row => row.verdict !== 'proved') || resident && !resident.matches()) throw new Error(`proof failed: ${server.key}`);
-                    }
-                    if (recovered.probe() !== 'live') throw new Error(`process not live: ${record.id}`);
+                if (!start) throw new Error(`seat ${record.id} is not a live original Start`);
+                const verdict = await this.verifySurvivor(record, start, {admission, verified, tenantService, verifyRuntime, readGrants})
+                    .catch(error => ({unproved: error?.message || 'unproved'}));
+                // The revocations sit outside the verdict, so a failed durable write still refuses the handoff.
+                if (verdict.unproved) {
+                    record.runtimeUnresolved = true;
+                    if (start.admissionGeneration) admission.revoke(start.agentId, LAUNCH_ADMISSION_REASONS.RECOVERY_UNVERIFIED, {generation: start.admissionGeneration});
+                    continue
+                }
+                for (const [key, reason] of verdict.unprovedServers) {
+                    admission.revokeServerGrant(start.agentId, key, reason, {generation: start.admissionGeneration})
                 }
             }
         }});
+    }
+
+    /**
+     * @summary One surviving seat's handoff verdict: which of its servers cannot prove, or why the seat itself cannot.
+     * Reads and proves only; the caller applies the revocations.
+     * @param {Object} record The seat's lifecycle record.
+     * @param {Object} start Its immutable original Start.
+     * @param {Object} options The admission issuer, the shared runtime reads, and the handoff's read seams.
+     * @returns {Promise<{unprovedServers: Array<[String, String]>}>} `[serverKey, reason]` pairs to revoke.
+     * @throws {Error} When the seat cannot prove its original Start, runtime pin, generation or inputs.
+     * @private
+     */
+    async verifySurvivor(record, start, {admission, verified, tenantService, verifyRuntime, readGrants}) {
+        const unprovedServers = [];
+        if (record.runtimeUnresolved || !this.matchesRuntimeStart(record, start, {adopted: false}) || this.probeSeat(record) !== 'live') throw new Error(`seat ${record.id} is not a live original Start`);
+        const key = JSON.stringify(start.runtime);
+        if (!verified.has(key)) verified.set(key, Promise.resolve().then(() => verifyRuntime({directory: start.runtime.directory})));
+        const runtime = await verified.get(key);
+        if (!runtime || !isDeepStrictEqual(runtimeGenerationPin(runtime), start.runtime) ||
+            runtime.compatibility?.launchProtocol !== LAUNCH_ADMISSION_PROTOCOL) throw new Error(`runtime pin changed: ${record.id}`);
+        if (!start.admissionGeneration) return {unprovedServers};
+        const saved = admission.admissionSnapshot().generations.find(row => row.id === start.admissionGeneration);
+        if (saved?.state === 'revoked' || saved?.state === 'stale') return {unprovedServers};
+        if (saved?.state !== 'active') throw new Error(`admission generation missing: ${record.id}`);
+        const recovered = await this.readOriginalRuntimeInputs(start, saved, {tenantService, readGrants, adopted: false});
+        const servers   = admission.recoverServers({saved, start, recovered});
+        for (const server of servers.values()) {
+            if (server.state === 'revoked') continue;
+            const resident = recovered.residentInputs[server.key], env = resident ? resident.read() : {};
+            if (env === null || server.resident.some(name => server.required.includes(name) && typeof env[name] !== 'string')) {
+                unprovedServers.push([server.key, LAUNCH_ADMISSION_REASONS.CREDENTIAL_MISSING]);
+                continue
+            }
+            const values = server.owned.map(name => recovered.owners[name].resolve());
+            if (values.some(value => typeof value !== 'string' || !value.trim())) {
+                unprovedServers.push([server.key, LAUNCH_ADMISSION_REASONS.CREDENTIAL_MISSING]);
+                continue
+            }
+            const port       = typeof env.NEO_NL_PORT === 'string' && /^[1-9][0-9]{0,4}$/.test(env.NEO_NL_PORT) ? Number(env.NEO_NL_PORT) : null;
+            const generation = admission.generations.get(start.agentId);
+            const proofs     = await Promise.all(server.owned.map((name, index) => admission.prove(generation, name, values[index], port)));
+            if (proofs.some(row => row.verdict !== 'proved') || resident && !resident.matches()) unprovedServers.push([server.key, LAUNCH_ADMISSION_REASONS.RECOVERY_UNVERIFIED]);
+        }
+        if (recovered.probe() !== 'live') throw new Error(`process not live: ${record.id}`);
+        return {unprovedServers}
     }
 
     /**
