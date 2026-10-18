@@ -28,25 +28,25 @@
  * @see ai/services/github-workflow/sync/IssueSyncer.mjs
  * @see ai/services/github-workflow/queries/issueQueries.mjs
  */
-import fs              from 'fs/promises';
-import path            from 'path';
-import {fileURLToPath} from 'url';
-import matter          from 'gray-matter';
+import 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
+import fs                   from 'fs/promises';
+import path                 from 'path';
+import {fileURLToPath}      from 'url';
+import matter               from 'gray-matter';
+import githubWorkflowConfig from '../../mcp/server/github-workflow/config.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
-
-const projectRoot = path.resolve(__dirname, '../../..');
 
 /**
- * Resolves the active issues directory from CLI `--issues-dir` or declared GitHub corpus
- * environment keys, refusing when none is configured.
+ * Resolves the active issues directory from CLI `--issues-dir` or the declared
+ * `issueSync.issuesDir` config leaf, refusing when none is configured.
  * @param {Object} [options={}]
  * @param {String[]} [options.argv=process.argv.slice(2)]
- * @param {Object} [options.env=process.env]
+ * @param {String} [options.configuredDir=githubWorkflowConfig.issueSync.issuesDir]
  * @returns {String}
  */
-export function resolveIssuesDir({argv = process.argv.slice(2), env = process.env} = {}) {
+export function resolveIssuesDir({argv = process.argv.slice(2), configuredDir = githubWorkflowConfig.issueSync.issuesDir} = {}) {
     for (let i = 0; i < argv.length; i++) {
         const arg = argv[i];
         if (arg === '--issues-dir') {
@@ -65,15 +65,8 @@ export function resolveIssuesDir({argv = process.argv.slice(2), env = process.en
         }
     }
 
-    if (typeof env.NEO_MCP_GITHUB_ISSUES_DIR === 'string' && env.NEO_MCP_GITHUB_ISSUES_DIR.trim().length > 0) {
-        return path.resolve(env.NEO_MCP_GITHUB_ISSUES_DIR.trim());
-    }
-
-    if (typeof env.NEO_MCP_GITHUB_CONTENT_ROOT === 'string' && env.NEO_MCP_GITHUB_CONTENT_ROOT.trim().length > 0) {
-        const repo = (typeof env.NEO_MCP_GITHUB_REPO === 'string' && env.NEO_MCP_GITHUB_REPO.trim().length > 0)
-            ? env.NEO_MCP_GITHUB_REPO.trim()
-            : 'neo';
-        return path.resolve(env.NEO_MCP_GITHUB_CONTENT_ROOT.trim(), repo, 'issues');
+    if (typeof configuredDir === 'string' && configuredDir.trim().length > 0) {
+        return path.resolve(configuredDir.trim());
     }
 
     throw new Error(

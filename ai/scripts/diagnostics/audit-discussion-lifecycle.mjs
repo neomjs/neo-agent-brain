@@ -1,3 +1,5 @@
+import 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import fs                                     from 'node:fs/promises';
 import path                                   from 'node:path';
 import process                                from 'node:process';
@@ -5,6 +7,7 @@ import {execFile}                             from 'node:child_process';
 import {promisify}                            from 'node:util';
 import {fileURLToPath}                        from 'node:url';
 import {Command, InvalidArgumentError}        from 'commander';
+import githubWorkflowConfig                   from '../../mcp/server/github-workflow/config.mjs';
 import {classifyDiscussionRoutingDisposition} from '../../services/github-workflow/shared/discussionRoutingDisposition.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -24,27 +27,20 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_STALE_DAYS = 90;
 
 /**
- * Resolves the synced Discussions corpus directory from CLI `--discussions-dir` or declared
- * GitHub corpus environment keys, refusing when none is configured.
+ * Resolves the synced Discussions corpus directory from CLI `--discussions-dir` or the declared
+ * `issueSync.discussionsDir` config leaf, refusing when none is configured.
  * @param {Object} [options={}]
  * @param {String} [options.discussionsDir]
- * @param {Object} [options.env=process.env]
+ * @param {String} [options.configuredDir=githubWorkflowConfig.issueSync.discussionsDir]
  * @returns {String}
  */
-function resolveDiscussionsDir({discussionsDir, env = process.env} = {}) {
+function resolveDiscussionsDir({discussionsDir, configuredDir = githubWorkflowConfig.issueSync.discussionsDir} = {}) {
     if (typeof discussionsDir === 'string' && discussionsDir.trim().length > 0) {
         return path.resolve(discussionsDir.trim());
     }
 
-    if (typeof env.NEO_MCP_GITHUB_DISCUSSIONS_DIR === 'string' && env.NEO_MCP_GITHUB_DISCUSSIONS_DIR.trim().length > 0) {
-        return path.resolve(env.NEO_MCP_GITHUB_DISCUSSIONS_DIR.trim());
-    }
-
-    if (typeof env.NEO_MCP_GITHUB_CONTENT_ROOT === 'string' && env.NEO_MCP_GITHUB_CONTENT_ROOT.trim().length > 0) {
-        const repo = (typeof env.NEO_MCP_GITHUB_REPO === 'string' && env.NEO_MCP_GITHUB_REPO.trim().length > 0)
-            ? env.NEO_MCP_GITHUB_REPO.trim()
-            : 'neo';
-        return path.resolve(env.NEO_MCP_GITHUB_CONTENT_ROOT.trim(), repo, 'discussions');
+    if (typeof configuredDir === 'string' && configuredDir.trim().length > 0) {
+        return path.resolve(configuredDir.trim());
     }
 
     throw new Error(
@@ -587,10 +583,9 @@ function createArgParser({silent = false} = {}) {
  * @param {String[]} argv
  * @param {Object} [options]
  * @param {Boolean} [options.silent=false]
- * @param {Object} [options.env=process.env]
  * @returns {Object}
  */
-function parseArgs(argv, {silent = false, env = process.env} = {}) {
+function parseArgs(argv, {silent = false} = {}) {
     const program = createArgParser({silent});
 
     program.parse(argv, {from: 'user'});
@@ -599,7 +594,6 @@ function parseArgs(argv, {silent = false, env = process.env} = {}) {
 
     return {
         discussionsDir     : options.discussionsDir ? path.resolve(options.discussionsDir) : null,
-        env,
         failOn             : options.reportOnly ? 'none' : options.failOn,
         fixture            : options.fixture ? path.resolve(options.fixture) : null,
         json               : options.json,
@@ -765,7 +759,7 @@ async function main() {
 
     const discussionsDir = options.fixture
         ? null
-        : resolveDiscussionsDir({discussionsDir: options.discussionsDir, env: options.env});
+        : resolveDiscussionsDir({discussionsDir: options.discussionsDir});
 
     const discussions = options.fixture
         ? await loadFixture(options.fixture)

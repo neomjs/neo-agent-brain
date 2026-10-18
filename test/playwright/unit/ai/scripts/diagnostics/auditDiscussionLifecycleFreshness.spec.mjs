@@ -133,20 +133,20 @@ test.describe('audit-discussion-lifecycle — the snapshot states its own age', 
         expect(parsed.snapshot).toEqual(snapshot)
     });
 
-    test('resolveDiscussionsDir and resolveIssuesDir refuse naming their declared CLI flags and env keys when unconfigured (#459)', () => {
-        expect(() => resolveDiscussionsDir({env: {}})).toThrow(
+    test('resolveDiscussionsDir and resolveIssuesDir refuse naming their declared CLI flags and config leaves when unconfigured (#459)', () => {
+        expect(() => resolveDiscussionsDir({configuredDir: ''})).toThrow(
             /audit-discussion-lifecycle:.*--discussions-dir.*NEO_MCP_GITHUB_DISCUSSIONS_DIR.*NEO_MCP_GITHUB_CONTENT_ROOT/
         );
         expect(resolveDiscussionsDir({
-            env: {NEO_MCP_GITHUB_CONTENT_ROOT: '/tmp/corpus', NEO_MCP_GITHUB_REPO: 'neo'}
+            configuredDir: '/tmp/corpus/neo/discussions'
         })).toBe('/tmp/corpus/neo/discussions');
 
-        expect(() => resolveIssuesDir({argv: [], env: {}})).toThrow(
+        expect(() => resolveIssuesDir({argv: [], configuredDir: ''})).toThrow(
             /detectTruncatedTimelines:.*--issues-dir.*NEO_MCP_GITHUB_ISSUES_DIR.*NEO_MCP_GITHUB_CONTENT_ROOT/
         );
         expect(resolveIssuesDir({
-            argv: ['--issues-dir', '/tmp/corpus/neo/issues'],
-            env : {}
+            argv         : ['--issues-dir', '/tmp/corpus/neo/issues'],
+            configuredDir: ''
         })).toBe('/tmp/corpus/neo/issues');
     });
 });
