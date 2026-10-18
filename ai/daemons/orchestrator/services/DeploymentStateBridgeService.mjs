@@ -21,6 +21,10 @@ import {
 import {readSecretCarrier}   from '../../../services/shared/secretCarrier.mjs';
 import {runHealthcheck}      from '../../../scripts/diagnostics/mcpHealthcheck.mjs';
 import {writeFileAtomicSync} from '../../../services/shared/atomicFileWrite.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+} from '../../../services/shared/configSnapshot.mjs';
 
 /**
  * The message `runHealthcheck` produces when the server ANSWERED and reported a status outside the
@@ -205,8 +209,34 @@ const EMBEDDING_RECOVERY_PROBE_STATUSES = new Set([
     'terminal'
 ]);
 
-function resolveBridgeConfig(instance) {
-    return instance?.configSnapshot || DeploymentStateBridgeService.configSnapshot || AiConfig;
+function mergeSnapshotOverrides(target, overrides = {}) {
+    if (!overrides || typeof overrides !== 'object') {
+        return target;
+    }
+
+    for (const [key, val] of Object.entries(overrides)) {
+        if (val !== null && typeof val === 'object' && !Array.isArray(val) && Object.getPrototypeOf(val) === Object.prototype) {
+            const current = target[key];
+            target[key]   = mergeSnapshotOverrides(
+                (current && typeof current === 'object' && !Array.isArray(current)) ? {...current} : {},
+                val
+            );
+        } else if (Array.isArray(val)) {
+            target[key] = val.map(item =>
+                (item && typeof item === 'object' && !Array.isArray(item))
+                    ? mergeSnapshotOverrides({}, item)
+                    : item
+            );
+        } else {
+            target[key] = val;
+        }
+    }
+
+    return target;
+}
+
+function resolveBridgeConfig(instance = null) {
+    return instance?.configSnapshot ?? AiConfig;
 }
 
 /**
@@ -354,8 +384,6 @@ export class DeploymentStateBridgeService extends Base {
         writeLog: null
     }
 
-    static configSnapshot = null
-
     /**
      * Test-scoped config snapshot override.
      * Stored outside reactive `static config` so `Neo.core.Config` does not deep-clone
@@ -407,91 +435,17 @@ export class DeploymentStateBridgeService extends Base {
      * @returns {Object}
      */
     static createConfigSnapshot(overrides = {}) {
-        const
-            baseOrchestrator  = AiConfig.orchestrator,
-            extraOrchestrator = overrides.orchestrator || {},
-            baseRuntimeAccess = baseOrchestrator.deploymentRuntimeAccess,
-            extraRuntime      = extraOrchestrator.deploymentRuntimeAccess || {},
-            baseBridge        = baseOrchestrator.deploymentStateBridge,
-            extraBridge       = extraOrchestrator.deploymentStateBridge || {};
-
-        return {
-            backupPath     : overrides.backupPath ?? AiConfig.backupPath,
-            heapObservation: {
-                ...AiConfig.heapObservation,
-                ...(overrides.heapObservation || {})
-            },
-            localModels: {
-                embedding: {
-                    ...AiConfig.localModels.embedding,
-                    ...(overrides.localModels?.embedding || {})
-                }
-            },
-            maintenance: {
-                backup: {
-                    ...AiConfig.maintenance.backup,
-                    ...(overrides.maintenance?.backup || {}),
-                    offHostSync: {
-                        ...AiConfig.maintenance.backup.offHostSync,
-                        ...(overrides.maintenance?.backup?.offHostSync || {})
-                    }
-                }
-            },
-            openAiCompatible: {
-                ...AiConfig.openAiCompatible,
-                ...(overrides.openAiCompatible || {})
-            },
-            providerLaneDeclaration: {
-                embedding: {
-                    ...AiConfig.providerLaneDeclaration.embedding,
-                    ...(overrides.providerLaneDeclaration?.embedding || {})
-                }
-            },
-            orchestrator: {
-                ...baseOrchestrator,
-                ...extraOrchestrator,
-                cloudOnly: {
-                    ...baseOrchestrator.cloudOnly,
-                    ...(extraOrchestrator.cloudOnly || {})
-                },
-                intervals: {
-                    ...baseOrchestrator.intervals,
-                    ...(extraOrchestrator.intervals || {})
-                },
-                providerReadiness: {
-                    ...baseOrchestrator.providerReadiness,
-                    ...(extraOrchestrator.providerReadiness || {})
-                },
-                tenantRepoSync: {
-                    ...baseOrchestrator.tenantRepoSync,
-                    ...(extraOrchestrator.tenantRepoSync || {})
-                },
-                recoveryActuator: {
-                    ...baseOrchestrator.recoveryActuator,
-                    ...(extraOrchestrator.recoveryActuator || {}),
-                    futility: {
-                        ...baseOrchestrator.recoveryActuator.futility,
-                        ...(extraOrchestrator.recoveryActuator?.futility || {})
-                    }
-                },
-                deploymentRuntimeAccess: {
-                    ...baseRuntimeAccess,
-                    ...extraRuntime,
-                    allowedServices    : [...(extraRuntime.allowedServices ?? baseRuntimeAccess.allowedServices)],
-                    readOperations     : [...(extraRuntime.readOperations ?? baseRuntimeAccess.readOperations)],
-                    lifecycleOperations: [...(extraRuntime.lifecycleOperations ?? baseRuntimeAccess.lifecycleOperations)]
-                },
-                deploymentStateBridge: {
-                    ...baseBridge,
-                    ...extraBridge,
-                    allowedServices                 : [...(extraBridge.allowedServices ?? baseBridge.allowedServices)],
-                    directProbeUrls                 : [...(extraBridge.directProbeUrls ?? baseBridge.directProbeUrls)],
-                    providerResidencyServiceKeys    : [...(extraBridge.providerResidencyServiceKeys ?? baseBridge.providerResidencyServiceKeys)],
-                    providerLaneShapeServiceKeys    : [...(extraBridge.providerLaneShapeServiceKeys ?? baseBridge.providerLaneShapeServiceKeys)],
-                    providerModelIdentityServiceKeys: [...(extraBridge.providerModelIdentityServiceKeys ?? baseBridge.providerModelIdentityServiceKeys)]
-                }
-            }
+        const snapshot = {
+            backupPath             : AiConfig.backupPath,
+            heapObservation        : cloneConfigSubtree(AiConfig, ['heapObservation']),
+            localModels            : cloneConfigSubtree(AiConfig, ['localModels']),
+            maintenance            : cloneConfigSubtree(AiConfig, ['maintenance']),
+            openAiCompatible       : cloneConfigSubtree(AiConfig, ['openAiCompatible']),
+            providerLaneDeclaration: cloneConfigSubtree(AiConfig, ['providerLaneDeclaration']),
+            orchestrator           : cloneConfigSubtree(AiConfig, ['orchestrator'])
         };
+
+        return mergeSnapshotOverrides(snapshot, overrides);
     }
 
     /**
@@ -509,7 +463,14 @@ export class DeploymentStateBridgeService extends Base {
      * @protected
      */
     beforeSetConfigSnapshot(value) {
-        return value && typeof value === 'object' ? value : null;
+        return validateConfigSnapshot(value, {
+            serviceName     : 'DeploymentStateBridgeService',
+            requiredSubtrees: [
+                'orchestrator.deploymentStateBridge',
+                'orchestrator.deploymentRuntimeAccess',
+                'heapObservation'
+            ]
+        });
     }
 
     /**

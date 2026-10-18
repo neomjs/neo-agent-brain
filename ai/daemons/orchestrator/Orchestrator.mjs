@@ -95,10 +95,46 @@ import {writeBootIdentityFact}                         from './services/bootIden
 import {getProviderActivityMetrics}                    from '../../services/shared/providerActivityLedger.mjs';
 import {inspectProviderActivityStatus}                 from '../../services/shared/providerActivityStatusStore.mjs';
 import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+} from '../../services/shared/configSnapshot.mjs';
+import {
     inspectHeavyMaintenanceLeaseSync,
     withHeavyMaintenanceLease
 } from './services/heavyMaintenanceLeasePrimitives.mjs';
 import {resolveCloudOnlyDefault} from './services/deploymentDurabilityPosture.mjs';
+
+/**
+ * Recursively applies plain-object and array overrides onto a cloned config snapshot subtree.
+ * @param {Object} target
+ * @param {Object} [overrides={}]
+ * @returns {Object}
+ */
+function mergeSnapshotOverrides(target, overrides = {}) {
+    if (!overrides || typeof overrides !== 'object') {
+        return target;
+    }
+
+    for (const [key, val] of Object.entries(overrides)) {
+        if (val !== null && typeof val === 'object' && !Array.isArray(val) && Object.getPrototypeOf(val) === Object.prototype) {
+            const current = target[key];
+            target[key]   = mergeSnapshotOverrides(
+                (current && typeof current === 'object' && !Array.isArray(current)) ? {...current} : {},
+                val
+            );
+        } else if (Array.isArray(val)) {
+            target[key] = val.map(item =>
+                (item && typeof item === 'object' && !Array.isArray(item))
+                    ? mergeSnapshotOverrides({}, item)
+                    : item
+            );
+        } else {
+            target[key] = val;
+        }
+    }
+
+    return target;
+}
 
 /**
  * Stable waiter identity for the provider-residency repair actuator.
@@ -128,16 +164,14 @@ export async function initializeDatabaseSelfBootstrap(dbPath) {
 }
 
 /**
- * Resolves a deployment-aware boolean toggle from `AiConfig.orchestrator.localOnly[key]`.
- * `null` or missing keys mean "use the deployment-profile default" (local = enabled,
- * cloud = disabled); explicit `true`/`false` overrides. Missing-key fallback keeps
- * gitignored operator configs safe when a newly tracked template key is introduced.
+ * Resolves the active config root for an Orchestrator instance (`instance.configSnapshot` when
+ * injected for B4 test isolation, otherwise `AiConfig`).
  *
- * @param {String} key
- * @returns {Boolean}
+ * @param {Object|null} [instance=null]
+ * @returns {Object}
  */
-function resolveOrchestratorConfig(instance) {
-    return instance?.configSnapshot || OrchestratorInstance?.configSnapshot || AiConfig;
+function resolveOrchestratorConfig(instance = null) {
+    return instance?.configSnapshot ?? AiConfig;
 }
 
 function resolveLocalDeploymentDefault(cfg, deploymentMode = AiConfig.orchestrator.deploymentMode) {
@@ -162,12 +196,9 @@ function resolveDeploymentEnabled(key, config = AiConfig) {
 // Exported so a cross-module controller (e.g. the recovery actuator's B1 compose-service selection
 // point) can consult a cloudOnly mode-gate without scattering raw `deploymentMode` reads — the
 // reactive-config-as-single-source-of-truth pattern: read resolved leaves at the use site, never re-derive.
-export function resolveCloudOnlyEnabled(key, config = (OrchestratorInstance?.configSnapshot || null)) {
-    if (config) {
-        return resolveCloudOnlyDefault(config.orchestrator.cloudOnly[key], config.orchestrator.deploymentMode);
-    }
-
-    return resolveCloudOnlyDefault(AiConfig.orchestrator.cloudOnly[key], AiConfig.orchestrator.deploymentMode);
+export function resolveCloudOnlyEnabled(key, config = null) {
+    const cfg = config ?? AiConfig;
+    return resolveCloudOnlyDefault(cfg.orchestrator.cloudOnly[key], cfg.orchestrator.deploymentMode);
 }
 
 const LOG_RETENTION_DAYS = 30;
@@ -301,67 +332,25 @@ export class Orchestrator extends Base {
      * @returns {Object}
      */
     static createConfigSnapshot(overrides = {}) {
-        const base          = AiConfig;
-        const orch          = base.orchestrator || {};
-        const orchOverrides = overrides.orchestrator || {};
-
-        return {
-            ...(base.data || {}),
-            modelProvider    : base.modelProvider,
-            graphProvider    : base.graphProvider,
-            embeddingProvider: base.embeddingProvider,
-            dataDir          : base.dataDir,
-            backupPath       : base.backupPath,
-            ...overrides,
-            plane           : {...(base.plane || {}), ...(overrides.plane || {})},
-            ollama          : {...(base.ollama || {}), ...(overrides.ollama || {})},
-            mlx             : {...(base.mlx || {}), ...(overrides.mlx || {})},
-            lms             : {...(base.lms || {}), ...(overrides.lms || {})},
-            openAiCompatible: {...(base.openAiCompatible || {}), ...(overrides.openAiCompatible || {})},
-            localModels     : {
-                ...(base.localModels || {}),
-                ...(overrides.localModels || {}),
-                chat     : {...(base.localModels?.chat || {}), ...(overrides.localModels?.chat || {})},
-                embedding: {...(base.localModels?.embedding || {}), ...(overrides.localModels?.embedding || {})}
-            },
-            engines: {
-                ...(base.engines || {}),
-                ...(overrides.engines || {}),
-                chroma: {...(base.engines?.chroma || {}), ...(overrides.engines?.chroma || {})}
-            },
-            temporalSummary: {...(base.temporalSummary || {}), ...(overrides.temporalSummary || {})},
-            orchestrator   : {
-                ...orch,
-                deploymentMode         : orch.deploymentMode,
-                ...orchOverrides,
-                intervals              : {...(orch.intervals || {}), ...(orchOverrides.intervals || {})},
-                localOnly              : {...(orch.localOnly || {}), ...(orchOverrides.localOnly || {})},
-                cloudOnly              : {...(orch.cloudOnly || {}), ...(orchOverrides.cloudOnly || {})},
-                chroma                 : {...(orch.chroma || {}), ...(orchOverrides.chroma || {})},
-                mlx                    : {...(orch.mlx || {}), ...(orchOverrides.mlx || {})},
-                lms                    : {...(orch.lms || {}), ...(orchOverrides.lms || {})},
-                ollama                 : (orch.ollama || orchOverrides.ollama) ? {...(orch.ollama || {}), ...(orchOverrides.ollama || {})} : undefined,
-                corpusProjection       : {...(orch.corpusProjection || {}), ...(orchOverrides.corpusProjection || {})},
-                graphLogCompaction     : {...(orch.graphLogCompaction || {}), ...(orchOverrides.graphLogCompaction || {})},
-                communityReconciliation: {...(orch.communityReconciliation || {}), ...(orchOverrides.communityReconciliation || {})},
-                neuralLinkBridge       : {...(orch.neuralLinkBridge || {}), ...(orchOverrides.neuralLinkBridge || {})},
-                swarmHeartbeat         : {...(orch.swarmHeartbeat || {}), ...(orchOverrides.swarmHeartbeat || {})},
-                tenantRepoSync         : {...(orch.tenantRepoSync || {}), ...(orchOverrides.tenantRepoSync || {})},
-                heavyMaintenanceLease  : {...(orch.heavyMaintenanceLease || {}), ...(orchOverrides.heavyMaintenanceLease || {})},
-                providerReadiness      : {...(orch.providerReadiness || {}), ...(orchOverrides.providerReadiness || {})},
-                deploymentRuntimeAccess: {...(orch.deploymentRuntimeAccess || {}), ...(orchOverrides.deploymentRuntimeAccess || {})},
-                deploymentStateBridge  : {...(orch.deploymentStateBridge || {}), ...(orchOverrides.deploymentStateBridge || {})},
-                memorySaturation       : {...(orch.memorySaturation || {}), ...(orchOverrides.memorySaturation || {})},
-                restartChurn           : {...(orch.restartChurn || {}), ...(orchOverrides.restartChurn || {})},
-                recoveryActuator       : {
-                    ...(orch.recoveryActuator || {}),
-                    ...(orchOverrides.recoveryActuator || {}),
-                    healLedger        : {...(orch.recoveryActuator?.healLedger || {}), ...(orchOverrides.recoveryActuator?.healLedger || {})},
-                    systemicCircuit   : {...(orch.recoveryActuator?.systemicCircuit || {}), ...(orchOverrides.recoveryActuator?.systemicCircuit || {})},
-                    chronicUnsafeInput: {...(orch.recoveryActuator?.chronicUnsafeInput || {}), ...(orchOverrides.recoveryActuator?.chronicUnsafeInput || {})}
-                }
-            }
+        const snapshot = {
+            modelProvider    : AiConfig.modelProvider,
+            graphProvider    : AiConfig.graphProvider,
+            embeddingProvider: AiConfig.embeddingProvider,
+            vectorDimension  : AiConfig.vectorDimension,
+            dataDir          : AiConfig.dataDir,
+            backupPath       : AiConfig.backupPath,
+            plane            : cloneConfigSubtree(AiConfig, ['plane']),
+            ollama           : cloneConfigSubtree(AiConfig, ['ollama']),
+            mlx              : cloneConfigSubtree(AiConfig, ['mlx']),
+            lms              : cloneConfigSubtree(AiConfig, ['lms']),
+            openAiCompatible : cloneConfigSubtree(AiConfig, ['openAiCompatible']),
+            localModels      : cloneConfigSubtree(AiConfig, ['localModels']),
+            engines          : cloneConfigSubtree(AiConfig, ['engines']),
+            temporalSummary  : cloneConfigSubtree(AiConfig, ['temporalSummary']),
+            orchestrator     : cloneConfigSubtree(AiConfig, ['orchestrator'])
         };
+
+        return mergeSnapshotOverrides(snapshot, overrides);
     }
 
     /**
@@ -378,10 +367,10 @@ export class Orchestrator extends Base {
      * @returns {Object|null}
      */
     beforeSetConfigSnapshot(value) {
-        if (!value) {
-            return null;
-        }
-        return value.orchestrator ? value : Orchestrator.createConfigSnapshot(value);
+        return validateConfigSnapshot(value, {
+            serviceName     : 'Orchestrator',
+            requiredSubtrees: ['orchestrator', 'engines.chroma', 'temporalSummary']
+        });
     }
 
     primaryRepoSyncService   = PrimaryRepoSyncService
@@ -1460,8 +1449,8 @@ export class Orchestrator extends Base {
 
     get swarmHeartbeatIdentity()      { return process.env.NEO_AGENT_IDENTITY?.trim() || undefined; }
     get swarmHeartbeatExplicitTargets() {
-        const raw = (this.configSnapshot || OrchestratorInstance?.configSnapshot)
-            ? resolveOrchestratorConfig(this).orchestrator.swarmHeartbeat.targets
+        const raw = this.configSnapshot
+            ? this.configSnapshot.orchestrator.swarmHeartbeat.targets
             : AiConfig.orchestrator.swarmHeartbeat.targets;
         if (!raw) return null;
         const list = String(raw).split(',').map(s => s.trim()).filter(Boolean);
@@ -1771,7 +1760,7 @@ export class Orchestrator extends Base {
      * @returns {Object}
      */
     buildConfiguredTaskDefinitions({scriptDir, nodeBin}) {
-        const configSnapshot = this.configSnapshot || OrchestratorInstance?.configSnapshot;
+        const configSnapshot = this.configSnapshot;
         return this.buildConfiguredTaskDefinitionsService({
             scriptDir,
             nodeBin,
@@ -2113,8 +2102,8 @@ export class Orchestrator extends Base {
 
     /** @summary Returns true when the Chroma supervised process exceeds max runtime. */
     isChromaRecycleDue(state, now) {
-        const maxRuntimeMs = (this.configSnapshot || OrchestratorInstance?.configSnapshot)
-            ? resolveOrchestratorConfig(this).orchestrator.chroma.maxRuntimeMs
+        const maxRuntimeMs = this.configSnapshot
+            ? this.configSnapshot.orchestrator.chroma.maxRuntimeMs
             : AiConfig.orchestrator.chroma.maxRuntimeMs;
         const lastRunAt = state?.lastRunAt || 0;
         return Boolean(state?.running) && maxRuntimeMs > 0 && lastRunAt > 0 && (now - lastRunAt) > maxRuntimeMs;

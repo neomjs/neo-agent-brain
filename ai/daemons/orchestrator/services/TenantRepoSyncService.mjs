@@ -12,6 +12,10 @@ import {
     normalizeSettlementCounts
 }                                from '../../../services/knowledge-base/helpers/corpusOutstanding.mjs';
 import {createBoundedRetryGate}                                                                                  from '../../../services/shared/boundedRetryGate.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+}                                                                                                                from '../../../services/shared/configSnapshot.mjs';
 import {writeFileAtomic}                                                                                         from '../../../services/shared/atomicFileWrite.mjs';
 import {buildEmbeddingProbeBlock, buildEmbeddingProbeInput, EMBEDDING_PROBE_BAND_FRACTION, projectProbeCoverage} from '../../../services/shared/embeddingProbe.mjs';
 import {resolveEmbeddingAdmissionBand}                                                                           from '../../../embeddingSafeBand.mjs';
@@ -939,31 +943,66 @@ class TenantRepoSyncService extends Base {
      * @returns {Object|null}
      */
     beforeSetConfigSnapshot(value) {
-        if (value === null || value === undefined) return null;
+        const validated = validateConfigSnapshot(value, {
+            serviceName     : 'TenantRepoSyncService',
+            requiredSubtrees: ['orchestrator.tenantRepoSync', 'localModels.embedding']
+        });
 
-        if (typeof value !== 'object' || Array.isArray(value)) {
-            throw new Error('TenantRepoSyncService.configSnapshot must be a non-null object or null');
+        if (validated === null) {
+            return null;
         }
 
         const missing = [];
-        if (typeof value.orchestrator?.dataDir !== 'string' || !value.orchestrator.dataDir) {
+        if (typeof validated.orchestrator?.dataDir !== 'string' || !validated.orchestrator.dataDir) {
             missing.push('orchestrator.dataDir');
         }
-        if (typeof value.orchestrator?.tenantRepoMirrorRoot !== 'string' || !value.orchestrator.tenantRepoMirrorRoot) {
+        if (typeof validated.orchestrator?.tenantRepoMirrorRoot !== 'string' || !validated.orchestrator.tenantRepoMirrorRoot) {
             missing.push('orchestrator.tenantRepoMirrorRoot');
-        }
-        if (!value.orchestrator?.tenantRepoSync || typeof value.orchestrator.tenantRepoSync !== 'object') {
-            missing.push('orchestrator.tenantRepoSync');
-        }
-        if (!value.localModels?.embedding || typeof value.localModels.embedding !== 'object') {
-            missing.push('localModels.embedding');
         }
 
         if (missing.length > 0) {
-            throw new Error(`TenantRepoSyncService.configSnapshot is missing required keys: ${missing.join(', ')}`);
+            throw new TypeError(`TenantRepoSyncService.configSnapshot is missing required keys: ${missing.join(', ')}`);
         }
 
-        return value;
+        return validated;
+    }
+
+    /**
+     * Creates an isolated test-scoped config snapshot seeded from `AiConfig`.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    static createConfigSnapshot(overrides = {}) {
+        const mergeSnapshotOverrides = (target, ov = {}) => {
+            if (!ov || typeof ov !== 'object') return target;
+            for (const [key, val] of Object.entries(ov)) {
+                if (val !== null && typeof val === 'object' && !Array.isArray(val) && Object.getPrototypeOf(val) === Object.prototype) {
+                    const current = target[key];
+                    target[key]   = mergeSnapshotOverrides(
+                        (current && typeof current === 'object' && !Array.isArray(current)) ? {...current} : {},
+                        val
+                    );
+                } else if (Array.isArray(val)) {
+                    target[key] = val.map(item =>
+                        (item && typeof item === 'object' && !Array.isArray(item))
+                            ? mergeSnapshotOverrides({}, item)
+                            : item
+                    );
+                } else {
+                    target[key] = val;
+                }
+            }
+            return target;
+        };
+
+        const snapshot = {
+            embeddingProvider: AiConfig.embeddingProvider,
+            vectorDimension  : AiConfig.vectorDimension,
+            localModels      : cloneConfigSubtree(AiConfig, ['localModels']),
+            orchestrator     : cloneConfigSubtree(AiConfig, ['orchestrator'])
+        };
+
+        return mergeSnapshotOverrides(snapshot, overrides);
     }
 
     /**
@@ -972,43 +1011,7 @@ class TenantRepoSyncService extends Base {
      * @returns {Object}
      */
     createConfigSnapshot(overrides = {}) {
-        const snapshot = {
-            embeddingProvider: AiConfig.embeddingProvider,
-            vectorDimension  : AiConfig.vectorDimension,
-            localModels      : {
-                embedding: {...AiConfig.localModels.embedding}
-            },
-            orchestrator: {
-                dataDir             : AiConfig.orchestrator.dataDir,
-                tenantRepoMirrorRoot: AiConfig.orchestrator.tenantRepoMirrorRoot,
-                intervals           : {...AiConfig.orchestrator.intervals},
-                tenantRepoSync      : {...AiConfig.orchestrator.tenantRepoSync},
-                recoveryActuator    : {
-                    ...AiConfig.orchestrator.recoveryActuator,
-                    healLedger: {...AiConfig.orchestrator.recoveryActuator.healLedger}
-                }
-            }
-        };
-
-        if (overrides.embeddingProvider !== undefined) snapshot.embeddingProvider = overrides.embeddingProvider;
-        if (overrides.vectorDimension !== undefined)   snapshot.vectorDimension   = overrides.vectorDimension;
-        if (overrides.localModels?.embedding) {
-            Object.assign(snapshot.localModels.embedding, overrides.localModels.embedding);
-        }
-        if (overrides.orchestrator) {
-            const {intervals, tenantRepoSync, recoveryActuator, ...rest} = overrides.orchestrator;
-            Object.assign(snapshot.orchestrator, rest);
-            if (intervals)      Object.assign(snapshot.orchestrator.intervals, intervals);
-            if (tenantRepoSync) Object.assign(snapshot.orchestrator.tenantRepoSync, tenantRepoSync);
-            if (recoveryActuator) {
-                const {healLedger, ...actRest} = recoveryActuator;
-                Object.assign(snapshot.orchestrator.recoveryActuator, actRest);
-                if (healLedger) Object.assign(snapshot.orchestrator.recoveryActuator.healLedger, healLedger);
-            }
-        }
-
-        snapshot.data = snapshot;
-        return snapshot;
+        return TenantRepoSyncService.createConfigSnapshot(overrides);
     }
 
     /**

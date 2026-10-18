@@ -41,13 +41,14 @@ import {
 
 const SPEC_PATH                    = fileURLToPath(import.meta.url);
 let   testOrchestratorSeq          = 0;
+let   currentSnapshot              = null;
 const TEST_NEURAL_LINK_BRIDGE_PORT = 18081;
 
 /**
  * Test helper for the Orchestrator refactor shape:
  * - Operator policy values (intervals + booleans) are Class D lazy getters reading
- *   from `#getConfig()` — helper injects via `OrchestratorInstance.configSnapshot` (B4)
- *   and resets in `afterEach`.
+ *   from `#getConfig()` — helper injects via per-instance `configSnapshot` (B4)
+ *   and resets `currentSnapshot` in `afterEach`.
  * - Simple-imported collaborators (Class C) are instance fields — Neo.create config
  *   can't set them either. Helper assigns directly after Neo.create.
  * - Reactive class config slots (Class A/B parent props: dataDir, taskDefinitions,
@@ -88,8 +89,7 @@ function createTestOrchestrator(config = {}) {
                 Date.now();
     }
 
-    const snapshot = OrchestratorInstance.configSnapshot || OrchestratorInstance.createConfigSnapshot();
-    OrchestratorInstance.configSnapshot = snapshot;
+    const snapshot = config.configSnapshot || currentSnapshot || Orchestrator.createConfigSnapshot();
 
     // Class D operator policy values — B4 configSnapshot reaches lazy getters.
     // Test defaults preserve the pre-refactor helper's defaults (600000ms intervals etc.).
@@ -174,7 +174,7 @@ function createTestOrchestrator(config = {}) {
 }
 
 test.afterEach(() => {
-    OrchestratorInstance.configSnapshot = null;
+    currentSnapshot = null;
 });
 
 test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
@@ -1428,7 +1428,7 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
     });
 
     test('supervises lms via the supervisor HTTP liveness probe — (re)start only when the endpoint is down (#12262 / #12090)', async () => {
-        OrchestratorInstance.configSnapshot = OrchestratorInstance.createConfigSnapshot({
+        const lmsSnapshot = Orchestrator.createConfigSnapshot({
             modelProvider    : 'openAiCompatible',
             graphProvider    : 'openAiCompatible',
             embeddingProvider: 'openAiCompatible',
@@ -1443,7 +1443,7 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
             }
         });
 
-        const orchestrator    = createTestOrchestrator({kbSyncEnabled: false});
+        const orchestrator    = createTestOrchestrator({kbSyncEnabled: false, configSnapshot: lmsSnapshot});
         const taskDefinitions = orchestrator.buildConfiguredTaskDefinitions({
             scriptDir: path.resolve(process.cwd(), 'ai/scripts'),
             nodeBin  : process.argv[0]
@@ -2565,11 +2565,11 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
 
 test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#12138)', () => {
     beforeEachSnapshot();
-    test.afterEach(()  => { OrchestratorInstance.configSnapshot = null; });
+    test.afterEach(()  => { currentSnapshot = null; });
 
     function beforeEachSnapshot() {
         test.beforeEach(() => {
-            OrchestratorInstance.configSnapshot = OrchestratorInstance.createConfigSnapshot();
+            currentSnapshot = Orchestrator.createConfigSnapshot();
         });
     }
 
@@ -2583,7 +2583,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     }
 
     test('isChromaRecycleDue: true only when running, ceiling > 0, and uptime exceeds it', () => {
-        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
+        currentSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
         const orchestrator = createTestOrchestrator();
         const now          = Date.now();
 
@@ -2598,7 +2598,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
         // Regression for the CI-only failure: the harness sets chroma.running=true with the
         // default lastRunAt=0; with a real maxRuntimeMs this previously read as now-0 = huge
         // uptime and spuriously recycled, polluting unrelated poll() tests.
-        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
+        currentSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
 
@@ -2621,7 +2621,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('recycles an over-age chroma daemon: kills it and flags a pending defrag', () => {
-        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
+        currentSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
 
@@ -2638,7 +2638,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('defers an over-age chroma recycle while the heavy-maintenance lease is active', () => {
-        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
+        currentSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
         const sink         = {killed: [], started: [], supervised: []};
         const orchestrator = createTestOrchestrator();
         const now          = Date.now();
@@ -2674,7 +2674,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('does not recycle a chroma daemon within its max-runtime ceiling', () => {
-        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
+        currentSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
 
@@ -2689,7 +2689,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('does not recycle chroma in cloud mode (daemon lane disabled)', () => {
-        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
+        currentSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator({deploymentMode: 'cloud', kbSyncEnabled: false});
 
@@ -2704,7 +2704,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('spawns the KB defrag once the restarted chroma is connection-ready', async () => {
-        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
+        currentSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
 
@@ -2723,7 +2723,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('does not start pending chroma defrag while the heavy-maintenance lease is active', async () => {
-        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
+        currentSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
         const now          = Date.now();
@@ -2755,7 +2755,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('does not spawn the defrag while the restarted chroma is not yet connection-ready', async () => {
-        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
+        currentSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
 
@@ -2770,6 +2770,75 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
 
         expect(sink.started.find(s => s.taskName === 'chromaDefrag')).toBeUndefined();
         expect(orchestrator._chromaDefragPending).toBe(true);
+    });
+});
+
+test.describe('B4 configSnapshot structural invariants (#1102)', () => {
+    test('RA-1: beforeSetConfigSnapshot rejects live AiConfig, missing keys, and nested AiConfig subtrees', () => {
+        const orchestrator = createTestOrchestrator();
+        const expectedErr  = /Orchestrator: configSnapshot must be an isolated snapshot, never the shared aiConfig singleton or a live subtree/;
+
+        expect(() => {
+            orchestrator.configSnapshot = AiConfig;
+        }).toThrow(expectedErr);
+
+        expect(() => {
+            orchestrator.configSnapshot = {orchestrator: {}};
+        }).toThrow(expectedErr);
+
+        expect(() => {
+            const badSnapshot = Orchestrator.createConfigSnapshot();
+            badSnapshot.orchestrator = AiConfig.orchestrator;
+            orchestrator.configSnapshot = badSnapshot;
+        }).toThrow(expectedErr);
+    });
+
+    test('RA-2: createConfigSnapshot deep-clones nested subtrees without mutating AiConfig', () => {
+        const origPollMs = AiConfig.orchestrator.intervals.pollMs;
+        const snapshot   = Orchestrator.createConfigSnapshot({
+            orchestrator: {
+                intervals: {pollMs: 99999}
+            }
+        });
+
+        expect(snapshot.orchestrator.intervals.pollMs).toBe(99999);
+        expect(snapshot.orchestrator.intervals.summarySweepMs).toBe(AiConfig.orchestrator.intervals.summarySweepMs);
+        expect(AiConfig.orchestrator.intervals.pollMs).toBe(origPollMs);
+
+        snapshot.orchestrator.localOnly.bridgeDaemonEnabled = !AiConfig.orchestrator.localOnly.bridgeDaemonEnabled;
+        expect(AiConfig.orchestrator.localOnly.bridgeDaemonEnabled).not.toBe(snapshot.orchestrator.localOnly.bridgeDaemonEnabled);
+    });
+
+    test('RA-3: per-instance configSnapshot is isolated from OrchestratorInstance.configSnapshot', () => {
+        const singletonSnapshot = Orchestrator.createConfigSnapshot({
+            orchestrator: {heavyMaintenanceLease: {starvationDegradeAfterMs: 11111}}
+        });
+        OrchestratorInstance.configSnapshot = singletonSnapshot;
+
+        try {
+            const instanceSnapshot = Orchestrator.createConfigSnapshot({
+                orchestrator: {heavyMaintenanceLease: {starvationDegradeAfterMs: 22222}}
+            });
+            const instanceWithSnapshot    = createTestOrchestrator({configSnapshot: instanceSnapshot});
+            const instanceWithoutSnapshot = Neo.create(Orchestrator, {
+                configSnapshot  : null,
+                dataDir         : '/tmp/orchestrator-test',
+                stateFile       : '/tmp/orchestrator-test/state.json',
+                logFile         : null,
+                taskDefinitions : {},
+                taskStateService: TaskStateService,
+                healthService   : {recordTaskOutcome() {}},
+                spawnFn         : () => { throw new Error('spawnFn not expected'); }
+            });
+
+            expect(instanceWithSnapshot.heavyMaintenanceStarvationDegradeAfterMs).toBe(22222);
+            expect(instanceWithoutSnapshot.heavyMaintenanceStarvationDegradeAfterMs).toBe(
+                AiConfig.orchestrator.heavyMaintenanceLease.starvationDegradeAfterMs
+            );
+            expect(OrchestratorInstance.heavyMaintenanceStarvationDegradeAfterMs).toBe(11111);
+        } finally {
+            OrchestratorInstance.configSnapshot = null;
+        }
     });
 });
 

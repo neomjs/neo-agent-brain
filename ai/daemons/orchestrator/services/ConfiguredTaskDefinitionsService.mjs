@@ -167,7 +167,7 @@ function applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn, configSnapshot 
             }
 
             return ensureLmsModelsLoaded({
-                host                    : configSnapshot ? configSnapshot.openAiCompatible.host : AiConfig.openAiCompatible.host,
+                host                    : cfg.openAiCompatible.host,
                 models                  : requiredModels,
                 contextLengths          : preloadConfig.contextLengths,
                 parallels               : preloadConfig.parallels,

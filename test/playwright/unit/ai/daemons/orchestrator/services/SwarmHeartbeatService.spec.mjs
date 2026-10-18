@@ -1025,7 +1025,7 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
             SwarmHeartbeatService.configSnapshot = SwarmHeartbeatService.createConfigSnapshot({
                 wakeDaemonHeartbeatAlivePath: overridePath
             });
-            expect(heartbeatAlivePath()).toBe(overridePath);
+            expect(heartbeatAlivePath(SwarmHeartbeatService.configSnapshot)).toBe(overridePath);
         } finally {
             SwarmHeartbeatService.configSnapshot = null;
         }
@@ -1038,7 +1038,7 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
             SwarmHeartbeatService.configSnapshot = SwarmHeartbeatService.createConfigSnapshot({
                 wakeDaemonHeartbeatAlivePath: path.join(tmpDir, 'heartbeat.alive')
             });
-            expect(githubNotificationWakeStatePath()).toBe(path.join(tmpDir, 'github-notification-wake-ids.json'));
+            expect(githubNotificationWakeStatePath(SwarmHeartbeatService.configSnapshot)).toBe(path.join(tmpDir, 'github-notification-wake-ids.json'));
 
             applyDefaultStubs();
             delete SwarmHeartbeatService.readGitHubNotificationWakeState;

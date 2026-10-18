@@ -13,32 +13,45 @@ test.describe('Neo.ai.daemons.Orchestrator cloudOnly mode-gate (#14150 composeSe
     let snapshot;
 
     test.beforeEach(() => {
-        snapshot                            = OrchestratorInstance.createConfigSnapshot();
-        OrchestratorInstance.configSnapshot = snapshot;
+        snapshot = OrchestratorInstance.createConfigSnapshot();
     });
 
     test.afterEach(() => {
-        OrchestratorInstance.configSnapshot = null;
+        snapshot = null;
     });
 
     test('mode-gate default: cloud → B1 enabled, local → B1 disabled', () => {
         snapshot.orchestrator.cloudOnly[KEY] = null; // profile default (the leaf default)
 
         snapshot.orchestrator.deploymentMode = 'cloud';
-        expect(resolveCloudOnlyEnabled(KEY)).toBe(true);
+        expect(resolveCloudOnlyEnabled(KEY, snapshot)).toBe(true);
 
         snapshot.orchestrator.deploymentMode = 'local';
-        expect(resolveCloudOnlyEnabled(KEY)).toBe(false);
+        expect(resolveCloudOnlyEnabled(KEY, snapshot)).toBe(false);
     });
 
     test('explicit override beats the deployment default (opt-in local / opt-out cloud)', () => {
         snapshot.orchestrator.deploymentMode = 'local';
         snapshot.orchestrator.cloudOnly[KEY] = true;  // operator opts B1 in for a local smoke test
-        expect(resolveCloudOnlyEnabled(KEY)).toBe(true);
+        expect(resolveCloudOnlyEnabled(KEY, snapshot)).toBe(true);
 
         snapshot.orchestrator.deploymentMode = 'cloud';
         snapshot.orchestrator.cloudOnly[KEY] = false; // operator opts B1 out in a cloud deployment
-        expect(resolveCloudOnlyEnabled(KEY)).toBe(false);
+        expect(resolveCloudOnlyEnabled(KEY, snapshot)).toBe(false);
+    });
+
+    test('resolveCloudOnlyEnabled ignores OrchestratorInstance.configSnapshot when called without an explicit config argument', () => {
+        const baseline = resolveCloudOnlyEnabled(KEY);
+        snapshot.orchestrator.deploymentMode = baseline ? 'local' : 'cloud';
+        snapshot.orchestrator.cloudOnly[KEY] = !baseline;
+        OrchestratorInstance.configSnapshot  = snapshot;
+
+        try {
+            expect(resolveCloudOnlyEnabled(KEY)).toBe(baseline);
+            expect(resolveCloudOnlyEnabled(KEY, snapshot)).toBe(!baseline);
+        } finally {
+            OrchestratorInstance.configSnapshot = null;
+        }
     });
 
     test('self-check: spec contains zero shared-config singleton writes (B4)', () => {

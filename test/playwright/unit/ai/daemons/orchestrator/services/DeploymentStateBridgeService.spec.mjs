@@ -126,7 +126,7 @@ function createService({
     tenantRepoSyncEnabledReader = null,
     writeLog = null,
     nowFn = () => OBSERVED_AT,
-    configSnapshot = DeploymentStateBridgeService.configSnapshot || DeploymentStateBridgeService.createConfigSnapshot()
+    configSnapshot = testSnapshot || DeploymentStateBridgeService.createConfigSnapshot()
 } = {}) {
     return Neo.create(DeploymentStateBridgeService, {
         configSnapshot,
@@ -159,10 +159,9 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
     // the worker, which is how a snapshot path set by one test reached an unrelated MCP smoke
     // assertion. Captured by resolved value instead, naming each leaf explicitly.
     test.beforeEach(() => {
-        testSnapshot                                = DeploymentStateBridgeService.createConfigSnapshot();
-        DeploymentStateBridgeService.configSnapshot = testSnapshot;
-        restoreBridgeConfig                         = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
-        restoreRuntimeAccessConfig                  = snapshotAiConfig(testSnapshot, RUNTIME_ACCESS_CONFIG_PATHS);
+        testSnapshot               = DeploymentStateBridgeService.createConfigSnapshot();
+        restoreBridgeConfig        = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
+        restoreRuntimeAccessConfig = snapshotAiConfig(testSnapshot, RUNTIME_ACCESS_CONFIG_PATHS);
 
         Object.assign(testSnapshot.orchestrator.deploymentStateBridge, {
              allowedServices : [],
@@ -186,8 +185,7 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
     test.afterEach(() => {
         restoreBridgeConfig?.();
         restoreRuntimeAccessConfig?.();
-        DeploymentStateBridgeService.configSnapshot = null;
-        testSnapshot                                = null;
+        testSnapshot = null;
     });
 
     test('folds OOM and clean die events into bounded, newest-first death records', () => {
@@ -3337,10 +3335,9 @@ test.describe('DeploymentStateBridgeService — the classification projection is
     // Same decorative-restore defect as the suite above: a `Neo.clone` of an AiConfig node yields an
     // empty object, so the paired `Object.assign` restored nothing.
     test.beforeEach(() => {
-        testSnapshot                                = DeploymentStateBridgeService.createConfigSnapshot();
-        DeploymentStateBridgeService.configSnapshot = testSnapshot;
-        restoreSavedBridgeConfig                    = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
-        restoreSavedRuntimeConfig                   = snapshotAiConfig(testSnapshot, RUNTIME_ACCESS_CONFIG_PATHS);
+        testSnapshot              = DeploymentStateBridgeService.createConfigSnapshot();
+        restoreSavedBridgeConfig  = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
+        restoreSavedRuntimeConfig = snapshotAiConfig(testSnapshot, RUNTIME_ACCESS_CONFIG_PATHS);
 
         Object.assign(testSnapshot.orchestrator.deploymentStateBridge, {
             allowedServices  : ['chroma', 'kb-server'],
@@ -3352,8 +3349,7 @@ test.describe('DeploymentStateBridgeService — the classification projection is
     test.afterEach(() => {
         restoreSavedBridgeConfig?.();
         restoreSavedRuntimeConfig?.();
-        DeploymentStateBridgeService.configSnapshot = null;
-        testSnapshot                                = null;
+        testSnapshot = null;
     });
 
     function healthyRuntime() {
@@ -3382,6 +3378,7 @@ test.describe('DeploymentStateBridgeService — the classification projection is
         // and three successive post-merge verification formulations were each unobservable.
         const clock   = {now: OBSERVED_AT},
               service = Neo.create(DeploymentStateBridgeService, {
+            configSnapshot      : testSnapshot,
             runtimeAccessService: healthyRuntime(),
             diagnosisService    : Neo.create(ContainerHealthDiagnosisService, {}),
             writeLog            : () => {},
@@ -3436,6 +3433,7 @@ test.describe('DeploymentStateBridgeService — the classification projection is
 
     test('a diagnosis seam without the projection degrades to null rather than fabricating one', async () => {
         const service = Neo.create(DeploymentStateBridgeService, {
+            configSnapshot      : testSnapshot,
             runtimeAccessService: healthyRuntime(),
             diagnosisService    : {diagnose: () => null},
             writeLog            : () => {}
@@ -3575,8 +3573,7 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — heap obs
         // REAL fact produced in both. If the envelope varies and the diagnosis does not, the field
         // provably does not feed the decision — and the handoff witness proves the stronger claim
         // that `diagnose()` is never even offered it.
-        testSnapshot                                = DeploymentStateBridgeService.createConfigSnapshot();
-        DeploymentStateBridgeService.configSnapshot = testSnapshot;
+        testSnapshot          = DeploymentStateBridgeService.createConfigSnapshot();
         const restorePrevious = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
 
         Object.assign(testSnapshot.orchestrator.deploymentStateBridge, {
@@ -3634,8 +3631,7 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — heap obs
             asNonNode = await collect(['python3', 'server.py'])
         } finally {
             restorePrevious();
-            DeploymentStateBridgeService.configSnapshot = null;
-            testSnapshot                                = null;
+            testSnapshot = null;
         }
 
         // Non-vacuity: the two runs genuinely differ on the field under test, so equality below is
@@ -3898,15 +3894,13 @@ test.describe('DeploymentStateBridgeService — a residency key the bridge never
     let restoreResidencyConfig;
 
     test.beforeEach(() => {
-        testSnapshot                                = DeploymentStateBridgeService.createConfigSnapshot();
-        DeploymentStateBridgeService.configSnapshot = testSnapshot;
-        restoreResidencyConfig                      = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
+        testSnapshot           = DeploymentStateBridgeService.createConfigSnapshot();
+        restoreResidencyConfig = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
     });
 
     test.afterEach(() => {
         restoreResidencyConfig?.();
-        DeploymentStateBridgeService.configSnapshot = null;
-        testSnapshot                                = null;
+        testSnapshot = null;
     });
 
     // ---- Residency observability: `null` must say WHICH null it is. --------------------------------
@@ -4042,15 +4036,13 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — provider
           THIN_SLOTS    = [{n_ctx: 8192}, {n_ctx: 8192}];
 
     test.beforeEach(() => {
-        testSnapshot                                = DeploymentStateBridgeService.createConfigSnapshot();
-        DeploymentStateBridgeService.configSnapshot = testSnapshot;
-        restoreBridgeConfig                         = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
+        testSnapshot        = DeploymentStateBridgeService.createConfigSnapshot();
+        restoreBridgeConfig = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
     });
 
     test.afterEach(() => {
         restoreBridgeConfig?.();
-        DeploymentStateBridgeService.configSnapshot = null;
-        testSnapshot                                = null;
+        testSnapshot = null;
     });
 
     test('the probe runs ONCE and the receipt is republished — never a recurring /slots caller', async () => {
@@ -4143,15 +4135,13 @@ test.describe('provider-lane shape routing — the embedding receipt must not ri
     // degraded the wrong container. Widening residency instead would misroute residency and
     // provider-activity the other way; the two sets are separate on purpose.
     test.beforeEach(() => {
-        testSnapshot                                = DeploymentStateBridgeService.createConfigSnapshot();
-        DeploymentStateBridgeService.configSnapshot = testSnapshot;
-        restoreBridgeConfig                         = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
+        testSnapshot        = DeploymentStateBridgeService.createConfigSnapshot();
+        restoreBridgeConfig = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
     });
 
     test.afterEach(() => {
         restoreBridgeConfig?.();
-        DeploymentStateBridgeService.configSnapshot = null;
-        testSnapshot                                = null;
+        testSnapshot = null;
     });
 
     test('the two predicates disagree under the split-lane profile, and each names its own lane', () => {
@@ -4193,9 +4183,8 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — embeddin
     let restoreIdentityConfig;
 
     test.beforeEach(() => {
-        testSnapshot                                = DeploymentStateBridgeService.createConfigSnapshot();
-        DeploymentStateBridgeService.configSnapshot = testSnapshot;
-        restoreIdentityConfig                       = snapshotAiConfig(testSnapshot, IDENTITY_CONFIG_PATHS);
+        testSnapshot          = DeploymentStateBridgeService.createConfigSnapshot();
+        restoreIdentityConfig = snapshotAiConfig(testSnapshot, IDENTITY_CONFIG_PATHS);
 
         testSnapshot.openAiCompatible.host           = 'http://127.0.0.1:8090';
         testSnapshot.openAiCompatible.embeddingModel = 'qwen3-embedding-0.6b'
@@ -4203,8 +4192,7 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — embeddin
 
     test.afterEach(() => {
         restoreIdentityConfig?.();
-        DeploymentStateBridgeService.configSnapshot = null;
-        testSnapshot                                = null;
+        testSnapshot = null;
     });
 
     test('the identity probe presents the lane\'s key, and a refused key is named as the key', async () => {
@@ -4460,9 +4448,8 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — identity
     }
 
     test.beforeEach(() => {
-        testSnapshot                                = DeploymentStateBridgeService.createConfigSnapshot();
-        DeploymentStateBridgeService.configSnapshot = testSnapshot;
-        restoreWiringConfig                         = snapshotAiConfig(testSnapshot, IDENTITY_WIRING_PATHS);
+        testSnapshot        = DeploymentStateBridgeService.createConfigSnapshot();
+        restoreWiringConfig = snapshotAiConfig(testSnapshot, IDENTITY_WIRING_PATHS);
 
         testSnapshot.openAiCompatible.host           = 'http://127.0.0.1:8090';
         testSnapshot.openAiCompatible.embeddingModel = 'qwen3-embedding-0.6b';
@@ -4474,8 +4461,7 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — identity
 
     test.afterEach(() => {
         restoreWiringConfig?.();
-        DeploymentStateBridgeService.configSnapshot = null;
-        testSnapshot                                = null;
+        testSnapshot = null;
     });
 
     test('the snapshot publishes identity for a participant and withholds it for a non-participant', async () => {
@@ -4485,6 +4471,7 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — identity
         // predicate left the isolated predicate test green — a pure-function corpus cannot catch an
         // unreachable or mis-wired call site, so the gate has to be exercised through the snapshot.
         const bridge = Neo.create(DeploymentStateBridgeService, {
+            configSnapshot            : testSnapshot,
             runtimeAccessService      : runtimeStub(),
             diagnosisService          : Neo.create(ContainerHealthDiagnosisService, {}),
             providerResidencyProbe    : async () => null,
@@ -5082,16 +5069,14 @@ test.describe('direct-probe bearer credential — evidence that cannot authentic
     let restoreConfig;
 
     test.beforeEach(() => {
-        testSnapshot                                = DeploymentStateBridgeService.createConfigSnapshot();
-        DeploymentStateBridgeService.configSnapshot = testSnapshot;
-        restoreConfig                               = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
+        testSnapshot  = DeploymentStateBridgeService.createConfigSnapshot();
+        restoreConfig = snapshotAiConfig(testSnapshot, BRIDGE_CONFIG_PATHS);
         testSnapshot.orchestrator.deploymentStateBridge.directProbeUrls = [...PROBE_URLS];
     });
 
     test.afterEach(() => {
         restoreConfig?.();
-        DeploymentStateBridgeService.configSnapshot = null;
-        testSnapshot                                = null;
+        testSnapshot = null;
     });
 
     test('a configured token file is threaded into the probe and NEVER disclosed to any log sink', async () => {

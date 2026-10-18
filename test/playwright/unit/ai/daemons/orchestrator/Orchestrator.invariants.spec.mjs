@@ -68,6 +68,7 @@ function createMinimalOrchestrator() {
     TaskStateService.taskState = createInitialTaskState(taskDefinitions);
 
     return Neo.create(Orchestrator, {
+        configSnapshot           : snapshot,
         dataDir                  : '/tmp/orchestrator-test',
         stateFile                : '/tmp/orchestrator-test/state.json',
         logFile                  : null,
@@ -80,8 +81,7 @@ function createMinimalOrchestrator() {
 }
 
 test.beforeEach(() => {
-    snapshot                            = OrchestratorInstance.createConfigSnapshot();
-    OrchestratorInstance.configSnapshot = snapshot;
+    snapshot = Orchestrator.createConfigSnapshot();
 
     savedEnvKbSyncEnabled          = process.env.NEO_ORCHESTRATOR_KB_SYNC_ENABLED;
     savedEnvKbSyncInterval         = process.env.NEO_ORCHESTRATOR_KB_SYNC_INTERVAL_MS;
@@ -98,8 +98,7 @@ test.beforeEach(() => {
 });
 
 test.afterEach(() => {
-    OrchestratorInstance.configSnapshot = null;
-    snapshot                            = null;
+    snapshot = null;
 
     restoreEnv('NEO_ORCHESTRATOR_KB_SYNC_ENABLED',           savedEnvKbSyncEnabled);
     restoreEnv('NEO_ORCHESTRATOR_KB_SYNC_INTERVAL_MS',       savedEnvKbSyncInterval);
@@ -697,6 +696,15 @@ test.describe('Orchestrator source-level invariants (#11834 AC4)', () => {
         });
 
         expect(missingHook, `Reactive config slots with \`_\`-suffix MUST have a corresponding \`beforeGetX\`, \`beforeSetX\`, or \`afterSetX\` hook (Sub-1 anti-pattern: cargo-cult underscores without hooks). Offending slots: ${missingHook.join(', ')}.`).toEqual([]);
+    });
+
+    test('createConfigSnapshot deep-clones nested arrays so mutating allowedServices leaves AiConfig unchanged', () => {
+        const baselineAllowedServices = [...AiConfig.orchestrator.deploymentRuntimeAccess.allowedServices];
+
+        snapshot.orchestrator.deploymentRuntimeAccess.allowedServices.push('x');
+
+        expect(AiConfig.orchestrator.deploymentRuntimeAccess.allowedServices).toEqual(baselineAllowedServices);
+        expect(snapshot.orchestrator.deploymentRuntimeAccess.allowedServices).toContain('x');
     });
 
     test('self-check: spec contains zero shared-config singleton writes (B4)', async () => {

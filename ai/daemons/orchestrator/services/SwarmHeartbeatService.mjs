@@ -44,12 +44,42 @@ import {
     resolveTargets        as resolveHeartbeatTargets,
     VALID_TARGET_SOURCES
 } from '../scheduling/swarmHeartbeat.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+} from '../../../services/shared/configSnapshot.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
 const DEFAULT_POLL_INTERVAL_MS = 5 * 60 * 1000;
 const PUSH_CAPABLE_TARGETS     = Object.freeze(['mcp-notifications', 'a2a-webhook', 'bridge-daemon']);
+
+function mergeSnapshotOverrides(target, overrides = {}) {
+    if (!overrides || typeof overrides !== 'object') {
+        return target;
+    }
+
+    for (const [key, val] of Object.entries(overrides)) {
+        if (val !== null && typeof val === 'object' && !Array.isArray(val) && Object.getPrototypeOf(val) === Object.prototype) {
+            const current = target[key];
+            target[key]   = mergeSnapshotOverrides(
+                (current && typeof current === 'object' && !Array.isArray(current)) ? {...current} : {},
+                val
+            );
+        } else if (Array.isArray(val)) {
+            target[key] = val.map(item =>
+                (item && typeof item === 'object' && !Array.isArray(item))
+                    ? mergeSnapshotOverrides({}, item)
+                    : item
+            );
+        } else {
+            target[key] = val;
+        }
+    }
+
+    return target;
+}
 
 /**
  * @summary Resolves the heartbeat liveness file path shared with HealthService.
@@ -60,11 +90,12 @@ const PUSH_CAPABLE_TARGETS     = Object.freeze(['mcp-notifications', 'a2a-webhoo
  * operator probes can isolate the path via `NEO_HEARTBEAT_ALIVE_PATH`, matching
  * the consumer-side override contract.
  *
+ * @param {Object} [config=AiConfig]
  * @returns {String}
  * @see ai/services/memory-core/HealthService.mjs
  */
-function heartbeatAlivePath() {
-    return (SwarmHeartbeatServiceInstance?.configSnapshot || AiConfig).wakeDaemonHeartbeatAlivePath;
+function heartbeatAlivePath(config = AiConfig) {
+    return (config ?? AiConfig).wakeDaemonHeartbeatAlivePath;
 }
 
 /**
@@ -74,11 +105,12 @@ function heartbeatAlivePath() {
  * coordinate it no longer defaults. Both contenders — the producer wrapping expensive work and this
  * lane inspecting/clearing it — must read the same leaf, or the mutex stops being one.
  *
+ * @param {Object} [config=AiConfig]
  * @returns {String}
  * @see ai/scripts/lifecycle/heartbeatLock.mjs
  */
-function heartbeatLockPath() {
-    return (SwarmHeartbeatServiceInstance?.configSnapshot || AiConfig).heartbeatConcurrencyLockPath;
+function heartbeatLockPath(config = AiConfig) {
+    return (config ?? AiConfig).heartbeatConcurrencyLockPath;
 }
 
 /**
@@ -87,10 +119,11 @@ function heartbeatLockPath() {
  * Reuses the wake-daemon data directory resolved by the existing heartbeat
  * liveness path, avoiding a new config leaf while keeping the state alongside
  * the other wake-delivery cursors.
+ * @param {Object} [config=AiConfig]
  * @returns {String}
  */
-function githubNotificationWakeStatePath() {
-    return path.join(path.dirname(heartbeatAlivePath()), 'github-notification-wake-ids.json')
+function githubNotificationWakeStatePath(config = AiConfig) {
+    return path.join(path.dirname(heartbeatAlivePath(config)), 'github-notification-wake-ids.json')
 }
 
 /**
@@ -284,28 +317,46 @@ class SwarmHeartbeatService extends Base {
      * @returns {Object|null}
      */
     beforeSetConfigSnapshot(value) {
-        if (value === null || value === undefined) return null;
+        const validated = validateConfigSnapshot(value, {
+            serviceName     : 'SwarmHeartbeatService',
+            requiredSubtrees: ['orchestrator']
+        });
 
-        if (typeof value !== 'object' || Array.isArray(value)) {
-            throw new Error('SwarmHeartbeatService.configSnapshot must be a non-null object or null');
+        if (validated === null) {
+            return null;
         }
 
         const missing = [];
-        if (typeof value.wakeDaemonHeartbeatAlivePath !== 'string' || !value.wakeDaemonHeartbeatAlivePath) {
+        if (typeof validated.wakeDaemonHeartbeatAlivePath !== 'string' || !validated.wakeDaemonHeartbeatAlivePath) {
             missing.push('wakeDaemonHeartbeatAlivePath');
         }
-        if (typeof value.heartbeatConcurrencyLockPath !== 'string' || !value.heartbeatConcurrencyLockPath) {
+        if (typeof validated.heartbeatConcurrencyLockPath !== 'string' || !validated.heartbeatConcurrencyLockPath) {
             missing.push('heartbeatConcurrencyLockPath');
         }
-        if (typeof value.orchestrator?.deploymentMode !== 'string' || !value.orchestrator.deploymentMode) {
+        if (typeof validated.orchestrator?.deploymentMode !== 'string' || !validated.orchestrator.deploymentMode) {
             missing.push('orchestrator.deploymentMode');
         }
 
         if (missing.length > 0) {
-            throw new Error(`SwarmHeartbeatService.configSnapshot is missing required keys: ${missing.join(', ')}`);
+            throw new TypeError(`SwarmHeartbeatService.configSnapshot is missing required keys: ${missing.join(', ')}`);
         }
 
-        return value;
+        return validated;
+    }
+
+    /**
+     * Creates an isolated test-scoped config snapshot seeded from `AiConfig`.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    static createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            wakeDaemonHeartbeatAlivePath: AiConfig.wakeDaemonHeartbeatAlivePath,
+            heartbeatConcurrencyLockPath: AiConfig.heartbeatConcurrencyLockPath,
+            orchestrator                : cloneConfigSubtree(AiConfig, ['orchestrator'])
+        };
+
+        return mergeSnapshotOverrides(snapshot, overrides);
     }
 
     /**
@@ -314,25 +365,7 @@ class SwarmHeartbeatService extends Base {
      * @returns {Object}
      */
     createConfigSnapshot(overrides = {}) {
-        const snapshot = {
-            wakeDaemonHeartbeatAlivePath: AiConfig.wakeDaemonHeartbeatAlivePath,
-            heartbeatConcurrencyLockPath: AiConfig.heartbeatConcurrencyLockPath,
-            orchestrator                : {
-                deploymentMode: AiConfig.orchestrator.deploymentMode
-            }
-        };
-
-        if (overrides.wakeDaemonHeartbeatAlivePath !== undefined) {
-            snapshot.wakeDaemonHeartbeatAlivePath = overrides.wakeDaemonHeartbeatAlivePath;
-        }
-        if (overrides.heartbeatConcurrencyLockPath !== undefined) {
-            snapshot.heartbeatConcurrencyLockPath = overrides.heartbeatConcurrencyLockPath;
-        }
-        if (overrides.orchestrator) {
-            Object.assign(snapshot.orchestrator, overrides.orchestrator);
-        }
-
-        return snapshot;
+        return SwarmHeartbeatService.createConfigSnapshot(overrides);
     }
 
     /**
@@ -559,7 +592,7 @@ class SwarmHeartbeatService extends Base {
      * @returns {Promise<void>}
      */
     async touchLivenessFile() {
-        const alivePath = heartbeatAlivePath();
+        const alivePath = heartbeatAlivePath(this.configSnapshot ?? AiConfig);
         const now       = new Date();
         try {
             await fs.utimes(alivePath, now, now)
@@ -586,7 +619,7 @@ class SwarmHeartbeatService extends Base {
      * @protected
      */
     async checkHeartbeatLock() {
-        return inspectHeartbeatLock({lockPath: heartbeatLockPath()})
+        return inspectHeartbeatLock({lockPath: heartbeatLockPath(this.configSnapshot ?? AiConfig)})
     }
 
     /**
@@ -595,7 +628,7 @@ class SwarmHeartbeatService extends Base {
      * @protected
      */
     async clearHeartbeatLock() {
-        return releaseHeartbeatLock({lockPath: heartbeatLockPath()})
+        return releaseHeartbeatLock({lockPath: heartbeatLockPath(this.configSnapshot ?? AiConfig)})
     }
 
     /**
@@ -1088,7 +1121,7 @@ class SwarmHeartbeatService extends Base {
      * @protected
      */
     async readGitHubNotificationWakeState() {
-        const statePath = githubNotificationWakeStatePath();
+        const statePath = githubNotificationWakeStatePath(this.configSnapshot ?? AiConfig);
         try {
             const parsed = JSON.parse(await fs.readFile(statePath, 'utf8'));
             if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
@@ -1108,7 +1141,7 @@ class SwarmHeartbeatService extends Base {
      * @protected
      */
     async writeGitHubNotificationWakeState(state) {
-        const statePath = githubNotificationWakeStatePath();
+        const statePath = githubNotificationWakeStatePath(this.configSnapshot ?? AiConfig);
         await fs.mkdir(path.dirname(statePath), {recursive: true});
         await fs.writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
     }
