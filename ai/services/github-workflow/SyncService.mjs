@@ -1,13 +1,14 @@
-import aiConfig              from '../../mcp/server/github-workflow/config.mjs';
-import Base                  from 'neo.mjs/src/core/Base.mjs';
-import logger                from '../../mcp/server/github-workflow/logger.mjs';
-import IssueSyncer           from './sync/IssueSyncer.mjs';
-import MetadataManager       from './sync/MetadataManager.mjs';
-import ReleaseNotesSyncer    from './sync/ReleaseNotesSyncer.mjs';
-import DiscussionSyncer      from './sync/DiscussionSyncer.mjs';
-import PullRequestSyncer     from './sync/PullRequestSyncer.mjs';
-import reconcileActiveChunks from './shared/reconcileActiveChunks.mjs';
-import RepositoryService     from './RepositoryService.mjs';
+import aiConfig                                     from '../../mcp/server/github-workflow/config.mjs';
+import Base                                         from 'neo.mjs/src/core/Base.mjs';
+import logger                                       from '../../mcp/server/github-workflow/logger.mjs';
+import {cloneConfigSubtree, validateConfigSnapshot} from '../shared/configSnapshot.mjs';
+import IssueSyncer                                  from './sync/IssueSyncer.mjs';
+import MetadataManager                              from './sync/MetadataManager.mjs';
+import ReleaseNotesSyncer                           from './sync/ReleaseNotesSyncer.mjs';
+import DiscussionSyncer                             from './sync/DiscussionSyncer.mjs';
+import PullRequestSyncer                            from './sync/PullRequestSyncer.mjs';
+import reconcileActiveChunks                        from './shared/reconcileActiveChunks.mjs';
+import RepositoryService                            from './RepositoryService.mjs';
 import {
     collectWrittenArchiveTargets,
     findLogicalIdentityCollisions,
@@ -63,6 +64,63 @@ class SyncService extends Base {
          * @protected
          */
         singleton: true
+    }
+
+    #configSnapshot = null;
+
+    /**
+     * @summary Returns the isolated configuration snapshot injected by unit tests, or `null` when
+     * the service reads the canonical `aiConfig` singleton.
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @summary Injects an isolated configuration snapshot for unit testing, or `null` to restore
+     * the canonical `aiConfig` singleton.
+     * @param {Object|null} value Candidate snapshot or `null`.
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * @summary Rejects non-isolated config snapshots so `SyncService.configSnapshot` cannot be
+     * pointed at the shared `aiConfig` singleton or any of its live subtrees.
+     * @param {Object|null} value Candidate snapshot or `null` to restore canonical `aiConfig`.
+     * @returns {Object|null}
+     * @protected
+     */
+    beforeSetConfigSnapshot(value) {
+        return validateConfigSnapshot(value, {
+            serviceName     : 'SyncService',
+            requiredSubtrees: ['issueSync']
+        });
+    }
+
+    /**
+     * @summary Builds an isolated plain-object snapshot of the resolved `aiConfig` leaves and
+     * `issueSync` subtree consumed by `SyncService`.
+     * @returns {Object}
+     */
+    createConfigSnapshot() {
+        return {
+            issueSync          : cloneConfigSubtree(aiConfig, ['issueSync']),
+            projectRoot        : aiConfig.projectRoot,
+            pushToRepoAfterSync: aiConfig.pushToRepoAfterSync,
+            repo               : aiConfig.repo
+        };
+    }
+
+    /**
+     * @summary Returns the active configuration tree (`#configSnapshot` when injected, otherwise `aiConfig`).
+     * @returns {Object}
+     * @private
+     */
+    #getConfig() {
+        return this.#configSnapshot || aiConfig;
     }
 
     /**
@@ -302,9 +360,11 @@ class SyncService extends Base {
         //     canonical, so no reader has to repair layout it never wrote. It runs before the verdict
         //     below, so a failed facet does not leave the facets that advanced in a drifted layout. The
         //     `issueSync` block is read at the use site; only its `contentRoot` leaf is consumed.
-        await reconcileActiveChunks(aiConfig.issueSync, {repoSlug: aiConfig.repo, type: 'pulls',       filePrefix: 'pr-'});
-        await reconcileActiveChunks(aiConfig.issueSync, {repoSlug: aiConfig.repo, type: 'issues',      filePrefix: 'issue-'});
-        await reconcileActiveChunks(aiConfig.issueSync, {repoSlug: aiConfig.repo, type: 'discussions', filePrefix: 'discussion-'});
+        const cfg = this.#getConfig();
+
+        await reconcileActiveChunks(cfg.issueSync, {repoSlug: cfg.repo, type: 'pulls',       filePrefix: 'pr-'});
+        await reconcileActiveChunks(cfg.issueSync, {repoSlug: cfg.repo, type: 'issues',      filePrefix: 'issue-'});
+        await reconcileActiveChunks(cfg.issueSync, {repoSlug: cfg.repo, type: 'discussions', filePrefix: 'discussion-'});
 
         const failedFacets = outcomes.filter(outcome => !outcome.advanced);
 
@@ -353,7 +413,7 @@ class SyncService extends Base {
      */
     async emitConversationCorpus({refetchIssues = []} = {}) {
         const
-            archiveRoot     = aiConfig.issueSync.archiveRoot,
+            archiveRoot     = this.#getConfig().issueSync.archiveRoot,
             baselineArchive = snapshotArchiveTree(archiveRoot),
             result          = await this.emitGeneratedContent({pushLocalChanges: false, refetchIssues}),
             targets         = collectWrittenArchiveTargets(archiveRoot, baselineArchive),
@@ -523,12 +583,14 @@ class SyncService extends Base {
      * @returns {Promise<void>}
      */
     async autoPushGeneratedContent({rerunEmission, maxAttempts = 2}) {
-        if (aiConfig.pushToRepoAfterSync) {
+        const cfg = this.#getConfig();
+
+        if (cfg.pushToRepoAfterSync) {
             const {permission}     = await RepositoryService.getViewerPermission();
             const writePermissions = ['ADMIN', 'MAINTAIN', 'WRITE'];
 
             if (writePermissions.includes(permission)) {
-                const cwd = aiConfig.projectRoot;
+                const cwd = cfg.projectRoot;
 
                 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                     try {

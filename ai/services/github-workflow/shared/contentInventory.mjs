@@ -309,7 +309,11 @@ function collectArchiveArtifacts(familyDir) {
 }
 
 /**
- * @summary Maps `<family>/<logical name>` to every archived artifact claiming it.
+ * @summary Maps `<family>/<basename>` to every archived artifact claiming it.
+ *
+ * A consumer resolves an artifact by its logical name (`<family>/<basename>` regardless of chunk per
+ * `0004-github-content-architecture.md` §3.2.1), so the collision scope spans all version and chunk
+ * directories under `archive/<family>` rather than a single bucket.
  * @param {String} archiveRoot Absolute path to the archive tree.
  * @returns {Map<String, String[]>} Keys with more than one value are collisions.
  */
@@ -391,10 +395,13 @@ export function collectWrittenArchiveTargets(archiveRoot, before = new Map()) {
 }
 
 /**
- * @summary Finds logical-name collisions across `archiveRoot`, optionally restricted to `targets`.
+ * @summary Finds logical-name collisions (`<family>/<basename>` regardless of chunk), optionally
+ * restricted to the artifacts a change touches.
  * @param {Object} options
  * @param {String} options.archiveRoot Absolute path to the archive tree.
- * @param {String[]|null} [options.targets=null] Absolute paths from the change; `null` audits all.
+ * @param {String[]|null} [options.targets=null] Absolute paths from the change. When given, only
+ *     collisions involving one of them are reported — scoping the verdict to what the run wrote so a
+ *     pre-existing collision the run never touched cannot block it. `null` audits everything.
  * @returns {Array<{key: String, paths: String[]}>}
  */
 export function findLogicalIdentityCollisions({archiveRoot, targets = null}) {

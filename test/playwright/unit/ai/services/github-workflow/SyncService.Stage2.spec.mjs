@@ -15,6 +15,7 @@ setup({
 
 import {test, expect} from '@playwright/test';
 import fs             from 'fs/promises';
+import os             from 'os';
 import path           from 'path';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
@@ -22,7 +23,6 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 test.describe('SyncService — Stage 2 Ingestion', () => {
     test.describe.configure({mode: 'serial'});
 
-    let aiConfig;
     let SyncService;
     let IssueSyncer;
     let ReleaseNotesSyncer;
@@ -68,7 +68,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         // and avoid ReferenceErrors from circular dependencies in dynamic imports.
         await import('../../../../../../ai/services.mjs');
 
-        aiConfig = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
         SyncService = (await import('../../../../../../ai/services/github-workflow/SyncService.mjs')).default;
         IssueSyncer = (await import('../../../../../../ai/services/github-workflow/sync/IssueSyncer.mjs')).default;
         ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
@@ -887,10 +886,10 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
 
     test.describe('the corpus emit path enforces one artifact per logical name (#457)', () => {
         let tempRoot,
-            originalContentRootOverride;
+            syncSnapshot;
 
         const writeOriginArchived = async (relative, body = '# artifact\n') => {
-            const absolute = path.join(aiConfig.issueSync.archiveRoot, relative);
+            const absolute = path.join(syncSnapshot.issueSync.archiveRoot, relative);
 
             await fs.mkdir(path.dirname(absolute), {recursive: true});
             await fs.writeFile(absolute, body, 'utf8');
@@ -898,14 +897,21 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         };
 
         test.beforeEach(async () => {
-            tempRoot                    = await fs.mkdtemp(path.join(await fs.realpath('/tmp'), 'neo-emit-corpus-'));
-            originalContentRootOverride = aiConfig.issueSync.contentRootOverride;
-            aiConfig.issueSync.contentRootOverride = tempRoot;
-            ReleaseNotesSyncer.sortedReleases      = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}]
+            tempRoot     = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'neo-emit-corpus-'));
+            syncSnapshot = SyncService.createConfigSnapshot();
+
+            const originRoot = path.join(tempRoot, syncSnapshot.repo);
+
+            syncSnapshot.issueSync.contentRootOverride = tempRoot;
+            syncSnapshot.issueSync.contentRoot         = tempRoot;
+            syncSnapshot.issueSync.originRoot          = originRoot;
+            syncSnapshot.issueSync.archiveRoot         = path.join(originRoot, 'archive');
+            SyncService.configSnapshot                 = syncSnapshot;
+            ReleaseNotesSyncer.sortedReleases          = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}]
         });
 
         test.afterEach(async () => {
-            aiConfig.issueSync.contentRootOverride = originalContentRootOverride;
+            SyncService.configSnapshot = null;
             await fs.rm(tempRoot, {force: true, recursive: true})
         });
 
@@ -941,10 +947,14 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             expect(result.facetOutcomes.every(outcome => outcome.advanced)).toBe(true)
         });
 
-        test('AC-3: SyncService no longer imports check-content-logical-identity from neo.mjs', async () => {
-            const source = await fs.readFile(path.resolve(process.cwd(), 'ai/services/github-workflow/SyncService.mjs'), 'utf8');
+        test('AC-3: SyncService no longer imports check-content-logical-identity from neo.mjs and isolates test config via configSnapshot', async () => {
+            const source                      = await fs.readFile(path.resolve(process.cwd(), 'ai/services/github-workflow/SyncService.mjs'), 'utf8'),
+                  specSource                  = await fs.readFile(path.resolve(process.cwd(), 'test/playwright/unit/ai/services/github-workflow/SyncService.Stage2.spec.mjs'), 'utf8'),
+                  {findSharedConfigMutations} = await import('../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs');
 
-            expect(source).not.toMatch(/check-content-logical-identity/)
+            expect(source).not.toMatch(/check-content-logical-identity/);
+            expect(findSharedConfigMutations(specSource)).toEqual([]);
+            expect(() => { SyncService.configSnapshot = {}; }).toThrow(TypeError)
         })
     })
 });
