@@ -265,6 +265,21 @@ export function rewriteIdentityString(value) {
 }
 
 /**
+ * @summary Rewrites a graph row id that embeds a handle: the whole-handle rule, plus the era-chain
+ * shape `embodied-episode-<key>-<since>`, whose ISO `since` suffix hides the handle's right boundary
+ * behind a hyphen. Row ids and the JSON `id` they mirror move together, never one without the other.
+ * @param {String} id Node or edge row id.
+ * @returns {String}
+ */
+export function rewriteNodeId(id) {
+    const eraShapesMoved = id.replace(
+        /embodied-episode-(.+?)(-\d{4}-\d{2}-\d{2}T[0-9:.Z+-]*)/g,
+        (match, key, since) => `embodied-episode-${rewriteIdentityString(key)}${since}`
+    );
+    return rewriteIdentityString(eraShapesMoved);
+}
+
+/**
  * @summary Rewrites identity tokens in a value known to represent identity metadata.
  * @param {*} value Metadata value.
  * @returns {*}
@@ -454,17 +469,42 @@ function rewriteIdentityEdges(db, rename, apply, stats) {
     }
 }
 
+const STRUCTURAL_NODE_IDS = new Set(IDENTITY_RENAMES.map(rename => rename.fromNodeId));
+
 /**
- * @summary Rewrites identity metadata in all graph rows after structural node moves.
+ * @summary Rewrites identity metadata in all graph rows after structural node moves. A row whose id
+ * embeds a handle (`identity-state-@…`, `embodied-episode-@…-<since>`, `AGENT:@…`) is re-keyed, and
+ * every edge endpoint that named the old id follows, so the SQLite id, the JSON id and the edge
+ * endpoints never disagree. The AgentIdentity rows themselves moved structurally above.
  * @param {Object} db Open better-sqlite3 connection.
  * @param {Boolean} apply True to write, false for dry-run.
  * @param {Object} stats Mutable stats object.
  */
 function rewriteGraphMetadataRows(db, apply, stats) {
     for (const row of db.prepare('SELECT id, user_id, data FROM Nodes').all()) {
+        if (STRUCTURAL_NODE_IDS.has(row.id)) continue;
+
         const data       = parseGraphData(row.data);
         const nextData   = rewriteIdentityFields(data);
         const nextUserId = rewriteUserIdColumn(row.user_id);
+        const nextId     = rewriteNodeId(row.id);
+
+        if (nextId !== row.id) {
+            if (db.prepare('SELECT id FROM Nodes WHERE id = ?').get(nextId)) {
+                stats.graph.duplicateCollisions++;
+                stats.graph.skipped.push(`collision:${row.id}→${nextId}`);
+                continue;
+            }
+            if (data.id === row.id) nextData.id = nextId;
+            if (apply) {
+                db.prepare('UPDATE Nodes SET id = ?, user_id = ?, data = ? WHERE id = ?')
+                    .run(nextId, nextUserId, JSON.stringify(nextData), row.id);
+                db.prepare('UPDATE Edges SET source = ? WHERE source = ?').run(nextId, row.id);
+                db.prepare('UPDATE Edges SET target = ? WHERE target = ?').run(nextId, row.id);
+            }
+            stats.graph.nodesRekeyed++;
+            continue;
+        }
 
         if (nextUserId !== row.user_id || changedJson(data, nextData)) {
             if (apply) {
@@ -475,17 +515,30 @@ function rewriteGraphMetadataRows(db, apply, stats) {
         }
     }
 
-    for (const row of db.prepare('SELECT id, user_id, data FROM Edges').all()) {
+    for (const row of db.prepare('SELECT id, user_id, source, target, data FROM Edges').all()) {
         const data       = parseGraphData(row.data);
         const nextData   = rewriteIdentityFields(data);
         const nextUserId = rewriteUserIdColumn(row.user_id);
+        const nextId     = rewriteNodeId(row.id);
 
-        if (nextUserId !== row.user_id || changedJson(data, nextData)) {
+        // Endpoints mirror the (already re-keyed) node ids, era-chain shapes included.
+        if (typeof data.source === 'string') nextData.source = rewriteNodeId(data.source);
+        if (typeof data.target === 'string') nextData.target = rewriteNodeId(data.target);
+        if (data.id === row.id) nextData.id = nextId;
+
+        if (nextId !== row.id && db.prepare('SELECT id FROM Edges WHERE id = ?').get(nextId)) {
+            stats.graph.duplicateCollisions++;
+            stats.graph.skipped.push(`collision:${row.id}→${nextId}`);
+            continue;
+        }
+
+        if (nextId !== row.id || nextUserId !== row.user_id || changedJson(data, nextData)) {
             if (apply) {
-                db.prepare('UPDATE Edges SET user_id = ?, data = ? WHERE id = ?')
-                    .run(nextUserId, JSON.stringify(nextData), row.id);
+                db.prepare('UPDATE Edges SET id = ?, user_id = ?, data = ? WHERE id = ?')
+                    .run(nextId, nextUserId, JSON.stringify(nextData), row.id);
             }
-            stats.graph.edgeMetadataRowsUpdated++;
+            if (nextId !== row.id) stats.graph.edgesRekeyed++;
+            else stats.graph.edgeMetadataRowsUpdated++;
         }
     }
 }
@@ -519,11 +572,13 @@ export function runGraphMigration(db, apply) {
             duplicateCollisions    : 0,
             edgeMetadataRowsUpdated: 0,
             edgesDropped           : 0,
+            edgesRekeyed           : 0,
             edgesRewritten         : 0,
             nodeMetadataRowsUpdated: 0,
             nodesDeleted           : 0,
             nodesInserted          : 0,
             nodesMerged            : 0,
+            nodesRekeyed           : 0,
             skipped                : []
         }
     };
@@ -712,6 +767,8 @@ async function main() {
             console.log(`  duplicate collisions:    ${graphStats.duplicateCollisions}`);
             console.log(`  node metadata updated:   ${graphStats.nodeMetadataRowsUpdated}`);
             console.log(`  edge metadata updated:   ${graphStats.edgeMetadataRowsUpdated}`);
+            console.log(`  nodes re-keyed:          ${graphStats.nodesRekeyed}`);
+            console.log(`  edges re-keyed:          ${graphStats.edgesRekeyed}`);
             console.log(`  skipped:                 ${graphStats.skipped.length}`);
         } finally {
             db.close();
