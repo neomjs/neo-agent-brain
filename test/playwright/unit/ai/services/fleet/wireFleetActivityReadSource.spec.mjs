@@ -148,6 +148,19 @@ test.describe('Neo.ai.services.fleet.wireFleetActivityReadSource', () => {
         await expect((async () => captured.readA2ASnapshot({limit: 5}))()).rejects.toThrow(/a2a activity source not wired/);
         // The present PR/lane slot is a real reader, not the throwing sentinel.
         expect(typeof captured.readPrLaneSnapshot).toBe('function');
+
+        // Symmetric twin: only the A2A source is present; the PR/lane slot has no contentRoot or issuesDir.
+        let prLaneAbsent = null;
+        wireFleetActivityReadSource({
+            listMessages: async () => ({messages: []}),
+            bridge      : stubBridge(),
+            createSource: opts => { prLaneAbsent = opts; return {readActivitySnapshot() {}} }
+        });
+
+        await expect((async () => prLaneAbsent.readPrLaneSnapshot({limit: 5}))()).rejects.toThrow(
+            /pr-lane activity source not wired.*fleet\.contentRoot \/ NEO_FLEET_CONTENT_ROOT/
+        );
+        expect(typeof prLaneAbsent.readA2ASnapshot).toBe('function');
     });
 
     test('the A2A slot pages the mailbox: the offset reaches listMessages, and the first page asks without one', async () => {

@@ -151,6 +151,20 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         IssueIngestor.ingestPullRequestFeedback = originalIngestPullRequestFeedback;
     });
 
+    test('emitGeneratedContent refuses naming NEO_MCP_GITHUB_CONTENT_ROOT before loading metadata when no contentRoot is configured (#459)', async () => {
+        let metadataLoadCalls = 0;
+
+        MetadataManager.load = async () => {
+            metadataLoadCalls++;
+            return {issues: {}, releases: {}, discussions: {}, pullRequests: {}};
+        };
+
+        await expect(SyncService.emitGeneratedContent()).rejects.toThrow(
+            /SyncService#emitGeneratedContent:.*issueSync\.contentRootOverride \/ NEO_MCP_GITHUB_CONTENT_ROOT/
+        );
+        expect(metadataLoadCalls).toBe(0);
+    });
+
     test('an unclean pull-corpus verdict NEVER reaches the auto-push, and the pull facet does not advance', async () => {
         // Every pass reports its own outcome and degrades softly on its own terms, which is exactly
         // how a corpus reaches the commit with each step reporting success and the whole known-broken.
@@ -185,7 +199,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             divergentDuplicateIds   : [10124]
         });
 
-        await expect(SyncService.runFullSync()).rejects.toThrow(/integrity is not clean/);
+        await expect(SyncService.runFullSync({contentRoot: '/mock/resources/content'})).rejects.toThrow(/integrity is not clean/);
 
         // THE invariant: delivery is never reached, so a corpus measured broken is never committed.
         expect(order).not.toContain('permission-check');
@@ -210,13 +224,13 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             repaired: [], removed: 0, failed: [{id: 10124, reason: 'network down'}]
         });
 
-        await expect(SyncService.runFullSync()).rejects.toThrow(/integrity is not clean/);
+        await expect(SyncService.runFullSync({contentRoot: '/mock/resources/content'})).rejects.toThrow(/integrity is not clean/);
         expect(order).not.toContain('permission-check');
     });
 
     test('a clean verdict lets the run proceed — the gate can PASS', async () => {
         // Otherwise the two aborts above prove only that runFullSync can throw.
-        const result = await SyncService.runFullSync();
+        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
 
         expect(result.success).toBe(true);
         expect(result.syncStats ?? result).toBeTruthy();
@@ -236,7 +250,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             }
         };
 
-        const result = await SyncService.emitGeneratedContent({pushLocalChanges: false});
+        const result = await SyncService.emitGeneratedContent({pushLocalChanges: false, contentRoot: '/mock/resources/content'});
 
         expect(pushCalls).toBe(0);
         expect(pullCalls).toBe(1);
@@ -256,7 +270,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         ReleaseNotesSyncer.syncNotes = async () => { releaseNoteCalls++ };
         IssueSyncer.pushToGitHub = async () => { pushCalls++ };
 
-        const result = await SyncService.emitConversationCorpus();
+        const result = await SyncService.emitConversationCorpus({contentRoot: '/mock/resources/content'});
 
         expect(result.facetOutcomes.map(({name}) => name)).toEqual(['releases', 'issues', 'releaseNotes', 'discussions', 'pulls']);
         expect(fetchOptions).toEqual({needNotes: true});
@@ -274,14 +288,14 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             throw new Error('discussion index write failed');
         };
 
-        await expect(SyncService.emitConversationCorpus()).rejects.toThrow(/discussions \(discussion index write failed\)/);
+        await expect(SyncService.emitConversationCorpus({contentRoot: '/mock/resources/content'})).rejects.toThrow(/discussions \(discussion index write failed\)/);
 
         expect(saved.some(metadata => metadata.releasesLastFetched)).toBe(true);
         expect(saved.every(metadata => !metadata.discussions[1])).toBe(true);
     });
 
     test('runFullSync never invokes Native Graph projection — the container-plane owner is exclusive (#17627)', async () => {
-        const result = await SyncService.runFullSync();
+        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
 
         expect(result.success).toBe(true);
         expect(stage2Calls.issueStates).toBe(0);
@@ -298,7 +312,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             return {permission: 'READ'};
         };
 
-        const result = await SyncService.runFullSync();
+        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
 
         expect(result.success).toBe(true);
 
@@ -376,7 +390,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             return {stdout: '', stderr: ''};
         };
 
-        const result = await SyncService.runFullSync();
+        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
 
         expect(result.success).toBe(true);
         expect(result.statistics.pulled.count).toBe(2);
@@ -445,7 +459,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             return {stdout: '', stderr: ''};
         };
 
-        const result = await SyncService.runFullSync();
+        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
 
         expect(result.success).toBe(true);
         expect(result.statistics.pulled.count).toBe(2);
@@ -487,7 +501,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             return {stdout: '', stderr: ''};
         };
 
-        const result = await SyncService.runFullSync();
+        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
 
         expect(result.success).toBe(true);
         expect(commands).not.toContain('git rebase --abort');
@@ -559,7 +573,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             savedMetadata = md;
         };
 
-        await SyncService.runFullSync();
+        await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
 
         // Metadata persistence carry-over: both syncers' mutations survived.
         expect(savedMetadata, 'MetadataManager.save received an argument').not.toBeNull();
@@ -598,7 +612,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
 
         MetadataManager.save = async (md) => { savedMetadata = md; };
 
-        await SyncService.runFullSync();
+        await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
 
         expect(savedMetadata.discussions).toEqual({});
         expect(savedMetadata.pulls).toEqual({});
@@ -616,7 +630,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         DiscussionSyncer.syncDiscussions = async () => { throw new Error('discussion page cost ceiling') };
         PullRequestSyncer.syncPullRequests = async () => { pullSyncCalled++; return {count: 0} };
 
-        await expect(SyncService.runFullSync()).rejects.toThrow(/did not advance/);
+        await expect(SyncService.runFullSync({contentRoot: '/mock/resources/content'})).rejects.toThrow(/did not advance/);
 
         // The whole point: pull requests are fetched even though discussions threw first. Before
         // isolation this was 0, and that single fact is why `pulls/` went stale from a discussions bug.
@@ -641,7 +655,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             throw new Error('failed after mutating')
         };
 
-        await expect(SyncService.runFullSync()).rejects.toThrow(/did not advance/);
+        await expect(SyncService.runFullSync({contentRoot: '/mock/resources/content'})).rejects.toThrow(/did not advance/);
 
         expect(saved.length).toBeGreaterThan(0);
 
@@ -659,7 +673,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         DiscussionSyncer.syncDiscussions = async () => { throw new Error('cost ceiling') };
         ReleaseNotesSyncer.syncNotes = async () => { throw new Error('release notes boom') };
 
-        const error = await SyncService.runFullSync().then(() => null, e => e);
+        const error = await SyncService.runFullSync({contentRoot: '/mock/resources/content'}).then(() => null, e => e);
 
         expect(error).toBeTruthy();
         expect(error.message).toMatch(/discussions/);
@@ -688,7 +702,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         DiscussionSyncer.syncDiscussions   = async () => { ran.push('discussions');  return {count: 0} };
         PullRequestSyncer.syncPullRequests = async () => { ran.push('pulls');        return {count: 0} };
 
-        const error = await SyncService.runFullSync().then(() => null, e => e);
+        const error = await SyncService.runFullSync({contentRoot: '/mock/resources/content'}).then(() => null, e => e);
 
         // NONE of the dependents may execute without the bucketing reference.
         expect(ran).toEqual([]);
@@ -715,7 +729,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         DiscussionSyncer.syncDiscussions   = async () => { ran.push('discussions'); return {count: 0} };
         PullRequestSyncer.syncPullRequests = async () => { ran.push('pulls');       return {count: 0} };
 
-        await expect(SyncService.runFullSync()).rejects.toThrow(/did not advance/);
+        await expect(SyncService.runFullSync({contentRoot: '/mock/resources/content'})).rejects.toThrow(/did not advance/);
 
         expect(ran).toContain('discussions');
         expect(ran).toContain('pulls');
@@ -746,7 +760,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             divergentDuplicateIds   : []
         });
 
-        const error = await SyncService.runFullSync().then(() => null, e => e),
+        const error = await SyncService.runFullSync({contentRoot: '/mock/resources/content'}).then(() => null, e => e),
               last  = saved.at(-1);
 
         expect(error).toBeTruthy();
