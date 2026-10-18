@@ -1390,14 +1390,17 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             now         = startedAt;
 
         // One configured repo whose embedding episode awaits a generation. Its ordinary backoff is an
-        // hour, so every sweep runs the cadence probe and only a bypass can dispatch it.
-        async function seedAwaitingRepo(slug) {
-            const episodeId = (++episodeSeq).toString(16).padStart(32, 'e');
+        // hour, so every sweep runs the cadence probe and only a bypass can dispatch it. `join` adds it
+        // to the repos already awaiting instead of replacing them.
+        async function seedAwaitingRepo(slug, {join = false} = {}) {
+            const
+                episodeId = (++episodeSeq).toString(16).padStart(32, 'e'),
+                awaiting  = join ? (await fs.readJson(revisionsFile)).revisions : {};
 
             await provisionMirrorDir({tenantId: 't1', repoSlug: slug});
             await TenantRepoSyncService.writePersistedRevisions({
                 filePath : revisionsFile,
-                revisions: {[`t1/${slug}`]: {
+                revisions: {...awaiting, [`t1/${slug}`]: {
                     lastIngestedRev                   : null,
                     lastRunAttemptAt                  : startedAt,
                     consecutiveFailures               : 10,
@@ -1422,13 +1425,13 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             return [`${episodeId}:initial`]
         }
 
-        function sweepOptions(slug, taskStateService, embeddingRecoveryProbe) {
+        function sweepOptions(slugs, taskStateService, embeddingRecoveryProbe) {
             return {
                 reason           : 'periodic-sweep:60000',
                 taskStateService,
-                tenantReposConfig: {tenantRepos: [{
-                    tenantId: 't1', repoSlug: slug, mirrorRoot, cloneUrl: `https://github.com/neomjs/${slug.split('/')[1]}.git`
-                }]},
+                tenantReposConfig: {tenantRepos: [].concat(slugs).map(repoSlug => ({
+                    tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`
+                }))},
                 gitMirror                    : makeFakeGitMirror(),
                 envelopeBuilder              : makeFakeEnvelopeBuilder(),
                 knowledgeBaseIngestionService: makeFakeIngestionService({
@@ -1536,26 +1539,36 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             expect(await attempt(fullBand), 'the control minted, and its bypass recovered the repo').toBeUndefined();
         });
 
-        test('a full-band proof that kills the provider is attempted once per identity', async () => {
-            const slug = 'org/proof-death';
+        test('a full-band death refuses for the lane, whichever cohort asks, until it expires', async () => {
+            const
+                slug       = 'org/proof-death',
+                joiner     = 'org/proof-death-joiner',
+                quarter    = () => ({status: 'healthy', probeBandFraction: 0.25, probeEstimateTokens: 5310, probeSized: true}),
+                proveDying = () => TenantRepoSyncService.proveEmbeddingRecoveryAuthorization({timeoutMs: 1_000, runProbe: () => {
+                    attempts++;
+                    return {status: 'failed', errorClassification: 'provider-died', errorCode: 'EMBEDDING_PROVIDER_DIED'}
+                }});
             let attempts = 0;
 
             await seedAwaitingRepo(slug);
-            await TenantRepoSyncService.runTask(sweepOptions(slug, createTaskStateService(), () => ({
-                status: 'healthy', probeBandFraction: 0.25, probeEstimateTokens: 5310, probeSized: true
-            })));
-
-            const dying = () => {
-                attempts++;
-                return {status: 'failed', errorClassification: 'provider-died', errorCode: 'EMBEDDING_PROVIDER_DIED'}
-            };
-
-            await TenantRepoSyncService.proveEmbeddingRecoveryAuthorization({timeoutMs: 1_000, runProbe: dying});
+            await TenantRepoSyncService.runTask(sweepOptions(slug, createTaskStateService(), quarter));
+            await proveDying();
             now += 11 * 60_000;
-            const second = await TenantRepoSyncService.proveEmbeddingRecoveryAuthorization({timeoutMs: 1_000, runProbe: dying});
 
-            expect(attempts, 'the second proof is the death cache, not another engine').toBe(1);
-            expect(second).toMatchObject({status: 'failed', errorClassification: 'provider-died', cached: true});
+            expect(await proveDying()).toMatchObject({status: 'failed', errorClassification: 'provider-died', cached: true});
+            expect(attempts, 'the same cohort asking again is the death cache, not another engine').toBe(1);
+
+            // A repo joins the awaiting cohort: a new cohort key, the same lane. At the band ceiling one
+            // more attempt costs about four times the request that killed the engine.
+            await seedAwaitingRepo(joiner, {join: true});
+            await TenantRepoSyncService.runTask(sweepOptions([slug, joiner], createTaskStateService(), quarter));
+            expect(TenantRepoSyncService.embeddingAuthorizationRequest.episodeKeys).toHaveLength(2);
+            await proveDying();
+            expect(attempts, 'a joining repo buys no second attempt at the band ceiling').toBe(1);
+
+            now += 12 * AiConfig.data.orchestrator.intervals.tenantRepoSyncMs + 1;
+            await proveDying();
+            expect(attempts, 'the death expires, so a lane given more memory is asked again').toBe(2);
         });
 
         test('the poll cycle is due only while a requested proof is missing and its gate allows an attempt', async () => {

@@ -107,6 +107,11 @@ const
     EMBEDDING_RECOVERY_FAILURE_TTL_MS     = 30 * 1000,
     EMBEDDING_RECOVERY_FAILURE_TTL_MAX_MS = 10 * 60 * 1000,
     EMBEDDING_RECOVERY_PROBE_TIMEOUT_MS   = 30 * 1000,
+    // A lane that died at the full band is re-asked after this many sweep cadences: one engine per
+    // twelve sweeps on a lane that cannot serve its band, not one per cohort join, while an engine
+    // given more memory is re-asked within that window (or at once after a restart, deaths being
+    // process-local).
+    EMBEDDING_AUTHORIZATION_DEATH_TTL_CADENCES = 12,
     // Milliseconds of provider budget per estimate-token, measured from the incident this lane
     // exists for: a 13,980-token request took ~180 s on the offending image, i.e. ~12.9 ms/token.
     //
@@ -972,12 +977,19 @@ class TenantRepoSyncService extends Base {
     embeddingAuthorizationRequest = null
 
     /**
-     * The latest authorization proof: the probe outcome plus `{key, checkedAt}`. Process-local by
-     * design: a restart loses it, and the next cycle proves again.
+     * The latest authorization proof: the probe outcome plus `{key, timeoutMs, checkedAt}`.
+     * Process-local by design: a restart loses it, and the next cycle proves again.
      * @member {Object|null} embeddingAuthorizationProof
      * @protected
      */
     embeddingAuthorizationProof = null
+
+    /**
+     * The lane the current proof attempt records a death against, read by its gate closure.
+     * @member {String|null} embeddingAuthorizationLaneKey
+     * @protected
+     */
+    embeddingAuthorizationLaneKey = null
 
     /**
      * @summary Returns a bounded readiness result for one effective repository.
@@ -1031,6 +1043,7 @@ class TenantRepoSyncService extends Base {
         this.embeddingAuthorizationProbeFn = null;
         this.embeddingAuthorizationRequest = null;
         this.embeddingAuthorizationProof   = null;
+        this.embeddingAuthorizationLaneKey = null;
     }
 
     /**
@@ -1144,7 +1157,8 @@ class TenantRepoSyncService extends Base {
      * @param {Object} options
      * @param {String[]} options.episodeKeys Awaiting durable episode/generation-history keys.
      * @param {Number} options.fraction Share of the admission band the probe exercises.
-     * @returns {{probeSize: Object, key: String}}
+     * @returns {{probeSize: Object, laneKey: String, key: String}} `laneKey` names the provider at
+     *     this geometry; `key` binds it to the awaiting cohort.
      * @protected
      */
     resolveEmbeddingProbeIdentity({episodeKeys, fraction}) {
@@ -1156,11 +1170,13 @@ class TenantRepoSyncService extends Base {
                 }).estimateBandTokens,
                 fraction
             }),
-            geometry  = probeSize.sized ? `${probeSize.estimateTokens}:${probeSize.fraction}` : 'unsized';
+            geometry  = probeSize.sized ? `${probeSize.estimateTokens}:${probeSize.fraction}` : 'unsized',
+            laneKey   = `${AiConfig.embeddingProvider}:${AiConfig.vectorDimension}:${geometry}`;
 
         return {
             probeSize,
-            key: `${AiConfig.embeddingProvider}:${AiConfig.vectorDimension}:${geometry}:${[...episodeKeys].sort().join(',')}`
+            laneKey,
+            key: `${laneKey}:${[...episodeKeys].sort().join(',')}`
         }
     }
 
@@ -1203,15 +1219,17 @@ class TenantRepoSyncService extends Base {
      * @param {Function} options.probe Attempt, called with the gate context.
      * @param {Number} options.failureTtlMs Failure backoff floor.
      * @param {Number} options.failureTtlMaxMs Failure backoff ceiling.
+     * @param {Function} [options.deathKey] Names the identity a death is recorded against; the gate key by default.
+     * @param {Number} [options.deathTtlMs=Infinity] How long a recorded death refuses.
      * @returns {Object}
      * @protected
      */
-    createEmbeddingProbeGate({probe, failureTtlMs, failureTtlMaxMs}) {
+    createEmbeddingProbeGate({probe, failureTtlMs, failureTtlMaxMs, deathKey = context => context?.key, deathTtlMs = Infinity}) {
         return createBoundedRetryGate({
             run: async context => {
-                const died = this.embeddingRecoveryDeaths?.get(context?.key);
+                const died = this.embeddingRecoveryDeaths?.get(deathKey(context));
 
-                if (died) {
+                if (died && this.embeddingRecoveryClock() - died.diedAt < deathTtlMs) {
                     return {...died, cached: true}
                 }
 
@@ -1219,7 +1237,7 @@ class TenantRepoSyncService extends Base {
                     const outcome = await probe(context);
 
                     if (outcome?.errorClassification === 'provider-died') {
-                        (this.embeddingRecoveryDeaths ??= new Map()).set(context?.key, outcome)
+                        (this.embeddingRecoveryDeaths ??= new Map()).set(deathKey(context), {...outcome, diedAt: this.embeddingRecoveryClock()})
                     }
 
                     return outcome;
@@ -1244,27 +1262,36 @@ class TenantRepoSyncService extends Base {
      * The sweep only REQUESTS this proof and later consumes it; it never awaits a full-band embed.
      * The orchestrator's poll cycle calls this under the heavy-maintenance lease, so `timeoutMs` is
      * that lease's budget rather than a deadline derived from the input size: the size-derived one
-     * would be ~411 s, held once per backoff against a dead provider.
+     * would be ~411 s, held once per backoff against a dead provider. The budget travels on the
+     * verdict, so a short lease reads as budget, not as a provider failure.
+     *
+     * The proof answers for the cohort it was requested for, so an embedding failure that changes
+     * the cohort retires it. Its death answers for the LANE: at the band ceiling one attempt costs
+     * about four times the request that killed the engine, so a repo joining the cohort must not
+     * buy another. The death expires after `deathTtlMs`, or the lane changes.
      *
      * @param {Object} options
      * @param {Number} options.timeoutMs Provider deadline: the caller's lease budget.
      * @param {Function} [options.runProbe] Attempt seam.
      * @param {Number} [options.failureTtlMs=30000] Proof failure backoff floor.
      * @param {Number} [options.failureTtlMaxMs=600000] Proof failure backoff ceiling.
+     * @param {Number} [options.deathTtlMs] How long a full-band death refuses: twelve sweep cadences.
      * @returns {Promise<Object|null>} The recorded proof, or `null` when none is requested.
      */
     async proveEmbeddingRecoveryAuthorization({
         timeoutMs,
         runProbe,
         failureTtlMs    = EMBEDDING_RECOVERY_FAILURE_TTL_MS,
-        failureTtlMaxMs = EMBEDDING_RECOVERY_FAILURE_TTL_MAX_MS
+        failureTtlMaxMs = EMBEDDING_RECOVERY_FAILURE_TTL_MAX_MS,
+        deathTtlMs      = EMBEDDING_AUTHORIZATION_DEATH_TTL_CADENCES * AiConfig.data.orchestrator.intervals.tenantRepoSyncMs
     } = {}) {
         const request = this.embeddingAuthorizationRequest;
 
         if (!request) return null;
 
-        const {probeSize, key} = this.resolveEmbeddingProbeIdentity({episodeKeys: request.episodeKeys, fraction: 1});
+        const {probeSize, laneKey, key} = this.resolveEmbeddingProbeIdentity({episodeKeys: request.episodeKeys, fraction: 1});
 
+        this.embeddingAuthorizationLaneKey = laneKey;
         this.embeddingAuthorizationProbeFn = runProbe || this.createEmbeddingProbeFn({
             operationLabel: 'Tenant repo sync embedding authorization proof',
             probeSize,
@@ -1272,7 +1299,9 @@ class TenantRepoSyncService extends Base {
         });
 
         this.embeddingAuthorizationGate ??= this.createEmbeddingProbeGate({
-            probe: context => this.embeddingAuthorizationProbeFn(context),
+            probe   : context => this.embeddingAuthorizationProbeFn(context),
+            deathKey: () => this.embeddingAuthorizationLaneKey,
+            deathTtlMs,
             failureTtlMs,
             failureTtlMaxMs
         });
@@ -1282,6 +1311,7 @@ class TenantRepoSyncService extends Base {
         this.embeddingAuthorizationProof = {
             ...outcome,
             key,
+            timeoutMs,
             checkedAt: outcome.gate?.checkedAt ?? this.embeddingRecoveryClock()
         };
 
@@ -2263,7 +2293,7 @@ class TenantRepoSyncService extends Base {
                 // A healthy sub-band answer is not a provider fault: the refusal is coverage. Ask the
                 // poll cycle for the proof this cohort needs, and say so.
                 this.embeddingAuthorizationRequest = {key: authorizationKey, episodeKeys, requestedAt: embeddingRecoveryClock()};
-                writeLog?.('INFO', `[TenantRepoSync] Embedding recovery answers at ${observation.probeBandFraction ?? 'an unsized'} band; awaiting a full-band authorization proof${proof ? ` (last proof: ${proof.errorCode || proof.status})` : ''}.`);
+                writeLog?.('INFO', `[TenantRepoSync] Embedding recovery answers at ${observation.probeBandFraction ?? 'an unsized'} band; awaiting a full-band authorization proof${proof ? ` (last proof: ${proof.errorCode || proof.status} within ${proof.timeoutMs} ms)` : ''}.`);
             } else if (observation) {
                 writeLog?.('INFO', `[TenantRepoSync] Embedding recovery not yet observed (${observation.errorCode || 'EMBEDDING_PROVIDER_ERROR'}; ${observation.gate?.cached ? 'probe backoff retained' : 'provider still failing'}).`);
             }
