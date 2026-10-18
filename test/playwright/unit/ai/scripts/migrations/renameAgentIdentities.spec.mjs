@@ -645,6 +645,42 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
         db.close();
     });
 
+    test('a compatible merge survives the rest of the pass: a survivor that still needs normalization keeps the merged data in either visiting order', () => {
+        // Sophie's finding on the head before this one: the pass walked a pre-pass snapshot, so a survivor
+        // visited after its merge was overwritten with its stale, un-merged data whenever it needed
+        // normalization itself.
+        for (const oldFirst of [true, false]) {
+            const db = new Database(':memory:');
+            createGraphSchema(db);
+
+            const oldState = createIdentityStateNode({identityKey: '@neo-gpt'}).node;
+            const newState = createIdentityStateNode({identityKey: '@neo-gpt-euclid'}).node;
+            const oldRow   = {id: oldState.id, user_id: 'neo-gpt', data: {...oldState, properties: {createdAt: '2020-01-01T00:00:00.000Z', historyCanary: 'kept'}}};
+            // The survivor still carries the old user id and an old token: it needs normalization itself.
+            const newRow = {id: newState.id, user_id: 'neo-gpt', data: {...newState, properties: {createdAt: '2025-01-01T00:00:00.000Z', requiredGithubLogin: '@neo-gpt'}}};
+
+            insertNode(db, {id: '@neo-gpt', user_id: 'neo-gpt', data: {id: '@neo-gpt', label: 'AgentIdentity', properties: {githubLogin: '@neo-gpt', userId: 'neo-gpt'}}});
+            for (const node of oldFirst ? [oldRow, newRow] : [newRow, oldRow]) insertNode(db, node);
+
+            runGraphMigration(db, true);
+
+            const survivor = db.prepare('SELECT user_id, data FROM Nodes WHERE id = ?').get(newState.id);
+            expect(db.prepare('SELECT id FROM Nodes WHERE id = ?').get(oldState.id), `old row gone (oldFirst=${oldFirst})`).toBeUndefined();
+            expect(survivor.user_id, `survivor user_id normalized (oldFirst=${oldFirst})`).toBe('neo-gpt-euclid');
+            expect(JSON.parse(survivor.data).properties, `merged data kept (oldFirst=${oldFirst})`).toEqual({
+                createdAt          : '2020-01-01T00:00:00.000Z',
+                historyCanary      : 'kept',
+                requiredGithubLogin: '@neo-gpt-euclid'
+            });
+
+            const second = runGraphMigration(db, true);
+            expect(second).toMatchObject({duplicateCollisions: 0, nodeMetadataRowsUpdated: 0, nodesMerged: 0, nodesRekeyed: 0});
+            expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+
+            db.close();
+        }
+    });
+
     test('a coexisting compound row whose value disagrees with the survivor fails closed: no writes for it, the plan names the key, keys hold', () => {
         const db = new Database(':memory:');
         createGraphSchema(db);

@@ -521,8 +521,13 @@ function moveEdges(db, fromId, toId, apply, stats) {
 function rewriteGraphMetadataRows(db, apply, stats) {
     const moved = new Map(); // old row id → surviving row id
 
-    for (const row of db.prepare('SELECT id, user_id, data FROM Nodes').all()) {
-        if (STRUCTURAL_NODE_IDS.has(row.id)) continue;
+    for (const snapshot of db.prepare('SELECT id FROM Nodes').all()) {
+        if (STRUCTURAL_NODE_IDS.has(snapshot.id)) continue;
+
+        // Re-read before deciding: a merge earlier in this pass may have rewritten or removed this row,
+        // and the snapshot taken before the pass is no authority over merged data.
+        const row = db.prepare('SELECT id, user_id, data FROM Nodes WHERE id = ?').get(snapshot.id);
+        if (!row) continue;
 
         const data       = parseGraphData(row.data);
         const nextData   = rewriteIdentityFields(data);
@@ -543,7 +548,7 @@ function rewriteGraphMetadataRows(db, apply, stats) {
                 moveEdges(db, row.id, nextId, apply, stats);
                 if (apply) {
                     db.prepare('UPDATE Nodes SET user_id = ?, data = ? WHERE id = ?')
-                        .run(survivor.user_id ?? nextUserId, JSON.stringify(merged), nextId);
+                        .run(rewriteUserIdColumn(survivor.user_id) ?? nextUserId, JSON.stringify(merged), nextId);
                     db.prepare('DELETE FROM Nodes WHERE id = ?').run(row.id);
                 }
                 stats.graph.nodesMerged++;
@@ -573,7 +578,11 @@ function rewriteGraphMetadataRows(db, apply, stats) {
         }
     }
 
-    for (const row of db.prepare('SELECT id, user_id, source, target, data FROM Edges').all()) {
+    for (const snapshot of db.prepare('SELECT id FROM Edges').all()) {
+        // Re-read: the node moves above rewrote endpoints and dropped duplicates.
+        const row = db.prepare('SELECT id, user_id, source, target, data FROM Edges WHERE id = ?').get(snapshot.id);
+        if (!row) continue;
+
         const data       = parseGraphData(row.data);
         const nextData   = rewriteIdentityFields(data);
         const nextUserId = rewriteUserIdColumn(row.user_id);
