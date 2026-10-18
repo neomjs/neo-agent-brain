@@ -1,8 +1,9 @@
-import {createHash}  from 'node:crypto';
-import {constants}   from 'node:fs';
-import fs            from 'node:fs/promises';
-import path          from 'node:path';
-import {MCP_SERVERS} from '../../../src/fleet/contract/mcpServers.mjs';
+import {createHash}          from 'node:crypto';
+import {constants}           from 'node:fs';
+import fs                    from 'node:fs/promises';
+import path                  from 'node:path';
+import {parse as parseToml}  from 'smol-toml';
+import {MCP_SERVERS}         from '../../../src/fleet/contract/mcpServers.mjs';
 import {ANTIGRAVITY_MCP_DIRECTORY, ANTIGRAVITY_MCP_WORKSPACE_FILE, generateAntigravityMcpFiles, parseAntigravityMcpInvoker}
     from './generateAntigravityMcpFiles.mjs';
 import {
@@ -20,7 +21,10 @@ import {
  * A verified read supplies no Start or succession authority by itself.
  */
 export const DESKTOP_PROFILE_RECEIPT = '.neo-fleet-claude-desktop-profile.json';
+/** @summary A Codex seat's own config in its `CODEX_HOME`, the carrier of its capability-bearing tables. */
+export const CODEX_HOME_CONFIG = 'config.toml';
 const PROFILE = 'claude_desktop_config.json', PREFIX = 'neo-mjs-', MAX_BYTES = 8 * 1024 * 1024;
+const CODEX_PROJECT_CONFIG = path.join('.codex', 'config.toml');
 const digest  = value => createHash('sha256').update(value).digest('hex');
 const isHash  = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const exact   = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
@@ -103,7 +107,38 @@ export function createAntigravityLaunchBinding({identity, issuer, instanceHome, 
 }
 
 /**
- * @summary Validates the closed Claude JSON (v1) or Antigravity invoker (v2) binding without file access.
+ * @summary The canonical Neo-owned MCP tables of a Codex config, the projection binding and recovery both hash.
+ * @param {String} source TOML.
+ * @returns {Object} The `neo-mjs-*` server tables.
+ */
+export function codexProfileProjection(source) {
+    let parsed;
+    try { parsed = parseToml(source) } catch { throw refuse('invalid-toml') }
+    return JSON.parse(canonicalJson(Object.fromEntries(
+        Object.entries(parsed?.mcp_servers || {}).filter(([name]) => name.startsWith(PREFIX))
+    )))
+}
+
+/**
+ * @summary Binds a Codex seat's original Start to the capability-bearing tables of its home config.
+ * The home config is the carrier because it lives outside every checkout; a project config would win over
+ * it for a table both name, so recovery also proves the original workspace names none of them.
+ * @param {Object} options
+ * @param {String} options.identity Validated forge login.
+ * @param {String} options.issuer The original loopback origin.
+ * @param {String} options.codexHome Canonical `CODEX_HOME` preparation wrote the config into.
+ * @param {String} options.workspaceRoot Canonical original workspace.
+ * @param {String} options.source The home config exactly as preparation writes it.
+ * @returns {Object} Closed non-secret binding: hashes, identity, issuer and the two roots.
+ */
+export function createCodexLaunchBinding({identity, issuer, codexHome, workspaceRoot, source}) {
+    if (!absolute(codexHome) || !absolute(workspaceRoot) || typeof source !== 'string') throw refuse('invalid-binding');
+    const {projectionSha256, grants} = createDesktopLaunchBinding({rows: codexProfileProjection(source), identity, issuer});
+    return {version: 3, kind: 'codex', identity, issuer, codexHome, workspaceRoot, projectionSha256, grants}
+}
+
+/**
+ * @summary Validates the closed Claude JSON (v1), Antigravity invoker (v2) or Codex TOML (v3) binding without file access.
  * @param {*} value Candidate non-secret original-Start profile metadata.
  * @returns {Boolean} Unknown fields, formats, paths and server sets refuse.
  */
@@ -114,6 +149,10 @@ export function isLaunchProfileBinding(value) {
         !Object.entries(value.grants).every(([key, grant]) => /^[a-z][a-z0-9-]{0,63}$/.test(key) &&
             exact(grant, ['id', 'sha256']) && typeof grant.id === 'string' && /^[A-Za-z0-9_-]{22,128}$/.test(grant.id) && isHash(grant.sha256))) return false;
     if (value.version === 1) return exact(value, ['version', 'identity', 'issuer', 'projectionSha256', 'grants']) && isHash(value.projectionSha256);
+    if (value.version === 3) {
+        return exact(value, ['version', 'kind', 'identity', 'issuer', 'codexHome', 'workspaceRoot', 'projectionSha256', 'grants']) &&
+            value.kind === 'codex' && absolute(value.codexHome) && absolute(value.workspaceRoot) && isHash(value.projectionSha256)
+    }
     return Boolean(value.version === 2 && exact(value, ['version', 'kind', 'identity', 'issuer', 'instanceHome', 'workspaceRoot', 'workspaceSha256', 'invokerSha256', 'grants']) &&
         value.kind === 'antigravity' && absolute(value.instanceHome) && absolute(value.workspaceRoot) && isHash(value.workspaceSha256) &&
         value.invokerSha256 && typeof value.invokerSha256 === 'object' && !Array.isArray(value.invokerSha256) &&
@@ -155,19 +194,20 @@ function sameFile(a, b, content = true) {
 /**
  * @summary Recovers unchanged original capabilities from their native profile carrier.
  * Bounded descriptor reads retain their handles through final path/UID/mode/change-stamp checks.
- * Antigravity additionally binds its exact profile, workspace and enabled invoker set. Workspace
- * reads inspect only canonical Fleet rows; unrelated project settings remain outside the binding.
+ * Antigravity additionally binds its exact profile, workspace and enabled invoker set; Codex binds its
+ * home config and proves the original workspace leaves the bound tables to it. Workspace reads inspect
+ * only canonical Fleet rows; unrelated project settings remain outside the binding.
  * @param {Object} options
  * @param {String} options.managedRoot Canonical lifecycle-owned profile root.
  * @param {String} options.instanceHome Expected home derived from the original lifecycle record.
- * @param {String} [options.workspaceRoot] Original Start's working directory, required for Antigravity.
+ * @param {String} [options.workspaceRoot] Original Start's working directory, required for Antigravity and Codex.
  * @param {Object} options.binding Original non-secret profile binding.
  * @param {Object} [options.fileSystem=fs] Promise filesystem seam.
  * @param {Number} [options.uid=process.getuid()] Expected owner.
  * @returns {Promise<Object<String,String>>} Transient per-server capabilities, never persisted.
  */
 export async function recoverLaunchProfileGrants({managedRoot, instanceHome, workspaceRoot, binding, fileSystem = fs, uid = process.getuid?.()}) {
-    const handles = [], files = [], directories = [];
+    const handles = [], files = [], directories = [], absent = [];
     try {
         if (!Number.isInteger(uid) || !path.isAbsolute(managedRoot || '') || !path.isAbsolute(instanceHome || '') ||
             !isLaunchProfileBinding(binding)) throw refuse('invalid-binding');
@@ -185,6 +225,18 @@ export async function recoverLaunchProfileGrants({managedRoot, instanceHome, wor
         for (const part of ['', ...relative.split(path.sep)]) {
             if (part) current = path.join(current, part);
             await directory(current);
+        }
+
+        /** @summary Whether a path exists. A proven absence is re-checked with the final stamps; any other error refuses. */
+        async function present(file) {
+            try {
+                await fileSystem.lstat(file);
+                return true
+            } catch (error) {
+                if (error?.code !== 'ENOENT') throw error;
+                absent.push(file);
+                return false
+            }
         }
 
         /** @summary Reads bounded bytes without following links and retains the descriptor for final checks. */
@@ -225,6 +277,29 @@ export async function recoverLaunchProfileGrants({managedRoot, instanceHome, wor
                 digest(canonicalJson(rows)) !== binding.projectionSha256) throw refuse('receipt-mismatch');
             if (canonicalJson(Object.keys(rows).sort()) !== canonicalJson(Object.keys(binding.grants).map(key => PREFIX + key).sort())) throw refuse('row-set-mismatch');
             for (const key of Object.keys(binding.grants)) capabilities[key] = capability(rows[PREFIX + key], key);
+        } else if (binding.version === 3) {
+            const below = path.relative(home, binding.codexHome);
+            if (below.startsWith('..') || path.isAbsolute(below) || workspaceRoot !== binding.workspaceRoot ||
+                await fileSystem.realpath(workspaceRoot) !== workspaceRoot) throw refuse('profile-binding-mismatch');
+            let current = home;
+            for (const part of below ? below.split(path.sep) : []) {
+                current = path.join(current, part);
+                await directory(current);
+            }
+            const rows = codexProfileProjection((await read(path.join(binding.codexHome, CODEX_HOME_CONFIG))).toString('utf8'));
+            if (digest(canonicalJson(rows)) !== binding.projectionSha256) throw refuse('projection-mismatch');
+            if (canonicalJson(Object.keys(rows).sort()) !== canonicalJson(Object.keys(binding.grants).map(key => PREFIX + key).sort())) throw refuse('row-set-mismatch');
+            for (const key of Object.keys(binding.grants)) capabilities[key] = capability(rows[PREFIX + key], key);
+            // A project config wins over home for a table both name: the workspace must leave the bound ones to home.
+            await directory(workspaceRoot);
+            const project = path.join(workspaceRoot, CODEX_PROJECT_CONFIG);
+            if (await present(path.dirname(project))) {
+                await directory(path.dirname(project));
+                if (await present(project)) {
+                    const named = codexProfileProjection((await read(project, false)).toString('utf8'));
+                    if (Object.keys(binding.grants).some(key => Object.hasOwn(named, PREFIX + key))) throw refuse('workspace-mismatch');
+                }
+            }
         } else {
             if (home !== binding.instanceHome || workspaceRoot !== binding.workspaceRoot ||
                 await fileSystem.realpath(workspaceRoot) !== workspaceRoot) throw refuse('profile-binding-mismatch');
@@ -257,6 +332,13 @@ export async function recoverLaunchProfileGrants({managedRoot, instanceHome, wor
         }
         for (const {file, stat} of directories) {
             if (!sameFile(stat, await fileSystem.lstat(file, {bigint: true}), false)) throw refuse('directory-changed');
+        }
+        for (const file of absent) {
+            const appeared = await fileSystem.lstat(file).then(() => true, error => {
+                if (error?.code === 'ENOENT') return false;
+                throw error
+            });
+            if (appeared) throw refuse('file-changed');
         }
         return capabilities;
     } catch (error) {
