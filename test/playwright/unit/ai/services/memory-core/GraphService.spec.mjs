@@ -1860,13 +1860,15 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
     });
 
     test('TestLifecycleHelper.cleanupGraphService(clear) and SystemLifecycleService.initAsync restore canonical boot seeds on warm workers', async () => {
-        const {TestLifecycleHelper, resetMemoryCoreLifecycle} = await import('./util.mjs');
+        const
+            {TestLifecycleHelper, resetMemoryCoreLifecycle} = await import('./util.mjs'),
+            seedAgentId = createGraphBootSeedManifest().nodes.find(node => node.type === 'AgentIdentity').id;
 
-        expect(GraphService.db.nodes.get('@neo-gemini-pro')).toBeFalsy();
+        expect(GraphService.db.nodes.get(seedAgentId)).toBeFalsy();
 
         await TestLifecycleHelper.cleanupGraphService(GraphService, SystemLifecycleService, null, null, 'clear');
 
-        expect(GraphService.db.nodes.get('@neo-gemini-pro')?.label).toBe('AgentIdentity');
+        expect(GraphService.db.nodes.get(seedAgentId)?.label).toBe('AgentIdentity');
 
         GraphService.db.nodes.clear();
         GraphService.db.edges.clear();
@@ -1874,11 +1876,11 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         await GraphService.db.storage.clear();
         await resetMemoryCoreLifecycle();
 
-        expect(GraphService.db.nodes.get('@neo-gemini-pro')).toBeFalsy();
+        expect(GraphService.db.nodes.get(seedAgentId)).toBeFalsy();
 
         await SystemLifecycleService.initAsync();
 
-        expect(GraphService.db.nodes.get('@neo-gemini-pro')?.label).toBe('AgentIdentity');
+        expect(GraphService.db.nodes.get(seedAgentId)?.label).toBe('AgentIdentity');
     });
 });
 
