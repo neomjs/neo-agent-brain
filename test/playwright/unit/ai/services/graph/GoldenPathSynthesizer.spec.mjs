@@ -145,11 +145,11 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
     test('derives repo-enrichment identity projections from identityRoots', () => {
 
         expect(Synthesizer.getCoreSwarmAgentFamilies()).toMatchObject({
-            'neo-opus-grace': 'claude',
+            'neo-opus-grace'  : 'claude',
             'neo-gemini-julia': 'gemini',
-            'neo-gpt-euclid'       : 'gpt',
-            'neo-opus-ada'  : 'claude',
-            'neo-opus-vega' : 'claude'
+            'neo-gpt-euclid'  : 'gpt',
+            'neo-opus-ada'    : 'claude',
+            'neo-opus-vega'   : 'claude'
         });
 
         expect(Synthesizer.getAgentLogins()).toEqual(expect.arrayContaining([
@@ -3434,7 +3434,7 @@ test.describe('GoldenPathSynthesizer.hasCrossFamilyReview — author family from
 
     // `@`-stripped login → modelFamily, matching getCoreSwarmAgentFamilies().
     const agentFamilies = {
-        'neo-gpt-euclid'       : 'gpt',
+        'neo-gpt-euclid': 'gpt',
         'neo-opus-grace': 'claude',
         'neo-opus-ada'  : 'claude',
         'neo-opus-vega' : 'claude'

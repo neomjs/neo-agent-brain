@@ -1583,7 +1583,7 @@ test.describe('HealthService #11181 — buildChromaMigrationStats', () => {
         expect(result.shared).toBe(1);
         expect(result.migrationDebt).toBe(2);
         expect(result.perUserId).toEqual({
-            shared   : 1,
+            shared          : 1,
             'neo-gpt-euclid': 1
         });
     });
