@@ -131,7 +131,9 @@ test.describe('PrimaryRepoSyncService (#11017)', () => {
         expect(isKbRelevantChangePath('src/button/Base.mjs')).toBe(true);
         expect(isKbRelevantChangePath('ai/services/knowledge-base/source/ApiSource.mjs')).toBe(true);
         expect(isKbRelevantChangePath('docs/output/class-hierarchy.json')).toBe(true);
-        expect(isKbRelevantChangePath('resources/content/issues/chunk-13/issue-11783.md')).toBe(true);
+        // Concepts are a KB source root; the retired conversation mirror and its metadata are not.
+        expect(isKbRelevantChangePath('resources/content/concepts/component-model.md')).toBe(true);
+        expect(isKbRelevantChangePath('resources/content/issues/chunk-13/issue-11783.md')).toBe(false);
         expect(isKbRelevantChangePath('resources/content/.sync-metadata.json')).toBe(false);
         expect(isKbRelevantChangePath('.codex/config.template.toml')).toBe(false);
         expect(isKbRelevantChangePath('package.json')).toBe(false);
@@ -424,65 +426,6 @@ test.describe('PrimaryRepoSyncService (#11017)', () => {
             configChangedPathCount : 1,
             configChangedPathSample: ['ai/mcp/server/memory-core/config.template.mjs']
         });
-    });
-
-    test('uses layer 2 only for generated sync metadata', () => {
-        const execStub = createExecStub([{
-            cmd   : 'git',
-            args  : ['worktree', 'list', '--porcelain'],
-            output: 'worktree /primary/neo\n'
-        }, {
-            cmd   : 'git',
-            args  : ['rev-parse', '--abbrev-ref', 'HEAD'],
-            output: 'dev\n'
-        }, {
-            cmd : 'git',
-            args: ['fetch', 'origin', 'dev', '--quiet']
-        }, {
-            cmd   : 'git',
-            args  : ['rev-list', '--count', 'dev..origin/dev'],
-            output: '1\n'
-        }, {
-            cmd   : 'git',
-            args  : ['status', '--porcelain'],
-            output: ' M resources/content/.sync-metadata.json\n'
-        }, {
-            cmd   : 'git',
-            args  : ['rev-parse', 'HEAD'],
-            output: 'old-head\n'
-        }, {
-            cmd : 'git',
-            args: ['checkout', '--', 'resources/content/.sync-metadata.json']
-        }, {
-            cmd : 'git',
-            args: ['pull', '--ff-only', 'origin', 'dev']
-        }, {
-            cmd   : 'git',
-            args  : ['rev-parse', 'HEAD'],
-            output: 'new-head\n'
-        }, {
-            cmd   : 'git',
-            args  : ['diff', '--name-only', 'old-head..new-head'],
-            output: 'resources/content/.sync-metadata.json\n'
-        }]);
-
-        const result = PrimaryRepoSyncService.syncPrimaryDev({
-            cwd           : '/primary/neo',
-            execFileSyncFn: execStub,
-            writeLog      : () => {}
-        });
-
-        expect(result.status).toBe('completed');
-        expect(result.details.resolved).toBe('meta-sync');
-        expect(result.details).toMatchObject({
-            kbSync            : false,
-            kbSyncRequired    : false,
-            kbSyncReasonCode  : 'no-kb-relevant-changes',
-            reasonCode        : 'no-kb-relevant-changes',
-            changedPathCount  : 1,
-            kbChangedPathCount: 0
-        });
-        expect(execStub.calls.map(call => call.cmd)).not.toContain(process.platform === 'win32' ? 'npm.cmd' : 'npm');
     });
 
     test('syncs configured dev roots and cascades KB once from the owning checkout', () => {
@@ -1356,7 +1299,7 @@ test.describe('PrimaryRepoSyncService (#11017)', () => {
     });
 
     // ---------------------------------------------------------------------------------------
-    // #251 — the KB cascade requires an explicit authorization.
+    // The KB cascade requires an explicit authorization.
     //
     // `enables.kbSync` gated the SCHEDULED task in `../scheduling/registry.mjs` and nothing
     // else; this service reached the same destructive-by-default rebuild by a second route
@@ -1364,9 +1307,8 @@ test.describe('PrimaryRepoSyncService (#11017)', () => {
     // negatives because the negatives are the whole point: a guard that only demonstrates
     // the allowed case cannot witness the bypass it was written to close.
     //
-    // The refused paths are exactly the four doors: completed root, changed-path-probe
-    // failure (which fails OPEN into a full cascade), the unset-roots primary fallthrough,
-    // and the metadata-reset path.
+    // The refused paths are exactly the three doors: completed root, changed-path-probe
+    // failure (which fails OPEN into a full cascade), and the unset-roots primary fallthrough.
     // ---------------------------------------------------------------------------------------
 
     test('#251 POSITIVE control: authorized + KB-relevant completed root cascades exactly once', () => {
@@ -1407,8 +1349,8 @@ test.describe('PrimaryRepoSyncService (#11017)', () => {
     test('#251 NEGATIVE control: omitted authorization fails CLOSED (the pre-#251 caller shape)', () => {
         const execStub = createExecStub(kbRelevantFfPullSteps());
 
-        // Every caller written before #251 passes exactly this shape. A permissive default
-        // would leave them all cascading, which is the bypass itself.
+        // Every caller written before the authorization existed passes exactly this shape. A
+        // permissive default would leave them all cascading, which is the bypass itself.
         const result = PrimaryRepoSyncService.syncPrimaryDev({
             cwd           : '/primary/neo',
             execFileSyncFn: execStub,
@@ -1462,35 +1404,6 @@ test.describe('PrimaryRepoSyncService (#11017)', () => {
             kbSyncAuthorized  : false
         });
 
-        expect(result.details.kbSync).toBe(false);
-        expect(result.details.reasonCode).toBe(KB_SYNC_UNAUTHORIZED_REASON_CODE);
-        expect(execStub.calls.map(call => call.cmd)).not.toContain(NPM_BIN);
-    });
-
-    test('#251 NEGATIVE control: unauthorized metadata-reset path refuses the cascade', () => {
-        const execStub = createExecStub([
-            {cmd: 'git', args: ['worktree', 'list', '--porcelain'],        output: 'worktree /primary/neo\n'},
-            {cmd: 'git', args: ['rev-parse', '--abbrev-ref', 'HEAD'],      output: 'dev\n'},
-            {cmd: 'git', args: ['fetch', 'origin', 'dev', '--quiet']},
-            {cmd: 'git', args: ['rev-list', '--count', 'dev..origin/dev'], output: '1\n'},
-            {cmd: 'git', args: ['status', '--porcelain'],                  output: ' M resources/content/.sync-metadata.json\n'},
-            {cmd: 'git', args: ['rev-parse', 'HEAD'],                      output: 'old-head\n'},
-            {cmd: 'git', args: ['checkout', '--', 'resources/content/.sync-metadata.json']},
-            {cmd: 'git', args: ['pull', '--ff-only', 'origin', 'dev']},
-            {cmd: 'git', args: ['rev-parse', 'HEAD'],                      output: 'new-head\n'},
-            // A KB-relevant path rides along with the metadata reset, so this path WOULD cascade.
-            {cmd: 'git', args: ['diff', '--name-only', 'old-head..new-head'], output: 'src/button/Base.mjs\n'}
-        ]);
-
-        const result = PrimaryRepoSyncService.syncPrimaryDev({
-            cwd             : '/primary/neo',
-            execFileSyncFn  : execStub,
-            writeLog        : () => {},
-            kbSyncAuthorized: false
-        });
-
-        expect(result.details.resolved).toBe('meta-sync');
-        expect(result.details.kbSyncRequired).toBe(true);
         expect(result.details.kbSync).toBe(false);
         expect(result.details.reasonCode).toBe(KB_SYNC_UNAUTHORIZED_REASON_CODE);
         expect(execStub.calls.map(call => call.cmd)).not.toContain(NPM_BIN);
