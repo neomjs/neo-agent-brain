@@ -76,7 +76,7 @@ export function isPlainSnapshotObject(candidate) {
  * @param {Array} items Source array.
  * @returns {Array}
  */
-function cloneSnapshotArray(items) {
+export function cloneSnapshotArray(items) {
     return items.map(item => {
         if (Array.isArray(item)) {
             return cloneSnapshotArray(item);
@@ -143,10 +143,10 @@ export function cloneConfigSubtree(provider, pathParts) {
         }
     }
 
-    let liveNode = provider?.data && typeof provider.data === 'object' ? provider.data : provider;
+    let liveNode = provider.data && typeof provider.data === 'object' ? provider.data : provider;
 
     for (const key of pathParts) {
-        liveNode = liveNode?.[key];
+        liveNode = liveNode[key];
     }
 
     const snapshot = {};

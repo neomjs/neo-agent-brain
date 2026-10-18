@@ -1,15 +1,15 @@
-import fs                                           from 'fs-extra';
-import TextEmbeddingService                         from '../memory-core/TextEmbeddingService.mjs';
-import mcConfig                                     from '../../mcp/server/memory-core/config.mjs';
-import aiConfig                                     from '../../mcp/server/knowledge-base/config.mjs';
-import Base                                         from 'neo.mjs/src/core/Base.mjs';
-import ChromaManager                                from './ChromaManager.mjs';
-import {cloneConfigSubtree, validateConfigSnapshot} from '../shared/configSnapshot.mjs';
-import {describeRetrievalProvenance}                from './retrievalProvenance.mjs';
-import RequestContextService, {normalizeUserId}     from '../../mcp/server/shared/services/RequestContextService.mjs';
-import dotenv                                       from 'dotenv';
-import path                                         from 'path';
-import KBRecorderService                            from './KBRecorderService.mjs';
+import fs                                                               from 'fs-extra';
+import TextEmbeddingService                                             from '../memory-core/TextEmbeddingService.mjs';
+import mcConfig                                                         from '../../mcp/server/memory-core/config.mjs';
+import aiConfig                                                         from '../../mcp/server/knowledge-base/config.mjs';
+import Base                                                             from 'neo.mjs/src/core/Base.mjs';
+import ChromaManager                                                    from './ChromaManager.mjs';
+import {cloneConfigSubtree, cloneSnapshotArray, validateConfigSnapshot} from '../shared/configSnapshot.mjs';
+import {describeRetrievalProvenance}                                    from './retrievalProvenance.mjs';
+import RequestContextService, {normalizeUserId}                         from '../../mcp/server/shared/services/RequestContextService.mjs';
+import dotenv                                                           from 'dotenv';
+import path                                                             from 'path';
+import KBRecorderService                                                from './KBRecorderService.mjs';
 
 const {queryScoreWeights} = aiConfig;
 
@@ -98,7 +98,7 @@ class QueryService extends Base {
             hierarchyPath      : aiConfig.hierarchyPath,
             neoRootDir         : aiConfig.neoRootDir,
             nResults           : aiConfig.nResults,
-            queryCandidatePools: aiConfig.queryCandidatePools.map(pool => ({...pool})),
+            queryCandidatePools: cloneSnapshotArray(aiConfig.queryCandidatePools),
             sourcePaths        : cloneConfigSubtree(aiConfig, ['sourcePaths'])
         };
 

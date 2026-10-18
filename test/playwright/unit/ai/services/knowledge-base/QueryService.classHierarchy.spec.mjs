@@ -113,9 +113,20 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#getClassHierarchy', (
             });
     });
 
+    test('createConfigSnapshot deep-clones queryCandidatePools including nested types arrays', async () => {
+        const aiConfig      = (await import('../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
+        const originalTypes = [...aiConfig.queryCandidatePools[0].types];
+        const snapshot      = QueryService.createConfigSnapshot();
+
+        snapshot.queryCandidatePools[0].types.push('__snapshot_probe__');
+
+        expect(aiConfig.queryCandidatePools[0].types).toEqual(originalTypes);
+    });
+
     test('uses per-test config snapshots instead of mutating shared config', async () => {
         const specSource = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
 
         expect(findSharedConfigMutations(specSource)).toEqual([]);
     });
 });
+
