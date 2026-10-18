@@ -178,56 +178,88 @@ function tenantMcpPlan(resources, matrix) {
     })
 }
 
-/** Reset the singleton + inject fresh test doubles. Returns the spawn stub. */
-function install({agents = {}, creds = {}} = {}) {
-    const spawnStub = makeSpawnStub();
+/** The doubles {@link install} puts on the singleton's seams: the one list of what this file owns. */
+function testSeams({spawnStub, registry} = {}) {
+    return {
+        installedRuntime          : null,
+        spawnFn                   : spawnStub,
+        // Stub the version probe by default so no spec spawns a real auxiliary subprocess; the
+        // env-boundary test injects its own recorder.
+        execFileFn                : () => {},
+        residentMcpEnvSource      : () => ({NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane')}),
+        fetchFn                   : null,
+        openCodeHookExecFileFn    : null,
+        openCodeBootstrapTimeoutMs: 10000,
+        registry,
+        sigkillTimeoutMs          : 50,
+        // Reset the configurable env-key fields to their defaults so a collision test cannot bleed into
+        // the next serial sibling (singleton-stateful service).
+        credentialEnvVar          : 'GH_TOKEN',
+        bridgeTokenEnvVar         : 'NEO_FLEET_BRIDGE_TOKEN',
+        // Reset the curated-launch resolution fields too — fallback tests set them explicitly.
+        instanceRoot                 : null,
+        harnessBinaryPaths           : null,
+        codexDesktopCapabilityProbeFn: null,
+        antigravityRuntimeProbeFn    : null,
+        codexDesktopCleanupFn        : null,
+        // Seat-lease seams: no spec reads or signals a host process unless it opts in. Every stub child
+        // reads as born at one fixed time, so an app-bundle start can lease it.
+        processInspectFn: () => ({startedAt: 'Thu Oct  1 08:00:00 2026', command: ''}),
+        processSignalFn : () => { throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) },
+        // Window seams: no spec queries or moves a host window unless it opts in.
+        windowRectReadFn      : async () => null,
+        windowRectPlaceFn     : async () => null,
+        windowPlatform        : process.platform,
+        windowRestoreTimeoutMs: 20000,
+        windowRestorePollMs   : 500,
+        adoptedExitPollMs     : 5,
+        leasesAdopted         : false,
+        processListFn         : null,
+        launchAdmission       : null
+    }
+}
+
+/** The admission singleton's fields {@link install} resets beside them. */
+const ADMISSION_SEAMS = {handoffPromise: null, continuityPhase: 'ready'};
+
+/** The `keys` of `target`, by value. */
+function pick(target, keys) {
+    return Object.fromEntries(keys.map(key => [key, target[key]]))
+}
+
+// What the seams held before this file ran. install() resets BEFORE each test, so without the
+// hand-back below, the last test's doubles are what the next spec file in this worker reads.
+const SEAM_ORIGINALS = {
+    admission: pick(McpLaunchAdmissionService, Object.keys(ADMISSION_SEAMS)),
+    lifecycle: pick(FleetLifecycleService,     Object.keys(testSeams()))
+};
+
+/** Clear every process record's bootstrap timer, then drop the records. */
+function clearProcesses() {
     for (const record of FleetLifecycleService.processes.values()) {
         clearTimeout(record.openCodeBootstrapTimer);
     }
     FleetLifecycleService.processes.clear();
-    FleetLifecycleService.installedRuntime = null;
-    McpLaunchAdmissionService.handoffPromise = null;
-    McpLaunchAdmissionService.continuityPhase = 'ready';
-    FleetLifecycleService.spawnFn         = spawnStub;
-    // Stub the version probe by default so no spec spawns a real auxiliary subprocess; the
-    // env-boundary test injects its own recorder.
-    FleetLifecycleService.execFileFn      = () => {};
-    FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane')});
-    FleetLifecycleService.fetchFn         = null;
-    FleetLifecycleService.openCodeHookExecFileFn = null;
-    FleetLifecycleService.openCodeBootstrapTimeoutMs = 10000;
-    FleetLifecycleService.registry        = makeRegistry(agents, creds);
-    FleetLifecycleService.sigkillTimeoutMs = 50;
-    // Reset the configurable env-key fields to their defaults so a collision test cannot bleed into
-    // the next serial sibling (singleton-stateful service).
-    FleetLifecycleService.credentialEnvVar          = 'GH_TOKEN';
-    FleetLifecycleService.bridgeTokenEnvVar         = 'NEO_FLEET_BRIDGE_TOKEN';
-    // Reset the curated-launch resolution fields too — fallback tests set them explicitly.
-    FleetLifecycleService.instanceRoot       = null;
-    FleetLifecycleService.harnessBinaryPaths = null;
-    FleetLifecycleService.codexDesktopCapabilityProbeFn = null;
-    FleetLifecycleService.antigravityRuntimeProbeFn      = null;
-    FleetLifecycleService.codexDesktopCleanupFn         = null;
-    // Seat-lease seams: no spec reads or signals a host process unless it opts in. Every stub child
-    // reads as born at one fixed time, so an app-bundle start can lease it.
-    FleetLifecycleService.processInspectFn  = () => ({startedAt: 'Thu Oct  1 08:00:00 2026', command: ''});
-    FleetLifecycleService.processSignalFn   = () => { throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) };
-    // Window seams: no spec queries or moves a host window unless it opts in.
-    FleetLifecycleService.windowRectReadFn       = async () => null;
-    FleetLifecycleService.windowRectPlaceFn      = async () => null;
-    FleetLifecycleService.windowPlatform         = process.platform;
-    FleetLifecycleService.windowRestoreTimeoutMs = 20000;
-    FleetLifecycleService.windowRestorePollMs    = 500;
-    FleetLifecycleService.adoptedExitPollMs = 5;
-    FleetLifecycleService.leasesAdopted     = false;
-    FleetLifecycleService.processListFn     = null;
-    FleetLifecycleService.launchAdmission   = null;
+}
+
+/** Reset the singleton + inject fresh test doubles. Returns the spawn stub. */
+function install({agents = {}, creds = {}} = {}) {
+    const spawnStub = makeSpawnStub();
+    clearProcesses();
+    Object.assign(McpLaunchAdmissionService, ADMISSION_SEAMS);
+    Object.assign(FleetLifecycleService, testSeams({spawnStub, registry: makeRegistry(agents, creds)}));
     return spawnStub;
 }
 
 // Singleton-stateful service → run serially in one worker so per-test install() resets are not
 // raced by Playwright's parallel worker reuse.
 test.describe.configure({mode: 'serial'});
+
+test.afterAll(() => {
+    clearProcesses();
+    Object.assign(McpLaunchAdmissionService, SEAM_ORIGINALS.admission);
+    Object.assign(FleetLifecycleService,     SEAM_ORIGINALS.lifecycle)
+});
 
 test.describe('Neo.ai.services.fleet.FleetLifecycleService', () => {
     test('idle old and new runtime pins survive installed changes; unknown ownership retains its generation', () => {
