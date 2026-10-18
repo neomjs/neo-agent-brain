@@ -67,8 +67,8 @@ const CORE_SWARM_USER_IDS = Object.freeze([
     'neo-opus-ada',
     'neo-opus-grace',
     'neo-opus-vega',
-    'neo-gemini-pro',
-    'neo-gpt'
+    'neo-gemini-julia',
+    'neo-gpt-euclid'
 ]);
 
 const COLLECTION_MEMORY  = 'neo-agent-memory';

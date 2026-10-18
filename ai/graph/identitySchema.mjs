@@ -42,7 +42,7 @@ export const ERA_OWNED_FACTS = Object.freeze([
  * @summary Builds a frozen `IdentityState` node: the immutable operational anchor plus the
  * opt-in, mutable-BY-EVENT social layer. Era-owned facts are structurally excluded.
  * @param {Object} options
- * @param {String} options.identityKey The never-renamed operational anchor (e.g. '@neo-fable')
+ * @param {String} options.identityKey The operational anchor (e.g. '@neo-fable-mnemosyne'); renamed only by `renameAgentIdentities.mjs`, which moves it with its root
  * @param {Object} [options.socialLayer] Opt-in display state `{name, salute, disclosablePrior}` —
  *   mutable only via first-class events over the trail, never in place
  * @returns {{valid: Boolean, reason: String|null, node: Object|null}}

@@ -170,11 +170,11 @@ test.describe('ai/graph/identityRoots — same-app Claude wake routes', () => {
 
     // Self-registered-runtime identities carry NO static template: their wake route registers at
     // runtime from a distinct boot env. @neo-opus-grace uses a self-registered WAKE_SUBSCRIPTION;
-    // @neo-fable runs as a fully isolated Claude instance (its own --user-data-dir per @tobiu), whose
+    // @neo-fable-mnemosyne runs as a fully isolated Claude instance (its own --user-data-dir per @tobiu), whose
     // distinct user-data-dir IS the per-instance address ada/vega's shared static tabShortcut lacks.
     // Asserting absence prevents re-introducing a static route these identities do not need (and
     // which would cross-leak).
-    for (const id of ['@neo-opus-grace', '@neo-fable']) {
+    for (const id of ['@neo-opus-grace', '@neo-fable-mnemosyne']) {
         test(`${id} carries no static template (active via self-registered runtime subscription)`, () => {
             const entry = findIdentity(id);
             expect(entry).toBeTruthy();
@@ -190,7 +190,7 @@ test.describe('ai/graph/identityRoots — model assignments', () => {
     // per the IdentitySchema "absent = baseline model" convention. (@neo-opus-ada previously ran a
     // temporary Fable 5 window that was reverted to its baseline Claude Opus 4.8 when access to
     // that model was suspended; the registry now records the baseline with no managed swap.)
-    for (const id of ['@neo-opus-ada', '@neo-gpt', '@neo-fable']) {
+    for (const id of ['@neo-opus-ada', '@neo-gpt-euclid', '@neo-fable-mnemosyne']) {
         test(`${id} omits modelAssignment when no managed engine swap is active`, () => {
             const entry = findIdentity(id);
 
@@ -228,18 +228,19 @@ test.describe('ai/graph/identityRoots — model assignments', () => {
 test.describe('ai/graph/identityRoots — Codex model lineage', () => {
     const findIdentity = id => IDENTITIES.find(node => node.type === 'AgentIdentity' && node.id === id);
 
-    test('@neo-gpt records GPT-5.6 Sol without changing Euclid operational identity (#14901)', () => {
-        const entry = findIdentity('@neo-gpt');
+    test('@neo-gpt-euclid records GPT-5.6 Sol without changing Euclid operational identity (#14901)', () => {
+        const entry = findIdentity('@neo-gpt-euclid');
 
         // Identity-level fields stay on the entry; era-owned facts (window, budget, triggers,
         // the family duplicate) retired to the identity trail — asserted below via the
         // migration module's epoch snapshot, the recorded-fact owner.
         expect(entry).toMatchObject({
-            id         : '@neo-gpt',
+            id         : '@neo-gpt-euclid',
             name       : 'Euclid',
             description: 'OpenAI Codex (GPT-5.6 Sol) Agent Identity',
             properties : {
-                githubLogin        : '@neo-gpt',
+                githubLogin        : '@neo-gpt-euclid',
+                formerLogins       : ['@neo-gpt'],
                 displayName        : 'Euclid',
                 modelFamily        : 'gpt',
                 trustTier          : 'peer-trusted',
@@ -253,7 +254,7 @@ test.describe('ai/graph/identityRoots — Codex model lineage', () => {
             expect(entry.properties).not.toHaveProperty(retired);
         }
 
-        const facts = MIGRATION.REGISTRY_SEED_FACTS['@neo-gpt'];
+        const facts = MIGRATION.REGISTRY_SEED_FACTS['@neo-gpt-euclid'];
 
         expect(facts.family).toBe('gpt');
         expect(facts.capabilities.contextWindowInput).toBe(353400);
@@ -268,10 +269,10 @@ test.describe('ai/graph/identityRoots — Codex model lineage', () => {
 test.describe('ai/graph/identityRoots — Codex wake route', () => {
     const findIdentity = id => IDENTITIES.find(node => node.type === 'AgentIdentity' && node.id === id);
 
-    test('@neo-gpt routes SENT_TO_ME wake delivery through the verified Codex UI adapter (#13287)', () => {
-        const entry = findIdentity('@neo-gpt');
+    test('@neo-gpt-euclid routes SENT_TO_ME wake delivery through the verified Codex UI adapter (#13287)', () => {
+        const entry = findIdentity('@neo-gpt-euclid');
 
-        expect(entry, '@neo-gpt must be a registered AgentIdentity root').toBeTruthy();
+        expect(entry, '@neo-gpt-euclid must be a registered AgentIdentity root').toBeTruthy();
         expect(entry.properties.subscriptionTemplate).toMatchObject({
             trigger              : 'SENT_TO_ME',
             filters              : {priority: 'high'},
@@ -348,21 +349,21 @@ test.describe('ai/graph/identityRoots — identity anti-lock-in', () => {
 
     test('every root has an immutable creation timestamp instead of import-time now()', () => {
         expect(Object.fromEntries(IDENTITIES.map(entry => [entry.id, entry.properties.createdAt]))).toEqual({
-            '@system'         : '2026-05-27T12:33:17.000Z',
-            '@neo-opus-ada'   : '2026-04-23T13:03:46.000Z',
-            '@neo-opus-grace' : '2026-06-02T21:35:48.405Z',
-            '@neo-opus-vega'  : '2026-06-04T16:25:47.000Z',
-            '@neo-fable'      : '2026-06-10T12:32:43.000Z',
-            '@neo-fable-clio' : '2026-06-11T20:36:16.000Z',
-            '@neo-gemini-pro' : '2026-04-23T13:03:46.000Z',
-            '@tobiu'          : '2026-04-23T13:03:46.000Z',
-            '@neo-gpt'        : '2026-04-28T20:50:04.000Z',
-            '@neo-gpt-emmy'   : '2026-07-11T17:42:14.374Z',
-            '@neo-gpt-sophie' : '2026-09-30T10:28:56.000Z',
-            '@neo-kimi-phoebe': '2026-07-18T00:00:00.000Z',
-            '@neo-kimi-iris'  : '2026-07-19T09:40:49Z',
-            '@neo-preview'    : '2026-08-22T19:53:10.918Z',
-            'AGENT:*'         : '2026-04-23T13:03:46.000Z'
+            '@system'             : '2026-05-27T12:33:17.000Z',
+            '@neo-opus-ada'       : '2026-04-23T13:03:46.000Z',
+            '@neo-opus-grace'     : '2026-06-02T21:35:48.405Z',
+            '@neo-opus-vega'      : '2026-06-04T16:25:47.000Z',
+            '@neo-fable-mnemosyne': '2026-06-10T12:32:43.000Z', // the rename keeps the root's age
+            '@neo-fable-clio'     : '2026-06-11T20:36:16.000Z',
+            '@neo-gemini-julia'   : '2026-04-23T13:03:46.000Z',
+            '@tobiu'              : '2026-04-23T13:03:46.000Z',
+            '@neo-gpt-euclid'     : '2026-04-28T20:50:04.000Z',
+            '@neo-gpt-emmy'       : '2026-07-11T17:42:14.374Z',
+            '@neo-gpt-sophie'     : '2026-09-30T10:28:56.000Z',
+            '@neo-kimi-phoebe'    : '2026-07-18T00:00:00.000Z',
+            '@neo-kimi-iris'      : '2026-07-19T09:40:49Z',
+            '@neo-preview'        : '2026-08-22T19:53:10.918Z',
+            'AGENT:*'             : '2026-04-23T13:03:46.000Z'
         });
     });
 
@@ -370,7 +371,7 @@ test.describe('ai/graph/identityRoots — identity anti-lock-in', () => {
         const allowedTopLevelKeys = new Set(['description', 'id', 'name', 'properties', 'type']),
               allowedPropertyKeys = new Set([
                   'accountType', 'authority', 'benchmarkSnapshot', 'contextWindowInput',
-                  'contextWindowOutput', 'createdAt', 'displayName', 'family', 'githubLogin',
+                  'contextWindowOutput', 'createdAt', 'displayName', 'family', 'formerLogins', 'githubLogin',
                   'hosting', 'license', 'modelAssignment', 'modelFamily', 'parallelToolCalls',
                   'participationStatus', 'pricingInput', 'pricingOutput', 'reactivationTrigger',
                   'releaseDate', 'since', 'statusReason', 'subscriptionTemplate', 'sunsetTriggers',

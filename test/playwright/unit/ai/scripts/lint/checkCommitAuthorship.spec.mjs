@@ -177,7 +177,7 @@ test.describe('check-commit-authorship — the operator must not author from an 
     });
 
     test('a SIBLING-ref push cannot smuggle an operator commit past a clean HEAD', () => {
-        // @neo-gpt's RA-1. The guard hard-coded `origin/dev..HEAD`, so pushing an explicit sibling ref
+        // Euclid's review finding. The guard hard-coded `origin/dev..HEAD`, so pushing an explicit sibling ref
         // was measured against whatever HEAD happened to be — clean — and exited green while shipping
         // the operator-authored commit. A bypass in a guard whose whole purpose is being unbypassable.
         const
@@ -512,8 +512,8 @@ test.describe('#15337 bootstrapWorktree — configureAgentGitIdentity', () => {
             await expect(configureAgentGitIdentity({
                 projectRoot            : '/tmp/agent-seat',
                 mainCheckout           : '/tmp/main-checkout',
-                agentIdentity          : '@neo-gpt',
-                getAuthenticatedAccount: account('neo-gpt', 'someone@example.com'),
+                agentIdentity          : '@neo-gpt-euclid',
+                getAuthenticatedAccount: account('neo-gpt-euclid', 'someone@example.com'),
                 execGit                : async args => { gitCalls.push(args); return {stdout: ''} }
             })).rejects.toThrow(/does not match its roster commit address/u);
 
@@ -537,8 +537,8 @@ test.describe('#15337 bootstrapWorktree — configureAgentGitIdentity', () => {
             const result = await configureAgentGitIdentity({
                 projectRoot            : tree,
                 mainCheckout           : main,
-                agentIdentity          : '@neo-gpt',
-                getAuthenticatedAccount: account('neo-gpt', 'neo-gpt@neomjs.com')
+                agentIdentity          : '@neo-gpt-euclid',
+                getAuthenticatedAccount: account('neo-gpt-euclid', 'neo-gpt@neomjs.com')
             });
 
             expect(result.action).toBe('configured');
@@ -558,8 +558,8 @@ test.describe('#15337 bootstrapWorktree — configureAgentGitIdentity', () => {
         await configureAgentGitIdentity({
             projectRoot            : treeA,
             mainCheckout           : main,
-            agentIdentity          : '@neo-gpt',
-            getAuthenticatedAccount: account('neo-gpt', 'neo-gpt@neomjs.com')
+            agentIdentity          : '@neo-gpt-euclid',
+            getAuthenticatedAccount: account('neo-gpt-euclid', 'neo-gpt@neomjs.com')
         });
         await configureAgentGitIdentity({
             projectRoot            : treeB,
@@ -608,8 +608,8 @@ test.describe('#15337 bootstrapWorktree — configureAgentGitIdentity', () => {
         const result = await configureAgentGitIdentity({
             projectRoot            : independent,
             mainCheckout           : canonical,
-            agentIdentity          : '@neo-gpt',
-            getAuthenticatedAccount: account('neo-gpt', 'neo-gpt@neomjs.com')
+            agentIdentity          : '@neo-gpt-euclid',
+            getAuthenticatedAccount: account('neo-gpt-euclid', 'neo-gpt@neomjs.com')
         });
 
         expect(result.scope).toBe('local');
@@ -622,7 +622,7 @@ test.describe('#15337 bootstrapWorktree — configureAgentGitIdentity', () => {
         {
             name         : 'missing agent identity',
             agentIdentity: '',
-            account      : account('neo-gpt', 'neo-gpt@neomjs.com'),
+            account      : account('neo-gpt-euclid', 'neo-gpt@neomjs.com'),
             error        : /NEO_AGENT_IDENTITY/
         },
         {
@@ -633,20 +633,20 @@ test.describe('#15337 bootstrapWorktree — configureAgentGitIdentity', () => {
         },
         {
             name         : 'authenticated-login mismatch',
-            agentIdentity: '@neo-gpt',
+            agentIdentity: '@neo-gpt-euclid',
             account      : account('neo-opus-vega', 'neo-opus-vega@neomjs.com'),
             error        : /does not match/
         },
         {
             name         : 'no verified primary email',
-            agentIdentity: '@neo-gpt',
-            account      : async () => ({login: 'neo-gpt', emails: [{email: 'other@example.com', primary: false, verified: true}]}),
+            agentIdentity: '@neo-gpt-euclid',
+            account      : async () => ({login: 'neo-gpt-euclid', emails: [{email: 'other@example.com', primary: false, verified: true}]}),
             error        : /verified primary/
         },
         {
             name         : 'noreply primary email',
-            agentIdentity: '@neo-gpt',
-            account      : account('neo-gpt', 'neo-gpt@users.noreply.github.com'),
+            agentIdentity: '@neo-gpt-euclid',
+            account      : account('neo-gpt-euclid', 'neo-gpt@users.noreply.github.com'),
             error        : /noreply/
         }
     ]) {

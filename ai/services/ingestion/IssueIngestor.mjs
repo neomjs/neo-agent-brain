@@ -198,14 +198,18 @@ class IssueIngestor extends Base {
 
     /**
      * @summary Bare GitHub logins of registered internal authors (human owner + swarm maintainers),
-     * derived from the canonical identity registry. The `@` prefix is stripped to match GitHub
-     * issue-author logins. An empty set disables the community multiplier (safe degrade) instead of
-     * boosting every ticket.
+     * derived from the canonical identity registry — current logins and `formerLogins`, because a
+     * ticket authored before a handle rename keeps its old author string in the corpus. The `@`
+     * prefix is stripped to match GitHub issue-author logins. An empty set disables the community
+     * multiplier (safe degrade) instead of boosting every ticket.
      * @member {Set<String>} internalAuthorLogins
      * @static
      */
     static internalAuthorLogins = new Set(
-        IDENTITIES.map(identity => identity.properties?.githubLogin).filter(Boolean).map(login => login.replace(/^@/, ''))
+        IDENTITIES
+            .flatMap(identity => [identity.properties?.githubLogin, ...(identity.properties?.formerLogins ?? [])])
+            .filter(Boolean)
+            .map(login => login.replace(/^@/, ''))
     )
 
     /**

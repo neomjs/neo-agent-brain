@@ -116,10 +116,10 @@ test.describe('ai/scripts/migrations/migrateWakeSubscriptions', () => {
         const db = new Database(':memory:');
         createGraphSchema(db);
 
-        insertAgentIdentity(db, '@neo-gpt', {appName: 'Codex'});
+        insertAgentIdentity(db, '@neo-gpt-euclid', {appName: 'Codex'});
         insertSubscription(db, {
             id                   : 'WAKE_SUB:codex-legacy',
-            agentIdentity        : '@neo-gpt',
+            agentIdentity        : '@neo-gpt-euclid',
             harnessTargetMetadata: {
                 appName     : 'Codex',
                 focusSeedKey: 'r'
@@ -142,14 +142,14 @@ test.describe('ai/scripts/migrations/migrateWakeSubscriptions', () => {
         const db = new Database(':memory:');
         createGraphSchema(db);
 
-        insertAgentIdentity(db, '@neo-gpt', {
+        insertAgentIdentity(db, '@neo-gpt-euclid', {
             adapter    : 'codex-app-server',
             appName    : 'Codex',
             tabShortcut: null
         });
         insertSubscription(db, {
             id                   : 'WAKE_SUB:codex-dry-run',
-            agentIdentity        : '@neo-gpt',
+            agentIdentity        : '@neo-gpt-euclid',
             harnessTargetMetadata: {
                 appName: 'Codex'
             }

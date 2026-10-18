@@ -265,6 +265,8 @@ test.describe('ai/graph/agentCoAuthorEmails (#16280)', () => {
     test('the sunset condition is measurable, not aspirational', () => {
         // This file retires when this list empties. Asserting it is non-empty today keeps the test
         // honest; when the last seat migrates, THIS assertion fails and points at the deletion.
-        expect(mismatchedLogins().sort()).toEqual(['@neo-gemini-pro', '@neo-opus-ada', '@neo-opus-grace']);
+        // 2026-10-18: the first seats' handles took their Social Names while their addresses stayed,
+        // so the list grew by two — the sunset receded, and this row says so.
+        expect(mismatchedLogins().sort()).toEqual(['@neo-fable-mnemosyne', '@neo-gemini-julia', '@neo-gpt-euclid', '@neo-opus-ada', '@neo-opus-grace']);
     });
 });

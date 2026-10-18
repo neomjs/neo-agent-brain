@@ -14,12 +14,14 @@ import {IDENTITIES} from './identityRoots.mjs';
  * email, never derived from a handle.** Derivation is the defect this module exists to catch:
  * a peer needing an address the roster did not document
  * guessed one from the display name (`ada@`) and another from the GitHub login (`neo-opus-ada@`),
- * producing 19 commits that credit an account nobody owns. Three logins do NOT match their local
+ * producing 19 commits that credit an account nobody owns. Five logins do NOT match their local
  * part, which is exactly why the mapping cannot be computed:
  *
- *   `@neo-opus-ada`   → `neo-opus-4-7@`        (historical: the first Claude seat, pre-naming)
- *   `@neo-opus-grace` → `neo-claude-opus@`
- *   `@neo-gemini-pro` → `neo-gemini-3-1-pro@`
+ *   `@neo-opus-ada`        → `neo-opus-4-7@`        (historical: the first Claude seat, pre-naming)
+ *   `@neo-opus-grace`      → `neo-claude-opus@`
+ *   `@neo-gemini-julia`    → `neo-gemini-3-1-pro@`
+ *   `@neo-gpt-euclid`      → `neo-gpt@`             (2026-10-18: the first seats' handles took their Social Names; the addresses stayed)
+ *   `@neo-fable-mnemosyne` → `neo-fable@`
  *
  * **Sunset condition.** Once every active seat satisfies `localPart === githubLogin.slice(1)`, this
  * map retires and the check becomes a derivation rule with nothing to maintain. **Retirement
@@ -35,18 +37,18 @@ import {IDENTITIES} from './identityRoots.mjs';
  * @member {Object}
  */
 const EMAIL_BY_LOGIN = Object.freeze({
-    '@neo-opus-ada'   : 'neo-opus-4-7@neomjs.com',       // 837 occurrences
-    '@neo-opus-grace' : 'neo-claude-opus@neomjs.com',    // 336
-    '@neo-opus-vega'  : 'neo-opus-vega@neomjs.com',      // 242
-    '@neo-gpt'        : 'neo-gpt@neomjs.com',            // 915
-    '@neo-gpt-emmy'   : 'neo-gpt-emmy@neomjs.com',       // 142
-    '@neo-gpt-sophie' : 'neo-gpt-sophie@neomjs.com',     // Verified primary, operator-approved 2026-10-01
-    '@neo-kimi-iris'  : 'neo-kimi-iris@neomjs.com',      // 38
-    '@neo-kimi-phoebe': 'neo-kimi-phoebe@neomjs.com',    // 51
-    '@neo-fable'      : 'neo-fable@neomjs.com',          // 92
-    '@neo-fable-clio' : 'neo-fable-clio@neomjs.com',     // 64
-    '@neo-gemini-pro' : 'neo-gemini-3-1-pro@neomjs.com', // 288 — dormant seat, address still real
-    '@neo-preview'    : 'neo-preview@neomjs.com'         // 0 — provisioned ahead of first boot; satisfies the sunset form
+    '@neo-opus-ada'       : 'neo-opus-4-7@neomjs.com',       // 837 occurrences
+    '@neo-opus-grace'     : 'neo-claude-opus@neomjs.com',    // 336
+    '@neo-opus-vega'      : 'neo-opus-vega@neomjs.com',      // 242
+    '@neo-gpt-euclid'     : 'neo-gpt@neomjs.com',            // 915
+    '@neo-gpt-emmy'       : 'neo-gpt-emmy@neomjs.com',       // 142
+    '@neo-gpt-sophie'     : 'neo-gpt-sophie@neomjs.com',     // Verified primary, operator-approved 2026-10-01
+    '@neo-kimi-iris'      : 'neo-kimi-iris@neomjs.com',      // 38
+    '@neo-kimi-phoebe'    : 'neo-kimi-phoebe@neomjs.com',    // 51
+    '@neo-fable-mnemosyne': 'neo-fable@neomjs.com',          // 92
+    '@neo-fable-clio'     : 'neo-fable-clio@neomjs.com',     // 64
+    '@neo-gemini-julia'   : 'neo-gemini-3-1-pro@neomjs.com', // 288
+    '@neo-preview'        : 'neo-preview@neomjs.com'         // 0 — provisioned ahead of first boot; satisfies the sunset form
 });
 
 /**

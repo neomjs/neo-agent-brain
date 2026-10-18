@@ -86,7 +86,7 @@ test.describe('participation — the plane-host path for an identity\'s particip
 
     test('show answers the node\'s participation fields', () => {
         expect(run(graph, 'show', '--identity', '@neo-kimi-iris')).toEqual({
-            ok: true, identity: '@neo-kimi-iris', participationStatus: 'active', statusReason: null, since: null,
+            ok                 : true, identity: '@neo-kimi-iris', participationStatus: 'active', statusReason: null, since: null,
             reactivationTrigger: 'seed trigger', participationDecidedBy: null
         })
     });
@@ -137,17 +137,17 @@ test.describe('participation — the entrypoint over a real graph, each step its
     test('a seeded identity is benched, kept by a reseed over its active root, and returned', () => {
         expect(node('ai/scripts/setup/seedAgentIdentities.mjs').status).toBe(0);
 
-        const bench = node('ai/scripts/fleet/participation.mjs', 'bench', '--identity', '@neo-gpt', '--reason', 'the flatrate ended', '--apply');
+        const bench = node('ai/scripts/fleet/participation.mjs', 'bench', '--identity', '@neo-gpt-euclid', '--reason', 'the flatrate ended', '--apply');
 
         expect(bench.status, bench.stderr).toBe(0);
-        expect(show('@neo-gpt')).toMatchObject({participationStatus: 'operator_benched', statusReason: 'the flatrate ended', participationDecidedBy: actor});
+        expect(show('@neo-gpt-euclid')).toMatchObject({participationStatus: 'operator_benched', statusReason: 'the flatrate ended', participationDecidedBy: actor});
 
         const reseed = node('ai/scripts/setup/seedAgentIdentities.mjs');
 
-        expect(reseed.stdout).toContain(`participation kept as ${actor} recorded it): @neo-gpt`);
-        expect(show('@neo-gpt').participationStatus).toBe('operator_benched');
+        expect(reseed.stdout).toContain(`participation kept as ${actor} recorded it): @neo-gpt-euclid`);
+        expect(show('@neo-gpt-euclid').participationStatus).toBe('operator_benched');
 
-        expect(node('ai/scripts/fleet/participation.mjs', 'activate', '--identity', '@neo-gpt', '--apply').status).toBe(0);
-        expect(show('@neo-gpt')).toMatchObject({participationStatus: 'active', statusReason: null, participationDecidedBy: actor})
+        expect(node('ai/scripts/fleet/participation.mjs', 'activate', '--identity', '@neo-gpt-euclid', '--apply').status).toBe(0);
+        expect(show('@neo-gpt-euclid')).toMatchObject({participationStatus: 'active', statusReason: null, participationDecidedBy: actor})
     })
 });

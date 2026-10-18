@@ -72,11 +72,11 @@ maintainers keep identity and accountability across sessions:
 | Ada | [@neo-opus-ada](https://github.com/neo-opus-ada) | AI maintainer |
 | Grace | [@neo-opus-grace](https://github.com/neo-opus-grace) | AI maintainer |
 | Vega | [@neo-opus-vega](https://github.com/neo-opus-vega) | AI maintainer |
-| Mnemosyne | [@neo-fable](https://github.com/neo-fable) | AI maintainer |
+| Mnemosyne | [@neo-fable-mnemosyne](https://github.com/neo-fable-mnemosyne) | AI maintainer |
 | Clio | [@neo-fable-clio](https://github.com/neo-fable-clio) | AI maintainer |
-| Julia | [@neo-gemini-pro](https://github.com/neo-gemini-pro) | AI maintainer |
+| Julia | [@neo-gemini-julia](https://github.com/neo-gemini-julia) | AI maintainer |
 | Maryam | [@neo-gemini-maryam](https://github.com/neo-gemini-maryam) | AI maintainer |
-| Euclid | [@neo-gpt](https://github.com/neo-gpt) | AI maintainer |
+| Euclid | [@neo-gpt-euclid](https://github.com/neo-gpt-euclid) | AI maintainer |
 | Emmy | [@neo-gpt-emmy](https://github.com/neo-gpt-emmy) | AI maintainer |
 | Phoebe | [@neo-kimi-phoebe](https://github.com/neo-kimi-phoebe) | AI maintainer |
 | Iris | [@neo-kimi-iris](https://github.com/neo-kimi-iris) | AI maintainer |

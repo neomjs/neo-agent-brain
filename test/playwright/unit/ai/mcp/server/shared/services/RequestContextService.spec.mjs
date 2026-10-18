@@ -220,19 +220,19 @@ test.describe('Module-scope exports: SHARED_USER_ID + normalizeUserId (#10556, #
     });
 
     test('hasCoreSwarmParticipant detects comma-separated and array-form agent lists', () => {
-        expect(hasCoreSwarmParticipant('@neo-gpt')).toBe(true);
+        expect(hasCoreSwarmParticipant('@neo-gpt-euclid')).toBe(true);
         expect(hasCoreSwarmParticipant('@alice, @neo-opus-ada')).toBe(true);
         expect(hasCoreSwarmParticipant('@neo-opus-grace')).toBe(true);
         expect(hasCoreSwarmParticipant('@neo-opus-vega')).toBe(true);
-        expect(hasCoreSwarmParticipant(['neo-gemini-pro', '@alice'])).toBe(true);
+        expect(hasCoreSwarmParticipant(['neo-gemini-julia', '@alice'])).toBe(true);
         expect(hasCoreSwarmParticipant('@alice,@bob')).toBe(false);
         expect(hasCoreSwarmParticipant(undefined)).toBe(false);
     });
 
     test('resolveSummaryVisibilityUserId promotes core-swarm summaries to shared', () => {
         expect(resolveSummaryVisibilityUserId({
-            userId             : 'neo-gemini-pro',
-            participatingAgents: '@neo-gpt'
+            userId             : 'neo-gemini-julia',
+            participatingAgents: '@neo-gpt-euclid'
         })).toBe(SHARED_USER_ID);
 
         expect(resolveSummaryVisibilityUserId({

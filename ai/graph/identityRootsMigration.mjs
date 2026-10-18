@@ -40,15 +40,15 @@ export const MIGRATION_EPOCH = '2026-07-04T00:00:00Z';
  * @type {Object}
  */
 export const REGISTRY_MODEL_DESIGNATIONS = Object.freeze({
-    '@neo-opus-ada'  : 'Claude Opus 4.8',
-    '@neo-opus-grace': 'Claude Opus 4.8',
-    '@neo-opus-vega' : 'Claude Opus 4.8',
-    '@neo-fable'     : 'Claude Fable 5',
-    '@neo-fable-clio': 'Claude Fable 5',
-    '@neo-gemini-pro': 'Gemini 3.1 Pro',
+    '@neo-opus-ada'       : 'Claude Opus 4.8',
+    '@neo-opus-grace'     : 'Claude Opus 4.8',
+    '@neo-opus-vega'      : 'Claude Opus 4.8',
+    '@neo-fable-mnemosyne': 'Claude Fable 5',
+    '@neo-fable-clio'     : 'Claude Fable 5',
+    '@neo-gemini-julia'   : 'Gemini 3.1 Pro',
     // Epoch-pinned: GPT-5.6 Sol began 2026-07-09, after MIGRATION_EPOCH. The Sol
     // embodiment belongs in a subsequent era, never a retroactive seed rename.
-    '@neo-gpt'       : 'GPT-5.5'
+    '@neo-gpt-euclid'     : 'GPT-5.5'
 });
 
 /**
@@ -90,13 +90,13 @@ export const LIFTED_CAPABILITY_KEYS = Object.freeze([
  * @type {Object}
  */
 export const REGISTRY_SEED_FACTS = Object.freeze({
-    '@neo-opus-ada'  : Object.freeze({family: 'claude', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Anthropic releases a successor Opus-class model with material reasoning capability upgrade', 'Anthropic deprecates Opus family branch']), thoughtBudget: 'max'})}),
-    '@neo-opus-grace': Object.freeze({family: 'claude', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Anthropic releases a successor Opus-class model with material reasoning capability upgrade', 'Anthropic deprecates Opus family branch']), thoughtBudget: 'max'})}),
-    '@neo-opus-vega' : Object.freeze({family: 'claude', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Anthropic releases a successor Opus-class model with material reasoning capability upgrade', 'Anthropic deprecates Opus family branch']), thoughtBudget: 'max'})}),
-    '@neo-fable'     : Object.freeze({family: 'claude', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Anthropic releases a successor Fable-class model with material reasoning capability upgrade', 'Anthropic deprecates the Fable model branch']), thoughtBudget: 'max'})}),
-    '@neo-fable-clio': Object.freeze({family: 'claude', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Anthropic releases a successor Fable-class model with material reasoning capability upgrade', 'Anthropic deprecates the Fable model branch']), thoughtBudget: 'max'})}),
-    '@neo-gemini-pro': Object.freeze({family: 'gemini', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Google releases Gemini 4.x with material reasoning capability upgrade', 'Gemini 3.x branch deprecation announcement']), thoughtBudget: 'high'})}),
-    '@neo-gpt'       : Object.freeze({family: 'gpt', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 353400, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['OpenAI releases a successor Sol-tier model with material reasoning capability upgrade', 'GPT-5.x family deprecation']), thoughtBudget: 'xhigh'})})
+    '@neo-opus-ada'       : Object.freeze({family: 'claude', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Anthropic releases a successor Opus-class model with material reasoning capability upgrade', 'Anthropic deprecates Opus family branch']), thoughtBudget: 'max'})}),
+    '@neo-opus-grace'     : Object.freeze({family: 'claude', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Anthropic releases a successor Opus-class model with material reasoning capability upgrade', 'Anthropic deprecates Opus family branch']), thoughtBudget: 'max'})}),
+    '@neo-opus-vega'      : Object.freeze({family: 'claude', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Anthropic releases a successor Opus-class model with material reasoning capability upgrade', 'Anthropic deprecates Opus family branch']), thoughtBudget: 'max'})}),
+    '@neo-fable-mnemosyne': Object.freeze({family: 'claude', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Anthropic releases a successor Fable-class model with material reasoning capability upgrade', 'Anthropic deprecates the Fable model branch']), thoughtBudget: 'max'})}),
+    '@neo-fable-clio'     : Object.freeze({family: 'claude', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Anthropic releases a successor Fable-class model with material reasoning capability upgrade', 'Anthropic deprecates the Fable model branch']), thoughtBudget: 'max'})}),
+    '@neo-gemini-julia'   : Object.freeze({family: 'gemini', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 1048576, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['Google releases Gemini 4.x with material reasoning capability upgrade', 'Gemini 3.x branch deprecation announcement']), thoughtBudget: 'high'})}),
+    '@neo-gpt-euclid'     : Object.freeze({family: 'gpt', tier: 'frontier', capabilities: Object.freeze({contextWindowInput: 353400, hosting: 'cloud', parallelToolCalls: true, sunsetTriggers: Object.freeze(['OpenAI releases a successor Sol-tier model with material reasoning capability upgrade', 'GPT-5.x family deprecation']), thoughtBudget: 'xhigh'})})
 });
 
 /**

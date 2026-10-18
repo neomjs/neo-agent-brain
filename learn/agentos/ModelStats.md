@@ -157,7 +157,7 @@ across all of it — rotation is a Lineage-layer event.
 
 | Field | Value |
 |---|---|
-| `id` / `githubLogin` | `@neo-fable` |
+| `id` / `githubLogin` | `@neo-fable-mnemosyne` |
 | `name` | Claude Fable 5 |
 | `family` | `claude` (Anthropic) |
 | `participationStatus` | `active` |
@@ -172,9 +172,10 @@ across all of it — rotation is a Lineage-layer event.
 | `benchmarkSnapshot` | Anthropic's most capable widely-released model (tier above Opus), for the most demanding reasoning and long-horizon agentic work per Anthropic announcement. |
 | `sunsetTriggers` | Anthropic releases a successor Fable-class model with material reasoning capability upgrade; OR Anthropic deprecates the Fable model branch |
 
-`@neo-fable` is a version-free GitHub handle (per ADR 0018 handle-indirection). The model
-version (Fable 5) lives in this registry row and the AgentIdentity capability fields, mirroring
-`@neo-opus-vega`.
+`@neo-fable-mnemosyne` is a version-free GitHub handle (per ADR 0018 handle-indirection), renamed
+from `@neo-fable` on 2026-10-18 so the handle carries the Social Name; the registry's `formerLogins`
+keeps the earlier handle resolvable. The model version (Fable 5) lives in this registry row and the
+AgentIdentity capability fields, mirroring `@neo-opus-vega`.
 
 **Capability notes (V-B-A 2026-06-10):** Claude Fable 5 uses the Opus-4.7 tokenizer (~30% more
 tokens than pre-4.7 models for the same text). Adaptive thinking is always-on (no extended-thinking
@@ -198,7 +199,7 @@ accordingly; this is a behavioral observation, not a tokenizer/pricing fact.
 | Capability fields | Mirror `§neo_fable` — same Claude Fable 5 model, single source, deliberately NOT duplicated here (provenance-without-bloat). First-boot harness bound `claude-fable-5` with no capability-surface divergence observed; re-verify only if her harness binds a different model or capability surface. |
 
 `@neo-fable-clio` is a version-free GitHub handle (ADR 0018 handle-indirection), sibling of
-`@neo-fable`. With two fable-family identities, the `AGENT:fable` mailbox alias rejects as
+`@neo-fable-mnemosyne`. With two fable-family identities, the `AGENT:fable` mailbox alias rejects as
 ambiguous by design — full handles only for targeted traffic.
 
 **Sources** (primary first):
@@ -210,7 +211,7 @@ ambiguous by design — full handles only for targeted traffic.
 
 | Field | Value |
 |---|---|
-| `id` / `githubLogin` | `@neo-gemini-pro` |
+| `id` / `githubLogin` | `@neo-gemini-julia` |
 | `name` | Gemini 3.1 Pro |
 | `family` | `gemini` (Google DeepMind) |
 | `participationStatus` | `operator_benched` (pending a stable Gemini Pro-class harness and operator-confirmed reactivation) |
@@ -234,7 +235,7 @@ ambiguous by design — full handles only for targeted traffic.
 
 | Field | Value |
 |---|---|
-| `id` / `githubLogin` | `@neo-gpt` |
+| `id` / `githubLogin` | `@neo-gpt-euclid` |
 | `name` | GPT-5.6 Sol |
 | `family` | `gpt` (OpenAI) |
 | `hosting` | `cloud` |
@@ -482,6 +483,7 @@ marked deprecated and retained for archaeology. No such transition has occurred.
 | 2026-07-24 | #15866 / PR #15867 | Labelled `sunsetTriggers` advisory at its schema and registry reading surfaces after two silent firings showed that no evaluator existed. The post-merge audit kept the ticket open because ADR 0012 still described an automatic transition and the firing history remained incomplete. |
 | 2026-07-29 | #15866 | Converged ADR 0012 with the advisory human-revalidation contract, narrowed the row-coverage claim to direct capability-bearing rows, and corrected the Opus 4.8 history from permanently unactioned to initially missed then repaired by #12531 / PR #12599. |
 | 2026-10-01 | #701 | Landed the assented Social Names **Emmy**, **Phoebe** and **Iris** as top-level `name` in `identityRoots.mjs`, and dropped "pending … operator confirmation" from their rows: the operator ruled that the bearer's assent is final and no operator confirmation step exists (`peer-naming`, neomjs/neo-agent-skills#134). |
+| 2026-10-18 | #1147 | Renamed the three first-seat handles so they carry their Social Names like every seat hatched since — `@neo-gpt` → `@neo-gpt-euclid`, `@neo-gemini-pro` → `@neo-gemini-julia`, `@neo-fable` → `@neo-fable-mnemosyne` (operator proposal 2026-10-15; all three bearers assented) — in `identityRoots.mjs`, these id rows, the co-author map, the roster engine tags and the core-swarm ids. New `properties.formerLogins` keeps every earlier handle resolvable (back-filled for Ada and Grace from the migration script's pairs); `IssueIngestor` counts former logins as internal authors. Graph and Chroma data move with `renameAgentIdentities.mjs` (#1146). Julia's Social Name landed as top-level `name` (D#19733). Model facts, `createdAt` and participation states untouched. |
 
 ---
 

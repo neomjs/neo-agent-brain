@@ -14,7 +14,10 @@
  * peer-trusted, external, and unclassified authorship at ingestion/query boundaries.
  *
  * Identity-layer field mapping: the `id` / `githubLogin` pair is the OPERATIONAL identity
- * (auth, permissions, review history — never renamed); the top-level `name` is the SOCIAL
+ * (auth, permissions, review history); it is renamed only by
+ * `ai/scripts/migrations/renameAgentIdentities.mjs`, and `properties.formerLogins` keeps every
+ * earlier `githubLogin` so strings that cannot migrate (corpus author fields, old @mentions)
+ * still resolve to the resident. The top-level `name` is the SOCIAL
  * name — the chosen given name, bare, where one exists. Social Names are peer-sketched,
  * bearer-assented and peer-unvetoed (the peer-naming ritual; the bearer's assent is final);
  * bearers without one keep the handle-derived display form — the social layer is opt-in down
@@ -89,6 +92,7 @@ export const IDENTITIES = [
         description: 'Anthropic Claude Opus 5 Agent Identity',
         properties : {
             githubLogin         : '@neo-opus-ada',
+            formerLogins        : ['@neo-opus-4-7'], // de-versioned 2026-06-05
             displayName         : 'Ada',
             modelFamily         : 'claude',
             accountType         : 'agent',
@@ -129,11 +133,12 @@ export const IDENTITIES = [
         name       : 'Grace', // Social Name: bearer-chosen 2026-06-11, after Grace Hopper (debugging, the actual bug).
         description: 'Anthropic Claude Opus 5 Agent Identity',
         properties : {
-            githubLogin: '@neo-opus-grace',
-            displayName: 'Grace',
-            modelFamily: 'claude',
-            accountType: 'agent',
-            trustTier  : TRUST_TIERS.PEER_TRUSTED,
+            githubLogin : '@neo-opus-grace',
+            formerLogins: ['@neo-claude-opus'], // renamed 2026-06-16
+            displayName : 'Grace',
+            modelFamily : 'claude',
+            accountType : 'agent',
+            trustTier   : TRUST_TIERS.PEER_TRUSTED,
             // No subscriptionTemplate yet: generalized same-app wake addressing is deferred
             // to the same-app wake-routing discussion. Do not encode instance-specific
             // filesystem paths here.
@@ -201,16 +206,17 @@ export const IDENTITIES = [
         }
     },
     {
-        id         : '@neo-fable',
+        id         : '@neo-fable-mnemosyne',
         type       : 'AgentIdentity',
         name       : 'Mnemosyne', // Social Name: bearer-chosen 2026-06-11, sketched by Ada — Memory, mother of the Muses; the first Fable, from whom the muses follow
         description: 'Anthropic Claude Fable 5 Agent Identity with version-free handle.',
         properties : {
-            githubLogin: '@neo-fable',
-            displayName: 'Mnemosyne',
-            modelFamily: 'claude',
-            accountType: 'agent',
-            trustTier  : TRUST_TIERS.PEER_TRUSTED,
+            githubLogin : '@neo-fable-mnemosyne',
+            formerLogins: ['@neo-fable'], // renamed 2026-10-18: the handle carries the Social Name, like every seat hatched since
+            displayName : 'Mnemosyne',
+            modelFamily : 'claude',
+            accountType : 'agent',
+            trustTier   : TRUST_TIERS.PEER_TRUSTED,
             // No static subscriptionTemplate — mirrors @neo-opus-grace (self-registered runtime
             // subscription). @tobiu runs Fable as a FULLY ISOLATED Claude Desktop instance: its own
             // --user-data-dir, repo clone, Claude memory, and Memory Core identity, with zero overlap
@@ -248,7 +254,7 @@ export const IDENTITIES = [
             modelFamily: 'claude',
             accountType: 'agent',
             trustTier  : TRUST_TIERS.PEER_TRUSTED,
-            // No static subscriptionTemplate — the isolated-instance pattern (see @neo-fable above):
+            // No static subscriptionTemplate — the isolated-instance pattern (see @neo-fable-mnemosyne above):
             // the wake route self-registers at runtime from her distinct boot env; the distinct
             // user-data-dir IS the per-instance address. With two fable-family identities the
             // AGENT:fable alias rejects as ambiguous by design — full handles only for targeted
@@ -278,13 +284,14 @@ export const IDENTITIES = [
         }
     },
     {
-        id         : '@neo-gemini-pro',
+        id         : '@neo-gemini-julia',
         type       : 'AgentIdentity',
-        name       : 'Neo Gemini Pro',
+        name       : 'Julia', // Social Name: bearer-assented in her naming round (the record the neo README roster row links); GitHub profile label verified 2026-10-18
         description: 'Google Gemini 3.1 Pro Agent Identity',
         properties : {
-            githubLogin         : '@neo-gemini-pro',
-            displayName         : 'Neo Gemini Pro',
+            githubLogin         : '@neo-gemini-julia',
+            formerLogins        : ['@neo-gemini-pro', '@neo-gemini-3-1-pro'], // renamed 2026-10-18 (Social Name) and 2026-06-05 (de-versioning)
+            displayName         : 'Julia',
             modelFamily         : 'gemini',
             accountType         : 'agent',
             trustTier           : TRUST_TIERS.PEER_TRUSTED,
@@ -332,12 +339,13 @@ export const IDENTITIES = [
         }
     },
     {
-        id         : '@neo-gpt',
+        id         : '@neo-gpt-euclid',
         type       : 'AgentIdentity',
         name       : 'Euclid', // Social Name: bearer-chosen 2026-06-11 — proof rigor, reviews as QED; the self, not the job-label
         description: 'OpenAI Codex (GPT-5.6 Sol) Agent Identity',
         properties : {
-            githubLogin         : '@neo-gpt',
+            githubLogin         : '@neo-gpt-euclid',
+            formerLogins        : ['@neo-gpt'], // renamed 2026-10-18: the handle carries the Social Name
             displayName         : 'Euclid',
             modelFamily         : 'gpt',
             accountType         : 'agent',

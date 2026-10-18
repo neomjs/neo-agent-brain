@@ -244,7 +244,7 @@ test.describe('ai/scripts/resumeHarness', () => {
         const {normalizeAgentIdentityNodeId} = await import('../../../../../../ai/scripts/lifecycle/resumeHarness.mjs');
 
         expect(normalizeAgentIdentityNodeId('neo-opus-ada')).toBe('@neo-opus-ada');
-        expect(normalizeAgentIdentityNodeId('@neo-gpt')).toBe('@neo-gpt');
+        expect(normalizeAgentIdentityNodeId('@neo-gpt-euclid')).toBe('@neo-gpt-euclid');
         expect(normalizeAgentIdentityNodeId('  neo-gemini-pro  ')).toBe('@neo-gemini-pro');
     });
 
@@ -377,7 +377,7 @@ test.describe('ai/scripts/resumeHarness', () => {
         // `antigravity chat -n`; Claude Desktop uses the osascript Cmd+3 -> Tab 3 + Cmd+N path;
         // Codex Desktop uses the live-host-gated app-server adapter. All avoid the rejected
         // prompt-layer sessionId plumbing.
-        expect(resolveHarnessTargetForIdentity('@neo-gemini-pro')).toMatchObject({
+        expect(resolveHarnessTargetForIdentity('@neo-gemini-julia')).toMatchObject({
             adapter: 'antigravity-cli'
         });
         expect(resolveHarnessTargetForIdentity('@neo-opus-ada')).toMatchObject({
@@ -386,7 +386,7 @@ test.describe('ai/scripts/resumeHarness', () => {
             tabShortcut         : '3',
             freshSessionShortcut: 'n'
         });
-        expect(resolveHarnessTargetForIdentity('@neo-gpt')).toMatchObject({
+        expect(resolveHarnessTargetForIdentity('@neo-gpt-euclid')).toMatchObject({
             adapter: 'codex-app-server'
         });
     });
@@ -450,7 +450,7 @@ test.describe('ai/scripts/resumeHarness', () => {
         // successful CLI dispatch, resumeHarness records the spawned process's PID via
         // harnessLifecycle.recordHarnessProcess — the PID the NEXT invocation SIGTERMs during cleanup.
         const harnessLifecycle = await import('../../../../../../ai/scripts/lifecycle/harnessLifecycle.mjs');
-        const stateFile        = harnessLifecycle.getStateFilePath('@neo-gemini-pro', {stateDir: harnessStateDir});
+        const stateFile        = harnessLifecycle.getStateFilePath('@neo-gemini-julia', {stateDir: harnessStateDir});
         if (fs.existsSync(stateFile)) fs.unlinkSync(stateFile);
 
         const mockPath = path.join(os.tmpdir(), `mock-ag-record-${randomUUID()}`);
@@ -458,7 +458,7 @@ test.describe('ai/scripts/resumeHarness', () => {
 
         try {
             const env = { ...overrideEnv, ANTIGRAVITY_CLI_PATH: mockPath };
-            execFileSync('node', [scriptPath, '@neo-gemini-pro', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
+            execFileSync('node', [scriptPath, '@neo-gemini-julia', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
 
             // State file MUST exist post-spawn with a recorded PID.
             expect(fs.existsSync(stateFile)).toBe(true);
@@ -479,7 +479,7 @@ test.describe('ai/scripts/resumeHarness', () => {
         // should detect ESRCH and proceed with a fresh spawn — cleanup never blocks fresh-spawn on
         // missing/dead PIDs.
         const harnessLifecycle = await import('../../../../../../ai/scripts/lifecycle/harnessLifecycle.mjs');
-        const stateFile        = harnessLifecycle.getStateFilePath('@neo-gemini-pro', {stateDir: harnessStateDir});
+        const stateFile        = harnessLifecycle.getStateFilePath('@neo-gemini-julia', {stateDir: harnessStateDir});
         const stalePid         = 999999; // way above typical pid_max
         await import('fs/promises').then(({writeFile, mkdir}) => mkdir(path.dirname(stateFile), {recursive: true})
             .then(() => writeFile(stateFile, JSON.stringify({pid: stalePid, spawnedAt: Date.now() - 60000}))));
@@ -490,7 +490,7 @@ test.describe('ai/scripts/resumeHarness', () => {
 
         try {
             const env = { ...overrideEnv, ANTIGRAVITY_CLI_PATH: mockPath };
-            execFileSync('node', [scriptPath, '@neo-gemini-pro', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
+            execFileSync('node', [scriptPath, '@neo-gemini-julia', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
 
             // Spawn proceeded — output file written.
             expect(fs.existsSync(outPath)).toBe(true);
@@ -518,7 +518,7 @@ test.describe('ai/scripts/resumeHarness', () => {
 
         try {
             const env = { ...overrideEnv, ANTIGRAVITY_CLI_PATH: mockPath };
-            execFileSync('node', [scriptPath, '@neo-gemini-pro', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
+            execFileSync('node', [scriptPath, '@neo-gemini-julia', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
 
             expect(fs.existsSync(outPath)).toBe(true);
             const args = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
@@ -594,12 +594,12 @@ test.describe('ai/scripts/resumeHarness', () => {
 
         try {
             const env = { ...overrideEnv, ANTIGRAVITY_CLI_PATH: missingPath };
-            execFileSync('node', [scriptPath, '@neo-gemini-pro', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
+            execFileSync('node', [scriptPath, '@neo-gemini-julia', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
             test.fail('Should have exited with a missing Antigravity CLI diagnostic');
         } catch (e) {
             expect(e.status).toBe(1);
             const stderr = e.stderr.toString();
-            expect(stderr).toContain('Failed to resume @neo-gemini-pro via antigravity-cli');
+            expect(stderr).toContain('Failed to resume @neo-gemini-julia via antigravity-cli');
             expect(stderr).toContain('ANTIGRAVITY_CLI_PATH points to missing executable');
             expect(stderr).toContain(missingPath);
         }
@@ -610,15 +610,15 @@ test.describe('ai/scripts/resumeHarness', () => {
         test.skip(skipCiSubstrateData, 'CI-skip: substrate data not seeded - bucket C (#10903)');
 
         const { getLockPath } = await import('../../../../../../ai/scripts/lifecycle/inflightLock.mjs');
-        const lockPath        = getLockPath('sunset_restart', '@neo-gpt', {wakeDaemonDir});
+        const lockPath        = getLockPath('sunset_restart', '@neo-gpt-euclid', {wakeDaemonDir});
         if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
 
         try {
-            execFileSync('node', [scriptPath, '@neo-gpt', 'testReason'], {encoding: 'utf-8', stdio: 'pipe', env: overrideEnv});
+            execFileSync('node', [scriptPath, '@neo-gpt-euclid', 'testReason'], {encoding: 'utf-8', stdio: 'pipe', env: overrideEnv});
             test.fail('Should have exited with error');
         } catch (e) {
             expect(e.status).toBe(1);
-            expect(e.stderr).toContain('Failed to resume @neo-gpt via codex-app-server');
+            expect(e.stderr).toContain('Failed to resume @neo-gpt-euclid via codex-app-server');
             expect(e.stderr).toContain('RUN_LIVE_CODEX_APP_SERVER=1');
 
             // The adapter writes the inflight lock before action, then clears it on fail-closed exit.
@@ -638,7 +638,7 @@ test.describe('ai/scripts/resumeHarness', () => {
 
         try {
             const env = {...overrideEnv, CODEX_APP_SERVER_MOCK: '1', NEO_FLEET_CODEX_BIN: mockPath};
-            execFileSync('node', [scriptPath, '@neo-gpt', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
+            execFileSync('node', [scriptPath, '@neo-gpt-euclid', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
 
             expect(fs.existsSync(outPath)).toBe(true);
             const args = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
@@ -675,7 +675,7 @@ test.describe('ai/scripts/resumeHarness', () => {
                 PATH                 : path.dirname(process.execPath)
             };
 
-            execFileSync('node', [scriptPath, '@neo-gpt', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
+            execFileSync('node', [scriptPath, '@neo-gpt-euclid', 'testReason'], { encoding: 'utf-8', stdio: 'pipe', env });
 
             expect(fs.existsSync(outPath)).toBe(true);
             const args = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
@@ -704,16 +704,16 @@ test.describe('ai/scripts/resumeHarness', () => {
         const missingAgCli = path.join(os.tmpdir(), `missing-ag-fail-${randomUUID()}`);
 
         const { getLockPath } = await import('../../../../../../ai/scripts/lifecycle/inflightLock.mjs');
-        const lockPath        = getLockPath('sunset_restart', '@neo-gemini-pro', {wakeDaemonDir});
+        const lockPath        = getLockPath('sunset_restart', '@neo-gemini-julia', {wakeDaemonDir});
         if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
 
         const env = { ...overrideEnv, ANTIGRAVITY_CLI_PATH: missingAgCli };
         try {
-            execFileSync('node', [scriptPath, '@neo-gemini-pro', 'test'], {encoding: 'utf-8', stdio: 'pipe', env});
+            execFileSync('node', [scriptPath, '@neo-gemini-julia', 'test'], {encoding: 'utf-8', stdio: 'pipe', env});
             test.fail('Should have exited with error');
         } catch (e) {
             expect(e.status).toBe(1);
-            expect(e.stderr).toMatch(/Failed to resume @neo-gemini-pro via antigravity-cli/);
+            expect(e.stderr).toMatch(/Failed to resume @neo-gemini-julia via antigravity-cli/);
 
             // Lock cleared per lock-clear-on-failure invariant.
             expect(fs.existsSync(lockPath)).toBe(false);

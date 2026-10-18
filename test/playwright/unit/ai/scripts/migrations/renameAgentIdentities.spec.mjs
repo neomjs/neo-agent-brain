@@ -191,7 +191,11 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
             // did not change and was not weakened — the relocation moved a real occurrence out of a
             // blind spot and into its view, which is the guard working, so it is allowlisted with
             // its reason rather than silenced.
-            'ai/graph/agentCoAuthorEmails.mjs'
+            'ai/graph/agentCoAuthorEmails.mjs',
+            // The registry's `formerLogins` is the lineage record: `@neo-gemini-3-1-pro` sits there as
+            // a FORMER login so corpus author strings and old @mentions still resolve to the resident,
+            // never as a live handle. The guard sees the same string the lineage must keep.
+            'ai/graph/identityRoots.mjs'
         ]);
         const unexpected = output
             .filter(file => !allowed.has(file));

@@ -879,6 +879,11 @@ test.describe('Neo.ai.daemons.services.IssueIngestor — community-multiplier in
         // Owner + a known agent maintainer, normalized to bare form (matches GitHub issue authors).
         expect(logins.has('tobiu')).toBe(true);
         expect(logins.has('neo-opus-ada')).toBe(true);
+        // Former logins count too: a ticket authored before a handle rename keeps its old author
+        // string in the corpus, and the community multiplier must not fire on a maintainer's history.
+        expect(logins.has('neo-fable-mnemosyne')).toBe(true);
+        expect(logins.has('neo-fable')).toBe(true);
+        expect(logins.has('neo-opus-4-7')).toBe(true);
         // The leading-@ registry form and null/empty entries must NOT leak through.
         expect(logins.has('@tobiu')).toBe(false);
         expect(logins.has('')).toBe(false);

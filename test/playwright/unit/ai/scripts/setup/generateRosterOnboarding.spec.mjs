@@ -675,8 +675,8 @@ test.describe('generateRosterOnboarding — live-file anchoring (the anchors mus
         ]);
     });
 
-    test('an activated resident (@neo-fable) is DIVERGENT and refuses onboarding overwrite', () => {
-        const planned = planOnboardingSurfaces(buildPlan({handle: '@neo-fable'}), readRealFiles());
+    test('an activated resident (@neo-fable-mnemosyne) is DIVERGENT and refuses onboarding overwrite', () => {
+        const planned = planOnboardingSurfaces(buildPlan({handle: '@neo-fable-mnemosyne'}), readRealFiles());
 
         expect(planned.valid).toBe(false);
         expect(planned.surfaces[0].status).toBe(SURFACE_STATES.DIVERGENT);

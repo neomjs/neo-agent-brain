@@ -24,7 +24,7 @@ export const SHARED_USER_ID = 'shared';
  * Session summaries that involve any of these agents are part of the shared
  * swarm memory substrate, even when a single harness performed the summarization
  * write. Without this list, restored summaries can be tagged to only one peer
- * (`neo-gemini-pro`, etc.) and silently disappear for the other named peers'
+ * (`neo-gemini-julia`, etc.) and silently disappear for the other named peers'
  * tenant-aware summary reads.
  *
  * @member {String[]}
@@ -33,8 +33,8 @@ export const CORE_SWARM_USER_IDS = Object.freeze([
     'neo-opus-ada',
     'neo-opus-grace',
     'neo-opus-vega',
-    'neo-gemini-pro',
-    'neo-gpt'
+    'neo-gemini-julia',
+    'neo-gpt-euclid'
 ]);
 
 /**

@@ -50,15 +50,15 @@ import {FLEET_COCKPIT_SOURCES} from '../../../src/fleet/contract/cockpit.mjs';
  * @type {Object<String,String>}
  */
 export const ENGINE_TAG_BY_ID = {
-    'neo-opus-ada'   : 'opus-5',      // §neo_opus
-    'neo-opus-grace' : 'opus-5',      // §neo_claude_opus
-    'neo-fable'      : 'fable-5',     // §neo_fable
-    'neo-fable-clio' : 'fable-5',     // §neo_fable_clio (mirrors §neo_fable)
-    'neo-gemini-pro' : '3.1-pro',     // §neo_gemini_pro
-    'neo-gpt'        : 'gpt-5.6-sol', // §neo_gpt
-    'neo-gpt-emmy'   : 'gpt-5.6-sol', // §neo_gpt_emmy (mirrors §neo_gpt)
-    'neo-kimi-phoebe': 'kimi-k3',     // §neo_kimi_phoebe
-    'neo-kimi-iris'  : 'kimi-k3'      // §neo_kimi_iris
+    'neo-opus-ada'       : 'opus-5',      // §neo_opus
+    'neo-opus-grace'     : 'opus-5',      // §neo_claude_opus
+    'neo-fable-mnemosyne': 'fable-5',     // §neo_fable
+    'neo-fable-clio'     : 'fable-5',     // §neo_fable_clio (mirrors §neo_fable)
+    'neo-gemini-julia'   : '3.1-pro',     // §neo_gemini_pro
+    'neo-gpt-euclid'     : 'gpt-5.6-sol', // §neo_gpt
+    'neo-gpt-emmy'       : 'gpt-5.6-sol', // §neo_gpt_emmy (mirrors §neo_gpt)
+    'neo-kimi-phoebe'    : 'kimi-k3',     // §neo_kimi_phoebe
+    'neo-kimi-iris'      : 'kimi-k3'      // §neo_kimi_iris
 };
 
 /**

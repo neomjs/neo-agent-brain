@@ -81,7 +81,7 @@ export async function swarmWakeCooldown(signal, {wakeDaemonDir}={}) {
         await LifecycleService.ready();
         await GraphService.ready();
 
-        const coordinator    = signal.coordinator_recommendation || '@neo-gemini-pro';
+        const coordinator    = signal.coordinator_recommendation || '@neo-gemini-julia';
         const sender         = process.env.NEO_AGENT_IDENTITY || '@system';
         const abandonedCount = signal.details?.[coordinator]?.abandonedCount || 0;
 

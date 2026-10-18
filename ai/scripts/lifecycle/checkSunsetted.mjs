@@ -76,7 +76,7 @@ import { checkInflightLock }            from './inflightLock.mjs';
  * @returns {Promise<Object>} Structured detector contract consumed by shell and daemon paths.
  */
 export async function checkSunsetted(
-    identity = process.env.NEO_AGENT_IDENTITY || '@neo-gemini-pro',
+    identity = process.env.NEO_AGENT_IDENTITY || '@neo-gemini-julia',
     {wakeDaemonDir}={}
 ) {
     await LifecycleService.ready();
@@ -241,7 +241,7 @@ export async function checkSunsetted(
 }
 
 async function main() {
-    const identity = process.argv[2] || process.env.NEO_AGENT_IDENTITY || '@neo-gemini-pro';
+    const identity = process.argv[2] || process.env.NEO_AGENT_IDENTITY || '@neo-gemini-julia';
     const result   = await checkSunsetted(identity, {wakeDaemonDir: memoryCoreConfig.wakeDaemon.dataDir});
     console.log(JSON.stringify(result));
 }
