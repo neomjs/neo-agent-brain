@@ -1858,6 +1858,28 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
             RequestContextService.getUserId = originalGetUserId
         }
     });
+
+    test('TestLifecycleHelper.cleanupGraphService(clear) and SystemLifecycleService.initAsync restore canonical boot seeds on warm workers', async () => {
+        const {TestLifecycleHelper, resetMemoryCoreLifecycle} = await import('./util.mjs');
+
+        expect(GraphService.db.nodes.get('@neo-gemini-pro')).toBeFalsy();
+
+        await TestLifecycleHelper.cleanupGraphService(GraphService, SystemLifecycleService, null, null, 'clear');
+
+        expect(GraphService.db.nodes.get('@neo-gemini-pro')?.label).toBe('AgentIdentity');
+
+        GraphService.db.nodes.clear();
+        GraphService.db.edges.clear();
+        GraphService.db.vicinityLoadedNodes.clear();
+        await GraphService.db.storage.clear();
+        await resetMemoryCoreLifecycle();
+
+        expect(GraphService.db.nodes.get('@neo-gemini-pro')).toBeFalsy();
+
+        await SystemLifecycleService.initAsync();
+
+        expect(GraphService.db.nodes.get('@neo-gemini-pro')?.label).toBe('AgentIdentity');
+    });
 });
 
 test.describe('GraphService — getLifecycleCensus (#10158)', () => {

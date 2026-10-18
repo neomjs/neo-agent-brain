@@ -47,6 +47,15 @@ class SystemLifecycleService extends Base {
         await ChromaLifecycleService.ready();
         await InferenceLifecycleService.ready();
         await GraphService.ready();
+
+        if (GraphService.db?.storage?.db && typeof GraphService.provisionMissingBootSeeds === 'function') {
+            try {
+                GraphService.provisionMissingBootSeeds();
+            } catch (error) {
+                logger.warn(`[SystemLifecycleService] Non-fatal DB contention during canonical boot-seed provisioning: ${error.message}`);
+            }
+        }
+
         await StorageRouter.ready();
 
         logger.info('[SystemLifecycleService] All memory-core microservices initialized successfully!');

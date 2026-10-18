@@ -214,6 +214,13 @@ export class TestLifecycleHelper {
                     try { await GraphService.db.storage.clear(); } catch (e) {
                         console.warn(`[Cleanup] Failed to clear test database:`, e.message);
                     }
+                    if (GraphService.db.storage.db) {
+                        try { GraphService.db.storage.db.exec('DELETE FROM GraphLog'); } catch (e) {}
+                    }
+                    GraphService.db.lastSyncId = 0;
+                }
+                if (GraphService.db.storage?.db && typeof GraphService.provisionMissingBootSeeds === 'function') {
+                    try { GraphService.provisionMissingBootSeeds(); } catch (e) {}
                 }
             }
             await resetMemoryCoreLifecycle();
