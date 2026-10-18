@@ -1,121 +1,69 @@
-import path                                         from 'path';
+import Neo                                          from 'neo.mjs/src/Neo.mjs';
+import {createConfigProxy}                          from '../../../ConfigProvider.mjs';
+import ConfigBase                                   from '../../../mcp/server/github-workflow/configBase.mjs';
 import {cloneConfigSubtree, validateConfigSnapshot} from '../../shared/configSnapshot.mjs';
 
 /**
- * Clone the `github-workflow` configuration slices from `aiConfig` into an isolated plain
- * object with reactive path getters on `issueSync` so tests can override `contentRootOverride`,
- * `archiveChunkThreshold`, `routeByMilestone`, `discussionDenylist`, `issueDenylist`, etc.
- * without mutating the shared `aiConfig` module object.
+ * Build an isolated plain-object `github-workflow` configuration snapshot by applying
+ * `overrides` to a disposable `ConfigBase` instance so all `issueSync` path formulas
+ * derive from the single `configBase.mjs` SSOT definition.
  *
  * @param {Object} aiConfig
  * @param {Object} [overrides={}]
  * @returns {Object}
  */
 export function createGitHubWorkflowConfigSnapshot(aiConfig, overrides = {}) {
-    const baseIssueSync      = cloneConfigSubtree(aiConfig, ['issueSync']);
-    const issueSyncOverrides = overrides.issueSync || {};
+    const isolated = createConfigProxy(Neo.create(ConfigBase));
 
-    const issueSync = {
-        ...baseIssueSync,
-        ...issueSyncOverrides,
-        droppedLabels: [
-            ...(issueSyncOverrides.droppedLabels ?? baseIssueSync.droppedLabels ?? [])
-        ],
-        discussionDenylist: {
-            numbers: [
-                ...(issueSyncOverrides.discussionDenylist?.numbers ?? baseIssueSync.discussionDenylist?.numbers ?? [])
-            ],
-            authors: [
-                ...(issueSyncOverrides.discussionDenylist?.authors ?? baseIssueSync.discussionDenylist?.authors ?? [])
-            ]
-        },
-        issueDenylist: {
-            numbers: [
-                ...(issueSyncOverrides.issueDenylist?.numbers ?? baseIssueSync.issueDenylist?.numbers ?? [])
-            ],
-            authors: [
-                ...(issueSyncOverrides.issueDenylist?.authors ?? baseIssueSync.issueDenylist?.authors ?? [])
-            ]
-        },
-        productNameDenylist: [
-            ...(issueSyncOverrides.productNameDenylist ?? baseIssueSync.productNameDenylist ?? [])
-        ]
-    };
-
-    const basePullRequest      = cloneConfigSubtree(aiConfig, ['pullRequest']);
-    const pullRequestOverrides = overrides.pullRequest || {};
-
-    const pullRequest = {
-        ...basePullRequest,
-        ...pullRequestOverrides,
-        defaults: {
-            ...(basePullRequest.defaults || {}),
-            ...(pullRequestOverrides.defaults || {})
+    try {
+        if (overrides.owner !== undefined) {
+            isolated.owner = overrides.owner;
         }
-    };
-
-    const snapshot = {
-        owner      : overrides.owner ?? aiConfig.owner,
-        repo       : overrides.repo ?? aiConfig.repo,
-        projectRoot: overrides.projectRoot ?? aiConfig.projectRoot,
-        pullRequest,
-        issueSync
-    };
-
-    Object.defineProperties(issueSync, {
-        metadataBaseRoot: {
-            enumerable  : true,
-            configurable: true,
-            get() { return this.contentRootOverride ?? snapshot.projectRoot; }
-        },
-        contentRoot: {
-            enumerable  : true,
-            configurable: true,
-            get() { return this.contentRootOverride ?? ''; }
-        },
-        corpusLeaseFile: {
-            enumerable  : true,
-            configurable: true,
-            get() { return this.contentRoot ? path.resolve(this.contentRoot, '.corpus-sync.lock') : ''; }
-        },
-        originRoot: {
-            enumerable  : true,
-            configurable: true,
-            get() { return this.contentRootOverride ? path.resolve(this.contentRootOverride, snapshot.repo) : ''; }
-        },
-        issuesDir: {
-            enumerable  : true,
-            configurable: true,
-            get() { return this.issuesDirOverride ?? (this.originRoot ? path.resolve(this.originRoot, 'issues') : ''); }
-        },
-        archiveRoot: {
-            enumerable  : true,
-            configurable: true,
-            get() { return this.archiveRootOverride ?? (this.originRoot ? path.resolve(this.originRoot, 'archive') : ''); }
-        },
-        discussionsDir: {
-            enumerable  : true,
-            configurable: true,
-            get() { return this.discussionsDirOverride ?? (this.originRoot ? path.resolve(this.originRoot, 'discussions') : ''); }
-        },
-        pullsDir: {
-            enumerable  : true,
-            configurable: true,
-            get() { return this.pullsDirOverride ?? (this.originRoot ? path.resolve(this.originRoot, 'pulls') : ''); }
-        },
-        metadataFile: {
-            enumerable  : true,
-            configurable: true,
-            get() { return this.metadataFileOverride ?? (this.originRoot ? path.resolve(this.originRoot, '.sync-metadata.json') : ''); }
-        },
-        releaseNotesDir: {
-            enumerable  : true,
-            configurable: true,
-            get() { return this.releaseNotesDirOverride ?? (this.originRoot ? path.resolve(this.originRoot, 'release-notes') : ''); }
+        if (overrides.repo !== undefined) {
+            isolated.repo = overrides.repo;
         }
-    });
+        if (overrides.projectRoot !== undefined) {
+            isolated.projectRoot = overrides.projectRoot;
+        }
 
-    return snapshot;
+        const issueSyncOverrides = overrides.issueSync || {};
+        for (const [key, value] of Object.entries(issueSyncOverrides)) {
+            if (key === 'discussionDenylist' || key === 'issueDenylist') {
+                isolated.issueSync[key] = {
+                    ...isolated.issueSync[key],
+                    ...value,
+                    numbers: [...(value?.numbers ?? isolated.issueSync[key]?.numbers ?? [])],
+                    authors: [...(value?.authors ?? isolated.issueSync[key]?.authors ?? [])]
+                };
+            } else if (Array.isArray(value)) {
+                isolated.issueSync[key] = [...value];
+            } else {
+                isolated.issueSync[key] = value;
+            }
+        }
+
+        const pullRequestOverrides = overrides.pullRequest || {};
+        for (const [key, value] of Object.entries(pullRequestOverrides)) {
+            if (key === 'defaults' && value && typeof value === 'object') {
+                isolated.pullRequest.defaults = {
+                    ...isolated.pullRequest.defaults,
+                    ...value
+                };
+            } else {
+                isolated.pullRequest[key] = value;
+            }
+        }
+
+        return {
+            owner      : isolated.owner,
+            repo       : isolated.repo,
+            projectRoot: isolated.projectRoot,
+            pullRequest: cloneConfigSubtree(isolated, ['pullRequest']),
+            issueSync  : cloneConfigSubtree(isolated, ['issueSync'])
+        };
+    } finally {
+        isolated.destroy();
+    }
 }
 
 /**
