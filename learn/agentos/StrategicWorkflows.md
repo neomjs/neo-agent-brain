@@ -139,7 +139,6 @@ in `package.json`; the old direct query scripts are retired.
 ```bash
 npm run ai:mcp-client -- --server knowledge-base --call-tool ask_knowledge_base --args '{"query":"ticket #<ticket_number> original plan","type":"ticket"}'
 
-npm run ai:sync-github-workflow
 npm run ai:mcp-client -- --server github-workflow --call-tool get_local_issue_by_id --args '{"issue_number":"<ticket_number>"}'
 
 npm run ai:mcp-client -- --server memory-core --call-tool query_raw_memories --args '{"query":"context for ticket #<ticket_number>","nResults":5}'

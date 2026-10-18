@@ -182,16 +182,17 @@ test.describe('syncGithubWorkflow SDK-boundary exception — self-expiring', () 
         // moved or unreadable entry file would read as "clean" — the shape this whole file exists to
         // reject. The same guard the barrel test uses, for the same reason.
         //
-        // This floor is the reason the package-boundary under-walk was ever noticed: when the walker
-        // stopped at `neo.mjs/**`, reach fell from its calibrated range to 45 and this fired.
-        // Calibration: the walker reaches 63 modules from the stage entry, measured when this floor
-        // was last re-derived. Lowering the floor to accommodate a shrunken walk is the anti-fix —
-        // it converts a working alarm into a silent one, which is exactly what it just caught.
+        // This floor is the reason the package-boundary under-walk was ever noticed: the walker once
+        // stopped at `neo.mjs/**`, and reach fell below the floor. Calibration: the walker reaches 47
+        // modules from the stage entry, 13 of them under `neo.mjs/**`. A walker that stops at that
+        // boundary again reaches 34, and an entry that moved or cannot be read walks 1, so a floor of
+        // 40 fires on both. Lowering the floor to accommodate a shrunken walk is the anti-fix — it
+        // converts a working alarm into a silent one. Re-derive it from a measured walk instead.
         expect(
             walked,
             'the stage-entry walk found almost nothing, so a `false` below would prove nothing — ' +
             'check that ai/scripts/maintenance/syncGithubWorkflow.mjs still resolves'
-        ).toBeGreaterThan(50);
+        ).toBeGreaterThan(40);
 
         expect(
             reached,
@@ -226,15 +227,14 @@ test.describe('syncGithubWorkflow SDK-boundary exception — self-expiring', () 
         expect(source).not.toContain("from '../../services.mjs'");
     });
 
-    test('makeSafe is still a no-op for the methods this script calls', () => {
+    test('makeSafe is still a no-op for the method this script calls', () => {
         // The barrel wraps services in `makeSafe`, which validates and marshals against the OpenAPI
-        // spec. That is currently harmless to lose here because neither called method is an operation
-        // in the spec. If someone ADDS one, the direct import silently drops validation — so this
+        // spec. That is currently harmless to lose here because the called method is not an operation
+        // in the spec. If someone ADDS it, the direct import silently drops validation — so this
         // fails and says so rather than letting the exception quietly widen its cost.
         const spec = readFileSync(OPENAPI, 'utf8');
 
-        for (const method of ['emitGeneratedContent', 'emitConversationCorpus', 'runFullSync',
-            'emit_generated_content', 'emit_conversation_corpus', 'run_full_sync']) {
+        for (const method of ['emitConversationCorpus', 'emit_conversation_corpus']) {
             expect(
                 spec.includes(method),
                 `${method} is now in the github-workflow OpenAPI spec, so makeSafe would validate or ` +

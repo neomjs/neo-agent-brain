@@ -1138,6 +1138,118 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect((await read(configPath)).match(/ELECTRON_RUN_AS_NODE/g)).toHaveLength(3);
     });
 
+    test.describe('a packaged runtime an install moved (#1136)', () => {
+        const resident = '\n[mcp_servers."neo-mjs-github-workflow".tools."list_issues"]\napproval_mode = "approve"\n\n[resident]\nkeep = "owned by the peer"\n';
+
+        /** @summary A packaged runtime in the installed shape: the organism and executable inside one bundle. */
+        async function packagedRuntime(bundle) {
+            const organism   = path.join(root, bundle, 'Contents/Resources/organism'),
+                  executable = path.join(root, bundle, 'Contents/MacOS/Neo Harness');
+
+            await fs.cp(agentosRuntimeRoot, organism, {recursive: true});
+            await fs.mkdir(path.dirname(executable), {recursive: true});
+            await fs.writeFile(executable, '#!/bin/sh\n', {mode: 0o755});
+
+            return {agentosRuntimeRoot: organism, nodePath: executable}
+        }
+
+        /** @summary One codex-desktop seat on the plane, started from the runtime given, as a packaged Fleet starts it. */
+        function startFrom(runtime) {
+            return {
+                ...options(makeAgent('codex-desktop')), ...runtime, mcpTarget: tenantTarget(),
+                runtime: {execPath: runtime.nodePath, versions: {electron: '43.5.0'}}
+            }
+        }
+
+        test('the next Start moves the rows to the installed runtime; transport, receipt and resident tables stay', async () => {
+            const bundled    = await packagedRuntime('Neo Harness.app'),
+                  generation = await packagedRuntime('runtime/gen-b/host.runtime'),
+                  first      = await prepareManagedAgentWorkspace(startFrom(bundled)),
+                  configPath = path.join(first.targetRepoRoot, '.codex/config.toml'),
+                  receipt    = path.join(first.instanceHome, '.neo-fleet-mcp-transport.json');
+
+            await fs.writeFile(configPath, await read(configPath) + resident);
+
+            const receiptBefore = await read(receipt);
+
+            // the replaced bundle is gone, as after an install
+            await fs.rm(path.join(root, 'Neo Harness.app'), {recursive: true});
+
+            const moved  = await prepareManagedAgentWorkspace(startFrom(generation)),
+                  result = await read(configPath);
+
+            expect(moved.artifacts.find(item => item.path === configPath).status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+            expect(result).not.toContain(bundled.agentosRuntimeRoot);
+            expect(result.split(generation.nodePath)).toHaveLength(4);
+            expect(result).toContain(resident);
+            expect(result).toContain('https://tenant.example.com/agentos/mc/mcp');
+            expect(await read(receipt)).toBe(receiptBefore);
+            expect((await prepareManagedAgentWorkspace(startFrom(generation))).artifacts
+                .every(item => item.status === WORKSPACE_ARTIFACT_STATES.MATCH)).toBe(true)
+        });
+
+        test('rows rendered before NEO_NL_PORT joined Neural Link move too, with and without a runtime move', async () => {
+            const bundled    = await packagedRuntime('Neo Harness.app'),
+                  generation = await packagedRuntime('runtime/gen-b/host.runtime');
+
+            for (const [from, to] of [[generation, generation], [bundled, generation]]) {
+                const first      = await prepareManagedAgentWorkspace(startFrom(from)),
+                      configPath = path.join(first.targetRepoRoot, '.codex/config.toml'),
+                      current    = await read(configPath);
+
+                expect(current).toContain('"NEO_AGENT_IDENTITY","NEO_NL_PORT","NEO_FLEET_BRIDGE_TOKEN"');
+                // the render from before NEO_NL_PORT joined: the same rows without it
+                await fs.writeFile(configPath, current.replace('"NEO_NL_PORT",', '') + resident);
+
+                const moved = await prepareManagedAgentWorkspace(startFrom(to));
+
+                expect(moved.artifacts.find(item => item.path === configPath).status, from.nodePath).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+                expect(await read(configPath)).toContain('"NEO_AGENT_IDENTITY","NEO_NL_PORT","NEO_FLEET_BRIDGE_TOKEN"');
+                expect(await read(configPath)).toContain(resident);
+
+                await fs.rm(first.targetRepoRoot, {recursive: true})
+            }
+        });
+
+        test('anything but an exact earlier render still refuses without overwrite', async () => {
+            const bundled    = await packagedRuntime('Neo Harness.app'),
+                  other      = await packagedRuntime('Other.app'),
+                  generation = await packagedRuntime('runtime/gen-b/host.runtime');
+
+            // edits one server's own table, never a transport row: those refuse on the receipt instead
+            const inTable = (name, edit) => text => {
+                const start = text.indexOf(`[mcp_servers."${name}"]`),
+                      end   = text.indexOf('\n[', start + 1);
+
+                return text.slice(0, start) + edit(text.slice(start, end)) + text.slice(end)
+            };
+
+            const edits = {
+                'a hand-pointed executable'        : text => text.replaceAll(`"${bundled.nodePath}"`, '"/usr/local/bin/node"'),
+                'a root outside the packaged shape': text => text
+                    .replaceAll(bundled.agentosRuntimeRoot, path.join(root, 'checkout'))
+                    .replaceAll(bundled.nodePath, path.join(root, 'checkout-node')),
+                'another managed byte changed': inTable('neo-mjs-neural-link', table => table.replace('tool_timeout_sec = 120', 'tool_timeout_sec = 121')),
+                'rows naming two runtimes'    : inTable('neo-mjs-github-workflow', table => table
+                    .replaceAll(bundled.agentosRuntimeRoot, other.agentosRuntimeRoot)
+                    .replaceAll(bundled.nodePath, other.nodePath))
+            };
+
+            for (const [label, edit] of Object.entries(edits)) {
+                const first      = await prepareManagedAgentWorkspace(startFrom(bundled)),
+                      configPath = path.join(first.targetRepoRoot, '.codex/config.toml'),
+                      edited     = edit(await read(configPath));
+
+                expect(edited, label).not.toBe(await read(configPath));
+                await fs.writeFile(configPath, edited);
+                await expect(prepareManagedAgentWorkspace(startFrom(generation)), label).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+                expect(await read(configPath), label).toBe(edited);
+
+                await fs.rm(first.targetRepoRoot, {recursive: true})
+            }
+        })
+    });
+
     test('installed Codex parser and Electron execute the generated MCP command', async () => {
         test.skip(!process.versions.electron || !process.env.NEO_TEST_CODEX_BIN,
             'Requires the packaged Electron runtime and an installed Codex CLI.');

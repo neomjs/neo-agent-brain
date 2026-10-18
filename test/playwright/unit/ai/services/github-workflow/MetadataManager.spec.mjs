@@ -189,7 +189,6 @@ test.describe('Neo.ai.services.github-workflow.sync.MetadataManager', () => {
         const metadata = {
             lastSync           : '2026-04-23T22:00:00Z',
             releasesLastFetched: '2026-04-23T22:00:00Z',
-            pushFailures       : [],
             issues             : {
                 '10267': {
                     state        : 'OPEN',

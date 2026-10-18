@@ -31,10 +31,8 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
     let GraphqlService;
     let MetadataManager;
     let IssueIngestor;
-    let RepositoryService;
 
     let originalReconcileArchived;
-    let originalPush;
     let originalPull;
     let originalFetchReleases;
     let originalSyncNotes;
@@ -48,8 +46,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
     let originalRepairPullDuplicates;
     let originalReconcilePullIndex;
     let originalVerifyPullIntegrity;
-    let originalGetViewerPermission;
-    let originalExecGit;
 
     let originalIngestIssueStates;
     let originalIngestDiscussionStates;
@@ -76,14 +72,12 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         GraphqlService = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
         MetadataManager = (await import('../../../../../../ai/services/github-workflow/sync/MetadataManager.mjs')).default;
         IssueIngestor = (await import('../../../../../../ai/services/ingestion/IssueIngestor.mjs')).default;
-        RepositoryService = (await import('../../../../../../ai/services/github-workflow/RepositoryService.mjs')).default;
     });
 
     test.beforeEach(() => {
         stage2Calls = { issueStates: 0, discussionStates: 0, pullRequestFeedback: 0 };
 
         originalReconcileArchived = IssueSyncer.reconcileClosedIssueLocations;
-        originalPush = IssueSyncer.pushToGitHub;
         originalPull = IssueSyncer.pullFromGitHub;
         originalFetchReleases = ReleaseNotesSyncer.fetchAndCacheReleases;
         originalSyncNotes = ReleaseNotesSyncer.syncNotes;
@@ -94,29 +88,24 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         originalRepairPullDuplicates = PullRequestSyncer.repairDuplicateArtifacts;
         originalReconcilePullIndex = PullRequestSyncer.reconcilePullRequestIndex;
         originalVerifyPullIntegrity = PullRequestSyncer.verifyCorpusIntegrity;
-        originalGetViewerPermission = RepositoryService.getViewerPermission;
-        originalExecGit = SyncService.execGit;
         originalLoadMetadata = MetadataManager.load;
         originalSaveMetadata = MetadataManager.save;
 
         IssueSyncer.reconcileClosedIssueLocations = async () => ({ count: 0 });
-        IssueSyncer.pushToGitHub = async () => ({ count: 0 });
         IssueSyncer.pullFromGitHub = async (md) => ({ newMetadata: md || { issues: {}, releases: {}, discussions: {}, pullRequests: {} }, stats: { pulled: { count: 0, created: 0, updated: 0, moved: 0 }, dropped: { count: 0 } } });
         ReleaseNotesSyncer.fetchAndCacheReleases = async () => {};
         ReleaseNotesSyncer.syncNotes = async () => ({ count: 0 });
         DiscussionSyncer.syncDiscussions = async () => ({ count: 0 });
         PullRequestSyncer.syncPullRequests = async () => ({ count: 0 });
         // These specs exercise Stage-2 SEQUENCING, so every orchestration step is stubbed — otherwise
-        // `runFullSync` runs the real pass against the real `resources/content`, which is a tracked
-        // generated corpus. Both pull passes below were previously unstubbed and merely appeared
-        // harmless: the relocate pass bails early because `fetchAndCacheReleases` is stubbed to a
-        // no-op and it refuses to bucket without releases. That is luck, not isolation — the index
-        // reconcile needs no network and would rewrite thousands of live entries from a unit run.
+        // the emission runs the real pass against the configured corpus root. Both pull passes below
+        // were previously unstubbed and merely appeared harmless: the relocate pass bails early because
+        // `fetchAndCacheReleases` is stubbed to a no-op and it refuses to bucket without releases. That
+        // is luck, not isolation — the index reconcile needs no network and would rewrite live entries.
         PullRequestSyncer.reconcileClosedPullRequestLocations = async () => ({ count: 0, pullRequests: [], indexed: 0 });
         PullRequestSyncer.repairDuplicateArtifacts = async () => ({ repaired: [], removed: 0, failed: [] });
         PullRequestSyncer.reconcilePullRequestIndex = async () => ({ reindexed: 0, unchanged: 0, removed: 0, skippedAmbiguous: [] });
         PullRequestSyncer.verifyCorpusIntegrity = async () => ({ ok: true, staleIndexEntries: [], inconsistentIndexEntries: [], duplicateIndexEntryIds: [], unindexedIds: [], identicalDuplicateIds: [], divergentDuplicateIds: [] });
-        RepositoryService.getViewerPermission = async () => ({ permission: 'READ' }); // Skip git commands
         MetadataManager.load = async () => ({ issues: {}, releases: {}, discussions: {}, pullRequests: {} });
         MetadataManager.save = async () => {};
 
@@ -127,11 +116,17 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         IssueIngestor.ingestIssueStates = async () => { stage2Calls.issueStates++; };
         IssueIngestor.ingestDiscussionStates = async () => { stage2Calls.discussionStates++; };
         IssueIngestor.ingestPullRequestFeedback = async () => { stage2Calls.pullRequestFeedback++; };
+
+        // Every arm runs against a declared corpus root, isolated from the shared config.
+        // The refusal arm below swaps in an undeclared one.
+        const declared = SyncService.createConfigSnapshot();
+        declared.issueSync.contentRoot = '/mock/corpus';
+        SyncService.configSnapshot = declared;
     });
 
     test.afterEach(() => {
+        SyncService.configSnapshot = null;
         IssueSyncer.reconcileClosedIssueLocations = originalReconcileArchived;
-        IssueSyncer.pushToGitHub = originalPush;
         IssueSyncer.pullFromGitHub = originalPull;
         ReleaseNotesSyncer.fetchAndCacheReleases = originalFetchReleases;
         ReleaseNotesSyncer.syncNotes = originalSyncNotes;
@@ -142,8 +137,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         PullRequestSyncer.repairDuplicateArtifacts = originalRepairPullDuplicates;
         PullRequestSyncer.reconcilePullRequestIndex = originalReconcilePullIndex;
         PullRequestSyncer.verifyCorpusIntegrity = originalVerifyPullIntegrity;
-        RepositoryService.getViewerPermission = originalGetViewerPermission;
-        SyncService.execGit = originalExecGit;
         MetadataManager.load = originalLoadMetadata;
         MetadataManager.save = originalSaveMetadata;
 
@@ -152,43 +145,34 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         IssueIngestor.ingestPullRequestFeedback = originalIngestPullRequestFeedback;
     });
 
-    test('emitGeneratedContent refuses naming NEO_MCP_GITHUB_CONTENT_ROOT before loading metadata when no contentRoot is configured (#459)', async () => {
-        let metadataLoadCalls = 0;
+    test('an undeclared corpus root is refused by name before any metadata loads', async () => {
+        const undeclared = SyncService.createConfigSnapshot();
+        let   loads      = 0;
 
-        MetadataManager.load = async () => {
-            metadataLoadCalls++;
-            return {issues: {}, releases: {}, discussions: {}, pullRequests: {}};
-        };
+        undeclared.issueSync.contentRoot = '';
+        SyncService.configSnapshot       = undeclared;
+        MetadataManager.load             = async () => { loads++; return {issues: {}, releases: {}, discussions: {}, pulls: {}} };
 
         await expect(SyncService.emitGeneratedContent()).rejects.toThrow(
             /SyncService#emitGeneratedContent:.*issueSync\.contentRootOverride \/ NEO_MCP_GITHUB_CONTENT_ROOT/
         );
-        expect(metadataLoadCalls).toBe(0);
+        expect(loads).toBe(0);
     });
 
-    test('an unclean pull-corpus verdict NEVER reaches the auto-push, and the pull facet does not advance', async () => {
+    test('an unclean pull-corpus verdict fails the run, and the pull facet does not advance', async () => {
         // Every pass reports its own outcome and degrades softly on its own terms, which is exactly
-        // how a corpus reaches the commit with each step reporting success and the whole known-broken.
-        // The verdict is only worth taking if something consumes it: a generated commit is what every
+        // how a corpus reaches publication with each step reporting success and the whole known-broken.
+        // The verdict is only worth taking if something consumes it: a published corpus is what every
         // consumer then reads as truth, and unlike a failed run it cannot be retried away.
         //
-        // This test previously asserted `order === []` — that NOTHING ran, including the metadata save
-        // and the derive. That was the whole-run abort, and it is deliberately narrowed: a failure in one
-        // facet must no longer discard the facets that already succeeded, or a deterministic failure
-        // anywhere freezes the entire corpus indefinitely.
-        //
-        // So the assertion moves to the property that actually protects consumers, and it is STRONGER
-        // for being explicit: **no auto-push**, and **the pull slice does not advance**. A generated
-        // commit still requires every facet clean, because the aggregate verdict throws before delivery.
-        const
-            order      = [],
-            savedPulls = [];
+        // A failure in one facet must not discard the facets that already succeeded, or a deterministic
+        // failure anywhere freezes the entire corpus indefinitely. So the protected property is narrow:
+        // **the run fails**, so the publisher never publishes it, and **the pull slice does not advance**.
+        const savedPulls = [];
 
         MetadataManager.save = async metadata => {
-            order.push('metadata-save');
             savedPulls.push(structuredClone(metadata.pulls ?? null))
         };
-        RepositoryService.getViewerPermission = async () => { order.push('permission-check'); return {permission: 'READ'} };
 
         PullRequestSyncer.verifyCorpusIntegrity = async () => ({
             ok                      : false,
@@ -200,10 +184,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             divergentDuplicateIds   : [10124]
         });
 
-        await expect(SyncService.runFullSync({contentRoot: '/mock/resources/content'})).rejects.toThrow(/integrity is not clean/);
-
-        // THE invariant: delivery is never reached, so a corpus measured broken is never committed.
-        expect(order).not.toContain('permission-check');
+        await expect(SyncService.emitGeneratedContent()).rejects.toThrow(/integrity is not clean/);
 
         // The pull facet is the one that failed, so it contributed no save of its own. Any save that did
         // happen came from an earlier facet — which is the point — and none of them may carry pull
@@ -211,72 +192,55 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         expect(savedPulls.every(pulls => !pulls || !Object.keys(pulls).length)).toBe(true);
     });
 
-    test('a FAILED duplicate repair aborts too, even when the verdict is otherwise clean', async () => {
+    test('a FAILED duplicate repair fails the run too, even when the verdict is otherwise clean', async () => {
         // The repair reports its failures rather than throwing, so a soft-failed restoration would
         // otherwise sail past a verdict that cannot see it.
-        //
-        // Narrowed with its sibling above: the abort is now facet-local, so the assertion is that
-        // DELIVERY is never reached, not that no facet before it persisted.
-        const order = [];
-
-        MetadataManager.save = async () => { order.push('metadata-save') };
-        RepositoryService.getViewerPermission = async () => { order.push('permission-check'); return {permission: 'READ'} };
         PullRequestSyncer.repairDuplicateArtifacts = async () => ({
             repaired: [], removed: 0, failed: [{id: 10124, reason: 'network down'}]
         });
 
-        await expect(SyncService.runFullSync({contentRoot: '/mock/resources/content'})).rejects.toThrow(/integrity is not clean/);
-        expect(order).not.toContain('permission-check');
+        await expect(SyncService.emitGeneratedContent()).rejects.toThrow(/integrity is not clean/);
     });
 
     test('a clean verdict lets the run proceed — the gate can PASS', async () => {
-        // Otherwise the two aborts above prove only that runFullSync can throw.
-        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
+        // Otherwise the two failures above prove only that the emission can throw.
+        const result = await SyncService.emitGeneratedContent();
 
-        expect(result.success).toBe(true);
-        expect(result.syncStats ?? result).toBeTruthy();
+        expect(result.facetOutcomes.every(outcome => outcome.advanced)).toBe(true);
     });
 
-    test('pull-only emission skips local-to-GitHub issue mutation but still pulls (#15977)', async () => {
-        let pushCalls = 0,
-            pullCalls = 0;
+    test('the issues facet reconciles closed issues, then pulls, and pushes nothing to GitHub', async () => {
+        const order = [];
 
         ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
-        IssueSyncer.pushToGitHub = async () => { pushCalls++; return {count: 0} };
+        IssueSyncer.reconcileClosedIssueLocations = async () => { order.push('reconcile'); return {count: 0} };
         IssueSyncer.pullFromGitHub = async metadata => {
-            pullCalls++;
+            order.push('pull');
             return {
                 newMetadata: metadata,
                 stats      : {pulled: {count: 0, created: 0, updated: 0, moved: 0}, dropped: {count: 0}}
             }
         };
 
-        const result = await SyncService.emitGeneratedContent({pushLocalChanges: false, contentRoot: '/mock/resources/content'});
+        const result = await SyncService.emitGeneratedContent();
 
-        expect(pushCalls).toBe(0);
-        expect(pullCalls).toBe(1);
-        expect(result.pushStats).toEqual({
-            skipped: true,
-            reason : 'pull-only generated-content emission'
-        })
+        expect(order).toEqual(['reconcile', 'pull']);
+        expect(result).not.toHaveProperty('pushStats');
     });
 
     test('the corpus emits the conversation facets and the release notes, fetching releases with their notes in view', async () => {
         let fetchOptions     = null,
-            releaseNoteCalls = 0,
-            pushCalls        = 0;
+            releaseNoteCalls = 0;
 
         ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
         ReleaseNotesSyncer.fetchAndCacheReleases = async (metadata, options) => { fetchOptions = options };
         ReleaseNotesSyncer.syncNotes = async () => { releaseNoteCalls++ };
-        IssueSyncer.pushToGitHub = async () => { pushCalls++ };
 
-        const result = await SyncService.emitConversationCorpus({contentRoot: '/mock/resources/content'});
+        const result = await SyncService.emitConversationCorpus();
 
         expect(result.facetOutcomes.map(({name}) => name)).toEqual(['releases', 'issues', 'releaseNotes', 'discussions', 'pulls']);
         expect(fetchOptions).toEqual({needNotes: true});
         expect(releaseNoteCalls).toBe(1);
-        expect(pushCalls).toBe(0);
     });
 
     test('conversation corpus retains successful facet progress and rejects its failed facet', async () => {
@@ -289,237 +253,29 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             throw new Error('discussion index write failed');
         };
 
-        await expect(SyncService.emitConversationCorpus({contentRoot: '/mock/resources/content'})).rejects.toThrow(/discussions \(discussion index write failed\)/);
+        await expect(SyncService.emitConversationCorpus()).rejects.toThrow(/discussions \(discussion index write failed\)/);
 
         expect(saved.some(metadata => metadata.releasesLastFetched)).toBe(true);
         expect(saved.every(metadata => !metadata.discussions[1])).toBe(true);
     });
 
-    test('runFullSync never invokes Native Graph projection — the container-plane owner is exclusive (#17627)', async () => {
-        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
+    test('the emission never invokes Native Graph projection — the container-plane owner is exclusive', async () => {
+        const result = await SyncService.emitGeneratedContent();
 
-        expect(result.success).toBe(true);
+        expect(result.facetOutcomes.every(outcome => outcome.advanced)).toBe(true);
         expect(stage2Calls.issueStates).toBe(0);
         expect(stage2Calls.discussionStates).toBe(0);
         expect(stage2Calls.pullRequestFeedback).toBe(0);
-    });
-
-    test('runFullSync persists every facet before the auto-push status check (#13260)', async () => {
-        const order = [];
-
-        MetadataManager.save = async () => { order.push('metadata-save'); };
-        RepositoryService.getViewerPermission = async () => {
-            order.push('permission-check');
-            return {permission: 'READ'};
-        };
-
-        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
-
-        expect(result.success).toBe(true);
-
-        // The claim under test is an ORDERING — persist, then check push permission — not a sequence of
-        // pinned length. Each facet persists as it completes, so the save count grows with the facets;
-        // pinning it would fail on every future facet while saying nothing about the order.
-        const
-            lastSave  = order.lastIndexOf('metadata-save'),
-            pushCheck = order.indexOf('permission-check');
-
-        expect(lastSave).toBeGreaterThanOrEqual(0);
-        expect(lastSave).toBeLessThan(pushCheck);
-        expect(order.filter(step => step === 'permission-check')).toHaveLength(1);
-    });
-
-    test('the auto-commit allowlist carries the emitted corpus and no Portal artifact (#888)', async () => {
-        // The sync derives no Portal index or SEO file, so an allowlist naming one would commit
-        // whatever another process left in the checkout as if the sync had produced it.
-        const source = await fs.readFile(path.resolve(process.cwd(), 'ai/services/github-workflow/SyncService.mjs'), 'utf8');
-
-        expect(source).toContain("'resources/content/_index.json'");
-        expect(source).not.toContain('apps/portal/');
-        expect(source).toContain('git status --porcelain ${generatedSyncStatusPaths}');
-        expect(source).toContain('git add ${generatedSyncStatusPaths}');
-    });
-
-    test('auto-push aborts failed rebase, resets, re-emits, and retries once (#13798)', async () => {
-        const commands       = [];
-        let   pullRuns       = 0;
-        let   saves          = 0;
-        let   rebaseAttempts = 0;
-
-        RepositoryService.getViewerPermission = async () => ({permission: 'WRITE'});
-
-        IssueSyncer.pullFromGitHub = async (md) => {
-            pullRuns++;
-
-            return {
-                newMetadata: {
-                    ...(md || {}),
-                    issues      : {},
-                    pushFailures: [],
-                    lastSync    : `run-${pullRuns}`
-                },
-                stats: {
-                    pulled : {count: pullRuns, created: 0, updated: 0, moved: 0},
-                    dropped: {count: 0}
-                }
-            };
-        };
-
-        MetadataManager.save = async () => {
-            saves++;
-        };
-
-        SyncService.execGit = async (command) => {
-            commands.push(command);
-
-            if (command.startsWith('git status --porcelain ')) {
-                return {stdout: ' M resources/content/issues/active/issue-13798.md\n', stderr: ''};
-            }
-
-            if (command === 'git diff --cached --name-only') {
-                return {stdout: 'resources/content/issues/active/issue-13798.md\n', stderr: ''};
-            }
-
-            if (command === 'git pull --rebase --autostash') {
-                rebaseAttempts++;
-
-                if (rebaseAttempts === 1) {
-                    throw new Error('simulated rebase conflict');
-                }
-            }
-
-            return {stdout: '', stderr: ''};
-        };
-
-        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
-
-        expect(result.success).toBe(true);
-        expect(result.statistics.pulled.count).toBe(2);
-        expect(pullRuns).toBe(2);
-        // NOT pinned to the pass count: each facet persists as it completes, so a pass makes several
-        // saves. `pullRuns` is the pass counter, so `saves > pullRuns` asserts per-facet persistence is
-        // in force without hardcoding how many facets exist.
-        expect(saves).toBeGreaterThan(pullRuns);
-        expect(stage2Calls).toEqual({
-            issueStates        : 0,
-            discussionStates   : 0,
-            pullRequestFeedback: 0
-        });
-        expect(commands.filter(command => command.startsWith('git status --porcelain '))).toHaveLength(2);
-        expect(commands.filter(command => command === 'NEO_SKIP_TICKET_ARCHAEOLOGY=1 git commit --no-verify -m "chore: ticket sync [skip ci]"')).toHaveLength(2);
-        expect(commands.filter(command => command === 'git pull --rebase --autostash')).toHaveLength(2);
-        expect(commands.filter(command => command === 'git push')).toHaveLength(1);
-        expect(commands).toContain('git rebase --abort');
-        expect(commands).toContain('git fetch origin dev:refs/remotes/origin/dev');
-        expect(commands).toContain('git reset --hard origin/dev');
-    });
-
-    test('auto-push recovers the checkout when delivery retries are exhausted (#13798)', async () => {
-        const commands = [];
-        let   pullRuns = 0;
-        let   saves    = 0;
-
-        RepositoryService.getViewerPermission = async () => ({permission: 'WRITE'});
-
-        IssueSyncer.pullFromGitHub = async (md) => {
-            pullRuns++;
-
-            return {
-                newMetadata: {
-                    ...(md || {}),
-                    issues      : {},
-                    pushFailures: [],
-                    lastSync    : `run-${pullRuns}`
-                },
-                stats: {
-                    pulled : {count: pullRuns, created: 0, updated: 0, moved: 0},
-                    dropped: {count: 0}
-                }
-            };
-        };
-
-        MetadataManager.save = async () => {
-            saves++;
-        };
-
-        SyncService.execGit = async (command) => {
-            commands.push(command);
-
-            if (command.startsWith('git status --porcelain ')) {
-                return {stdout: ' M resources/content/issues/active/issue-13798.md\n', stderr: ''};
-            }
-
-            if (command === 'git diff --cached --name-only') {
-                return {stdout: 'resources/content/issues/active/issue-13798.md\n', stderr: ''};
-            }
-
-            if (command === 'git pull --rebase --autostash') {
-                throw new Error('persistent rebase conflict');
-            }
-
-            return {stdout: '', stderr: ''};
-        };
-
-        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
-
-        expect(result.success).toBe(true);
-        expect(result.statistics.pulled.count).toBe(2);
-        expect(pullRuns).toBe(2);
-        // NOT pinned to the pass count: each facet persists as it completes, so a pass makes several
-        // saves. `pullRuns` is the pass counter, so `saves > pullRuns` asserts per-facet persistence is
-        // in force without hardcoding how many facets exist.
-        expect(saves).toBeGreaterThan(pullRuns);
-        expect(stage2Calls).toEqual({
-            issueStates        : 0,
-            discussionStates   : 0,
-            pullRequestFeedback: 0
-        });
-        expect(commands.filter(command => command.startsWith('git status --porcelain '))).toHaveLength(2);
-        expect(commands.filter(command => command === 'NEO_SKIP_TICKET_ARCHAEOLOGY=1 git commit --no-verify -m "chore: ticket sync [skip ci]"')).toHaveLength(2);
-        expect(commands.filter(command => command === 'git pull --rebase --autostash')).toHaveLength(2);
-        expect(commands).not.toContain('git push');
-        expect(commands.filter(command => command === 'git rebase --abort')).toHaveLength(2);
-        expect(commands.filter(command => command === 'git fetch origin dev:refs/remotes/origin/dev')).toHaveLength(2);
-        expect(commands.filter(command => command === 'git reset --hard origin/dev')).toHaveLength(2);
-    });
-
-    test('auto-push does not hard-reset the checkout for allowlist guard failures (#13798)', async () => {
-        const commands = [];
-
-        RepositoryService.getViewerPermission = async () => ({permission: 'WRITE'});
-
-        SyncService.execGit = async (command) => {
-            commands.push(command);
-
-            if (command.startsWith('git status --porcelain ')) {
-                return {stdout: ' M resources/content/issues/active/issue-13798.md\n', stderr: ''};
-            }
-
-            if (command === 'git diff --cached --name-only') {
-                return {stdout: 'resources/content/issues/active/issue-13798.md\nsrc/unrelated/ManualEdit.mjs\n', stderr: ''};
-            }
-
-            return {stdout: '', stderr: ''};
-        };
-
-        const result = await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
-
-        expect(result.success).toBe(true);
-        expect(commands).not.toContain('git rebase --abort');
-        expect(commands).not.toContain('git fetch origin dev:refs/remotes/origin/dev');
-        expect(commands).not.toContain('git reset --hard origin/dev');
-        expect(commands).not.toContain('git pull --rebase --autostash');
-        expect(commands).not.toContain('git push');
     });
 
     /**
      * Regression coverage for metadata persistence carry-over.
      *
      * Empirical bug: `IssueSyncer.pullFromGitHub` returns a FRESH `newMetadata` object
-     * carrying only `{issues, pushFailures, lastSync}`. Subsequent calls to
+     * carrying only `{issues, lastSync}`. Subsequent calls to
      * `DiscussionSyncer.syncDiscussions(metadata)` and `PullRequestSyncer.syncPullRequests(metadata)`
      * mutate the OLD `metadata` argument's `.discussions` and `.pulls` fields. Without explicit
-     * carry-over in `SyncService.runFullSync`, those mutations were dropped at `save(newMetadata)`,
+     * carry-over in `SyncService.emitGeneratedContent`, those mutations were dropped at `save(newMetadata)`,
      * leaving `metadata.discussions = {}` and `metadata.pulls = {}` on disk after every sync.
      *
      * This test mocks the production behavior exactly:
@@ -529,15 +285,14 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
      *
      * Asserts that the metadata captured at `save()` retains both syncers' mutations.
      */
-    test('runFullSync carries metadata.discussions + metadata.pulls from per-syncer mutations onto newMetadata before save (#11573)', async () => {
+    test('the emission carries metadata.discussions + metadata.pulls from per-syncer mutations onto newMetadata before save', async () => {
         let savedMetadata = null;
 
-        // Mock pullFromGitHub returns a FRESH newMetadata, mirroring IssueSyncer.mjs:570-574.
+        // Mock pullFromGitHub returns a FRESH newMetadata, as the real pull does.
         IssueSyncer.pullFromGitHub = async () => ({
             newMetadata: {
-                issues      : {42: {state: 'OPEN'}},
-                pushFailures: [],
-                lastSync    : '2026-05-18T04:42:00Z'
+                issues  : {42: {state: 'OPEN'}},
+                lastSync: '2026-05-18T04:42:00Z'
             },
             stats: {pulled: {count: 0, created: 0, updated: 0, moved: 0}, dropped: {count: 0}}
         });
@@ -574,7 +329,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             savedMetadata = md;
         };
 
-        await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
+        await SyncService.emitGeneratedContent();
 
         // Metadata persistence carry-over: both syncers' mutations survived.
         expect(savedMetadata, 'MetadataManager.save received an argument').not.toBeNull();
@@ -599,11 +354,11 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
      * `{}` rather than `undefined` on `newMetadata`. MetadataManager.save then renders
      * an empty object in the JSON file rather than a missing key.
      */
-    test('runFullSync produces metadata.discussions = {} when syncers leave fields undefined (#11573)', async () => {
+    test('the emission produces metadata.discussions = {} when syncers leave fields undefined', async () => {
         let savedMetadata = null;
 
         IssueSyncer.pullFromGitHub = async () => ({
-            newMetadata: {issues: {}, pushFailures: [], lastSync: '2026-05-18T04:42:00Z'},
+            newMetadata: {issues: {}, lastSync: '2026-05-18T04:42:00Z'},
             stats      : {pulled: {count: 0, created: 0, updated: 0, moved: 0}, dropped: {count: 0}}
         });
 
@@ -613,7 +368,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
 
         MetadataManager.save = async (md) => { savedMetadata = md; };
 
-        await SyncService.runFullSync({contentRoot: '/mock/resources/content'});
+        await SyncService.emitGeneratedContent();
 
         expect(savedMetadata.discussions).toEqual({});
         expect(savedMetadata.pulls).toEqual({});
@@ -631,7 +386,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         DiscussionSyncer.syncDiscussions = async () => { throw new Error('discussion page cost ceiling') };
         PullRequestSyncer.syncPullRequests = async () => { pullSyncCalled++; return {count: 0} };
 
-        await expect(SyncService.runFullSync({contentRoot: '/mock/resources/content'})).rejects.toThrow(/did not advance/);
+        await expect(SyncService.emitGeneratedContent()).rejects.toThrow(/did not advance/);
 
         // The whole point: pull requests are fetched even though discussions threw first. Before
         // isolation this was 0, and that single fact is why `pulls/` went stale from a discussions bug.
@@ -656,7 +411,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             throw new Error('failed after mutating')
         };
 
-        await expect(SyncService.runFullSync({contentRoot: '/mock/resources/content'})).rejects.toThrow(/did not advance/);
+        await expect(SyncService.emitGeneratedContent()).rejects.toThrow(/did not advance/);
 
         expect(saved.length).toBeGreaterThan(0);
 
@@ -674,7 +429,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         DiscussionSyncer.syncDiscussions = async () => { throw new Error('cost ceiling') };
         ReleaseNotesSyncer.syncNotes = async () => { throw new Error('release notes boom') };
 
-        const error = await SyncService.runFullSync({contentRoot: '/mock/resources/content'}).then(() => null, e => e);
+        const error = await SyncService.emitGeneratedContent().then(() => null, e => e);
 
         expect(error).toBeTruthy();
         expect(error.message).toMatch(/discussions/);
@@ -703,7 +458,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         DiscussionSyncer.syncDiscussions   = async () => { ran.push('discussions');  return {count: 0} };
         PullRequestSyncer.syncPullRequests = async () => { ran.push('pulls');        return {count: 0} };
 
-        const error = await SyncService.runFullSync({contentRoot: '/mock/resources/content'}).then(() => null, e => e);
+        const error = await SyncService.emitGeneratedContent().then(() => null, e => e);
 
         // NONE of the dependents may execute without the bucketing reference.
         expect(ran).toEqual([]);
@@ -730,7 +485,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         DiscussionSyncer.syncDiscussions   = async () => { ran.push('discussions'); return {count: 0} };
         PullRequestSyncer.syncPullRequests = async () => { ran.push('pulls');       return {count: 0} };
 
-        await expect(SyncService.runFullSync({contentRoot: '/mock/resources/content'})).rejects.toThrow(/did not advance/);
+        await expect(SyncService.emitGeneratedContent()).rejects.toThrow(/did not advance/);
 
         expect(ran).toContain('discussions');
         expect(ran).toContain('pulls');
@@ -761,7 +516,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             divergentDuplicateIds   : []
         });
 
-        const error = await SyncService.runFullSync({contentRoot: '/mock/resources/content'}).then(() => null, e => e),
+        const error = await SyncService.emitGeneratedContent().then(() => null, e => e),
               last  = saved.at(-1);
 
         expect(error).toBeTruthy();
@@ -776,126 +531,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         expect(error.message).toMatch(/pulls \(/);
         expect(error.message).not.toMatch(/discussions \(/);
         expect(error.message).toMatch(/integrity is not clean/);
-    });
-
-    test('a metadata-only diff is DELIVERED, never rolled back — the first-run high-water case', async () => {
-        const commands = [];
-
-        SyncService.execGit = async (command) => {
-            commands.push(command);
-
-            // The whole point of this fixture: the corpus is already current, so the metadata file is the
-            // ONLY dirty path. That is not a contrived edge case — it is the first run of any new
-            // high-water field, when the advance lives entirely in metadata.
-            if (command.startsWith('git status --porcelain ')) {
-                return {stdout: ' M resources/content/.sync-metadata.json\n', stderr: ''};
-            }
-
-            if (command === 'git diff --cached --name-only') {
-                return {stdout: 'resources/content/.sync-metadata.json\n', stderr: ''};
-            }
-
-            return {stdout: '', stderr: ''};
-        };
-
-        const pushed = await SyncService.commitRebaseAndPushGeneratedContent('/tmp/does-not-matter');
-
-        // Discriminates on TWO independent axes, because the rollback failed on both: it discarded the
-        // file AND reported "nothing delivered". Reinstating `git restore` + `return false` fails here
-        // twice over, and no weaker fixture (one with Markdown churn) can fail at all — content changes
-        // took the delivery path even before this fix.
-        expect(commands.some(command => command.includes('git restore'))).toBe(false);
-        expect(pushed).toBe(true);
-
-        // And it must be delivered as a real commit, not merely "not restored" — a path that staged the
-        // file and then silently skipped the commit would satisfy both assertions above.
-        // `includes` rather than `startsWith` for the commit: the real invocation carries an env prefix
-        // (`NEO_SKIP_TICKET_ARCHAEOLOGY=1 git commit --no-verify …`), so a prefix matcher silently misses
-        // it and the assertion would fail against correct code.
-        expect(commands.some(command => command.startsWith('git add '))).toBe(true);
-        expect(commands.some(command => command.includes('git commit'))).toBe(true);
-        expect(commands.some(command => command.includes('git push'))).toBe(true);
-    });
-
-    /**
-     * The corpus logical-identity invariant, asserted at the ONLY point that can enforce it.
-     *
-     * `commitRebaseAndPushGeneratedContent` commits with `--no-verify`, deliberately and correctly —
-     * generated content carries trailing whitespace the whitespace hook rejects. That bypass disables
-     * every git hook, so the `lint-staged` copy of this guard is structurally unable to see the one
-     * automated commit that writes the corpus. Hence the in-process assertion.
-     *
-     * Both tests drive a TEMP corpus rather than `resources/content`, because a test that pointed at a
-     * real duplicate would assert today's damage and start failing the moment the repair lands.
-     */
-    test.describe('the corpus-commit path enforces one artifact per logical name (#16057)', () => {
-        let tempRoot;
-
-        const stageOnly = (commands, staged) => async command => {
-            commands.push(command);
-
-            if (command.startsWith('git status --porcelain ')) {
-                return {stdout: ` M ${staged}\n`, stderr: ''}
-            }
-
-            if (command === 'git diff --cached --name-only') {
-                return {stdout: `${staged}\n`, stderr: ''}
-            }
-
-            return {stdout: '', stderr: ''}
-        };
-
-        const writeArtifact = async (relative) => {
-            const absolute = path.join(tempRoot, relative);
-
-            await fs.mkdir(path.dirname(absolute), {recursive: true});
-            await fs.writeFile(absolute, '# artifact\n', 'utf8')
-        };
-
-        test.beforeEach(async () => {
-            tempRoot = await fs.mkdtemp(path.join(await fs.realpath('/tmp'), 'neo-sync-corpus-'))
-        });
-
-        test.afterEach(async () => {
-            await fs.rm(tempRoot, {force: true, recursive: true})
-        });
-
-        test('a staged collision is REFUSED and never reaches the commit', async () => {
-            const
-                commands = [],
-                staged   = 'resources/content/archive/pulls/v13.0.0/chunk-2/pr-1.md';
-
-            await writeArtifact('resources/content/archive/pulls/v13.0.0/chunk-1/pr-1.md');
-            await writeArtifact(staged);
-
-            SyncService.execGit = stageOnly(commands, staged);
-
-            await expect(SyncService.commitRebaseAndPushGeneratedContent(tempRoot))
-                .rejects.toThrow(/two artifacts claiming one logical name/);
-
-            // The load-bearing half: refusing AFTER committing would leave the corpus broken on `dev`
-            // and the error would be an epilogue. Nothing may be committed or pushed.
-            expect(commands.some(command => command.includes('git commit'))).toBe(false);
-            expect(commands.some(command => command.includes('git push'))).toBe(false)
-        });
-
-        test('a staged artifact with no collision proceeds — the gate can PASS', async () => {
-            // The positive control. Without it the refusal above is satisfied by a guard that rejects
-            // everything, and "commit never happened" would prove only that the method is broken.
-            const
-                commands = [],
-                staged   = 'resources/content/archive/pulls/v13.0.0/chunk-1/pr-2.md';
-
-            await writeArtifact('resources/content/archive/pulls/v13.0.0/chunk-1/pr-1.md');
-            await writeArtifact(staged);
-
-            SyncService.execGit = stageOnly(commands, staged);
-
-            await expect(SyncService.commitRebaseAndPushGeneratedContent(tempRoot)).resolves.toBe(true);
-
-            expect(commands.some(command => command.includes('git commit'))).toBe(true);
-            expect(commands.some(command => command.includes('git push'))).toBe(true)
-        })
     });
 
     test.describe('the corpus emit path enforces one artifact per logical name (#457)', () => {

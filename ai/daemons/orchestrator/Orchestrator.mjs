@@ -307,6 +307,7 @@ export class Orchestrator extends Base {
     authorityReceiptFile          = null
     primaryDevSyncRootsConfig     = null
     maintenanceDeferralLogKeys    = null
+    embeddingAuthorizationFlight  = null
     heavyMaintenanceTaskNames     = DEFAULT_HEAVY_MAINTENANCE_TASK_NAMES
     goldenPathDependencyTaskNames = DEFAULT_GOLDEN_PATH_DEPENDENCY_TASK_NAMES
 
@@ -466,8 +467,8 @@ export class Orchestrator extends Base {
      */
     beforeSetProcessSupervisorService(value) {
         return ClassSystemUtil.beforeSetInstance(value, ProcessSupervisorService, {
-            // Resolved at the use site and injected across the narrow construction seam (ADR-0019 // ticket-ref-ok: the ADR is the authority assigning env resolution to the leaf, not background reading
-            // §5.1/§5.5). The supervisor never reads the env var itself.
+            // Resolved at the use site and injected across the narrow construction seam
+            // (ADR-0019 [not-ticket-ref: decision-record authority] §5.1/§5.5). The supervisor never reads the env var itself.
             supervisedTaskHeapMb   : AiConfig.orchestrator.supervisedTaskHeapMb,
             dataDir                : this.dataDir,
             taskDefinitions        : this.getAuthorityScopedTaskDefinitions(),
@@ -496,7 +497,6 @@ export class Orchestrator extends Base {
      */
     beforeSetContainerHealthDiagnosisService(value) {
         // Resolved at the use site and injected — the service holds no env reader of its own.
-        // ticket-ref-ok: the config SSOT decision assigns env/default resolution to the leaf
         const {deploymentStateBridge, memorySaturation, restartChurn} = AiConfig.orchestrator;
 
         // An unspannable memory window is not a tuning choice — it is a detector that cannot fire on
@@ -945,7 +945,7 @@ export class Orchestrator extends Base {
                 },
                 // Freeze-from-serving: the safe terminal for a systemic / dimension-systemic fault. Fences the
                 // served collections (mirrors quarantine) AND persists a freeze-record so the autonomous re-probe
-                // cycle can auto-unfreeze when the fault clears — in cloud there is no operator (the #1 weeks-bar risk).
+                // cycle can auto-unfreeze when the fault clears — in cloud there is no operator (the top weeks-bar risk).
                 freeze: createFreezeHealOperation({
                     freezeRecordsDir,
                     // Symmetric store-level fence (memory + session) — paired with the re-probe auto-unfence via the
@@ -1139,10 +1139,46 @@ export class Orchestrator extends Base {
     }
 
     /**
+     * @summary Produces the full-band embedding authorization proof the tenant-repo sweep requested,
+     * off the sweep's awaited path. The sweep only consumes the proof.
+     *
+     * Runs under the heavy-maintenance lease, so the full-band embed never overlaps the sweep or other
+     * embedding-heavy work, the contention the lane dies of; a held lease defers to the next poll. The
+     * provider deadline is that lease's fairness budget, not one derived from the input size. One flight
+     * at a time, and a cheap no-op unless a proof is needed.
+     * @returns {Promise<Object|null>} The lease outcome, or `null` when nothing was due.
+     */
+    async runEmbeddingAuthorizationProofIfNeeded() {
+        const service = this.tenantRepoSyncService;
+
+        if (this.embeddingAuthorizationFlight || !service.needsEmbeddingAuthorizationProof()) {
+            return null
+        }
+
+        this.embeddingAuthorizationFlight = withHeavyMaintenanceLease(
+            () => service.proveEmbeddingRecoveryAuthorization({
+                timeoutMs: AiConfig.orchestrator.heavyMaintenanceLease.fairnessYieldAfterMs
+            }),
+            {
+                owner       : 'tenant-repo-sync:embedding-authorization',
+                reason      : 'embedding-recovery-authorization',
+                leasePath   : this.maintenanceBackpressureService.resolveHeavyMaintenanceLeasePath(),
+                staleAfterMs: AiConfig.orchestrator.heavyMaintenanceLease.staleAfterMs
+            }
+        );
+
+        try {
+            return await this.embeddingAuthorizationFlight
+        } finally {
+            this.embeddingAuthorizationFlight = null
+        }
+    }
+
+    /**
      * @summary Runs one autonomous freeze re-probe tick (the recovery counterpart to the `freeze` actuator op):
      * for every frozen collection it re-probes health and auto-unfreezes + re-heals a cleared fault, stays frozen
      * while it persists, or contains it past the thrash cap — all under `decideFreezeReprobe`'s back-off, never an
-     * operator. In cloud a transient embedder fault must not permanently kill a collection (the #1 weeks-bar risk).
+     * operator. In cloud a transient embedder fault must not permanently kill a collection (the top weeks-bar risk).
      * No-op (a cheap read only) when nothing is frozen; never throws into the poll (the caller swallows).
      * @param {Number} [now] Injected clock (epoch ms).
      * @returns {Promise<Object[]>} Per-collection re-probe outcomes, or `[]` when nothing is frozen.
@@ -2088,6 +2124,11 @@ export class Orchestrator extends Base {
         if (this.isTaskAuthorityOwned('freeze-reprobe')) {
             this.runFreezeReprobeCycleIfActive(now)
                 .catch(error => this.writeLog('ERROR', `[Orchestrator] Freeze re-probe cycle failed: ${error.message}`));
+        }
+
+        if (this.isTaskAuthorityOwned('tenant-repo-sync') && this.tenantRepoSyncEnabled && !this.authorityLeaseLost) {
+            this.runEmbeddingAuthorizationProofIfNeeded()
+                .catch(error => this.writeLog('ERROR', `[Orchestrator] Embedding authorization proof failed: ${error.message}`));
         }
 
         if (this.isPolling) {

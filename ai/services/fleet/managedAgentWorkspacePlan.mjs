@@ -33,7 +33,9 @@ const KNOWLEDGE_RUNTIME_ENV_BEFORE_PLACEMENT = Object.freeze([
  * durable key/default authority; this pure sibling adds no host binding, environment read, command,
  * or credential value. The host apply edge consumes the relative entrypoint only after validating a
  * logical plan produced here. `seatEnv` names the values the Fleet injects per seat at spawn: they never
- * come from the host's own config, so the resident envelope excludes them.
+ * come from the host's own config, so the resident envelope excludes them. `legacyRuntimeEnv` (before plane
+ * placement) and `previousRuntimeEnv` (before a server's latest addition) are history: read only to recognise
+ * rows Fleet rendered earlier, never to export or spawn.
  * @type {Readonly<Object<String, Object>>}
  */
 export const MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS = Object.freeze({
@@ -58,6 +60,8 @@ export const MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS = Object.freeze({
             'NEO_NL_PORT',
             'NEO_FLEET_BRIDGE_TOKEN'
         ]),
+        // the vocabulary before NEO_NL_PORT joined; retire once no seat carries a row rendered before it
+        previousRuntimeEnv: Object.freeze(['NEO_AGENT_IDENTITY', 'NEO_FLEET_BRIDGE_TOKEN']),
         requiredRuntimeEnv: Object.freeze(['NEO_AGENT_IDENTITY']),
         secretEnv         : Object.freeze(['NEO_FLEET_BRIDGE_TOKEN']),
         seatEnv           : Object.freeze(['NEO_FLEET_BRIDGE_TOKEN'])

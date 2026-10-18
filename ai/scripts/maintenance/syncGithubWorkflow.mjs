@@ -32,34 +32,22 @@ import fs                from 'node:fs/promises';
 import path              from 'node:path';
 import {validateSegment} from '../../services/github-workflow/shared/contentPath.mjs';
 
-import {
-    resolveHeavyMaintenanceLeasePath,
-    withHeavyMaintenanceLease
-} from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
+import {withHeavyMaintenanceLease}    from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
 import {fileURLToPath, pathToFileURL} from 'url';
-import {
-    buildSyncGithubWorkflowDevBranchGuard,
-    defaultSyncGithubWorkflowBranchDetector
-} from './syncGithubWorkflowBranchGuard.mjs';
 
 /**
  * @module ai/scripts/maintenance/syncGithubWorkflow
- * @summary CLI for manual GitHub Workflow delivery and origin-qualified, pull-only corpus emission.
- *
- * **Why this operator CLI is the canonical manual entry point:**
+ * @summary CLI for origin-qualified, pull-only corpus emission.
  *
  * The scheduled corpus pipeline (`neomjs/github-content-sync`'s `publish-corpus.yml`) invokes this
- * CLI with `--corpus-only`. `--emit-only` delegates to
- * `GH_SyncService.emitGeneratedContent({pushLocalChanges: false})`, and the default mode runs
- * `GH_SyncService.runFullSync()`, including its intentional local-to-GitHub issue push. No mode
- * derives Portal indexes or SEO: the Portal's deploy derives them from the published corpus.
- * Native Graph projection is absent: the container-plane
- * core-corpus projection owner is its only admitted writer. The long-running emission is absent from the
- * agent MCP surface: clean-slate emission can span
- * ~8.5k issues + ~2.8k PRs + ~165 discussions + ~166 release notes and must stay
- * behind the shared heavy-maintenance lease rather than an MCP request timeout.
- * `--corpus-only` instead emits the three conversation facets and the release notes into an explicitly
- * declared external corpus root, with a corpus-local shared lease and no git publication.
+ * CLI with `--corpus-only`, the one mode it runs: the three conversation facets and the release notes,
+ * emitted into an explicitly declared external corpus root under a corpus-local lease, with no git
+ * publication. Without the flag the CLI refuses before any lease or request. No mode derives Portal
+ * indexes or SEO: the Portal's deploy derives them from the published corpus. Native Graph projection
+ * is absent: the container-plane core-corpus projection owner is its only admitted writer. The
+ * long-running emission is absent from the agent MCP surface: clean-slate emission can span
+ * ~8.5k issues + ~2.8k PRs + ~165 discussions + ~166 release notes and must stay behind a lease
+ * rather than an MCP request timeout.
  *
  * Corpus publishers pin a Brain checkout by immutable commit, run `npm ci` and `npm run prepare`,
  * then invoke this script from that installation. `NEO_MCP_GITHUB_OWNER` and `NEO_MCP_GITHUB_REPO`
@@ -71,20 +59,18 @@ import {
  * `.corpus-sync.lock` is transient and must not be published. Progress stays in the destination;
  * the publisher owns cleanup of unsuccessful attempts and serialization across jobs.
  *
- * `--refetch-issues=<n,…>` (with `--corpus-only` only) heals corpus files that drifted from GitHub without
- * an `updatedAt` change, which the delta sync never revisits: the issues facet force-refetches the named
- * numbers of the selected source in the same emission, so they publish with it. Every token must be a
- * positive integer, checked before the emitter loads; a named issue that does not come back fails the run.
+ * `--refetch-issues=<n,…>` heals corpus files that drifted from GitHub without an `updatedAt` change,
+ * which the delta sync never revisits: the issues facet force-refetches the named numbers of the
+ * selected source in the same emission, so they publish with it. Every token must be a positive
+ * integer, checked before the emitter loads; a named issue that does not come back fails the run.
  *
- * Ordinary invocation retains its existing local directory layout.
- * Both modes write origin-qualified index identities. Bootstrapping an unqualified legacy index
+ * The emission writes origin-qualified index identities. Bootstrapping an unqualified legacy index
  * requires explicit `NEO_MCP_GITHUB_LEGACY_REPO_SLUG`; the current source is never guessed as owner.
  *
  * The CLI:
  * - avoids an MCP request-timeout ceiling
  * - uses declared `NEO_LOG_LEVEL` for syncer diagnostics; `--verbose` prints context and full results
- * - keeps scheduled CI read-only at the GitHub API boundary while preserving the
- *   operator's full bi-directional mode
+ * - stays read-only at the GitHub API boundary
  *
  * **SDK boundary exception:** the file header owns the temporary direct-import rationale and its
  * self-expiring test. Neo/core imports preserve namespace bootstrap. There is no sync-on-startup
@@ -92,35 +78,17 @@ import {
  * container-plane projection owner.
  *
  * The authority boundary is the regeneratable-cache model: this script exists
- * to rebuild workflow mirrors outside the MCP request-timeout envelope.
+ * to rebuild the corpus outside the MCP request-timeout envelope.
  *
  * @example
- *   npm run ai:sync-github-workflow
- *   npm run ai:sync-github-workflow -- --verbose
- *   npm run ai:sync-github-workflow -- --emit-only
  *   NEO_MCP_GITHUB_OWNER=neomjs NEO_MCP_GITHUB_REPO=neo \
  *     NEO_MCP_GITHUB_CONTENT_ROOT=/checkout/corpus npm run ai:sync-github-workflow -- --corpus-only
  *   NEO_MCP_GITHUB_CONTENT_ROOT=/checkout/corpus \
- *     npm run ai:sync-github-workflow -- --corpus-only --refetch-issues=19565,19637
+ *     npm run ai:sync-github-workflow -- --corpus-only --verbose --refetch-issues=19565,19637
  *
  *   # Full output streamed to stdout/stderr (no MCP timeout ceiling).
  *   # Exit code 0 on success / 1 on failure.
  */
-
-/**
- * @summary Asserts that the GitHub Workflow sync CLI is running from dev.
- * @returns {Promise<void>}
- */
-async function assertSyncGithubWorkflowDevBranch() {
-    const
-        projectRoot = GH_Config.projectRoot,
-        guard       = buildSyncGithubWorkflowDevBranchGuard(
-            async () => true,
-            () => defaultSyncGithubWorkflowBranchDetector({projectRoot})
-        );
-
-    await guard();
-}
 
 /**
  * @summary Reads `--refetch-issues=<n,…>` into issue numbers, refusing anything but positive integers.
@@ -222,23 +190,21 @@ async function assertCorpusDestination() {
 }
 
 /**
- * @summary CLI entry point for full manual sync or scheduled pull-only corpus emission.
+ * @summary CLI entry point for scheduled, pull-only corpus emission.
  * @returns {Promise<void>}
  */
 async function syncGithubWorkflow() {
-    const
-        corpusOnly = process.argv.includes('--corpus-only'),
-        emitOnly   = process.argv.includes('--emit-only'),
-        verbose    = process.argv.includes('--verbose');
+    const verbose = process.argv.includes('--verbose');
 
     let refetchIssues;
 
     try {
-        if (corpusOnly && emitOnly) throw new Error('Choose either --corpus-only or --emit-only.');
+        if (!process.argv.includes('--corpus-only') || process.argv.includes('--emit-only')) {
+            throw new Error('syncGithubWorkflow emits the corpus only: run it with --corpus-only. ' +
+                'The full sync and --emit-only modes are retired.');
+        }
         refetchIssues = parseRefetchIssues(process.argv);
-        if (refetchIssues.length > 0 && !corpusOnly) throw new Error('--refetch-issues needs --corpus-only.');
-        if (corpusOnly) await assertCorpusDestination();
-        else await assertSyncGithubWorkflowDevBranch();
+        await assertCorpusDestination();
     } catch (error) {
         console.error(error.message);
         process.exit(1);
@@ -252,29 +218,19 @@ async function syncGithubWorkflow() {
         ...(refetchIssues.length > 0 && {refetchIssues})
     });
 
-    console.log(corpusOnly ? '🔄 Starting origin-qualified conversation corpus emission...' : emitOnly
-        ? '🔄 Starting pull-only GitHub Workflow corpus emission...'
-        : '🔄 Starting full GitHub Workflow sync via GH_SyncService.runFullSync()...');
+    console.log('🔄 Starting origin-qualified conversation corpus emission...');
 
-    // Run the full workflow sync under the shared heavy-maintenance lease so this CLI
-    // cannot collide with orchestrator maintenance tasks or another manual graph-heavy
-    // script. The whole-run guard keeps graph ingestion protected until the sync stages
-    // have a narrower concurrency boundary.
+    // The corpus-local lease serializes emissions into one destination.
     let outcome;
     try {
         outcome = await withHeavyMaintenanceLease(
-            async () => corpusOnly
-                ? GH_SyncService.emitConversationCorpus({refetchIssues})
-                : emitOnly
-                ? GH_SyncService.emitGeneratedContent({pushLocalChanges: false})
-                : GH_SyncService.runFullSync(),
+            async () => GH_SyncService.emitConversationCorpus({refetchIssues}),
             {
-                leasePath   : corpusOnly ? GH_Config.issueSync.corpusLeaseFile :
-                    resolveHeavyMaintenanceLeasePath({dataDir: AiConfig.orchestrator.dataDir}),
+                leasePath   : GH_Config.issueSync.corpusLeaseFile,
                 owner       : 'syncGithubWorkflow',
                 reason      : 'manual-cli',
                 staleAfterMs: AiConfig.orchestrator.heavyMaintenanceLease.staleAfterMs,
-                metadata    : {corpusOnly, emitOnly, script: 'ai/scripts/maintenance/syncGithubWorkflow.mjs', verbose}
+                metadata    : {script: 'ai/scripts/maintenance/syncGithubWorkflow.mjs', verbose}
             }
         );
     } catch (e) {
@@ -282,15 +238,15 @@ async function syncGithubWorkflow() {
         process.exit(1);
     }
 
+    // A held lease fails the run: any nonzero exit forbids publishing the attempt.
     if (outcome.status === 'held') {
         const held = outcome.lease;
         console.log(`⏸️  Deferred: heavy-maintenance lease held by '${held.owner}' (reason='${held.reason}', pid=${held.pid}, acquiredAt=${held.acquiredAt}).`);
         console.log('   This script will not run while another heavy-maintenance task is active.');
-        process.exit(emitOnly || corpusOnly ? 1 : 0);
+        process.exit(1);
     }
 
-    console.log(emitOnly || corpusOnly ? '✅ Corpus emission complete:' : '✅ Sync complete:',
-        verbose ? JSON.stringify(outcome.result, null, 2) : outcome.result);
+    console.log('✅ Corpus emission complete:', verbose ? JSON.stringify(outcome.result, null, 2) : outcome.result);
     process.exit(0);
 }
 
@@ -298,4 +254,4 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
     syncGithubWorkflow();
 }
 
-export {assertCorpusDestination, assertSyncGithubWorkflowDevBranch, parseRefetchIssues, syncGithubWorkflow};
+export {assertCorpusDestination, parseRefetchIssues, syncGithubWorkflow};

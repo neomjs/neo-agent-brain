@@ -1118,14 +1118,14 @@ test.describe('backup.mjs orchestrator — atomic bundle assembly (#10129 Phase 
  * answer was to know the file existed and run it by hand, which is precisely the knowledge an
  * operator in the middle of a suspected data loss does not have.
  *
- * These probes are static on purpose: they read `package.json` and the committed runbook, so no
- * ambient state can satisfy them.
+ * These probes are static on purpose: they read `cloud/package.json`, where the runbook's commands
+ * run, and the committed runbook, so no ambient state can satisfy them.
  */
 test.describe('backup corruption canary — reachable by name', () => {
     const repoRoot = process.cwd();
 
     test('a named npm script invokes the timeline tool', () => {
-        const {scripts} = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+        const {scripts} = JSON.parse(fs.readFileSync(path.join(repoRoot, 'cloud/package.json'), 'utf8'));
 
         expect(scripts['ai:check-backup-integrity']).toBeDefined();
         expect(scripts['ai:check-backup-integrity']).toContain('backupCorruptionTimeline.mjs');

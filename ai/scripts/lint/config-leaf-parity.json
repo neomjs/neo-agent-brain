@@ -605,7 +605,6 @@
         "pullRequest.defaults.state",
         "pullRequest.maxCommentsPerPullRequest",
         "pullRequest.maxLimit",
-        "pushToRepoAfterSync",
         "repo"
     ],
     "ai/mcp/server/gitlab-workflow/config.template.mjs": [

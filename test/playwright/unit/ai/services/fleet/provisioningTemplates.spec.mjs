@@ -14,6 +14,11 @@ function readRepoFile(relativePath) {
     return fs.readFileSync(new URL(`../../../../../../${relativePath}`, import.meta.url), 'utf8')
 }
 
+/** @summary Read one file from the installed engine, which owns the seat templates. */
+function readEngineFile(relativePath) {
+    return fs.readFileSync(new URL(import.meta.resolve(`neo.mjs/${relativePath}`)), 'utf8')
+}
+
 /**
  * @summary The host port the container plane actually publishes, read from the Compose file rather
  * than restated here. A template pinned to a port Compose no longer binds is the silent-provisioning
@@ -71,14 +76,14 @@ function codexTable(source, serverName) {
 test.describe('Provisioning templates (#16205)', () => {
     test('both templates name the one Fleet credential slot', () => {
         for (const relativePath of ['.codex/config.template.toml', '.claude/claude_desktop_config.example.json']) {
-            expect(readRepoFile(relativePath), `${relativePath} drifted from the Fleet credential slot`)
+            expect(readEngineFile(relativePath), `${relativePath} drifted from the Fleet credential slot`)
                 .toContain(REMOTE_MCP_CREDENTIAL_ENV_VAR)
         }
     });
 
     test('neither template carries a literal credential', () => {
         for (const relativePath of ['.codex/config.template.toml', '.claude/claude_desktop_config.example.json']) {
-            const source = readRepoFile(relativePath);
+            const source = readEngineFile(relativePath);
 
             // The slot may appear only as a bare name: never assigned a value, never inlined after `Bearer `.
             expect(source, `${relativePath} assigns the credential slot a value`)
@@ -89,7 +94,7 @@ test.describe('Provisioning templates (#16205)', () => {
 
     test('the Codex template carries the native remote form for both plane servers', () => {
         const
-            source = readRepoFile('.codex/config.template.toml'),
+            source = readEngineFile('.codex/config.template.toml'),
             port   = publishedIngressPort();
 
         for (const serverName of PLANE_SERVERS) {
@@ -114,7 +119,7 @@ test.describe('Provisioning templates (#16205)', () => {
 
     test('the Claude Desktop template bridges both plane servers through Neo\'s own entrypoint', () => {
         const
-            servers = JSON.parse(readRepoFile('.claude/claude_desktop_config.example.json')).mcpServers,
+            servers = JSON.parse(readEngineFile('.claude/claude_desktop_config.example.json')).mcpServers,
             port    = publishedIngressPort();
 
         for (const serverName of PLANE_SERVERS) {

@@ -21,7 +21,6 @@ import fs                          from 'fs-extra';
 import fsp                         from 'node:fs/promises';
 import matter                      from 'gray-matter';
 import path                        from 'path';
-import crypto                      from 'crypto';
 import {fileURLToPath}             from 'url';
 import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
@@ -1382,158 +1381,6 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         }
     });
 
-    test('pushToGitHub heals generated-only drift without mutating GitHub (#13958)', async () => {
-        const issueNumber = 43058;
-        const filePath    = path.join(issueSyncConfig.issuesDir, 'chunk-1', `issue-${issueNumber}.md`);
-        const markdown    = matter.stringify(
-            '# Generated-only drift\n\nRemote body already matches.\n\n## Timeline\n\n### @tobiu - 2026-06-24T12:00:00Z\n\nGenerated timeline changed.\n',
-            {
-                id           : issueNumber,
-                title        : 'Generated-only drift',
-                state        : 'OPEN',
-                updatedAt    : '2026-06-24T12:00:00Z',
-                githubUrl    : `https://github.com/neomjs/neo/issues/${issueNumber}`,
-                author       : 'tobiu',
-                commentsCount: 1,
-                contentTrust : {projected: true, quarantined: 0, signals: []}
-            },
-            {lineWidth: -1}
-        );
-        const currentHash = hashContent(markdown);
-
-        await fs.ensureDir(path.dirname(filePath));
-        await fs.writeFile(filePath, markdown, 'utf8');
-
-        const metadata = {
-            lastSync: '2026-06-24T11:00:00Z',
-            issues  : {
-                [issueNumber]: {
-                    state        : 'OPEN',
-                    path         : path.relative(aiConfig.issueSync.metadataBaseRoot, filePath),
-                    updatedAt    : '2026-06-24T12:00:00Z',
-                    closedAt     : null,
-                    milestone    : null,
-                    title        : 'Generated-only drift',
-                    contentHash  : 'stale-full-render-hash',
-                    commentsTotal: 1
-                }
-            }
-        };
-
-        const queries = [];
-        GraphqlService.query = async (query, variables) => {
-            queries.push({query, variables});
-
-            if (query.includes('GetIssueForPush')) {
-                return {
-                    repository: {
-                        issue: {
-                            id   : 'I_generated_only',
-                            title: 'Generated-only drift',
-                            body : 'Remote body already matches.'
-                        }
-                    }
-                };
-            }
-
-            if (query.includes('UpdateIssue')) {
-                throw new Error('generated-only drift must not call UPDATE_ISSUE');
-            }
-
-            throw new Error(`Unexpected GraphQL query in test: ${query.slice(0, 80)}`);
-        };
-
-        const stats = await IssueSyncer.pushToGitHub(metadata);
-
-        expect(stats.count).toBe(0);
-        expect(stats.generatedOnly.count).toBe(1);
-        expect(stats.generatedOnly.issues).toEqual([issueNumber]);
-        expect(metadata.issues[issueNumber].contentHash).toBe(currentHash);
-        expect(queries.filter(item => item.query.includes('UpdateIssue'))).toHaveLength(0);
-    });
-
-    test('pushToGitHub still mutates GitHub for real title/body edits (#13958)', async () => {
-        const issueNumber = 43059;
-        const filePath    = path.join(issueSyncConfig.issuesDir, 'chunk-1', `issue-${issueNumber}.md`);
-        const markdown    = matter.stringify(
-            '# Real body edit\n\nLocal body changed.\n\n## Timeline\n\n### @tobiu - 2026-06-24T12:00:00Z\n\nGenerated timeline.\n',
-            {
-                id           : issueNumber,
-                title        : 'Real body edit',
-                state        : 'OPEN',
-                updatedAt    : '2026-06-24T12:00:00Z',
-                githubUrl    : `https://github.com/neomjs/neo/issues/${issueNumber}`,
-                author       : 'tobiu',
-                commentsCount: 1,
-                contentTrust : {projected: true, quarantined: 0, signals: []}
-            },
-            {lineWidth: -1}
-        );
-        const currentHash = hashContent(markdown);
-
-        await fs.ensureDir(path.dirname(filePath));
-        await fs.writeFile(filePath, markdown, 'utf8');
-
-        const metadata = {
-            lastSync: '2026-06-24T11:00:00Z',
-            issues  : {
-                [issueNumber]: {
-                    state        : 'OPEN',
-                    path         : path.relative(aiConfig.issueSync.metadataBaseRoot, filePath),
-                    updatedAt    : '2026-06-24T12:00:00Z',
-                    closedAt     : null,
-                    milestone    : null,
-                    title        : 'Real body edit',
-                    contentHash  : 'stale-full-render-hash',
-                    commentsTotal: 1
-                }
-            }
-        };
-
-        const updates = [];
-        GraphqlService.query = async (query, variables) => {
-            if (query.includes('GetIssueForPush')) {
-                return {
-                    repository: {
-                        issue: {
-                            id   : 'I_real_edit',
-                            title: 'Real body edit',
-                            body : 'Remote body before local edit.'
-                        }
-                    }
-                };
-            }
-
-            if (query.includes('UpdateIssue')) {
-                updates.push(variables);
-                return {
-                    updateIssue: {
-                        issue: {
-                            number   : issueNumber,
-                            title    : variables.title,
-                            updatedAt: '2026-06-24T12:01:00Z'
-                        }
-                    }
-                };
-            }
-
-            throw new Error(`Unexpected GraphQL query in test: ${query.slice(0, 80)}`);
-        };
-
-        const stats = await IssueSyncer.pushToGitHub(metadata);
-
-        expect(stats.count).toBe(1);
-        expect(stats.issues).toEqual([issueNumber]);
-        expect(stats.generatedOnly.count).toBe(0);
-        expect(updates).toEqual([{
-            issueId: 'I_real_edit',
-            title  : 'Real body edit',
-            body   : 'Local body changed.'
-        }]);
-        expect(metadata.issues[issueNumber].contentHash).toBe(currentHash);
-        expect(metadata.issues[issueNumber].updatedAt).toBe('2026-06-24T12:01:00Z');
-    });
-
     /**
      * Containment denylist coverage. Empirical anchor: an astroturf vendor pitch from an account
      * with no prior association reached `resources/content/issues/**` with the product name verbatim
@@ -1971,8 +1818,4 @@ function buildMockIssue({number, title, timelineFirst, hasNextPage, endCursor}) 
             nodes   : timelineFirst
         }
     };
-}
-
-function hashContent(content) {
-    return crypto.createHash('sha256').update(content).digest('hex');
 }
