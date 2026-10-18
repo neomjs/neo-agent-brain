@@ -234,18 +234,6 @@ test.describe('#16197 — the dropped capabilities are ANNOUNCED, not just writt
         announcer.announceDisabledLanes();
         expect(announcer.logs).toEqual([]);
     });
-
-    test('the idleness drumbeat is no longer INFO', () => {
-        // The measured symptom: this line fires on the 60s sweep cadence forever wherever no tenant
-        // repos are configured, and it sat directly above the only genuine failure in the window.
-        const source = readFileSync(
-            new URL('../../../../../../ai/daemons/orchestrator/services/TenantRepoSyncService.mjs', import.meta.url),
-            'utf8'
-        );
-
-        expect(source).not.toContain("writeLog?.('INFO', `[TenantRepoSync] No tenantRepos configured");
-        expect(source).toContain("writeLog?.('DEBUG', `[TenantRepoSync] No tenantRepos configured");
-    });
 });
 
 test.describe("#16197 — a child's own level survives the supervisor, timestamp and all", () => {

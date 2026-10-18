@@ -92,7 +92,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     let revisionsFile;
 
     // The real writer over this test's temp dir, never a double: a double carrying fields the writer
-    // lacks let a reader ship against fiction while this suite stayed green (#420).
+    // lacks let a reader ship against fiction while this suite stayed green.
     function createTaskStateService() {
         const options = {
                   stateFile      : path.join(tmpDir, 'task-state.json'),
@@ -454,7 +454,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 lastConsumedAt          : null
             };
 
-        // The clean-partial resume marker rides the same allowlist (#430): a well-formed timestamp
+        // The clean-partial resume marker rides the same allowlist: a well-formed timestamp
         // survives the read, anything else fails toward the cadence, and the bare-SHA shape predates it.
         expect(normalizeTenantRepoCheckpointState({partialProgressAt: 1_000}).partialProgressAt).toBe(1_000);
         expect(normalizeTenantRepoCheckpointState({partialProgressAt: -5}).partialProgressAt).toBeNull();
@@ -1444,11 +1444,13 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('skipped when no tenantRepos configured', async () => {
-        const taskStateService = createTaskStateService();
+        const taskStateService = createTaskStateService(),
+              logs             = [];
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'manual-test',
             taskStateService,
+            writeLog         : (level, message) => logs.push(`${level} ${message}`),
             tenantReposConfig: {tenantRepos: []},
             revisionsFilePath: revisionsFile
         });
@@ -1456,6 +1458,8 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(result.status).toBe('skipped');
         expect(result.details.reason).toBe('no-tenant-repos-configured');
         expect(result.details.repoCount).toBe(0);
+        // DEBUG, not INFO: the sweep repeats this line every cadence on a deployment with no tenant repos
+        expect(logs.filter(line => line.includes('No tenantRepos configured'))).toEqual(['DEBUG [TenantRepoSync] No tenantRepos configured; skipping.']);
         // The real record carries the disposition: a skip stamps the cycle and leaves the exit code and
         // the success clock alone.
         expect(taskStateService.getTaskState('tenant-repo-sync')).toMatchObject({running: false, lastExitCode: null, lastSuccessAt: null, lastCompletionAt: expect.any(String)});
@@ -1722,9 +1726,9 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
 
-    // #238 round 2 — the SERVICE-level witnesses. The pure predicates prove classification and
-    // suppression as functions; these prove the wiring, which is what round 1 shipped without.
-    // Round 1 froze the failure counter and left `isRepoDue` admitting the repo every cadence, so the
+    // The SERVICE-level witnesses. The pure predicates prove classification and suppression as
+    // functions; these prove the wiring, which an earlier version shipped without. It froze the
+    // failure counter and left `isRepoDue` admitting the repo every cadence, so the
     // clone/fetch/envelope work ran forever and merely rediscovered the same cause.
     test.describe('terminal stop: no attempt, exact ref, honest sweep status (#238)', () => {
         const REF = 'refs/heads/gone';
@@ -2710,7 +2714,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     // A repo with no `lastIngestedRev` is either one nobody has started or one that has started and
     // failed every time. Only the second is actionable, and `uninitialized` is the reading that
     // invites no investigation — so collapsing them hid the alarming case behind the boring one.
-    // Specimen that motivated this: 41 consecutive failures reported as `uninitialized` (#64).
+    // Specimen that motivated this: 41 consecutive failures reported as `uninitialized`.
     const nullRevState = (overrides = {}) => ({
         lastIngestedRev                      : null,
         lastRunAttemptAt                     : 1_700_000_000_000,
@@ -6197,7 +6201,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             lastAccessCode     : 'KB_TENANT_REPO_ACCESS_SYNC_FAILED',
             lastErrorAt        : expect.any(Number),
             embeddingRecovery  : null,
-            // A failure writes the clean-partial resume marker back to null explicitly (#430), so the
+            // A failure writes the clean-partial resume marker back to null explicitly, so the
             // exact-shape contract declares it: a marker that survived a failure would re-admit a
             // broken repo every sweep, and this line is where that would be caught.
             partialProgressAt  : null
@@ -8584,7 +8588,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             'a budgeted slice clears the streak without claiming the corpus is whole'
         ).toBe('sha-rotating');
 
-        // The resume marker (#430): a clean partial slice earns the very next sweep, and only a clean
+        // The resume marker: a clean partial slice earns the very next sweep, and only a clean
         // one. Written beside `lastRunAttemptAt` on the rotating repo; a failing slice writes null, so
         // the marker can never shorten a backoff it did not earn.
         expect(
@@ -8597,9 +8601,9 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         ).toBeNull();
 
         // And the scheduler reads it: measured live before this existed, a 47k-chunk first ingest
-        // waited the full 30-minute cadence after every clean slice (#430).
+        // waited the full 30-minute cadence after every clean slice.
         const {isRepoDue} = await import('../../../../../../../ai/daemons/orchestrator/scheduling/tenantRepoSync.mjs');
-        const due = isRepoDue({
+        const due         = isRepoDue({
             repo              : {tenantId: 't1', repoSlug: 'org/rotating'},
             persistedRepoState: revisions['t1/org/rotating'],
             now               : revisions['t1/org/rotating'].lastRunAttemptAt + 1,
@@ -8922,7 +8926,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             .toMatchObject({status: 'lease-yield-deferred'});
         expect(taskStateService.getTaskState('tenant-repo-sync')).toMatchObject({
             running       : false,
-            // `observedYieldCause` is what the starvation receipt reads back off this state (#415).
+            // `observedYieldCause` is what the starvation receipt reads back off this state.
             lastCompletion: {status: 'yielded', leaseYielded: true, observedYieldCause: 'lease'}
         });
         expect(taskStateService.getTaskState('tenant-repo-sync')).toMatchObject({lastExitCode: 0, lastSuccessAt: expect.any(String), lastCompletionAt: expect.any(String)});

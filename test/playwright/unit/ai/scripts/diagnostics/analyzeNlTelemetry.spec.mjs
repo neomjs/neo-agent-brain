@@ -146,7 +146,7 @@ test.describe('Neo.ai.scripts.analyzeNlTelemetry', () => {
     test('reads the resolved Memory Core graph leaf without a duplicate env fallback (#12438)', () => {
         const diagnosticsSource = fs.readFileSync(scriptPath, 'utf8');
 
-        expect(diagnosticsSource).toContain('const DB_PATH = aiConfig.storagePaths.graph;');
+        expect(diagnosticsSource).toMatch(/const DB_PATH\s*=\s*aiConfig\.storagePaths\.graph;/);
         expect(diagnosticsSource).not.toContain('process.env.NEO_MEMORY_DB_PATH ||');
         expect(diagnosticsSource).not.toContain('process.env.NEO_MEMORY_DB_PATH ??');
     });
