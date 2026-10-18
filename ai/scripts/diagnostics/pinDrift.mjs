@@ -34,10 +34,10 @@
  * `--ref` to `origin/dev`. Each `--module` restricts the report to commits touching that engine
  * path, loaded or not: "is the behaviour I am about to work around already fixed upstream?"
  */
-import {execFileSync, spawnSync} from 'node:child_process';
-import fs                        from 'node:fs';
-import path                      from 'node:path';
-import {fileURLToPath}           from 'node:url';
+import fs                  from 'node:fs';
+import path                from 'node:path';
+import {fileURLToPath}     from 'node:url';
+import {git, readAtCommit} from './gitObjects.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -295,49 +295,6 @@ export function formatReport(report) {
     }
 
     return lines
-}
-
-/**
- * Runs git and returns stdout.
- * @param {String} cwd
- * @param {String[]} args
- * @returns {String}
- */
-function git(cwd, args) {
-    return execFileSync('git', ['-C', cwd, ...args], {encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe']})
-}
-
-/**
- * Reads engine files at one commit through a single `git cat-file --batch`.
- * @param {String} engine engine checkout
- * @param {String} sha
- * @param {String[]} paths
- * @returns {Map<String, String|null>} null for a path that is no file at that commit
- */
-function readAtCommit(engine, sha, paths) {
-    const result = new Map();
-
-    if (!paths.length) return result;
-
-    const out    = spawnSync('git', ['-C', engine, 'cat-file', '--batch'], {input: paths.map(file => `${sha}:${file}`).join('\n') + '\n', maxBuffer: 256 * 1024 * 1024}).stdout;
-    let   offset = 0;
-
-    for (const file of paths) {
-        const end    = out.indexOf(10, offset),
-              header = out.subarray(offset, end).toString().split(' ');
-
-        offset = end + 1;
-
-        // A found object answers `<oid> <type> <size>`; a missing one echoes the request, which may hold spaces
-        if (header.at(-1) === 'missing') { result.set(file, null); continue }
-
-        const size = Number(header[2]);
-
-        result.set(file, header[1] === 'blob' ? out.subarray(offset, offset + size).toString() : null);
-        offset += size + 1
-    }
-
-    return result
 }
 
 /**
