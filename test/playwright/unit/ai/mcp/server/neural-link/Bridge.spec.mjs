@@ -41,7 +41,20 @@ const sign = (agentId, expiresAt = Date.now() + 3_600_000) => {
 
 // A minimal WebSocket stand-in — handleConnection / registerAgent only touch close / on / send / readyState.
 // `on` records each handler under `this.handlers` so a test can synthetically fire e.g. the 'close' handler.
-const makeWs  = () => ({readyState: 1, closed: null, sent: [], handlers: {}, on(event, handler) {this.handlers[event] = handler}, send(d) {this.sent.push(d)}, close(code, reason) {this.closed = {code, reason}}, terminate() {}});
+const makeWs = () => ({
+    readyState: 1,
+    closed    : null,
+    sent      : [],
+    handlers  : {},
+    on(event, handler) {
+        this.handlers[event] = event === 'close'
+            ? (code, reason) => { this.readyState = 3; return handler(code, reason) }
+            : handler
+    },
+    send(d) { this.sent.push(d) },
+    close(code, reason) { this.readyState = 3; this.closed = {code, reason} },
+    terminate() { this.readyState = 3 }
+});
 const makeReq = query => ({url: `/?${query}`, headers: {host: '127.0.0.1:8081'}});
 
 test.describe('Bridge listener boundary (#15187)', () => {
@@ -57,6 +70,7 @@ test.describe('Bridge.handleConnection — agent handshake auth (#13172)', () =>
     test.beforeEach(() => {
         // isolate the singleton's connection maps + configure fleet mode (a verify key is present)
         Bridge.agents          = new Map();
+        Bridge.agentSockets    = new Map();
         Bridge.apps            = new Map();
         Bridge.bridgePublicKey = publicKey;
     });
@@ -78,7 +92,8 @@ test.describe('Bridge.handleConnection — agent handshake auth (#13172)', () =>
             `role=agent&id=agent-a&token=${sign('agent-a').slice(0, -4)}AAAA` // tampered signature
         ];
         for (const q of bad) {
-            Bridge.agents = new Map();
+            Bridge.agents       = new Map();
+            Bridge.agentSockets = new Map();
             const ws = makeWs();
             Bridge.handleConnection(ws, makeReq(q));
             expect(ws.closed?.code).toBe(1008);
@@ -96,6 +111,7 @@ test.describe('Bridge.handleConnection — agent handshake auth (#13172)', () =>
     test('test-role connections cannot replace an authenticated agent without a valid token', () => {
         const existing = makeWs(), app = makeWs();
         Bridge.agents.set('agent-a', existing);
+        Bridge.agentSockets.set('agent-a', new Set([existing]));
         Bridge.apps.set('app-1', app);
         for (const token of [null, 'malformed', sign('agent-a', Date.now() - 1), sign('agent-a').slice(0, -4) + 'AAAA']) {
             const ws = makeWs();
@@ -131,8 +147,9 @@ test.describe('Bridge.handleConnection — agent handshake auth (#13172)', () =>
 
 test.describe('Bridge protocol freshness stamp (#13299)', () => {
     test.beforeEach(() => {
-        Bridge.agents = new Map();
-        Bridge.apps   = new Map();
+        Bridge.agents       = new Map();
+        Bridge.agentSockets = new Map();
+        Bridge.apps         = new Map();
     });
 
     test('createBridgeInfoPayload exposes the current Bridge protocol contract', () => {
@@ -164,8 +181,9 @@ test.describe('Bridge read-only verifier (#980)', () => {
     test('the actual handler and probe agree over a disposable socket without touching active maps', async () => {
         Bridge.bridgePublicKey = publicKey;
         const existing = makeWs();
-        Bridge.agents = new Map([['existing', existing]]);
-        Bridge.apps = new Map();
+        Bridge.agents       = new Map([['existing', existing]]);
+        Bridge.agentSockets = new Map([['existing', new Set([existing])]]);
+        Bridge.apps         = new Map();
         const server = new WebSocketServer({host: '127.0.0.1', port: 0});
         server.on('connection', (socket, request) => Bridge.handleConnection(socket, request));
         await once(server, 'listening');
@@ -184,8 +202,9 @@ test.describe('Bridge read-only verifier (#980)', () => {
 
     test('reports the cached token gate without registration, replay or session creation', () => {
         const existing = makeWs(), app = makeWs(), probe = makeWs();
-        Bridge.agents = new Map([['agent-a', existing]]);
-        Bridge.apps = new Map([['app-a', app]]);
+        Bridge.agents       = new Map([['agent-a', existing]]);
+        Bridge.agentSockets = new Map([['agent-a', new Set([existing])]]);
+        Bridge.apps         = new Map([['app-a', app]]);
         Bridge.bridgePublicKey = publicKey;
         const fingerprint = crypto.createHash('sha256').update(publicKey.export({format: 'der', type: 'spki'})).digest('hex');
         Bridge.handleConnection(probe, makeReq('role=verifier'));
@@ -203,8 +222,9 @@ test.describe('Bridge read-only verifier (#980)', () => {
 
     test('legacy mode is explicit and extra request parameters cannot enter a registration path', () => {
         Bridge.bridgePublicKey = null;
-        Bridge.agents = new Map();
-        Bridge.apps = new Map();
+        Bridge.agents       = new Map();
+        Bridge.agentSockets = new Map();
+        Bridge.apps         = new Map();
         const legacy = makeWs();
         Bridge.handleConnection(legacy, makeReq('role=verifier'));
         expect(legacy.sent.map(JSON.parse)).toEqual([createBridgeVerifierPayload(null)]);
@@ -221,8 +241,9 @@ test.describe('Bridge read-only verifier (#980)', () => {
 
 test.describe('Bridge.handleAgentMessage — agent-message sidecar emit', () => {
     test.beforeEach(() => {
-        Bridge.agents = new Map();
-        Bridge.apps   = new Map();
+        Bridge.agents       = new Map();
+        Bridge.agentSockets = new Map();
+        Bridge.apps         = new Map();
     });
 
     test('registerAgent stamps a non-empty string sessionId on the agent socket', () => {
@@ -277,8 +298,9 @@ test.describe('Bridge — two agent sockets under one id', () => {
     const framesOf = (ws, type) => ws.sent.map(JSON.parse).filter(frame => frame.type === type);
 
     test.beforeEach(() => {
-        Bridge.agents = new Map();
-        Bridge.apps   = new Map();
+        Bridge.agents       = new Map();
+        Bridge.agentSockets = new Map();
+        Bridge.apps         = new Map();
     });
 
     test('the replaced socket\'s close leaves the newer one routable and tells no agent it left; apps release its session', () => {
@@ -384,9 +406,10 @@ test.describe('Bridge — an Agent that joins later learns what connected Apps a
         .map(frame => frame.message);
 
     test.beforeEach(() => {
-        Bridge.agents   = new Map();
-        Bridge.apps     = new Map();
-        Bridge.appState = new Map();
+        Bridge.agents       = new Map();
+        Bridge.agentSockets = new Map();
+        Bridge.apps         = new Map();
+        Bridge.appState     = new Map();
     });
 
     test('app_connected is followed by the registration and each open window, never by history', () => {
@@ -517,9 +540,10 @@ test.describe('Bridge — who addressed an App, for the peers who share it', () 
     const address  = (agentId, target, id) => Bridge.handleAgentMessage(agentId, Buffer.from(JSON.stringify({target, message: {id, method: 'describeScene'}})));
 
     test.beforeEach(() => {
-        Bridge.agents   = new Map();
-        Bridge.apps     = new Map();
-        Bridge.appState = new Map();
+        Bridge.agents       = new Map();
+        Bridge.agentSockets = new Map();
+        Bridge.apps         = new Map();
+        Bridge.appState     = new Map();
     });
 
     test('records the first and the last addresser with counts, and tells every Agent each time', () => {

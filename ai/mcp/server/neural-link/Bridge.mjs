@@ -69,15 +69,20 @@ class Bridge extends Base {
     wss = null
 
     /**
-     * @summary Returns the live socket set for `id`, reconciled against `this.agents`.
+     * @summary Returns true when a WebSocket is still live (CONNECTING or OPEN, readyState <= 1).
+     * @param {WebSocket|Object|null} ws
+     * @returns {Boolean}
+     */
+    #isSocketLive(ws) {
+        return Boolean(ws) && typeof ws.readyState === 'number' && ws.readyState <= 1;
+    }
+
+    /**
+     * @summary Returns the live socket set for `id` from `this.agentSockets`, pruning closed entries.
      * @param {String} id
      * @returns {Set<WebSocket>}
      */
     #getAgentSocketSet(id) {
-        if (!this.agents.has(id)) {
-            this.agentSockets.delete(id);
-        }
-
         let sockets = this.agentSockets.get(id);
 
         if (!sockets) {
@@ -85,14 +90,8 @@ class Bridge extends Base {
             this.agentSockets.set(id, sockets);
         }
 
-        const current = this.agents.get(id);
-
-        if (current) {
-            sockets.add(current);
-        }
-
         for (const candidate of sockets) {
-            if (candidate.closed != null || (typeof candidate.readyState === 'number' && candidate.readyState > 1)) {
+            if (!this.#isSocketLive(candidate)) {
                 sockets.delete(candidate);
             }
         }
@@ -280,9 +279,10 @@ class Bridge extends Base {
 
     /**
      * @summary Registers an Agent connection; all live connections under an id remain routable and receive broadcasts,
-     * while `this.agents.get(id)` tracks the newest live connection. Closing any connection promotes the most recent
-     * remaining open connection under that id and announces `agent_disconnected` to Agents only when the last open
-     * connection for that id closes. Apps still hear every connection's close, keyed by its `sessionId`.
+     * while `this.agents.get(id)` tracks the newest live connection. The per-id `Set` in `this.agentSockets` preserves
+     * insertion order, which defines "most recent". Closing any connection promotes the most recent remaining open
+     * connection under that id and announces `agent_disconnected` to Agents only when the last open connection for
+     * that id closes. Apps still hear every connection's close, keyed by its `sessionId`.
      * @param {String} id
      * @param {WebSocket} ws
      */
@@ -307,25 +307,21 @@ class Bridge extends Base {
             const activeSet = this.agentSockets.get(id);
             activeSet?.delete(ws);
 
-            if (!this.agents.has(id)) {
-                this.agentSockets.delete(id);
-            } else {
-                const remaining = activeSet
-                    ? [...activeSet].filter(candidate => candidate !== ws && candidate.closed == null && !(typeof candidate.readyState === 'number' && candidate.readyState > 1))
-                    : [];
-                const nextActive = remaining.at(-1) || null;
+            const remaining = activeSet
+                ? [...activeSet].filter(candidate => candidate !== ws && this.#isSocketLive(candidate))
+                : [];
+            const nextActive = remaining.at(-1) || null;
 
-                if (nextActive) {
-                    this.agents.set(id, nextActive);
-                } else {
-                    this.agentSockets.delete(id);
-                    if (this.agents.get(id) === ws) {
-                        this.agents.delete(id);
-                        this.broadcastToAgents({
-                            type   : 'agent_disconnected',
-                            agentId: id
-                        });
-                    }
+            if (nextActive) {
+                this.agents.set(id, nextActive);
+            } else {
+                this.agentSockets.delete(id);
+                if (this.agents.get(id) === ws) {
+                    this.agents.delete(id);
+                    this.broadcastToAgents({
+                        type   : 'agent_disconnected',
+                        agentId: id
+                    });
                 }
             }
 
@@ -587,25 +583,14 @@ class Bridge extends Base {
      * @param {Object} payload
      */
     broadcastToAgents(payload) {
-        const data       = JSON.stringify(payload),
-              recipients = new Set();
+        const data = JSON.stringify(payload);
 
-        for (const [id, activeWs] of this.agents.entries()) {
-            if (activeWs) {
-                recipients.add(activeWs);
-            }
-            const sockets = this.agentSockets.get(id);
-            if (sockets) {
-                for (const ws of sockets) {
-                    if (ws.closed == null && !(typeof ws.readyState === 'number' && ws.readyState > 1)) {
-                        recipients.add(ws);
-                    }
+        for (const sockets of this.agentSockets.values()) {
+            for (const ws of sockets) {
+                if (this.#isSocketLive(ws)) {
+                    ws.send(data);
                 }
             }
-        }
-
-        for (const ws of recipients) {
-            ws.send(data);
         }
     }
 
