@@ -30,11 +30,11 @@ import {
  * The complete unresolved-edge population of `backup.mjs` — MEASURED against the live tree, which is
  * what makes the substitution arm below a real falsifier rather than a fixture arguing with itself.
  *
- * **Three edges, and the two later ones are why this fixture is worth keeping honest.** The config
- * provider's runtime-path dynamic import has always been here. The tenant-parser loader arrived with
- * per-tenant parser registration: `IngestionService` imports it statically, so every closure that
- * reaches that service now reaches the loader's runtime-path `import()` too — including a maintenance
- * entrypoint like `backup.mjs`, which has nothing to do with parsing.
+ * **Four edges, and the three later ones are why this fixture is worth keeping honest.** The config
+ * provider's runtime-path dynamic import has always been here. The tenant-parser loader and its
+ * tenant-extractor sibling arrived with per-tenant registration: `IngestionService` imports both
+ * statically, so every closure that reaches that service now reaches their runtime-path `import()`
+ * too — including a maintenance entrypoint like `backup.mjs`, which has nothing to do with parsing.
  *
  * That widening is real and this fixture caught it, so it is recorded rather than trimmed. Moving the
  * loader behind a lazy import inside `resolveTenantParser` was considered and does NOT help: the
@@ -53,7 +53,8 @@ import {
 const KNOWN_BACKUP_EDGES = [
     'ai/ConfigProvider.mjs::dynamic-import::load',
     'ai/mcp/client/config.mjs::dynamic-import::load',
-    'ai/services/knowledge-base/source/tenantParserLoader.mjs::dynamic-import::importModule'
+    'ai/services/knowledge-base/source/tenantParserLoader.mjs::dynamic-import::importModule',
+    'ai/services/knowledge-base/source/tenantExtractorLoader.mjs::dynamic-import::importModule'
 ];
 
 /**
@@ -65,8 +66,8 @@ const KNOWN_BACKUP_EDGES = [
  * entrypoint REACHES — and the moment you do that, the load-bearing question stops being "does this
  * file touch a shell" and becomes "does it REQUIRE one".
  *
- * ADR-0014 is the fixture that settles it — ticket-ref-ok: the ADR is the authority these arms
- * implement. `backup.mjs` stamps a bundle with `git rev-parse HEAD`
+ * ADR-0014 [not-ticket-ref: the decision record these arms implement] is the fixture that settles
+ * it. `backup.mjs` stamps a bundle with `git rev-parse HEAD`
  * inside a swallowing try, and the ADR rules that not a host dependency because it degrades to
  * `null`. Any predicate that convicts it is wrong against an accepted decision record — which is what
  * the retired token classifier did.
@@ -464,7 +465,7 @@ export default {
             // 98 modules under `ai/` carry `if (process.argv[1] && … === __filename)`. Without this
             // test the walk concludes that importing a script runs its `main()`, which promoted
             // the former `lint-skill-manifest`'s git calls onto `backup.mjs`, convicting it against the
-            // bundle-stamp decision — ADR-0014, ticket-ref-ok: it is the authority contradicted.
+            // bundle-stamp decision of ADR-0014 [not-ticket-ref: the authority that was contradicted].
             const guarded = `import {spawn} from 'child_process';
 export function main() { return spawn('git', []) }
 if (process.argv[1] && process.argv[1] === 'x') { main() }`;
@@ -1002,38 +1003,35 @@ test.describe('the unresolved ratchet holds IDENTITIES, not a count', () => {
     });
 
     test('an unlisted authority conflict fails; a ticketed one is held and still printed', () => {
-        // `syncGithubWorkflow` genuinely requires a shell, so declaring it container-plane is the
-        // severe direction: the script breaks on the plane it is declared for. Chosen over the
-        // reverse because `authority-conflict-host` is suppressed while an unresolved edge stands,
-        // which would make this arm pass for a reason that has nothing to do with the ledger.
-        const roots       = [{name: 'x', rel: 'ai/scripts/maintenance/syncGithubWorkflow.mjs', via: 'npm'}],
-              conflicting = {
-                  'ai/scripts/maintenance/syncGithubWorkflow.mjs': {
-                      taskName: 'githubWorkflowSync', authorityClass: 'container-plane'
-                  }
-              },
-              ledger      = [KNOWN_BACKUP_EDGES[0]],
-              identity    = 'ai/scripts/maintenance/syncGithubWorkflow.mjs::githubWorkflowSync::'
-                  + 'authority-conflict-in-plane';
+        // A root that requires a shell, declared container-plane: the severe direction, the script
+        // breaking on the plane it is declared for. It is a fixture because whether a real script
+        // requires a shell is a fact about today's tree, not the property under test.
+        const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plane-conflict-')),
+              rel         = 'ai/scripts/maintenance/requiresShell.mjs',
+              conflicting = {[rel]: {taskName: 'shellTask', authorityClass: 'container-plane'}},
+              identity    = `${rel}::shellTask::authority-conflict-in-plane`,
+              lint        = (authorityByScript, knownConflicts) => runLint({
+                  entrypoints: [{name: 'x', rel, via: 'npm'}], authorityByScript, ledger: [], knownConflicts, projectRoot
+              });
 
-        const unlisted = runLint({
-            entrypoints      : roots,
-            authorityByScript: conflicting,
-            ledger,
-            knownConflicts   : []
-        });
+        try {
+            fs.mkdirSync(path.join(projectRoot, path.dirname(rel)), {recursive: true});
+            fs.writeFileSync(path.join(projectRoot, rel),
+                `import {execFileSync} from 'node:child_process';\nexecFileSync('git', ['rev-parse', 'HEAD']);\n`);
 
-        expect(unlisted.exitCode).toBe(1);
-        expect(unlisted.conflicts).toHaveLength(1);
+            expect(lint({}, []).planes['host-edge'], 'control: the fixture root requires a shell').toBe(1);
 
-        const held = runLint({
-            entrypoints      : roots,
-            authorityByScript: conflicting,
-            ledger,
-            knownConflicts   : [identity]
-        });
+            const unlisted = lint(conflicting, []);
 
-        expect(held.exitCode, 'a ticketed conflict is held').toBe(0);
-        expect(held.conflicts, 'and it is still surfaced, never hidden').toHaveLength(1);
+            expect(unlisted.exitCode).toBe(1);
+            expect(unlisted.conflicts).toHaveLength(1);
+
+            const held = lint(conflicting, [identity]);
+
+            expect(held.exitCode, 'a ticketed conflict is held').toBe(0);
+            expect(held.conflicts, 'and it is still surfaced, never hidden').toHaveLength(1);
+        } finally {
+            fs.rmSync(projectRoot, {recursive: true, force: true});
+        }
     });
 });
