@@ -54,7 +54,7 @@ const
  * Full-install CI cannot reproduce any of this, because CI has the cloud plane installed.
  *
  * @param {Object}   config
- * @param {String}   config.target Repo-relative module to import in the spawned process.
+ * @param {String}   config.target Module to import in the spawned process: repo-relative, or absolute.
  * @param {String[]} config.denied Package specifiers the resolve hook must refuse.
  * @returns {Object} `{survived, stdout}`
  */
@@ -96,7 +96,7 @@ function probe({target, denied}) {
                 // through the harness instead of the denial hook and the probe proves nothing.
                 NODE_OPTIONS       : '',
                 NEO_DENIED_PACKAGES: denied.join(','),
-                NEO_PROBE_TARGET   : path.join(REPO_ROOT, target)
+                NEO_PROBE_TARGET   : path.resolve(REPO_ROOT, target)
             }
         });
 
@@ -189,7 +189,7 @@ test.describe('host-plane runtime reach — a store handle must be unreachable b
         // reading — they establish the denial is real and that the probe observes the target's own
         // resolution, so this arm does not have to re-prove either.
         const {survived, stdout} = probe({
-            target: 'test/playwright/fixtures.mjs',
+            target: fileURLToPath(import.meta.resolve('neo.mjs/test/playwright/fixtures.mjs')),
             denied: CLOUD_ONLY
         });
 

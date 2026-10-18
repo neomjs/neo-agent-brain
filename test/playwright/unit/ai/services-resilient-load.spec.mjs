@@ -23,7 +23,6 @@ import {NeuralLink_DockService, safeLoadYaml, makeSafe} from '../../../../ai/ser
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 const scratchDir = path.join(__dirname, 'scratch');
-const repoRoot   = path.resolve(__dirname, '../../../..');
 
 test.describe('Neo.ai.services resilient eager-loading', () => {
     test.beforeAll(() => {
@@ -78,7 +77,7 @@ test.describe('Neo.ai.services resilient eager-loading', () => {
     });
 
     test('wires dock helpers through the whitebox Neural Link fixture', () => {
-        const source = fs.readFileSync(path.join(repoRoot, 'test/playwright/fixtures.mjs'), 'utf8');
+        const source = fs.readFileSync(new URL(import.meta.resolve('neo.mjs/test/playwright/fixtures.mjs')), 'utf8');
 
         expect(source).toContain('NeuralLink_DockService');
         expect(source).toMatch(
