@@ -181,6 +181,18 @@ const HARNESS_AUTH_MARKERS = {
 const SURVIVING_HARNESS_TYPES = new Set(listHarnessTypes().filter(entry => entry.runsAs === 'app').map(entry => entry.type));
 
 /**
+ * @summary Whether a Start's launch admission owns the seat's Bridge token. A packaged Start whose admission plan
+ * enables `neural-link` gets a renewing owner ({@link FleetLifecycleService#launchAdmissionOwners}): every launch
+ * redeems a token minted for it, so the seat env carries no static copy.
+ * @param {Object|null} runtimeGeneration The Start's packaged runtime, or the pin its record keeps.
+ * @param {Object|null} launchAdmission The Start's `{generation, plan, …}` admission.
+ * @returns {Boolean}
+ */
+function admissionOwnsBridgeToken(runtimeGeneration, launchAdmission) {
+    return Boolean(runtimeGeneration) && launchAdmission?.plan.some(row => row.key === 'neural-link' && row.enabled) === true
+}
+
+/**
  * @summary The surviving seat's lease in its harness home: the pid a later server adopts. A seat home
  * that holds one may still have its process running.
  * @type {String}
@@ -1046,7 +1058,9 @@ class FleetLifecycleService extends Base {
         if (opts.runtimeGeneration && !isBridgeSigningAuthority(bridgeToken.authority)) {
             throw new Error('FleetLifecycleService.start: original Bridge signing authority was not captured.');
         }
-        env[this.bridgeTokenEnvVar] = bridgeToken.token;
+        // An admitted seat's owner redeems a token per launch, so a copy here would be the env's one credential that
+        // stops working an hour after Start. The mint stays: its signing authority is what that owner renews with.
+        if (!admissionOwnsBridgeToken(opts.runtimeGeneration, opts.launchAdmission)) env[this.bridgeTokenEnvVar] = bridgeToken.token;
 
         // Agent identity: every FM-spawned harness carries the definition's canonical GitHub login
         // under the FIXED NEO_AGENT_IDENTITY var (a cross-process contract — the MCP identity
@@ -1278,7 +1292,7 @@ class FleetLifecycleService extends Base {
                 [agent.forge === 'gitlab' ? 'NEO_GITLAB_PAT' : this.credentialEnvVar]: owners.pat,
                 [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                      : owners.plane
             };
-        if (record.runtimeGeneration && launchAdmission?.plan.some(row => row.key === 'neural-link' && row.enabled)) {
+        if (admissionOwnsBridgeToken(record.runtimeGeneration, launchAdmission)) {
             slots[this.bridgeTokenEnvVar] = createBridgeTokenOwner({registry: this.getRegistry(), agent, authority: record.bridgeAuthority});
         }
         return slots;
