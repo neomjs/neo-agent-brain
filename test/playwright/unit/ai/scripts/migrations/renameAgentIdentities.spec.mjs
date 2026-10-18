@@ -599,8 +599,9 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
         const edgeId   = 'edge-state-episode';
 
         insertNode(db, {id: '@neo-gpt', user_id: 'neo-gpt', data: {id: '@neo-gpt', label: 'AgentIdentity', properties: {githubLogin: '@neo-gpt', userId: 'neo-gpt'}}});
-        insertNode(db, {id: oldState.id, user_id: 'neo-gpt',        data: oldState});
-        insertNode(db, {id: newState.id, user_id: 'neo-gpt-euclid', data: newState});
+        // The old row is older and carries a key the surviving row lacks; the surviving row's own values win.
+        insertNode(db, {id: oldState.id, user_id: 'neo-gpt',        data: {...oldState, properties: {createdAt: '2026-01-01T00:00:00.000Z', note: 'from the old row', shared: 'old'}}});
+        insertNode(db, {id: newState.id, user_id: 'neo-gpt-euclid', data: {...newState, properties: {createdAt: '2026-06-01T00:00:00.000Z', shared: 'new'}}});
         insertNode(db, {id: episode.id,  user_id: 'neo-gpt',        data: episode});
         insertEdge(db, {
             id     : edgeId,
@@ -617,6 +618,11 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
         const episodeNewId = 'embodied-episode-@neo-gpt-euclid-2026-01-01T00:00:00Z';
         expect(db.prepare('SELECT id FROM Nodes WHERE id IN (?, ?)').all(oldState.id, episode.id)).toEqual([]);
         expect(db.prepare('SELECT id FROM Nodes WHERE id IN (?, ?)').all(newState.id, episodeNewId)).toHaveLength(2);
+
+        // The merge keeps the older age and the old row's extra key; the surviving row's values win.
+        const survivor = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(newState.id).data);
+        expect([survivor.id, survivor.identityKey]).toEqual([newState.id, '@neo-gpt-euclid']);
+        expect(survivor.properties).toEqual({createdAt: '2026-01-01T00:00:00.000Z', note: 'from the old row', shared: 'new'});
 
         const edge     = db.prepare('SELECT user_id, source, target, data FROM Edges WHERE id = ?').get(edgeId);
         const edgeData = JSON.parse(edge.data);
@@ -635,6 +641,43 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
             nodesMerged            : 0,
             nodesRekeyed           : 0
         });
+
+        db.close();
+    });
+
+    test('an edge whose re-keyed id is already taken keeps its id and still takes its endpoints: one mapping for SQL id, JSON id and endpoints', () => {
+        const db = new Database(':memory:');
+        createGraphSchema(db);
+
+        insertNode(db, {id: '@neo-gpt',       user_id: 'neo-gpt',       data: {id: '@neo-gpt',       label: 'AgentIdentity', properties: {githubLogin: '@neo-gpt',       userId: 'neo-gpt'}}});
+        insertNode(db, {id: '@neo-opus-vega', user_id: 'neo-opus-vega', data: {id: '@neo-opus-vega', label: 'AgentIdentity', properties: {githubLogin: '@neo-opus-vega', userId: 'neo-opus-vega'}}});
+
+        // Edge A's id re-keys onto edge B's existing id; distinct types and directions keep both through the
+        // endpoint move, so only the ids collide.
+        const edgeA = 'LINK:@neo-gpt:@neo-opus-vega';
+        const edgeB = 'LINK:@neo-gpt-euclid:@neo-opus-vega';
+        insertEdge(db, {id: edgeA, user_id: 'neo-gpt',       source: '@neo-gpt',       target: '@neo-opus-vega', type: 'SENT_TO',  data: {id: edgeA, source: '@neo-gpt',       target: '@neo-opus-vega', type: 'SENT_TO',  properties: {}}});
+        insertEdge(db, {id: edgeB, user_id: 'neo-opus-vega', source: '@neo-opus-vega', target: '@neo-gpt',       type: 'MENTIONS', data: {id: edgeB, source: '@neo-opus-vega', target: '@neo-gpt',       type: 'MENTIONS', properties: {}}});
+
+        const first = runGraphMigration(db, true);
+        expect(first).toMatchObject({duplicateCollisions: 1, edgesRekeyed: 0, edgesDropped: 0});
+        expect(first.skipped).toContain(`collision:${edgeA}→${edgeB}`);
+
+        const a     = db.prepare('SELECT id, user_id, source, target, data FROM Edges WHERE id = ?').get(edgeA);
+        const aData = JSON.parse(a.data);
+        expect(a, 'edge A keeps its id').toBeTruthy();
+        expect([a.user_id, a.source, a.target]).toEqual(['neo-gpt-euclid', '@neo-gpt-euclid', '@neo-opus-vega']);
+        expect([aData.id, aData.source, aData.target]).toEqual([edgeA, '@neo-gpt-euclid', '@neo-opus-vega']);
+
+        const b     = db.prepare('SELECT id, source, target, data FROM Edges WHERE id = ?').get(edgeB);
+        const bData = JSON.parse(b.data);
+        expect([b.source, b.target]).toEqual(['@neo-opus-vega', '@neo-gpt-euclid']);
+        expect([bData.id, bData.source, bData.target]).toEqual([edgeB, '@neo-opus-vega', '@neo-gpt-euclid']);
+        expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+
+        // The collision is reported again on every run and nothing is written for it.
+        const second = runGraphMigration(db, true);
+        expect(second).toMatchObject({duplicateCollisions: 1, edgeMetadataRowsUpdated: 0, edgesRekeyed: 0, nodeMetadataRowsUpdated: 0, nodesMerged: 0, nodesRekeyed: 0});
 
         db.close();
     });

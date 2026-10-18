@@ -457,9 +457,12 @@ function rewriteIdentityEdges(db, rename, apply, stats) {
             continue;
         }
 
-        const data = rewriteIdentityFields(parseGraphData(edge.data));
+        const original = parseGraphData(edge.data);
+        const data     = rewriteIdentityFields(original);
         data.source = nextSource;
         data.target = nextTarget;
+        // The JSON id mirrors the SQL id; the metadata pass re-keys both together or neither.
+        if (original.id === edge.id) data.id = edge.id;
 
         if (apply) {
             db.prepare('UPDATE Edges SET user_id = ?, source = ?, target = ?, data = ? WHERE id = ?')
@@ -507,10 +510,10 @@ function moveEdges(db, fromId, toId, apply, stats) {
  * insert, move, delete: the `Edges` foreign keys (`REFERENCES Nodes(id) ON DELETE CASCADE`, no
  * `ON UPDATE`) refuse a primary-key update on a connected row, so the surviving row exists before any
  * edge names it and nothing still names the old row when it goes. When both ids already exist, the
- * row under the new id is the live one: the old row's edges move onto it and the old row goes. The
- * edge pass mirrors the moved SQL columns into the JSON, never an independent rewrite, so the SQLite
- * id, the JSON id and the edge endpoints never disagree. The AgentIdentity rows themselves moved
- * structurally above.
+ * old row merges into the surviving one ({@link mergeCompoundNodeData}): its edges move over and it
+ * goes. The edge pass mirrors the moved SQL columns into the JSON, never an independent rewrite, so
+ * the SQLite id, the JSON id and the edge endpoints never disagree. The AgentIdentity rows themselves
+ * moved structurally above.
  * @param {Object} db Open better-sqlite3 connection.
  * @param {Boolean} apply True to write, false for dry-run.
  * @param {Object} stats Mutable stats object.
@@ -529,9 +532,13 @@ function rewriteGraphMetadataRows(db, apply, stats) {
         if (nextId !== row.id) {
             moved.set(row.id, nextId);
 
-            if (db.prepare('SELECT id FROM Nodes WHERE id = ?').get(nextId)) {
+            const survivor = db.prepare('SELECT user_id, data FROM Nodes WHERE id = ?').get(nextId);
+            if (survivor) {
+                const mergedData = mergeCompoundNodeData(nextData, rewriteIdentityFields(parseGraphData(survivor.data)));
                 moveEdges(db, row.id, nextId, apply, stats);
                 if (apply) {
+                    db.prepare('UPDATE Nodes SET user_id = ?, data = ? WHERE id = ?')
+                        .run(survivor.user_id ?? nextUserId, JSON.stringify(mergedData), nextId);
                     db.prepare('DELETE FROM Nodes WHERE id = ?').run(row.id);
                 }
                 stats.graph.nodesMerged++;
@@ -564,18 +571,20 @@ function rewriteGraphMetadataRows(db, apply, stats) {
         const data       = parseGraphData(row.data);
         const nextData   = rewriteIdentityFields(data);
         const nextUserId = rewriteUserIdColumn(row.user_id);
-        const nextId     = rewriteNodeId(row.id);
+        let   nextId     = rewriteNodeId(row.id);
+
+        if (nextId !== row.id && db.prepare('SELECT id FROM Edges WHERE id = ?').get(nextId)) {
+            // Another edge already carries the re-keyed id: this row keeps its own, and one mapping
+            // still governs its SQL id, its JSON id and its endpoints.
+            stats.graph.duplicateCollisions++;
+            stats.graph.skipped.push(`collision:${row.id}→${nextId}`);
+            nextId = row.id;
+        }
 
         // Endpoints mirror the SQL columns after the node moves (in a dry run, the moves they would make).
         if (typeof data.source === 'string') nextData.source = moved.get(row.source) ?? row.source;
         if (typeof data.target === 'string') nextData.target = moved.get(row.target) ?? row.target;
         if (data.id === row.id) nextData.id = nextId;
-
-        if (nextId !== row.id && db.prepare('SELECT id FROM Edges WHERE id = ?').get(nextId)) {
-            stats.graph.duplicateCollisions++;
-            stats.graph.skipped.push(`collision:${row.id}→${nextId}`);
-            continue;
-        }
 
         if (nextId !== row.id || nextUserId !== row.user_id || changedJson(data, nextData)) {
             if (apply) {
@@ -586,6 +595,30 @@ function rewriteGraphMetadataRows(db, apply, stats) {
             else stats.graph.edgeMetadataRowsUpdated++;
         }
     }
+}
+
+/**
+ * @summary Merges an old compound row into the row already living under its new id: the surviving
+ * row's values win on conflict, the old row fills every gap, and `properties.createdAt` keeps the
+ * older of the two — a merge loses no key and no age, and the rule is total, so a collision never
+ * leaves the run undecided.
+ * @param {Object} oldData The old row's data, identity tokens already rewritten.
+ * @param {Object} survivingData The surviving row's data.
+ * @returns {Object}
+ */
+function mergeCompoundNodeData(oldData, survivingData) {
+    const merged = {
+        ...oldData,
+        ...survivingData,
+        properties: {...(oldData.properties || {}), ...(survivingData.properties || {})}
+    };
+    const oldAt = oldData.properties?.createdAt;
+    const newAt = survivingData.properties?.createdAt;
+
+    if (oldAt && (!newAt || oldAt < newAt)) {
+        merged.properties.createdAt = oldAt;
+    }
+    return merged;
 }
 
 /**
