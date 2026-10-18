@@ -900,6 +900,82 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect(text).not.toContain(path.join(root, 'placed-plane'));
     });
 
+    test.describe('a Codex Desktop seat with a reserved launch admission', () => {
+        const projectFile = opts => path.join(opts.targetRepoRoot, '.codex/config.toml');
+        const homeFile    = prepared => path.join(prepared.instanceHome, 'codex-home', 'config.toml');
+
+        test('Neural Link runs Fleet\'s launcher from the home config, and the project file leaves it out', async () => {
+            const opts     = {...options(makeAgent('codex-desktop')), launchAdmission: desktopAdmission()};
+            const prepared = await prepareManagedAgentWorkspace(opts);
+            const project  = await read(projectFile(opts)), home = await read(homeFile(prepared));
+            const table    = tomlMcpTable(home, 'neo-mjs-neural-link');
+
+            expect(tomlMcpTable(project, 'neo-mjs-neural-link')).toBe('');
+            expect(tomlMcpTable(project, 'neo-mjs-memory-core')).toContain('mcp-server.mjs');
+            expect(table).toContain('fleetMcpLauncher.mjs');
+            expect(table).toContain(opts.launchAdmission.grants['neural-link']);
+            expect(table).toContain('NEO_FLEET_LAUNCH_ISSUER');
+            expect(home).not.toContain('NEO_FLEET_BRIDGE_TOKEN');
+            expect((await fs.stat(homeFile(prepared))).mode & 0o777).toBe(0o600);
+            expect(prepared.launchAdmissionBinding).toMatchObject({version: 3, kind: 'codex', identity: 'shared-login'});
+            expect(JSON.stringify(prepared.launchAdmissionBinding)).not.toContain(opts.launchAdmission.grants['neural-link']);
+        });
+
+        test('the table an earlier Fleet rendered moves from the project file into the home, and back without admission', async () => {
+            const opts = options(makeAgent('codex-desktop'));
+            await prepareManagedAgentWorkspace(opts);
+            expect(tomlMcpTable(await read(projectFile(opts)), 'neo-mjs-neural-link')).toContain('mcp-server.mjs');
+
+            const prepared = await prepareManagedAgentWorkspace({...opts, launchAdmission: desktopAdmission()});
+            expect(tomlMcpTable(await read(projectFile(opts)), 'neo-mjs-neural-link')).toBe('');
+            expect(tomlMcpTable(await read(homeFile(prepared)), 'neo-mjs-neural-link')).toContain('fleetMcpLauncher.mjs');
+
+            await prepareManagedAgentWorkspace(opts);
+            expect(tomlMcpTable(await read(projectFile(opts)), 'neo-mjs-neural-link')).toContain('mcp-server.mjs');
+            expect(tomlMcpTable(await read(homeFile(prepared)), 'neo-mjs-neural-link')).toBe('');
+        });
+
+        test('each Start replaces the last grant, and the seat\'s own switch survives in one table', async () => {
+            const opts     = options(makeAgent('codex-desktop')), first = desktopAdmission(), second = desktopAdmission();
+            const prepared = await prepareManagedAgentWorkspace({...opts, launchAdmission: first});
+            const header   = '[mcp_servers."neo-mjs-neural-link"]';
+
+            await fs.writeFile(homeFile(prepared), (await read(homeFile(prepared))).replace(header, `${header}\nenabled = false`));
+            await prepareManagedAgentWorkspace({...opts, launchAdmission: second});
+
+            const home = await read(homeFile(prepared)), table = tomlMcpTable(home, 'neo-mjs-neural-link');
+            expect(table).toContain(second.grants['neural-link']);
+            expect(table).not.toContain(first.grants['neural-link']);
+            expect(table).toContain('enabled = false');
+            expect(home.split(header)).toHaveLength(2);
+        });
+
+        test('a switch the seat set before any admission merges into the launcher table', async () => {
+            const opts     = options(makeAgent('codex-desktop'));
+            const prepared = await prepareManagedAgentWorkspace(opts);
+            const header   = '[mcp_servers."neo-mjs-neural-link"]';
+
+            await fs.appendFile(homeFile(prepared), `\n${header}\nenabled = false\n`);
+            await prepareManagedAgentWorkspace({...opts, launchAdmission: desktopAdmission()});
+
+            const home = await read(homeFile(prepared));
+            expect(home.split(header)).toHaveLength(2);
+            expect(tomlMcpTable(home, 'neo-mjs-neural-link')).toContain('enabled = false');
+            expect(tomlMcpTable(home, 'neo-mjs-neural-link')).toContain('fleetMcpLauncher.mjs');
+        });
+
+        test('a launcher table Fleet did not write refuses before a byte changes', async () => {
+            const opts     = options(makeAgent('codex-desktop'));
+            const prepared = await prepareManagedAgentWorkspace({...opts, launchAdmission: desktopAdmission()});
+            const edited   = (await read(homeFile(prepared))).replace('fleetMcpLauncher.mjs', 'operator-launcher.mjs');
+
+            await fs.writeFile(homeFile(prepared), edited);
+            await expect(prepareManagedAgentWorkspace({...opts, launchAdmission: desktopAdmission()}))
+                .rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+            expect(await read(homeFile(prepared))).toBe(edited);
+        });
+    });
+
     test('retiring an earlier Fleet\'s Code-tab rows keeps one snapshot of the shared config under the seat home, none at HOME root', async () => {
         const
             opts                       = options(makeAgent('claude-desktop')),

@@ -14,8 +14,10 @@ import {deriveNodeRuntimeEnv}                         from './deriveNodeRuntimeE
 import {PACKAGE_RECEIPT_PATH}                         from './runtimeGeneration.mjs';
 import {
     DESKTOP_PROFILE_RECEIPT,
-    createDesktopLaunchBinding,
+    codexProfileProjection,
     createAntigravityLaunchBinding,
+    createCodexLaunchBinding,
+    createDesktopLaunchBinding,
     desktopProfileProjection as claudeJsonOwnedProjection,
     recoverLaunchProfileGrants
 } from './launchProfileCustody.mjs';
@@ -813,7 +815,7 @@ async function prepareHarnessArtifacts({
     switch (agent.harnessType) {
         case 'codex':
         case 'codex-desktop':
-            return {artifacts: await prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem})};
+            return prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan, previous, residentMcpEnv, launchAdmission, fileSystem});
         case 'kimi-code':
             return {artifacts: await prepareKimiArtifacts({agent, instanceRoot, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem})};
         case 'opencode':
@@ -1162,12 +1164,24 @@ function parseJsonObject(source) {
  * @summary Converge a Codex seat's project MCP tables and its Codex home. The `enabled` lines are
  * converged first ({@link convergeCodexProjectSwitches}): the Fleet switches servers off in the
  * project layer and leaves the others to the seat's own switch, which writes the home.
+ *
+ * A seat with a reserved launch admission starts Neural Link through Fleet's launcher, because the Bridge
+ * token that server presents expires an hour after it is minted and the launcher redeems a fresh one at
+ * every launch. That table carries the grant, so it lives in the seat's home config, outside every checkout,
+ * and the project file leaves it out ({@link convergeCodexHomeLaunchTables}).
  * @param {Object} options
- * @returns {Promise<Object[]>} The artifact rows: project, home, memories directory.
+ * @param {Object} [options.residentMcpEnv] Resolved resident values, for the launcher row's placement.
+ * @param {Object} [options.launchAdmission] `{issuer, identity, grants}` reserved for this Start.
+ * @returns {Promise<{artifacts: Object[], launchAdmissionBinding: Object|null}>} The project, home and
+ *     memories rows, and the binding of the home's capability-bearing tables when a server is launched.
  * @private
  */
-async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan, previous, fileSystem}) {
+async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan, previous, residentMcpEnv = {}, launchAdmission = null, fileSystem}) {
     const
+        launched           = launchAdmission ? plan.filter(server => server.key === 'neural-link' && server.enabled) : [],
+        projectPlan        = plan.filter(server => !launched.includes(server)),
+        // the project file as the other launch mode renders it: Fleet's own, so a seat may move between the two
+        formerPlan         = launched.length ? plan : plan.filter(server => server.key !== 'neural-link'),
         projectPath        = path.join(targetRepoRoot, '.codex', 'config.toml'),
         legacyContent      = renderCodexProjectConfig(localizePlan(plan)),
         runtimePrevious    = previousNodeRuntimePlan(plan),
@@ -1190,15 +1204,16 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
 
     artifacts.push(...await convergeTransportArtifact({
         filePath                 : projectPath,
-        desiredContent           : contextSeed + renderCodexProjectConfig(plan),
+        desiredContent           : contextSeed + renderCodexProjectConfig(projectPlan),
         legacyContent,
-        placementLegacyContent   : [previousPlacementPlan(plan), vocabularyPrevious].filter(Boolean).map(rows => renderCodexProjectConfig(rows)),
+        placementLegacyContent   : [previousPlacementPlan(plan), vocabularyPrevious, formerPlan]
+            .filter(Boolean).map(rows => renderCodexProjectConfig(rows)),
         runtimeLegacyContent     : runtimePrevious && renderCodexProjectConfig(runtimePrevious),
         runtimeLegacyStdioContent: runtimePrevious && renderCodexProjectConfig(localizePlan(runtimePrevious)),
         priorRuntimeContent      : existing => {
             const prior = priorPackagedCodexRuntime(existing, plan);
 
-            return prior ? [plan, vocabularyPrevious].filter(Boolean).map(rows => renderCodexProjectConfig(rebindRuntime(rows, prior))) : []
+            return prior ? [plan, vocabularyPrevious, formerPlan].filter(Boolean).map(rows => renderCodexProjectConfig(rebindRuntime(rows, prior))) : []
         },
         ownedProjection: projectCodexOwnedProjection,
         mergeTransport : mergeCodexTransport,
@@ -1249,10 +1264,133 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
         homeArtifact.status = WORKSPACE_ARTIFACT_STATES.UPDATED
     }
 
+    if (launched.length) await assertLaunchEntrypoints({plan: launched, fileSystem});
+
+    const launchRows = launched.length ? renderDesktopLaunchRows({agent, plan: launched, residentMcpEnv, launchAdmission}) : {};
+
+    if (await convergeCodexHomeLaunchTables({
+        filePath: homePath,
+        tables  : Object.entries(launchRows).map(([name, row]) => renderCodexMcpTable({
+            name, enabled: true, command: row.command, args: row.args, environment: row.env, runtimeEnv: []
+        })).join('\n\n'),
+        trustedRoot: instanceHome,
+        fileSystem
+    }) && homeArtifact.status === WORKSPACE_ARTIFACT_STATES.MATCH) {
+        homeArtifact.status = WORKSPACE_ARTIFACT_STATES.UPDATED
+    }
+
     artifacts.push(homeArtifact);
     artifacts.push(await ensureDirectoryArtifact(memoriesPath, instanceHome, fileSystem));
 
-    return artifacts;
+    return {
+        artifacts,
+        launchAdmissionBinding: launched.length ? createCodexLaunchBinding({
+            identity     : launchAdmission.identity,
+            issuer       : launchAdmission.issuer,
+            codexHome    : homeRoot,
+            workspaceRoot: targetRepoRoot,
+            source       : await fileSystem.readFile(homePath, 'utf8')
+        }) : null
+    };
+}
+
+/**
+ * @summary Converge the `neo-mjs-*` tables of a Codex home config to the launcher tables of this Start; every
+ * other line stays the seat's. The tables carry a grant minted per Start, so they change on every Start: a
+ * receipt beside the config records the projection Fleet wrote, and only a projection it recorded may be
+ * replaced. A seat with nothing launched has its recorded tables retired.
+ * @param {Object} options
+ * @param {String} options.filePath    The Codex home `config.toml`, converged just before.
+ * @param {String} options.tables      The desired launcher tables, empty when nothing is launched.
+ * @param {String} options.trustedRoot The root no path segment may leave by a symlink.
+ * @param {Object} options.fileSystem  Promise filesystem seam.
+ * @returns {Promise<Boolean>} Whether Fleet changed the file.
+ * @private
+ */
+async function convergeCodexHomeLaunchTables({filePath, tables, trustedRoot, fileSystem}) {
+    const
+        receiptPath = path.join(path.dirname(filePath), CODEX_LAUNCH_RECEIPT),
+        ownedLabel  = 'mcp_servers."neo-mjs-*"';
+
+    await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: receiptPath, fileSystem, label: 'launch receipt'});
+
+    const source = await fileSystem.readFile(filePath, 'utf8');
+    let actual;
+
+    try {
+        actual = codexProfileProjection(source)
+    } catch {
+        throw divergentArtifact(filePath, ownedLabel, 'invalid Codex home config')
+    }
+
+    const
+        actualHash  = hashContent(JSON.stringify(actual)),
+        desiredHash = hashContent(JSON.stringify(codexProfileProjection(tables || ''))),
+        recorded    = await readCodexLaunchReceipt({receiptPath, fileSystem}),
+        record      = previous => publishTextAtomically({
+            filePath: receiptPath,
+            content : JSON.stringify({version: 1, artifact: path.basename(filePath), sha256: desiredHash, previous}, null, 2) + '\n',
+            fileSystem
+        });
+
+    if (actualHash === desiredHash) {
+        Object.keys(actual).length && !recorded.includes(desiredHash) && await record(null);
+        return false
+    }
+
+    if (Object.keys(actual).length && !recorded.includes(actualHash)) {
+        throw divergentArtifact(filePath, ownedLabel, 'Fleet-owned Codex home tables differ from what Fleet last wrote')
+    }
+
+    // A table's `enabled` line is the seat's own switch: it moves into the new table, and a table holding only
+    // the switch merges into it rather than leaving a second header behind.
+    const switches = {};
+    let   output   = source;
+
+    for (const name of new Set([...Object.keys(actual), ...Object.keys(codexProfileProjection(tables || ''))])) {
+        const table = findTomlMcpTable(output, name);
+        if (!table) continue;
+        const line = table.value.split('\n').slice(1).find(entry => /^\s*enabled\s*=/.test(entry));
+        if (line) switches[name] = line.trim();
+        output = output.slice(0, table.start) + output.slice(table.end);
+    }
+
+    output = output.replace(/\n{3,}/g, '\n\n').replace(/\s*$/, '\n');
+    if (tables) {
+        output += '\n' + tables.replace(/^\[mcp_servers\."([^"]+)"\]$/gm, (header, name) => switches[name] ? `${header}\n${switches[name]}` : header) + '\n';
+    }
+
+    let written;
+    try { written = hashContent(JSON.stringify(codexProfileProjection(output))) } catch { written = null }
+    if (written !== desiredHash) {
+        throw divergentArtifact(filePath, ownedLabel, 'the Codex home config would not read back as the tables Fleet writes')
+    }
+
+    // the receipt names the new tables before the config does, so an interrupted write converges next time
+    await record(Object.keys(actual).length ? actualHash : null);
+    await publishTextAtomically({filePath, content: output, fileSystem});
+
+    return true
+}
+
+/**
+ * @returns {Promise<String[]>} The table projections the Codex launch receipt admits: the ones Fleet wrote
+ *     last, and the ones before them while that write may not have landed. Empty when no receipt can vouch.
+ * @private
+ */
+async function readCodexLaunchReceipt({receiptPath, fileSystem}) {
+    let receipt;
+
+    try {
+        receipt = JSON.parse(await fileSystem.readFile(receiptPath, 'utf8'))
+    } catch (error) {
+        if (error?.code === 'ENOENT' || error instanceof SyntaxError) return [];
+        throw error
+    }
+
+    return receipt?.version === 1 && receipt.artifact === 'config.toml'
+        ? [receipt.sha256, receipt.previous].filter(hash => /^[a-f0-9]{64}$/.test(hash ?? ''))
+        : []
 }
 
 /**
@@ -2853,6 +2991,9 @@ const TRANSPORT_SERVER_NAMES = Object.freeze([
 
 const TRANSPORT_RECEIPT_FILE = '.neo-fleet-mcp-transport.json';
 
+// Beside a Codex home config: the projection of the launcher tables Fleet last wrote there.
+const CODEX_LAUNCH_RECEIPT = '.neo-fleet-codex-launch.json';
+
 /** @summary Recognize the former exact invocation without widening any other managed setting. @private */
 function previousNodeRuntimePlan(plan) {
     return plan.some(server => server.environment)
@@ -3289,26 +3430,36 @@ async function publishTextAtomically({filePath, content, fileSystem}) {
     await fileSystem.chmod(filePath, 0o600)
 }
 
-/** @private */
+/**
+ * @summary Replace each named managed table with its desired one. A table only one side has moves with the
+ * server's carrier: it leaves the file when the server is launched from the seat's home, and comes back when
+ * it no longer is. The caller's recognised projection vouched for either move.
+ * @private
+ */
 function mergeCodexTransport(existing, desired, names = TRANSPORT_SERVER_NAMES) {
     let   output       = existing;
-    const replacements = names.map(name => {
+    const added        = [];
+    const replacements = names.flatMap(name => {
         const
             current = findTomlMcpTable(existing, name),
             target  = findTomlMcpTable(desired, name);
 
-        if (!current || !target) {
+        if (!current && !target) {
             throw transportDivergence(name, 'Codex MCP table', 'managed table is missing')
         }
+        if (!current) {
+            added.push(target.value);
+            return []
+        }
 
-        return {start: current.start, end: current.end, value: target.value}
+        return [{start: current.start, end: current.end, value: target ? target.value : ''}]
     }).sort((a, b) => b.start - a.start);
 
     for (const replacement of replacements) {
         output = output.slice(0, replacement.start) + replacement.value + output.slice(replacement.end)
     }
 
-    return output
+    return added.length ? output.replace(/\s*$/, '\n\n') + added.join('\n\n') + '\n' : output
 }
 
 /**

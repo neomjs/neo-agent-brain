@@ -108,15 +108,19 @@ export function createAntigravityLaunchBinding({identity, issuer, instanceHome, 
 
 /**
  * @summary The canonical Neo-owned MCP tables of a Codex config, the projection binding and recovery both hash.
+ * A table's `enabled` key is the seat's own switch, which the Codex app writes into this layer, so it stays
+ * outside the projection; a table holding nothing else is the switch alone.
  * @param {String} source TOML.
  * @returns {Object} The `neo-mjs-*` server tables.
  */
 export function codexProfileProjection(source) {
     let parsed;
     try { parsed = parseToml(source) } catch { throw refuse('invalid-toml') }
-    return JSON.parse(canonicalJson(Object.fromEntries(
-        Object.entries(parsed?.mcp_servers || {}).filter(([name]) => name.startsWith(PREFIX))
-    )))
+    const table = value => value && typeof value === 'object' && !Array.isArray(value);
+    return JSON.parse(canonicalJson(Object.fromEntries(Object.entries(parsed?.mcp_servers || {})
+        .filter(([name]) => name.startsWith(PREFIX))
+        .map(([name, value]) => [name, table(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'enabled')) : value])
+        .filter(([, value]) => !table(value) || Object.keys(value).length))))
 }
 
 /**

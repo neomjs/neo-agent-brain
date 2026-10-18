@@ -347,6 +347,14 @@ test.describe('Codex original profile custody', () => {
         expect(await recover()).toEqual({'neural-link': grant.capability});
     });
 
+    test('the seat switching the bound table off or on keeps custody', async () => {
+        const switched = homeSource.replace('startup_timeout_sec = 30', 'startup_timeout_sec = 30\nenabled = false');
+        await write(homeConfig, switched);
+        expect(await recover()).toEqual({'neural-link': grant.capability});
+        await write(homeConfig, switched.replace('enabled = false', 'enabled = true'));
+        expect(await recover()).toEqual({'neural-link': grant.capability});
+    });
+
     test('an edited Fleet table in the home config refuses', async () => {
         await write(homeConfig, homeSource.replace('/runtime/host', '/other/runtime'));
         await expect(recover()).rejects.toMatchObject({reason: 'projection-mismatch'});
