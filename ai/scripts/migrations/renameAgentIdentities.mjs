@@ -3,12 +3,18 @@
  * @summary One-shot migration script that renames canonical Neo maintainer identities
  * across the SQLite Native Edge Graph and ChromaDB memory metadata.
  *
- * This handles stable GitHub handle de-versioning while preserving model-version
- * facts in `learn/agentos/ModelStats.md` and AgentIdentity capability fields:
+ * This handles GitHub handle renames while preserving model-version facts in
+ * `learn/agentos/ModelStats.md` and AgentIdentity capability fields:
  *
  * - `@neo-opus-4-7` → `@neo-opus-ada`
- * - `@neo-gemini-3-1-pro` → `@neo-gemini-pro`
+ * - `@neo-gemini-3-1-pro` → `@neo-gemini-pro` → `@neo-gemini-julia`
  * - `@neo-claude-opus` → `@neo-opus-grace`
+ * - `@neo-gpt` → `@neo-gpt-euclid`
+ * - `@neo-fable` → `@neo-fable-mnemosyne`
+ *
+ * A token is rewritten only where it is a whole handle: `@neo-gpt-emmy` keeps its prefix,
+ * `neo-fable@neomjs.com` keeps its address, and a chain resolves to its last handle in one
+ * pass, so a second run finds nothing left to do.
  *
  * The migration updates identity-keyed graph columns, mirrored JSON fields, and
  * Chroma metadata only. It deliberately does not rewrite memory documents,
@@ -60,6 +66,26 @@ export const IDENTITY_RENAMES = Object.freeze([
         toNodeId  : '@neo-opus-grace',
         fromUserId: 'neo-claude-opus',
         toUserId  : 'neo-opus-grace'
+    }),
+    // 2026-10-18: the first seat of each family carries its Social Name, like every seat hatched since.
+    // Listed after the pair it continues: a chain is walked in this order.
+    Object.freeze({
+        fromNodeId: '@neo-gpt',
+        toNodeId  : '@neo-gpt-euclid',
+        fromUserId: 'neo-gpt',
+        toUserId  : 'neo-gpt-euclid'
+    }),
+    Object.freeze({
+        fromNodeId: '@neo-gemini-pro',
+        toNodeId  : '@neo-gemini-julia',
+        fromUserId: 'neo-gemini-pro',
+        toUserId  : 'neo-gemini-julia'
+    }),
+    Object.freeze({
+        fromNodeId: '@neo-fable',
+        toNodeId  : '@neo-fable-mnemosyne',
+        fromUserId: 'neo-fable',
+        toUserId  : 'neo-fable-mnemosyne'
     })
 ]);
 
@@ -85,6 +111,7 @@ const IDENTITY_METADATA_KEYS = new Set([
     'grantedBy',
     'id',
     'identity',
+    'identityKey',
     'identityLogin',
     'identityLogins',
     'owner',
@@ -177,16 +204,64 @@ Options:
 }
 
 /**
- * @summary Rewrites identity tokens inside a string value.
+ * @summary Maps every rename token (`@` node id and bare user id) to the last handle of its chain,
+ * so `@neo-gemini-3-1-pro` resolves to `@neo-gemini-julia` in one step rather than stopping at the
+ * intermediate `@neo-gemini-pro`.
+ * @param {ReadonlyArray<Object>} renames Rename descriptors in chain order.
+ * @returns {Map<String,String>}
+ */
+export function buildRenameTargets(renames) {
+    const next = new Map();
+
+    for (const rename of renames) {
+        next.set(rename.fromNodeId, rename.toNodeId);
+        next.set(rename.fromUserId, rename.toUserId);
+    }
+
+    const resolve = token => {
+        let current = token;
+        for (let hops = 0; next.has(current) && hops < next.size; hops++) {
+            current = next.get(current);
+        }
+        return current;
+    };
+
+    return new Map([...next.keys()].map(token => [token, resolve(token)]));
+}
+
+/**
+ * @summary Builds one global alternation over every rename token, longest first, with the boundary
+ * rule in lookarounds so a rejected position is never consumed. A handle is made of `[A-Za-z0-9-]`;
+ * neither form may run on into a handle character or an `@`, which keeps `@neo-gpt-emmy` whole and
+ * `neo-fable@neomjs.com` untouched. The `@` form may follow any non-alphanumeric character
+ * (`AGENT:@neo-gpt`, `identity-state-@neo-fable`); the bare form may not follow `@` or a handle character.
+ * @param {Map<String,String>} targets Output of {@link buildRenameTargets}.
+ * @returns {RegExp}
+ */
+export function buildTokenPattern(targets) {
+    const escape  = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const tokens  = [...targets.keys()].sort((a, b) => b.length - a.length);
+    const nodeIds = tokens.filter(token => token.startsWith('@')).map(token => escape(token.slice(1)));
+    const userIds = tokens.filter(token => !token.startsWith('@')).map(escape);
+
+    return new RegExp(
+        `(?<![A-Za-z0-9])@(?:${nodeIds.join('|')})(?![A-Za-z0-9@-])` +
+        `|(?<![A-Za-z0-9@-])(?:${userIds.join('|')})(?![A-Za-z0-9@-])`,
+        'g'
+    );
+}
+
+const RENAME_TARGETS = buildRenameTargets(IDENTITY_RENAMES);
+const TOKEN_PATTERN  = buildTokenPattern(RENAME_TARGETS);
+
+/**
+ * @summary Rewrites whole-handle identity tokens inside a string value; applying it to its own output
+ * changes nothing.
  * @param {String} value Source string.
  * @returns {String}
  */
 export function rewriteIdentityString(value) {
-    return IDENTITY_RENAMES.reduce((text, rename) => {
-        return text
-            .replaceAll(rename.fromNodeId, rename.toNodeId)
-            .replaceAll(rename.fromUserId, rename.toUserId);
-    }, value);
+    return value.replace(TOKEN_PATTERN, token => RENAME_TARGETS.get(token));
 }
 
 /**
@@ -253,9 +328,7 @@ function changedJson(before, after) {
  */
 function rewriteUserIdColumn(userId) {
     if (typeof userId !== 'string') return userId;
-    const match = IDENTITY_RENAMES.find(rename => userId === rename.fromUserId || userId === rename.fromNodeId);
-    if (!match) return userId;
-    return userId.startsWith('@') ? match.toNodeId : match.toUserId;
+    return RENAME_TARGETS.get(userId) ?? userId;
 }
 
 /**

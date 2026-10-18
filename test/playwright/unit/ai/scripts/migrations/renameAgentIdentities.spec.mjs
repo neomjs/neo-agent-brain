@@ -23,6 +23,7 @@ import * as core                              from 'neo.mjs/src/core/_export.mjs
 import {
     findChromaMetadataUpdates,
     rewriteIdentityFields,
+    rewriteIdentityString,
     runGraphMigration
 } from '../../../../../../ai/scripts/migrations/renameAgentIdentities.mjs';
 
@@ -195,7 +196,7 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
                 bodyText             : 'historical body mentions @neo-opus-4-7',
                 participatingAgents  : '@neo-opus-4-7, @neo-gemini-3-1-pro',
                 requiredGithubLogin  : '@neo-gemini-3-1-pro',
-                sourceAgentIdentities: ['@neo-opus-4-7', '@neo-gpt'],
+                sourceAgentIdentities: ['@neo-opus-4-7', '@neo-opus-vega'],
                 subject              : 'historical subject mentions @neo-gemini-3-1-pro',
                 userId               : 'neo-opus-4-7'
             }
@@ -205,9 +206,10 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
 
         expect(result.id).toBe('@neo-opus-ada');
         expect(result.properties.agentIdentity).toBe('@neo-opus-ada');
-        expect(result.properties.participatingAgents).toBe('@neo-opus-ada, @neo-gemini-pro');
-        expect(result.properties.requiredGithubLogin).toBe('@neo-gemini-pro');
-        expect(result.properties.sourceAgentIdentities).toEqual(['@neo-opus-ada', '@neo-gpt']);
+        // A chain resolves to its last handle in one pass: 3-1-pro → pro → julia.
+        expect(result.properties.participatingAgents).toBe('@neo-opus-ada, @neo-gemini-julia');
+        expect(result.properties.requiredGithubLogin).toBe('@neo-gemini-julia');
+        expect(result.properties.sourceAgentIdentities).toEqual(['@neo-opus-ada', '@neo-opus-vega']);
         expect(result.properties.userId).toBe('neo-opus-ada');
 
         // Historical prose is intentionally preserved; only identity-keyed metadata changes.
@@ -246,11 +248,11 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
             }
         });
         insertNode(db, {
-            id  : '@neo-gpt',
+            id  : '@neo-opus-vega',
             data: {
-                id        : '@neo-gpt',
+                id        : '@neo-opus-vega',
                 label     : 'AgentIdentity',
-                properties: {githubLogin: '@neo-gpt'}
+                properties: {githubLogin: '@neo-opus-vega'}
             }
         });
         insertNode(db, {
@@ -271,12 +273,12 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
             id     : 'edge-old-duplicate',
             user_id: 'neo-opus-4-7',
             source : '@neo-opus-4-7',
-            target : '@neo-gpt',
+            target : '@neo-opus-vega',
             type   : 'SENT_TO',
             data   : {
                 id        : 'edge-old-duplicate',
                 source    : '@neo-opus-4-7',
-                target    : '@neo-gpt',
+                target    : '@neo-opus-vega',
                 type      : 'SENT_TO',
                 properties: {userId: 'neo-opus-4-7'}
             }
@@ -284,12 +286,12 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
         insertEdge(db, {
             id    : 'edge-canonical-duplicate',
             source: '@neo-opus-ada',
-            target: '@neo-gpt',
+            target: '@neo-opus-vega',
             type  : 'SENT_TO',
             data  : {
                 id        : 'edge-canonical-duplicate',
                 source    : '@neo-opus-ada',
-                target    : '@neo-gpt',
+                target    : '@neo-opus-vega',
                 type      : 'SENT_TO',
                 properties: {userId: 'neo-opus-ada'}
             }
@@ -297,12 +299,12 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
         insertEdge(db, {
             id     : 'edge-inbound',
             user_id: 'neo-opus-4-7',
-            source : '@neo-gpt',
+            source : '@neo-opus-vega',
             target : '@neo-opus-4-7',
             type   : 'MENTIONS',
             data   : {
                 id        : 'edge-inbound',
-                source    : '@neo-gpt',
+                source    : '@neo-opus-vega',
                 target    : '@neo-opus-4-7',
                 type      : 'MENTIONS',
                 properties: {
@@ -333,7 +335,7 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
 
         const inbound = db.prepare('SELECT user_id, source, target, data FROM Edges WHERE id = ?').get('edge-inbound');
         expect(inbound.user_id).toBe('neo-opus-ada');
-        expect(inbound.source).toBe('@neo-gpt');
+        expect(inbound.source).toBe('@neo-opus-vega');
         expect(inbound.target).toBe('@neo-opus-ada');
 
         const inboundData = JSON.parse(inbound.data);
@@ -367,8 +369,8 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
                             userId             : 'neo-opus-4-7'
                         },
                         {
-                            participatingAgents: '@neo-gpt',
-                            userId             : 'neo-gpt'
+                            participatingAgents: '@neo-opus-vega',
+                            userId             : 'neo-opus-vega'
                         }
                     ]
                 };
@@ -383,9 +385,128 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
             id      : 'memory-1',
             metadata: {
                 bodyText           : 'document prose keeps @neo-gemini-3-1-pro',
-                participatingAgents: '@neo-opus-ada,@neo-gpt',
+                participatingAgents: '@neo-opus-ada,@neo-gpt-euclid',
                 userId             : 'neo-opus-ada'
             }
         });
+    });
+
+    test('first-seat pairs rewrite whole handles once: no prefix chaining, siblings and addresses stay, chains resolve, a second pass is a no-op', () => {
+        const cases = [
+            ['@neo-fable',                        '@neo-fable-mnemosyne'],
+            ['neo-fable',                         'neo-fable-mnemosyne'],
+            ['@neo-gpt',                          '@neo-gpt-euclid'],
+            ['@neo-gemini-pro',                   '@neo-gemini-julia'],
+            ['@neo-gemini-3-1-pro',               '@neo-gemini-julia'],
+            ['neo-gemini-3-1-pro',                'neo-gemini-julia'],
+            ['@neo-fable-clio',                   '@neo-fable-clio'],
+            ['@neo-gpt-emmy',                     '@neo-gpt-emmy'],
+            ['neo-gpt-sophie',                    'neo-gpt-sophie'],
+            ['neo-gemini-maryam',                 'neo-gemini-maryam'],
+            ['@neo-fable-mnemosyne',              '@neo-fable-mnemosyne'],
+            ['neo-fable@neomjs.com',              'neo-fable@neomjs.com'],
+            ['AGENT:@neo-gpt',                    'AGENT:@neo-gpt-euclid'],
+            ['identity-state-@neo-fable',         'identity-state-@neo-fable-mnemosyne'],
+            ['@neo-opus-4-7, @neo-gpt',           '@neo-opus-ada, @neo-gpt-euclid'],
+            ['@neo-gemini-pro,@neo-fable-clio',   '@neo-gemini-julia,@neo-fable-clio']
+        ];
+
+        for (const [input, expected] of cases) {
+            const once = rewriteIdentityString(input);
+            expect(once, input).toBe(expected);
+            expect(rewriteIdentityString(once), `second pass over ${once}`).toBe(expected);
+        }
+    });
+
+    test('a first seat moves once through the graph: node, edges and user_id follow, a sibling seat stays byte-identical, a second apply changes nothing', () => {
+        const db = new Database(':memory:');
+        createGraphSchema(db);
+
+        insertNode(db, {
+            id     : '@neo-gpt',
+            user_id: 'neo-gpt',
+            data   : {
+                id        : '@neo-gpt',
+                label     : 'AgentIdentity',
+                properties: {createdAt: '2026-04-30T00:00:00.000Z', githubLogin: '@neo-gpt', userId: 'neo-gpt'}
+            }
+        });
+        insertNode(db, {
+            id     : '@neo-gpt-emmy',
+            user_id: 'neo-gpt-emmy',
+            data   : {
+                id        : '@neo-gpt-emmy',
+                label     : 'AgentIdentity',
+                properties: {githubLogin: '@neo-gpt-emmy', userId: 'neo-gpt-emmy'}
+            }
+        });
+        insertNode(db, {
+            id     : 'MESSAGE:2',
+            user_id: 'neo-gpt',
+            data   : {
+                id        : 'MESSAGE:2',
+                label     : 'MESSAGE',
+                properties: {
+                    deliveredTo: ['@neo-gpt-emmy'],
+                    sentBy     : '@neo-gpt',
+                    subject    : 'Euclid (@neo-gpt) wrote this',
+                    userId     : 'neo-gpt'
+                }
+            }
+        });
+        insertEdge(db, {
+            id     : 'edge-first-seat',
+            user_id: 'neo-gpt',
+            source : '@neo-gpt',
+            target : '@neo-gpt-emmy',
+            type   : 'SENT_TO',
+            data   : {
+                id        : 'edge-first-seat',
+                source    : '@neo-gpt',
+                target    : '@neo-gpt-emmy',
+                type      : 'SENT_TO',
+                properties: {userId: 'neo-gpt'}
+            }
+        });
+
+        const siblingBefore = db.prepare('SELECT user_id, data FROM Nodes WHERE id = ?').get('@neo-gpt-emmy');
+
+        const first = runGraphMigration(db, true);
+        expect(first).toMatchObject({nodesInserted: 1, nodesDeleted: 1, edgesRewritten: 1, duplicateCollisions: 0});
+
+        expect(db.prepare('SELECT id FROM Nodes WHERE id = ?').get('@neo-gpt')).toBeUndefined();
+
+        const renamed     = db.prepare('SELECT user_id, data FROM Nodes WHERE id = ?').get('@neo-gpt-euclid');
+        const renamedData = JSON.parse(renamed.data);
+        expect(renamed.user_id).toBe('neo-gpt-euclid');
+        expect(renamedData.properties.githubLogin).toBe('@neo-gpt-euclid');
+        expect(renamedData.properties.createdAt).toBe('2026-04-30T00:00:00.000Z');
+
+        expect(db.prepare('SELECT user_id, data FROM Nodes WHERE id = ?').get('@neo-gpt-emmy')).toEqual(siblingBefore);
+
+        const edge = db.prepare('SELECT user_id, source, target, data FROM Edges WHERE id = ?').get('edge-first-seat');
+        expect([edge.user_id, edge.source, edge.target]).toEqual(['neo-gpt-euclid', '@neo-gpt-euclid', '@neo-gpt-emmy']);
+        expect(JSON.parse(edge.data).target).toBe('@neo-gpt-emmy');
+
+        const message     = db.prepare('SELECT user_id, data FROM Nodes WHERE id = ?').get('MESSAGE:2');
+        const messageData = JSON.parse(message.data);
+        expect(message.user_id).toBe('neo-gpt-euclid');
+        expect(messageData.properties.sentBy).toBe('@neo-gpt-euclid');
+        expect(messageData.properties.deliveredTo).toEqual(['@neo-gpt-emmy']);
+        expect(messageData.properties.subject).toBe('Euclid (@neo-gpt) wrote this');
+
+        const second = runGraphMigration(db, true);
+        expect(second).toMatchObject({
+            duplicateCollisions    : 0,
+            edgeMetadataRowsUpdated: 0,
+            edgesDropped           : 0,
+            edgesRewritten         : 0,
+            nodeMetadataRowsUpdated: 0,
+            nodesDeleted           : 0,
+            nodesInserted          : 0,
+            nodesMerged            : 0
+        });
+
+        db.close();
     });
 });
