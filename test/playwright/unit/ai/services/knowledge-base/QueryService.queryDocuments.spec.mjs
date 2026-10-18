@@ -514,4 +514,20 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
                 .toContain('filename:GraphService.mjs')
         }
     });
+
+    test('inferSourceType classifies repository-qualified corpus paths and retires resources/content/ prefix rules (#459)', () => {
+        expect(QueryService.inferSourceType('neo/issues/chunk-1/issue-459.md')).toBe('ticket');
+        expect(QueryService.inferSourceType('neo-agent-brain/archive/issues/v1.0.0/chunk-1/issue-1.md')).toBe('ticket');
+        expect(QueryService.inferSourceType('neo/discussions/discussion-19835.md')).toBe('discussion');
+        expect(QueryService.inferSourceType('neo/archive/discussions/v13.0.0/discussion-10137.md')).toBe('discussion');
+        expect(QueryService.inferSourceType('neo-agent-brain/pulls/pr-1093.md')).toBe('pull');
+        expect(QueryService.inferSourceType('neo/archive/pulls/v13.0.0/pr-100.md')).toBe('pull');
+        expect(QueryService.inferSourceType('neo/release-notes/v13.0.0.md')).toBe('release');
+        expect(QueryService.inferSourceType('.github/RELEASE_NOTES/v13.2.0.md')).toBe('release');
+
+        // Retired pre-split checkout paths no longer classify as corpus types
+        expect(QueryService.inferSourceType('resources/content/issues/issue-1.md')).toBe('raw');
+        expect(QueryService.inferSourceType('resources/content/discussions/discussion-1.md')).toBe('raw');
+        expect(QueryService.inferSourceType('resources/content/pulls/pr-1.md')).toBe('raw');
+    });
 });

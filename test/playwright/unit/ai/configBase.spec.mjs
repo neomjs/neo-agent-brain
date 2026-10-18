@@ -289,16 +289,30 @@ test.describe('fleet.port — the domain type, not the generic one', () => {
 });
 
 test.describe('fleet.contentRoot — the activity feed reads a declared root, never a hardwired checkout path', () => {
-    // devFleetServer resolved `<projectRoot>/resources/content/{issues,pulls}` at both wiring
-    // sites. A Brain checkout carries no `resources/content` post-split, so the PR/lane slot died with
-    // ENOENT unless a symlink pointed at the engine tree. The leaf keeps that path as the default for
-    // self-contained checkouts and lets a deployment name the corpus root through one env.
+    // A Brain checkout carries no `resources/content` post-split, so `fleet.contentRoot` defaults to
+    // empty string `''` and deployments declare their materialized corpus root via `NEO_FLEET_CONTENT_ROOT`.
     const contentRootLeaf = () => ConfigBase.config.data.fleet.contentRoot;
 
-    test('declares the string type, the env name and the checkout-relative default', () => {
+    test('declares the string type, the env name and the empty unconfigured default', () => {
         expect(contentRootLeaf().type).toBe('string');
         expect(contentRootLeaf().env).toBe('NEO_FLEET_CONTENT_ROOT');
-        expect(contentRootLeaf().default).toBe(path.resolve(ConfigBase.config.data.projectRoot.default, 'resources/content'));
+        expect(contentRootLeaf().default).toBe('');
+    });
+
+    test('wireFleetActivityReadSource refuses pr-lane slot naming fleet.contentRoot / NEO_FLEET_CONTENT_ROOT when unconfigured', async () => {
+        const {wireFleetActivityReadSource} = await import('../../../../ai/services/fleet/wireFleetActivityReadSource.mjs');
+        const bridge                        = {};
+        const source                        = wireFleetActivityReadSource({
+            bridge,
+            contentRoot : '',
+            listMessages: async () => ({messages: []})
+        });
+
+        expect(source).toBeTruthy();
+        const snapshot = await source.readActivitySnapshot();
+        expect(snapshot.capability.state).toBe('degraded');
+        expect(snapshot.capability.reason).toMatch(/fleet\.contentRoot \/ NEO_FLEET_CONTENT_ROOT/);
+        expect(snapshot.capability.reason).not.toMatch(/resources\/content/);
     });
 
     test('the in-process wiring site reads the leaf at the use site, the plane branch reads the plane — no content literal remains', () => {

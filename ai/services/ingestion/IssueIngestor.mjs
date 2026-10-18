@@ -1,22 +1,21 @@
-import fs                                        from 'fs';
-import path                                      from 'path';
-import * as yaml                                 from 'js-yaml';
-import {fileURLToPath}                           from 'url';
-import crypto                                    from 'crypto';
-import Base                                      from 'neo.mjs/src/core/Base.mjs';
-import { Memory_StorageRouter as StorageRouter } from '../../services.mjs';
-import { Memory_GraphService as GraphService }   from '../../services.mjs';
-import logger                                    from '../../mcp/server/memory-core/logger.mjs';
-import {IDENTITIES}                              from '../../graph/identityRoots.mjs';
-import {CORPUS_PROJECTION_OWNER}                 from '../graph/corpusProjectionContract.mjs';
+import fs        from 'fs';
+import path      from 'path';
+import * as yaml from 'js-yaml';
+import crypto    from 'crypto';
+import Base      from 'neo.mjs/src/core/Base.mjs';
+import {
+    Memory_Config as aiConfig,
+    Memory_GraphService as GraphService,
+    Memory_StorageRouter as StorageRouter
+} from '../../services.mjs';
+import logger                    from '../../mcp/server/memory-core/logger.mjs';
+import {IDENTITIES}              from '../../graph/identityRoots.mjs';
+import {CORPUS_PROJECTION_OWNER} from '../graph/corpusProjectionContract.mjs';
 import {
     normalizeDiscussionRoutingProjection as normalizeSourceDiscussionRoutingProjection
 } from '../github-workflow/shared/discussionRoutingDisposition.mjs';
 
-const __filename           = fileURLToPath(import.meta.url);
-const __dirname            = path.dirname(__filename);
-const DEFAULT_CONTENT_ROOT = path.resolve(__dirname, '../../../resources/content');
-const PULL_GAP_LABELS      = Object.freeze(['KB_GAP', 'TOOLING_GAP', 'RETROSPECTIVE']);
+const PULL_GAP_LABELS = Object.freeze(['KB_GAP', 'TOOLING_GAP', 'RETROSPECTIVE']);
 
 /**
  * @summary Loads the source revision's exact path→provider-id map for one corpus facet.
@@ -275,6 +274,29 @@ class IssueIngestor extends Base {
     }
 
     /**
+     * Resolves the materialized corpus root from an explicit argument or `orchestrator.corpusProjection`,
+     * refusing when neither is configured.
+     * @param {String} [contentRoot]
+     * @param {String} methodName
+     * @returns {String}
+     * @private
+     */
+    #resolveContentRoot(contentRoot, methodName) {
+        if (typeof contentRoot === 'string' && contentRoot.trim().length > 0) {
+            return contentRoot;
+        }
+
+        if (aiConfig.orchestrator.corpusProjection.enabled && aiConfig.orchestrator.corpusProjection.materializedRoot) {
+            return aiConfig.orchestrator.corpusProjection.materializedRoot;
+        }
+
+        throw new Error(
+            `IssueIngestor#${methodName}: no contentRoot supplied and orchestrator.corpusProjection.enabled is false ` +
+            '(set orchestrator.corpusProjection.enabled / orchestrator.corpusProjection.materializedRoot or pass contentRoot).'
+        );
+    }
+
+    /**
      * @summary Parses the local file system for markdown files and explicitly syncs their state
      * into the Native Graph database. Re-asserts edge weights for OPEN issues, heavily discounting
      * any nodes structurally blocked via BLOCKED_BY relationships to prevent GraphRAG hallucinations.
@@ -282,7 +304,7 @@ class IssueIngestor extends Base {
      * Each ISSUE node carries its `author` login and its `assignees` logins, an empty list when none
      * hold it, so the next sync after an unassignment replaces the old holders.
      * @param {Object} [options]
-     * @param {String} [options.contentRoot=DEFAULT_CONTENT_ROOT] Exact-revision materialized corpus root.
+     * @param {String} [options.contentRoot] Exact-revision materialized corpus root.
      * @param {Boolean} [options.strict=false] True rejects any otherwise-swallowed facet error so a
      * projection receipt can advance only after error-free completion.
      * @param {Boolean} [options.reconcile=false] True deletes source-absent ISSUE rows/vectors.
@@ -290,11 +312,12 @@ class IssueIngestor extends Base {
      * @returns {Promise<Object[]>} Returns only the OPEN issues for synthesis.
      */
     async ingestIssueStates({
-        contentRoot = DEFAULT_CONTENT_ROOT,
+        contentRoot,
         strict = false,
         reconcile = false,
         projectionContext = null
     } = {}) {
+        contentRoot       = this.#resolveContentRoot(contentRoot, 'ingestIssueStates');
         projectionContext = normalizeProjectionContext(projectionContext, reconcile);
         const projectionMetadata = getProjectionMetadata(projectionContext);
         const targetPaths        = [
@@ -526,18 +549,19 @@ class IssueIngestor extends Base {
      * @summary Extracts Ideation Sandbox Discussion content to drive semantic and structural context.
      * Searches both active and archived discussion directories recursively.
      * @param {Object} [options]
-     * @param {String} [options.contentRoot=DEFAULT_CONTENT_ROOT] Exact-revision materialized corpus root.
+     * @param {String} [options.contentRoot] Exact-revision materialized corpus root.
      * @param {Boolean} [options.strict=false] True rejects directory/frontmatter errors for truthful facet completion.
      * @param {Boolean} [options.reconcile=false] True deletes source-absent DISCUSSION rows/vectors.
      * @param {Object|null} [options.projectionContext=null] Exact source identity stamped on produced rows.
      * @returns {Promise<void>}
      */
     async ingestDiscussionStates({
-        contentRoot = DEFAULT_CONTENT_ROOT,
+        contentRoot,
         strict = false,
         reconcile = false,
         projectionContext = null
     } = {}) {
+        contentRoot       = this.#resolveContentRoot(contentRoot, 'ingestDiscussionStates');
         projectionContext = normalizeProjectionContext(projectionContext, reconcile);
         const projectionMetadata = getProjectionMetadata(projectionContext);
         const targetPaths        = [
@@ -720,18 +744,19 @@ class IssueIngestor extends Base {
      * `author` login, and `assignees` only where the synced frontmatter holds that key: an absent key
      * projects nothing rather than an empty list the corpus never asserted.
      * @param {Object} [options]
-     * @param {String} [options.contentRoot=DEFAULT_CONTENT_ROOT] Exact-revision materialized corpus root.
+     * @param {String} [options.contentRoot] Exact-revision materialized corpus root.
      * @param {Boolean} [options.strict=false] True rejects directory/frontmatter errors for truthful facet completion.
      * @param {Boolean} [options.reconcile=false] True deletes source-absent PR and PR-gap graph rows.
      * @param {Object|null} [options.projectionContext=null] Exact source identity stamped on produced rows.
      * @returns {Promise<void>}
      */
     async ingestPullRequestFeedback({
-        contentRoot = DEFAULT_CONTENT_ROOT,
+        contentRoot,
         strict = false,
         reconcile = false,
         projectionContext = null
     } = {}) {
+        contentRoot       = this.#resolveContentRoot(contentRoot, 'ingestPullRequestFeedback');
         projectionContext = normalizeProjectionContext(projectionContext, reconcile);
         const projectionMetadata = getProjectionMetadata(projectionContext);
         const targetPaths        = [

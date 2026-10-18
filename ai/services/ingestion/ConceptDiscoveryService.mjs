@@ -447,10 +447,16 @@ class ConceptDiscoveryService extends Base {
      * @protected
      */
     async loadEpicSources() {
-        const corpusRoot = aiConfig.orchestrator.corpusProjection.enabled
-            ? aiConfig.orchestrator.corpusProjection.materializedRoot
-            : path.resolve(aiConfig.projectRoot, 'resources/content');
-        const issuesDir = this.issuesDir || path.resolve(corpusRoot, 'issues');
+        let issuesDir = this.issuesDir;
+        if (!issuesDir) {
+            if (!aiConfig.orchestrator.corpusProjection.enabled || !aiConfig.orchestrator.corpusProjection.materializedRoot) {
+                throw new Error(
+                    'ConceptDiscoveryService#loadEpicSources: the core corpus projection is disabled on this plane ' +
+                    '(orchestrator.corpusProjection.enabled); cannot resolve issues from orchestrator.corpusProjection.materializedRoot.'
+                );
+            }
+            issuesDir = path.resolve(aiConfig.orchestrator.corpusProjection.materializedRoot, 'issues');
+        }
 
         try {
             await fs.promises.access(issuesDir);
@@ -502,10 +508,16 @@ class ConceptDiscoveryService extends Base {
      * @protected
      */
     async loadPullRequestSources() {
-        const corpusRoot = aiConfig.orchestrator.corpusProjection.enabled
-            ? aiConfig.orchestrator.corpusProjection.materializedRoot
-            : path.resolve(aiConfig.projectRoot, 'resources/content');
-        const pullsDir = this.pullsDir || path.resolve(corpusRoot, 'pulls');
+        let pullsDir = this.pullsDir;
+        if (!pullsDir) {
+            if (!aiConfig.orchestrator.corpusProjection.enabled || !aiConfig.orchestrator.corpusProjection.materializedRoot) {
+                throw new Error(
+                    'ConceptDiscoveryService#loadPullRequestSources: the core corpus projection is disabled on this plane ' +
+                    '(orchestrator.corpusProjection.enabled); cannot resolve pulls from orchestrator.corpusProjection.materializedRoot.'
+                );
+            }
+            pullsDir = path.resolve(aiConfig.orchestrator.corpusProjection.materializedRoot, 'pulls');
+        }
 
         try {
             await fs.promises.access(pullsDir);

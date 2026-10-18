@@ -2291,7 +2291,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         try {
             // Real IssueIngestor control flow: SQLite commits first, the Chroma write rejects later,
             // the per-item catch swallows it, and the facet returns normally without this open issue.
-            const projected = await IssueIngestor.ingestIssueStates();
+            const projected = await IssueIngestor.ingestIssueStates({contentRoot: '/mock/resources/content'});
             const persisted = GraphService.db.storage.db.prepare('SELECT data FROM Nodes WHERE id = ?').get(issueId);
 
             expect(projected).toEqual([]);
@@ -3294,6 +3294,15 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect(handoffContent).toContain(issueId);
         expect(handoffContent).toContain(openId);        // open discussions are now actionable (converge-to-drive)
         expect(computedSection).not.toContain(closedId); // closed discussions excluded by the state='OPEN' gate
+    });
+
+    test('resolveIssuesDir refuses naming orchestrator.corpusProjection.enabled when no issuesDir is supplied and projection is disabled (#459)', () => {
+        const Synthesizer = GoldenPathSynthesizer.constructor;
+
+        expect(() => Synthesizer.resolveIssuesDir()).toThrow(
+            /GoldenPathSynthesizer#resolveIssuesDir:.*orchestrator\.corpusProjection\.enabled.*orchestrator\.corpusProjection\.materializedRoot/
+        );
+        expect(Synthesizer.resolveIssuesDir('/tmp/declared/issues')).toBe('/tmp/declared/issues');
     });
 
     test('renderConsolidationGapsSection surfaces undigested sessions visibly (#13807)', async () => {

@@ -72,9 +72,12 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
             metadata: {type: 'ai-infrastructure'}
         })).toBe(aiConfig.neoRootDir);
         expect(SearchService.resolveLocalReferenceRoot({
-            source  : 'resources/content/issues/issue-1.md',
+            source  : 'neo/issues/chunk-1/issue-1.md',
             metadata: {type: 'ticket'}
         })).toBe(aiConfig.projectRoot);
+        expect(SearchService.resolveLocalReferenceRoot({
+            source: 'resources/content/issues/issue-1.md'
+        })).toBe(aiConfig.neoRootDir);
         expect(SearchService.resolveLocalReferenceRoot({
             source: '.github/RELEASE_NOTES/v13.2.0.md'
         })).toBe(aiConfig.projectRoot)
@@ -638,11 +641,9 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
     });
 
     test('the CONSTRUCTED service published the queue it handed over — the production edge', async () => {
-        // Third round on one defect, and the shape is the lesson: each previous fix asserted the
-        // newly-extracted pure function while the unwitnessed edge moved UP to its caller.
-        //   round 1: asserted buildAskRequestQueue().capacity  -> removing the injection stayed green
-        //   round 2: asserted buildAskChatModelOptions()       -> removing the CALL from construct stayed green
-        // Both proved a builder. Neither proved THIS SERVICE composed anything.
+        // Asserting `buildAskRequestQueue().capacity` or `buildAskChatModelOptions()` in isolation only
+        // proves the pure builder helper; it does not prove that `construct` called the builder or
+        // injected the resulting queue into the service instance.
         //
         // `askRequestQueue` is published off the SAME options object handed to `buildChatModel`, so it
         // is a receipt of what actually travelled rather than a second construction. Bypass the call in

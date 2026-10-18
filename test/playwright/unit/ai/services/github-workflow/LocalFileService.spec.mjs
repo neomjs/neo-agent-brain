@@ -25,12 +25,17 @@ test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index
     let aiConfig;
     let originalContentRootOverride;
     let testRoot;
+    let unconfiguredIssueResult;
+    let unconfiguredDiscussionResult;
 
     test.beforeAll(async () => {
-        aiConfig = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
+        aiConfig         = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
+        LocalFileService = (await import('../../../../../../ai/services/github-workflow/LocalFileService.mjs')).default;
 
-        // Capture original paths
-        originalContentRootOverride = aiConfig.issueSync.contentRootOverride;
+        // Capture original paths and verify unconfigured refusal before testRoot override is installed
+        originalContentRootOverride  = aiConfig.issueSync.contentRootOverride;
+        unconfiguredIssueResult      = await LocalFileService.getIssueById('11100');
+        unconfiguredDiscussionResult = await LocalFileService.getDiscussionById('10137');
 
         // Create isolated test root
         testRoot = path.join(os.tmpdir(), `neo-localfileservice-test-${Date.now()}`);
@@ -39,8 +44,6 @@ test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index
         await fs.ensureDir(aiConfig.issueSync.issuesDir);
         await fs.ensureDir(aiConfig.issueSync.archiveRoot);
         await fs.ensureDir(aiConfig.issueSync.discussionsDir);
-
-        LocalFileService = (await import('../../../../../../ai/services/github-workflow/LocalFileService.mjs')).default;
     });
 
     test.afterAll(async () => {
@@ -55,6 +58,21 @@ test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index
         await fs.emptyDir(aiConfig.issueSync.archiveRoot).catch(() => {});
         await fs.emptyDir(aiConfig.issueSync.discussionsDir).catch(() => {});
         await fs.remove(path.join(testRoot, '_index.json')).catch(() => {});
+    });
+
+    test('refuses with CONTENT_ROOT_UNCONFIGURED naming issueSync.contentRootOverride / NEO_MCP_GITHUB_CONTENT_ROOT when no corpus root is configured', () => {
+        expect(unconfiguredIssueResult).toMatchObject({
+            code : 'CONTENT_ROOT_UNCONFIGURED',
+            error: 'Content root not configured'
+        });
+        expect(unconfiguredIssueResult.message).toMatch(/issueSync\.contentRootOverride \/ NEO_MCP_GITHUB_CONTENT_ROOT/);
+        expect(unconfiguredIssueResult.message).not.toMatch(/resources\/content/);
+
+        expect(unconfiguredDiscussionResult).toMatchObject({
+            code : 'CONTENT_ROOT_UNCONFIGURED',
+            error: 'Content root not configured'
+        });
+        expect(unconfiguredDiscussionResult.message).toMatch(/issueSync\.contentRootOverride \/ NEO_MCP_GITHUB_CONTENT_ROOT/);
     });
 
     test('getIssueById finds active issue via _index.json', async () => {

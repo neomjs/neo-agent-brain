@@ -6,7 +6,6 @@ const __filename     = fileURLToPath(import.meta.url);
 const __dirname      = path.dirname(__filename);
 const packageRoot    = path.resolve(__dirname, '../../../../');
 const projectRoot    = process.cwd() === '/' ? packageRoot : process.cwd();
-const contentRoot    = path.resolve(projectRoot, 'resources/content');
 const validLogLevels = ['error', 'warn', 'info', 'log', 'debug'];
 
 function parseLogLevel(envVarName, {env = process.env, warn = console.warn} = {}) {
@@ -325,32 +324,34 @@ class ConfigBase extends ConfigProvider {
         /**
          * @summary Resolves GitHub corpus paths from the one relocatable content-root parent.
          *
-         * Corpus-only emission must declare `contentRootOverride` and writes beneath its repository
-         * child. Ordinary invocation retains the existing checkout layout for Portal/SEO compatibility.
-         * Logical index identity remains repository-qualified in both modes. Each child is a genuine
-         * reactive derivation from that parent; the matching `*Override` leaf is the sole escape hatch.
+         * Corpus emission and local markdown reads must declare `contentRootOverride` (or the matching
+         * `*Override` leaf) and resolve beneath its repository child. When `contentRootOverride` is unset,
+         * corpus path formulas evaluate to empty string `''` rather than fabricating a checkout-relative
+         * `resources/content` path.
          */
         formulas: {
             // Metadata stores target-relative paths. In corpus-only mode the target is the declared
             // corpus checkout, while ordinary operation retains the module-time checkout anchor.
             'issueSync.metadataBaseRoot': data => data.issueSync.contentRootOverride ?? data.projectRoot,
-            'issueSync.contentRoot': data => data.issueSync.contentRootOverride ?? contentRoot,
-            'issueSync.corpusLeaseFile': data => path.resolve(data.issueSync.contentRoot, '.corpus-sync.lock'),
+            'issueSync.contentRoot'     : data => data.issueSync.contentRootOverride ?? '',
+            'issueSync.corpusLeaseFile' : data => data.issueSync.contentRoot
+                ? path.resolve(data.issueSync.contentRoot, '.corpus-sync.lock')
+                : '',
             'issueSync.originRoot' : data => data.issueSync.contentRootOverride
                 ? path.resolve(data.issueSync.contentRootOverride, data.repo)
-                : contentRoot,
+                : '',
             'issueSync.issuesDir': data => data.issueSync.issuesDirOverride ??
-                path.resolve(data.issueSync.originRoot, 'issues'),
+                (data.issueSync.originRoot ? path.resolve(data.issueSync.originRoot, 'issues') : ''),
             'issueSync.archiveRoot': data => data.issueSync.archiveRootOverride ??
-                path.resolve(data.issueSync.originRoot, 'archive'),
+                (data.issueSync.originRoot ? path.resolve(data.issueSync.originRoot, 'archive') : ''),
             'issueSync.discussionsDir': data => data.issueSync.discussionsDirOverride ??
-                path.resolve(data.issueSync.originRoot, 'discussions'),
+                (data.issueSync.originRoot ? path.resolve(data.issueSync.originRoot, 'discussions') : ''),
             'issueSync.pullsDir': data => data.issueSync.pullsDirOverride ??
-                path.resolve(data.issueSync.originRoot, 'pulls'),
+                (data.issueSync.originRoot ? path.resolve(data.issueSync.originRoot, 'pulls') : ''),
             'issueSync.metadataFile': data => data.issueSync.metadataFileOverride ??
-                path.resolve(data.issueSync.originRoot, '.sync-metadata.json'),
+                (data.issueSync.originRoot ? path.resolve(data.issueSync.originRoot, '.sync-metadata.json') : ''),
             'issueSync.releaseNotesDir': data => data.issueSync.releaseNotesDirOverride ??
-                path.resolve(data.issueSync.originRoot, 'release-notes')
+                (data.issueSync.originRoot ? path.resolve(data.issueSync.originRoot, 'release-notes') : '')
         }
     }
 }

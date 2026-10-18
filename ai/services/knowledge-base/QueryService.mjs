@@ -832,24 +832,28 @@ class QueryService extends Base {
 
     /**
      * @summary Infers the public KB type for a local source path.
-     * @param {String} source Source path relative to `neoRootDir`.
+     * @param {String} source Source path relative to `neoRootDir` or the declared corpus root.
      * @returns {String} Best-effort content type.
      */
     inferSourceType(source) {
         if (source.startsWith('learn/')) return 'guide';
         if (source.startsWith('.agents/skills/')) return 'skill';
         if (source.startsWith('test/')) return 'test';
-        if (source.startsWith('resources/content/issues/') || source.startsWith('resources/content/archive/issues/')) return 'ticket';
-        if (source.startsWith('resources/content/discussions/') || source.startsWith('resources/content/archive/discussions/')) return 'discussion';
-        if (source.startsWith('resources/content/pulls/') || source.startsWith('resources/content/archive/pulls/')) return 'pull';
-        if (source.startsWith('resources/content/release-notes/') || source.startsWith('.github/RELEASE_NOTES/')) return 'release';
+        if (source.startsWith('.github/RELEASE_NOTES/')) return 'release';
 
         const apiSources = aiConfig.sourcePaths.ApiSource || [];
         const match      = apiSources.find(({path: sourceRoot}) =>
             source === sourceRoot || source.startsWith(`${sourceRoot}/`)
         );
 
-        return match?.type ?? 'raw';
+        if (match?.type) return match.type;
+
+        if (/^[^/]+\/(?:archive\/)?issues\//.test(source)) return 'ticket';
+        if (/^[^/]+\/(?:archive\/)?discussions\//.test(source)) return 'discussion';
+        if (/^[^/]+\/(?:archive\/)?pulls\//.test(source)) return 'pull';
+        if (/^[^/]+\/release-notes\//.test(source)) return 'release';
+
+        return 'raw';
     }
 
     /**

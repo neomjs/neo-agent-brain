@@ -333,13 +333,14 @@ class ConfigBase extends ConfigProvider {
                 /**
                  * Root of the synced GitHub conversation tree the cockpit's activity feed reads:
                  * `<root>/issues` + `<root>/pulls`, the single-origin layout `neomjs/github-content-sync`
-                 * publishes under `neo/`. The default is the pre-split checkout-relative engine tree,
-                 * which a Brain checkout does not carry, so a deployment names the corpus it
-                 * materializes. A root that does not exist degrades the PR/lane slot honestly. Not a
-                 * plane member — a read source, never a data-root path.
+                 * publishes under `neo/`. Empty by default because a Brain checkout does not carry a
+                 * markdown corpus; a deployment must declare the corpus root it materializes via
+                 * `fleet.contentRoot` or `NEO_FLEET_CONTENT_ROOT`. When unconfigured or missing on disk,
+                 * the PR/lane slot degrades honestly naming `fleet.contentRoot` / `NEO_FLEET_CONTENT_ROOT`.
+                 * Not a plane member — a read source, never a data-root path.
                  * @type {string}
                  */
-                contentRoot    : leaf(path.resolve(projectRoot, 'resources/content'), 'NEO_FLEET_CONTENT_ROOT', 'string'),
+                contentRoot    : leaf('', 'NEO_FLEET_CONTENT_ROOT', 'string'),
                 /**
                  * Canonical base of the containerized Agent OS plane the Fleet server's mailbox,
                  * compose, and catch-up seams consume (`<base>/mc/mcp` is derived — the

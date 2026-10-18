@@ -368,6 +368,18 @@ test.describe('Neo.ai.daemons.services.ConceptDiscoveryService', () => {
         expect(sharedLine).not.toContain('from-pr');
     });
 
+    test('loadEpicSources and loadPullRequestSources refuse naming orchestrator.corpusProjection.enabled when no explicit dir is set (#459)', async () => {
+        ConceptDiscoveryService.issuesDir = null;
+        ConceptDiscoveryService.pullsDir  = null;
+
+        await expect(ConceptDiscoveryService.loadEpicSources()).rejects.toThrow(
+            /ConceptDiscoveryService#loadEpicSources:.*orchestrator\.corpusProjection\.enabled.*orchestrator\.corpusProjection\.materializedRoot/
+        );
+        await expect(ConceptDiscoveryService.loadPullRequestSources()).rejects.toThrow(
+            /ConceptDiscoveryService#loadPullRequestSources:.*orchestrator\.corpusProjection\.enabled.*orchestrator\.corpusProjection\.materializedRoot/
+        );
+    });
+
     test('runMessageConceptHarvest uses frequency pre-filter and appends process/MX candidates (#13840)', async () => {
         writeEmptyConceptGraph();
 

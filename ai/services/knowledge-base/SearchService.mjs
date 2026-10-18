@@ -81,11 +81,9 @@ export function buildAskProviderConfigs(config) {
  *
  * The capacity is READ HERE, at the use site. It is never threaded into `buildChatModel` as a value,
  * and `buildChatModel` must not read `AiConfig` itself — Neo/AiConfig imports belong only in
- * thread-entrypoints and the provider layer is not one. Per ADR 0019 B5 + C1 (ticket-ref-ok: the ADR
- * clauses are the authority for this shape; without naming them, "pass maxParallel through" reads
- * like the simpler option instead of a zero-tolerance violation). So the config-derived object is
+ * thread-entrypoints and the provider layer is not one. So the config-derived object is
  * constructed on this side and injected; an injected collaborator is not a threaded config value,
- * which is what keeps this inside B5.
+ * which keeps config resolution at the service boundary rather than threading `maxParallel` through.
  *
  * Exported as a pure function for the same reason as {@link buildAskProviderConfigs}: the capacity
  * wiring is then assertable without booting a service or reaching into a private member.
@@ -335,7 +333,7 @@ class SearchService extends Base {
         }
 
         return primaryRepoHydrationTypes.has(type) ||
-            source.startsWith('resources/content/') || source.startsWith('.github/RELEASE_NOTES/')
+            source.startsWith('.github/RELEASE_NOTES/')
             ? aiConfig.projectRoot
             : aiConfig.neoRootDir
     }

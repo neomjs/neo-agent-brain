@@ -274,6 +274,18 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
         }
     });
 
+    test('refuses ingestIssueStates, ingestDiscussionStates, and ingestPullRequestFeedback naming orchestrator.corpusProjection.enabled when no contentRoot is supplied (#459)', async () => {
+        await expect(IssueIngestor.ingestIssueStates()).rejects.toThrow(
+            /IssueIngestor#ingestIssueStates:.*orchestrator\.corpusProjection\.enabled.*orchestrator\.corpusProjection\.materializedRoot/
+        );
+        await expect(IssueIngestor.ingestDiscussionStates()).rejects.toThrow(
+            /IssueIngestor#ingestDiscussionStates:.*orchestrator\.corpusProjection\.enabled.*orchestrator\.corpusProjection\.materializedRoot/
+        );
+        await expect(IssueIngestor.ingestPullRequestFeedback()).rejects.toThrow(
+            /IssueIngestor#ingestPullRequestFeedback:.*orchestrator\.corpusProjection\.enabled.*orchestrator\.corpusProjection\.materializedRoot/
+        );
+    });
+
     test('ingestIssueStates() maps issues correctly through _index.json', async () => {
         StorageRouter.getGraphCollection = async () => ({
             upsert: async () => {},
@@ -284,7 +296,7 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
         try {
             // Mock out global StorageRouter if it exists, but the ingestor doesn't throw if null
             // we will just see what comes out as returned open issues
-            const result = await IssueIngestor.ingestIssueStates();
+            const result = await IssueIngestor.ingestIssueStates({contentRoot: '/mock/resources/content'});
 
             // Verify that open issue was identified
             expect(result.length).toBe(1);
@@ -304,7 +316,7 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
         });
 
         try {
-            const result       = await IssueIngestor.ingestIssueStates();
+            const result       = await IssueIngestor.ingestIssueStates({contentRoot: '/mock/resources/content'});
             const activeIssue  = result.find(issue => issue.issueId === 'issue-2001');
             const activeUpsert = upserts.find(payload => payload.ids[0] === 'issue-2001');
 
@@ -326,7 +338,7 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
         });
 
         try {
-            await IssueIngestor.ingestDiscussionStates();
+            await IssueIngestor.ingestDiscussionStates({contentRoot: '/mock/resources/content'});
         } finally {
             StorageRouter.getGraphCollection = _originalGetGraphCollection;
         }
@@ -391,7 +403,7 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
         };
 
         try {
-            await IssueIngestor.ingestDiscussionStates();
+            await IssueIngestor.ingestDiscussionStates({contentRoot: '/mock/resources/content'});
         } finally {
             fs.promises.readdir = priorReaddir;
             fs.promises.readFile = priorReadFile;
@@ -415,7 +427,7 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
         };
 
         try {
-            await expect(IssueIngestor.ingestDiscussionStates()).rejects.toThrow('graph persistence failed');
+            await expect(IssueIngestor.ingestDiscussionStates({contentRoot: '/mock/resources/content'})).rejects.toThrow('graph persistence failed');
         } finally {
             GraphService.upsertNode = priorUpsertNode;
             StorageRouter.getGraphCollection = _originalGetGraphCollection;
@@ -431,7 +443,7 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
         });
 
         try {
-            await expect(IssueIngestor.ingestDiscussionStates()).rejects.toThrow('vector persistence failed');
+            await expect(IssueIngestor.ingestDiscussionStates({contentRoot: '/mock/resources/content'})).rejects.toThrow('vector persistence failed');
         } finally {
             StorageRouter.getGraphCollection = _originalGetGraphCollection;
         }
@@ -481,7 +493,7 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
         };
 
         try {
-            await IssueIngestor.ingestDiscussionStates();
+            await IssueIngestor.ingestDiscussionStates({contentRoot: '/mock/resources/content'});
         } finally {
             fs.promises.readdir = priorReaddir;
             fs.promises.readFile = priorReadFile;
@@ -555,7 +567,7 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
     });
 
     test('ingestPullRequestFeedback() creates PR nodes and RESOLVES edges from PR markdown (#12644)', async () => {
-        await IssueIngestor.ingestPullRequestFeedback();
+        await IssueIngestor.ingestPullRequestFeedback({contentRoot: '/mock/resources/content'});
 
         expect(graphNodes.find(node => node.id === 'pr-4001')).toMatchObject({
             id   : 'pr-4001',
@@ -575,7 +587,7 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
     });
 
     test('ingestPullRequestFeedback() keeps review actions non-routing unless mapped to sanctioned tags (#13967)', async () => {
-        await IssueIngestor.ingestPullRequestFeedback();
+        await IssueIngestor.ingestPullRequestFeedback({contentRoot: '/mock/resources/content'});
 
         const prNode            = graphNodes.find(node => node.id === 'pr-4002');
         const retrospectiveNode = graphNodes.find(node =>

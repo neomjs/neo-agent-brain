@@ -51,6 +51,15 @@ class LocalFileService extends Base {
         const idValue      = String(rawId);
         const normalizedId = idValue.startsWith('#') ? idValue.substring(1) : idValue;
 
+        if (!aiConfig.issueSync.contentRoot) {
+            logger.warn(`[LocalFileService] No local corpus root configured for ${label} #${normalizedId}`);
+            return {
+                error  : 'Content root not configured',
+                message: `No local corpus root configured (set issueSync.contentRootOverride / NEO_MCP_GITHUB_CONTENT_ROOT) to read ${label.toLowerCase()} #${normalizedId}. Use live GitHub for current state.`,
+                code   : 'CONTENT_ROOT_UNCONFIGURED'
+            };
+        }
+
         try {
             const index = await readContentIndex(aiConfig.issueSync);
             const entry = findContentIndexEntry(index, {repoSlug: aiConfig.repo, type, id: normalizedId});

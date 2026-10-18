@@ -131,7 +131,7 @@ export function wireFleetActivityReadSource({
 
     const readPrLaneSnapshot = hasProducer
         ? withProducerPrLane(readPrLaneBase, {producer: openWorkProducer})
-        : readPrLaneBase ?? (() => { throw new Error('pr-lane activity source not wired — no contentRoot or issuesDir') });
+        : readPrLaneBase ?? (() => { throw new Error('pr-lane activity source not wired — no contentRoot or issuesDir (set fleet.contentRoot / NEO_FLEET_CONTENT_ROOT)') });
 
     bridge.activitySource = createSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity, limit, laneClaimStore, laneClaimSource});
 

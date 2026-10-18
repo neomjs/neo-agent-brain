@@ -49,6 +49,8 @@ async function importTemplateConfig() {
     }
 }
 
+test.describe.configure({mode: 'serial'});
+
 test.describe('GitHub Workflow MCP Server Config Completeness', () => {
     let ConfigBase, ConfigProvider, originalEnv;
 
@@ -114,7 +116,7 @@ test.describe('GitHub Workflow MCP Server Config Completeness', () => {
         process.env.NEO_MCP_GITHUB_CONTENT_ROOT = '/custom/corpus';
 
         const parentRoot = Neo.ai.Config.getData('projectRoot'),
-              config = Neo.create(ConfigBase);
+              config     = Neo.create(ConfigBase);
 
         try {
             expect(config.getDataConfig('issueSync.archiveRoot').get()).toBe('/custom/archive/path');
@@ -148,7 +150,7 @@ test.describe('GitHub Workflow MCP Server Config Completeness', () => {
                 entrypoint: 'sync-github-workflow',
                 mode      : 'corpus-only'
             })).toMatchObject({
-                ok: false,
+                ok      : false,
                 findings: [{
                     env        : 'NEO_MCP_GITHUB_CONTENT_ROOT',
                     leafPath   : 'issueSync.contentRootOverride',
@@ -156,9 +158,11 @@ test.describe('GitHub Workflow MCP Server Config Completeness', () => {
                     disposition: 'fail-closed'
                 }]
             });
-            expect(missingDestination.getData('issueSync.originRoot')).toBe(
-                missingDestination.getData('issueSync.contentRoot')
-            );
+            expect(missingDestination.getData('issueSync.contentRoot')).toBe('');
+            expect(missingDestination.getData('issueSync.originRoot')).toBe('');
+            expect(missingDestination.getData('issueSync.issuesDir')).toBe('');
+            expect(missingDestination.getData('issueSync.discussionsDir')).toBe('');
+            expect(missingDestination.getData('issueSync.pullsDir')).toBe('');
         } finally {
             missingDestination.destroy();
         }

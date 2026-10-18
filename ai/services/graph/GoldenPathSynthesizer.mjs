@@ -983,6 +983,27 @@ class GoldenPathSynthesizer extends Base {
     }
 
     /**
+     * Resolves the issue corpus directory from an explicit argument or the materialized
+     * corpus projection when enabled, refusing when neither is configured.
+     * @param {String} [issuesDir] Explicit issue corpus directory override.
+     * @returns {String}
+     */
+    static resolveIssuesDir(issuesDir) {
+        if (typeof issuesDir === 'string' && issuesDir.trim().length > 0) {
+            return issuesDir;
+        }
+
+        if (aiConfig.orchestrator.corpusProjection.enabled && aiConfig.orchestrator.corpusProjection.materializedRoot) {
+            return path.resolve(aiConfig.orchestrator.corpusProjection.materializedRoot, 'issues');
+        }
+
+        throw new Error(
+            'GoldenPathSynthesizer#resolveIssuesDir: no issuesDir supplied and orchestrator.corpusProjection.enabled is false ' +
+            '(set orchestrator.corpusProjection.enabled / orchestrator.corpusProjection.materializedRoot or pass issuesDir).'
+        );
+    }
+
+    /**
      * @summary Runs one Golden Path pass: ranks open work against the frontier, writes the handoff and
      * publishes the typed `computed-route.v1` sidecar the handoff renders from.
      *
@@ -999,12 +1020,7 @@ class GoldenPathSynthesizer extends Base {
      */
     async synthesizeGoldenPath({
         repoEnrichmentEnabled = true,
-        issuesDir = path.resolve(
-            aiConfig.orchestrator.corpusProjection.enabled
-                ? aiConfig.orchestrator.corpusProjection.materializedRoot
-                : path.resolve(aiConfig.projectRoot, 'resources/content'),
-            'issues'
-        ),
+        issuesDir,
         now   = new Date(),
         runId = randomUUID()
     } = {}) {
@@ -1355,7 +1371,7 @@ class GoldenPathSynthesizer extends Base {
         if (repoEnrichmentEnabled) {
             try {
                 currentFocusCandidates = this.constructor.buildCurrentFocusCandidates({
-                    issuesDir,
+                    issuesDir: this.constructor.resolveIssuesDir(issuesDir),
                     now
                 });
             } catch (e) {
@@ -1763,7 +1779,7 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
             try {
                 const Synthesizer     = this.constructor;
                 const staleCandidates = Synthesizer.buildStaleAssignmentCandidates({
-                    issuesDir,
+                    issuesDir: Synthesizer.resolveIssuesDir(issuesDir),
                     now
                 });
 
@@ -1779,7 +1795,7 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
             try {
                 const Synthesizer            = this.constructor;
                 const silentThreadCandidates = Synthesizer.buildSilentThreadCandidates({
-                    issuesDir,
+                    issuesDir: Synthesizer.resolveIssuesDir(issuesDir),
                     now,
                     goldenIds
                 });
@@ -1828,9 +1844,9 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
                 const Synthesizer = this.constructor,
                       capturedAt  = now instanceof Date ? now : new Date(now),
                       findings    = Synthesizer.buildWorkGraphStallFindings({
-                          issuesDir,
-                          now: capturedAt,
-                          prs: openPrs
+                          issuesDir: Synthesizer.resolveIssuesDir(issuesDir),
+                          now      : capturedAt,
+                          prs      : openPrs
                       });
 
                 stallFindingsAppend = Synthesizer.renderWorkGraphStallFindingsSection(findings, {capturedAt});
@@ -1843,7 +1859,7 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
         let backlogAppend = '';
         if (repoEnrichmentEnabled) {
             try {
-                const filesRaw       = fs.readdirSync(issuesDir);
+                const filesRaw       = fs.readdirSync(this.constructor.resolveIssuesDir(issuesDir));
                 const mdFiles        = filesRaw.filter(f => f.endsWith('.md'));
                 const openIssuesData = [];
                 for (const file of mdFiles) {
