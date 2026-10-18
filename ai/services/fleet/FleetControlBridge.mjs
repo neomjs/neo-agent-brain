@@ -240,9 +240,10 @@ function taskRefusalOf(error) {
 /**
  * @summary A provisioned start or restart as a domain outcome: the lifecycle record resolves, a refusal
  * its start path names is rejected, a workspace that could not be prepared answers its declared code
- * (never its message, which can carry local paths), and any other failure rethrows. The preparation
- * error is matched by name, so the plan/apply composer keeps its one production caller. A named refusal
- * carries its {@link START_REFUSAL_FIELDS} beside the reason.
+ * (never its message, which can carry local paths) and writes message, artifact and cause to the Fleet
+ * log the reason points at, and any other failure rethrows. The preparation error is matched by name, so
+ * the plan/apply composer keeps its one production caller. A named refusal carries its
+ * {@link START_REFUSAL_FIELDS} beside the reason.
  * @param {Function} start Resolves the agent's lifecycle status.
  * @returns {Promise<Object>} the lifecycle status, or `{status: 'rejected', reason, code?, step?, source?, destination?}`.
  * @private
@@ -252,6 +253,10 @@ async function startOutcome(start) {
         return await start()
     } catch (error) {
         if (error?.name === 'ManagedWorkspacePreparationError' && WORKSPACE_PREPARATION_CODES.includes(error.code)) {
+            // local paths and state only: the artifact never carries file contents or secret values
+            console.warn('[fleet] Start refused:', [error.message, error.artifact && JSON.stringify(error.artifact),
+                error.cause?.message && `cause: ${error.cause.message}`].filter(Boolean).join(' · '));
+
             return {status: 'rejected', reason: `the seat's workspace could not be prepared (${error.code}); the Fleet log names the artifact.`}
         }
 

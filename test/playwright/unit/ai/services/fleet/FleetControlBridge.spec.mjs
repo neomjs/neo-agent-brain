@@ -764,6 +764,10 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         FleetManager.provisionAndStartFn = async () => { throw refusal };
         FleetControlBridge.manager       = FleetManager;
 
+        const warnings = [], warn = console.warn;
+
+        console.warn = (...args) => warnings.push(args.join(' '));
+
         try {
             for (const [method, id, thrown, reason] of [
                 ['startAgent',   'released', null, "agent 'released' was released to its own harness: adopt it to start it here."],
@@ -796,6 +800,20 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
                 expect((await dispatchFleetRequest(createFleetWireRequest('startAgent', 'alice'), FleetControlBridge)).result, code)
                     .toEqual({status: 'rejected', reason: `the seat's workspace could not be prepared (${code}); the Fleet log names the artifact.`})
             }
+
+            // the Fleet log the reason points at names the artifact; the wire still carries the code only
+            const artifact = {path: '/agents/alice/neomjs/neo/.codex/config.toml', status: 'DIVERGENT', ownedKeys: 'mcp_servers."neo-mjs-*"', reason: 'non-transport managed keys differ'};
+
+            refusal = new ManagedWorkspacePreparationError(`prepareManagedAgentWorkspace: refusing at '${artifact.path}'.`, {code: 'FLEET_WORKSPACE_DIVERGENT', artifact});
+            warnings.length = 0;
+
+            const logged = await dispatchFleetRequest(createFleetWireRequest('restartAgent', 'alice'), FleetControlBridge);
+
+            expect(logged.result).toEqual({status: 'rejected', reason: "the seat's workspace could not be prepared (FLEET_WORKSPACE_DIVERGENT); the Fleet log names the artifact."});
+            expect(JSON.stringify(logged)).not.toContain(artifact.path);
+            expect(warnings).toHaveLength(1);
+            expect(warnings[0]).toMatch(/^\[fleet\] Start refused: /);
+            expect(warnings[0]).toContain(JSON.stringify(artifact))
 
             // a memory-import refusal carries its named fields beside the reason, each only when known, and
             // nothing else of the error; a refusal without them answers exactly as before
@@ -831,6 +849,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
                 expect(JSON.stringify(wire)).not.toMatch(/secret|SECRET/)
             }
         } finally {
+            console.warn                     = warn;
             FleetManager.lifecycleService    = null;
             FleetManager.managedRoot         = null;
             FleetManager.provisionAndStartFn = null;
