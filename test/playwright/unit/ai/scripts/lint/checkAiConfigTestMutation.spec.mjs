@@ -4,7 +4,8 @@ import {existsSync, mkdirSync, readFileSync, rmSync, writeFileSync}             
 import path                                                                                                from 'node:path';
 import process                                                                                             from 'node:process';
 import {fileURLToPath}                                                                                     from 'node:url';
-import {findDbPathMutations, findSharedConfigMutations, findCloneCaptures, scanFileContent, ADR_0019_RULES, ALLOWLIST, ESCAPE_MARKER} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {findDbPathMutations, findSharedConfigMutations, findCloneCaptures, scanFileContent, ADR_0019_RULES, ALLOWLIST, ESCAPE_MARKER,
+        CEILINGS_FILE, countWritesByFile, findCeilingBreaches, loadCeilings, tightenCeilings} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {createAdr0019GuardRegistry, validateAdr0019GuardOwnership}                                                  from '../../../../../../ai/scripts/lint/lint-config-template-ssot.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..');
@@ -17,7 +18,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
  * inline escape marker.
  */
 test.describe('check-aiconfig-test-mutation guard', () => {
-    test('B4 is TWO rules sharing ONE catalog id, and only the DB-path subset gates', () => {
+    test('B4 is TWO rules sharing ONE catalog id, and only the DB-path subset gates every hit', () => {
         // A rule labelled `B4` that detects DB paths only made "is B4 enforced?" — asked against
         // the catalog's own table — return a false assurance, which is worse than an absent guard.
         // The full-scope rule therefore exists, is tested, and is honestly marked not-yet-gating.
@@ -552,5 +553,81 @@ test.describe('check-aiconfig-test-mutation guard', () => {
             'const s = "unterminated',
             'aiConfig.database = 1;'
         ].join('\n')).map(h => h.line)).toEqual([2])
+    })
+});
+
+/**
+ * The full B4 scope's count is a burndown, so it reports; its GROWTH gates, per file. These arms pin
+ * the ratchet: a clean file that acquires writes fails, a file at or under its ceiling passes, and the
+ * one tool that edits the ceilings can only lower them.
+ */
+test.describe('check-aiconfig-test-mutation per-file ceiling ratchet', () => {
+    test('a file the ceilings do not name holds none: its first writes breach at ceiling 0', () => {
+        const counts   = countWritesByFile([{file: 'test/a.spec.mjs'}, {file: 'test/a.spec.mjs'}]),
+              breaches = findCeilingBreaches(counts, new Map());
+
+        expect(breaches).toEqual([{file: 'test/a.spec.mjs', count: 2, ceiling: 0}])
+    });
+
+    test('a file at or under its ceiling passes; one above it breaches with both numbers', () => {
+        const ceilings = new Map([['test/at.spec.mjs', 3], ['test/under.spec.mjs', 3], ['test/over.spec.mjs', 3]]),
+              counts   = new Map([['test/at.spec.mjs', 3], ['test/under.spec.mjs', 1], ['test/over.spec.mjs', 4]]);
+
+        expect(findCeilingBreaches(counts, ceilings)).toEqual([{file: 'test/over.spec.mjs', count: 4, ceiling: 3}])
+    });
+
+    test('tightening lowers to the measured count and drops zeros, but never raises or adds', () => {
+        const ceilings = new Map([['test/Session.build.spec.mjs', 5], ['test/converted.spec.mjs', 4], ['test/Session.Summarize.spec.mjs', 2]]),
+              counts   = new Map([['test/Session.build.spec.mjs', 3], ['test/Session.Summarize.spec.mjs', 7], ['test/new.spec.mjs', 1]]);
+
+        // `converted` measured nothing and leaves; `Summarize` keeps its ceiling, so the breach still shows;
+        // `new` is not added, so its first write still breaches at ceiling 0. Code-point sort (`Summarize`
+        // before `build`) matches `[...files].sort()` in the sidecar invariant below.
+        expect([...tightenCeilings(counts, ceilings)]).toEqual([['test/Session.Summarize.spec.mjs', 2], ['test/Session.build.spec.mjs', 3]])
+    });
+
+    test('the sidecar names only existing files, each with a positive whole ceiling, in sorted order', () => {
+        const ceilings = loadCeilings(),
+              files    = [...ceilings.keys()];
+
+        expect(files.length, 'an empty sidecar means the count reached zero; promote the rule then').toBeGreaterThan(0);
+        expect(files, 'the sidecar is generated sorted, so a hand edit shows where it landed').toEqual([...files].sort());
+
+        for (const [file, ceiling] of ceilings) {
+            expect(existsSync(path.join(repoRoot, file)), `${file} no longer exists: --tighten-ceilings drops it`).toBe(true);
+            expect(Number.isInteger(ceiling) && ceiling > 0, `${file} carries ceiling ${ceiling}`).toBe(true)
+        }
+
+        expect(JSON.parse(readFileSync(CEILINGS_FILE, 'utf-8')).$schema.purpose).toContain('ceiling 0')
+    });
+
+    test('CLI: a clean spec that gains shared-config writes fails the build, naming the file, count and ceiling', () => {
+        const checker    = path.join(repoRoot, 'ai/scripts/lint/check-aiconfig-test-mutation.mjs'),
+              fixtureDir = path.join(repoRoot, `test/.tmp-ceiling-${process.pid}`),
+              fixture    = path.join(fixtureDir, 'fixture.mjs'),
+              rel        = path.relative(repoRoot, fixture).split(path.sep).join('/');
+
+        mkdirSync(fixtureDir, {recursive: true});
+
+        try {
+            // A non-DB-path leaf, so the exit code can only come from the ceiling.
+            writeFileSync(fixture, 'aiConfig.issueSync.contentRootOverride = root;\naiConfig.issueSync.contentRootOverride = previous;\n');
+
+            const result = spawnSync(process.execPath, [checker, rel], {cwd: repoRoot, encoding: 'utf-8'});
+
+            expect(result.status, 'growth past the ceiling must fail the build').toBe(1);
+            expect(result.stderr).toContain(`${rel}: 2 write(s), ceiling 0`);
+            expect(result.stderr).toContain('configSnapshot')
+        } finally {
+            rmSync(fixtureDir, {recursive: true, force: true})
+        }
+    });
+
+    test('CLI: tightening refuses a partial scan, which cannot tell a skipped spec from a deleted one', () => {
+        const checker = path.join(repoRoot, 'ai/scripts/lint/check-aiconfig-test-mutation.mjs'),
+              result  = spawnSync(process.execPath, [checker, '--tighten-ceilings', 'test/x.mjs'], {cwd: repoRoot, encoding: 'utf-8'});
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('needs a full scan')
     })
 });

@@ -22,7 +22,8 @@ import fs                from 'fs';
 import path              from 'path';
 import os                from 'os';
 import {fileURLToPath}   from 'url';
-import {readResumeState} from '../../../../../../ai/services/knowledge-base/helpers/kbEmbeddingResumeStore.mjs';
+import {readResumeState}           from '../../../../../../ai/services/knowledge-base/helpers/kbEmbeddingResumeStore.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -209,23 +210,20 @@ function writeFixtureJsonl(filePath, chunkCount, hashPrefix = 'chunk-') {
 }
 
 test.describe('VectorService.embed — work-volume branching (#10572)', () => {
-    let SDK, KB_VectorService, KB_ChromaManager, KB_Config, Memory_Config;
+    let SDK, KB_VectorService, KB_ChromaManager, KB_Config;
     let TextEmbeddingService_orig;
     let originalGetCollection;
     let originalClient;
-    let originalThreshold;
-    let originalEmbeddingLimits;
-    let originalEmbeddingProvider;
     let originalResumeStateDir;
+    let kbConfigSnapshot;
     let tmpDir, fixturePath;
 
     let TextEmbeddingService;
 
     test.beforeAll(async () => {
-        SDK              = await import('../../../../../../ai/services.mjs');
-        KB_ChromaManager = SDK.KB_ChromaManager;
-        KB_Config        = SDK.KB_Config;
-        Memory_Config    = SDK.Memory_Config;
+        SDK                  = await import('../../../../../../ai/services.mjs');
+        KB_ChromaManager     = SDK.KB_ChromaManager;
+        KB_Config            = SDK.KB_Config;
         TextEmbeddingService = SDK.Memory_TextEmbeddingService;
 
         // VectorService is a helper not exposed via the SDK exports — import directly.
@@ -237,15 +235,9 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
         TextEmbeddingService_orig = TextEmbeddingService.embedTexts.bind(TextEmbeddingService);
         TextEmbeddingService.embedTexts = async texts => texts.map(() => new Array(384).fill(0));
 
-        originalGetCollection = KB_ChromaManager.getKnowledgeBaseCollection.bind(KB_ChromaManager);
-        originalClient        = KB_ChromaManager.client;
-        originalThreshold     = KB_Config.data.mcpSyncMaxChunks;
-        originalEmbeddingLimits = {
-            contextLimitTokens       : Number(KB_Config.data.localModels.embedding.contextLimitTokens),
-            safeProcessingLimitTokens: Number(KB_Config.data.localModels.embedding.safeProcessingLimitTokens)
-        };
-        originalEmbeddingProvider = Memory_Config.data.embeddingProvider;
-        originalResumeStateDir     = KB_VectorService.resumeStateDir;
+        originalGetCollection  = KB_ChromaManager.getKnowledgeBaseCollection.bind(KB_ChromaManager);
+        originalClient         = KB_ChromaManager.client;
+        originalResumeStateDir = KB_VectorService.resumeStateDir;
 
         tmpDir      = path.resolve(os.tmpdir(), `kb-work-volume-test-${process.pid}-${Date.now()}`);
         fs.mkdirSync(tmpDir, {recursive: true});
@@ -255,11 +247,8 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     test.afterAll(async () => {
         KB_ChromaManager.getKnowledgeBaseCollection = originalGetCollection;
         KB_ChromaManager.client                     = originalClient;
-        KB_Config.data.mcpSyncMaxChunks             = originalThreshold;
-        KB_Config.data.localModels.embedding.contextLimitTokens        = originalEmbeddingLimits.contextLimitTokens;
-        KB_Config.data.localModels.embedding.safeProcessingLimitTokens = originalEmbeddingLimits.safeProcessingLimitTokens;
-        Memory_Config.data.embeddingProvider        = originalEmbeddingProvider;
-        KB_VectorService.resumeStateDir              = originalResumeStateDir;
+        KB_VectorService.configSnapshot             = null;
+        KB_VectorService.resumeStateDir             = originalResumeStateDir;
         TextEmbeddingService.embedTexts             = TextEmbeddingService_orig;
         if (tmpDir && fs.existsSync(tmpDir)) {
             fs.rmSync(tmpDir, {recursive: true, force: true});
@@ -267,12 +256,11 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     });
 
     test.beforeEach(() => {
-        KB_Config.data.mcpSyncMaxChunks = 5; // tight threshold for predictable branching
-        KB_Config.data.localModels.embedding.contextLimitTokens        = originalEmbeddingLimits.contextLimitTokens;
-        KB_Config.data.localModels.embedding.safeProcessingLimitTokens = originalEmbeddingLimits.safeProcessingLimitTokens;
-        Memory_Config.data.embeddingProvider = originalEmbeddingProvider;
-        TextEmbeddingService.embedTexts = async texts => texts.map(() => new Array(384).fill(0));
-        KB_ChromaManager.client         = originalClient;
+        kbConfigSnapshot                  = KB_VectorService.createConfigSnapshot();
+        kbConfigSnapshot.mcpSyncMaxChunks = 5; // tight threshold for predictable branching
+        KB_VectorService.configSnapshot   = kbConfigSnapshot;
+        TextEmbeddingService.embedTexts   = async texts => texts.map(() => new Array(384).fill(0));
+        KB_ChromaManager.client           = originalClient;
         KB_ChromaManager.getKnowledgeBaseCollection = originalGetCollection;
         KB_ChromaManager.invalidateKnowledgeBaseCollectionCache();
 
@@ -333,15 +321,10 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     });
 
     test('#17017 unchanged poison is skipped across sweeps while changed content and replay re-enter', async () => {
-        const originalBatch = {
-            batchSize : KB_Config.data.batchSize,
-            batchDelay: KB_Config.data.batchDelay,
-            maxRetries: KB_Config.data.maxRetries
-        };
         const spy           = createSpyCollection({existingIds: []});
         let   providerCalls = 0;
 
-        Object.assign(KB_Config.data, {batchSize: 1, batchDelay: 0, maxRetries: 1});
+        Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 1});
         KB_ChromaManager.getKnowledgeBaseCollection = async () => spy;
 
         TextEmbeddingService.embedTexts = async texts => {
@@ -354,46 +337,42 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
             return texts.map(() => new Array(384).fill(0))
         };
 
-        try {
-            writeFixtureJsonl(fixturePath, 3);
+        writeFixtureJsonl(fixturePath, 3);
 
-            const first         = await KB_VectorService.embed(fixturePath);
-            const firstPoisonId = first.poisonedChunks[0].chunkId;
+        const first         = await KB_VectorService.embed(fixturePath);
+        const firstPoisonId = first.poisonedChunks[0].chunkId;
 
-            expect(first.embedded).toBe(2);
-            expect(first).toMatchObject({settled: 3, remaining: 0});
-            expect(first.poisonedChunks).toHaveLength(1);
-            expect(providerCalls).toBe(4);
-            expect(JSON.stringify(first.poisonedChunks)).not.toContain('private provider detail');
+        expect(first.embedded).toBe(2);
+        expect(first).toMatchObject({settled: 3, remaining: 0});
+        expect(first.poisonedChunks).toHaveLength(1);
+        expect(providerCalls).toBe(4);
+        expect(JSON.stringify(first.poisonedChunks)).not.toContain('private provider detail');
 
-            const beforeSecondSweep = providerCalls;
-            const second            = await KB_VectorService.embed(fixturePath);
+        const beforeSecondSweep = providerCalls;
+        const second            = await KB_VectorService.embed(fixturePath);
 
-            expect(providerCalls, 'unchanged poison is never re-offered').toBe(beforeSecondSweep);
-            expect(second.embedded).toBe(0);
-            expect(second).toMatchObject({settled: 3, remaining: 0});
-            expect(second.poisonedChunks).toEqual(first.poisonedChunks);
-            expect(second.message).toContain('proven poison');
+        expect(providerCalls, 'unchanged poison is never re-offered').toBe(beforeSecondSweep);
+        expect(second.embedded).toBe(0);
+        expect(second).toMatchObject({settled: 3, remaining: 0});
+        expect(second.poisonedChunks).toEqual(first.poisonedChunks);
+        expect(second.message).toContain('proven poison');
 
-            const rows = fs.readFileSync(fixturePath, 'utf8').split('\n').map(line => JSON.parse(line));
-            rows[0].hash = 'changed-poison-content-id';
-            fs.writeFileSync(fixturePath, rows.map(row => JSON.stringify(row)).join('\n'), 'utf8');
+        const rows = fs.readFileSync(fixturePath, 'utf8').split('\n').map(line => JSON.parse(line));
+        rows[0].hash = 'changed-poison-content-id';
+        fs.writeFileSync(fixturePath, rows.map(row => JSON.stringify(row)).join('\n'), 'utf8');
 
-            const beforeChangedContent = providerCalls;
-            const changed              = await KB_VectorService.embed(fixturePath);
+        const beforeChangedContent = providerCalls;
+        const changed              = await KB_VectorService.embed(fixturePath);
 
-            expect(providerCalls - beforeChangedContent, 'changed content re-enters A-B-A proof').toBe(3);
-            expect(changed.poisonedChunks).toHaveLength(1);
-            expect(changed.poisonedChunks[0].chunkId).not.toBe(firstPoisonId);
+        expect(providerCalls - beforeChangedContent, 'changed content re-enters A-B-A proof').toBe(3);
+        expect(changed.poisonedChunks).toHaveLength(1);
+        expect(changed.poisonedChunks[0].chunkId).not.toBe(firstPoisonId);
 
-            const beforeReplay = providerCalls;
-            const replayed     = await KB_VectorService.embed(fixturePath, {replayEmbeddingPoison: true});
+        const beforeReplay = providerCalls;
+        const replayed     = await KB_VectorService.embed(fixturePath, {replayEmbeddingPoison: true});
 
-            expect(providerCalls - beforeReplay, 'explicit replay clears and re-offers the current poison').toBe(3);
-            expect(replayed.poisonedChunks).toHaveLength(1);
-        } finally {
-            Object.assign(KB_Config.data, originalBatch)
-        }
+        expect(providerCalls - beforeReplay, 'explicit replay clears and re-offers the current poison').toBe(3);
+        expect(replayed.poisonedChunks).toHaveLength(1);
     });
 
     test('splits over-budget full-sync chunks before provider invocation while embedding the safe remainder', async () => {
@@ -537,9 +516,9 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
         // Pre-fix this test pinned the fail-open: gemini was outside a hand-maintained local
         // set, so the guard skipped the measurement and the provider was called with an
         // over-band input. The guard now measures every provider.
-        Memory_Config.data.embeddingProvider                            = 'gemini';
-        KB_Config.data.localModels.embedding.contextLimitTokens        = 50;
-        KB_Config.data.localModels.embedding.safeProcessingLimitTokens = 1;
+        kbConfigSnapshot.embeddingProvider                            = 'gemini';
+        kbConfigSnapshot.localModels.embedding.contextLimitTokens        = 50;
+        kbConfigSnapshot.localModels.embedding.safeProcessingLimitTokens = 1;
 
         const explicitProviders = [];
         TextEmbeddingService.embedTexts = async (texts, explicitProvider) => {
@@ -568,9 +547,9 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     });
 
     test('a non-local provider embeds an under-band document — measured, not exempt', async () => {
-        Memory_Config.data.embeddingProvider                            = 'gemini';
-        KB_Config.data.localModels.embedding.contextLimitTokens        = 50_000;
-        KB_Config.data.localModels.embedding.safeProcessingLimitTokens = 40_000;
+        kbConfigSnapshot.embeddingProvider                            = 'gemini';
+        kbConfigSnapshot.localModels.embedding.contextLimitTokens        = 50_000;
+        kbConfigSnapshot.localModels.embedding.safeProcessingLimitTokens = 40_000;
 
         const explicitProviders = [];
         TextEmbeddingService.embedTexts = async (texts, explicitProvider) => {
@@ -648,8 +627,8 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     });
 
     test('shadow-swap refuses promotion when an over-budget chunk would make the rebuilt corpus incomplete', async () => {
-        KB_Config.data.localModels.embedding.contextLimitTokens        = 50;
-        KB_Config.data.localModels.embedding.safeProcessingLimitTokens = 40;
+        kbConfigSnapshot.localModels.embedding.contextLimitTokens        = 50;
+        kbConfigSnapshot.localModels.embedding.safeProcessingLimitTokens = 40;
 
         const live = createSpyCollection({existingIds: [], name: KB_Config.data.collectionName});
         let shadow;
@@ -802,13 +781,7 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     });
 
     test('#17439 shadow-swap resume keeps embedded per-call while settlement advances cumulatively', async () => {
-        const
-            live          = createSpyCollection({existingIds: [], name: KB_Config.data.collectionName}),
-            originalBatch = {
-                batchDelay: KB_Config.data.batchDelay,
-                batchSize : KB_Config.data.batchSize,
-                maxRetries: KB_Config.data.maxRetries
-            };
+        const live = createSpyCollection({existingIds: [], name: KB_Config.data.collectionName});
 
         let shadow;
 
@@ -825,40 +798,36 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
         KB_ChromaManager.getKnowledgeBaseCollection = async () => {
             return shadow?.name === KB_Config.data.collectionName ? shadow : live
         };
-        Object.assign(KB_Config.data, {batchDelay: 0, batchSize: 1, maxRetries: 1});
+        Object.assign(kbConfigSnapshot, {batchDelay: 0, batchSize: 1, maxRetries: 1});
         writeFixtureJsonl(fixturePath, 3);
 
-        try {
-            const first = await KB_VectorService.embed(fixturePath, {
-                staleStrategy: 'shadow-swap',
-                shouldYield  : () => true
-            });
+        const first = await KB_VectorService.embed(fixturePath, {
+            staleStrategy: 'shadow-swap',
+            shouldYield  : () => true
+        });
 
-            expect(first).toMatchObject({embedded: 1, settled: 1, remaining: 2, yielded: true});
-            expect(live.calls.modify).toEqual([]);
-            expect(shadow.calls.modify).toEqual([]);
+        expect(first).toMatchObject({embedded: 1, settled: 1, remaining: 2, yielded: true});
+        expect(live.calls.modify).toEqual([]);
+        expect(shadow.calls.modify).toEqual([]);
 
-            const resumeState = await readResumeState({dir: KB_VectorService.resumeStateDir});
-            expect(resumeState?.shadowName).toBe(shadow.name);
+        const resumeState = await readResumeState({dir: KB_VectorService.resumeStateDir});
+        expect(resumeState?.shadowName).toBe(shadow.name);
 
-            const second = await KB_VectorService.embed(fixturePath, {
-                staleStrategy: 'shadow-swap',
-                shouldYield  : () => true
-            });
+        const second = await KB_VectorService.embed(fixturePath, {
+            staleStrategy: 'shadow-swap',
+            shouldYield  : () => true
+        });
 
-            expect(second).toMatchObject({embedded: 1, settled: 2, remaining: 1, yielded: true});
+        expect(second).toMatchObject({embedded: 1, settled: 2, remaining: 1, yielded: true});
 
-            const completed = await KB_VectorService.embed(fixturePath, {
-                staleStrategy: 'shadow-swap',
-                shouldYield  : () => false
-            });
+        const completed = await KB_VectorService.embed(fixturePath, {
+            staleStrategy: 'shadow-swap',
+            shouldYield  : () => false
+        });
 
-            expect(completed).toMatchObject({embedded: 1, settled: 3, remaining: 0});
-            expect(shadow.rows.size).toBe(3);
-            expect(shadow.name).toBe(KB_Config.data.collectionName)
-        } finally {
-            Object.assign(KB_Config.data, originalBatch)
-        }
+        expect(completed).toMatchObject({embedded: 1, settled: 3, remaining: 0});
+        expect(shadow.rows.size).toBe(3);
+        expect(shadow.name).toBe(KB_Config.data.collectionName);
     });
 
     test('fresh-build records the resume marker BEFORE creating the shadow (write-ahead — no orphan on a double failure)', async () => {
@@ -946,7 +915,7 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
         expect(result.message).toContain(KB_Config.data.logPath);
         expect(result.message).not.toContain('undefined');
 
-        // Wire-format boundary (RA2 per @neo-gpt cycle 1): the KB Server's adapter at
+        // Wire-format boundary: the KB Server's adapter at
         // Server.mjs:202 — `isError = 'error' in result` — is the contract that converts
         // this service-level shape into the MCP-protocol `isError: true` the caller observes.
         // Inline the same expression here so this test asserts the observable wire-format
@@ -1032,7 +1001,7 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
 
         // Zero adds (empty corpus file), 12 deletions, threshold below the deletion count.
         writeFixtureJsonl(fixturePath, 0);
-        KB_Config.data.mcpSyncMaxChunks = 5;
+        kbConfigSnapshot.mcpSyncMaxChunks = 5;
 
         const result = await KB_VectorService.embed(fixturePath, {viaMcp: true, tenantContext: stamp});
 
@@ -1057,7 +1026,7 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
         KB_ChromaManager.getKnowledgeBaseCollection = async () => spy;
 
         writeFixtureJsonl(fixturePath, 0);
-        KB_Config.data.mcpSyncMaxChunks = 500; // gate must not interfere
+        kbConfigSnapshot.mcpSyncMaxChunks = 500; // gate must not interfere
 
         const result = await KB_VectorService.embed(fixturePath, {tenantContext: stamp});
 
@@ -1075,6 +1044,10 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
 
         expect(noop.deleted).toBe(0);
         expect(noop.message).toContain('No changes detected');
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(fs.readFileSync(__filename, 'utf8'))).toEqual([]);
     });
 
 });

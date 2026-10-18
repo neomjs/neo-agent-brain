@@ -1,8 +1,8 @@
-import {existsSync}                              from 'fs';
-import fs                                        from 'fs/promises';
-import path                                      from 'path';
+import {existsSync, readdirSync, statSync}                        from 'fs';
+import fs                                                         from 'fs/promises';
+import path                                                       from 'path';
 import {parseContentPath, pathSegmentOptionsFor, validateSegment} from './contentPath.mjs';
-import {readContentIndex, contentRootFor}        from './contentIndex.mjs';
+import {readContentIndex, contentRootFor}                         from './contentIndex.mjs';
 
 /**
  * @module ai/services/github-workflow/shared/contentInventory
@@ -140,11 +140,11 @@ export function resolveArchivedLocation(inventory, id) {
  * @returns {Promise<{type: String, ok: Boolean, indexedTotal: Number, corpusTotal: Number, uniqueIds: Number, staleIndexEntries: Array<Object>, inconsistentIndexEntries: Array<Object>, duplicateIndexEntryIds: Array<Number>, unindexedIds: Array<Number>, identicalDuplicateIds: Array<Number>, divergentDuplicateIds: Array<Number>}>}
  */
 export async function validateContentIntegrity(issueSyncConfig = {}, {repoSlug, type, filePrefix, inventory} = {}) {
-    const contentRoot = contentRootFor(issueSyncConfig),
-          segments    = pathSegmentOptionsFor(issueSyncConfig),
-          corpus      = inventory || await buildContentInventory(issueSyncConfig, {repoSlug, type, filePrefix}),
-          index       = await readContentIndex(issueSyncConfig),
-          indexed     = index.filter(entry => entry.repoSlug === repoSlug && entry.type === type),
+    const contentRoot             = contentRootFor(issueSyncConfig),
+          segments                = pathSegmentOptionsFor(issueSyncConfig),
+          corpus                  = inventory || await buildContentInventory(issueSyncConfig, {repoSlug, type, filePrefix}),
+          index                   = await readContentIndex(issueSyncConfig),
+          indexed                 = index.filter(entry => entry.repoSlug === repoSlug && entry.type === type),
           unqualifiedIndexEntries = index.filter(entry =>
               entry.type === type && (entry.repoSlug === undefined || entry.repoSlug === null));
 
@@ -249,4 +249,174 @@ export function formatIntegrityReport(result = {}) {
     ];
 
     return lines.join('\n');
+}
+
+/**
+ * @summary Lists the child directories present on disk under an archive level.
+ * @param {String} archiveRoot Absolute path to the archive level to read.
+ * @returns {String[]} Directory names, derived from disk.
+ */
+export function listArchiveFamilies(archiveRoot) {
+    let entries;
+
+    try {
+        entries = readdirSync(archiveRoot);
+    } catch {
+        return []
+    }
+
+    return entries.filter(entry => {
+        try {
+            return statSync(path.join(archiveRoot, entry)).isDirectory()
+        } catch {
+            return false
+        }
+    })
+}
+
+/**
+ * @summary Collects every `.md` artifact under one archive family recursively.
+ * @param {String} familyDir Absolute path to `archive/<family>`.
+ * @returns {String[]} Absolute file paths.
+ * @private
+ */
+function collectArchiveArtifacts(familyDir) {
+    const found = [];
+
+    const walk = dir => {
+        let entries;
+
+        try {
+            entries = readdirSync(dir, {withFileTypes: true});
+        } catch {
+            return
+        }
+
+        for (const entry of entries) {
+            const full = path.join(dir, entry.name);
+
+            if (entry.isDirectory()) {
+                walk(full)
+            } else if (entry.name.endsWith('.md')) {
+                found.push(full)
+            }
+        }
+    };
+
+    walk(familyDir);
+
+    return found
+}
+
+/**
+ * @summary Maps `<family>/<basename>` to every archived artifact claiming it.
+ *
+ * A consumer resolves an artifact by its logical name (`<family>/<basename>` regardless of chunk per
+ * `0004-github-content-architecture.md` §3.2.1), so the collision scope spans all version and chunk
+ * directories under `archive/<family>` rather than a single bucket.
+ * @param {String} archiveRoot Absolute path to the archive tree.
+ * @returns {Map<String, String[]>} Keys with more than one value are collisions.
+ */
+export function buildLogicalIndex(archiveRoot) {
+    const index = new Map();
+
+    for (const family of listArchiveFamilies(archiveRoot)) {
+        for (const absPath of collectArchiveArtifacts(path.join(archiveRoot, family))) {
+            const key = `${family}/${path.basename(absPath)}`;
+
+            if (!index.has(key)) index.set(key, []);
+            index.get(key).push(absPath)
+        }
+    }
+
+    return index
+}
+
+/**
+ * @summary Captures nanosecond stat coordinates for every `.md` artifact currently under `archiveRoot`.
+ * @param {String} archiveRoot Absolute path to the archive tree.
+ * @returns {Map<String, {mtimeNs: BigInt, ctimeNs: BigInt, size: BigInt, ino: BigInt}>}
+ */
+export function snapshotArchiveTree(archiveRoot) {
+    const snapshot = new Map();
+
+    for (const family of listArchiveFamilies(archiveRoot)) {
+        for (const absPath of collectArchiveArtifacts(path.join(archiveRoot, family))) {
+            try {
+                const resolved = path.resolve(absPath),
+                      stat     = statSync(resolved, {bigint: true});
+
+                snapshot.set(resolved, {
+                    mtimeNs: stat.mtimeNs,
+                    ctimeNs: stat.ctimeNs,
+                    size   : stat.size,
+                    ino    : stat.ino
+                })
+            } catch {
+                // Skip concurrently removed files.
+            }
+        }
+    }
+
+    return snapshot
+}
+
+/**
+ * @summary Returns resolved paths of `.md` artifacts under `archiveRoot` created or modified since `before`.
+ * @param {String} archiveRoot Absolute path to the archive tree.
+ * @param {Map<String, {mtimeNs: BigInt, ctimeNs: BigInt, size: BigInt, ino: BigInt}>} [before=new Map()]
+ * @returns {String[]}
+ */
+export function collectWrittenArchiveTargets(archiveRoot, before = new Map()) {
+    const targets = [];
+
+    for (const family of listArchiveFamilies(archiveRoot)) {
+        for (const absPath of collectArchiveArtifacts(path.join(archiveRoot, family))) {
+            try {
+                const resolved = path.resolve(absPath),
+                      stat     = statSync(resolved, {bigint: true}),
+                      previous = before.get(resolved);
+
+                if (!previous ||
+                    previous.mtimeNs !== stat.mtimeNs ||
+                    previous.ctimeNs !== stat.ctimeNs ||
+                    previous.size    !== stat.size    ||
+                    previous.ino     !== stat.ino
+                ) {
+                    targets.push(resolved)
+                }
+            } catch {
+                // Skip concurrently removed files.
+            }
+        }
+    }
+
+    return targets
+}
+
+/**
+ * @summary Finds logical-name collisions (`<family>/<basename>` regardless of chunk), optionally
+ * restricted to the artifacts a change touches.
+ * @param {Object} options
+ * @param {String} options.archiveRoot Absolute path to the archive tree.
+ * @param {String[]|null} [options.targets=null] Absolute paths from the change. When given, only
+ *     collisions involving one of them are reported — scoping the verdict to what the run wrote so a
+ *     pre-existing collision the run never touched cannot block it. `null` audits everything.
+ * @returns {Array<{key: String, paths: String[]}>}
+ */
+export function findLogicalIdentityCollisions({archiveRoot, targets = null}) {
+    const
+        index    = buildLogicalIndex(archiveRoot),
+        resolved = targets && new Set(targets.map(target => path.resolve(target))),
+        findings = [];
+
+    for (const [key, paths] of index) {
+        if (paths.length < 2) continue;
+
+        if (resolved && !paths.some(candidate => resolved.has(path.resolve(candidate)))) continue;
+
+        findings.push({key, paths})
+    }
+
+    return findings.sort((a, b) => a.key.localeCompare(b.key))
 }

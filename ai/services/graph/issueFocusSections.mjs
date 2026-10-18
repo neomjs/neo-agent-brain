@@ -299,14 +299,14 @@ export function findLastQualifyingAssignmentActivity(issue, maintainers = getSta
  * @param {Object} options
  * @param {String} options.issuesDir Local synced issue directory.
  * @param {Date} [options.now=new Date()] Current clock for deterministic tests.
- * @param {Number} [options.thresholdMs=aiConfig.goldenPathStaleAssignmentThresholdMs] Stale threshold.
+ * @param {Number} options.thresholdMs Stale threshold.
  * @param {String[]} [options.maintainers=getStaleAssignmentMaintainers()] Maintainer logins.
  * @returns {Array<Object>} Stale candidates sorted by oldest qualifying activity first.
  */
 export function buildStaleAssignmentCandidates({
     issuesDir,
     now = new Date(),
-    thresholdMs = aiConfig.goldenPathStaleAssignmentThresholdMs,
+    thresholdMs,
     maintainers = getStaleAssignmentMaintainers()
 }) {
     const candidates = [];
@@ -367,12 +367,12 @@ export function buildStaleAssignmentCandidates({
  * @param {Array<Object>} candidates Stale assignment candidates.
  * @param {Object} options
  * @param {Date} [options.capturedAt=new Date()] Capture timestamp.
- * @param {Number} [options.limit=aiConfig.goldenPathStaleAssignmentRenderLimit] Maximum candidates to render.
+ * @param {Number} options.limit Maximum candidates to render.
  * @returns {String}
  */
 export function renderStaleAssignmentCandidatesSection(candidates, {
     capturedAt = new Date(),
-    limit = aiConfig.goldenPathStaleAssignmentRenderLimit
+    limit
 } = {}) {
     let section = `\n## Stale Assignment Candidates\n\n`;
     section += `*Captured at: ${capturedAt.toISOString()} (Source: local issue sync)*\n\n`;
@@ -510,8 +510,8 @@ export function hasOpenIssueBlocker({issueId, issue, graphService = GraphService
  * @param {String} options.issuesDir Local synced issue directory.
  * @param {Date} [options.now=new Date()] Current clock for deterministic tests.
  * @param {Set<String>} [options.goldenIds=new Set()] Current Computed Golden Path issue ids.
- * @param {Number} [options.thresholdMs=aiConfig.goldenPathSilentThreadThresholdMs] Idle threshold.
- * @param {Number} [options.minScore=aiConfig.goldenPathSilentThreadMinScore] Minimum silence score.
+ * @param {Number} options.thresholdMs Idle threshold.
+ * @param {Number} options.minScore Minimum silence score.
  * @param {Object} [options.graphService=GraphService] Memory GraphService singleton or test double.
  * @param {Function} [options.getStructuralWeight=getIssueStructuralWeight] Structural-weight seam.
  * @returns {Array<Object>} Silent-thread candidates sorted by silence score.
@@ -520,8 +520,8 @@ export function buildSilentThreadCandidates({
     issuesDir,
     now = new Date(),
     goldenIds = new Set(),
-    thresholdMs = aiConfig.goldenPathSilentThreadThresholdMs,
-    minScore = aiConfig.goldenPathSilentThreadMinScore,
+    thresholdMs,
+    minScore,
     graphService = GraphService,
     getStructuralWeight = getIssueStructuralWeight
 }) {
@@ -615,12 +615,12 @@ export function buildSilentThreadCandidates({
  * @param {Array<Object>} candidates Silent-thread candidates.
  * @param {Object} options
  * @param {Date} [options.capturedAt=new Date()] Capture timestamp.
- * @param {Number} [options.limit=aiConfig.goldenPathSilentThreadRenderLimit] Maximum candidates to render.
+ * @param {Number} options.limit Maximum candidates to render.
  * @returns {String}
  */
 export function renderSilentThreadCandidatesSection(candidates, {
     capturedAt = new Date(),
-    limit = aiConfig.goldenPathSilentThreadRenderLimit
+    limit
 } = {}) {
     let section = `\n## Silent Threads\n\n`;
     section += `*Captured at: ${capturedAt.toISOString()} (Source: local issue sync + Native Edge Graph; visibility-only, no routing)*\n\n`;
@@ -1301,14 +1301,14 @@ export function buildWorkGraphStallFindings({
  * @param {Object[]} findings Stall finding payloads.
  * @param {Object} options
  * @param {Date} [options.capturedAt=new Date()] Capture timestamp.
- * @param {Number} [options.limit=aiConfig.goldenPathStallFindingRenderLimit] Maximum verified findings to render.
- * @param {Boolean} [options.renderEnabled=aiConfig.goldenPathStallFindingRenderEnabled] Render flag.
+ * @param {Number} options.limit Maximum verified findings to render.
+ * @param {Boolean} options.renderEnabled Render flag.
  * @returns {String}
  */
 export function renderWorkGraphStallFindingsSection(findings = [], {
     capturedAt = new Date(),
-    limit = aiConfig.goldenPathStallFindingRenderLimit,
-    renderEnabled = aiConfig.goldenPathStallFindingRenderEnabled
+    limit,
+    renderEnabled
 } = {}) {
     if (renderEnabled === false) return '';
 

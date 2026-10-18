@@ -15,9 +15,12 @@ setup({
     }
 });
 
+import fs                             from 'node:fs';
+import {fileURLToPath}                from 'node:url';
 import {test, expect}                 from '@playwright/test';
 import Neo                            from 'neo.mjs/src/Neo.mjs';
 import * as core                      from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations}    from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {EMBEDDING_BATCH_YIELDED_CODE} from '../../../../../../ai/services/memory-core/TextEmbeddingService.mjs';
 
 /**
@@ -124,32 +127,28 @@ function makeTimeout({failedTextOffset, failedTextCount} = {}) {
 }
 
 test.describe('VectorService.embedChunks — failure-path work conservation (#17112) + undeliverable attribution (#17129)', () => {
-    let SDK, KB_VectorService, KB_Config, TextEmbeddingService;
-    let originalEmbedTexts, originalBatchConfig;
+    let SDK, KB_VectorService, TextEmbeddingService;
+    let originalEmbedTexts, kbConfigSnapshot;
 
     test.beforeAll(async () => {
         SDK                  = await import('../../../../../../ai/services.mjs');
-        KB_Config            = SDK.KB_Config;
         TextEmbeddingService = SDK.Memory_TextEmbeddingService;
 
         const VectorServiceModule = await import('../../../../../../ai/services/knowledge-base/VectorService.mjs');
         KB_VectorService          = VectorServiceModule.default;
 
-        originalEmbedTexts  = TextEmbeddingService.embedTexts.bind(TextEmbeddingService);
-        originalBatchConfig = {
-            batchSize : KB_Config.data.batchSize,
-            batchDelay: KB_Config.data.batchDelay,
-            maxRetries: KB_Config.data.maxRetries
-        };
+        originalEmbedTexts = TextEmbeddingService.embedTexts.bind(TextEmbeddingService);
     });
 
     test.afterAll(() => {
         TextEmbeddingService.embedTexts = originalEmbedTexts;
-        Object.assign(KB_Config.data, originalBatchConfig);
+        KB_VectorService.configSnapshot = null;
     });
 
     test.beforeEach(() => {
-        Object.assign(KB_Config.data, {batchSize: 50, batchDelay: 0, maxRetries: 3});
+        kbConfigSnapshot = KB_VectorService.createConfigSnapshot();
+        Object.assign(kbConfigSnapshot, {batchSize: 50, batchDelay: 0, maxRetries: 3});
+        KB_VectorService.configSnapshot = kbConfigSnapshot;
     });
 
     test('a timeout-class failure PERSISTS its carried prefix before the sweep ends', async () => {
@@ -545,7 +544,7 @@ test.describe('VectorService.embedChunks — failure-path work conservation (#17
         const spy    = createSpyCollection();
         const chunks = [{id: 'rst-0', type: 'guide', name: 'r0', content: 'reset body'}];
 
-        Object.assign(KB_Config.data, {maxRetries: 1}); // one 500 exhausts the batch without backoff sleeps
+        Object.assign(kbConfigSnapshot, {maxRetries: 1}); // one 500 exhausts the batch without backoff sleeps
 
         const persisted    = [];
         const generationId = makeGenerationId('2');
@@ -584,7 +583,7 @@ test.describe('VectorService.embedChunks — failure-path work conservation (#17
         const spy    = createSpyCollection();
         const chunks = [{id: 'psf-0', type: 'guide', name: 'p0', content: 'storage-failure body'}];
 
-        Object.assign(KB_Config.data, {maxRetries: 1});
+        Object.assign(kbConfigSnapshot, {maxRetries: 1});
 
         const persisted    = [];
         const generationId = makeGenerationId('3');
@@ -749,5 +748,9 @@ test.describe('VectorService.embedChunks — failure-path work conservation (#17
 
         expect(generation.embedCallCeilingMs, 'suppression evidence is only valid under the ceiling it was gathered at').toBe(expectedCeiling);
         expect(Number.isFinite(generation.embedCallCeilingMs)).toBe(true);
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'))).toEqual([]);
     });
 });

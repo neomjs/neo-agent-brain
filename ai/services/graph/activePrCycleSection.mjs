@@ -1,4 +1,3 @@
-import aiConfig               from '../../mcp/server/memory-core/config.mjs';
 import logger                 from '../../mcp/server/memory-core/logger.mjs';
 import {hasCrossFamilyReview} from './agentFamilyResolution.mjs';
 
@@ -18,10 +17,10 @@ import {hasCrossFamilyReview} from './agentFamilyResolution.mjs';
  *
  * @param {Object[]} prs GitHub PR payloads.
  * @param {Object} options
- * @param {Number} [options.limit=aiConfig.goldenPathRecentOpenPrRenderLimit] Maximum PRs to render.
+ * @param {Number} options.limit Maximum PRs to render.
  * @returns {String}
  */
-export function renderRecentOpenPrSummary(prs, {limit = aiConfig.goldenPathRecentOpenPrRenderLimit} = {}) {
+export function renderRecentOpenPrSummary(prs, {limit} = {}) {
     const recent = [...prs]
         .filter(pr => pr.createdAt)
         .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
@@ -67,17 +66,17 @@ export function getActivePrCycleStatus({capturedAt, now, freshnessMs}) {
  * @param {Date|String} [options.capturedAt=new Date()] Snapshot timestamp.
  * @param {Date|String} [options.now=options.capturedAt] Freshness comparison timestamp.
  * @param {Error} [options.error=null] Fetch failure that makes the section degraded.
- * @param {Number} [options.freshnessMs=aiConfig.goldenPathActivePrStateFreshnessMs] Freshness SLA.
- * @param {Number} [options.limit=aiConfig.goldenPathRecentOpenPrRenderLimit] Maximum PR rows.
+ * @param {Number} options.freshnessMs Freshness SLA.
+ * @param {Number} options.limit Maximum PR rows.
  * @returns {String}
  */
 export function renderActivePrCycleState({
-    prs         = [],
-    capturedAt  = new Date(),
-    now         = capturedAt,
-    error       = null,
-    freshnessMs = aiConfig.goldenPathActivePrStateFreshnessMs,
-    limit       = aiConfig.goldenPathRecentOpenPrRenderLimit
+    prs        = [],
+    capturedAt = new Date(),
+    now        = capturedAt,
+    error      = null,
+    freshnessMs,
+    limit
 } = {}) {
     const capturedDate = capturedAt instanceof Date ? capturedAt : new Date(capturedAt),
           freshUntil   = new Date(capturedDate.getTime() + freshnessMs),

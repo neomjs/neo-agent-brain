@@ -1,10 +1,12 @@
 import aiConfig                 from '../../mcp/server/knowledge-base/config.mjs';
-import {validateConfigSnapshot} from '../shared/configSnapshot.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+}                               from '../shared/configSnapshot.mjs';
 import TextEmbeddingService, {
     getEmbeddingModel,
     isEmbeddingBatchYieldError
 }                               from '../memory-core/TextEmbeddingService.mjs';
-import mcConfig                from '../../mcp/server/memory-core/config.mjs';
 import {isProviderTimeoutCode} from '../../provider/createTimeoutError.mjs';
 import Base                    from 'neo.mjs/src/core/Base.mjs';
 import {IMPLEMENTED_EMBEDDING_PROVIDERS, resolveEmbeddingProviderModel}
@@ -220,6 +222,13 @@ function resolveEmbeddingInputStrategyVersion(guardrail) {
         : `${EMBEDDING_POISON_STRATEGY_FAMILY}:band-unresolved`
 }
 
+const VECTOR_SERVICE_SNAPSHOT_SUBTREES = Object.freeze([
+    'localModels',
+    'localModels.embedding',
+    'ollama',
+    'openAiCompatible'
+]);
+
 /**
  * @summary Manages vector database operations including embedding generation and storage.
  *
@@ -289,36 +298,48 @@ class VectorService extends Base {
      */
     beforeSetConfigSnapshot(value) {
         return validateConfigSnapshot(value, {
-            serviceName: 'VectorService'
+            serviceName     : 'VectorService',
+            requiredSubtrees: VECTOR_SERVICE_SNAPSHOT_SUBTREES
         });
     }
 
     /**
-     * @summary Builds an isolated plain-object snapshot of the resolved `aiConfig` batch/retry
-     * leaves consumed by `VectorService.embedChunks`.
+     * @summary Builds a deep, isolated plain-object snapshot of the resolved `aiConfig` leaves
+     * and subtrees consumed by `VectorService`.
      *
-     * Scoped exclusively to `embedChunks` (`backoffBaseMs`, `batchDelay`, `batchSize`, `maxRetries`,
-     * `undeliverableTimeoutStrikes`). Any additional `VectorService` method migrated onto
-     * {@link #getConfig} must expand `createConfigSnapshot()` with the leaves it consumes.
+     * Tests inject the returned snapshot into `VectorService.configSnapshot` and mutate its
+     * leaves freely without touching the shared `aiConfig` / `KB_Config` / `MC_Config` singletons.
      *
      * @returns {Object}
      */
     createConfigSnapshot() {
         return {
-            backoffBaseMs              : aiConfig.backoffBaseMs,
-            batchDelay                 : aiConfig.batchDelay,
-            batchSize                  : aiConfig.batchSize,
+            backoffBaseMs    : aiConfig.backoffBaseMs,
+            batchDelay       : aiConfig.batchDelay,
+            batchSize        : aiConfig.batchSize,
+            defaultRepoSlug  : aiConfig.defaultRepoSlug,
+            defaultTenantId  : aiConfig.defaultTenantId,
+            defaultVisibility: aiConfig.defaultVisibility,
+            embeddingModel   : aiConfig.embeddingModel,
+            embeddingProvider: aiConfig.embeddingProvider,
+            knowledgeBase    : null,
+            localModels      : {
+                embedding: cloneConfigSubtree(aiConfig, ['localModels', 'embedding'])
+            },
+            logPath                    : aiConfig.logPath,
             maxRetries                 : aiConfig.maxRetries,
-            undeliverableTimeoutStrikes: aiConfig.undeliverableTimeoutStrikes
+            mcpSyncMaxChunks           : aiConfig.mcpSyncMaxChunks,
+            ollama                     : cloneConfigSubtree(aiConfig, ['ollama']),
+            openAiCompatible           : cloneConfigSubtree(aiConfig, ['openAiCompatible']),
+            spoofRejectionMode         : aiConfig.spoofRejectionMode,
+            undeliverableTimeoutStrikes: aiConfig.undeliverableTimeoutStrikes,
+            vectorDimension            : aiConfig.vectorDimension
         };
     }
 
     /**
-     * @summary Returns the active configuration source for `embedChunks` (`#configSnapshot` when
-     * injected, otherwise `aiConfig`).
-     *
-     * Currently scoped to `embedChunks`; any other `VectorService` method routed through
-     * `#getConfig()` must first add its consumed leaves to {@link #createConfigSnapshot}.
+     * @summary Returns the active configuration source (`#configSnapshot` when injected,
+     * otherwise `aiConfig`).
      *
      * @returns {Object}
      * @private
@@ -380,7 +401,8 @@ class VectorService extends Base {
      * @returns {Object} Tenant-isolation configuration object.
      */
     getTenantIsolationConfig() {
-        const nested = aiConfig.knowledgeBase;
+        const cfg    = this.#getConfig();
+        const nested = cfg.knowledgeBase;
         // The portable nested tenant-shape carries tenant fields. Tier-1's
         // `knowledgeBase` leaf (KB OPS config: alerting / reconciliation / GC) is inherited here via
         // the realm chain and is NOT a tenant-shape — so a naked `?? aiConfig` would wrongly select
@@ -392,7 +414,7 @@ class VectorService extends Base {
             nested.defaultVisibility  !== undefined ||
             nested.spoofRejectionMode !== undefined
         );
-        return hasTenantShape ? nested : aiConfig;
+        return hasTenantShape ? nested : cfg;
     }
 
     /**
@@ -583,15 +605,16 @@ class VectorService extends Base {
      * @returns {{recognized: Boolean, contextLimitTokens: Number, safeProcessingLimitTokens: Number, model: String}}
      */
     resolveEmbeddingGuardrail() {
-        const embeddingProvider         = mcConfig.embeddingProvider;
-        const contextLimitTokens        = Number(aiConfig.localModels.embedding.contextLimitTokens);
-        const safeProcessingLimitTokens = Number(aiConfig.localModels.embedding.safeProcessingLimitTokens);
+        const cfg                       = this.#getConfig();
+        const embeddingProvider         = cfg.embeddingProvider;
+        const contextLimitTokens        = Number(cfg.localModels.embedding.contextLimitTokens);
+        const safeProcessingLimitTokens = Number(cfg.localModels.embedding.safeProcessingLimitTokens);
 
         return {
             recognized: IMPLEMENTED_EMBEDDING_PROVIDERS.includes(embeddingProvider),
             contextLimitTokens,
             safeProcessingLimitTokens,
-            model     : resolveEmbeddingProviderModel({embeddingProvider, aiConfig})
+            model     : resolveEmbeddingProviderModel({embeddingProvider, aiConfig: cfg})
         };
     }
 
@@ -605,20 +628,21 @@ class VectorService extends Base {
      * @returns {{provider: String, model: String, vectorDimension: Number, strategyVersion: String}}
      */
     resolveEmbeddingPoisonGeneration() {
-        const provider = mcConfig.embeddingProvider;
+        const cfg      = this.#getConfig();
+        const provider = cfg.embeddingProvider;
 
         return {
             provider,
-            model          : getEmbeddingModel(provider),
-            vectorDimension: Number(aiConfig.vectorDimension),
+            model          : getEmbeddingModel(provider, cfg),
+            vectorDimension: Number(cfg.vectorDimension),
             // The effective per-call ceiling is part of the evidence conditions: an
             // undeliverable-at-geometry disposition proven under a 30-minute ceiling is void under a
             // 60-minute one. Folding it into the generation invalidates ALL suppression evidence on a
             // ceiling change — including content-poison, which then costs one isolation re-proof
             // cycle. Correctness over thrift: stale suppression silently withholds documents.
             embedCallCeilingMs: provider === 'ollama'
-                ? Number(mcConfig.ollama.embeddingTimeoutMs)
-                : Number(mcConfig.openAiCompatible.batchEmbeddingTimeoutMs),
+                ? Number(cfg.ollama.embeddingTimeoutMs)
+                : Number(cfg.openAiCompatible.batchEmbeddingTimeoutMs),
             // Derived from the resolved admission band rather than a literal, so the commonest repair
             // — moving the band — is a change this generation can see. See
             // {@link resolveEmbeddingInputStrategyVersion} for why a frozen value silently outlived
@@ -1065,7 +1089,7 @@ class VectorService extends Base {
     generateIsolationEmbeddings({inputs, shouldYield, signal, onProviderTimeout}) {
         return TextEmbeddingService.embedTexts(
             inputs.map(input => input.text),
-            mcConfig.embeddingProvider,
+            this.#getConfig().embeddingProvider,
             {
                 operationLabel          : 'knowledge base tenant ingestion poison isolation',
                 operationStage          : 'kb-tenant-ingestion-embedding',
@@ -1346,12 +1370,20 @@ class VectorService extends Base {
             };
         }
 
-        logger.log(`Using TextEmbeddingService with provider: ${mcConfig.embeddingProvider}.`);
+        const {
+            backoffBaseMs,
+            batchSize,
+            batchDelay,
+            embeddingProvider,
+            maxRetries,
+            undeliverableTimeoutStrikes
+        } = this.#getConfig();
+
+        logger.log(`Using TextEmbeddingService with provider: ${embeddingProvider}.`);
         logger.log('Embedding chunks...');
 
-        const {backoffBaseMs, batchSize, batchDelay, maxRetries, undeliverableTimeoutStrikes} = this.#getConfig();
-        const guardrail                                                                       = this.resolveEmbeddingGuardrail();
-        const failedBatches                                                                   = [];
+        const guardrail     = this.resolveEmbeddingGuardrail();
+        const failedBatches = [];
         // Death-class graduation receipts for this sweep. Separate from
         // `poisonedChunks`, which reports what was ALREADY fenced when the sweep started: this reports
         // what this sweep fenced and on what evidence, so convergence is visible in the summary instead
@@ -1572,7 +1604,7 @@ class VectorService extends Base {
                 const dispatchSeq = evidence.seq;
 
                 try {
-                    embeddings ??= await TextEmbeddingService.embedTexts(textsToEmbed, mcConfig.embeddingProvider, {
+                    embeddings ??= await TextEmbeddingService.embedTexts(textsToEmbed, embeddingProvider, {
                         operationLabel          : 'knowledge base tenant ingestion embedding',
                         operationStage          : 'kb-tenant-ingestion-embedding',
                         providerActivityRecorder: KBRecorderService,
@@ -2675,11 +2707,12 @@ class VectorService extends Base {
         // deleting 60,000 presented to the gate as "3"; and the no-adds branch deleted and
         // returned before the gate was ever evaluated, which made the largest possible
         // deletion the one case no guard saw. A mass delete is work.
-        const mcpThreshold = aiConfig.mcpSyncMaxChunks;
+        const cfg          = this.#getConfig();
+        const mcpThreshold = cfg.mcpSyncMaxChunks;
         if (viaMcp && Math.max(workVolume, idsToDelete.length + idsToReplace.length) > mcpThreshold) {
             // `logPath` is a Provider-owned leaf; read it directly so malformed config
             // shape fails loud instead of silently re-deriving a local default.
-            const logDir       = aiConfig.logPath;
+            const logDir       = cfg.logPath;
             const errorPayload = {
                 error  : `KB sync work volume exceeds MCP-callable threshold`,
                 message: `${workVolume} chunks need re-embedding and ${idsToDelete.length + idsToReplace.length} need deleting ` +

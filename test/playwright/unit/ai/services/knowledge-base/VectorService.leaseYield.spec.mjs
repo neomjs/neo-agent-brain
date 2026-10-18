@@ -15,9 +15,12 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import fs                          from 'node:fs';
+import {fileURLToPath}             from 'node:url';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 /**
  * Cooperative heavy-maintenance-lease yield-point coverage for `VectorService.embedChunks`.
@@ -83,7 +86,7 @@ function makeChunks(count) {
 
 test.describe('VectorService.embedChunks — cooperative lease yield-point', () => {
     let SDK, KB_VectorService, KB_Config, Memory_Config, TextEmbeddingService, EMBEDDING_BATCH_YIELDED_CODE;
-    let originalEmbedTexts, originalBatchConfig;
+    let originalEmbedTexts, originalBatchConfig, kbConfigSnapshot;
 
     test.beforeAll(async () => {
         SDK                  = await import('../../../../../../ai/services.mjs');
@@ -111,11 +114,13 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
 
     test.afterAll(() => {
         TextEmbeddingService.embedTexts = originalEmbedTexts;
-        Object.assign(KB_Config.data, originalBatchConfig);
+        KB_VectorService.configSnapshot = null;
     });
 
     test.beforeEach(() => {
-        Object.assign(KB_Config.data, {batchSize: 50, batchDelay: 0, maxRetries: 1});
+        kbConfigSnapshot = KB_VectorService.createConfigSnapshot();
+        Object.assign(kbConfigSnapshot, {batchSize: 50, batchDelay: 0, maxRetries: 1});
+        KB_VectorService.configSnapshot = kbConfigSnapshot;
         // Re-applied per test: the inner-yield cases below swap in their own embedder, and a leaked stub
         // would silently change what a later test is measuring.
         TextEmbeddingService.embedTexts = async texts => texts.map(() => new Array(384).fill(0));
@@ -163,7 +168,7 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
               chunks          = makeChunks(6),
               originalTimeout = KB_VectorService.timeout;
 
-        Object.assign(KB_Config.data, {batchSize: 2, batchDelay: 50});
+        Object.assign(kbConfigSnapshot, {batchSize: 2, batchDelay: 50});
 
         let delayCompleted = false;
 
@@ -208,7 +213,7 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
         // 3, not the deployed 5: the retry arm backs off `2 ** retries` seconds, so a maxRetries-5 mutation
         // run exhausts the 30s test timeout before it exhausts the retries — and a timeout-red would leave
         // this test looking falsifiable while proving only that something hung.
-        Object.assign(KB_Config.data, {maxRetries: 3});
+        Object.assign(kbConfigSnapshot, {maxRetries: 3});
 
         let embedCalls = 0;
 
@@ -294,7 +299,7 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
         const spy    = createSpyCollection();
         const chunks = makeChunks(50); // 1 batch
 
-        Object.assign(KB_Config.data, {maxRetries: 3});
+        Object.assign(kbConfigSnapshot, {maxRetries: 3});
 
         let embedCalls = 0;
 
@@ -481,5 +486,9 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
             preRepairIntervalMs,
             'the interval this repair removed was multiples of the bound, not a near miss'
         ).toBeGreaterThan(maxActiveHoldMs);
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'))).toEqual([]);
     });
 });

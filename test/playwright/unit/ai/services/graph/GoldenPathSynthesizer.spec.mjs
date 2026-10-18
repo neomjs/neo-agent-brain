@@ -19,9 +19,11 @@ import * as core                   from 'neo.mjs/src/core/_export.mjs';
 import fs                          from 'fs';
 import path                        from 'path';
 import os                          from 'os';
+import {fileURLToPath}             from 'url';
 import child_process               from 'child_process';
 import Database                    from 'better-sqlite3';
 import {IDENTITIES}                from '../../../../../../ai/graph/identityRoots.mjs';
+import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {resolveCrossFamilyVerdict} from '../../../../../../ai/services/graph/agentFamilyResolution.mjs';
 import {TestLifecycleHelper}       from '../../services/memory-core/util.mjs';
 
@@ -46,19 +48,8 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
     let TextEmbeddingService;
     let tmpHandoffFile;
     let originalExecSync;
-    let originalEmbeddingModel;
-    let originalEmbeddingProvider;
-    let originalGoldenPathRecentOpenPrRenderLimit;
-    let originalGoldenPathTopNodeRenderLimit;
-    let originalGoldenPathStaleAssignmentRenderLimit;
-    let originalGoldenPathStaleAssignmentThresholdMs;
-    let originalGoldenPathSilentThreadMinScore;
-    let originalGoldenPathSilentThreadRenderLimit;
-    let originalGoldenPathSilentThreadThresholdMs;
-    let originalGoldenPathStallFindingRenderEnabled;
-    let originalGoldenPathStallFindingRenderLimit;
-    let originalVectorDimension;
     let originalWarn;
+    let gpConfigSnapshot;
 
     /**
      * @summary Builds a deterministic embedding with the resolved SSOT dimension, keeping tests from
@@ -66,7 +57,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
      * @returns {Number[]}
      */
     function buildConfiguredEmbedding() {
-        return new Array(Number(aiConfig.vectorDimension)).fill(0.1)
+        return new Array(Number((gpConfigSnapshot ?? aiConfig).vectorDimension)).fill(0.1)
     }
 
     test.beforeAll(async () => {
@@ -116,47 +107,27 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
     });
 
     test.beforeEach(() => {
-        originalEmbeddingModel    = aiConfig.embeddingModel;
-        originalEmbeddingProvider = aiConfig.embeddingProvider;
-        originalExecSync          = child_process.execSync;
-        originalGoldenPathRecentOpenPrRenderLimit       = aiConfig.goldenPathRecentOpenPrRenderLimit;
-        originalGoldenPathTopNodeRenderLimit            = aiConfig.goldenPathTopNodeRenderLimit;
-        originalGoldenPathStaleAssignmentRenderLimit    = aiConfig.goldenPathStaleAssignmentRenderLimit;
-        originalGoldenPathStaleAssignmentThresholdMs    = aiConfig.goldenPathStaleAssignmentThresholdMs;
-        originalGoldenPathSilentThreadMinScore          = aiConfig.goldenPathSilentThreadMinScore;
-        originalGoldenPathSilentThreadRenderLimit       = aiConfig.goldenPathSilentThreadRenderLimit;
-        originalGoldenPathSilentThreadThresholdMs       = aiConfig.goldenPathSilentThreadThresholdMs;
-        originalGoldenPathStallFindingRenderEnabled     = aiConfig.goldenPathStallFindingRenderEnabled;
-        originalGoldenPathStallFindingRenderLimit       = aiConfig.goldenPathStallFindingRenderLimit;
-        originalVectorDimension   = aiConfig.vectorDimension;
-        originalWarn              = logger.warn;
+        originalExecSync = child_process.execSync;
+        originalWarn     = logger.warn;
 
-        aiConfig.goldenPathRecentOpenPrRenderLimit       = 5;
-        aiConfig.goldenPathTopNodeRenderLimit            = 10;
-        aiConfig.goldenPathStaleAssignmentRenderLimit    = 20;
-        aiConfig.goldenPathStaleAssignmentThresholdMs    = 7 * 24 * 60 * 60 * 1000;
-        aiConfig.goldenPathSilentThreadMinScore          = 14;
-        aiConfig.goldenPathSilentThreadRenderLimit       = 10;
-        aiConfig.goldenPathSilentThreadThresholdMs       = 14 * 24 * 60 * 60 * 1000;
-        aiConfig.goldenPathStallFindingRenderEnabled     = true;
-        aiConfig.goldenPathStallFindingRenderLimit       = 10;
+        gpConfigSnapshot                                      = GoldenPathSynthesizer.createConfigSnapshot();
+        gpConfigSnapshot.goldenPathRecentOpenPrRenderLimit    = 5;
+        gpConfigSnapshot.goldenPathTopNodeRenderLimit         = 10;
+        gpConfigSnapshot.goldenPathStaleAssignmentRenderLimit = 20;
+        gpConfigSnapshot.goldenPathStaleAssignmentThresholdMs = 7 * 24 * 60 * 60 * 1000;
+        gpConfigSnapshot.goldenPathSilentThreadMinScore       = 14;
+        gpConfigSnapshot.goldenPathSilentThreadRenderLimit    = 10;
+        gpConfigSnapshot.goldenPathSilentThreadThresholdMs    = 14 * 24 * 60 * 60 * 1000;
+        gpConfigSnapshot.goldenPathStallFindingRenderEnabled  = true;
+        gpConfigSnapshot.goldenPathStallFindingRenderLimit    = 10;
+        GoldenPathSynthesizer.configSnapshot                  = gpConfigSnapshot;
     });
 
     test.afterEach(() => {
-        aiConfig.embeddingModel    = originalEmbeddingModel;
-        aiConfig.embeddingProvider = originalEmbeddingProvider;
-        aiConfig.goldenPathRecentOpenPrRenderLimit       = originalGoldenPathRecentOpenPrRenderLimit;
-        aiConfig.goldenPathTopNodeRenderLimit            = originalGoldenPathTopNodeRenderLimit;
-        aiConfig.goldenPathStaleAssignmentRenderLimit    = originalGoldenPathStaleAssignmentRenderLimit;
-        aiConfig.goldenPathStaleAssignmentThresholdMs    = originalGoldenPathStaleAssignmentThresholdMs;
-        aiConfig.goldenPathSilentThreadMinScore          = originalGoldenPathSilentThreadMinScore;
-        aiConfig.goldenPathSilentThreadRenderLimit       = originalGoldenPathSilentThreadRenderLimit;
-        aiConfig.goldenPathSilentThreadThresholdMs       = originalGoldenPathSilentThreadThresholdMs;
-        aiConfig.goldenPathStallFindingRenderEnabled     = originalGoldenPathStallFindingRenderEnabled;
-        aiConfig.goldenPathStallFindingRenderLimit       = originalGoldenPathStallFindingRenderLimit;
-        aiConfig.vectorDimension   = originalVectorDimension;
-        child_process.execSync     = originalExecSync;
-        logger.warn                = originalWarn;
+        GoldenPathSynthesizer.configSnapshot = null;
+        gpConfigSnapshot                     = null;
+        child_process.execSync               = originalExecSync;
+        logger.warn                          = originalWarn;
 
         if (fs.existsSync(tmpHandoffFile)) {
             try { fs.unlinkSync(tmpHandoffFile); } catch(e) {}
@@ -400,7 +371,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const originalGetGraphCollection   = StorageRouter.getGraphCollection;
         const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
         const originalEmbedText            = TextEmbeddingService.embedText;
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         StorageRouter.getGraphCollection = async () => ({ query: async () => ({ ids: [['mock-id']], distances: [[0.1]] }) });
         StorageRouter.getSummaryCollection = async () => ({ get: async () => ({ documents: ['mock document'] }) });
@@ -461,7 +432,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const originalGetGraphCollection   = StorageRouter.getGraphCollection;
         const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
         const originalEmbedText            = TextEmbeddingService.embedText;
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         const now      = new Date();
         const hoursAgo = h => new Date(now.getTime() - h * 3600 * 1000).toISOString();
@@ -620,7 +591,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const originalEmbedText            = TextEmbeddingService.embedText;
         const originalFetchOpenPRs         = GoldenPathSynthesizer.fetchOpenPRs;
         const issuesDir                    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-zero-candidate-issues-'));
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         fs.mkdirSync(path.dirname(tmpHandoffFile), {recursive: true});
         fs.writeFileSync(tmpHandoffFile, [
@@ -688,7 +659,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const issuesDir                    = fs.mkdtempSync(path.join(os.tmpdir(), 'golden-path-projection-race-'));
         let   admissionReads               = 0;
 
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
         fs.writeFileSync(tmpHandoffFile, '# Last-known-good race handoff\n', 'utf8');
         StorageRouter.getGraphCollection = async () => ({query: async () => ({ids: [[]], distances: [[]]})});
         StorageRouter.getSummaryCollection = async () => ({get: async () => ({documents: ['mock document']})});
@@ -735,7 +706,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const originalRenderSlice          = GoldenPathSynthesizer.constructor.renderConceptSliceHandoffSection;
         const issuesDir                    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-concept-slice-split-'));
         const companionFile                = path.join(path.dirname(tmpHandoffFile), 'sandman_concept_slice.md');
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         StorageRouter.getGraphCollection   = async () => ({ query: async () => ({ ids: [[]], distances: [[]] }) });
         StorageRouter.getSummaryCollection = async () => ({ get: async () => ({ documents: ['mock document'] }) });
@@ -782,7 +753,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const originalFetchOpenPRs         = GoldenPathSynthesizer.fetchOpenPRs;
         const issuesDir                    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-degraded-pr-issues-'));
         const now                          = new Date('2026-06-25T02:00:00.000Z');
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         fs.mkdirSync(path.dirname(tmpHandoffFile), {recursive: true});
         fs.writeFileSync(tmpHandoffFile, [
@@ -876,7 +847,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const originalEmbedText            = TextEmbeddingService.embedText;
         const originalFetchOpenPRs         = GoldenPathSynthesizer.fetchOpenPRs;
         const issuesDir                    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-recent-pr-issues-'));
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         StorageRouter.getGraphCollection = async () => ({ query: async () => ({ ids: [['mock-id']], distances: [[0.1]] }) });
         StorageRouter.getSummaryCollection = async () => ({ get: async () => ({ documents: ['mock document'] }) });
@@ -910,7 +881,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const issuesDir                    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-stale-issues-'));
         const chunkDir                     = path.join(issuesDir, 'chunk-1');
         const now                          = new Date('2026-05-28T00:00:00Z');
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         fs.mkdirSync(chunkDir, {recursive: true});
         fs.writeFileSync(path.join(chunkDir, 'issue-9001.md'), [
@@ -1016,7 +987,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const chunkDir                         = path.join(issuesDir, 'chunk-1');
         const now                              = new Date('2026-05-28T00:00:00Z');
         const goldenIssueId                    = `issue-silent-golden-${Date.now()}`;
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         fs.mkdirSync(chunkDir, {recursive: true});
         fs.writeFileSync(path.join(chunkDir, 'issue-9401.md'), [
@@ -1780,7 +1751,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const discussionId                 = `discussion-governance-${suffix}`;
         const epicId                       = `issue-epic-${suffix}`;
         const notReadyId                   = `issue-not-ready-${suffix}`;
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         fs.mkdirSync(chunkDir, {recursive: true});
         fs.writeFileSync(path.join(chunkDir, 'issue-13750.md'), [
@@ -1948,7 +1919,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const chunkDir                     = path.join(issuesDir, 'chunk-1');
         const now                          = new Date('2026-06-22T02:55:31Z');
         const blogId                       = 'issue-10074';
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         fs.mkdirSync(chunkDir, {recursive: true});
         fs.writeFileSync(path.join(chunkDir, 'issue-13750.md'), [
@@ -2032,7 +2003,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const suffix                       = `${process.pid}-${Date.now()}`;
         const staleId                      = `issue-stale-guide-${suffix}`;
         const notReadyId                   = `issue-empty-not-ready-${suffix}`;
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         GraphService.upsertNode({
             id        : 'frontier',
@@ -2101,7 +2072,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const blockerId                    = `issue-route-ledger-blocker-${suffix}`;
         const sourceAId                    = `issue-route-ledger-source-a-${suffix}`;
         const sourceBId                    = `discussion-route-ledger-source-b-${suffix}`;
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         GraphService.upsertNode({
             id        : 'frontier',
@@ -2343,7 +2314,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const suffix                       = `${process.pid}-${Date.now()}`;
         const staleId                      = `issue-stale-query-guide-${suffix}`;
         const queryError                   = new Error('Error executing plan: Internal error: Error finding id');
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         GraphService.upsertNode({
             id        : 'frontier',
@@ -2425,7 +2396,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const suffix                       = `${process.pid}-${Date.now()}`;
         const staleId                      = `issue-stale-guide-nonzero-${suffix}`;
         const readyId                      = `issue-current-guide-${suffix}`;
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         GraphService.upsertNode({
             id        : 'frontier',
@@ -2484,8 +2455,8 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const originalEmbedText            = TextEmbeddingService.embedText;
         const originalFetchOpenPRs         = GoldenPathSynthesizer.fetchOpenPRs;
         const issuesDir                    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-recent-pr-issues-'));
-        aiConfig.vectorDimension = 2;
-        aiConfig.goldenPathRecentOpenPrRenderLimit = 10;
+        gpConfigSnapshot.vectorDimension = 2;
+        gpConfigSnapshot.goldenPathRecentOpenPrRenderLimit = 10;
 
         StorageRouter.getGraphCollection = async () => ({ query: async () => ({ ids: [['mock-id']], distances: [[0.1]] }) });
         StorageRouter.getSummaryCollection = async () => ({ get: async () => ({ documents: ['mock document'] }) });
@@ -2532,7 +2503,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const originalGenerate             = OpenAiCompatible.prototype.generate;
         const suffix                       = `${process.pid}-${Date.now()}`;
         const readyId                      = `issue-strategic-fallback-${suffix}`;
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         GraphService.upsertNode({
             id        : readyId,
@@ -3118,7 +3089,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const originalFetchOpenPRs         = GoldenPathSynthesizer.fetchOpenPRs;
         const issuesDir                    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-stall-render-issues-'));
         const chunkDir                     = path.join(issuesDir, 'chunk-1');
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
         fs.mkdirSync(chunkDir, {recursive: true});
 
         fs.writeFileSync(path.join(chunkDir, 'issue-9701.md'), [
@@ -3189,9 +3160,9 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const warnings                     = [];
         let   queryCalls                   = 0;
 
-        aiConfig.embeddingProvider = 'gemini';
-        aiConfig.embeddingModel    = 'gemini-embedding-001';
-        aiConfig.vectorDimension   = 4096;
+        gpConfigSnapshot.embeddingProvider = 'gemini';
+        gpConfigSnapshot.embeddingModel    = 'gemini-embedding-001';
+        gpConfigSnapshot.vectorDimension   = 4096;
 
         StorageRouter.getGraphCollection = async () => ({
             query: async () => {
@@ -3230,7 +3201,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const OpenAiCompatible             = (await import('../../../../../../ai/provider/OpenAiCompatible.mjs')).default;
         const originalGenerate             = OpenAiCompatible.prototype.generate;
 
-        aiConfig.vectorDimension = 2;
+        gpConfigSnapshot.vectorDimension = 2;
 
         // Deterministic, realistic-shaped ids: these fixtures are this test's positive subjects
         // and must FLOW through scoring. The routing layer's provenance guard is STAMP-based
@@ -3429,6 +3400,16 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             {undigested: 40, digested: 100, recentCycles: [], axisErrors: {recentCycles: 'read-failed'}});
         expect(degradedCycles).not.toContain('REM consolidation stalled');
         expect(degradedCycles).toContain('frontier unanchored');
+    });
+
+    test('beforeSetConfigSnapshot rejects incomplete snapshots and accepts createConfigSnapshot()', () => {
+        expect(() => {
+            GoldenPathSynthesizer.configSnapshot = {};
+        }).toThrow(/GoldenPathSynthesizer: configSnapshot must be an isolated snapshot/);
+
+        const validSnapshot = GoldenPathSynthesizer.createConfigSnapshot();
+        GoldenPathSynthesizer.configSnapshot = validSnapshot;
+        expect(GoldenPathSynthesizer.configSnapshot).toBe(validSnapshot);
     });
 });
 
@@ -3694,5 +3675,9 @@ test.describe('GoldenPathSynthesizer.hasCrossFamilyReview — author family from
         } finally {
             await fs.rm(tmp, {recursive: true, force: true});
         }
+    });
+
+    test('zero shared-config mutations (#1091)', () => {
+        expect(findSharedConfigMutations(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'))).toEqual([]);
     });
 });
