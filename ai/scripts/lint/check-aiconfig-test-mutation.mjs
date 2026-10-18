@@ -6,12 +6,12 @@
  * removed that copy. Brain owns both the Agent OS config contract and the tests this guard scans;
  * the Engine package is never a fallback distribution channel for this implementation.
  */
-import * as acorn            from 'acorn';
-import {execSync, spawnSync} from 'node:child_process';
-import {readFileSync}        from 'node:fs';
-import path                  from 'node:path';
-import process               from 'node:process';
-import {fileURLToPath}       from 'node:url';
+import * as acorn                     from 'acorn';
+import {execSync, spawnSync}          from 'node:child_process';
+import {readFileSync, writeFileSync}  from 'node:fs';
+import path                           from 'node:path';
+import process                        from 'node:process';
+import {fileURLToPath}                from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -298,12 +298,15 @@ const DB_PATH_MUTATION_GLOBAL = new RegExp(DB_PATH_MUTATION.source, 'g');
  * guard prints the current measured count on every run; that printout is the receipt, and no number
  * written here is one.
  *
- * **So this rule is deliberately NOT gating.** Turning it on today would red the files whose correct
- * fix is an injected config snapshot, not an escape marker, and a gate that gets muted within a day
- * teaches the next reader the gate is optional. It ships as a measured, tested, REPORT-ONLY rule: the
- * surface stops being invisible, and promoting it to gating is a separate, deliberate step once those
- * files have a real isolation story. Per-leaf escape markers are explicitly NOT that story — they are
- * how a class of leaves becomes a class of unexamined exemptions.
+ * **So the count is deliberately NOT gating — its growth is.** Turning the count on today would red
+ * the files whose correct fix is an injected config snapshot, not an escape marker, and a gate that
+ * gets muted within a day teaches the next reader the gate is optional. Every hit is still detected
+ * and printed, but what fails the build is a file holding more writes than its ceiling
+ * ({@link loadCeilings}): the count it had when the ratchet was seeded, and none for a file the
+ * ceilings never name. Conversions only move the number down, and nothing moves it back up. Gating
+ * the whole count stays a separate, deliberate step for when the last ceiling reaches zero. Per-leaf
+ * escape markers are explicitly NOT that story — they are how a class of leaves becomes a class of
+ * unexamined exemptions.
  */
 export const SHARED_CONFIG_MUTATION = new RegExp(
     `(?<![\\w$])${CONFIG_ROOT}(?![\\w$])` +                    // a config-shaped root, same grammar as the DB-path rule
@@ -341,9 +344,10 @@ const SHARED_CONFIG_MUTATION_GLOBAL   = new RegExp(SHARED_CONFIG_MUTATION.source
  * DB-path rule. A spec that wants to mutate config in isolation goes through an injected snapshot
  * instead; that is the sanctioned form, not a gap this detector is trying to close.
  *
- * Report-only by design. Exported and unit-tested so the promotion to a gating rule is a wiring change
- * in one place rather than a re-derivation. Run it for the CURRENT disposition — the guard prints the
- * live measured count on every run, and no number in a comment or a decision record is a receipt.
+ * Report-only per hit; `main()` gates a file only past its ceiling. Exported and unit-tested so the
+ * promotion to a gating rule is a wiring change in one place rather than a re-derivation. Run it for
+ * the CURRENT disposition — the guard prints the live measured count on every run, and no number in a
+ * comment or a decision record is a receipt.
  *
  * @param {String} content
  * @returns {Object[]} `[{line, text, leaf}]` — one entry per offending line (1-based line numbers).
@@ -540,10 +544,10 @@ export function scanFileContent(file, content, {allowlist = ALLOWLIST} = {}) {
         // Gating: the DB-path class, honestly named. `dbPathHits` keeps its field name so the allowlist
         // scoping below stays scoped to what it always was — a DB-PATH justification.
         dbPathHits: allowlist.has(file) ? [] : GATING_RULE.detect(content),
-        // Report-only: the full B4 clause's surface. The allowlist does NOT suppress this, and that is
-        // deliberate: an allowlist entry justifies a DB-PATH mutation specifically, and extending that
-        // reasoning to an unrelated leaf is how a narrow exemption becomes a blanket bypass. Reported
-        // rather than gating, so an allowlisted file still shows its shared-config writes.
+        // Report-only per hit: the full B4 clause's surface. The allowlist does NOT suppress this, and
+        // that is deliberate: an allowlist entry justifies a DB-PATH mutation specifically, and extending
+        // that reasoning to an unrelated leaf is how a narrow exemption becomes a blanket bypass. An
+        // allowlisted file still shows its shared-config writes, and still answers to its ceiling.
         sharedConfigHits: REPORT_ONLY_RULE.detect(content),
         cloneHits        : findCloneCaptures(content)
     }
@@ -557,6 +561,87 @@ export function scanFileContent(file, content, {allowlist = ALLOWLIST} = {}) {
  */
 export function toRepoRelative(file, gitRoot) {
     return path.relative(gitRoot, path.resolve(gitRoot, file)).split(path.sep).join('/')
+}
+
+/**
+ * The sidecar holding each test file's ceiling of shared-config writes, beside this script like the
+ * folder's other registries.
+ * @type {String}
+ */
+export const CEILINGS_FILE = path.join(__dirname, 'shared-config-write-ceilings.json');
+
+/**
+ * @summary Reads the per-file ceilings of the full B4 scope: a test file may hold at most its recorded
+ * count of shared-config writes, and a file the sidecar does not name may hold none.
+ *
+ * A ceiling silences nothing — every write is still detected and printed — so it is not an escape
+ * marker by another name. It only refuses growth: a spec that gains a write, or a clean spec that
+ * acquires its first, fails while the conversions that lower the count stay green in any merge order.
+ * @param {String} [file=CEILINGS_FILE]
+ * @returns {Map<String, Number>} Repo-relative test path → ceiling.
+ */
+export function loadCeilings(file = CEILINGS_FILE) {
+    return new Map(Object.entries(JSON.parse(readFileSync(file, 'utf-8')).ceilings))
+}
+
+/**
+ * @summary Counts shared-config writes per file.
+ * @param {Array<{file: String}>} writes One entry per hit, as `main()` collects them.
+ * @returns {Map<String, Number>}
+ */
+export function countWritesByFile(writes) {
+    const counts = new Map();
+
+    writes.forEach(({file}) => counts.set(file, (counts.get(file) ?? 0) + 1));
+
+    return counts
+}
+
+/**
+ * @summary The ratchet's gating verdict: every counted file holding more writes than its ceiling.
+ * @param {Map<String, Number>} counts Per-file write counts of the scanned files.
+ * @param {Map<String, Number>} ceilings
+ * @returns {Array<{file: String, count: Number, ceiling: Number}>} Sorted by file.
+ */
+export function findCeilingBreaches(counts, ceilings) {
+    return [...counts]
+        .map(([file, count]) => ({file, count, ceiling: ceilings.get(file) ?? 0}))
+        .filter(({count, ceiling}) => count > ceiling)
+        .sort((left, right) => left.file.localeCompare(right.file))
+}
+
+/**
+ * @summary Lowers every ceiling to its file's current count and drops the ones that reach zero.
+ *
+ * It never raises a ceiling and never adds a file, so running it can only tighten the ratchet;
+ * loosening one stays a hand edit a reviewer sees in the diff. Defined over a FULL scan only: a file
+ * the scan did not read counts as zero here, which is right for a deleted spec and wrong for a spec a
+ * partial run skipped, so `main()` refuses the flag alongside explicit paths.
+ * @param {Map<String, Number>} counts Per-file write counts of a full scan.
+ * @param {Map<String, Number>} ceilings
+ * @returns {Map<String, Number>} Sorted by file.
+ */
+export function tightenCeilings(counts, ceilings) {
+    const tightened = new Map();
+
+    [...ceilings].sort(([left], [right]) => left.localeCompare(right)).forEach(([file, ceiling]) => {
+        const next = Math.min(ceiling, counts.get(file) ?? 0);
+
+        if (next > 0) tightened.set(file, next)
+    });
+
+    return tightened
+}
+
+/**
+ * @summary Rewrites the sidecar's ceilings, keeping its `$schema` description.
+ * @param {Map<String, Number>} ceilings
+ * @param {String} [file=CEILINGS_FILE]
+ */
+export function writeCeilings(ceilings, file = CEILINGS_FILE) {
+    const {$schema} = JSON.parse(readFileSync(file, 'utf-8'));
+
+    writeFileSync(file, `${JSON.stringify({$schema, ceilings: Object.fromEntries(ceilings)}, null, 4)}\n`)
 }
 
 function main() {
@@ -574,9 +659,16 @@ function main() {
     // `tree-json-lint` and `config-template-ssot-lint` already did. (The claim previously stated
     // here — that the other lint workflows are dependency-free — was false when written.)
     // lint-staged passes staged paths as positional args; `--quiet` suppresses the per-violation listing.
+    // `--tighten-ceilings` lowers the sidecar to the measured counts before judging them.
     const rawArgv   = process.argv.slice(2),
           quiet     = rawArgv.includes('-q') || rawArgv.includes('--quiet'),
+          tighten   = rawArgv.includes('--tighten-ceilings'),
           argvFiles = rawArgv.filter(arg => !arg.startsWith('-'));
+
+    if (tighten && argvFiles.length > 0) {
+        console.error('\x1b[31mcheck-aiconfig-test-mutation: --tighten-ceilings needs a full scan; drop the explicit paths.\x1b[0m');
+        process.exit(1);
+    }
 
     function collectDefaultFiles() {
         const result = spawnSync('find', ['test', '-type', 'f', '-name', '*.mjs'], {cwd: gitRoot, encoding: 'utf-8'});
@@ -619,23 +711,45 @@ function main() {
         sharedConfigHits.forEach(hit => sharedConfigWrites.push({file, ...hit}));
     }
 
-    // REPORT-ONLY, deliberately outside the exit decision. The count is printed on every run because
-    // the whole defect this rule addresses was that the surface was INVISIBLE — a gate that says
-    // "0 violations" while the real number of writes sits behind a narrower rule is a false
-    // assurance, and printing the number is the cheapest way to stop it being one again. It does not
-    // fail the build, because turning it on today would red the files whose correct fix is an
-    // injected config snapshot.
+    // The COUNT is report-only, deliberately outside the exit decision. It is printed on every run
+    // because the whole defect this rule addresses was that the surface was INVISIBLE — a gate that says
+    // "0 violations" while the real number of writes sits behind a narrower rule is a false assurance,
+    // and printing the number is the cheapest way to stop it being one again. The count does not fail
+    // the build, because turning it on today would red the files whose correct fix is an injected
+    // config snapshot; a file's GROWTH past its ceiling does, below.
     const distinctLeaves = new Set(sharedConfigWrites.map(write => write.leaf)),
-          assignCalls    = sharedConfigWrites.filter(write => write.form === 'assign-call').length;
+          assignCalls    = sharedConfigWrites.filter(write => write.form === 'assign-call').length,
+          counts         = countWritesByFile(sharedConfigWrites);
+
+    let ceilings = loadCeilings();
+
+    if (tighten) {
+        const tightened = tightenCeilings(counts, ceilings);
+
+        writeCeilings(tightened);
+        console.log(`check-aiconfig-test-mutation: --tighten-ceilings wrote ${tightened.size} ceiling(s), ` +
+            `${ceilings.size - tightened.size} dropped.`);
+        ceilings = tightened
+    }
+
+    const ceilingBreaches = findCeilingBreaches(counts, ceilings),
+          scanned         = new Set(files),
+          // A partial run judges only the files it read; a full run also sees a ceiling whose file is gone.
+          slack           = [...ceilings].filter(([file, ceiling]) =>
+              (argvFiles.length === 0 || scanned.has(file)) && (counts.get(file) ?? 0) < ceiling);
 
     console.log(`check-aiconfig-test-mutation: ${files.length} test file(s) scanned, ` +
         `${violations.length} new DB-path violation(s), ${sharedConfigWrites.length} shared-config write(s) ` +
-        `across ${distinctLeaves.size} leaf/leaves (REPORT-ONLY, ADR-0019 B4 scope: ` +
-        `${sharedConfigWrites.length - assignCalls} assignment, ${assignCalls} Object.assign).`);
+        `across ${distinctLeaves.size} leaf/leaves (count report-only, growth gated per file; ADR-0019 B4 ` +
+        `scope: ${sharedConfigWrites.length - assignCalls} assignment, ${assignCalls} Object.assign).`);
+
+    if (!quiet && slack.length > 0) {
+        console.log(`  ${slack.length} file(s) sit below their ceiling; \`--tighten-ceilings\` lowers them.`);
+    }
 
     if (!quiet && sharedConfigWrites.length > 0) {
-        console.log(`\n  B4 full scope — ${sharedConfigWrites.length} write(s) through a shared *Config root. Not gating yet;`);
-        console.log('  see the SHARED_CONFIG_MUTATION comment for the sequencing rationale. Top leaves:');
+        console.log(`\n  B4 full scope — ${sharedConfigWrites.length} write(s) through a shared *Config root. The count`);
+        console.log('  is not gating; see the SHARED_CONFIG_MUTATION comment for the sequencing rationale. Top leaves:');
 
         [...distinctLeaves]
             .map(leaf => ({leaf, n: sharedConfigWrites.filter(write => write.leaf === leaf).length}))
@@ -665,15 +779,26 @@ function main() {
         }
     }
 
-    // ONE exit decision covering both classes. Reporting Class-B and then falling through to the
+    if (ceilingBreaches.length > 0) {
+        console.error(`\x1b[31mcheck-aiconfig-test-mutation: ${ceilingBreaches.length} test file(s) above their shared-config write ceiling:\x1b[0m`);
+        if (!quiet) {
+            ceilingBreaches.forEach(({file, count, ceiling}) => console.error(`  ${file}: ${count} write(s), ceiling ${ceiling}`));
+            console.error('\nA test must not write the shared AiConfig singleton (ADR-0019 §4 B4), and a file may not');
+            console.error(`hold more such writes than its ceiling in ${path.relative(gitRoot, CEILINGS_FILE)} (a file it`);
+            console.error('does not name: 0). Isolate by construction instead, through an injected config snapshot');
+            console.error('(ai/services/shared/configSnapshot.mjs).');
+        }
+    }
+
+    // ONE exit decision covering every gating class. Reporting one and then falling through to the
     // success line would print violations and exit 0 — a gate that describes a problem instead of
     // failing on it, which is the exact shape this lint exists to prevent elsewhere.
-    if (violations.length > 0 || cloneViolations.length > 0) {
+    if (violations.length > 0 || cloneViolations.length > 0 || ceilingBreaches.length > 0) {
         process.exit(1);
     }
 
     console.log(`check-aiconfig-test-mutation: ${files.length} test file(s) scanned, 0 gating violation(s) ` +
-        `(DB-path + restore-capture). ${sharedConfigWrites.length} shared-config write(s) reported above.`);
+        `(DB-path + restore-capture + per-file ceiling). ${sharedConfigWrites.length} shared-config write(s) reported above.`);
 }
 
 const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === __filename;

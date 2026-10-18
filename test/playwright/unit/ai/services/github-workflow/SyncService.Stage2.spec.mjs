@@ -15,6 +15,7 @@ setup({
 
 import {test, expect} from '@playwright/test';
 import fs             from 'fs/promises';
+import os             from 'os';
 import path           from 'path';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
@@ -880,6 +881,80 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
 
             expect(commands.some(command => command.includes('git commit'))).toBe(true);
             expect(commands.some(command => command.includes('git push'))).toBe(true)
+        })
+    });
+
+    test.describe('the corpus emit path enforces one artifact per logical name (#457)', () => {
+        let tempRoot,
+            syncSnapshot;
+
+        const writeOriginArchived = async (relative, body = '# artifact\n') => {
+            const absolute = path.join(syncSnapshot.issueSync.archiveRoot, relative);
+
+            await fs.mkdir(path.dirname(absolute), {recursive: true});
+            await fs.writeFile(absolute, body, 'utf8');
+            return absolute
+        };
+
+        test.beforeEach(async () => {
+            tempRoot     = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'neo-emit-corpus-'));
+            syncSnapshot = SyncService.createConfigSnapshot();
+
+            const originRoot = path.join(tempRoot, syncSnapshot.repo);
+
+            syncSnapshot.issueSync.contentRootOverride = tempRoot;
+            syncSnapshot.issueSync.contentRoot         = tempRoot;
+            syncSnapshot.issueSync.originRoot          = originRoot;
+            syncSnapshot.issueSync.archiveRoot         = path.join(originRoot, 'archive');
+            SyncService.configSnapshot                 = syncSnapshot;
+            ReleaseNotesSyncer.sortedReleases          = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}]
+        });
+
+        test.afterEach(async () => {
+            SyncService.configSnapshot = null;
+            await fs.rm(tempRoot, {force: true, recursive: true})
+        });
+
+        test('AC-1: an emit run that writes a second artifact under an existing logical name rejects', async () => {
+            await writeOriginArchived('issues/v13.0.0/chunk-1/issue-42.md');
+
+            IssueSyncer.pullFromGitHub = async metadata => {
+                await writeOriginArchived('issues/v13.0.0/chunk-2/issue-42.md');
+                return {
+                    newMetadata: metadata,
+                    stats      : {pulled: {count: 1, created: 0, updated: 1, moved: 0}, dropped: {count: 0}}
+                }
+            };
+
+            await expect(SyncService.emitConversationCorpus())
+                .rejects.toThrow(/two artifacts claiming one logical name — issues\/issue-42\.md \(2 copies\)/)
+        });
+
+        test('AC-2: a clean emit run passes, and a pre-existing collision outside the files this run wrote passes', async () => {
+            await writeOriginArchived('pulls/v13.0.0/chunk-1/pr-100.md');
+            await writeOriginArchived('pulls/v13.0.0/chunk-9/pr-100.md');
+
+            IssueSyncer.pullFromGitHub = async metadata => {
+                await writeOriginArchived('issues/v13.0.0/chunk-1/issue-200.md');
+                return {
+                    newMetadata: metadata,
+                    stats      : {pulled: {count: 1, created: 1, updated: 0, moved: 0}, dropped: {count: 0}}
+                }
+            };
+
+            const result = await SyncService.emitConversationCorpus();
+
+            expect(result.facetOutcomes.every(outcome => outcome.advanced)).toBe(true)
+        });
+
+        test('AC-3: SyncService no longer imports check-content-logical-identity from neo.mjs and isolates test config via configSnapshot', async () => {
+            const source                      = await fs.readFile(path.resolve(process.cwd(), 'ai/services/github-workflow/SyncService.mjs'), 'utf8'),
+                  specSource                  = await fs.readFile(path.resolve(process.cwd(), 'test/playwright/unit/ai/services/github-workflow/SyncService.Stage2.spec.mjs'), 'utf8'),
+                  {findSharedConfigMutations} = await import('../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs');
+
+            expect(source).not.toMatch(/check-content-logical-identity/);
+            expect(findSharedConfigMutations(specSource)).toEqual([]);
+            expect(() => { SyncService.configSnapshot = {}; }).toThrow(TypeError)
         })
     })
 });
