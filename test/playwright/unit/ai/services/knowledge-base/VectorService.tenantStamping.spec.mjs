@@ -92,20 +92,19 @@ function getOnlyRow(spy) {
 }
 
 test.describe('VectorService.embed — tenant stamping (#11631)', () => {
-    let SDK, KB_VectorService, KB_DatabaseService, KB_ChromaManager, KB_Config, Logger;
+    let SDK, KB_VectorService, KB_DatabaseService, KB_ChromaManager, Logger;
     let TextEmbeddingService;
     let originalGetCollection;
     let originalEmbedTexts;
     let originalWarn;
-    let originalConfig;
+    let kbConfigSnapshot;
     let tmpDir, fixturePath;
     let warnCalls;
     let embeddingCalls;
 
     test.beforeAll(async () => {
-        SDK              = await import('../../../../../../ai/services.mjs');
-        KB_ChromaManager = SDK.KB_ChromaManager;
-        KB_Config        = SDK.KB_Config;
+        SDK                  = await import('../../../../../../ai/services.mjs');
+        KB_ChromaManager     = SDK.KB_ChromaManager;
         TextEmbeddingService = SDK.Memory_TextEmbeddingService;
 
         const VectorServiceModule   = await import('../../../../../../ai/services/knowledge-base/VectorService.mjs');
@@ -119,17 +118,6 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
         originalGetCollection = KB_ChromaManager.getKnowledgeBaseCollection.bind(KB_ChromaManager);
         originalEmbedTexts    = TextEmbeddingService.embedTexts.bind(TextEmbeddingService);
         originalWarn          = Logger.warn.bind(Logger);
-        originalConfig        = {
-            batchSize         : KB_Config.data.batchSize,
-            batchDelay        : KB_Config.data.batchDelay,
-            maxRetries        : KB_Config.data.maxRetries,
-            defaultTenantId   : KB_Config.data.defaultTenantId,
-            defaultRepoSlug   : KB_Config.data.defaultRepoSlug,
-            defaultVisibility : KB_Config.data.defaultVisibility,
-            spoofRejectionMode: KB_Config.data.spoofRejectionMode,
-            knowledgeBase     : KB_Config.data.knowledgeBase,
-            mcpSyncMaxChunks  : KB_Config.data.mcpSyncMaxChunks
-        };
 
         TextEmbeddingService.embedTexts = async (...args) => {
             embeddingCalls.push(args);
@@ -145,7 +133,7 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
         KB_ChromaManager.getKnowledgeBaseCollection = originalGetCollection;
         TextEmbeddingService.embedTexts             = originalEmbedTexts;
         Logger.warn                                 = originalWarn;
-        Object.assign(KB_Config.data, originalConfig);
+        KB_VectorService.configSnapshot             = null;
 
         if (tmpDir && fs.existsSync(tmpDir)) {
             fs.rmSync(tmpDir, {recursive: true, force: true});
@@ -153,15 +141,8 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
     });
 
     test.beforeEach(() => {
-        // KB_Config now extends Neo.state.Provider: `data` is a reactive proxy. The flat
-        // tenant keys below are registered leaves, so re-assigning them resets cleanly.
-        // `knowledgeBase` is deliberately NOT reset here: it is an unregistered nested
-        // namespace, and writing `undefined`/`null` through the reactive pipeline creates a
-        // sticky falsy parent config that blocks the nested-shape test from rebuilding the
-        // object. Leaving it untouched keeps the parent unregistered (falsy → the consumer's
-        // `aiConfig.knowledgeBase ?? aiConfig` falls back to the flat keys); the one nested
-        // test installs and tears down its own override.
-        Object.assign(KB_Config.data, {
+        kbConfigSnapshot = KB_VectorService.createConfigSnapshot();
+        Object.assign(kbConfigSnapshot, {
             batchSize         : 50,
             batchDelay        : 0,
             maxRetries        : 1,
@@ -171,10 +152,11 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
             spoofRejectionMode: 'overwrite',
             mcpSyncMaxChunks  : 50
         });
+        KB_VectorService.configSnapshot = kbConfigSnapshot;
 
-        warnCalls   = [];
+        warnCalls      = [];
         embeddingCalls = [];
-        Logger.warn = (...args) => warnCalls.push(args);
+        Logger.warn    = (...args) => warnCalls.push(args);
     });
 
     test('stamps Neo default tenant metadata before upsert', async () => {
@@ -303,7 +285,7 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
     test('reject mode fails before Chroma writes when client metadata conflicts', async () => {
         const spy = createSpyCollection();
         KB_ChromaManager.getKnowledgeBaseCollection = async () => spy;
-        KB_Config.data.spoofRejectionMode = 'reject';
+        kbConfigSnapshot.spoofRejectionMode = 'reject';
 
         writeFixtureJsonl(fixturePath, [{
             hash       : 'raw-hash-3',
@@ -330,39 +312,31 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
         const spy = createSpyCollection();
         KB_ChromaManager.getKnowledgeBaseCollection = async () => spy;
 
-        // VectorService.getTenantIsolationConfig() reads `aiConfig.knowledgeBase ?? aiConfig`,
+        // VectorService.getTenantIsolationConfig() reads `cfg.knowledgeBase ?? cfg`,
         // so a truthy nested `knowledgeBase` object takes precedence over the flat tenant keys.
-        // Under the reactive Provider, assigning an object to the (currently unregistered)
-        // `knowledgeBase` namespace registers + populates the nested leaves the consumer reads.
-        try {
-            KB_Config.data.knowledgeBase = {
-                defaultTenantId   : 'nested-tenant',
-                defaultRepoSlug   : 'nested-repo',
-                defaultVisibility : 'private',
-                spoofRejectionMode: 'overwrite'
-            };
+        kbConfigSnapshot.knowledgeBase = {
+            defaultTenantId   : 'nested-tenant',
+            defaultRepoSlug   : 'nested-repo',
+            defaultVisibility : 'private',
+            spoofRejectionMode: 'overwrite'
+        };
 
-            writeFixtureJsonl(fixturePath, [{
-                hash       : 'raw-hash-4',
-                type       : 'guide',
-                name       : 'NestedConfigDoc',
-                className  : '',
-                description: 'nested config',
-                content    : 'body'
-            }]);
+        writeFixtureJsonl(fixturePath, [{
+            hash       : 'raw-hash-4',
+            type       : 'guide',
+            name       : 'NestedConfigDoc',
+            className  : '',
+            description: 'nested config',
+            content    : 'body'
+        }]);
 
-            await KB_VectorService.embed(fixturePath);
+        await KB_VectorService.embed(fixturePath);
 
-            const row = getOnlyRow(spy);
+        const row = getOnlyRow(spy);
 
-            expect(row.metadata.tenantId).toBe('nested-tenant');
-            expect(row.metadata.repoSlug).toBe('nested-repo');
-            expect(row.metadata.visibility).toBe('private');
-        } finally {
-            // Reset to a clean falsy parent so subsequent serial tests fall back to the flat
-            // tenant keys. `null` (not `undefined`) reliably clears the reactive leaf value.
-            KB_Config.setData('knowledgeBase', null);
-        }
+        expect(row.metadata.tenantId).toBe('nested-tenant');
+        expect(row.metadata.repoSlug).toBe('nested-repo');
+        expect(row.metadata.visibility).toBe('private');
     });
 
     test('content hashes include tenant and repository identity', () => {
@@ -483,7 +457,7 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
     test('reject mode rejects a client-supplied ingestedAt before Chroma writes (#11712)', async () => {
         const spy = createSpyCollection();
         KB_ChromaManager.getKnowledgeBaseCollection = async () => spy;
-        KB_Config.data.spoofRejectionMode = 'reject';
+        kbConfigSnapshot.spoofRejectionMode = 'reject';
 
         writeFixtureJsonl(fixturePath, [{
             hash       : 'raw-hash-ingestedat-reject',

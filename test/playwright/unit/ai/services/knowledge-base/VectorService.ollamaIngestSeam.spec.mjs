@@ -15,10 +15,9 @@ setup({
     }
 });
 
-import {test, expect}     from '@playwright/test';
-import Neo                from 'neo.mjs/src/Neo.mjs';
-import * as core          from 'neo.mjs/src/core/_export.mjs';
-import {snapshotAiConfig} from '../memory-core/util.mjs';
+import {test, expect} from '@playwright/test';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 /**
  * @summary The KB ingest path driven through the NATIVE OLLAMA provider seam.
@@ -92,15 +91,13 @@ function makeChunks(count) {
 }
 
 test.describe('VectorService KB ingest — the native Ollama provider seam', () => {
-    let KB_VectorService, KB_Config, MC_Config, TextEmbeddingService;
-    let restoreKBConfig, restoreMCConfig, originalOllamaProvider;
+    let KB_VectorService, TextEmbeddingService;
+    let kbConfigSnapshot, originalOllamaProvider;
 
     test.beforeAll(async () => {
         const SDK = await import('../../../../../../ai/services.mjs');
 
-        KB_Config            = SDK.KB_Config;
         TextEmbeddingService = SDK.Memory_TextEmbeddingService;
-        MC_Config            = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
         KB_VectorService     = (await import('../../../../../../ai/services/knowledge-base/VectorService.mjs')).default;
 
         originalOllamaProvider = TextEmbeddingService.ollamaProvider;
@@ -108,27 +105,22 @@ test.describe('VectorService KB ingest — the native Ollama provider seam', () 
 
     test.afterAll(() => {
         TextEmbeddingService.ollamaProvider = originalOllamaProvider;
+        KB_VectorService.configSnapshot     = null;
     });
 
     test.beforeEach(() => {
-        // The shipped snapshot primitive rather than a hand-rolled save/restore. It captures by
-        // resolved value — the Provider's getOwnPropertyDescriptor trap misses leaves its get trap
-        // resolves — and it throws if a leaf does not already resolve, which a hand-rolled capture
-        // silently tolerates and then cannot undo.
-        restoreMCConfig = snapshotAiConfig(MC_Config, ['embeddingProvider']);
-        restoreKBConfig = snapshotAiConfig(KB_Config, [
-            'data.batchSize',
-            'data.batchDelay',
-            'data.maxRetries'
-        ]);
-
-        Object.assign(KB_Config.data, {batchSize: 50, batchDelay: 0, maxRetries: 1});
-        MC_Config.embeddingProvider = 'ollama';
+        kbConfigSnapshot = KB_VectorService.createConfigSnapshot();
+        Object.assign(kbConfigSnapshot, {
+            batchSize        : 50,
+            batchDelay       : 0,
+            maxRetries       : 1,
+            embeddingProvider: 'ollama'
+        });
+        KB_VectorService.configSnapshot = kbConfigSnapshot;
     });
 
     test.afterEach(() => {
-        restoreKBConfig?.();
-        restoreMCConfig?.();
+        KB_VectorService.configSnapshot = null;
     });
 
     test('the collection double REFUSES what ChromaDB refuses — the instrument\'s own control', async () => {
