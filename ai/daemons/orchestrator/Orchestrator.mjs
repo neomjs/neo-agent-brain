@@ -136,13 +136,13 @@ export async function initializeDatabaseSelfBootstrap(dbPath) {
  * @param {String} key
  * @returns {Boolean}
  */
-function resolveLocalDeploymentDefault(cfg) {
+function resolveLocalDeploymentDefault(cfg, deploymentMode = (OrchestratorInstance?.configSnapshot || AiConfig).orchestrator.deploymentMode) {
     if (cfg != null) return cfg;
-    return AiConfig.orchestrator.deploymentMode !== 'cloud';
+    return deploymentMode !== 'cloud';
 }
 
-function resolveDeploymentEnabled(key) {
-    return resolveLocalDeploymentDefault(AiConfig.orchestrator.localOnly[key]);
+function resolveDeploymentEnabled(key, config = (OrchestratorInstance?.configSnapshot || AiConfig)) {
+    return resolveLocalDeploymentDefault(config.orchestrator.localOnly[key], config.orchestrator.deploymentMode);
 }
 
 /**
@@ -152,12 +152,17 @@ function resolveDeploymentEnabled(key) {
  * lanes classified cloud-deployable by the deployment policy (e.g. `tenant-repo-sync`).
  *
  * @param {String} key
+ * @param {Object} [config]
  * @returns {Boolean}
  */
 // Exported so a cross-module controller (e.g. the recovery actuator's B1 compose-service selection
 // point) can consult a cloudOnly mode-gate without scattering raw `deploymentMode` reads — the
 // reactive-config-as-single-source-of-truth pattern: read resolved leaves at the use site, never re-derive.
-export function resolveCloudOnlyEnabled(key) {
+export function resolveCloudOnlyEnabled(key, config = (OrchestratorInstance?.configSnapshot || null)) {
+    if (config) {
+        return resolveCloudOnlyDefault(config.orchestrator.cloudOnly[key], config.orchestrator.deploymentMode);
+    }
+
     return resolveCloudOnlyDefault(AiConfig.orchestrator.cloudOnly[key], AiConfig.orchestrator.deploymentMode);
 }
 
@@ -262,6 +267,125 @@ export class Orchestrator extends Base {
         healthService_            : HealthService,
         spawnFn_                  : spawn,
         heavyMaintenanceLeasePath_: null
+    }
+
+    /**
+     * Test-scoped config snapshot override.
+     * Stored outside reactive `static config` so `Neo.core.Config` does not deep-clone
+     * the snapshot reference when tests mutate `snapshot.*` after assignment.
+     * @type {Object|null}
+     */
+    #configSnapshot = null
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * @summary Builds an isolated B4 config snapshot for Orchestrator unit tests.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    static createConfigSnapshot(overrides = {}) {
+        const base          = AiConfig;
+        const orch          = base.orchestrator || {};
+        const orchOverrides = overrides.orchestrator || {};
+
+        return {
+            ...(base.data || {}),
+            modelProvider    : base.modelProvider,
+            graphProvider    : base.graphProvider,
+            embeddingProvider: base.embeddingProvider,
+            dataDir          : base.dataDir,
+            backupPath       : base.backupPath,
+            ...overrides,
+            plane           : {...(base.plane || {}), ...(overrides.plane || {})},
+            ollama          : {...(base.ollama || {}), ...(overrides.ollama || {})},
+            mlx             : {...(base.mlx || {}), ...(overrides.mlx || {})},
+            lms             : {...(base.lms || {}), ...(overrides.lms || {})},
+            openAiCompatible: {...(base.openAiCompatible || {}), ...(overrides.openAiCompatible || {})},
+            localModels     : {
+                ...(base.localModels || {}),
+                ...(overrides.localModels || {}),
+                chat     : {...(base.localModels?.chat || {}), ...(overrides.localModels?.chat || {})},
+                embedding: {...(base.localModels?.embedding || {}), ...(overrides.localModels?.embedding || {})}
+            },
+            engines: {
+                ...(base.engines || {}),
+                ...(overrides.engines || {}),
+                chroma: {...(base.engines?.chroma || {}), ...(overrides.engines?.chroma || {})}
+            },
+            temporalSummary: {...(base.temporalSummary || {}), ...(overrides.temporalSummary || {})},
+            orchestrator   : {
+                ...orch,
+                deploymentMode         : orch.deploymentMode,
+                ...orchOverrides,
+                intervals              : {...(orch.intervals || {}), ...(orchOverrides.intervals || {})},
+                localOnly              : {...(orch.localOnly || {}), ...(orchOverrides.localOnly || {})},
+                cloudOnly              : {...(orch.cloudOnly || {}), ...(orchOverrides.cloudOnly || {})},
+                chroma                 : {...(orch.chroma || {}), ...(orchOverrides.chroma || {})},
+                mlx                    : {...(orch.mlx || {}), ...(orchOverrides.mlx || {})},
+                lms                    : {...(orch.lms || {}), ...(orchOverrides.lms || {})},
+                ollama                 : (orch.ollama || orchOverrides.ollama) ? {...(orch.ollama || {}), ...(orchOverrides.ollama || {})} : undefined,
+                corpusProjection       : {...(orch.corpusProjection || {}), ...(orchOverrides.corpusProjection || {})},
+                graphLogCompaction     : {...(orch.graphLogCompaction || {}), ...(orchOverrides.graphLogCompaction || {})},
+                communityReconciliation: {...(orch.communityReconciliation || {}), ...(orchOverrides.communityReconciliation || {})},
+                neuralLinkBridge       : {...(orch.neuralLinkBridge || {}), ...(orchOverrides.neuralLinkBridge || {})},
+                swarmHeartbeat         : {...(orch.swarmHeartbeat || {}), ...(orchOverrides.swarmHeartbeat || {})},
+                tenantRepoSync         : {...(orch.tenantRepoSync || {}), ...(orchOverrides.tenantRepoSync || {})},
+                heavyMaintenanceLease  : {...(orch.heavyMaintenanceLease || {}), ...(orchOverrides.heavyMaintenanceLease || {})},
+                providerReadiness      : {...(orch.providerReadiness || {}), ...(orchOverrides.providerReadiness || {})},
+                deploymentRuntimeAccess: {...(orch.deploymentRuntimeAccess || {}), ...(orchOverrides.deploymentRuntimeAccess || {})},
+                deploymentStateBridge  : {...(orch.deploymentStateBridge || {}), ...(orchOverrides.deploymentStateBridge || {})},
+                memorySaturation       : {...(orch.memorySaturation || {}), ...(orchOverrides.memorySaturation || {})},
+                restartChurn           : {...(orch.restartChurn || {}), ...(orchOverrides.restartChurn || {})},
+                recoveryActuator       : {
+                    ...(orch.recoveryActuator || {}),
+                    ...(orchOverrides.recoveryActuator || {}),
+                    healLedger        : {...(orch.recoveryActuator?.healLedger || {}), ...(orchOverrides.recoveryActuator?.healLedger || {})},
+                    systemicCircuit   : {...(orch.recoveryActuator?.systemicCircuit || {}), ...(orchOverrides.recoveryActuator?.systemicCircuit || {})},
+                    chronicUnsafeInput: {...(orch.recoveryActuator?.chronicUnsafeInput || {}), ...(orchOverrides.recoveryActuator?.chronicUnsafeInput || {})}
+                }
+            }
+        };
+    }
+
+    /**
+     * @summary Instance convenience wrapper for {@link Orchestrator.createConfigSnapshot}.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        return Orchestrator.createConfigSnapshot(overrides);
+    }
+
+    /**
+     * @param {Object|null} value
+     * @returns {Object|null}
+     */
+    beforeSetConfigSnapshot(value) {
+        if (!value) {
+            return null;
+        }
+        return value.orchestrator ? value : Orchestrator.createConfigSnapshot(value);
+    }
+
+    /**
+     * @summary Returns the active B4 config snapshot or the live AiConfig provider.
+     * @returns {Object}
+     */
+    #getConfig() {
+        return this.configSnapshot || OrchestratorInstance?.configSnapshot || AiConfig;
     }
 
     primaryRepoSyncService   = PrimaryRepoSyncService
@@ -448,7 +572,7 @@ export class Orchestrator extends Base {
      * @returns {String}
      */
     beforeGetDataDir(value) {
-        return value ?? AiConfig.orchestrator.dataDir
+        return value ?? this.#getConfig().orchestrator.dataDir
     }
 
     /**
@@ -458,7 +582,7 @@ export class Orchestrator extends Base {
      * @returns {String}
      */
     beforeGetDbPath(value) {
-        return value ?? AiConfig.orchestrator.dbPath
+        return value ?? this.#getConfig().orchestrator.dbPath
     }
 
     /**
@@ -467,9 +591,15 @@ export class Orchestrator extends Base {
      */
     beforeSetProcessSupervisorService(value) {
         return ClassSystemUtil.beforeSetInstance(value, ProcessSupervisorService, {
+<<<<<<< HEAD
             // Resolved at the use site and injected across the narrow construction seam
             // (ADR-0019 [not-ticket-ref: decision-record authority] §5.1/§5.5). The supervisor never reads the env var itself.
             supervisedTaskHeapMb   : AiConfig.orchestrator.supervisedTaskHeapMb,
+=======
+            // Resolved at the use site and injected across the narrow construction seam.
+            // The supervisor never reads the env var itself.
+            supervisedTaskHeapMb   : this.#getConfig().orchestrator.supervisedTaskHeapMb,
+>>>>>>> 4dd9884e (feat(ai): convert Orchestrator and daemon service B4 test writes (#1102))
             dataDir                : this.dataDir,
             taskDefinitions        : this.getAuthorityScopedTaskDefinitions(),
             taskStateService       : this.taskStateService,
@@ -497,7 +627,11 @@ export class Orchestrator extends Base {
      */
     beforeSetContainerHealthDiagnosisService(value) {
         // Resolved at the use site and injected — the service holds no env reader of its own.
+<<<<<<< HEAD
         const {deploymentStateBridge, memorySaturation, restartChurn} = AiConfig.orchestrator;
+=======
+        const {deploymentStateBridge, memorySaturation, restartChurn} = this.#getConfig().orchestrator;
+>>>>>>> 4dd9884e (feat(ai): convert Orchestrator and daemon service B4 test writes (#1102))
 
         // An unspannable memory window is not a tuning choice — it is a detector that cannot fire on
         // any scheduling path, and it looks identical from the outside to a service that is never
@@ -555,7 +689,7 @@ export class Orchestrator extends Base {
             // Preserve AiConfig as the source of truth while keeping this service free of a
             // non-entrypoint config import. A reader rather than a snapshot keeps a reactive
             // endpoint override visible at the diagnosis use site.
-            ollamaHostReader: () => AiConfig.ollama.host
+            ollamaHostReader: () => this.#getConfig().ollama.host
         });
     }
 
@@ -570,7 +704,7 @@ export class Orchestrator extends Base {
      * @returns {Neo.ai.daemons.services.ContainerHealthControllerService}
      */
     beforeSetContainerHealthControllerService(value) {
-        const {healLedger} = AiConfig.orchestrator.recoveryActuator;
+        const {healLedger} = this.#getConfig().orchestrator.recoveryActuator;
 
         return ClassSystemUtil.beforeSetInstance(value, ContainerHealthControllerService, {
             recoveryActuator   : this.recoveryActuatorService,
@@ -945,7 +1079,11 @@ export class Orchestrator extends Base {
                 },
                 // Freeze-from-serving: the safe terminal for a systemic / dimension-systemic fault. Fences the
                 // served collections (mirrors quarantine) AND persists a freeze-record so the autonomous re-probe
+<<<<<<< HEAD
                 // cycle can auto-unfreeze when the fault clears — in cloud there is no operator (the top weeks-bar risk).
+=======
+                // cycle can auto-unfreeze when the fault clears — in cloud there is no operator.
+>>>>>>> 4dd9884e (feat(ai): convert Orchestrator and daemon service B4 test writes (#1102))
                 freeze: createFreezeHealOperation({
                     freezeRecordsDir,
                     // Symmetric store-level fence (memory + session) — paired with the re-probe auto-unfence via the
@@ -1178,7 +1316,7 @@ export class Orchestrator extends Base {
      * @summary Runs one autonomous freeze re-probe tick (the recovery counterpart to the `freeze` actuator op):
      * for every frozen collection it re-probes health and auto-unfreezes + re-heals a cleared fault, stays frozen
      * while it persists, or contains it past the thrash cap — all under `decideFreezeReprobe`'s back-off, never an
-     * operator. In cloud a transient embedder fault must not permanently kill a collection (the top weeks-bar risk).
+     * operator. In cloud a transient embedder fault must not permanently kill a collection.
      * No-op (a cheap read only) when nothing is frozen; never throws into the poll (the caller swallows).
      * @param {Number} [now] Injected clock (epoch ms).
      * @returns {Promise<Object[]>} Per-collection re-probe outcomes, or `[]` when nothing is frozen.
@@ -1336,27 +1474,29 @@ export class Orchestrator extends Base {
 
     get swarmHeartbeatIdentity()      { return process.env.NEO_AGENT_IDENTITY?.trim() || undefined; }
     get swarmHeartbeatExplicitTargets() {
-        const raw = AiConfig.orchestrator.swarmHeartbeat.targets;
+        const raw = (this.configSnapshot || OrchestratorInstance?.configSnapshot)
+            ? this.#getConfig().orchestrator.swarmHeartbeat.targets
+            : AiConfig.orchestrator.swarmHeartbeat.targets;
         if (!raw) return null;
         const list = String(raw).split(',').map(s => s.trim()).filter(Boolean);
         return list.length > 0 ? list : null;
     }
 
-    get kbSyncEnabled()                  { return resolveCloudOnlyEnabled('kbSyncEnabled');                   }
-    get corpusProjectionEnabled()        { return AiConfig.orchestrator.corpusProjection.enabled;             }
-    get primaryDevSyncEnabled()          { return resolveDeploymentEnabled('primaryDevSyncEnabled');          }
-    get tenantRepoSyncEnabled()          { return resolveCloudOnlyEnabled('tenantRepoSyncEnabled');           }
-    get composeServiceRecoveryEnabled()  { return resolveCloudOnlyEnabled('composeServiceRecoveryEnabled');   }
-    get chromaDaemonEnabled()            { return resolveDeploymentEnabled('chromaDaemonEnabled');            }
-    get bridgeDaemonEnabled()            { return resolveDeploymentEnabled('bridgeDaemonEnabled');            }
-    get neuralLinkBridgeEnabled()        { return resolveDeploymentEnabled('neuralLinkBridgeEnabled');        }
-    get embedDaemonEnabled()             { return resolveDeploymentEnabled('embedDaemonEnabled');             }
-    get messageDaemonEnabled()           { return resolveDeploymentEnabled('messageDaemonEnabled');           }
+    get kbSyncEnabled()                  { return resolveCloudOnlyEnabled('kbSyncEnabled', this.#getConfig());                   }
+    get corpusProjectionEnabled()        { return this.#getConfig().orchestrator.corpusProjection.enabled;             }
+    get primaryDevSyncEnabled()          { return resolveDeploymentEnabled('primaryDevSyncEnabled', this.#getConfig());          }
+    get tenantRepoSyncEnabled()          { return resolveCloudOnlyEnabled('tenantRepoSyncEnabled', this.#getConfig());           }
+    get composeServiceRecoveryEnabled()  { return resolveCloudOnlyEnabled('composeServiceRecoveryEnabled', this.#getConfig());   }
+    get chromaDaemonEnabled()            { return resolveDeploymentEnabled('chromaDaemonEnabled', this.#getConfig());            }
+    get bridgeDaemonEnabled()            { return resolveDeploymentEnabled('bridgeDaemonEnabled', this.#getConfig());            }
+    get neuralLinkBridgeEnabled()        { return resolveDeploymentEnabled('neuralLinkBridgeEnabled', this.#getConfig());        }
+    get embedDaemonEnabled()             { return resolveDeploymentEnabled('embedDaemonEnabled', this.#getConfig());             }
+    get messageDaemonEnabled()           { return resolveDeploymentEnabled('messageDaemonEnabled', this.#getConfig());           }
     get embedDrainLivenessWatchdogWalDir()      { return memoryCoreConfig.memoryWal.dir; }
     get embedDrainLivenessWatchdogThresholdMs() { return memoryCoreConfig.memoryWal.embedDrainStallThresholdMs; }
     get remConsolidationWatchdogRunStateDir()   { return memoryCoreConfig.remRunStateDir; }
     get remConsolidationWatchdogThresholdMs()   { return memoryCoreConfig.remConsolidationStallThresholdMs; }
-    get heavyMaintenanceStarvationDegradeAfterMs() { return AiConfig.orchestrator.heavyMaintenanceLease.starvationDegradeAfterMs; }
+    get heavyMaintenanceStarvationDegradeAfterMs() { return this.#getConfig().orchestrator.heavyMaintenanceLease.starvationDegradeAfterMs; }
     /** @summary The Memory Core compose-service id targeted by data-integrity diagnoses. */
     get dataIntegrityServiceId() { return 'mc-server'; }
     /**
@@ -1366,7 +1506,7 @@ export class Orchestrator extends Base {
      * @returns {Function} `() => Promise<{collections:Object[]}>`
      */
     get dataIntegrityCoverageGatherer() {
-        const dataDir = AiConfig.engines.chroma.dataDir;
+        const dataDir = this.#getConfig().engines.chroma.dataDir;
         return () => auditChromaVectorCoverage({
             snapshotPath   : path.join(dataDir, 'chroma.sqlite3'),
             persistDir     : dataDir,
@@ -1387,7 +1527,7 @@ export class Orchestrator extends Base {
         const coverageGatherer  = this.dataIntegrityCoverageGatherer,
               dimensionGatherer = createLiveDimensionConsistencyGatherer({
                   storageRouter    : StorageRouter,
-                  expectedDimension: AiConfig.vectorDimension,
+                  expectedDimension: this.#getConfig().vectorDimension,
                   serviceId        : this.dataIntegrityServiceId
               }),
               serviceId         = this.dataIntegrityServiceId;
@@ -1400,14 +1540,14 @@ export class Orchestrator extends Base {
             return assembleDataIntegrityEvidence({diagnoses, serviceId});
         };
     }
-    get swarmHeartbeatEnabled()          { return resolveDeploymentEnabled('swarmHeartbeatEnabled');          }
-    get goldenPathRepoEnrichmentEnabled(){ return resolveDeploymentEnabled('goldenPathRepoEnrichmentEnabled');}
-    get graphLogCompactionEnabled()      { return AiConfig.orchestrator.graphLogCompaction.enabled;      }
+    get swarmHeartbeatEnabled()          { return resolveDeploymentEnabled('swarmHeartbeatEnabled', this.#getConfig());          }
+    get goldenPathRepoEnrichmentEnabled(){ return resolveDeploymentEnabled('goldenPathRepoEnrichmentEnabled', this.#getConfig());}
+    get graphLogCompactionEnabled()      { return this.#getConfig().orchestrator.graphLogCompaction.enabled;      }
     // local-only lane: the aggregation reads checkout-bound sources (resources/content, git log origin/dev,
     // learn/agentos/decisions), so it is disabled in a cloud profile. Runs only when the deployment allows it
     // AND the opt-in is set — both resolved leaves read at the use site.
-    get temporalSummaryEnabled()         { return resolveCloudOnlyEnabled('temporalSummaryEnabled') && AiConfig.temporalSummary.aggregationEnabled; }
-    get neuralLinkBridgeLivenessTimeoutMs() { return AiConfig.orchestrator.neuralLinkBridge.livenessProbeTimeoutMs; }
+    get temporalSummaryEnabled()         { return resolveCloudOnlyEnabled('temporalSummaryEnabled', this.#getConfig()) && this.#getConfig().temporalSummary.aggregationEnabled; }
+    get neuralLinkBridgeLivenessTimeoutMs() { return this.#getConfig().orchestrator.neuralLinkBridge.livenessProbeTimeoutMs; }
 
     /**
      * @summary Returns the entrypoint-resolved authority profile. Before `start()` captures
@@ -1415,7 +1555,7 @@ export class Orchestrator extends Base {
      * @returns {String}
      */
     getResolvedAuthorityProfile() {
-        return this.authorityProfile ?? AiConfig.orchestrator.authorityProfile
+        return this.authorityProfile ?? this.#getConfig().orchestrator.authorityProfile
     }
 
     /**
@@ -1645,10 +1785,12 @@ export class Orchestrator extends Base {
      * @returns {Object}
      */
     buildConfiguredTaskDefinitions({scriptDir, nodeBin}) {
+        const configSnapshot = this.configSnapshot || OrchestratorInstance?.configSnapshot;
         return this.buildConfiguredTaskDefinitionsService({
             scriptDir,
             nodeBin,
-            neuralLinkBridgeLivenessTimeoutMs: this.neuralLinkBridgeLivenessTimeoutMs
+            neuralLinkBridgeLivenessTimeoutMs: this.neuralLinkBridgeLivenessTimeoutMs,
+            ...(configSnapshot ? {configSnapshot} : {})
         });
     }
 
@@ -1659,11 +1801,13 @@ export class Orchestrator extends Base {
             return;
         }
 
-        this.authorityProfile = AiConfig.orchestrator.authorityProfile;
+        const config = this.#getConfig();
+
+        this.authorityProfile = config.orchestrator.authorityProfile;
         this.authorityReceipt = this.createAuthorityReceipt();
 
         const scriptDir = options.scriptDir || DEFAULT_SCRIPT_DIR;
-        const dataDir   = options.dataDir   || AiConfig.orchestrator.dataDir;
+        const dataDir   = options.dataDir   || config.orchestrator.dataDir;
 
         this.dataDir                   = dataDir;
         this.taskDefinitions   = options.taskDefinitions || this.buildConfiguredTaskDefinitions({
@@ -1671,14 +1815,14 @@ export class Orchestrator extends Base {
             nodeBin: options.nodeBin || process.argv[0]
         });
 
-        this.dbPath                    = options.dbPath   || AiConfig.orchestrator.dbPath;
+        this.dbPath                    = options.dbPath   || config.orchestrator.dbPath;
         this.logFile                   = options.logFile  || path.join(dataDir, 'orchestrator.log');
         this.stateFile                 = options.stateFile || path.join(dataDir, 'orchestrator-state.json');
         this.authorityReceiptFile       = options.authorityReceiptFile || path.join(dataDir, 'orchestrator-authority.json');
         this.heavyMaintenanceLeasePath = options.heavyMaintenanceLeasePath ?? this.heavyMaintenanceLeasePath;
         this.primaryDevSyncRootsConfig = options.primaryDevSyncRootsConfig !== undefined
             ? options.primaryDevSyncRootsConfig
-            : AiConfig.orchestrator.devSyncRoots;
+            : config.orchestrator.devSyncRoots;
         this.maintenanceDeferralLogKeys = new Set();
         this._chromaDefragPending  = false;
         this._chromaDefragInFlight = false;
@@ -1722,11 +1866,11 @@ export class Orchestrator extends Base {
         if (this.isTaskAuthorityOwned('swarm-heartbeat') && this.swarmHeartbeatEnabled) {
             try {
                 this.swarmHeartbeatService.identity        = this.swarmHeartbeatIdentity;
-                this.swarmHeartbeatService.pollIntervalMs  = AiConfig.orchestrator.intervals.swarmHeartbeatMs;
-                this.swarmHeartbeatService.targetSource    = AiConfig.orchestrator.swarmHeartbeat.targetSource;
+                this.swarmHeartbeatService.pollIntervalMs  = config.orchestrator.intervals.swarmHeartbeatMs;
+                this.swarmHeartbeatService.targetSource    = config.orchestrator.swarmHeartbeat.targetSource;
                 this.swarmHeartbeatService.explicitTargets = this.swarmHeartbeatExplicitTargets;
                 this.swarmHeartbeatService.wakeDaemonDir   = memoryCoreConfig.wakeDaemon.dataDir;
-                this.swarmHeartbeatService.harnessStateDir = path.join(AiConfig.plane.dataRoot, 'harness-state');
+                this.swarmHeartbeatService.harnessStateDir = path.join(config.plane.dataRoot, 'harness-state');
                 await this.swarmHeartbeatService.ready();
             } catch (e) {
                 this.writeLog('ERROR', `[Orchestrator] Swarm heartbeat init failed; lane disabled this run: ${e.message}`);
@@ -1738,7 +1882,7 @@ export class Orchestrator extends Base {
         await this.observeProviderLaneShapeBeforeFirstPoll();
 
         this.isPolling = true;
-        this.writeLog('INFO', `[Orchestrator] Started. authorityProfile=${this.authorityProfile} authorityReceipt=${this.authorityReceiptFile} summaryInterval=${AiConfig.orchestrator.intervals.summarySweepMs}ms kbSyncInterval=${AiConfig.orchestrator.intervals.kbSyncMs}ms poll=${AiConfig.orchestrator.intervals.pollMs}ms.`);
+        this.writeLog('INFO', `[Orchestrator] Started. authorityProfile=${this.authorityProfile} authorityReceipt=${this.authorityReceiptFile} summaryInterval=${config.orchestrator.intervals.summarySweepMs}ms kbSyncInterval=${config.orchestrator.intervals.kbSyncMs}ms poll=${config.orchestrator.intervals.pollMs}ms.`);
         this.announceDisabledLanes();
         this.poll();
     }
@@ -1769,7 +1913,7 @@ export class Orchestrator extends Base {
      * @param {Number} [deadlineMs] Bound on the boot-path wait. Defaults to the provider-readiness timeout.
      * @returns {Promise<void>}
      */
-    async observeProviderLaneShapeBeforeFirstPoll(deadlineMs = AiConfig.orchestrator.providerReadiness.timeoutMs) {
+    async observeProviderLaneShapeBeforeFirstPoll(deadlineMs = this.#getConfig().orchestrator.providerReadiness.timeoutMs) {
         if (!this.isTaskAuthorityOwned('deployment-state-bridge') || this.authorityLeaseLost) {
             return;
         }
@@ -1983,8 +2127,10 @@ export class Orchestrator extends Base {
 
     /** @summary Returns true when the Chroma supervised process exceeds max runtime. */
     isChromaRecycleDue(state, now) {
-        const maxRuntimeMs = AiConfig.orchestrator.chroma.maxRuntimeMs;
-        const lastRunAt    = state?.lastRunAt || 0;
+        const maxRuntimeMs = (this.configSnapshot || OrchestratorInstance?.configSnapshot)
+            ? this.#getConfig().orchestrator.chroma.maxRuntimeMs
+            : AiConfig.orchestrator.chroma.maxRuntimeMs;
+        const lastRunAt = state?.lastRunAt || 0;
         return Boolean(state?.running) && maxRuntimeMs > 0 && lastRunAt > 0 && (now - lastRunAt) > maxRuntimeMs;
     }
 
@@ -2010,8 +2156,9 @@ export class Orchestrator extends Base {
 
     /** @summary Resolves true when Chroma's TCP port accepts a connection. */
     probeChromaReady({timeoutMs = 2000} = {}) {
+        const config = this.#getConfig();
         return new Promise(resolve => {
-            const socket = net.connect({host: 'localhost', port: AiConfig.engines.chroma.port});
+            const socket = net.connect({host: 'localhost', port: config.engines.chroma.port});
             const finish = result => { socket.destroy(); resolve(result); };
             socket.setTimeout(timeoutMs);
             socket.once('connect', () => finish(true));
@@ -2025,6 +2172,7 @@ export class Orchestrator extends Base {
      * @returns {void}
      */
     poll() {
+        const config     = this.#getConfig();
         const leaseState = this.pulseAuthorityLease();
 
         if (leaseState === 'lost') {
@@ -2035,7 +2183,7 @@ export class Orchestrator extends Base {
             // Defer every mutating action in THIS sweep — but arm the next cadence, or one
             // contended poll silently disables every future sweep.
             if (this.isPolling) {
-                this.pollHandle = setTimeout(() => this.poll(), AiConfig.orchestrator.intervals.pollMs);
+                this.pollHandle = setTimeout(() => this.poll(), config.orchestrator.intervals.pollMs);
             }
             return;
         }
@@ -2056,7 +2204,7 @@ export class Orchestrator extends Base {
                     continue;
                 }
 
-                this.processSupervisorService.killTask('chroma', `max-runtime:${now - (state.lastRunAt || 0)}ms>${AiConfig.orchestrator.chroma.maxRuntimeMs}ms`);
+                this.processSupervisorService.killTask('chroma', `max-runtime:${now - (state.lastRunAt || 0)}ms>${config.orchestrator.chroma.maxRuntimeMs}ms`);
                 this._chromaDefragPending = true;
                 continue;
             }
@@ -2093,7 +2241,7 @@ export class Orchestrator extends Base {
         runSchedulingPipeline({
             ...buildOrchestratorSchedulingOptions({
                 orchestrator: this,
-                config      : AiConfig,
+                config,
                 now,
                 registry    : this.getAuthorityScheduledRegistry()
             })
@@ -2132,9 +2280,11 @@ export class Orchestrator extends Base {
         }
 
         if (this.isPolling) {
-            this.pollHandle = setTimeout(() => this.poll(), AiConfig.orchestrator.intervals.pollMs);
+            this.pollHandle = setTimeout(() => this.poll(), config.orchestrator.intervals.pollMs);
         }
     }
 }
 
-export default Neo.setupClass(Orchestrator);
+let OrchestratorInstance;
+OrchestratorInstance = Neo.setupClass(Orchestrator);
+export default OrchestratorInstance;

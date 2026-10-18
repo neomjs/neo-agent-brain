@@ -1,12 +1,14 @@
-import {test, expect} from '@playwright/test';
-import {spawnSync}    from 'node:child_process';
-import Database       from 'better-sqlite3';
-import fs             from 'fs-extra';
-import path           from 'path';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import AiConfig       from '../../../../../../ai/config.template.mjs';
-import {Orchestrator} from '../../../../../../ai/daemons/orchestrator/Orchestrator.mjs';
+import {test, expect}                       from '@playwright/test';
+import {spawnSync}                          from 'node:child_process';
+import {fileURLToPath}                      from 'node:url';
+import Database                             from 'better-sqlite3';
+import fs                                   from 'fs-extra';
+import path                                 from 'path';
+import Neo                                  from 'neo.mjs/src/Neo.mjs';
+import * as core                            from 'neo.mjs/src/core/_export.mjs';
+import AiConfig                             from '../../../../../../ai/config.template.mjs';
+import {findSharedConfigMutations}          from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import OrchestratorInstance, {Orchestrator} from '../../../../../../ai/daemons/orchestrator/Orchestrator.mjs';
 import {
     buildSupervisedTaskEnv,
     ProcessSupervisorService
@@ -37,23 +39,15 @@ import {
     ensureProviderActivitySchema
 } from '../../../../../../ai/services/shared/providerActivityLedger.mjs';
 
-let   testOrchestratorSeq            = 0;
-const TEST_NEURAL_LINK_BRIDGE_PORT   = 18081;
-let   savedIntervals                 = null;
-let   savedLocalOnly                 = null;
-let   savedCloudOnly                 = null;
-let   savedCorpusProjectionEnabled   = null;
-let   savedGraphLogCompaction        = null;
-let   savedGraphLogCompactionMissing = false;
-let   savedNeuralLinkBridge          = null;
-let   savedNeuralLinkBridgeMissing   = false;
-let   savedDeploymentMode            = null;
+const SPEC_PATH                    = fileURLToPath(import.meta.url);
+let   testOrchestratorSeq          = 0;
+const TEST_NEURAL_LINK_BRIDGE_PORT = 18081;
 
 /**
  * Test helper for the Orchestrator refactor shape:
- * - Operator policy values (intervals + booleans) are now Class D lazy getters reading
- *   from AiConfig — Neo.create config can't reach them. Helper injects via AiConfig.data
- *   mutation with restore-in-afterEach.
+ * - Operator policy values (intervals + booleans) are Class D lazy getters reading
+ *   from `#getConfig()` — helper injects via `OrchestratorInstance.configSnapshot` (B4)
+ *   and resets in `afterEach`.
  * - Simple-imported collaborators (Class C) are instance fields — Neo.create config
  *   can't set them either. Helper assigns directly after Neo.create.
  * - Reactive class config slots (Class A/B parent props: dataDir, taskDefinitions,
@@ -94,67 +88,56 @@ function createTestOrchestrator(config = {}) {
                 Date.now();
     }
 
-    // Save canonical AiConfig once per test; afterEach restores.
-    savedIntervals = savedIntervals || {...AiConfig.orchestrator.intervals};
-    savedLocalOnly = savedLocalOnly || {...AiConfig.orchestrator.localOnly};
-    savedCloudOnly = savedCloudOnly || {...AiConfig.orchestrator.cloudOnly};
-    if (savedGraphLogCompaction === null) {
-        savedGraphLogCompactionMissing = AiConfig.orchestrator.graphLogCompaction === undefined;
-        savedGraphLogCompaction = {...(AiConfig.orchestrator.graphLogCompaction || {})};
-    }
-    if (savedNeuralLinkBridge === null) {
-        savedNeuralLinkBridgeMissing = AiConfig.orchestrator.neuralLinkBridge === undefined;
-        savedNeuralLinkBridge = {...(AiConfig.orchestrator.neuralLinkBridge || {})};
-    }
-    savedDeploymentMode = savedDeploymentMode ?? AiConfig.orchestrator.deploymentMode;
+    const snapshot = OrchestratorInstance.configSnapshot || OrchestratorInstance.createConfigSnapshot();
+    OrchestratorInstance.configSnapshot = snapshot;
 
-    // Class D operator policy values — AiConfig.data mutation reaches lazy getters.
+    // Class D operator policy values — B4 configSnapshot reaches lazy getters.
     // Test defaults preserve the pre-refactor helper's defaults (600000ms intervals etc.).
-    AiConfig.orchestrator.intervals.summarySweepMs   = config.summarySweepIntervalMs   ?? 600000;
-    AiConfig.orchestrator.intervals.kbSyncMs         = config.kbSyncIntervalMs         ?? 600000;
-    AiConfig.orchestrator.intervals.corpusProjectionMs = config.corpusProjectionIntervalMs ?? Number.MAX_SAFE_INTEGER;
-    AiConfig.orchestrator.intervals.backupMs         = config.backupIntervalMs         ?? 86400000;
-    AiConfig.orchestrator.intervals.graphLogCompactionMs = config.graphLogCompactionIntervalMs ?? 86400000;
-    AiConfig.orchestrator.intervals.primaryDevSyncMs = config.primaryDevSyncIntervalMs ?? 600000;
-    AiConfig.orchestrator.intervals.tenantRepoSyncMs = config.tenantRepoSyncIntervalMs ?? Number.MAX_SAFE_INTEGER;
-    AiConfig.orchestrator.intervals.dreamMs          = config.dreamIntervalMs          ?? Number.MAX_SAFE_INTEGER;
-    AiConfig.orchestrator.intervals.dreamOverflowThreshold = config.dreamOverflowThreshold ?? 0.8;
-    AiConfig.orchestrator.intervals.goldenPathMs     = config.goldenPathIntervalMs     ?? Number.MAX_SAFE_INTEGER;
-    AiConfig.orchestrator.intervals.swarmHeartbeatMs = config.swarmHeartbeatIntervalMs ?? Number.MAX_SAFE_INTEGER;
-    AiConfig.orchestrator.intervals.defectLedgerDigestMs = config.defectLedgerDigestIntervalMs ?? Number.MAX_SAFE_INTEGER;
-    AiConfig.orchestrator.intervals.ciFailureIngestMs    = config.ciFailureIngestIntervalMs    ?? Number.MAX_SAFE_INTEGER;
-    if (config.pollIntervalMs !== undefined) AiConfig.orchestrator.intervals.pollMs = config.pollIntervalMs;
-    if (config.deploymentMode !== undefined) AiConfig.orchestrator.deploymentMode = config.deploymentMode;
+    snapshot.orchestrator.intervals.summarySweepMs        = config.summarySweepIntervalMs        ?? 600000;
+    snapshot.orchestrator.intervals.kbSyncMs              = config.kbSyncIntervalMs              ?? 600000;
+    snapshot.orchestrator.intervals.corpusProjectionMs    = config.corpusProjectionIntervalMs    ?? Number.MAX_SAFE_INTEGER;
+    snapshot.orchestrator.intervals.backupMs              = config.backupIntervalMs              ?? 86400000;
+    snapshot.orchestrator.intervals.graphLogCompactionMs  = config.graphLogCompactionIntervalMs  ?? 86400000;
+    snapshot.orchestrator.intervals.primaryDevSyncMs      = config.primaryDevSyncIntervalMs      ?? 600000;
+    snapshot.orchestrator.intervals.tenantRepoSyncMs      = config.tenantRepoSyncIntervalMs      ?? Number.MAX_SAFE_INTEGER;
+    snapshot.orchestrator.intervals.dreamMs               = config.dreamIntervalMs               ?? Number.MAX_SAFE_INTEGER;
+    snapshot.orchestrator.intervals.dreamOverflowThreshold = config.dreamOverflowThreshold       ?? 0.8;
+    snapshot.orchestrator.intervals.goldenPathMs          = config.goldenPathIntervalMs          ?? Number.MAX_SAFE_INTEGER;
+    snapshot.orchestrator.intervals.swarmHeartbeatMs      = config.swarmHeartbeatIntervalMs      ?? Number.MAX_SAFE_INTEGER;
+    snapshot.orchestrator.intervals.defectLedgerDigestMs  = config.defectLedgerDigestIntervalMs  ?? Number.MAX_SAFE_INTEGER;
+    snapshot.orchestrator.intervals.ciFailureIngestMs     = config.ciFailureIngestIntervalMs     ?? Number.MAX_SAFE_INTEGER;
+    if (config.pollIntervalMs !== undefined) snapshot.orchestrator.intervals.pollMs = config.pollIntervalMs;
+    if (config.deploymentMode !== undefined) snapshot.orchestrator.deploymentMode = config.deploymentMode;
 
     // `cloudOnly`, not `localOnly`: kbSync is container-plane classed, so its leaf lives in the
     // group whose null-default enables on the cloud profile. This fixture is the reason that move is
     // not free — kbSync is the canonical "schedulable heavy lane" across the specs below, so the
     // group flip inverts it for every local-mode case that uses it as a stand-in.
-    AiConfig.orchestrator.cloudOnly.kbSyncEnabled                  = config.kbSyncEnabled                  ?? true;
-    savedCorpusProjectionEnabled = savedCorpusProjectionEnabled ?? AiConfig.orchestrator.corpusProjection.enabled;
+    snapshot.orchestrator.cloudOnly.kbSyncEnabled = config.kbSyncEnabled ?? true;
     // Default-disabled in generic fixtures: dedicated projection arms opt in explicitly, so this
     // heavy lane does not compete with whichever scheduler path another test is exercising.
-    AiConfig.orchestrator.corpusProjection.enabled = config.corpusProjectionEnabled ?? false;
-    AiConfig.orchestrator.localOnly.primaryDevSyncEnabled          = config.primaryDevSyncEnabled          ?? false;
-    AiConfig.orchestrator.localOnly.bridgeDaemonEnabled            = config.bridgeDaemonEnabled            ?? true;
-    AiConfig.orchestrator.localOnly.neuralLinkBridgeEnabled        = Object.hasOwn(config, 'neuralLinkBridgeEnabled') ? config.neuralLinkBridgeEnabled : true;
+    snapshot.orchestrator.corpusProjection.enabled = config.corpusProjectionEnabled ?? false;
+    snapshot.orchestrator.localOnly.primaryDevSyncEnabled           = config.primaryDevSyncEnabled           ?? false;
+    snapshot.orchestrator.localOnly.bridgeDaemonEnabled             = config.bridgeDaemonEnabled             ?? true;
+    snapshot.orchestrator.localOnly.neuralLinkBridgeEnabled         = Object.hasOwn(config, 'neuralLinkBridgeEnabled') ? config.neuralLinkBridgeEnabled : true;
     // Default-disabled like primaryDevSyncEnabled: the embed-daemon lane has its own dedicated
     // test; every other test's supervision expectations stay scoped to the lanes under test.
-    AiConfig.orchestrator.localOnly.embedDaemonEnabled             = config.embedDaemonEnabled             ?? false;
-    AiConfig.orchestrator.localOnly.messageDaemonEnabled           = config.messageDaemonEnabled           ?? false;
-    AiConfig.orchestrator.localOnly.swarmHeartbeatEnabled          = config.swarmHeartbeatEnabled          ?? true;
-    AiConfig.orchestrator.localOnly.goldenPathRepoEnrichmentEnabled = config.goldenPathRepoEnrichmentEnabled ?? true;
+    snapshot.orchestrator.localOnly.embedDaemonEnabled              = config.embedDaemonEnabled              ?? false;
+    snapshot.orchestrator.localOnly.messageDaemonEnabled            = config.messageDaemonEnabled            ?? false;
+    snapshot.orchestrator.localOnly.swarmHeartbeatEnabled           = config.swarmHeartbeatEnabled           ?? true;
+    snapshot.orchestrator.localOnly.goldenPathRepoEnrichmentEnabled = config.goldenPathRepoEnrichmentEnabled ?? true;
 
-    AiConfig.orchestrator.cloudOnly.tenantRepoSyncEnabled = config.tenantRepoSyncEnabled ?? false;
-    AiConfig.setData('orchestrator.graphLogCompaction', {
+    snapshot.orchestrator.cloudOnly.tenantRepoSyncEnabled = config.tenantRepoSyncEnabled ?? false;
+    snapshot.orchestrator.graphLogCompaction = {
         enabled: config.graphLogCompactionEnabled ?? true,
         vacuum : config.graphLogCompactionVacuum ?? false
-    });
-    AiConfig.setData('orchestrator.neuralLinkBridge', {
+    };
+    snapshot.orchestrator.neuralLinkBridge = {
         livenessProbeTimeoutMs: config.neuralLinkBridgeLivenessTimeoutMs ?? 50
-    });
+    };
 
     const orchestrator = Neo.create(Orchestrator, {
+        configSnapshot           : snapshot,
         dataDir                  : '/tmp/orchestrator-test',
         stateFile                : '/tmp/orchestrator-test/state.json',
         logFile                  : null,
@@ -191,56 +174,8 @@ function createTestOrchestrator(config = {}) {
 }
 
 test.afterEach(() => {
-    // Restore canonical AiConfig defaults after each test (Class D lazy-getter substrate).
-    if (savedIntervals) {
-        Object.assign(AiConfig.orchestrator.intervals, savedIntervals);
-        savedIntervals = null;
-    }
-    if (savedLocalOnly) {
-        restoreConfigObject(AiConfig.orchestrator.localOnly, savedLocalOnly);
-        savedLocalOnly = null;
-    }
-    if (savedCloudOnly) {
-        restoreConfigObject(AiConfig.orchestrator.cloudOnly, savedCloudOnly);
-        savedCloudOnly = null;
-    }
-    if (savedCorpusProjectionEnabled !== null) {
-        AiConfig.orchestrator.corpusProjection.enabled = savedCorpusProjectionEnabled;
-        savedCorpusProjectionEnabled = null;
-    }
-    if (savedGraphLogCompaction) {
-        if (savedGraphLogCompactionMissing) {
-            AiConfig.setData('orchestrator.graphLogCompaction', undefined);
-        } else {
-            AiConfig.setData('orchestrator.graphLogCompaction', {...savedGraphLogCompaction});
-        }
-        savedGraphLogCompaction = null;
-        savedGraphLogCompactionMissing = false;
-    }
-    if (savedNeuralLinkBridge) {
-        if (savedNeuralLinkBridgeMissing) {
-            AiConfig.setData('orchestrator.neuralLinkBridge', undefined);
-        } else {
-            AiConfig.setData('orchestrator.neuralLinkBridge', {...savedNeuralLinkBridge});
-        }
-        savedNeuralLinkBridge = null;
-        savedNeuralLinkBridgeMissing = false;
-    }
-    if (savedDeploymentMode !== null) {
-        AiConfig.orchestrator.deploymentMode = savedDeploymentMode;
-        savedDeploymentMode = null;
-    }
+    OrchestratorInstance.configSnapshot = null;
 });
-
-function restoreConfigObject(target, prior) {
-    for (const key of Object.keys(target)) {
-        if (!(key in prior)) {
-            delete target[key];
-        }
-    }
-
-    Object.assign(target, prior);
-}
 
 test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
     test('authority profiles filter continuous supervision, scheduled work, and PID recovery (#16166)', () => {
@@ -1493,76 +1428,62 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
     });
 
     test('supervises lms via the supervisor HTTP liveness probe — (re)start only when the endpoint is down (#12262 / #12090)', async () => {
-        const saved = {
-            lms              : {...AiConfig.orchestrator.lms},
-            openAiCompatible : {...AiConfig.openAiCompatible},
-            providerReadiness: {...AiConfig.orchestrator.providerReadiness},
-            modelProvider    : AiConfig.modelProvider,
-            graphProvider    : AiConfig.graphProvider,
-            embeddingProvider: AiConfig.embeddingProvider
-        };
-
-        try {
-            AiConfig.orchestrator.lms = {enabled: true, model: 'legacy-model', port: '1234'};
-            AiConfig.openAiCompatible = {
+        OrchestratorInstance.configSnapshot = OrchestratorInstance.createConfigSnapshot({
+            modelProvider    : 'openAiCompatible',
+            graphProvider    : 'openAiCompatible',
+            embeddingProvider: 'openAiCompatible',
+            openAiCompatible : {
                 host          : 'http://127.0.0.1:1234',
                 model         : 'chat-model',
                 embeddingModel: 'embedding-model'
+            },
+            orchestrator: {
+                lms              : {enabled: true, model: 'legacy-model', port: '1234'},
+                providerReadiness: {attempts: 2, delayMs: 0, timeoutMs: 50, routineCacheTtlMs: 1000}
+            }
+        });
+
+        const orchestrator    = createTestOrchestrator({kbSyncEnabled: false});
+        const taskDefinitions = orchestrator.buildConfiguredTaskDefinitions({
+            scriptDir: path.resolve(process.cwd(), 'ai/scripts'),
+            nodeBin  : process.argv[0]
+        });
+        // `lms server start` is fire-and-exit, so liveness is the HTTP endpoint, not the launcher
+        // child. Stub the probe for determinism (no real :1234) and drive both branches.
+        let probeUp = false;
+        taskDefinitions.lms.livenessProbe = async () => probeUp;
+        orchestrator.taskDefinitions = taskDefinitions;
+        TaskStateService.configure({
+            stateFile : '/tmp/orchestrator-test/state.json',
+            taskDefinitions,
+            writeLogFn: () => {}
+        });
+        TaskStateService.taskState = createInitialTaskState(taskDefinitions);
+
+        const flushProbe = () => new Promise(resolve => setTimeout(resolve, 0));
+
+        // A fresh supervisor per case resets the probe-gate state without the test reaching into
+        // its internals; `runTask` is the restart spy. The supervisor owns the probe decision now.
+        const pollDownLms = async () => {
+            const started = [];
+            orchestrator.processSupervisorService = {
+                runTask(taskName, reason) { started.push({taskName, reason}); return true; }
             };
-            AiConfig.orchestrator.providerReadiness = {attempts: 2, delayMs: 0, timeoutMs: 50, routineCacheTtlMs: 1000};
-            AiConfig.modelProvider     = 'openAiCompatible';
-            AiConfig.graphProvider     = 'openAiCompatible';
-            AiConfig.embeddingProvider = 'openAiCompatible';
+            TaskStateService.taskState.lms.running   = false;
+            TaskStateService.taskState.lms.lastRunAt = 0;
+            orchestrator.poll();
+            await flushProbe();
+            return started;
+        };
 
-            const orchestrator    = createTestOrchestrator({kbSyncEnabled: false});
-            const taskDefinitions = orchestrator.buildConfiguredTaskDefinitions({
-                scriptDir: path.resolve(process.cwd(), 'ai/scripts'),
-                nodeBin  : process.argv[0]
-            });
-            // `lms server start` is fire-and-exit, so liveness is the HTTP endpoint, not the launcher
-            // child. Stub the probe for determinism (no real :1234) and drive both branches.
-            let probeUp = false;
-            taskDefinitions.lms.livenessProbe = async () => probeUp;
-            orchestrator.taskDefinitions = taskDefinitions;
-            TaskStateService.configure({
-                stateFile : '/tmp/orchestrator-test/state.json',
-                taskDefinitions,
-                writeLogFn: () => {}
-            });
-            TaskStateService.taskState = createInitialTaskState(taskDefinitions);
+        // Endpoint DOWN → the lane is (re)started.
+        probeUp = false;
+        expect(await pollDownLms()).toContainEqual({taskName: 'lms', reason: 'supervisor-restart'});
 
-            const flushProbe = () => new Promise(resolve => setTimeout(resolve, 0));
-
-            // A fresh supervisor per case resets the probe-gate state without the test reaching into
-            // its internals; `runTask` is the restart spy. The supervisor owns the probe decision now.
-            const pollDownLms = async () => {
-                const started = [];
-                orchestrator.processSupervisorService = {
-                    runTask(taskName, reason) { started.push({taskName, reason}); return true; }
-                };
-                TaskStateService.taskState.lms.running   = false;
-                TaskStateService.taskState.lms.lastRunAt = 0;
-                orchestrator.poll();
-                await flushProbe();
-                return started;
-            };
-
-            // Endpoint DOWN → the lane is (re)started.
-            probeUp = false;
-            expect(await pollDownLms()).toContainEqual({taskName: 'lms', reason: 'supervisor-restart'});
-
-            // Endpoint UP → silent no-op, NO restart (a healthy fire-and-exit lane must not re-spawn
-            // every cooldown).
-            probeUp = true;
-            expect((await pollDownLms()).find(entry => entry.taskName === 'lms')).toBeUndefined();
-        } finally {
-            AiConfig.orchestrator.lms = saved.lms;
-            AiConfig.openAiCompatible = saved.openAiCompatible;
-            AiConfig.orchestrator.providerReadiness = saved.providerReadiness;
-            AiConfig.modelProvider     = saved.modelProvider;
-            AiConfig.graphProvider     = saved.graphProvider;
-            AiConfig.embeddingProvider = saved.embeddingProvider;
-        }
+        // Endpoint UP → silent no-op, NO restart (a healthy fire-and-exit lane must not re-spawn
+        // every cooldown).
+        probeUp = true;
+        expect((await pollDownLms()).find(entry => entry.taskName === 'lms')).toBeUndefined();
     });
 
     test('skips chroma daemon supervision in cloud mode while keeping local default (#12019)', () => {
@@ -1913,70 +1834,50 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
     });
 
     test('passes local mlx launch model config into task definitions', () => {
-        const savedMlx = {...AiConfig.orchestrator.mlx};
+        const snapshot = Orchestrator.createConfigSnapshot();
 
-        try {
-            AiConfig.orchestrator.mlx = {
-                enabled: true,
-                model  : 'operator-configured-mlx-model',
-                port   : '11435'
-            };
+        snapshot.orchestrator.mlx = {
+            enabled: true,
+            model  : 'operator-configured-mlx-model',
+            port   : '11435'
+        };
 
-            const orchestrator = Neo.create(Orchestrator);
-            orchestrator.dataDir         = '/tmp/orchestrator-test-mlx-model';
-            orchestrator.taskDefinitions = orchestrator.buildConfiguredTaskDefinitions({
-                scriptDir: path.resolve(process.cwd(), 'ai/scripts'),
-                nodeBin  : process.argv[0]
-            });
+        const orchestrator = Neo.create(Orchestrator, {configSnapshot: snapshot});
+        orchestrator.dataDir         = '/tmp/orchestrator-test-mlx-model';
+        orchestrator.taskDefinitions = orchestrator.buildConfiguredTaskDefinitions({
+            scriptDir: path.resolve(process.cwd(), 'ai/scripts'),
+            nodeBin  : process.argv[0]
+        });
 
-            expect(orchestrator.taskDefinitions.mlx.args).toContain('operator-configured-mlx-model');
-            expect(orchestrator.taskDefinitions.mlx.args).not.toContain('google/gemma-4-26b-a4b');
-        } finally {
-            AiConfig.orchestrator.mlx = savedMlx;
-        }
+        expect(orchestrator.taskDefinitions.mlx.args).toContain('operator-configured-mlx-model');
+        expect(orchestrator.taskDefinitions.mlx.args).not.toContain('google/gemma-4-26b-a4b');
     });
 
     test('passes local lms launch port config into task definitions (#11986)', () => {
-        const saved = {
-            lms              : {...AiConfig.orchestrator.lms},
-            openAiCompatible : {...AiConfig.openAiCompatible},
-            providerReadiness: {...AiConfig.orchestrator.providerReadiness},
-            modelProvider    : AiConfig.modelProvider,
-            graphProvider    : AiConfig.graphProvider,
-            embeddingProvider: AiConfig.embeddingProvider
+        const snapshot = Orchestrator.createConfigSnapshot();
+
+        snapshot.orchestrator.lms = {enabled: true, model: 'qwen3-embedding-8b', port: '4242'};
+        snapshot.openAiCompatible = {
+            host          : 'http://127.0.0.1:4242',
+            model         : 'gemma4-26b',
+            embeddingModel: 'qwen3-8b'
         };
+        snapshot.orchestrator.providerReadiness = {attempts: 2, delayMs: 0, timeoutMs: 50, routineCacheTtlMs: 1000};
+        snapshot.modelProvider     = 'openAiCompatible';
+        snapshot.graphProvider     = 'openAiCompatible';
+        snapshot.embeddingProvider = 'openAiCompatible';
 
-        try {
-            AiConfig.orchestrator.lms = {enabled: true, model: 'qwen3-embedding-8b', port: '4242'};
-            AiConfig.openAiCompatible = {
-                host          : 'http://127.0.0.1:4242',
-                model         : 'gemma4-26b',
-                embeddingModel: 'qwen3-8b'
-            };
-            AiConfig.orchestrator.providerReadiness = {attempts: 2, delayMs: 0, timeoutMs: 50, routineCacheTtlMs: 1000};
-            AiConfig.modelProvider     = 'openAiCompatible';
-            AiConfig.graphProvider     = 'openAiCompatible';
-            AiConfig.embeddingProvider = 'openAiCompatible';
+        const orchestrator = Neo.create(Orchestrator, {configSnapshot: snapshot});
+        orchestrator.dataDir         = '/tmp/orchestrator-test-lms-port';
+        orchestrator.taskDefinitions = orchestrator.buildConfiguredTaskDefinitions({
+            scriptDir: path.resolve(process.cwd(), 'ai/scripts'),
+            nodeBin  : process.argv[0]
+        });
 
-            const orchestrator = Neo.create(Orchestrator);
-            orchestrator.dataDir         = '/tmp/orchestrator-test-lms-port';
-            orchestrator.taskDefinitions = orchestrator.buildConfiguredTaskDefinitions({
-                scriptDir: path.resolve(process.cwd(), 'ai/scripts'),
-                nodeBin  : process.argv[0]
-            });
-
-            expect(orchestrator.taskDefinitions.lms.command).toBe('lms');
-            expect(orchestrator.taskDefinitions.lms.args).toEqual(['server', 'start', '--port', '4242']);
-            expect(orchestrator.taskDefinitions.lms.pidFileName).toBe('lms.pid');
-            expect(orchestrator.taskDefinitions.lms.requiredModels).toEqual(['gemma4-26b', 'qwen3-8b']);
-        } finally {
-            AiConfig.orchestrator.lms = saved.lms;
-            AiConfig.openAiCompatible = saved.openAiCompatible;
-            AiConfig.orchestrator.providerReadiness = saved.providerReadiness;
-            AiConfig.modelProvider     = saved.modelProvider;
-            AiConfig.graphProvider     = saved.graphProvider;
-            AiConfig.embeddingProvider = saved.embeddingProvider;
-        }
+        expect(orchestrator.taskDefinitions.lms.command).toBe('lms');
+        expect(orchestrator.taskDefinitions.lms.args).toEqual(['server', 'start', '--port', '4242']);
+        expect(orchestrator.taskDefinitions.lms.pidFileName).toBe('lms.pid');
+        expect(orchestrator.taskDefinitions.lms.requiredModels).toEqual(['gemma4-26b', 'qwen3-8b']);
     });
 
     test('routes primary-dev-sync through its service coordinator', () => {
@@ -2663,10 +2564,14 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
 });
 
 test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#12138)', () => {
-    let savedChroma;
+    beforeEachSnapshot();
+    test.afterEach(()  => { OrchestratorInstance.configSnapshot = null; });
 
-    test.beforeEach(() => { savedChroma = AiConfig.orchestrator.chroma; });
-    test.afterEach(()  => { AiConfig.orchestrator.chroma = savedChroma; });
+    function beforeEachSnapshot() {
+        test.beforeEach(() => {
+            OrchestratorInstance.configSnapshot = OrchestratorInstance.createConfigSnapshot();
+        });
+    }
 
     function recycleMock(sink) {
         return {
@@ -2678,7 +2583,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     }
 
     test('isChromaRecycleDue: true only when running, ceiling > 0, and uptime exceeds it', () => {
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 1000};
+        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
         const orchestrator = createTestOrchestrator();
         const now          = Date.now();
 
@@ -2693,7 +2598,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
         // Regression for the CI-only failure: the harness sets chroma.running=true with the
         // default lastRunAt=0; with a real maxRuntimeMs this previously read as now-0 = huge
         // uptime and spuriously recycled, polluting unrelated poll() tests.
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 1000};
+        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
 
@@ -2711,12 +2616,12 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
         const orchestrator = createTestOrchestrator();
         const now          = Date.now();
 
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 0};
+        orchestrator.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 0};
         expect(orchestrator.isChromaRecycleDue({running: true, lastRunAt: now - 999999}, now)).toBe(false);
     });
 
     test('recycles an over-age chroma daemon: kills it and flags a pending defrag', () => {
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 1000};
+        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
 
@@ -2733,7 +2638,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('defers an over-age chroma recycle while the heavy-maintenance lease is active', () => {
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 1000};
+        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
         const sink         = {killed: [], started: [], supervised: []};
         const orchestrator = createTestOrchestrator();
         const now          = Date.now();
@@ -2769,7 +2674,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('does not recycle a chroma daemon within its max-runtime ceiling', () => {
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 60000};
+        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
 
@@ -2784,7 +2689,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('does not recycle chroma in cloud mode (daemon lane disabled)', () => {
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 1000};
+        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 1000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator({deploymentMode: 'cloud', kbSyncEnabled: false});
 
@@ -2799,7 +2704,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('spawns the KB defrag once the restarted chroma is connection-ready', async () => {
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 60000};
+        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
 
@@ -2818,7 +2723,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('does not start pending chroma defrag while the heavy-maintenance lease is active', async () => {
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 60000};
+        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
         const now          = Date.now();
@@ -2850,7 +2755,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
     });
 
     test('does not spawn the defrag while the restarted chroma is not yet connection-ready', async () => {
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 60000};
+        OrchestratorInstance.configSnapshot.orchestrator.chroma = {maxRuntimeMs: 60000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
 
@@ -3094,5 +2999,11 @@ test.describe('observeProviderLaneShapeBeforeFirstPoll — boot-boundary gate an
 
         expect(calls).toBe(1);
         orchestrator.destroy()
+    });
+
+    test('contains zero shared-config singleton mutations (ADR-0019 §4 B4)', () => {
+        const source = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
+
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });

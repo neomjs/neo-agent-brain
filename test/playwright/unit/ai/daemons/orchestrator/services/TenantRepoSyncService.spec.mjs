@@ -15,15 +15,16 @@ setup({
     }
 });
 
-import {buildEmbeddingProbeInput} from '../../../../../../../ai/services/shared/embeddingProbe.mjs';
-import {test, expect}             from '@playwright/test';
-import Neo                        from 'neo.mjs/src/Neo.mjs';
-import * as core                  from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager            from 'neo.mjs/src/manager/Instance.mjs';
-import fs                         from 'fs-extra';
-import os                         from 'os';
-import path                       from 'path';
-import {fileURLToPath}            from 'url';
+import {buildEmbeddingProbeInput}  from '../../../../../../../ai/services/shared/embeddingProbe.mjs';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager             from 'neo.mjs/src/manager/Instance.mjs';
+import fs                          from 'fs-extra';
+import os                          from 'os';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import {findSharedConfigMutations} from '../../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 import TenantRepoSyncService from '../../../../../../../ai/daemons/orchestrator/services/TenantRepoSyncService.mjs';
 import {TaskStateService}    from '../../../../../../../ai/daemons/orchestrator/services/TaskStateService.mjs';
@@ -4175,7 +4176,6 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('a provider timeout stops the next queued repo in this sweep and a fresh sweep can dispatch (#16995)', async () => {
         const
-            restoreMCConfig        = snapshotAiConfig(MemoryCoreConfig, ['ollama.maxInFlightEmbeddings']),
             originalOllamaProvider = TextEmbeddingService.ollamaProvider,
             taskStateService       = createTaskStateService(),
             slugs                  = ['org/provider-timeout-a', 'org/provider-timeout-b'],
@@ -4194,7 +4194,9 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         const bothEntered = new Promise(resolve => signalBothEntered = resolve);
 
-        MemoryCoreConfig.ollama.maxInFlightEmbeddings = 1;
+        const embeddingSnapshot = TextEmbeddingService.createConfigSnapshot();
+        embeddingSnapshot.ollama.maxInFlightEmbeddings = 1;
+        TextEmbeddingService.configSnapshot = embeddingSnapshot;
 
         TextEmbeddingService.ollamaProvider = {
             embed(inputs) {
@@ -4334,7 +4336,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             firstProviderSettlement?.reject(timeoutError);
             await Promise.allSettled([firstRunPromise, secondRunPromise].filter(Boolean));
             TextEmbeddingService.ollamaProvider = originalOllamaProvider;
-            restoreMCConfig();
+            TextEmbeddingService.configSnapshot = null;
         }
     });
 
@@ -4343,9 +4345,6 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             {default: embeddingConfig} = await import(
                 '../../../../../../../ai/mcp/server/memory-core/config.template.mjs'
             ),
-            originalHost      = embeddingConfig.openAiCompatible.host,
-            originalTimeout   = embeddingConfig.openAiCompatible.batchEmbeddingTimeoutMs,
-            originalUnload    = embeddingConfig.openAiCompatible.unloadRetryCount,
             originalProbe     = TextEmbeddingService.openAiCompatibleLoadedModelsProbe,
             {default: http}   = await import('node:http'),
             taskStateService  = createTaskStateService(),
@@ -4377,10 +4376,12 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 
-        embeddingConfig.openAiCompatible.host                    = `http://127.0.0.1:${server.address().port}`;
-        embeddingConfig.openAiCompatible.batchEmbeddingTimeoutMs = 300;
-        embeddingConfig.openAiCompatible.unloadRetryCount        = 0;
-        TextEmbeddingService.openAiCompatibleLoadedModelsProbe    = async () => [{
+        const embeddingSnapshot = TextEmbeddingService.createConfigSnapshot();
+        embeddingSnapshot.openAiCompatible.host                    = `http://127.0.0.1:${server.address().port}`;
+        embeddingSnapshot.openAiCompatible.batchEmbeddingTimeoutMs = 300;
+        embeddingSnapshot.openAiCompatible.unloadRetryCount        = 0;
+        TextEmbeddingService.configSnapshot                        = embeddingSnapshot;
+        TextEmbeddingService.openAiCompatibleLoadedModelsProbe     = async () => [{
             id           : embeddingConfig.openAiCompatible.embeddingModel,
             contextLength: embeddingConfig.localModels.embedding.contextLimitTokens
         }];
@@ -4473,10 +4474,8 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             });
         } finally {
             await Promise.allSettled([firstRunPromise, secondRunPromise].filter(Boolean));
-            embeddingConfig.openAiCompatible.host                    = originalHost;
-            embeddingConfig.openAiCompatible.batchEmbeddingTimeoutMs = originalTimeout;
-            embeddingConfig.openAiCompatible.unloadRetryCount        = originalUnload;
-            TextEmbeddingService.openAiCompatibleLoadedModelsProbe    = originalProbe;
+            TextEmbeddingService.configSnapshot                    = null;
+            TextEmbeddingService.openAiCompatibleLoadedModelsProbe = originalProbe;
             await new Promise(resolve => server.close(resolve));
         }
     });
@@ -5364,8 +5363,6 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             {default: embeddingConfig} = await import(
                 '../../../../../../../ai/mcp/server/memory-core/config.template.mjs'
             ),
-            originalHost               = embeddingConfig.openAiCompatible.host,
-            originalUnloadRetryCount   = embeddingConfig.openAiCompatible.unloadRetryCount,
             originalProbe              = TextEmbeddingService.openAiCompatibleLoadedModelsProbe;
 
         let connectionRefusedError, modelNotResidentError;
@@ -5382,8 +5379,10 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             const closedPort = closedServer.address().port;
             await new Promise(resolve => closedServer.close(resolve));
 
-            embeddingConfig.openAiCompatible.host             = `http://127.0.0.1:${closedPort}`;
-            embeddingConfig.openAiCompatible.unloadRetryCount = 0;
+            const embeddingSnapshot = TextEmbeddingService.createConfigSnapshot();
+            embeddingSnapshot.openAiCompatible.host             = `http://127.0.0.1:${closedPort}`;
+            embeddingSnapshot.openAiCompatible.unloadRetryCount = 0;
+            TextEmbeddingService.configSnapshot                 = embeddingSnapshot;
             TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => [{
                 id           : embeddingConfig.openAiCompatible.embeddingModel,
                 contextLength: embeddingConfig.localModels.embedding.contextLimitTokens
@@ -5392,8 +5391,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 TextEmbeddingService.embedText('connection-marker-must-not-project', 'openAiCompatible')
             );
         } finally {
-            embeddingConfig.openAiCompatible.host             = originalHost;
-            embeddingConfig.openAiCompatible.unloadRetryCount = originalUnloadRetryCount;
+            TextEmbeddingService.configSnapshot                    = null;
             TextEmbeddingService.openAiCompatibleLoadedModelsProbe = originalProbe;
         }
 
@@ -5705,23 +5703,18 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('#17439 K=2 composes real Vector resume and cumulative settlement through completion', async () => {
         const
-            SDK                                                                  = await import('../../../../../../../ai/services.mjs'),
-            {default: VectorService}                                             = await import('../../../../../../../ai/services/knowledge-base/VectorService.mjs'),
-            {KB_ChromaManager, KB_Config, KB_IngestionService: IngestionService} = SDK,
-            slugs                                                                = ['org/a', 'org/b', 'org/c', 'org/d'],
-            rows                                                                 = new Map(),
-            graphRows                                                            = new Map(),
-            upsertedIds                                                          = [],
-            ingestionCalls                                                       = [],
-            ingestionSummaries                                                   = [],
-            events                                                               = [],
-            taskStateService                                                     = createTaskStateService(),
-            original                                                             = {
-                batchConfig: {
-                    batchDelay: KB_Config.data.batchDelay,
-                    batchSize : KB_Config.data.batchSize,
-                    maxRetries: KB_Config.data.maxRetries
-                },
+            SDK                                                       = await import('../../../../../../../ai/services.mjs'),
+            {default: VectorService}                                  = await import('../../../../../../../ai/services/knowledge-base/VectorService.mjs'),
+            {KB_ChromaManager, KB_IngestionService: IngestionService} = SDK,
+            slugs                                                     = ['org/a', 'org/b', 'org/c', 'org/d'],
+            rows                                                      = new Map(),
+            graphRows                                                 = new Map(),
+            upsertedIds                                               = [],
+            ingestionCalls                                            = [],
+            ingestionSummaries                                        = [],
+            events                                                    = [],
+            taskStateService                                          = createTaskStateService(),
+            original                                                  = {
                 chromaManager                 : IngestionService.chromaManager,
                 embedTexts                    : TextEmbeddingService.embedTexts,
                 getKnowledgeBaseCollection    : KB_ChromaManager.getKnowledgeBaseCollection,
@@ -5895,7 +5888,11 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             };
 
         try {
-            Object.assign(KB_Config.data, {batchDelay: 5, batchSize: 1, maxRetries: 1});
+            VectorService.configSnapshot = Object.assign(VectorService.createConfigSnapshot(), {
+                batchDelay: 5,
+                batchSize : 1,
+                maxRetries: 1
+            });
             KB_ChromaManager.getKnowledgeBaseCollection = async () => collection;
             TextEmbeddingService.embedTexts = async texts => texts.map(() => new Array(384).fill(0));
             VectorService.resumeStateDir = path.join(tmpDir, 'tenant-slice-vector-state');
@@ -6012,7 +6009,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             expect((await IngestionService.getTenantManifest({tenantId: 't1', repoSlug: 'org/a'})).materializationReceipt,
                 'only the corpus-exhausting slice may publish the positive materialization proof').toBeTruthy();
         } finally {
-            Object.assign(KB_Config.data, original.batchConfig);
+            VectorService.configSnapshot                      = null;
             KB_ChromaManager.getKnowledgeBaseCollection       = original.getKnowledgeBaseCollection;
             TextEmbeddingService.embedTexts                   = original.embedTexts;
             VectorService.resolveEmbeddingGuardrail           = original.resolveEmbeddingGuardrail;
@@ -8834,7 +8831,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // And the scheduler reads it: measured live before this existed, a 47k-chunk first ingest
         // waited the full 30-minute cadence after every clean slice.
         const {isRepoDue} = await import('../../../../../../../ai/daemons/orchestrator/scheduling/tenantRepoSync.mjs');
-        const due = isRepoDue({
+        const due         = isRepoDue({
             repo              : {tenantId: 't1', repoSlug: 'org/rotating'},
             persistedRepoState: revisions['t1/org/rotating'],
             now               : revisions['t1/org/rotating'].lastRunAttemptAt + 1,
@@ -9968,6 +9965,11 @@ test.describe('syncTenantRepos container-plane CLI (#15748)', () => {
         expect(resolveExitCode({status: 'deferred', details: {deferredCount: 1}})).toBe(1);
         expect(resolveExitCode({status: 'starved', details: {starved: true}})).toBe(1);
         expect(resolveExitCode({status: 'skipped', details: {reason: 'no-tenant-repos-configured'}})).toBe(1);
+    });
+
+    test('spec contains zero shared-config mutations (ADR-0019 §4 B4)', async () => {
+        const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 
 });

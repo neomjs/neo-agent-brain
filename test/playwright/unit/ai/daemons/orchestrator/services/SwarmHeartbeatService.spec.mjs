@@ -1,7 +1,9 @@
-import {setup} from '../../../../../setup.mjs';
-import fs      from 'fs/promises';
-import os      from 'os';
-import path    from 'path';
+import {setup}                     from '../../../../../setup.mjs';
+import fs                          from 'fs/promises';
+import os                          from 'os';
+import path                        from 'path';
+import {fileURLToPath}             from 'url';
+import {findSharedConfigMutations} from '../../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 const appName = 'SwarmHeartbeatServiceTest';
 
@@ -1012,29 +1014,30 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         expect(emitted[0].targetIdentity).toBe('@test');
     });
 
-    test('heartbeatAlivePath() reads AiConfig.wakeDaemonHeartbeatAlivePath verbatim (#11872)', async () => {
-        const original = AiConfig.wakeDaemonHeartbeatAlivePath;
-
+    test('heartbeatAlivePath() reads wakeDaemonHeartbeatAlivePath via configSnapshot or AiConfig (#11872)', async () => {
         try {
             // Per the SSOT contract, env precedence is owned by `envBindings.wakeDaemonHeartbeatAlivePath
             // → NEO_HEARTBEAT_ALIVE_PATH` at config-load time. The service reads the resolved value
-            // directly; tests simulate env-applied state by mutating AiConfig.
+            // directly; tests simulate env-applied state via SwarmHeartbeatService.configSnapshot.
             expect(heartbeatAlivePath()).toBe(AiConfig.wakeDaemonHeartbeatAlivePath);
 
             const overridePath = path.join(os.tmpdir(), `neo-heartbeat-override-${Date.now()}.alive`);
-            AiConfig.wakeDaemonHeartbeatAlivePath = overridePath;
+            SwarmHeartbeatService.configSnapshot = SwarmHeartbeatService.createConfigSnapshot({
+                wakeDaemonHeartbeatAlivePath: overridePath
+            });
             expect(heartbeatAlivePath()).toBe(overridePath);
         } finally {
-            AiConfig.wakeDaemonHeartbeatAlivePath = original;
+            SwarmHeartbeatService.configSnapshot = null;
         }
     });
 
     test('GitHub notification wake-state lives beside the heartbeat liveness file (#12937)', async () => {
-        const original = AiConfig.wakeDaemonHeartbeatAlivePath;
-        const tmpDir   = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-github-notification-state-'));
+        const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-github-notification-state-'));
 
         try {
-            AiConfig.wakeDaemonHeartbeatAlivePath = path.join(tmpDir, 'heartbeat.alive');
+            SwarmHeartbeatService.configSnapshot = SwarmHeartbeatService.createConfigSnapshot({
+                wakeDaemonHeartbeatAlivePath: path.join(tmpDir, 'heartbeat.alive')
+            });
             expect(githubNotificationWakeStatePath()).toBe(path.join(tmpDir, 'github-notification-wake-ids.json'));
 
             applyDefaultStubs();
@@ -1048,7 +1051,7 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
                 '@test': ['ghn-1']
             });
         } finally {
-            AiConfig.wakeDaemonHeartbeatAlivePath = original;
+            SwarmHeartbeatService.configSnapshot = null;
             await fs.rm(tmpDir, {recursive: true, force: true});
         }
     });
@@ -1066,8 +1069,9 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         delete SwarmHeartbeatService.touchLivenessFile;
 
         const alivePath = path.join(os.tmpdir(), `neo-heartbeat-alive-${Date.now()}.alive`);
-        const original  = AiConfig.wakeDaemonHeartbeatAlivePath;
-        AiConfig.wakeDaemonHeartbeatAlivePath = alivePath;
+        SwarmHeartbeatService.configSnapshot = SwarmHeartbeatService.createConfigSnapshot({
+            wakeDaemonHeartbeatAlivePath: alivePath
+        });
 
         try {
             const before = Date.now();
@@ -1078,8 +1082,13 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
             const stat = await fs.stat(alivePath);
             expect(stat.mtime.getTime()).toBeGreaterThanOrEqual(before - 1000);
         } finally {
-            AiConfig.wakeDaemonHeartbeatAlivePath = original;
+            SwarmHeartbeatService.configSnapshot = null;
             await fs.rm(alivePath, {force: true});
         }
+    });
+
+    test('spec contains zero shared-config mutations (ADR-0019 §4 B4)', async () => {
+        const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });

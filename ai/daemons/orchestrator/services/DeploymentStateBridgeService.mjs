@@ -350,6 +350,30 @@ export class DeploymentStateBridgeService extends Base {
         writeLog: null
     }
 
+    static configSnapshot = null
+
+    /**
+     * Test-scoped config snapshot override.
+     * Stored outside reactive `static config` so `Neo.core.Config` does not deep-clone
+     * the snapshot reference when tests mutate `testSnapshot.*` after service construction.
+     * @type {Object|null}
+     */
+    #configSnapshot = null
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
     lastWriteAt           = 0
     writeInFlight         = false
     statsSamplesByService = new Map()
@@ -374,15 +398,134 @@ export class DeploymentStateBridgeService extends Base {
     lastLoggedSignature   = null
 
     /**
+     * @summary Builds an isolated plain-object config snapshot from `AiConfig` for B4 test isolation.
+     * @param {Object} [overrides={}] Optional nested overrides.
+     * @returns {Object}
+     */
+    static createConfigSnapshot(overrides = {}) {
+        const
+            baseOrchestrator  = AiConfig.orchestrator,
+            extraOrchestrator = overrides.orchestrator || {},
+            baseRuntimeAccess = baseOrchestrator.deploymentRuntimeAccess,
+            extraRuntime      = extraOrchestrator.deploymentRuntimeAccess || {},
+            baseBridge        = baseOrchestrator.deploymentStateBridge,
+            extraBridge       = extraOrchestrator.deploymentStateBridge || {};
+
+        return {
+            backupPath     : overrides.backupPath ?? AiConfig.backupPath,
+            heapObservation: {
+                ...AiConfig.heapObservation,
+                ...(overrides.heapObservation || {})
+            },
+            localModels: {
+                embedding: {
+                    ...AiConfig.localModels.embedding,
+                    ...(overrides.localModels?.embedding || {})
+                }
+            },
+            maintenance: {
+                backup: {
+                    ...AiConfig.maintenance.backup,
+                    ...(overrides.maintenance?.backup || {}),
+                    offHostSync: {
+                        ...AiConfig.maintenance.backup.offHostSync,
+                        ...(overrides.maintenance?.backup?.offHostSync || {})
+                    }
+                }
+            },
+            openAiCompatible: {
+                ...AiConfig.openAiCompatible,
+                ...(overrides.openAiCompatible || {})
+            },
+            providerLaneDeclaration: {
+                embedding: {
+                    ...AiConfig.providerLaneDeclaration.embedding,
+                    ...(overrides.providerLaneDeclaration?.embedding || {})
+                }
+            },
+            orchestrator: {
+                ...baseOrchestrator,
+                ...extraOrchestrator,
+                cloudOnly: {
+                    ...baseOrchestrator.cloudOnly,
+                    ...(extraOrchestrator.cloudOnly || {})
+                },
+                intervals: {
+                    ...baseOrchestrator.intervals,
+                    ...(extraOrchestrator.intervals || {})
+                },
+                providerReadiness: {
+                    ...baseOrchestrator.providerReadiness,
+                    ...(extraOrchestrator.providerReadiness || {})
+                },
+                tenantRepoSync: {
+                    ...baseOrchestrator.tenantRepoSync,
+                    ...(extraOrchestrator.tenantRepoSync || {})
+                },
+                recoveryActuator: {
+                    ...baseOrchestrator.recoveryActuator,
+                    ...(extraOrchestrator.recoveryActuator || {}),
+                    futility: {
+                        ...baseOrchestrator.recoveryActuator.futility,
+                        ...(extraOrchestrator.recoveryActuator?.futility || {})
+                    }
+                },
+                deploymentRuntimeAccess: {
+                    ...baseRuntimeAccess,
+                    ...extraRuntime,
+                    allowedServices    : [...(extraRuntime.allowedServices ?? baseRuntimeAccess.allowedServices)],
+                    readOperations     : [...(extraRuntime.readOperations ?? baseRuntimeAccess.readOperations)],
+                    lifecycleOperations: [...(extraRuntime.lifecycleOperations ?? baseRuntimeAccess.lifecycleOperations)]
+                },
+                deploymentStateBridge: {
+                    ...baseBridge,
+                    ...extraBridge,
+                    allowedServices                 : [...(extraBridge.allowedServices ?? baseBridge.allowedServices)],
+                    directProbeUrls                 : [...(extraBridge.directProbeUrls ?? baseBridge.directProbeUrls)],
+                    providerResidencyServiceKeys    : [...(extraBridge.providerResidencyServiceKeys ?? baseBridge.providerResidencyServiceKeys)],
+                    providerLaneShapeServiceKeys    : [...(extraBridge.providerLaneShapeServiceKeys ?? baseBridge.providerLaneShapeServiceKeys)],
+                    providerModelIdentityServiceKeys: [...(extraBridge.providerModelIdentityServiceKeys ?? baseBridge.providerModelIdentityServiceKeys)]
+                }
+            }
+        };
+    }
+
+    /**
+     * @summary Instance alias for {@link Neo.ai.daemons.services.DeploymentStateBridgeService.createConfigSnapshot}.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        return this.constructor.createConfigSnapshot(overrides);
+    }
+
+    /**
+     * @param {Object|null} value
+     * @returns {Object|null}
+     * @protected
+     */
+    beforeSetConfigSnapshot(value) {
+        return value && typeof value === 'object' ? value : null;
+    }
+
+    /**
+     * @returns {Object}
+     */
+    #getConfig() {
+        return this.configSnapshot || this.constructor.configSnapshot || AiConfig;
+    }
+
+    /**
      * Writes a snapshot when enabled and due.
      * @param {Object} [options]
      * @param {Boolean} [options.force=false] Bypass interval gate.
      * @returns {Promise<Object>}
      */
     async writeSnapshotIfDue({force = false, shouldWrite} = {}) {
-        const now = this.now();
+        const now          = this.now(),
+              bridgeConfig = this.#getConfig().orchestrator.deploymentStateBridge;
 
-        if (!AiConfig.orchestrator.deploymentStateBridge.enabled) {
+        if (!bridgeConfig.enabled) {
             return {ok: true, status: 'disabled'};
         }
 
@@ -390,7 +533,7 @@ export class DeploymentStateBridgeService extends Base {
             return {ok: true, status: 'in-flight'};
         }
 
-        if (!force && this.lastWriteAt > 0 && now - this.lastWriteAt < AiConfig.orchestrator.deploymentStateBridge.writeIntervalMs) {
+        if (!force && this.lastWriteAt > 0 && now - this.lastWriteAt < bridgeConfig.writeIntervalMs) {
             return {ok: true, status: 'skipped'};
         }
 
@@ -407,9 +550,9 @@ export class DeploymentStateBridgeService extends Base {
             }
 
             const result = await writeDeploymentStateSnapshot({
-                filePath: AiConfig.orchestrator.deploymentStateBridge.snapshotPath,
+                filePath: bridgeConfig.snapshotPath,
                 snapshot,
-                maxBytes: AiConfig.orchestrator.deploymentStateBridge.maxSnapshotBytes
+                maxBytes: bridgeConfig.maxSnapshotBytes
             });
 
             this.lastWriteAt = now;
@@ -424,7 +567,7 @@ export class DeploymentStateBridgeService extends Base {
             if (logged) {
                 const transition = this.lastLoggedSignature === null ? 'first write' : 'service-state changed';
 
-                this.writeLog?.('INFO', `[DeploymentStateBridge] wrote ${snapshot.services.length} service snapshots to ${AiConfig.orchestrator.deploymentStateBridge.snapshotPath} (${transition})`);
+                this.writeLog?.('INFO', `[DeploymentStateBridge] wrote ${snapshot.services.length} service snapshots to ${bridgeConfig.snapshotPath} (${transition})`);
                 this.lastLoggedSignature = signature;
             }
 
@@ -545,7 +688,7 @@ export class DeploymentStateBridgeService extends Base {
      * service or the probe itself could not run.
      */
     async collectDirectProbe({serviceKey}) {
-        const bridgeConfig = AiConfig.orchestrator.deploymentStateBridge,
+        const bridgeConfig = this.#getConfig().orchestrator.deploymentStateBridge,
               urls         = Array.isArray(bridgeConfig.directProbeUrls) ? bridgeConfig.directProbeUrls : [],
               // The URL's hostname IS the compose service key, so the declared list is self-describing
               // and cannot drift out of step with a parallel key list.
@@ -752,7 +895,8 @@ export class DeploymentStateBridgeService extends Base {
         stats   = await read('stats');
         const statsObservedAt = observationNow();
 
-        const bridgeConfig = AiConfig.orchestrator.deploymentStateBridge;
+        const cfg          = this.#getConfig(),
+              bridgeConfig = cfg.orchestrator.deploymentStateBridge;
 
         if (bridgeConfig.includeLogs) {
             // The interval is derived from the SAME inspect this snapshot publishes, so the slice
@@ -767,10 +911,10 @@ export class DeploymentStateBridgeService extends Base {
         }
 
         const eventsAllowed = bridgeConfig.includeEvents === true &&
-            Array.isArray(AiConfig.orchestrator.deploymentRuntimeAccess.readOperations) &&
-            AiConfig.orchestrator.deploymentRuntimeAccess.readOperations.includes('events');
+            Array.isArray(cfg.orchestrator.deploymentRuntimeAccess.readOperations) &&
+            cfg.orchestrator.deploymentRuntimeAccess.readOperations.includes('events');
 
-        let deaths = null,
+        let deaths    = null,
             deathRead = {
                 status           : eventsAllowed ? 'unavailable' : 'disabled',
                 source           : 'docker-events',
@@ -1045,7 +1189,7 @@ export class DeploymentStateBridgeService extends Base {
             memoryPressure,
             inspect: inspectSummary,
             stats  : summarizeStats(stats),
-            logs       : logSummary,
+            logs   : logSummary,
             deaths,
             deathRead,
             providerResidency,
@@ -1117,6 +1261,8 @@ export class DeploymentStateBridgeService extends Base {
                 ? 'broad-service-lookup-failure'
                 : degradedServices.length > 0 ? 'partial-service-observation-failure' : null;
 
+        const cfg = this.#getConfig();
+
         return {
             schemaVersion: 1,
             recordType   : 'deployment-state-bridge-diagnostics',
@@ -1124,25 +1270,25 @@ export class DeploymentStateBridgeService extends Base {
             status       : degradedServices.length > 0 ? 'degraded' : 'available',
             reason,
             runtimeAccess: {
-                enabled            : AiConfig.orchestrator.deploymentRuntimeAccess.enabled,
-                mechanism          : AiConfig.orchestrator.deploymentRuntimeAccess.mechanism,
-                composeProject     : AiConfig.orchestrator.deploymentRuntimeAccess.composeProject,
-                allowedServices    : Array.isArray(AiConfig.orchestrator.deploymentRuntimeAccess.allowedServices) ? [...AiConfig.orchestrator.deploymentRuntimeAccess.allowedServices] : [],
-                readOperations     : Array.isArray(AiConfig.orchestrator.deploymentRuntimeAccess.readOperations) ? [...AiConfig.orchestrator.deploymentRuntimeAccess.readOperations] : [],
-                lifecycleOperations: Array.isArray(AiConfig.orchestrator.deploymentRuntimeAccess.lifecycleOperations) ? [...AiConfig.orchestrator.deploymentRuntimeAccess.lifecycleOperations] : [],
-                auditMode          : AiConfig.orchestrator.deploymentRuntimeAccess.auditMode
+                enabled            : cfg.orchestrator.deploymentRuntimeAccess.enabled,
+                mechanism          : cfg.orchestrator.deploymentRuntimeAccess.mechanism,
+                composeProject     : cfg.orchestrator.deploymentRuntimeAccess.composeProject,
+                allowedServices    : Array.isArray(cfg.orchestrator.deploymentRuntimeAccess.allowedServices) ? [...cfg.orchestrator.deploymentRuntimeAccess.allowedServices] : [],
+                readOperations     : Array.isArray(cfg.orchestrator.deploymentRuntimeAccess.readOperations) ? [...cfg.orchestrator.deploymentRuntimeAccess.readOperations] : [],
+                lifecycleOperations: Array.isArray(cfg.orchestrator.deploymentRuntimeAccess.lifecycleOperations) ? [...cfg.orchestrator.deploymentRuntimeAccess.lifecycleOperations] : [],
+                auditMode          : cfg.orchestrator.deploymentRuntimeAccess.auditMode
             },
             bridgeConfig: {
-                allowedServices             : Array.isArray(AiConfig.orchestrator.deploymentStateBridge.allowedServices) ? [...AiConfig.orchestrator.deploymentStateBridge.allowedServices] : [],
+                allowedServices             : Array.isArray(cfg.orchestrator.deploymentStateBridge.allowedServices) ? [...cfg.orchestrator.deploymentStateBridge.allowedServices] : [],
                 effectiveServiceKeys        : this.getServiceKeys(),
-                includeEvents               : AiConfig.orchestrator.deploymentStateBridge.includeEvents,
-                includeLogs                 : AiConfig.orchestrator.deploymentStateBridge.includeLogs,
-                eventLookbackMs             : Number.isFinite(AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs) ? AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs : null,
-                recentDeathLimit            : Number.isFinite(AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit) ? AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit : null,
-                logTail                     : Number.isFinite(AiConfig.orchestrator.deploymentStateBridge.logTail) ? AiConfig.orchestrator.deploymentStateBridge.logTail : null,
-                logMaxBytes                 : Number.isFinite(AiConfig.orchestrator.deploymentStateBridge.logMaxBytes) ? AiConfig.orchestrator.deploymentStateBridge.logMaxBytes : null,
-                statsSampleWindow           : Number.isFinite(AiConfig.orchestrator.deploymentStateBridge.statsSampleWindow) ? AiConfig.orchestrator.deploymentStateBridge.statsSampleWindow : null,
-                providerResidencyServiceKeys: Array.isArray(AiConfig.orchestrator.deploymentStateBridge.providerResidencyServiceKeys) ? [...AiConfig.orchestrator.deploymentStateBridge.providerResidencyServiceKeys] : [],
+                includeEvents               : cfg.orchestrator.deploymentStateBridge.includeEvents,
+                includeLogs                 : cfg.orchestrator.deploymentStateBridge.includeLogs,
+                eventLookbackMs             : Number.isFinite(cfg.orchestrator.deploymentStateBridge.eventLookbackMs) ? cfg.orchestrator.deploymentStateBridge.eventLookbackMs : null,
+                recentDeathLimit            : Number.isFinite(cfg.orchestrator.deploymentStateBridge.recentDeathLimit) ? cfg.orchestrator.deploymentStateBridge.recentDeathLimit : null,
+                logTail                     : Number.isFinite(cfg.orchestrator.deploymentStateBridge.logTail) ? cfg.orchestrator.deploymentStateBridge.logTail : null,
+                logMaxBytes                 : Number.isFinite(cfg.orchestrator.deploymentStateBridge.logMaxBytes) ? cfg.orchestrator.deploymentStateBridge.logMaxBytes : null,
+                statsSampleWindow           : Number.isFinite(cfg.orchestrator.deploymentStateBridge.statsSampleWindow) ? cfg.orchestrator.deploymentStateBridge.statsSampleWindow : null,
+                providerResidencyServiceKeys: Array.isArray(cfg.orchestrator.deploymentStateBridge.providerResidencyServiceKeys) ? [...cfg.orchestrator.deploymentStateBridge.providerResidencyServiceKeys] : [],
                 // Residency keys the bridge will never evaluate, because it only ever tests the
                 // predicate against a service it ENUMERATES. The effect is PER KEY, not global: a
                 // listed key contributes nothing while any enumerated peer keeps observing normally,
@@ -1196,7 +1342,7 @@ export class DeploymentStateBridgeService extends Base {
         try {
             const probe  = this.providerResidencyProbe || probeProviderParallelModelCapacity,
                   result = await probe({
-                      timeoutMs: AiConfig.orchestrator.providerReadiness.timeoutMs,
+                      timeoutMs: this.#getConfig().orchestrator.providerReadiness.timeoutMs,
                       serviceKey,
                       observedAt
                   });
@@ -1266,7 +1412,8 @@ export class DeploymentStateBridgeService extends Base {
             return this.providerLaneShapeReceipt;
         }
 
-        const host = getOpenAiCompatibleHost(AiConfig);
+        const cfg  = this.#getConfig(),
+              host = getOpenAiCompatibleHost(cfg);
 
         if (!host) {
             return null;
@@ -1275,14 +1422,14 @@ export class DeploymentStateBridgeService extends Base {
         const probe   = this.providerLaneShapeProbe || fetchEmbeddingLaneSlots,
               payload = await probe({
                   host,
-                  timeoutMs: AiConfig.orchestrator.providerReadiness.timeoutMs
+                  timeoutMs: cfg.orchestrator.providerReadiness.timeoutMs
               }),
-              declaration = AiConfig.providerLaneDeclaration.embedding;
+              declaration = cfg.providerLaneDeclaration.embedding;
 
         this.providerLaneShapeReceipt = {
             ...classifyProviderLaneLiveShape({
                 observed                    : parseEmbeddingLaneSlots(payload),
-                safeProcessingLimitTokens   : AiConfig.localModels.embedding.safeProcessingLimitTokens,
+                safeProcessingLimitTokens   : cfg.localModels.embedding.safeProcessingLimitTokens,
                 declaredParallelSlots       : declaration.parallelSlots,
                 declaredContextTokensPerSlot: declaration.contextTokensPerSlot
             }),
@@ -1311,7 +1458,7 @@ export class DeploymentStateBridgeService extends Base {
      * @returns {Boolean}
      */
     isProviderLaneShapeServiceKey(serviceKey) {
-        return AiConfig.orchestrator.deploymentStateBridge.providerLaneShapeServiceKeys.includes(serviceKey);
+        return this.#getConfig().orchestrator.deploymentStateBridge.providerLaneShapeServiceKeys.includes(serviceKey);
     }
 
     /**
@@ -1328,7 +1475,7 @@ export class DeploymentStateBridgeService extends Base {
      * @returns {Boolean}
      */
     isProviderModelIdentityServiceKey(serviceKey) {
-        return AiConfig.orchestrator.deploymentStateBridge.providerModelIdentityServiceKeys.includes(serviceKey);
+        return this.#getConfig().orchestrator.deploymentStateBridge.providerModelIdentityServiceKeys.includes(serviceKey);
     }
 
     /**
@@ -1356,13 +1503,14 @@ export class DeploymentStateBridgeService extends Base {
      *     — `null` only when no OpenAI-compatible host is configured at all.
      */
     async collectProviderModelIdentity({observedAt = this.now()} = {}) {
-        const host = getOpenAiCompatibleHost(AiConfig);
+        const cfg  = this.#getConfig(),
+              host = getOpenAiCompatibleHost(cfg);
 
         if (!host) {
             return null;
         }
 
-        const configuredModel = AiConfig.openAiCompatible.embeddingModel;
+        const configuredModel = cfg.openAiCompatible.embeddingModel;
 
         if (!configuredModel) {
             return {
@@ -1377,8 +1525,8 @@ export class DeploymentStateBridgeService extends Base {
 
         try {
             apiKey = this.providerModelIdentityKey ? this.providerModelIdentityKey() : readSecretCarrier({
-                value    : AiConfig.openAiCompatible.apiKey,
-                file     : AiConfig.openAiCompatible.apiKeyFile,
+                value    : cfg.openAiCompatible.apiKey,
+                file     : cfg.openAiCompatible.apiKeyFile,
                 valueName: 'openAiCompatible.apiKey',
                 fileName : 'openAiCompatible.apiKeyFile'
             })
@@ -1393,7 +1541,7 @@ export class DeploymentStateBridgeService extends Base {
         try {
             servedModelIds = await probe({
                 host,
-                timeoutMs: AiConfig.orchestrator.providerReadiness.timeoutMs,
+                timeoutMs: cfg.orchestrator.providerReadiness.timeoutMs,
                 apiKey
             });
         } catch (error) {
@@ -1429,7 +1577,7 @@ export class DeploymentStateBridgeService extends Base {
     }
 
     isProviderResidencyServiceKey(serviceKey) {
-        return AiConfig.orchestrator.deploymentStateBridge.providerResidencyServiceKeys.includes(serviceKey);
+        return this.#getConfig().orchestrator.deploymentStateBridge.providerResidencyServiceKeys.includes(serviceKey);
     }
 
     /**
@@ -1454,7 +1602,7 @@ export class DeploymentStateBridgeService extends Base {
      * @returns {String[]} Configured residency keys the enumeration does not cover.
      */
     collectUnobservableResidencyKeys() {
-        const configured = AiConfig.orchestrator.deploymentStateBridge.providerResidencyServiceKeys,
+        const configured = this.#getConfig().orchestrator.deploymentStateBridge.providerResidencyServiceKeys,
               enumerated = new Set(this.getServiceKeys());
 
         return Array.isArray(configured) ? configured.filter(key => !enumerated.has(key)) : []
@@ -1539,7 +1687,7 @@ export class DeploymentStateBridgeService extends Base {
      */
     resolveEventWindow({serviceKey, observedAt}) {
         const
-            lookbackMs = AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs,
+            lookbackMs = this.#getConfig().orchestrator.deploymentStateBridge.eventLookbackMs,
             now        = Number.isFinite(observedAt) ? observedAt : this.now(),
             cursorMs   = Date.parse(this.eventCursorByService.get(serviceKey) || ''),
             sinceMs    = Number.isFinite(cursorMs)
@@ -1561,13 +1709,14 @@ export class DeploymentStateBridgeService extends Base {
      * @returns {String[]}
      */
     getServiceKeys() {
-        const allowedServices = AiConfig.orchestrator.deploymentStateBridge.allowedServices;
+        const cfg             = this.#getConfig(),
+              allowedServices = cfg.orchestrator.deploymentStateBridge.allowedServices;
 
         if (allowedServices.length > 0) {
             return allowedServices.filter(isSafeServiceKey);
         }
 
-        return AiConfig.orchestrator.deploymentRuntimeAccess.allowedServices.filter(isSafeServiceKey);
+        return cfg.orchestrator.deploymentRuntimeAccess.allowedServices.filter(isSafeServiceKey);
     }
 
     /**
@@ -1637,7 +1786,7 @@ export class DeploymentStateBridgeService extends Base {
      * @param {Object}      [options.config]     Resolved `heapObservation` leaves.
      * @returns {Object} Always an envelope; `observation` is `null` whenever `status` is `unavailable`.
      */
-    readHeapObservation({serviceKey, nodeCommand, observedAt, config = AiConfig.heapObservation}) {
+    readHeapObservation({serviceKey, nodeCommand, observedAt, config = this.#getConfig().heapObservation}) {
         const
             maxSkewMs    = config.maxSkewMs,
             staleAfterMs = config.staleAfterMs,
@@ -1769,7 +1918,7 @@ export class DeploymentStateBridgeService extends Base {
      * @param {Object}     [options.config]              Resolved `deploymentStateBridge` leaves.
      * @returns {Promise<Object>} Always an envelope; `text` is `null` whenever `status` is `unavailable`.
      */
-    async readStartupLogHead({serviceKey, incarnationStartedAt, config = AiConfig.orchestrator.deploymentStateBridge}) {
+    async readStartupLogHead({serviceKey, incarnationStartedAt, config = this.#getConfig().orchestrator.deploymentStateBridge}) {
         const unavailable = reason => ({
             schemaVersion       : 1,
             recordType          : 'deployment-startup-log-head',
@@ -1951,7 +2100,7 @@ export class DeploymentStateBridgeService extends Base {
      * @param {Object}       [options.config]               Resolved self-report channel leaves.
      * @returns {Object} Always an envelope; `disclosed` is `null` whenever `status` is `unavailable`.
      */
-    readResolvedConfig({serviceKey, nodeCommand, incarnationStartedAt, config = AiConfig.heapObservation}) {
+    readResolvedConfig({serviceKey, nodeCommand, incarnationStartedAt, config = this.#getConfig().heapObservation}) {
         const unavailable = reason => ({
             schemaVersion    : 1,
             recordType       : 'deployment-resolved-config',
@@ -2123,9 +2272,11 @@ export class DeploymentStateBridgeService extends Base {
             return {count: 0, reason: null, status: 'available'};
         }
 
+        const cfg = this.#getConfig();
+
         // The store's OWN retention bound, not the snapshot's publication cap (`recoveryRunLimit`).
         // Reading fewer entries than the store retains would silently under-subtract.
-        const limit = AiConfig.orchestrator.recoveryActuator.recoveryRunRetentionLimit;
+        const limit = cfg.orchestrator.recoveryActuator.recoveryRunRetentionLimit;
 
         // Checked before the read, because `readRecentRecoveryRunStates` answers a non-finite limit
         // with an empty array — which is indistinguishable from "no planned restarts" and would raise
@@ -2138,7 +2289,7 @@ export class DeploymentStateBridgeService extends Base {
             // Same injection seam `collectRecoveryRunSnapshot` uses, rather than a second direct
             // reader — one source of recovery-run truth, and testable.
             const reader     = this.recoveryRunStateReader || readRecentRecoveryRunStatesWithCompleteness,
-                  readResult = await reader({dir: AiConfig.orchestrator.recoveryActuator.recoveryRunStateDir, limit}),
+                  readResult = await reader({dir: cfg.orchestrator.recoveryActuator.recoveryRunStateDir, limit}),
                   // Existing tests and third-party seams may still return the legacy entries array.
                   // Production uses the completeness-bearing reader; treating a caller-injected
                   // array as complete preserves the dependency seam without weakening source reads.
@@ -2296,7 +2447,7 @@ export class DeploymentStateBridgeService extends Base {
             ? {...stats, observedAtMs: observedAt, heapObservation, containerId}
             : {...stats, heapObservation, containerId});
 
-        this.statsSamplesByService.set(serviceKey, samples.slice(-AiConfig.orchestrator.deploymentStateBridge.statsSampleWindow));
+        this.statsSamplesByService.set(serviceKey, samples.slice(-this.#getConfig().orchestrator.deploymentStateBridge.statsSampleWindow));
     }
 
     /**
@@ -2314,7 +2465,8 @@ export class DeploymentStateBridgeService extends Base {
      */
     async collectRecoveryRunSnapshot() {
         const
-            bridgeConfig = AiConfig.orchestrator.deploymentStateBridge,
+            cfg          = this.#getConfig(),
+            bridgeConfig = cfg.orchestrator.deploymentStateBridge,
             limit        = bridgeConfig.recoveryRunLimit,
             source       = 'orchestrator-recovery-run-ledger';
 
@@ -2333,7 +2485,7 @@ export class DeploymentStateBridgeService extends Base {
         try {
             const reader     = this.recoveryRunStateReader || readRecentRecoveryRunStates,
                   readResult = await reader({
-                      dir: AiConfig.orchestrator.recoveryActuator.recoveryRunStateDir,
+                      dir: cfg.orchestrator.recoveryActuator.recoveryRunStateDir,
                       limit
                   }),
                   entries      = Array.isArray(readResult) ? readResult : readResult?.entries;
@@ -2369,7 +2521,8 @@ export class DeploymentStateBridgeService extends Base {
      */
     async collectSelfHealSnapshot() {
         const
-            limit  = AiConfig.orchestrator.deploymentStateBridge.selfHealRecentEventLimit,
+            cfg    = this.#getConfig(),
+            limit  = cfg.orchestrator.deploymentStateBridge.selfHealRecentEventLimit,
             source = 'orchestrator-heal-event-ledger';
 
         // Validate the recent-event cap as its OWN surface (mirrors collectRecoveryRunSnapshot). queryHealLedger
@@ -2403,7 +2556,7 @@ export class DeploymentStateBridgeService extends Base {
                 // left to the helper's defaults: this surface publishes `thawEligibleAt`, and a deadline that
                 // disagrees with the one the loop acts on is worse than none — it reads as authoritative while
                 // the breaker thaws on its own schedule.
-                freezeState : foldFutilityFreezeState(events, {now: Date.now(), bounds: AiConfig.orchestrator.recoveryActuator.futility}),
+                freezeState : foldFutilityFreezeState(events, {now: Date.now(), bounds: cfg.orchestrator.recoveryActuator.futility}),
                 recentEvents: queryHealLedger(events, {limit}), // validated >= 0; limit 0 → [] (queryHealLedger caps)
                 errors      : []
             };
@@ -2431,13 +2584,14 @@ export class DeploymentStateBridgeService extends Base {
      */
     async collectTenantRepoSyncSnapshot({observedAt}) {
         const
+            cfg       = this.#getConfig(),
             taskName  = 'tenant-repo-sync',
             source    = 'orchestrator-tenant-repo-sync',
             scheduler = {
-                globalCadenceMs: AiConfig.orchestrator.intervals.tenantRepoSyncMs,
-                sweepCadenceMs : AiConfig.orchestrator.tenantRepoSync.sweepCadenceMs,
-                jitterRatio    : AiConfig.orchestrator.tenantRepoSync.jitterRatio,
-                backoffCapMs   : AiConfig.orchestrator.tenantRepoSync.backoffCapMs,
+                globalCadenceMs: cfg.orchestrator.intervals.tenantRepoSyncMs,
+                sweepCadenceMs : cfg.orchestrator.tenantRepoSync.sweepCadenceMs,
+                jitterRatio    : cfg.orchestrator.tenantRepoSync.jitterRatio,
+                backoffCapMs   : cfg.orchestrator.tenantRepoSync.backoffCapMs,
                 due            : null
             },
             errors         = [];

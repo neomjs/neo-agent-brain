@@ -5,12 +5,6 @@
         "raise": "Raising a ceiling or adding a file is a hand edit, and reads as one in the diff."
     },
     "ceilings": {
-        "test/playwright/unit/ai/daemons/orchestrator/Orchestrator.cloudOnlyGate.spec.mjs": 5,
-        "test/playwright/unit/ai/daemons/orchestrator/Orchestrator.invariants.spec.mjs": 45,
-        "test/playwright/unit/ai/daemons/orchestrator/Orchestrator.spec.mjs": 65,
-        "test/playwright/unit/ai/daemons/orchestrator/services/DeploymentStateBridgeService.spec.mjs": 57,
-        "test/playwright/unit/ai/daemons/orchestrator/services/SwarmHeartbeatService.spec.mjs": 6,
-        "test/playwright/unit/ai/daemons/orchestrator/services/TenantRepoSyncService.spec.mjs": 13,
         "test/playwright/unit/ai/daemons/wake/localWakeAdaptersDialogGate.spec.mjs": 2,
         "test/playwright/unit/ai/mcp/server/github-workflow/ConfigCompleteness.spec.mjs": 8,
         "test/playwright/unit/ai/mcp/server/knowledge-base/IngestSourceFilesTool.spec.mjs": 6,

@@ -64,7 +64,7 @@ const PUSH_CAPABLE_TARGETS     = Object.freeze(['mcp-notifications', 'a2a-webhoo
  * @see ai/services/memory-core/HealthService.mjs
  */
 function heartbeatAlivePath() {
-    return AiConfig.wakeDaemonHeartbeatAlivePath;
+    return (SwarmHeartbeatServiceInstance?.configSnapshot || AiConfig).wakeDaemonHeartbeatAlivePath;
 }
 
 /**
@@ -78,7 +78,7 @@ function heartbeatAlivePath() {
  * @see ai/scripts/lifecycle/heartbeatLock.mjs
  */
 function heartbeatLockPath() {
-    return AiConfig.heartbeatConcurrencyLockPath;
+    return (SwarmHeartbeatServiceInstance?.configSnapshot || AiConfig).heartbeatConcurrencyLockPath;
 }
 
 /**
@@ -248,6 +248,12 @@ class SwarmHeartbeatService extends Base {
     }
 
     /**
+     * Test-scoped config snapshot override.
+     * @type {Object|null}
+     */
+    #configSnapshot = null
+
+    /**
      * Resolved wake-daemon data member injected by the Orchestrator composition root.
      * @member {String|null} wakeDaemonDir=null
      */
@@ -257,6 +263,85 @@ class SwarmHeartbeatService extends Base {
      * @member {String|null} harnessStateDir=null
      */
     harnessStateDir = null
+
+    /**
+     * @returns {Object|null}
+     */
+    get configSnapshot() {
+        return this.#configSnapshot;
+    }
+
+    /**
+     * @param {Object|null} value
+     */
+    set configSnapshot(value) {
+        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+    }
+
+    /**
+     * Validates a test-scoped config snapshot.
+     * @param {Object|null} value
+     * @returns {Object|null}
+     */
+    beforeSetConfigSnapshot(value) {
+        if (value === null || value === undefined) return null;
+
+        if (typeof value !== 'object' || Array.isArray(value)) {
+            throw new Error('SwarmHeartbeatService.configSnapshot must be a non-null object or null');
+        }
+
+        const missing = [];
+        if (typeof value.wakeDaemonHeartbeatAlivePath !== 'string' || !value.wakeDaemonHeartbeatAlivePath) {
+            missing.push('wakeDaemonHeartbeatAlivePath');
+        }
+        if (typeof value.heartbeatConcurrencyLockPath !== 'string' || !value.heartbeatConcurrencyLockPath) {
+            missing.push('heartbeatConcurrencyLockPath');
+        }
+        if (typeof value.orchestrator?.deploymentMode !== 'string' || !value.orchestrator.deploymentMode) {
+            missing.push('orchestrator.deploymentMode');
+        }
+
+        if (missing.length > 0) {
+            throw new Error(`SwarmHeartbeatService.configSnapshot is missing required keys: ${missing.join(', ')}`);
+        }
+
+        return value;
+    }
+
+    /**
+     * Creates an isolated test-scoped config snapshot seeded from `AiConfig`.
+     * @param {Object} [overrides={}]
+     * @returns {Object}
+     */
+    createConfigSnapshot(overrides = {}) {
+        const snapshot = {
+            wakeDaemonHeartbeatAlivePath: AiConfig.wakeDaemonHeartbeatAlivePath,
+            heartbeatConcurrencyLockPath: AiConfig.heartbeatConcurrencyLockPath,
+            orchestrator                : {
+                deploymentMode: AiConfig.orchestrator.deploymentMode
+            }
+        };
+
+        if (overrides.wakeDaemonHeartbeatAlivePath !== undefined) {
+            snapshot.wakeDaemonHeartbeatAlivePath = overrides.wakeDaemonHeartbeatAlivePath;
+        }
+        if (overrides.heartbeatConcurrencyLockPath !== undefined) {
+            snapshot.heartbeatConcurrencyLockPath = overrides.heartbeatConcurrencyLockPath;
+        }
+        if (overrides.orchestrator) {
+            Object.assign(snapshot.orchestrator, overrides.orchestrator);
+        }
+
+        return snapshot;
+    }
+
+    /**
+     * Resolves active config source (`this.#configSnapshot || AiConfig`).
+     * @returns {Object}
+     */
+    #getConfig() {
+        return this.#configSnapshot || AiConfig;
+    }
 
     /**
      * Normalizes identity to canonical `@<identity>` form. Returns `null` for
@@ -585,7 +670,7 @@ class SwarmHeartbeatService extends Base {
         }
 
         return resumeHarnessScript(identity, reason, originSessionId, abandonedCount, {
-            deploymentMode : AiConfig.orchestrator.deploymentMode,
+            deploymentMode : this.#getConfig().orchestrator.deploymentMode,
             env            : {},
             harnessStateDir: this.harnessStateDir,
             harnessTargetMetadata,
@@ -1293,7 +1378,9 @@ class SwarmHeartbeatService extends Base {
     }
 }
 
-export default Neo.setupClass(SwarmHeartbeatService);
+const SwarmHeartbeatServiceInstance = Neo.setupClass(SwarmHeartbeatService);
+
+export default SwarmHeartbeatServiceInstance;
 
 export {
     DEFAULT_POLL_INTERVAL_MS,

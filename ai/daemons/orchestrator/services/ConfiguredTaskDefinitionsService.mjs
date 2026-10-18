@@ -1,7 +1,7 @@
-import path             from 'path';
-import AiConfig         from '../../../config.mjs';
+import path                from 'path';
+import AiConfig            from '../../../config.mjs';
 import {readSecretCarrier} from '../../../services/shared/secretCarrier.mjs';
-import neuralLinkConfig from '../../../mcp/server/neural-link/config.mjs';
+import neuralLinkConfig    from '../../../mcp/server/neural-link/config.mjs';
 import {
     buildLmsPreloadConfig,
     buildOllamaReadinessConfig,
@@ -34,22 +34,24 @@ export function buildConfiguredTaskDefinitions({
     scriptDir,
     nodeBin,
     neuralLinkBridgeLivenessTimeoutMs,
-    ensureLmsModelsLoadedFn = null
+    ensureLmsModelsLoadedFn = null,
+    configSnapshot = null
 }) {
-    const tasks = buildTaskDefinitions({
-        scriptDir,
-        nodeBin,
-        chromaDataDir       : AiConfig.engines.chroma.dataDir,
-        chromaHost          : AiConfig.engines.chroma.host,
-        chromaPort          : AiConfig.engines.chroma.port,
-        neuralLinkBridgePort: neuralLinkConfig.port,
-        neuralLinkBridgeLivenessTimeoutMs
-    });
+    const cfg   = configSnapshot || AiConfig,
+          tasks = buildTaskDefinitions({
+              scriptDir,
+              nodeBin,
+              chromaDataDir       : cfg.engines.chroma.dataDir,
+              chromaHost          : cfg.engines.chroma.host,
+              chromaPort          : configSnapshot ? configSnapshot.engines.chroma.port : AiConfig.engines.chroma.port,
+              neuralLinkBridgePort: neuralLinkConfig.port,
+              neuralLinkBridgeLivenessTimeoutMs
+          });
 
-    applyConfiguredGraphLogCompaction(tasks);
-    applyConfiguredMlxTask(tasks, {scriptDir});
-    applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn});
-    applyConfiguredOllamaTask(tasks);
+    applyConfiguredGraphLogCompaction(tasks, cfg);
+    applyConfiguredMlxTask(tasks, {scriptDir, configSnapshot});
+    applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn, configSnapshot});
+    applyConfiguredOllamaTask(tasks, {configSnapshot});
 
     return attachTaskAuthority(tasks);
 }
@@ -57,10 +59,11 @@ export function buildConfiguredTaskDefinitions({
 /**
  * @summary Applies the graph-log compaction flags owned by AiConfig.
  * @param {Object} tasks Task table.
+ * @param {Object} [cfg=AiConfig] Active config source.
  * @returns {void}
  */
-function applyConfiguredGraphLogCompaction(tasks) {
-    if (AiConfig.orchestrator.graphLogCompaction.vacuum) {
+function applyConfiguredGraphLogCompaction(tasks, cfg = AiConfig) {
+    if (cfg.orchestrator.graphLogCompaction.vacuum) {
         tasks['graphlog-compaction'].args.push('--vacuum');
     }
 }
@@ -70,10 +73,13 @@ function applyConfiguredGraphLogCompaction(tasks) {
  * @param {Object} tasks Task table.
  * @param {Object} options
  * @param {String} options.scriptDir Script directory.
+ * @param {Object|null} [options.configSnapshot=null] Optional test config snapshot.
  * @returns {void}
  */
-function applyConfiguredMlxTask(tasks, {scriptDir}) {
-    if (!AiConfig.orchestrator.mlx.enabled) {
+function applyConfiguredMlxTask(tasks, {scriptDir, configSnapshot = null}) {
+    const cfg     = configSnapshot || AiConfig,
+          enabled = configSnapshot ? configSnapshot.orchestrator.mlx.enabled : AiConfig.orchestrator.mlx.enabled;
+    if (!enabled) {
         return;
     }
 
@@ -84,9 +90,9 @@ function applyConfiguredMlxTask(tasks, {scriptDir}) {
             '-m',
             'mlx_lm.server',
             '--model',
-            AiConfig.orchestrator.mlx.model,
+            cfg.orchestrator.mlx.model,
             '--port',
-            String(AiConfig.orchestrator.mlx.port)
+            String(cfg.orchestrator.mlx.port)
         ],
         pidFileName    : 'mlx.pid',
         expectedCommand: 'mlx_lm.server'
@@ -98,26 +104,29 @@ function applyConfiguredMlxTask(tasks, {scriptDir}) {
  * @param {Object} tasks Task table.
  * @param {Object} options
  * @param {Function|null} options.ensureLmsModelsLoadedFn Optional process-free unit-test seam.
+ * @param {Object|null} [options.configSnapshot=null] Optional test config snapshot.
  * @returns {void}
  */
-function applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn}) {
-    if (!AiConfig.orchestrator.lms.enabled) {
+function applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn, configSnapshot = null}) {
+    const cfg     = configSnapshot || AiConfig,
+          enabled = configSnapshot ? configSnapshot.orchestrator.lms.enabled : AiConfig.orchestrator.lms.enabled;
+    if (!enabled) {
         return;
     }
 
-    const preloadConfig  = buildLmsPreloadConfig(AiConfig),
+    const preloadConfig  = buildLmsPreloadConfig(cfg),
           requiredModels = Array.isArray(preloadConfig.models)
               ? [...new Set(preloadConfig.models.filter(Boolean))]
-              : [AiConfig.orchestrator.lms.model].filter(Boolean),
-          embeddingModel = AiConfig.embeddingProvider === 'openAiCompatible' &&
-              requiredModels.includes(AiConfig.openAiCompatible.embeddingModel)
-                  ? AiConfig.openAiCompatible.embeddingModel
+              : [cfg.orchestrator.lms.model].filter(Boolean),
+          embeddingModel = cfg.embeddingProvider === 'openAiCompatible' &&
+              requiredModels.includes(cfg.openAiCompatible.embeddingModel)
+                  ? cfg.openAiCompatible.embeddingModel
                   : null;
 
     tasks.lms = {
         label          : 'lms server (LM Studio CLI)',
         command        : 'lms',
-        args           : ['server', 'start', '--port', String(AiConfig.orchestrator.lms.port)],
+        args           : ['server', 'start', '--port', String(cfg.orchestrator.lms.port)],
         pidFileName    : 'lms.pid',
         expectedCommand: 'lms server',
         requiredModels,
@@ -131,10 +140,10 @@ function applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn}) {
 
             try {
                 await fetchOpenAiCompatibleModelIds({
-                    host      : AiConfig.openAiCompatible.host,
-                    timeoutMs : AiConfig.orchestrator.providerReadiness.timeoutMs,
+                    host      : configSnapshot ? configSnapshot.openAiCompatible.host : AiConfig.openAiCompatible.host,
+                    timeoutMs : cfg.orchestrator.providerReadiness.timeoutMs,
                     freshness : 'routine',
-                    cacheTtlMs: AiConfig.orchestrator.providerReadiness.routineCacheTtlMs
+                    cacheTtlMs: cfg.orchestrator.providerReadiness.routineCacheTtlMs
                 });
                 return true;
             } catch {
@@ -158,22 +167,22 @@ function applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn}) {
             }
 
             return ensureLmsModelsLoaded({
-                host                    : AiConfig.openAiCompatible.host,
+                host                    : configSnapshot ? configSnapshot.openAiCompatible.host : AiConfig.openAiCompatible.host,
                 models                  : requiredModels,
                 contextLengths          : preloadConfig.contextLengths,
                 parallels               : preloadConfig.parallels,
                 allowPartial            : true,
-                attempts                : AiConfig.orchestrator.providerReadiness.attempts,
-                delayMs                 : AiConfig.orchestrator.providerReadiness.delayMs,
-                timeoutMs               : AiConfig.orchestrator.providerReadiness.timeoutMs,
+                attempts                : cfg.orchestrator.providerReadiness.attempts,
+                delayMs                 : cfg.orchestrator.providerReadiness.delayMs,
+                timeoutMs               : cfg.orchestrator.providerReadiness.timeoutMs,
                 modelDiscoveryFreshness : 'routine',
-                modelDiscoveryCacheTtlMs: AiConfig.orchestrator.providerReadiness.routineCacheTtlMs,
+                modelDiscoveryCacheTtlMs: cfg.orchestrator.providerReadiness.routineCacheTtlMs,
                 embeddingServingProbe   : embeddingModel
                     ? ({host, timeoutMs, lmsLoadedModels}) => checkOpenAiCompatibleEmbeddingServing({
                         host,
                         model       : embeddingModel,
                         timeoutMs,
-                        apiKey      : readSecretCarrier({value: AiConfig.openAiCompatible.apiKey, file: AiConfig.openAiCompatible.apiKeyFile, valueName: 'openAiCompatible.apiKey', fileName: 'openAiCompatible.apiKeyFile'}),
+                        apiKey      : readSecretCarrier({value: cfg.openAiCompatible.apiKey, file: cfg.openAiCompatible.apiKeyFile, valueName: 'openAiCompatible.apiKey', fileName: 'openAiCompatible.apiKeyFile'}),
                         lmsLoadedModels,
                         metadataOnly: true
                     })
@@ -186,14 +195,18 @@ function applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn}) {
 /**
  * @summary Adds the orchestrator-owned native Ollama server task when enabled.
  * @param {Object} tasks Task table.
+ * @param {Object} [options]
+ * @param {Object|null} [options.configSnapshot=null] Optional test config snapshot.
  * @returns {void}
  */
-function applyConfiguredOllamaTask(tasks) {
-    if (!AiConfig.orchestrator.ollama.enabled) {
+function applyConfiguredOllamaTask(tasks, {configSnapshot = null} = {}) {
+    const cfg     = configSnapshot || AiConfig,
+          enabled = configSnapshot ? configSnapshot.orchestrator.ollama.enabled : AiConfig.orchestrator.ollama.enabled;
+    if (!enabled) {
         return;
     }
 
-    const readinessConfig = buildOllamaReadinessConfig(AiConfig),
+    const readinessConfig = buildOllamaReadinessConfig(cfg),
           roles           = Array.isArray(readinessConfig.roles)
               ? readinessConfig.roles.filter(role => role.model)
               : [],
@@ -228,9 +241,9 @@ function applyConfiguredOllamaTask(tasks) {
                     keepAlive            : readinessConfig.keepAlive,
                     requireParallelModels: readinessConfig.requireParallelModels,
                     allowPartial         : true,
-                    attempts             : AiConfig.orchestrator.providerReadiness.attempts,
-                    delayMs              : AiConfig.orchestrator.providerReadiness.delayMs,
-                    timeoutMs            : AiConfig.orchestrator.providerReadiness.timeoutMs
+                    attempts             : cfg.orchestrator.providerReadiness.attempts,
+                    delayMs              : cfg.orchestrator.providerReadiness.delayMs,
+                    timeoutMs            : cfg.orchestrator.providerReadiness.timeoutMs
                 });
 
                 if (
@@ -255,9 +268,9 @@ function applyConfiguredOllamaTask(tasks) {
                 keepAlive            : readinessConfig.keepAlive,
                 requireParallelModels: readinessConfig.requireParallelModels,
                 allowPartial         : true,
-                attempts             : AiConfig.orchestrator.providerReadiness.attempts,
-                delayMs              : AiConfig.orchestrator.providerReadiness.delayMs,
-                timeoutMs            : AiConfig.orchestrator.providerReadiness.timeoutMs
+                attempts             : cfg.orchestrator.providerReadiness.attempts,
+                delayMs              : cfg.orchestrator.providerReadiness.delayMs,
+                timeoutMs            : cfg.orchestrator.providerReadiness.timeoutMs
             });
         }
     };

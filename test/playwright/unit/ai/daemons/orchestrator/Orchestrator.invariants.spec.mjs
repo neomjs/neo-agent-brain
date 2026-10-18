@@ -8,7 +8,7 @@ import Neo              from 'neo.mjs/src/Neo.mjs';
 import * as core        from 'neo.mjs/src/core/_export.mjs';
 import AiConfig         from '../../../../../../ai/config.template.mjs';
 import memoryCoreConfig from '../../../../../../ai/mcp/server/memory-core/config.template.mjs';
-import {
+import OrchestratorInstance, {
     Orchestrator
 } from '../../../../../../ai/daemons/orchestrator/Orchestrator.mjs';
 import {
@@ -18,6 +18,7 @@ import {
     buildTaskDefinitions
 } from '../../../../../../ai/daemons/orchestrator/taskDefinitions.mjs';
 import TaskStateService, {createInitialTaskState} from '../../../../../../ai/daemons/orchestrator/services/TaskStateService.mjs';
+import {findSharedConfigMutations}                from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 const __filename    = fileURLToPath(import.meta.url);
 const __dirname     = path.dirname(__filename);
@@ -39,18 +40,7 @@ const SIBLING_DAEMON_CONFIG_PATHS = {
 };
 
 let invariantSeq                   = 0;
-let savedIntervals                 = null;
-let savedLocalOnly                 = null;
-let savedCloudOnly                 = null;
-let savedDeploymentMode            = null;
-let savedMlxConfig                 = undefined;
-let savedLmsConfig                 = undefined;
-let savedOrchestratorOllamaConfig  = undefined;
-let savedProviderOllamaConfig      = undefined;
-let savedOpenAiCompatibleConfig    = undefined;
-let savedModelProvider             = undefined;
-let savedGraphProvider             = undefined;
-let savedEmbeddingProvider         = undefined;
+let snapshot                       = null;
 let savedEnvKbSyncEnabled          = undefined;
 let savedEnvKbSyncInterval         = undefined;
 let savedEnvTenantRepoSyncEnabled  = undefined;
@@ -90,18 +80,8 @@ function createMinimalOrchestrator() {
 }
 
 test.beforeEach(() => {
-    savedIntervals      = {...AiConfig.orchestrator.intervals};
-    savedLocalOnly      = {...AiConfig.orchestrator.localOnly};
-    savedCloudOnly      = AiConfig.orchestrator.cloudOnly ? {...AiConfig.orchestrator.cloudOnly} : null;
-    savedDeploymentMode = AiConfig.orchestrator.deploymentMode;
-    savedMlxConfig      = AiConfig.orchestrator.mlx ? {...AiConfig.orchestrator.mlx} : undefined;
-    savedLmsConfig      = AiConfig.orchestrator.lms ? {...AiConfig.orchestrator.lms} : undefined;
-    savedOrchestratorOllamaConfig = AiConfig.orchestrator.ollama ? {...AiConfig.orchestrator.ollama} : undefined;
-    savedProviderOllamaConfig     = AiConfig.ollama ? {...AiConfig.ollama} : undefined;
-    savedOpenAiCompatibleConfig = AiConfig.openAiCompatible ? {...AiConfig.openAiCompatible} : undefined;
-    savedModelProvider          = AiConfig.modelProvider;
-    savedGraphProvider          = AiConfig.graphProvider;
-    savedEmbeddingProvider      = AiConfig.embeddingProvider;
+    snapshot                            = OrchestratorInstance.createConfigSnapshot();
+    OrchestratorInstance.configSnapshot = snapshot;
 
     savedEnvKbSyncEnabled          = process.env.NEO_ORCHESTRATOR_KB_SYNC_ENABLED;
     savedEnvKbSyncInterval         = process.env.NEO_ORCHESTRATOR_KB_SYNC_INTERVAL_MS;
@@ -118,39 +98,8 @@ test.beforeEach(() => {
 });
 
 test.afterEach(() => {
-    Object.assign(AiConfig.orchestrator.intervals, savedIntervals);
-    restoreConfigObject(AiConfig.orchestrator.localOnly, savedLocalOnly);
-    if (savedCloudOnly) {
-        restoreConfigObject(AiConfig.orchestrator.cloudOnly, savedCloudOnly);
-    }
-    AiConfig.orchestrator.deploymentMode = savedDeploymentMode;
-
-    // Restore full supervised-server config objects. Stale local overlays may not yet carry
-    // `orchestrator.ollama`, so keep its absent-state distinct from mlx/lms.
-    if (savedMlxConfig !== undefined) {
-        AiConfig.orchestrator.mlx = savedMlxConfig;
-    }
-    if (savedLmsConfig !== undefined) {
-        AiConfig.orchestrator.lms = savedLmsConfig;
-    }
-    if (savedOrchestratorOllamaConfig === undefined) {
-        delete AiConfig.orchestrator.ollama;
-    } else {
-        AiConfig.orchestrator.ollama = savedOrchestratorOllamaConfig;
-    }
-    if (savedProviderOllamaConfig === undefined) {
-        delete AiConfig.ollama;
-    } else {
-        AiConfig.ollama = savedProviderOllamaConfig;
-    }
-    if (savedOpenAiCompatibleConfig === undefined) {
-        delete AiConfig.openAiCompatible;
-    } else {
-        AiConfig.openAiCompatible = savedOpenAiCompatibleConfig;
-    }
-    AiConfig.modelProvider     = savedModelProvider;
-    AiConfig.graphProvider     = savedGraphProvider;
-    AiConfig.embeddingProvider = savedEmbeddingProvider;
+    OrchestratorInstance.configSnapshot = null;
+    snapshot                            = null;
 
     restoreEnv('NEO_ORCHESTRATOR_KB_SYNC_ENABLED',           savedEnvKbSyncEnabled);
     restoreEnv('NEO_ORCHESTRATOR_KB_SYNC_INTERVAL_MS',       savedEnvKbSyncInterval);
@@ -174,35 +123,25 @@ function restoreEnv(name, prior) {
     }
 }
 
-function restoreConfigObject(target, prior) {
-    for (const key of Object.keys(target)) {
-        if (!(key in prior)) {
-            delete target[key];
-        }
-    }
-
-    Object.assign(target, prior);
-}
-
 test.describe('Orchestrator config getters delegate to AiConfig (data env/parse layer is the env-precedence SSOT)', () => {
     // These two used `kbSyncEnabled` as their example leaf until it moved to `cloudOnly`.
     // `primaryDevSyncEnabled` replaces it because it is still `localOnly` — it mutates a working
     // tree, which is a genuine host effect no container classification changes.
     test('boolean enable getter reads AiConfig.orchestrator.localOnly verbatim when value is explicit', () => {
-        AiConfig.orchestrator.localOnly.primaryDevSyncEnabled = false;
+        snapshot.orchestrator.localOnly.primaryDevSyncEnabled = false;
         expect(createMinimalOrchestrator().primaryDevSyncEnabled).toBe(false);
 
-        AiConfig.orchestrator.localOnly.primaryDevSyncEnabled = true;
+        snapshot.orchestrator.localOnly.primaryDevSyncEnabled = true;
         expect(createMinimalOrchestrator().primaryDevSyncEnabled).toBe(true);
     });
 
     test('AiConfig.localOnly.X=null falls through to deployment-profile default (local enables, cloud disables)', () => {
-        AiConfig.orchestrator.localOnly.primaryDevSyncEnabled = null;
+        snapshot.orchestrator.localOnly.primaryDevSyncEnabled = null;
 
-        AiConfig.orchestrator.deploymentMode = 'local';
+        snapshot.orchestrator.deploymentMode = 'local';
         expect(createMinimalOrchestrator().primaryDevSyncEnabled).toBe(true);
 
-        AiConfig.orchestrator.deploymentMode = 'cloud';
+        snapshot.orchestrator.deploymentMode = 'cloud';
         expect(createMinimalOrchestrator().primaryDevSyncEnabled).toBe(false);
     });
 
@@ -211,45 +150,47 @@ test.describe('Orchestrator config getters delegate to AiConfig (data env/parse 
         // container-plane lane must default ON for the role that owns it. Asserted here rather than
         // trusted, because ownership and enablement are separate axes and the ownership specs cannot
         // see this one.
-        AiConfig.orchestrator.cloudOnly.kbSyncEnabled = null;
+        snapshot.orchestrator.cloudOnly.kbSyncEnabled = null;
 
-        AiConfig.orchestrator.deploymentMode = 'cloud';
+        snapshot.orchestrator.deploymentMode = 'cloud';
         expect(createMinimalOrchestrator().kbSyncEnabled).toBe(true);
 
-        AiConfig.orchestrator.deploymentMode = 'local';
+        snapshot.orchestrator.deploymentMode = 'local';
         expect(createMinimalOrchestrator().kbSyncEnabled).toBe(false);
 
         // Explicit still wins over the profile default, in the group it now lives in.
-        AiConfig.orchestrator.cloudOnly.kbSyncEnabled = true;
+        snapshot.orchestrator.cloudOnly.kbSyncEnabled = true;
         expect(createMinimalOrchestrator().kbSyncEnabled).toBe(true);
     });
 
     test('chromaDaemonEnabled follows deployment profile default + explicit override (#12019)', () => {
-        AiConfig.orchestrator.localOnly.chromaDaemonEnabled = null;
+        snapshot.orchestrator.localOnly.chromaDaemonEnabled = null;
 
-        AiConfig.orchestrator.deploymentMode = 'local';
+        snapshot.orchestrator.deploymentMode = 'local';
         expect(createMinimalOrchestrator().chromaDaemonEnabled).toBe(true);
 
-        AiConfig.orchestrator.deploymentMode = 'cloud';
+        snapshot.orchestrator.deploymentMode = 'cloud';
         expect(createMinimalOrchestrator().chromaDaemonEnabled).toBe(false);
 
-        AiConfig.orchestrator.localOnly.chromaDaemonEnabled = true;
+        snapshot.orchestrator.localOnly.chromaDaemonEnabled = true;
         expect(createMinimalOrchestrator().chromaDaemonEnabled).toBe(true);
 
-        AiConfig.orchestrator.localOnly.chromaDaemonEnabled = false;
-        AiConfig.orchestrator.deploymentMode = 'local';
+        snapshot.orchestrator.localOnly.chromaDaemonEnabled = false;
+        snapshot.orchestrator.deploymentMode = 'local';
         expect(createMinimalOrchestrator().chromaDaemonEnabled).toBe(false);
     });
 
     test('AiConfig.data mutations are isolated per test via beforeEach/afterEach restore', () => {
-        const baselineKbSync   = savedIntervals.kbSyncMs;
-        const baselineLocalKbs = savedLocalOnly.kbSyncEnabled;
+        const baselineKbSync   = AiConfig.orchestrator.intervals.kbSyncMs;
+        const baselineLocalKbs = AiConfig.orchestrator.localOnly.kbSyncEnabled;
 
-        AiConfig.orchestrator.intervals.kbSyncMs = 99_000;
-        AiConfig.orchestrator.localOnly.kbSyncEnabled = !baselineLocalKbs;
+        snapshot.orchestrator.intervals.kbSyncMs = 99_000;
+        snapshot.orchestrator.localOnly.kbSyncEnabled = !baselineLocalKbs;
 
-        expect(AiConfig.orchestrator.intervals.kbSyncMs).toBe(99_000);
-        expect(AiConfig.orchestrator.localOnly.kbSyncEnabled).toBe(!baselineLocalKbs);
+        expect(snapshot.orchestrator.intervals.kbSyncMs).toBe(99_000);
+        expect(snapshot.orchestrator.localOnly.kbSyncEnabled).toBe(!baselineLocalKbs);
+        expect(AiConfig.orchestrator.intervals.kbSyncMs).toBe(baselineKbSync);
+        expect(AiConfig.orchestrator.localOnly.kbSyncEnabled).toBe(baselineLocalKbs);
     });
 
     // === mlx + lms + ollama supervised-server task composition ===
@@ -258,7 +199,7 @@ test.describe('Orchestrator config getters delegate to AiConfig (data env/parse 
     // individual tests can mutate freely without leak risk.
 
     test('buildConfiguredTaskDefinitions reads AiConfig.orchestrator.mlx at the daemon use site', () => {
-        AiConfig.orchestrator.mlx = {enabled: true, model: 'mlx-from-config', port: '11999'};
+        snapshot.orchestrator.mlx = {enabled: true, model: 'mlx-from-config', port: '11999'};
         const enabledTasks = createMinimalOrchestrator().buildConfiguredTaskDefinitions({
             scriptDir: '/repo/ai/scripts',
             nodeBin  : '/node'
@@ -273,7 +214,7 @@ test.describe('Orchestrator config getters delegate to AiConfig (data env/parse 
             '11999'
         ]);
 
-        AiConfig.orchestrator.mlx = {enabled: false, model: 'm', port: '11435'};
+        snapshot.orchestrator.mlx = {enabled: false, model: 'm', port: '11435'};
         const disabledTasks = createMinimalOrchestrator().buildConfiguredTaskDefinitions({
             scriptDir: '/repo/ai/scripts',
             nodeBin  : '/node'
@@ -282,15 +223,15 @@ test.describe('Orchestrator config getters delegate to AiConfig (data env/parse 
     });
 
     test('buildConfiguredTaskDefinitions composes LMS from AiConfig provider-role selectors', () => {
-        AiConfig.orchestrator.lms = {enabled: true, model: 'lms-from-config', port: '4242'};
-        AiConfig.openAiCompatible = {
+        snapshot.orchestrator.lms = {enabled: true, model: 'lms-from-config', port: '4242'};
+        snapshot.openAiCompatible = {
             host          : 'http://127.0.0.1:4242',
             model         : 'chat-from-config',
             embeddingModel: 'embedding-from-config'
         };
-        AiConfig.modelProvider     = 'gemini';
-        AiConfig.graphProvider     = 'openAiCompatible';
-        AiConfig.embeddingProvider = 'openAiCompatible';
+        snapshot.modelProvider     = 'gemini';
+        snapshot.graphProvider     = 'openAiCompatible';
+        snapshot.embeddingProvider = 'openAiCompatible';
 
         const o = createMinimalOrchestrator();
         expect(o.buildConfiguredTaskDefinitions({
@@ -302,19 +243,19 @@ test.describe('Orchestrator config getters delegate to AiConfig (data env/parse 
             requiredModels: ['chat-from-config', 'embedding-from-config']
         });
 
-        AiConfig.embeddingProvider = 'gemini';
+        snapshot.embeddingProvider = 'gemini';
         expect(createMinimalOrchestrator().buildConfiguredTaskDefinitions({
             scriptDir: '/repo/ai/scripts',
             nodeBin  : '/node'
         }).lms.requiredModels).toEqual(['chat-from-config']);
 
-        AiConfig.graphProvider = 'ollama';
+        snapshot.graphProvider = 'ollama';
         expect(createMinimalOrchestrator().buildConfiguredTaskDefinitions({
             scriptDir: '/repo/ai/scripts',
             nodeBin  : '/node'
         }).lms.requiredModels).toEqual([]);
 
-        AiConfig.orchestrator.lms = {enabled: false, model: 'qwen', port: '1234'};
+        snapshot.orchestrator.lms = {enabled: false, model: 'qwen', port: '1234'};
         expect(createMinimalOrchestrator().buildConfiguredTaskDefinitions({
             scriptDir: '/repo/ai/scripts',
             nodeBin  : '/node'
@@ -377,17 +318,17 @@ test.describe('Orchestrator config getters delegate to AiConfig (data env/parse 
     });
 
     test('buildConfiguredTaskDefinitions composes native Ollama from AiConfig provider-role selectors', () => {
-        AiConfig.orchestrator.ollama = {enabled: true};
-        AiConfig.ollama = {
+        snapshot.orchestrator.ollama = {enabled: true};
+        snapshot.ollama = {
             host                 : 'http://127.0.0.1:11434',
             model                : 'ollama-chat-from-config',
             embeddingModel       : 'ollama-embedding-from-config',
             keep_alive           : -1,
             requireParallelModels: 2
         };
-        AiConfig.modelProvider     = 'gemini';
-        AiConfig.graphProvider     = 'ollama';
-        AiConfig.embeddingProvider = 'ollama';
+        snapshot.modelProvider     = 'gemini';
+        snapshot.graphProvider     = 'ollama';
+        snapshot.embeddingProvider = 'ollama';
 
         const o          = createMinimalOrchestrator();
         const ollamaTask = o.buildConfiguredTaskDefinitions({
@@ -410,19 +351,19 @@ test.describe('Orchestrator config getters delegate to AiConfig (data env/parse 
         expect(typeof ollamaTask.postSpawn).toBe('function');
         expect(ollamaTask.healthProbe).toBeUndefined();
 
-        AiConfig.embeddingProvider = 'gemini';
+        snapshot.embeddingProvider = 'gemini';
         expect(createMinimalOrchestrator().buildConfiguredTaskDefinitions({
             scriptDir: '/repo/ai/scripts',
             nodeBin  : '/node'
         }).ollama.requiredModels).toEqual(['ollama-chat-from-config']);
 
-        AiConfig.graphProvider = 'openAiCompatible';
+        snapshot.graphProvider = 'openAiCompatible';
         expect(createMinimalOrchestrator().buildConfiguredTaskDefinitions({
             scriptDir: '/repo/ai/scripts',
             nodeBin  : '/node'
         }).ollama).toBeUndefined();
 
-        AiConfig.orchestrator.ollama = {enabled: false};
+        snapshot.orchestrator.ollama = {enabled: false};
         expect(createMinimalOrchestrator().buildConfiguredTaskDefinitions({
             scriptDir: '/repo/ai/scripts',
             nodeBin  : '/node'
@@ -756,6 +697,11 @@ test.describe('Orchestrator source-level invariants (#11834 AC4)', () => {
         });
 
         expect(missingHook, `Reactive config slots with \`_\`-suffix MUST have a corresponding \`beforeGetX\`, \`beforeSetX\`, or \`afterSetX\` hook (Sub-1 anti-pattern: cargo-cult underscores without hooks). Offending slots: ${missingHook.join(', ')}.`).toEqual([]);
+    });
+
+    test('self-check: spec contains zero shared-config singleton writes (B4)', async () => {
+        const source = await fs.readFile(__filename, 'utf8');
+        expect(findSharedConfigMutations(source)).toEqual([]);
     });
 });
 
