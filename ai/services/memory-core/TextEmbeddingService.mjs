@@ -2,9 +2,12 @@ import {
     GoogleGenerativeAI,
     GoogleGenerativeAIAbortError
 }                           from '@google/generative-ai';
-import {types as utilTypes} from 'node:util';
-import aiConfig             from '../../mcp/server/memory-core/config.mjs';
-import Base                 from 'neo.mjs/src/core/Base.mjs';
+import aiConfig from '../../mcp/server/memory-core/config.mjs';
+import Base     from 'neo.mjs/src/core/Base.mjs';
+import {
+    cloneConfigSubtree,
+    validateConfigSnapshot
+}                           from '../shared/configSnapshot.mjs';
 import {
     resolveCompletedPrefix,
     resolveDispatchPlan,
@@ -682,21 +685,15 @@ function assertPositiveTimeoutMs(value, label) {
     return value
 }
 
-/**
- * @summary Verifies that a candidate config snapshot node is an isolated plain object rather than
- * a `ConfigProvider` instance or hierarchical data proxy.
- * @param {*} candidate Candidate object node.
- * @returns {Boolean}
- */
-function isPlainSnapshotObject(candidate) {
-    return Boolean(
-        candidate &&
-        typeof candidate === 'object' &&
-        !Array.isArray(candidate) &&
-        !utilTypes.isProxy(candidate) &&
-        !(candidate instanceof Base)
-    );
-}
+const TEXT_EMBEDDING_SNAPSHOT_SUBTREES = Object.freeze([
+    'openAiCompatible',
+    'localModels',
+    'localModels.embedding',
+    'orchestrator',
+    'orchestrator.lms',
+    'orchestrator.providerReadiness',
+    'ollama'
+]);
 
 /**
  * @summary Service for creating embedding vectors for text.
@@ -742,15 +739,7 @@ class TextEmbeddingService extends Base {
          * @member {Function|null} openAiCompatibleLoadedModelsProbe=null
          * @protected
          */
-        openAiCompatibleLoadedModelsProbe: null,
-        /**
-         * Resolver seam for the OpenAI-compatible endpoint. Defaults to reading `openAiCompatible.host`
-         * from the active config source (`configSnapshot ?? aiConfig`).
-         * @member {Function|null} openAiCompatibleHostFn_=null
-         * @protected
-         * @reactive
-         */
-        openAiCompatibleHostFn_: null
+        openAiCompatibleLoadedModelsProbe: null
     }
 
     #configSnapshot                   = null;
@@ -789,8 +778,6 @@ class TextEmbeddingService extends Base {
     construct(config) {
         super.construct(config);
 
-        this.openAiCompatibleHostFn ??= () => this.#getConfig().openAiCompatible.host;
-
         const cfg = this.#getConfig();
 
         if (shouldInitializeGeminiEmbeddingClient(cfg)) {
@@ -823,14 +810,20 @@ class TextEmbeddingService extends Base {
      * @summary Injects an isolated configuration snapshot for unit testing, or `null` to restore
      * the canonical `aiConfig` singleton.
      *
-     * Validates via {@link #beforeSetConfigSnapshot} before assigning `#configSnapshot` so a rejected
-     * value never overwrites the prior snapshot (unlike a reactive `configSnapshot_` setter, which
-     * calls `setRaw` before `beforeSet*`).
+     * Validates via {@link #beforeSetConfigSnapshot} before assigning `#configSnapshot` so a
+     * rejected value never overwrites the prior snapshot (unlike a reactive `configSnapshot_` setter,
+     * which calls `setRaw` before `beforeSet*`).
+     *
+     * Changing or clearing `configSnapshot` unconditionally resets `this.ollamaProvider = null`,
+     * discarding any cached or previously injected `ollamaProvider` instance so the next native
+     * Ollama call re-binds to the active snapshot. Tests that inject a custom `ollamaProvider`
+     * double must assign `TextEmbeddingService.ollamaProvider` after setting `configSnapshot`.
      *
      * @param {Object|null} value Candidate snapshot or `null`.
      */
     set configSnapshot(value) {
         this.#configSnapshot = this.beforeSetConfigSnapshot(value);
+        this.ollamaProvider  = null;
     }
 
     /**
@@ -841,24 +834,10 @@ class TextEmbeddingService extends Base {
      * @protected
      */
     beforeSetConfigSnapshot(value) {
-        if (value === null || value === undefined) {
-            return null;
-        }
-
-        if (
-            !isPlainSnapshotObject(value) ||
-            !isPlainSnapshotObject(value.openAiCompatible) ||
-            !isPlainSnapshotObject(value.localModels) ||
-            !isPlainSnapshotObject(value.localModels.embedding) ||
-            !isPlainSnapshotObject(value.orchestrator) ||
-            !isPlainSnapshotObject(value.orchestrator.lms) ||
-            !isPlainSnapshotObject(value.orchestrator.providerReadiness) ||
-            !isPlainSnapshotObject(value.ollama)
-        ) {
-            throw new TypeError('TextEmbeddingService: configSnapshot must be an isolated snapshot, never the shared aiConfig singleton or a live subtree');
-        }
-
-        return value;
+        return validateConfigSnapshot(value, {
+            serviceName     : 'TextEmbeddingService',
+            requiredSubtrees: TEXT_EMBEDDING_SNAPSHOT_SUBTREES
+        });
     }
 
     /**
@@ -878,52 +857,24 @@ class TextEmbeddingService extends Base {
             geminiApiKey     : aiConfig.geminiApiKey,
             geminiApiKeyFile : aiConfig.geminiApiKeyFile,
             localModels      : {
-                embedding: {
-                    contextLimitTokens       : aiConfig.localModels.embedding.contextLimitTokens,
-                    parallel                 : aiConfig.localModels.embedding.parallel,
-                    safeProcessingLimitTokens: aiConfig.localModels.embedding.safeProcessingLimitTokens
-                }
+                embedding: cloneConfigSubtree(aiConfig, ['localModels', 'embedding'])
             },
-            ollama: {
-                embeddingModel       : aiConfig.ollama.embeddingModel,
-                embeddingTimeoutMs   : aiConfig.ollama.embeddingTimeoutMs,
-                host                 : aiConfig.ollama.host,
-                maxInFlightEmbeddings: aiConfig.ollama.maxInFlightEmbeddings,
-                model                : aiConfig.ollama.model
-            },
-            openAiCompatible: {
-                apiKey                 : aiConfig.openAiCompatible.apiKey,
-                batchEmbeddingChunkSize: aiConfig.openAiCompatible.batchEmbeddingChunkSize,
-                batchEmbeddingTimeoutMs: aiConfig.openAiCompatible.batchEmbeddingTimeoutMs,
-                batchEmbeddingYieldMs  : aiConfig.openAiCompatible.batchEmbeddingYieldMs,
-                contentionRetryCount   : aiConfig.openAiCompatible.contentionRetryCount,
-                contentionRetryDelayMs : aiConfig.openAiCompatible.contentionRetryDelayMs,
-                contentionTimeoutMs    : aiConfig.openAiCompatible.contentionTimeoutMs,
-                embeddingModel         : aiConfig.openAiCompatible.embeddingModel,
-                host                   : aiConfig.openAiCompatible.host,
-                model                  : aiConfig.openAiCompatible.model,
-                unloadRetryCount       : aiConfig.openAiCompatible.unloadRetryCount,
-                unloadRetryDelayMs     : aiConfig.openAiCompatible.unloadRetryDelayMs
-            },
-            orchestrator: {
-                lms: {
-                    enabled: aiConfig.orchestrator.lms.enabled,
-                    port   : aiConfig.orchestrator.lms.port
-                },
-                providerReadiness: {
-                    timeoutMs: aiConfig.orchestrator.providerReadiness.timeoutMs
-                }
+            ollama          : cloneConfigSubtree(aiConfig, ['ollama']),
+            openAiCompatible: cloneConfigSubtree(aiConfig, ['openAiCompatible']),
+            orchestrator    : {
+                lms              : cloneConfigSubtree(aiConfig, ['orchestrator', 'lms']),
+                providerReadiness: cloneConfigSubtree(aiConfig, ['orchestrator', 'providerReadiness'])
             }
         };
     }
 
     /**
-     * @summary Returns the active configuration tree (`configSnapshot` when injected, otherwise `aiConfig`).
+     * @summary Returns the active configuration tree (`#configSnapshot` when injected, otherwise `aiConfig`).
      * @returns {Object}
      * @private
      */
     #getConfig() {
-        return this.configSnapshot || aiConfig;
+        return this.#configSnapshot || aiConfig;
     }
 
     /**
@@ -1263,7 +1214,7 @@ class TextEmbeddingService extends Base {
         // the LM Studio gate. Normalised to the same row shape so the identity comparison below is
         // one code path rather than two.
         const ids = await helper.fetchOpenAiCompatibleModelIds({
-            host: this.openAiCompatibleHostFn(),
+            host: this.#getConfig().openAiCompatible.host,
             timeoutMs
         });
 
@@ -1346,7 +1297,9 @@ class TextEmbeddingService extends Base {
             return false;
         }
 
-        return Boolean(this.openAiCompatibleHostFn() && this.#getConfig().openAiCompatible.embeddingModel);
+        const cfg = this.#getConfig();
+
+        return Boolean(cfg.openAiCompatible.host && cfg.openAiCompatible.embeddingModel);
     }
 
     /**
@@ -1376,7 +1329,7 @@ class TextEmbeddingService extends Base {
         }
 
         const
-            host    = this.openAiCompatibleHostFn(),
+            host    = cfg.openAiCompatible.host,
             lmsPort = cfg.orchestrator.lms.port;
 
         let endpointUrl;
@@ -1637,11 +1590,10 @@ class TextEmbeddingService extends Base {
             unloadRetryDelayMs     = 500,
             contentionRetryDelayMs = 1000
         } = cfg.openAiCompatible;
-        // Through the seam, not destructured off the config block: a destructuring read binds a bare
-        // `host` that never reads as a member expression, so it slips past a grep for the leaf — which
-        // is how the one site that actually issues the request stayed invisible behind three that
-        // only looked like the whole surface.
-        const host           = this.openAiCompatibleHostFn();
+        // Read as an explicit member expression rather than destructured off the config block: a
+        // destructuring read binds a bare `host` that never reads as `openAiCompatible.host`, so it
+        // slips past a grep for the leaf.
+        const host           = cfg.openAiCompatible.host;
         const embeddingModel = cfg.openAiCompatible.embeddingModel;
 
         try {

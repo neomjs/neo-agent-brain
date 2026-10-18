@@ -102,6 +102,9 @@ function makeSafe(service, spec) {
                 return value.bind(target);
             }
             return value;
+        },
+        set(target, prop, value) {
+            return Reflect.set(target, prop, value, target);
         }
     });
 }
