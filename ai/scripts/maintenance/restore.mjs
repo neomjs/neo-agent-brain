@@ -567,15 +567,39 @@ async function parseJsonlRows(filePath, label) {
  * @throws {BundleContentError} At the first member that does not parse, naming it and, for JSONL, the line.
  */
 export async function validateIncidentLedgers(ledgersDir) {
+    await validateLedgerPayloads(ledgersDir);
+    await validateNestedLedgerMembers(ledgersDir)
+}
+
+/**
+ * @summary The ledger rule's first half: every row of each top-level ledger payload parses. {@link validateBundle}
+ * runs it where its streaming pass reaches `ledgers/`, its last subdirectory, before `bundle-meta.json`.
+ * @param {String} ledgersDir The bundle's `ledgers/` directory.
+ * @returns {Promise<void>}
+ * @throws {BundleContentError}
+ * @private
+ */
+async function validateLedgerPayloads(ledgersDir) {
     if (await pathIsProvablyAbsent(ledgersDir)) return;
 
     for (const file of (await fs.readdir(ledgersDir)).filter(isBundlePayload)) {
         await parseJsonlRows(path.join(ledgersDir, file), `ledgers/${file}`)
     }
+}
 
-    // The two members a top-level scan cannot reach: `heal-attempts.json` is not `.jsonl`, and the
-    // recovery-run files are NESTED. Both were once accepted malformed while the verdict still read
-    // `RESTORABLE`. A probe may only attest what it has actually parsed.
+/**
+ * @summary The ledger rule's second half: the members a top-level scan cannot reach. {@link validateBundle} runs it
+ * after `bundle-meta.json`, so an unreadable receipt still outranks a malformed nested member.
+ * @param {String} ledgersDir The bundle's `ledgers/` directory.
+ * @returns {Promise<void>}
+ * @throws {BundleContentError}
+ * @private
+ */
+async function validateNestedLedgerMembers(ledgersDir) {
+    if (await pathIsProvablyAbsent(ledgersDir)) return;
+
+    // `heal-attempts.json` is not `.jsonl`, and the recovery-run files are NESTED. Both were once accepted
+    // malformed while the verdict still read `RESTORABLE`. A probe may only attest what it has actually parsed.
     const attemptsPath = path.join(ledgersDir, INCIDENT_LEDGER_BUNDLE_MEMBERS.healAttempts);
 
     if (!await pathIsProvablyAbsent(attemptsPath)) {
@@ -649,7 +673,8 @@ export async function validateBundle(bundleRoot, layout, logger = console, expec
     // BEFORE any mutation. Line-1 sampling cannot satisfy the gate — a corrupt final row is the
     // exact shape this closes. Streamed totals are keyed per actual vector collection (kb chunks,
     // Memory Core memories, summaries, temporal summaries) and feed the declared-count check below.
-    // `ledgers` has its own rule, {@link validateIncidentLedgers}, run below.
+    // `ledgers` has its own rule, {@link validateIncidentLedgers}, run below in the order the verdicts depend on:
+    // its payloads where this pass would reach `ledgers/` last, its nested members after `bundle-meta.json`.
     const allSubdirs     = [...REQUIRED_BUNDLE_SUBDIRS, ...OPTIONAL_BUNDLE_SUBDIRS].filter(subdir => subdir !== 'ledgers');
     const streamedCounts = {};
 
@@ -701,7 +726,7 @@ export async function validateBundle(bundleRoot, layout, logger = console, expec
         }
     }
 
-    await validateIncidentLedgers(layout.ledgers);
+    await validateLedgerPayloads(layout.ledgers);
 
     const metaPath = path.join(bundleRoot, 'bundle-meta.json');
     let   meta     = null;
@@ -721,6 +746,8 @@ export async function validateBundle(bundleRoot, layout, logger = console, expec
     } else {
         logger.warn?.('[Restore] bundle-meta.json absent; topology compatibility check will be skipped (legacy bundle).');
     }
+
+    await validateNestedLedgerMembers(layout.ledgers);
 
     // Embedding compatibility preflight BEFORE any replace-mode truncate. Hard gates bind only to
     // evidence the bundle itself proves (schema shape, declared-vs-streamed counts, declared-vs-

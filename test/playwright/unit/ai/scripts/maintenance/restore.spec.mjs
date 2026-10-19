@@ -1626,6 +1626,23 @@ test.describe('verifyLatestBackupRestorable — falls back past an unusable newe
         expect(verdict.skipped[0].code).toBe('BUNDLE_INVALID');
     });
 
+    // An unreadable receipt beside a malformed ledger member: the validator reports the first fault it reaches, so
+    // the order is part of the verdict. Top-level ledger payloads stream before `bundle-meta.json`, the nested
+    // members are read after it.
+    for (const [member, file, content, verdictShape] of [
+        ['a malformed nested member', 'heal-attempts.json', '{NOT VALID JSON', {code: 'BUNDLE_UNVERIFIABLE', errorCode: 'EISDIR'}],
+        ['a torn top-level payload', 'heal-events.jsonl', '{"type":"he{"type":"heal"}\n', {code: 'BUNDLE_INVALID', reason: expect.stringMatching(/ledgers\/heal-events\.jsonl \(line 1\)/)}]
+    ]) {
+        test(`an unreadable receipt beside ${member} reads ${verdictShape.code}`, async () => {
+            const bundle = writeValidBundle('backup-2027-02-03T00-00-00');
+            fs.mkdirSync(path.join(bundle, 'ledgers'));
+            fs.writeFileSync(path.join(bundle, 'ledgers', file), content);
+            fs.mkdirSync(path.join(bundle, 'bundle-meta.json')); // a real EISDIR, as in the production-path case
+
+            expect(await verifyLatestBackupRestorable({backupRoot: probeRoot, logger: silent})).toMatchObject({restorable: false, ...verdictShape})
+        });
+    }
+
     test('a genuinely MISSING required subdirectory is content, but an unreadable one is not', async () => {
         // `fs.pathExists` resolves false for ANY failure, so "required subdirectory missing" was a
         // content verdict derived from a boolean that cannot tell absence from inaccessibility. Only
