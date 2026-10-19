@@ -260,7 +260,17 @@ test.describe('Neo.ai.scripts.revalidationSweep', () => {
                 dryRun: true,
                 io    : fakeIo
             });
-            expect(captured.since).toBe('2026-05-18T00:00:00.000Z');
+
+            // the fallback is the family representative's own roots row (the first active gemini identity in
+            // roots order), read from the roots here rather than pinned as a date the roster may change
+            const representative = IDENTITIES.find(node =>
+                node.type === 'AgentIdentity' &&
+                node.properties.modelFamily === 'gemini' &&
+                node.properties.participationStatus === 'active'
+            );
+
+            expect(representative.properties.since).toBeTruthy();
+            expect(captured.since).toBe(representative.properties.since);
         });
 
         test('throws when family is omitted', async () => {
