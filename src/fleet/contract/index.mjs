@@ -11,3 +11,4 @@ export * from './launchAuthority.mjs';
 export * from './mcpServers.mjs';
 export * from './wire.mjs';
 export * from './cockpit.mjs';
+export * from './seatLifecycle.mjs';

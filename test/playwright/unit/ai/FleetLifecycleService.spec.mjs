@@ -340,6 +340,19 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService', () => {
         expect(spawn.calls[0].opts.cwd).toBeUndefined();
     });
 
+    test('a spawn that throws leaves a failed record that names why, as every failed record does (#1201)', () => {
+        install({agents: {a: agentDef('a')}});
+        FleetLifecycleService.spawnFn = () => { throw Object.assign(new Error('spawn ENOENT'), {code: 'ENOENT'}) };
+
+        expect(() => FleetLifecycleService.start('a')).toThrow(/ENOENT/);
+        expect(FleetLifecycleService.status('a')).toMatchObject({
+            state        : 'failed',
+            running      : false,
+            pid          : null,
+            failureReason: 'the seat process could not be spawned: ENOENT'
+        });
+    });
+
     test('SECURITY: PAT injected into the child env copy only — never argv / record / live parent env', () => {
         const pat    = 'ghp_SECRET_injected_value',
               spawn  = install({agents: {a: agentDef('a')}, creds: {a: pat}}),

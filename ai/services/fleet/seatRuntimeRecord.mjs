@@ -4,6 +4,7 @@ import {isLaunchProfileBinding}                                      from './lau
 import {canonicalJson, isAdmissibleEnvName, isLaunchIdentity}        from './mcpLaunchAdmission.mjs';
 import {isRuntimeGenerationPin, runtimeGenerationPin}                from './runtimeGeneration.mjs';
 import {launchRowEnvNames, MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS} from './managedAgentWorkspacePlan.mjs';
+import {SEAT_LIFECYCLE_READ_ONLY_STATES, SEAT_LIFECYCLE_STATES}      from '../../../src/fleet/contract/seatLifecycle.mjs';
 
 /**
  * @module ai/services/fleet/seatRuntimeRecord
@@ -150,11 +151,11 @@ export function seatRuntimeSnapshot(record) {
 
 /**
  * @summary Validates the closed mutable retention envelope around an immutable Start binding.
- * `exited` is only read: the first durable-custody builds wrote it, and recovery re-persists it as `stopped`.
- * It leaves with the next snapshot version.
+ * The state is a word of the public seat lifecycle contract: what the Fleet writes, or a read-only word
+ * (`exited`, which recovery re-persists as `stopped`; it leaves with the next snapshot version).
  */
 export function isSeatRuntimeSnapshot(value) {
     return exact(value, ['start', 'state', 'ownershipUnresolved', 'cleanupUnresolved']) && isSeatRuntimeRecord(value.start) &&
-        ['running', 'stopping', 'stopped', 'exited', 'failed', 'unavailable'].includes(value.state) &&
+        (SEAT_LIFECYCLE_STATES.includes(value.state) || SEAT_LIFECYCLE_READ_ONLY_STATES.includes(value.state)) &&
         typeof value.ownershipUnresolved === 'boolean' && typeof value.cleanupUnresolved === 'boolean'
 }

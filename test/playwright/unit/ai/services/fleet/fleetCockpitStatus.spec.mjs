@@ -19,6 +19,7 @@ import * as core      from 'neo.mjs/src/core/_export.mjs'
 
 import {createFleetCockpitEvent, createFleetCockpitEventId, createFleetCockpitStatus} from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
 import {FLEET_COCKPIT_EVENT_TYPES, FLEET_COCKPIT_SOURCES}                             from '../../../../../../src/fleet/contract/cockpit.mjs';
+import {SEAT_LIFECYCLE_ROW_FALLBACK}                                                  from '../../../../../../src/fleet/contract/seatLifecycle.mjs';
 
 // Brain-side producer constants, imported HERE only: the module under test is a pure Body map that
 // must never import `ai/`. The spec is the one place both sides may meet — which is what lets it
@@ -124,8 +125,11 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
 
     test('composes runtimeStatus onto row lifecycle — observed process truth when present, honest not-wired when absent', () => {
         const snapshot = createFleetCockpitStatus({
-            agents       : [{id: 'alice'}, {id: 'bob'}],
-            runtimeStatus: [{agentId: 'alice', state: 'running', running: true, confidence: 'observed'}]
+            agents       : [{id: 'alice'}, {id: 'bob'}, {id: 'carol'}],
+            runtimeStatus: [
+                {agentId: 'alice', state: 'running', running: true, confidence: 'observed'},
+                {agentId: 'carol', running: false, confidence: 'observed'}
+            ]
         })
 
         expect(snapshot.rows[0].lifecycle).toMatchObject({source: FLEET_COCKPIT_SOURCES.runtime, state: 'running', confidence: 'observed'})
@@ -134,6 +138,9 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         // no runtime entry -> the DTO's own placeholder-never-renders-as-fact discipline
         expect(snapshot.rows[1].lifecycle).toMatchObject({state: 'not-wired', confidence: 'none'})
         expect(snapshot.rows[1].sources.runtime).toMatchObject({state: 'not-wired', confidence: 'none'})
+
+        // a supervised row that names no state carries the contract's fallback word, never a state a control acts on
+        expect(snapshot.rows[2].lifecycle).toMatchObject({source: FLEET_COCKPIT_SOURCES.runtime, state: SEAT_LIFECYCLE_ROW_FALLBACK, confidence: 'observed'})
     })
 
     test('carries the last start\'s per-repository outcome from the runtime row — null before a start', () => {
@@ -192,11 +199,14 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
     test('carries unresolved helper cleanup and its failureReason from the runtime row onto the roster row (#1074)', () => {
         const
             failureReason = 'Codex Desktop helper cleanup failed: ambiguous profile-owned process identity (pid 4242); refusing cleanup.',
+            spawnReason   = 'the seat process could not be spawned: ENOENT',
             snapshot      = createFleetCockpitStatus({
-                agents       : [{id: 'alice'}, {id: 'bob'}],
+                agents       : [{id: 'alice'}, {id: 'bob'}, {id: 'carol'}],
                 runtimeStatus: [
                     {agentId: 'alice', state: 'failed', running: false, confidence: 'observed', cleanupUnresolved: true, failureReason},
-                    {agentId: 'bob',   state: 'stopped', running: false, confidence: 'observed'}
+                    {agentId: 'bob',   state: 'stopped', running: false, confidence: 'observed'},
+                    // a cleanup-free failed record (a spawn that threw) names why the same way
+                    {agentId: 'carol', state: 'failed', running: false, confidence: 'observed', failureReason: spawnReason}
                 ]
             })
 
@@ -205,7 +215,8 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
             failureReason    : row.failureReason
         }))).toEqual([
             {cleanupUnresolved: true,  failureReason},
-            {cleanupUnresolved: false, failureReason: null}
+            {cleanupUnresolved: false, failureReason: null},
+            {cleanupUnresolved: false, failureReason: spawnReason}
         ])
     })
 

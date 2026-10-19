@@ -1151,7 +1151,11 @@ class FleetLifecycleService extends Base {
             if (opts.startSignal?.aborted) return this.canceledStart(id);
             child = spawn(resolvedCommand, args, spawnOptions);
         } catch (error) {
-            this.processes.set(id, {id, cwd: cwd ?? null, state: 'failed', pid: null, startedAt: null, exitCode: null, exitedAt: new Date().toISOString(), error: error.message});
+            // the record names why, as every other `failed` record does: a cockpit prints `failureReason`, never `error`
+            const words = failureWords(error, `the seat process of agent '${id}' could not be spawned`);
+
+            this.processes.set(id, {id, cwd: cwd ?? null, state: 'failed', pid: null, startedAt: null, exitCode: null, exitedAt: new Date().toISOString(), error: error.message,
+                failureReason: words ? `the seat process could not be spawned: ${words}` : 'the seat process could not be spawned; the Fleet log names the cause'});
             throw error;
         }
 

@@ -1,4 +1,5 @@
 import {FLEET_COCKPIT_EVENT_TYPES, FLEET_COCKPIT_SOURCES} from '../../../src/fleet/contract/cockpit.mjs';
+import {SEAT_LIFECYCLE_ROW_FALLBACK}                      from '../../../src/fleet/contract/seatLifecycle.mjs';
 import {PRESENCE_BEACON_FACETS}                           from './fleetPresenceStateAdapter.mjs';
 
 const GITHUB_AVATAR_SIZE = 80 // small cockpit-appropriate size (~2x the 40px card avatar); GitHub serves it via the `size` param
@@ -215,7 +216,7 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 lifecycle            : supervised
                     ? {
                         source    : FLEET_COCKPIT_SOURCES.runtime,
-                        state     : runtime.state ?? 'unknown',
+                        state     : runtime.state ?? SEAT_LIFECYCLE_ROW_FALLBACK,
                         confidence: runtime.confidence ?? 'observed'
                     }
                     : {

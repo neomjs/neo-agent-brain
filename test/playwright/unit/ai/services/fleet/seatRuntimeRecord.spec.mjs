@@ -1,12 +1,13 @@
 import {expect, test} from '@playwright/test';
 import {createSeatRuntimeRecord, isSeatRuntimeRecord, isSeatRuntimeSnapshot, seatRuntimeSnapshot}
     from '../../../../../../ai/services/fleet/seatRuntimeRecord.mjs';
-import {createManagedAgentWorkspacePlan}                            from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
-import path                                                         from 'node:path';
-import {createAntigravityLaunchBinding, createDesktopLaunchBinding} from '../../../../../../ai/services/fleet/launchProfileCustody.mjs';
-import {generateAntigravityMcpFiles}                                from '../../../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
-import {mintLaunchGrant}                                            from '../../../../../../ai/services/fleet/mcpLaunchAdmission.mjs';
-import {isAdmissionSnapshot}                                        from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
+import {createManagedAgentWorkspacePlan}                                                     from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
+import path                                                                                  from 'node:path';
+import {createAntigravityLaunchBinding, createDesktopLaunchBinding}                          from '../../../../../../ai/services/fleet/launchProfileCustody.mjs';
+import {generateAntigravityMcpFiles}                                                         from '../../../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
+import {mintLaunchGrant}                                                                     from '../../../../../../ai/services/fleet/mcpLaunchAdmission.mjs';
+import {isAdmissionSnapshot}                                                                 from '../../../../../../ai/services/fleet/launchAdmissionJournal.mjs';
+import {SEAT_LIFECYCLE_READ_ONLY_STATES, SEAT_LIFECYCLE_ROW_FALLBACK, SEAT_LIFECYCLE_STATES} from 'neo-agent-brain/fleet-contract';
 
 /** @summary A fresh observed Start with deliberately noisy internal fields that must never persist. */
 function fixture(harnessType = 'codex-desktop') {
@@ -36,6 +37,18 @@ test('original Start custody is closed metadata, detached from the live process 
     }
     snapshot.start.runtime.id = 'c'.repeat(64);
     expect(record.runtimeStart.runtime.id).toBe('a'.repeat(64));
+});
+
+test('the snapshot state is the public seat lifecycle contract: every written word and the read-only word pass, a sixth word fails (#1201)', () => {
+    const record = fixture();
+    record.runtimeStart = createSeatRuntimeRecord({record, identity: 'seat-login', plan: [{key: 'memory-core'}], leaseRequired: true});
+    const snapshot = seatRuntimeSnapshot(record);
+    for (const state of [...SEAT_LIFECYCLE_STATES, ...SEAT_LIFECYCLE_READ_ONLY_STATES]) {
+        expect(isSeatRuntimeSnapshot({...snapshot, state}), state).toBe(true);
+    }
+    for (const state of [SEAT_LIFECYCLE_ROW_FALLBACK, 'exploded', 'Running', '', null, undefined]) {
+        expect(isSeatRuntimeSnapshot({...snapshot, state}), String(state)).toBe(false);
+    }
 });
 
 test('Antigravity Starts require their exact native profile and workspace binding in the shared journal codec', () => {
