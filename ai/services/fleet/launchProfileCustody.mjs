@@ -125,8 +125,8 @@ export function codexProfileProjection(source) {
 
 /**
  * @summary Binds a Codex seat's original Start to the capability-bearing tables of its home config.
- * The home config is the carrier because it lives outside every checkout; a project config would win over
- * it for a table both name, so recovery also proves the original workspace names none of them.
+ * The home config is the carrier because it lives outside every checkout; a project config would override
+ * a bound table through any launcher key it names, so recovery also proves the original workspace names none.
  * @param {Object} options
  * @param {String} options.identity Validated forge login.
  * @param {String} options.issuer The original loopback origin.
@@ -294,14 +294,17 @@ export async function recoverLaunchProfileGrants({managedRoot, instanceHome, wor
             if (digest(canonicalJson(rows)) !== binding.projectionSha256) throw refuse('projection-mismatch');
             if (canonicalJson(Object.keys(rows).sort()) !== canonicalJson(Object.keys(binding.grants).map(key => PREFIX + key).sort())) throw refuse('row-set-mismatch');
             for (const key of Object.keys(binding.grants)) capabilities[key] = capability(rows[PREFIX + key], key);
-            // A project config wins over home for a table both name: the workspace must leave the bound ones to home.
+            // Codex merges config layers key by key (codex-rs config/src/merge.rs): a project table overrides home through
+            // the keys it names, so tool approvals ride along and any other key would replace the bound launcher.
             await directory(workspaceRoot);
             const project = path.join(workspaceRoot, CODEX_PROJECT_CONFIG);
             if (await present(path.dirname(project))) {
                 await directory(path.dirname(project));
                 if (await present(project)) {
                     const named = codexProfileProjection((await read(project, false)).toString('utf8'));
-                    if (Object.keys(binding.grants).some(key => Object.hasOwn(named, PREFIX + key))) throw refuse('workspace-mismatch');
+                    if (Object.keys(binding.grants).some(key => Object.keys(named[PREFIX + key] ?? {}).some(field => field !== 'tools'))) {
+                        throw refuse('workspace-mismatch');
+                    }
                 }
             }
         } else {
