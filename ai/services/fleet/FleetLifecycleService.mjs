@@ -2443,7 +2443,7 @@ class FleetLifecycleService extends Base {
      *
      * Pins are proved by their record, never by re-hashing the payload: the successor's recovery re-verifies the
      * bytes before any generation is active again, while a re-hash costs seconds per runtime inside the handoff's
-     * one deadline. Each survivor's outcome reaches the stage witness, so an overrun names the seat it reached.
+     * one deadline. Each survivor's outcome reaches the stage witness, so an overrun names the last seat it finished.
      * @param {Object} options Existing tenant owner, with isolated-test seams for runtime/profile reads.
      * @returns {Promise<Object>} The admission owner's terminal handoff disposition.
      */
