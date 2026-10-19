@@ -81,21 +81,22 @@ test('Claude Desktop: its session records and new-session folder point at the ne
     await put(path.join(projects, claudeSlug(clone(from)), 's-1.jsonl'), `${JSON.stringify({type: 'summary'})}\n${JSON.stringify({type: 'user', cwd: clone(from)})}\n`);
     // the slug of neo-fable-clio/neomjs/neo extends the old one, but its transcripts ran in another seat
     await put(path.join(projects, claudeSlug(clio), 's-2.jsonl'), `${JSON.stringify({type: 'user', cwd: clio})}\n`);
-    // a folder whose new name is already taken stays as it is
+    // a folder whose new name is already taken stays as it is, and the result says so
     await put(path.join(projects, claudeSlug(stage(from)), 's-3.jsonl'), `${JSON.stringify({cwd: stage(from)})}\n`);
     await fs.mkdir(path.join(projects, claudeSlug(stage(to))), {recursive: true});
 
     const carry  = () => carrySeatSessions({harnessType: 'claude-desktop', instanceHome, from, to, previousId: 'neo-fable', id: 'neo-fable-mnemosyne', homeDir}),
+          kept   = `${claudeSlug(stage(from))} → kept: ${claudeSlug(stage(to))} exists`,
           result = await carry();
 
-    expect(result).toEqual({records: 2, transcripts: [`${claudeSlug(clone(from))} → ${claudeSlug(clone(to))}`]});
+    expect(result).toEqual({records: 2, transcripts: [`${claudeSlug(clone(from))} → ${claudeSlug(clone(to))}`, kept]});
     expect(await readJson(record)).toEqual({cliSessionId: 's-1', cwd: clone(to), originCwd: clone(to), gitAnchors: [{gitRoot: clone(to), commonDir: path.join(clone(to), '.git')}], title: `Work in ${clone(from)}`});
     expect(await readJson(presets)).toEqual({byAccount: {account: {presets: [{target: {cwd: clone(to)}}]}}});
     expect(await fs.readFile(presets, 'utf8'), 'its indentation is kept').toContain('\n  "byAccount"');
     expect((await fs.readdir(projects)).sort()).toEqual([claudeSlug(clone(to)), claudeSlug(clio), claudeSlug(stage(from)), claudeSlug(stage(to))].sort());
     expect(await fs.readFile(path.join(projects, claudeSlug(clone(to)), 's-1.jsonl'), 'utf8'), 'a transcript is history, kept as written').toContain(`"cwd":"${clone(from)}"`);
 
-    expect(await carry(), 'a re-run changes nothing').toEqual({records: 0, transcripts: []})
+    expect(await carry(), 'a re-run moves nothing, and still reports the kept folder').toEqual({records: 0, transcripts: [kept]})
 });
 
 test('Claude Code: the transcripts in its own config home follow', async () => {

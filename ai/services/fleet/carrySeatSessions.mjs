@@ -89,18 +89,19 @@ export function claudeSlug(folder) {
  * @summary Renames the transcript folders of sessions that ran inside the previous folder. A folder is matched by
  * the `cwd` its own transcripts record, never by its name alone: a slug loses the separators, so the folder of
  * `neo-fable-clio/neomjs` and that of `neo-fable/clio/neomjs` share one name. A folder whose new name is taken
- * stays as it is.
+ * stays as it is, and the result says so: its sessions stay listed under the old folder.
  * @param {Object} options
  * @param {String} options.projects The `projects` folder of the Claude config home.
  * @param {String} options.from
  * @param {String} options.to
- * @returns {Promise<String[]>} The renamed folders, as `old → new` names.
+ * @returns {Promise<String[]>} By folder name, each renamed folder as `old → new` and each kept one as
+ *     `old → kept: new exists`.
  * @private
  */
 async function carryTranscripts({projects, from, to}) {
     const carried = [], prefix = claudeSlug(from);
 
-    for (const entry of await readdirOrEmpty(projects)) {
+    for (const entry of (await readdirOrEmpty(projects)).sort((a, b) => a.name.localeCompare(b.name))) {
         if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
 
         const cwd = await sessionFolderOf(path.join(projects, entry.name));
@@ -110,7 +111,12 @@ async function carryTranscripts({projects, from, to}) {
 
         const moved = rehomePath(cwd, from, to), name = claudeSlug(moved);
 
-        if (moved === cwd || await lstatOrNull(path.join(projects, name))) continue;
+        if (moved === cwd) continue;
+
+        if (await lstatOrNull(path.join(projects, name))) {
+            carried.push(`${entry.name} → kept: ${name} exists`);
+            continue
+        }
 
         await fs.rename(path.join(projects, entry.name), path.join(projects, name));
         carried.push(`${entry.name} → ${name}`)

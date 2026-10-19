@@ -62,7 +62,7 @@ test.afterEach(async () => {
  * @summary The preparation a Start runs for one seat under one agents root: the checkout sits in the
  * seat's folder, the way the Fleet lays it out.
  */
-function prepare({agent, agentsRoot, remote, previousInstanceRoot}) {
+function prepare({agent, agentsRoot, remote, previousInstanceRoot, previousAgentId}) {
     return prepareManagedAgentWorkspace({
         agent,
         targetRepoRoot    : path.join(agentsRoot, agent.id, 'neomjs', 'neo'),
@@ -79,7 +79,8 @@ function prepare({agent, agentsRoot, remote, previousInstanceRoot}) {
             launchBinaryPath: '/Applications/Claude.app/Contents/MacOS/Claude',
             bridge          : {kind: 'neo-stdio-streamable-http', command: process.execPath, entrypoint: path.join(runtime, 'ai/mcp/client/stdioToStreamableHttp.mjs')}
         }, launchAdmission: DESKTOP_ADMISSION}),
-        ...(previousInstanceRoot && {previousInstanceRoot})
+        ...(previousInstanceRoot && {previousInstanceRoot}),
+        ...(previousAgentId && {previousAgentId})
     })
 }
 
@@ -168,6 +169,51 @@ for (const harnessType of PREPARED_HARNESS_TYPES) {
             await fs.writeFile(editedPath, (await fs.readFile(editedPath, 'utf8')).replaceAll(rootA, path.join(root, 'elsewhere')));
 
             expect(await outcomeOf(prepare({agent, agentsRoot: rootB, remote, previousInstanceRoot: rootA})), edited).toBe('FLEET_WORKSPACE_DIVERGENT')
+        })
+    }
+}
+
+for (const harnessType of PREPARED_HARNESS_TYPES) {
+    for (const remote of [false, true]) {
+        const label = `${harnessType} seat (${remote ? 'remote' : 'resident'} MCP)`;
+
+        test(`a ${label} renamed in place converges under its new id when told the previous one, and only then (#1173)`, async () => {
+            const
+                {agent, rootA} = await preparedAndCopied({harnessType, remote, copies: []}),
+                oldSeat        = path.join(rootA, agent.id),
+                renamed        = {...agent, id: 'seat-b'},
+                untold         = {...agent, id: 'seat-c'};
+
+            // a rename copies the seat's folder, its checkout included, under the new id
+            for (const {id} of [renamed, untold]) {
+                await fs.cp(oldSeat, path.join(rootA, id), {recursive: true, verbatimSymlinks: true})
+            }
+
+            expect(await outcomeOf(prepare({agent: untold, agentsRoot: rootA, remote})), 'untold, a rendering under the old id is a hand edit')
+                .toBe(harnessType.startsWith('codex') && !remote ? 'converged' : 'FLEET_WORKSPACE_DIVERGENT');
+
+            const first = await prepare({agent: renamed, agentsRoot: rootA, remote, previousInstanceRoot: rootA, previousAgentId: agent.id});
+
+            expect(first.instanceHome.startsWith(path.join(rootA, renamed.id) + path.sep)).toBe(true);
+            expect(await filesNaming(path.join(rootA, renamed.id), oldSeat), 'no Fleet-owned file names the old seat folder').toEqual([]);
+
+            const checkout = path.join(rootA, renamed.id, 'neomjs', 'neo');
+
+            if (harnessType.startsWith('claude')) {
+                const settings = JSON.parse(await fs.readFile(path.join(checkout, '.claude', 'settings.local.json'), 'utf8'));
+
+                expect(settings.autoMemoryDirectory, 'the memory key rendered under the old id is replaced').toBe(path.join(rootA, renamed.id, 'memory'))
+            }
+
+            if (harnessType.startsWith('codex') && remote) {
+                const home = path.join(first.instanceHome, ...(harnessType === 'codex-desktop' ? ['codex-home'] : []), 'config.toml');
+
+                expect(parseToml(await fs.readFile(home, 'utf8')).projects, 'the trust block names the renamed checkout').toEqual({[checkout]: {trust_level: 'trusted'}})
+            }
+
+            const second = await prepare({agent: renamed, agentsRoot: rootA, remote, previousInstanceRoot: rootA, previousAgentId: agent.id});
+
+            expect(second.artifacts.filter(artifact => artifact.status !== 'MATCH'), 'a second Start converges as a match').toEqual([])
         })
     }
 }

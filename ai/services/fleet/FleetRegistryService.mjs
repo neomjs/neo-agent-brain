@@ -878,6 +878,10 @@ class FleetRegistryService extends Base {
      * The PAT and the seat's operator follow the row. The PAT is copied to the new id before the registry write
      * and removed from the old one after it, so an interruption leaves a startable seat, and a re-run, which
      * finds the row under its new id, completes the PAT and operator moves.
+     *
+     * Listeners hear the re-key as the old id's removal, then the new id's definition. In-process, the launch
+     * admission therefore ends the old id's generation, which is what a rename means; the CLI runs with the
+     * Fleet quit, so no listener is live there.
      * @param {String} id             The row's current id.
      * @param {Object} rename
      * @param {String} rename.to       The new id: a seat segment no row uses.
