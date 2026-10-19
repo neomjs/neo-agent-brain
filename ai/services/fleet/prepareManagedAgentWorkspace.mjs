@@ -2901,15 +2901,32 @@ async function convergeCodexProjectSwitches({filePath, plan, instanceHome, adapt
     await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: 'mcp_servers."neo-mjs-*".enabled'});
 
     const
-        receiptPath = path.join(instanceHome, TRANSPORT_RECEIPT_FILE),
-        receipt     = await readTransportReceipt({receiptPath, adapter, filePath, fileSystem});
+        receiptPath        = path.join(instanceHome, TRANSPORT_RECEIPT_FILE),
+        projectReceiptPath = path.join(instanceHome, PROJECT_MCP_RECEIPT_FILE),
+        sourceSplit        = splitTransportProjection(projectCodexOwnedProjection(source)),
+        targetSplit        = splitTransportProjection(projectCodexOwnedProjection(converged)),
+        sourceHash         = hashProjection({transport: sourceSplit.transport, other: sourceSplit.other}),
+        targetHash         = hashProjection({transport: targetSplit.transport, other: targetSplit.other}),
+        recorded           = await readProjectMcpReceipt({receiptPath: projectReceiptPath, artifact: path.basename(filePath), fileSystem}),
+        receipt            = await readTransportReceipt({receiptPath, adapter, filePath, fileSystem});
 
-    if (receipt?.projectionSha256 === hashProjection(splitTransportProjection(projectCodexOwnedProjection(source)).transport)) {
+    if (recorded.includes(sourceHash)) {
+        await writeProjectMcpReceipt({
+            receiptPath: projectReceiptPath,
+            artifact   : path.basename(filePath),
+            sha256     : targetHash,
+            previous   : sourceHash,
+            instanceHome,
+            fileSystem
+        })
+    }
+
+    if (receipt?.projectionSha256 === hashProjection(sourceSplit.transport)) {
         await convergeTransportReceipt({
             receiptPath,
             adapter,
             filePath,
-            projectionSha256: hashProjection(splitTransportProjection(projectCodexOwnedProjection(converged)).transport),
+            projectionSha256: hashProjection(targetSplit.transport),
             fileSystem,
             instanceHome
         })
@@ -3056,10 +3073,17 @@ const TRANSPORT_SERVER_NAMES = Object.freeze([
 
 const TRANSPORT_RECEIPT_FILE = '.neo-fleet-mcp-transport.json';
 
+// Beside the transport receipt in the seat's instance home: the owned projection Fleet last wrote to the project file.
+const PROJECT_MCP_RECEIPT_FILE = '.neo-fleet-mcp-project.json';
+
 // Beside a Codex home config: the projection of the launcher tables Fleet last wrote there.
 const CODEX_LAUNCH_RECEIPT = '.neo-fleet-codex-launch.json';
 
-/** @summary Recognize the former exact invocation without widening any other managed setting. @private */
+/**
+ * @summary Recognize the former exact invocation without widening any other managed setting.
+ * Retirement trigger: delete once every active seat has completed one Start recording `PROJECT_MCP_RECEIPT_FILE`.
+ * @private
+ */
 function previousNodeRuntimePlan(plan) {
     return plan.some(server => server.environment)
         ? plan.map(({environment, ...server}) => server)
@@ -3069,6 +3093,7 @@ function previousNodeRuntimePlan(plan) {
 /**
  * @summary Exact pre-placement slot vocabulary for upgrading only an untouched Fleet projection.
  * Descriptor history is bounded here; unrelated operator edits remain a divergence.
+ * Retirement trigger: delete once every active seat has completed one Start recording `PROJECT_MCP_RECEIPT_FILE`.
  * @param {Object[]} plan Bound current plan.
  * @returns {Object[]} Prior generated plan.
  * @private
@@ -3084,6 +3109,7 @@ function previousPlacementPlan(plan) {
  * @summary The current plan in each server's vocabulary before its latest addition (`previousRuntimeEnv`):
  * the added names leave the row and the resident names stay, so a row Fleet rendered before the addition
  * is recognised exactly.
+ * Retirement trigger: delete once every active seat has completed one Start recording `PROJECT_MCP_RECEIPT_FILE`.
  * @param {Object[]} plan Bound current plan.
  * @returns {Object[]|null} `null` when the plan carries no declared addition.
  * @private
@@ -3113,6 +3139,7 @@ function previousVocabularyPlan(plan) {
  * one root, and that pair has the current runtime's packaged shape — the organism at `PACKAGED_ORGANISM`
  * inside a bundle, the executable at the current executable's place in it. A hand-pointed executable,
  * another root shape, two runtimes or the current runtime answer `null`.
+ * Retirement trigger: delete once every active seat has completed one Start recording `PROJECT_MCP_RECEIPT_FILE`.
  * @param {String} source The existing project config.
  * @param {Object[]} plan Bound current plan.
  * @returns {{agentosRuntimeRoot: String, nodePath: String}|null}
@@ -3176,13 +3203,11 @@ function createRemoteServerMap(plan) {
 }
 
 /**
- * @summary Converge the one transport-bearing artifact with an authenticated transition receipt.
- * Markerless legacy stdio may move once; later changes require the receipt hash to match the
- * current MC/KB projection. Other managed entries must match, except an exact earlier projection
- * supplied by the renderer: the prior child Node mode, an earlier vocabulary, or — from
- * `priorRuntimeContent(existing)` — the current plan as the packaged runtime an install has since
- * moved ran it. Those upgrades accept no unrelated edit; resident tables and login state remain
- * outside the owned projection.
+ * @summary Converge the seat's project MCP file by its recorded owned-projection receipt (`PROJECT_MCP_RECEIPT_FILE`),
+ * falling back to the legacy candidate list only to migrate pre-receipt files on their first Start.
+ * Retirement trigger for the fallback candidate list (`legacyContent`, `runtimeLegacyContent`,
+ * `runtimeLegacyStdioContent`, `placementLegacyContent`, `priorRuntimeContent`): delete once every active
+ * seat has completed one Start on a build that writes `PROJECT_MCP_RECEIPT_FILE`.
  * @private
  */
 async function convergeTransportArtifact({
@@ -3206,13 +3231,34 @@ async function convergeTransportArtifact({
 
     const
         receiptPath          = path.join(instanceHome, TRANSPORT_RECEIPT_FILE),
+        projectReceiptPath   = path.join(instanceHome, PROJECT_MCP_RECEIPT_FILE),
+        artifactName         = path.basename(filePath),
         desired              = splitTransportProjection(ownedProjection(desiredContent)),
+        desiredHash          = hashProjection({transport: desired.transport, other: desired.other}),
         legacy               = splitTransportProjection(ownedProjection(legacyContent)),
         placementPrevious    = [].concat(placementLegacyContent || []).map(content => splitTransportProjection(ownedProjection(content))),
         runtimePrevious      = runtimeLegacyContent && splitTransportProjection(ownedProjection(runtimeLegacyContent)),
         runtimePreviousStdio = runtimeLegacyStdioContent && splitTransportProjection(ownedProjection(runtimeLegacyStdioContent));
     let existing;
     let artifactStatus = WORKSPACE_ARTIFACT_STATES.MATCH;
+
+    await assertNoSymlinkSegments({
+        rootPath  : instanceHome,
+        targetPath: projectReceiptPath,
+        fileSystem,
+        label     : 'project MCP receipt'
+    });
+
+    const
+        recorded = await readProjectMcpReceipt({receiptPath: projectReceiptPath, artifact: artifactName, fileSystem}),
+        record   = previous => writeProjectMcpReceipt({
+            receiptPath: projectReceiptPath,
+            artifact   : artifactName,
+            sha256     : desiredHash,
+            previous,
+            instanceHome,
+            fileSystem
+        });
 
     try {
         existing = await fileSystem.readFile(filePath, 'utf8')
@@ -3226,15 +3272,21 @@ async function convergeTransportArtifact({
         artifactStatus = WORKSPACE_ARTIFACT_STATES.CREATED
     }
 
-    const actual     = splitTransportProjection(ownedProjection(existing));
-    const recognised = [...placementPrevious,
-        ...[].concat(priorRuntimeContent?.(existing) ?? []).map(content => splitTransportProjection(ownedProjection(content)))];
-    const runtimeUpgrade = JSON.stringify(actual.other) !== JSON.stringify(desired.other)
-        && [runtimePrevious, ...recognised].some(previous => previous && !previous.invalid
-            && JSON.stringify(actual.other) === JSON.stringify(previous.other));
+    const
+        actual        = splitTransportProjection(ownedProjection(existing)),
+        actualHash    = actual.invalid ? null : hashProjection({transport: actual.transport, other: actual.other}),
+        recordedMatch = Boolean(actualHash && recorded.includes(actualHash)),
+        otherChanged  = JSON.stringify(actual.other) !== JSON.stringify(desired.other),
+        recognised    = recordedMatch ? [] : [...placementPrevious,
+            ...[].concat(priorRuntimeContent?.(existing) ?? []).map(content => splitTransportProjection(ownedProjection(content)))],
+        runtimeUpgrade = otherChanged && (
+            recordedMatch ||
+            [runtimePrevious, ...recognised].some(previous => previous && !previous.invalid
+                && JSON.stringify(actual.other) === JSON.stringify(previous.other))
+        );
 
     if (actual.invalid || desired.invalid || legacy.invalid ||
-        (!runtimeUpgrade && JSON.stringify(actual.other) !== JSON.stringify(desired.other))) {
+        (!runtimeUpgrade && otherChanged)) {
         throw transportDivergence(filePath, ownedLabel, actual.invalid ? 'invalid managed artifact' : 'non-transport managed keys differ')
     }
 
@@ -3242,13 +3294,13 @@ async function convergeTransportArtifact({
 
     if (transportChanged) {
         const receipt    = await readTransportReceipt({receiptPath, adapter, filePath, fileSystem});
-        const authorized = receipt
+        const authorized = recordedMatch || (receipt
             ? receipt.projectionSha256 === hashProjection(actual.transport)
             : JSON.stringify(actual.transport) === JSON.stringify(legacy.transport)
                 || recognised.some(previous => !previous.invalid
                     && JSON.stringify(actual.transport) === JSON.stringify(previous.transport))
                 || (runtimePreviousStdio && !runtimePreviousStdio.invalid
-                    && JSON.stringify(actual.transport) === JSON.stringify(runtimePreviousStdio.transport));
+                    && JSON.stringify(actual.transport) === JSON.stringify(runtimePreviousStdio.transport)));
 
         if (!authorized) {
             throw transportDivergence(filePath, ownedLabel, 'current MC/KB projection is neither markerless legacy stdio nor receipt-authenticated')
@@ -3266,8 +3318,11 @@ async function convergeTransportArtifact({
             throw transportDivergence(filePath, ownedLabel, 'transport-only merge could not preserve the managed artifact contract')
         }
 
+        await record(actualHash);
         await publishTextAtomically({filePath, content: merged, fileSystem});
         artifactStatus = WORKSPACE_ARTIFACT_STATES.UPDATED
+    } else if (recorded[0] !== desiredHash) {
+        await record(null)
     }
 
     const artifacts = [{
@@ -3326,6 +3381,50 @@ function splitTransportProjection(projection) {
 /** @private */
 function hashProjection(projection) {
     return crypto.createHash('sha256').update(JSON.stringify(canonicalize(projection))).digest('hex')
+}
+
+/**
+ * @summary The owned-projection digests the seat's project MCP receipt admits: the one Fleet wrote last,
+ * and the one before it while that write is in flight. Empty when no receipt can vouch.
+ * @private
+ */
+async function readProjectMcpReceipt({receiptPath, artifact, fileSystem}) {
+    let receipt;
+
+    try {
+        receipt = JSON.parse(await fileSystem.readFile(receiptPath, 'utf8'))
+    } catch (error) {
+        if (error?.code === 'ENOENT' || error instanceof SyntaxError) return [];
+        throw error
+    }
+
+    return receipt?.version === 1 && receipt.artifact === artifact
+        ? [receipt.sha256, receipt.previous].filter(hash => /^[a-f0-9]{64}$/.test(hash ?? ''))
+        : []
+}
+
+/**
+ * @summary Record the owned-projection digest Fleet wrote to the seat's project MCP file.
+ * @private
+ */
+async function writeProjectMcpReceipt({receiptPath, artifact, sha256, previous = null, instanceHome, fileSystem}) {
+    await assertNoSymlinkSegments({
+        rootPath  : instanceHome,
+        targetPath: receiptPath,
+        fileSystem,
+        label     : 'project MCP receipt'
+    });
+    await fileSystem.mkdir(path.dirname(receiptPath), {recursive: true});
+    await publishTextAtomically({
+        filePath: receiptPath,
+        content : JSON.stringify({
+            version : 1,
+            artifact,
+            sha256,
+            previous: previous && previous !== sha256 ? previous : null
+        }, null, 2) + '\n',
+        fileSystem
+    })
 }
 
 /** @private */

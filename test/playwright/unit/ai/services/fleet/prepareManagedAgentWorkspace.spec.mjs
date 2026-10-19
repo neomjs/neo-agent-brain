@@ -3728,3 +3728,148 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
         expect(observedNewFiles).toEqual({'kimi-code': [], opencode: []})
     })
 });
+
+test.describe('prepareManagedAgentWorkspace: project MCP files recognised by recorded write (#1180)', () => {
+    const PROJECT_RECEIPT = '.neo-fleet-mcp-project.json';
+
+    test('records the owned projection beside the transport receipt and converges across consecutive plan changes without candidate helpers', async () => {
+        const
+            opts               = {...options(makeAgent('codex-desktop')), mcpTarget: tenantTarget()},
+            first              = await prepareManagedAgentWorkspace(opts),
+            projectPath        = path.join(opts.targetRepoRoot, '.codex', 'config.toml'),
+            transportReceipt   = path.join(first.instanceHome, '.neo-fleet-mcp-transport.json'),
+            projectReceiptPath = path.join(first.instanceHome, PROJECT_RECEIPT),
+            customBlock        = '\n# keep operator comment\n[mcp_servers."custom"]\ncommand = "custom-server"\n';
+
+        const initialReceipt = JSON.parse(await read(projectReceiptPath));
+
+        expect((await fs.stat(transportReceipt)).isFile()).toBe(true);
+        expect(initialReceipt).toEqual({
+            version : 1,
+            artifact: 'config.toml',
+            sha256  : expect.stringMatching(/^[a-f0-9]{64}$/),
+            previous: null
+        });
+
+        // Simulate a seat whose project file was written two plan changes ago (an unbundled runtime path
+        // that `priorPackagedCodexRuntime` does not recognise, plus an arbitrary earlier env_vars list that
+        // `previousVocabularyPlan` / `previousPlacementPlan` do not enumerate) by recording that write first.
+        const planOneOpts = {
+            ...opts,
+            nodePath: path.join(root, 'custom-runtime-v1', 'node')
+        };
+        await fs.mkdir(path.dirname(planOneOpts.nodePath), {recursive: true});
+        await fs.writeFile(planOneOpts.nodePath, '#!/bin/sh\n', {mode: 0o755});
+
+        const afterPlanOne    = await prepareManagedAgentWorkspace(planOneOpts);
+        const receiptAfterOne = JSON.parse(await read(projectReceiptPath));
+
+        expect(afterPlanOne.artifacts[0].status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+        expect(receiptAfterOne.previous).toBe(initialReceipt.sha256);
+        expect(receiptAfterOne.sha256).not.toBe(initialReceipt.sha256);
+
+        // Preserve non-Fleet entries in the same file while applying a second consecutive plan change
+        // (switching to the current runtime + moving Neural Link to the home launcher via launchAdmission).
+        await fs.writeFile(projectPath, await read(projectPath) + customBlock, 'utf8');
+
+        const afterPlanTwo = await prepareManagedAgentWorkspace({
+            ...opts,
+            launchAdmission: desktopAdmission()
+        });
+        const receiptAfterTwo = JSON.parse(await read(projectReceiptPath));
+        const convergedSource = await read(projectPath);
+
+        expect(afterPlanTwo.artifacts[0].status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+        expect(convergedSource).toContain(customBlock);
+        expect(convergedSource).toContain(NODE_PATH);
+        expect(convergedSource).not.toContain('custom-runtime-v1');
+        expect(tomlMcpTable(convergedSource, 'neo-mjs-neural-link')).toBe('');
+        expect(receiptAfterTwo.previous).toBe(receiptAfterOne.sha256);
+        expect(receiptAfterTwo.sha256).not.toBe(receiptAfterOne.sha256);
+    });
+
+    test('an interrupted project-file write converges on the next Start via the receipt previous digest', async () => {
+        const
+            opts               = options(makeAgent('claude-code')),
+            first              = await prepareManagedAgentWorkspace(opts),
+            projectPath        = path.join(first.instanceHome, 'mcp-config.json'),
+            projectReceiptPath = path.join(first.instanceHome, PROJECT_RECEIPT),
+            before             = await read(projectPath),
+            failing            = new Proxy(fs, {
+                get(fileSystem, key) {
+                    return key === 'rename'
+                        ? async (from, to) => {
+                            if (to === projectPath) throw Object.assign(new Error('interrupted project write'), {code: 'EIO'});
+                            return fileSystem.rename(from, to)
+                        }
+                        : fileSystem[key]
+                }
+            });
+
+        const nextOpts = {
+            ...opts,
+            mcpTarget: tenantTarget(),
+            runtime  : {execPath: NODE_PATH, versions: {electron: '43.5.0'}}
+        };
+
+        await expect(prepareManagedAgentWorkspace({...nextOpts, fileSystem: failing})).rejects.toThrow();
+        expect(await read(projectPath)).toBe(before);
+
+        const midReceipt = JSON.parse(await read(projectReceiptPath));
+        expect(midReceipt.previous).toMatch(/^[a-f0-9]{64}$/);
+
+        const recovered = await prepareManagedAgentWorkspace(nextOpts);
+        expect(recovered.artifacts.find(item => item.path === projectPath).status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+        expect(await read(projectPath)).toContain('ELECTRON_RUN_AS_NODE');
+    });
+
+    test('a project file edited outside Fleet is refused and preserves non-Fleet entries', async () => {
+        const
+            opts        = options(makeAgent('codex')),
+            first       = await prepareManagedAgentWorkspace(opts),
+            projectPath = path.join(opts.targetRepoRoot, '.codex', 'config.toml'),
+            customTable = '\n# resident comment\n[mcp_servers."custom"]\ncommand = "keep"\n',
+            edited      = (await read(projectPath)).replace('tool_timeout_sec = 120', 'tool_timeout_sec = 999') + customTable;
+
+        expect((await fs.stat(path.join(first.instanceHome, PROJECT_RECEIPT))).isFile()).toBe(true);
+        await fs.writeFile(projectPath, edited, 'utf8');
+
+        await expect(prepareManagedAgentWorkspace({
+            ...opts,
+            runtime: {execPath: NODE_PATH, versions: {electron: '43.5.0'}}
+        })).rejects.toMatchObject({
+            code    : 'FLEET_WORKSPACE_DIVERGENT',
+            artifact: {path: projectPath, status: WORKSPACE_ARTIFACT_STATES.DIVERGENT}
+        });
+        expect(await read(projectPath)).toBe(edited);
+    });
+
+    test('an existing pre-receipt seat migrates cleanly on its first Start via the fallback candidate list and writes the receipt', async () => {
+        const
+            opts               = options(makeAgent('codex'), 'pre-receipt-seat'),
+            first              = await prepareManagedAgentWorkspace({...opts, runtime: {execPath: NODE_PATH, versions: {}}}),
+            projectPath        = path.join(opts.targetRepoRoot, '.codex', 'config.toml'),
+            projectReceiptPath = path.join(first.instanceHome, PROJECT_RECEIPT),
+            customTable        = '\n[mcp_servers."custom"]\ncommand = "keep"\n';
+
+        // Simulate a seat created before `.neo-fleet-mcp-project.json` existed: remove the receipt and
+        // leave the pre-Electron project config on disk alongside a custom non-Fleet MCP server.
+        await fs.unlink(projectReceiptPath);
+        await fs.writeFile(projectPath, await read(projectPath) + customTable, 'utf8');
+
+        const migrated = await prepareManagedAgentWorkspace({
+            ...opts,
+            runtime: {execPath: NODE_PATH, versions: {electron: '43.5.0'}}
+        });
+
+        expect(migrated.artifacts[0].status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+        expect(await read(projectPath)).toContain('ELECTRON_RUN_AS_NODE');
+        expect(await read(projectPath)).toContain(customTable);
+        expect(JSON.parse(await read(projectReceiptPath))).toEqual({
+            version : 1,
+            artifact: 'config.toml',
+            sha256  : expect.stringMatching(/^[a-f0-9]{64}$/),
+            previous: expect.stringMatching(/^[a-f0-9]{64}$/)
+        });
+    });
+});
