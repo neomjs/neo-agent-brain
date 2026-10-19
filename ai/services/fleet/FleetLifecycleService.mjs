@@ -2449,11 +2449,12 @@ class FleetLifecycleService extends Base {
      * bytes before any generation is active again, while a re-hash costs seconds per runtime inside the handoff's
      * one deadline. Each survivor's outcome reaches the stage witness, so an overrun names the last seat it finished.
      * @param {Object} options Existing tenant owner, with isolated-test seams for runtime/profile reads.
+     * @param {Number} [options.deadlineMs] Remaining whole-quit budget in milliseconds.
      * @returns {Promise<Object>} The admission owner's terminal handoff disposition.
      */
-    handoffRuntimeCustody({tenantService, verifyRuntime = readRuntimeGenerationRecord, readGrants = recoverLaunchProfileGrants, onStage = null} = {}) {
+    handoffRuntimeCustody({tenantService, verifyRuntime = readRuntimeGenerationRecord, readGrants = recoverLaunchProfileGrants, onStage = null, deadlineMs} = {}) {
         const admission = this.getLaunchAdmission();
-        return admission.handoff({onStage, verifySeats: async witness => {
+        return admission.handoff({onStage, deadlineMs, verifySeats: async witness => {
             if (this.pendingStarts.size) throw new Error('a Start is pending');
             this.adoptLeasedSeats();
             const verified = new Map();

@@ -3,7 +3,6 @@ import http                from 'node:http';
 import path                from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import Base                from 'neo.mjs/src/core/Base.mjs';
-import AiConfig            from '../../config.mjs';
 import {
     LAUNCH_ADMISSION_OUTCOMES as OUTCOMES,
     LAUNCH_ADMISSION_REASONS  as REASONS,
@@ -61,8 +60,8 @@ const BRIDGE_ENTRYPOINT = 'ai/mcp/client/stdioToStreamableHttp.mjs';
  * Nothing re-enables a grant: a server switched back on waits for a managed restart. A successor restores
  * only the positively proved original Start after a consumed clean handoff; every other survivor is stale.
  * During quit, {@link handoff} bounds survivor validation, proof drain and endpoint release under the
- * shared `AiConfig.fleet.shutdownBudgetMs` deadline (falling back to {@link proofTimeoutMs} when unset or
- * non-positive), while individual credential proofs continue to obey {@link proofTimeoutMs}.
+ * remaining `deadlineMs` passed by `cleanShutdown` (falling back to {@link proofTimeoutMs} when omitted),
+ * while individual credential proofs continue to obey {@link proofTimeoutMs}.
  *
  * **Custody.** A seat credential stays with its owner: the registry holds the PAT; the explicit tenant
  * or the plane binding holds the plane credential. Each redemption resolves it from the owner Start
@@ -98,10 +97,10 @@ class McpLaunchAdmissionService extends Base {
     pendingTimeoutMs = 30000
 
     /**
-     * How long a credential proof may take before it is unanswered, and the fallback bound for
-     * {@link performHandoff} when `AiConfig.fleet.shutdownBudgetMs` resolves to 0. Its AbortSignal caps each
-     * request's `AiConfig.fleet.tenantProbeTimeoutMs`; that per-request ceiling cannot extend this overall
-     * proof budget. With {@link pendingTimeoutMs}, it stays inside the launcher's per-attempt bound.
+     * How long a credential proof may take before it is unanswered, and the default bound for
+     * {@link performHandoff} when no `deadlineMs` is supplied. Its AbortSignal caps each request's
+     * AiConfig.fleet.tenantProbeTimeoutMs; that per-request ceiling cannot extend this overall proof budget.
+     * With {@link pendingTimeoutMs}, it stays inside the launcher's per-attempt bound.
      * @member {Number} proofTimeoutMs=10000
      */
     proofTimeoutMs = 10000
@@ -374,26 +373,24 @@ class McpLaunchAdmissionService extends Base {
      * @param {Function} [options.onStage] `(stage) => void`, called as each stage begins and once more on
      *     a refusal (`refused at <stage>: <reason>`), so a caller's log witnesses how far a handoff got
      *     even when the host kills the process mid-stage; never awaited, never trusted with control.
+     * @param {Number} [options.deadlineMs] Remaining whole-quit budget in milliseconds; defaults to {@link proofTimeoutMs}.
      * @returns {Promise<Object>} Coalesced terminal disposition, without grants or input values.
      */
-    handoff({verifySeats, onStage = null}) {
-        return this.handoffPromise ??= this.performHandoff(verifySeats, onStage);
+    handoff({verifySeats, onStage = null, deadlineMs}) {
+        return this.handoffPromise ??= this.performHandoff(verifySeats, onStage, deadlineMs);
     }
 
     /** @summary One bounded terminal transition; only the owner-facing handoff method starts it. @private */
-    async performHandoff(verifySeats, onStage = null) {
+    async performHandoff(verifySeats, onStage = null, deadlineMs = this.proofTimeoutMs) {
         const witness = stage => { try { onStage?.(stage) } catch {} };
         if (!this.journal || this.journalFailed || this.continuityPhase !== 'ready' || typeof verifySeats !== 'function') {
             throw new Error('Fleet continuity refused: custody-unavailable.');
         }
         this.continuityPhase = 'draining';
-        const budgetMs = AiConfig.fleet.shutdownBudgetMs > 0 ? AiConfig.fleet.shutdownBudgetMs : this.proofTimeoutMs;
+        const budgetMs = Number.isFinite(deadlineMs) && deadlineMs >= 0 ? deadlineMs : this.proofTimeoutMs;
         let timer, stage = 'survivor-validation';
         const deadline = new Promise((resolve, reject) => {
-            timer = setTimeout(() => {
-                stage = 'deadline';
-                reject(new Error('Fleet continuity refused: deadline.'));
-            }, budgetMs);
+            timer = setTimeout(() => reject(new Error('deadline')), budgetMs);
         });
         const bounded = work => Promise.race([work, deadline]);
         const release = () => new Promise((resolve, reject) => {
@@ -441,7 +438,7 @@ class McpLaunchAdmissionService extends Base {
                 server.closeAllConnections();
                 await new Promise(resolve => server.close(resolve));
             }
-            throw new Error(`Fleet continuity refused: ${stage}.`);
+            throw new Error(`Fleet continuity refused: ${error?.message === 'deadline' ? `deadline at ${stage}` : stage}.`);
         } finally {
             clearTimeout(timer);
         }

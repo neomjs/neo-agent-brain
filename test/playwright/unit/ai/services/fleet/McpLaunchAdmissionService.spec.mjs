@@ -31,7 +31,6 @@ import * as core       from 'neo.mjs/src/core/_export.mjs';
 import McpLaunchAdmissionService                         from '../../../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
 import FleetTenantService                                from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
 import aiConfig                                          from '../../../../../../ai/config.template.mjs';
-import {snapshotAiConfig}                                from '../memory-core/util.mjs';
 import {writeFileAtomicSync}                             from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
 import {createSeatPatOwner, createResidentMcpInputOwner} from '../../../../../../ai/services/fleet/launchCredentialOwners.mjs';
 import {createManagedAgentWorkspacePlan}                 from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
@@ -440,49 +439,40 @@ test.describe('McpLaunchAdmissionService — durable phase transitions', () => {
 
     for (const failure of ['pending', 'input-owner', 'deadline']) {
         test(`failed handoff preserves unclean evidence and remains quittable: ${failure}`, async () => {
-            const restore = snapshotAiConfig(aiConfig, {'fleet.shutdownBudgetMs': 30});
-            try {
-                service.openJournal({directory});
-                if (failure === 'pending') await service.reserve({agent: seatDefinition()});
-                else await activeSeat();
-                service.proofTimeoutMs = 30;
-                const verifySeats = failure === 'deadline' ? () => new Promise(() => {}) : async () => { throw Error('fixture owner unavailable'); };
-                await expect(service.handoff({verifySeats})).rejects.toThrow(
-                    failure === 'deadline' ? 'Fleet continuity refused: deadline.' : 'Fleet continuity refused'
-                );
-                expect(service.continuityPhase).toBe('unavailable');
-                expect(service.httpServer).toBeNull();
-                expect(fs.readJsonSync(path.join(directory, 'issuer.json')).phase).toBe('active');
-                await expect(service.closeUnclean()).resolves.toBeUndefined();
-            } finally {
-                restore();
-            }
+            service.openJournal({directory});
+            if (failure === 'pending') await service.reserve({agent: seatDefinition()});
+            else await activeSeat();
+            service.proofTimeoutMs = 30;
+            const verifySeats = failure === 'deadline' ? () => new Promise(() => {}) : async () => { throw Error('fixture owner unavailable'); };
+            await expect(service.handoff({verifySeats})).rejects.toThrow(
+                failure === 'deadline' ? 'Fleet continuity refused: deadline at survivor-validation.' : 'Fleet continuity refused'
+            );
+            expect(service.continuityPhase).toBe('unavailable');
+            expect(service.httpServer).toBeNull();
+            expect(fs.readJsonSync(path.join(directory, 'issuer.json')).phase).toBe('active');
+            await expect(service.closeUnclean()).resolves.toBeUndefined();
         });
     }
 
-    test('performHandoff race deadline follows AiConfig.fleet.shutdownBudgetMs while credential proofs retain proofTimeoutMs (#1081)', async () => {
+    test('performHandoff race deadline follows deadlineMs while credential proofs retain proofTimeoutMs (#1081)', async () => {
         expect(aiConfig.fleet.shutdownBudgetMs).toBe(10000);
-        const restore = snapshotAiConfig(aiConfig, {'fleet.shutdownBudgetMs': 40});
-        try {
-            service.openJournal({directory});
-            await activeSeat();
-            service.proofTimeoutMs = 5000;
-            const stages    = [];
-            const startedAt = Date.now();
-            await expect(
-                service.handoff({
-                    verifySeats: () => new Promise(() => {}),
-                    onStage    : stage => stages.push(stage)
-                })
-            ).rejects.toThrow('Fleet continuity refused: deadline.');
-            const elapsedMs = Date.now() - startedAt;
-            expect(elapsedMs).toBeGreaterThanOrEqual(30);
-            expect(elapsedMs).toBeLessThan(500);
-            expect(stages).toEqual(['survivor-validation', 'refused at deadline']);
-            expect(service.proofTimeoutMs).toBe(5000);
-        } finally {
-            restore();
-        }
+        service.openJournal({directory});
+        await activeSeat();
+        service.proofTimeoutMs = 5000;
+        const stages    = [];
+        const startedAt = Date.now();
+        await expect(
+            service.handoff({
+                deadlineMs : 40,
+                verifySeats: () => new Promise(() => {}),
+                onStage    : stage => stages.push(stage)
+            })
+        ).rejects.toThrow('Fleet continuity refused: deadline at survivor-validation.');
+        const elapsedMs = Date.now() - startedAt;
+        expect(elapsedMs).toBeGreaterThanOrEqual(30);
+        expect(elapsedMs).toBeLessThan(500);
+        expect(stages).toEqual(['survivor-validation', 'refused at survivor-validation: deadline']);
+        expect(service.proofTimeoutMs).toBe(5000);
     });
 
     test('reservation, activation and revocation are durable before they return, with hashes instead of secrets', async () => {

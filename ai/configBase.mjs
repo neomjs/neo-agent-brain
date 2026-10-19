@@ -564,12 +564,12 @@ class ConfigBase extends ConfigProvider {
                 /**
                  * Whole-quit budget in milliseconds that Fleet may spend across request drain and
                  * launch-admission continuity handoff before the host's grace escalates to SIGKILL.
-                 * Both `devFleetServer` (`cleanShutdown`) and `McpLaunchAdmissionService#performHandoff`
-                 * read this leaf at their use sites so drain and handoff share one deadline rather
-                 * than stacking two independent `proofTimeoutMs` bounds. The packaged Fleet Manager
-                 * host serializes `NEO_FLEET_SHUTDOWN_BUDGET_MS` derived from its quit grace
-                 * (`graceMs - margin`); standalone dev servers use the 10000 ms default. A non-positive
-                 * value falls back to `proofTimeoutMs`. Milliseconds.
+                 * `devFleetServer` (`cleanShutdown`) reads this leaf once at quit start (falling back
+                 * to `proofTimeoutMs` when non-positive), drains requests under
+                 * `Math.min(proofTimeoutMs, remaining())`, and passes `deadlineMs: remaining()` to
+                 * `handoffRuntimeCustody` -> `McpLaunchAdmissionService#performHandoff` so drain and
+                 * handoff share one deadline (`10000` ms default for standalone dev servers; packaged
+                 * Fleet Manager host serializes `graceMs - margin` via `NEO_FLEET_SHUTDOWN_BUDGET_MS`).
                  * @type {number}
                  */
                 shutdownBudgetMs: leaf(10000, 'NEO_FLEET_SHUTDOWN_BUDGET_MS', 'number'),

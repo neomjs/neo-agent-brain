@@ -1,8 +1,6 @@
 import {expect, test}                                from '@playwright/test';
 import fs                                            from 'node:fs';
-import aiConfig                                      from '../../../../../../ai/config.template.mjs';
 import {FLEET_BOOT_PHASES, formatFleetBootPhaseLine} from '../../../../../../ai/services/fleet/devFleetServer.mjs';
-import {snapshotAiConfig}                            from '../memory-core/util.mjs';
 
 const source = fs.readFileSync(new URL('../../../../../../ai/services/fleet/devFleetServer.mjs', import.meta.url), 'utf8');
 
@@ -104,91 +102,95 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         }
     });
 
-    test('under a 300 ms shutdownBudgetMs with a drain + handoff that would take longer, cleanShutdown logs Fleet continuity refused: deadline and exits (#1081)', async () => {
-        const restore = snapshotAiConfig(aiConfig, {'fleet.shutdownBudgetMs': 300});
-        try {
-            const logs   = [],
-                errors   = [],
-                events   = [],
-                drains   = [],
-                shutdown = shutdownSlice({
-                    AiConfig        : aiConfig,
-                    bridgeSupervisor: {stop() { events.push('bridge-stop') }},
-                    runtime         : {generation: 'gen-1081'},
-                    lifecycle       : {
-                        listRunning       : () => [{id: 'seat-1'}],
-                        getLaunchAdmission: () => ({
-                            proofTimeoutMs: 5000,
-                            closeUnclean  : async () => { events.push('close-unclean') }
-                        }),
-                        handoffRuntimeCustody : ({onStage}) => new Promise(resolve => {
-                            onStage?.('survivor-validation');
-                            setTimeout(resolve, 600);
-                        })
-                    },
-                    server                  : {
-                        drainFleetRequests: ms => {
-                            drains.push(ms);
-                            return new Promise(resolve => setTimeout(resolve, 100));
-                        }
-                    },
-                    FleetManager             : {getTenantService: async () => ({})},
-                    closeObservedWorkAndPlane: async () => { events.push('close-plane') },
-                    console                  : {
-                        log  : message => logs.push(message),
-                        error: message => errors.push(message)
-                    },
-                    process                 : {exit: code => events.push(['exit', code])}
-                });
+    test('under a 300 ms shutdownBudgetMs with a drain + handoff that would take longer, cleanShutdown passes remaining deadlineMs and logs Fleet continuity refused: deadline at survivor-validation (#1081)', async () => {
+        const logs    = [],
+            errors    = [],
+            events    = [],
+            drains    = [],
+            deadlines = [],
+            shutdown  = shutdownSlice({
+                AiConfig        : {fleet: {shutdownBudgetMs: 300}},
+                bridgeSupervisor: {stop() { events.push('bridge-stop') }},
+                runtime         : {generation: 'gen-1081'},
+                lifecycle       : {
+                    listRunning       : () => [{id: 'seat-1'}],
+                    getLaunchAdmission: () => ({
+                        proofTimeoutMs: 5000,
+                        closeUnclean  : async () => { events.push('close-unclean') }
+                    }),
+                    handoffRuntimeCustody: ({deadlineMs, onStage}) => new Promise((resolve, reject) => {
+                        deadlines.push(deadlineMs);
+                        onStage?.('survivor-validation');
+                        setTimeout(() => {
+                            onStage?.('refused at survivor-validation: deadline');
+                            reject(new Error('Fleet continuity refused: deadline at survivor-validation.'));
+                        }, deadlineMs);
+                    })
+                },
+                server                  : {
+                    drainFleetRequests: ms => {
+                        drains.push(ms);
+                        return new Promise(resolve => setTimeout(resolve, 100));
+                    }
+                },
+                FleetManager             : {getTenantService: async () => ({})},
+                closeObservedWorkAndPlane: async () => { events.push('close-plane') },
+                console                  : {
+                    log  : message => logs.push(message),
+                    error: message => errors.push(message)
+                },
+                process                 : {exit: code => events.push(['exit', code])}
+            });
 
-            await shutdown('SIGTERM');
+        await shutdown('SIGTERM');
 
-            expect(drains).toHaveLength(1);
-            expect(drains[0]).toBeGreaterThan(0);
-            expect(drains[0]).toBeLessThanOrEqual(300);
-            expect(logs.some(line => line.includes('continuity handoff starting: 1 running seat(s); shutdown budget 300 ms; drain and proofs bounded by 5000 ms each'))).toBe(true);
-            expect(logs.some(line => line.includes('continuity handoff: survivor-validation ('))).toBe(true);
-            expect(errors).toHaveLength(1);
-            const match = errors[0].match(/continuity handoff was not completed after (\d+) ms: Fleet continuity refused: deadline\. \(budget 300 ms\)/);
-            expect(match).not.toBeNull();
-            expect(Number(match[1])).toBeGreaterThanOrEqual(250);
-            expect(Number(match[1])).toBeLessThan(480);
-            expect(events).toEqual(['bridge-stop', 'close-unclean', 'close-plane', ['exit', 0]]);
+        expect(drains).toHaveLength(1);
+        expect(drains[0]).toBeGreaterThan(0);
+        expect(drains[0]).toBeLessThanOrEqual(300);
+        expect(deadlines).toHaveLength(1);
+        expect(deadlines[0]).toBeGreaterThan(0);
+        expect(deadlines[0]).toBeLessThanOrEqual(210);
+        expect(logs.some(line => line.includes('continuity handoff starting: 1 running seat(s); shutdown budget 300 ms; drain and proofs bounded by 5000 ms each'))).toBe(true);
+        expect(logs.some(line => line.includes('continuity handoff: survivor-validation ('))).toBe(true);
+        expect(logs.some(line => line.includes('continuity handoff: refused at survivor-validation: deadline ('))).toBe(true);
+        expect(errors).toHaveLength(1);
+        const match = errors[0].match(/continuity handoff was not completed after (\d+) ms: Fleet continuity refused: deadline at survivor-validation\. \(budget 300 ms\)/);
+        expect(match).not.toBeNull();
+        expect(Number(match[1])).toBeGreaterThanOrEqual(250);
+        expect(Number(match[1])).toBeLessThan(480);
+        expect(events).toEqual(['bridge-stop', 'close-unclean', 'close-plane', ['exit', 0]]);
 
-            const fastLogs   = [],
-                fastErrors   = [],
-                fastEvents   = [],
-                fastShutdown = shutdownSlice({
-                    AiConfig        : aiConfig,
-                    bridgeSupervisor: {stop() {}},
-                    runtime         : {generation: 'gen-1081-fast'},
-                    lifecycle       : {
-                        listRunning       : () => [{id: 'seat-1'}],
-                        getLaunchAdmission: () => ({
-                            proofTimeoutMs: 5000,
-                            closeUnclean  : async () => { fastEvents.push('close-unclean') }
-                        }),
-                        handoffRuntimeCustody: async ({onStage}) => {
-                            onStage?.('durable-handoff');
-                        }
-                    },
-                    server                   : {drainFleetRequests: async () => {}},
-                    FleetManager             : {getTenantService: async () => ({})},
-                    closeObservedWorkAndPlane: async () => { fastEvents.push('close-plane') },
-                    console                  : {
-                        log  : message => fastLogs.push(message),
-                        error: message => fastErrors.push(message)
-                    },
-                    process                 : {exit: code => fastEvents.push(['exit', code])}
-                });
+        const fastLogs   = [],
+            fastErrors   = [],
+            fastEvents   = [],
+            fastShutdown = shutdownSlice({
+                AiConfig        : {fleet: {shutdownBudgetMs: 300}},
+                bridgeSupervisor: {stop() {}},
+                runtime         : {generation: 'gen-1081-fast'},
+                lifecycle       : {
+                    listRunning       : () => [{id: 'seat-1'}],
+                    getLaunchAdmission: () => ({
+                        proofTimeoutMs: 5000,
+                        closeUnclean  : async () => { fastEvents.push('close-unclean') }
+                    }),
+                    handoffRuntimeCustody: async ({onStage}) => {
+                        onStage?.('durable-handoff');
+                    }
+                },
+                server                   : {drainFleetRequests: async () => {}},
+                FleetManager             : {getTenantService: async () => ({})},
+                closeObservedWorkAndPlane: async () => { fastEvents.push('close-plane') },
+                console                  : {
+                    log  : message => fastLogs.push(message),
+                    error: message => fastErrors.push(message)
+                },
+                process                 : {exit: code => fastEvents.push(['exit', code])}
+            });
 
-            await fastShutdown('SIGTERM');
-            expect(fastErrors).toEqual([]);
-            expect(fastLogs.some(line => /continuity handoff sealed after \d+ ms \(budget 300 ms\); a successor rebinds the released origin/.test(line))).toBe(true);
-            expect(fastEvents).toEqual(['close-unclean', 'close-plane', ['exit', 0]]);
-        } finally {
-            restore();
-        }
+        await fastShutdown('SIGTERM');
+        expect(fastErrors).toEqual([]);
+        expect(fastLogs.some(line => /continuity handoff sealed after \d+ ms \(budget 300 ms\); a successor rebinds the released origin/.test(line))).toBe(true);
+        expect(fastEvents).toEqual(['close-unclean', 'close-plane', ['exit', 0]]);
     });
 });
 

@@ -690,24 +690,12 @@ async function boot() {
                 runtime.generation && console.log(`[fleet] continuity handoff: draining requests (${elapsed()} ms / ${budgetMs} ms budget)`);
                 await server.drainFleetRequests(Math.min(proofTimeoutMs, remaining()));
                 if (runtime.generation) {
-                    let timer;
-                    const quitDeadline = new Promise((resolve, reject) => {
-                        timer = setTimeout(
-                            () => reject(new Error('Fleet continuity refused: deadline.')),
-                            remaining()
-                        );
+                    // Each stage is witnessed before its await, so a kill mid-stage still names the stage it died in.
+                    await lifecycle.handoffRuntimeCustody({
+                        tenantService: await FleetManager.getTenantService(),
+                        deadlineMs   : remaining(),
+                        onStage      : stage => console.log(`[fleet] continuity handoff: ${stage} (${elapsed()} ms / ${budgetMs} ms budget)`)
                     });
-                    try {
-                        // Each stage is witnessed before its await, so a kill mid-stage still names the stage it died in.
-                        const handoff = lifecycle.handoffRuntimeCustody({
-                            tenantService: await FleetManager.getTenantService(),
-                            onStage      : stage => console.log(`[fleet] continuity handoff: ${stage} (${elapsed()} ms / ${budgetMs} ms budget)`)
-                        });
-                        handoff.catch(() => {});
-                        await Promise.race([handoff, quitDeadline]);
-                    } finally {
-                        clearTimeout(timer);
-                    }
                     console.log(`[fleet] continuity handoff sealed after ${elapsed()} ms (budget ${budgetMs} ms); a successor rebinds the released origin`);
                 }
             } catch (error) {
