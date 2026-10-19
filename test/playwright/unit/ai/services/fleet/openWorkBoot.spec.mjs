@@ -12,6 +12,10 @@ function bootSlice({enabled = true, plane = true, start}) {
     const events = [], round = () => {},
         seams    = {
             startFleetBridgeServer               : async options => { events.push('listen'); return start?.(options) ?? {close() {}} },
+            settleFleetBridge                    : async () => ({state: 'ready', port: 1, action: 'verified', publicKeySha256: '0123456789abcdef'}),
+            FLEET_BRIDGE_STATES                  : {READY: 'ready'},
+            neuralLinkConfig                     : {port: 1},
+            FleetManager                         : {},
             AiConfig                             : {fleet: {openWorkWakes: enabled, bearerHandshake: false}},
             planeClient                          : plane ? {addMessage() { events.push('send') }} : null,
             FleetRegistryService                 : {}, RequestContextService: {run() {}},
@@ -19,7 +23,7 @@ function bootSlice({enabled = true, plane = true, start}) {
             wireFleetOpenWorkSource              : options => { events.push(['observe', options.onPulse]); return {} },
             readGithubToken                      : () => null, readPresence: async () => ({}),
             assertFleetViewerMcAuthorizationClass: () => null,
-            console                              : {log() {}}, port: 1, bearerToken: 'fixture', viewer: {}, origins: []
+            console                              : {log() {}, warn() {}}, port: 1, bearerToken: 'fixture', viewer: {}, origins: []
         },
         run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork; ${source.slice(begin, end)} })()`);
     return {events, round, config: seams.AiConfig, wakeOptions: () => wakeOptions, run: () => run(...Object.values(seams))}
