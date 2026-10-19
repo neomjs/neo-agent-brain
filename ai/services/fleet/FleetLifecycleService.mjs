@@ -1,40 +1,40 @@
-import {execFile, execFileSync, spawn}                                          from 'child_process';
-import fs                                                                       from 'fs';
-import path                                                                     from 'path';
-import {isDeepStrictEqual}                                                      from 'node:util';
-import AiConfig                                                                 from '../../config.mjs';
-import {generateLocalBearerToken}                                               from '../../mcp/server/shared/helpers/localBearer.mjs';
-import Base                                                                     from 'neo.mjs/src/core/Base.mjs';
-import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}                           from '../../../src/fleet/contract/mcpServers.mjs';
-import {listHarnessTypes, resolveHarnessSeatSettings}                           from '../../../src/fleet/contract/harnessTypes.mjs';
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}                 from './mcpServers.mjs';
-import {deriveAgentInstanceHome}                                                from './deriveAgentInstanceHome.mjs';
-import {deriveCodexHome, deriveHarnessLaunchSpec, guiProfileDir}                from './deriveHarnessLaunchSpec.mjs';
-import {readCodexSeatSettings}                                                  from './codexConfigToml.mjs';
-import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                                 from './deriveNodeRuntimeEnv.mjs';
-import FleetRegistryService                                                     from './FleetRegistryService.mjs';
-import {readSeatEnvOperatorKeys, SEAT_ENV_NOT_REGULAR}                          from './seatEnvFile.mjs';
-import {readSeatSessionFolder}                                                  from './seatSessionFolder.mjs';
-import {readSeatExitReason}                                                     from './seatExitReason.mjs';
-import memoryCoreConfig                                                         from '../../mcp/server/memory-core/config.mjs';
-import knowledgeBaseConfig                                                      from '../../mcp/server/knowledge-base/config.mjs';
-import neuralLinkConfig                                                         from '../../mcp/server/neural-link/config.mjs';
-import githubWorkflowConfig                                                     from '../../mcp/server/github-workflow/config.mjs';
-import gitlabWorkflowConfig                                                     from '../../mcp/server/gitlab-workflow/config.mjs';
+import {execFile, execFileSync, spawn}                                                    from 'child_process';
+import fs                                                                                 from 'fs';
+import path                                                                               from 'path';
+import {isDeepStrictEqual}                                                                from 'node:util';
+import AiConfig                                                                           from '../../config.mjs';
+import {generateLocalBearerToken}                                                         from '../../mcp/server/shared/helpers/localBearer.mjs';
+import Base                                                                               from 'neo.mjs/src/core/Base.mjs';
+import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}                                     from '../../../src/fleet/contract/mcpServers.mjs';
+import {listHarnessTypes, resolveHarnessSeatSettings}                                     from '../../../src/fleet/contract/harnessTypes.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}                           from './mcpServers.mjs';
+import {deriveAgentInstanceHome}                                                          from './deriveAgentInstanceHome.mjs';
+import {deriveCodexHome, deriveHarnessLaunchSpec, guiProfileDir}                          from './deriveHarnessLaunchSpec.mjs';
+import {readCodexSeatSettings}                                                            from './codexConfigToml.mjs';
+import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                                           from './deriveNodeRuntimeEnv.mjs';
+import FleetRegistryService                                                               from './FleetRegistryService.mjs';
+import {readSeatEnvOperatorKeys, SEAT_ENV_NOT_REGULAR}                                    from './seatEnvFile.mjs';
+import {readSeatSessionFolder}                                                            from './seatSessionFolder.mjs';
+import {readSeatExitReason}                                                               from './seatExitReason.mjs';
+import memoryCoreConfig                                                                   from '../../mcp/server/memory-core/config.mjs';
+import knowledgeBaseConfig                                                                from '../../mcp/server/knowledge-base/config.mjs';
+import neuralLinkConfig                                                                   from '../../mcp/server/neural-link/config.mjs';
+import githubWorkflowConfig                                                               from '../../mcp/server/github-workflow/config.mjs';
+import gitlabWorkflowConfig                                                               from '../../mcp/server/gitlab-workflow/config.mjs';
 import {LAUNCHER_ENTRYPOINT, MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS, launchRowEnvNames} from './managedAgentWorkspacePlan.mjs';
-import McpLaunchAdmissionService                                                from './McpLaunchAdmissionService.mjs';
-import {LAUNCH_ADMISSION_REASONS}                                               from '../../../src/fleet/contract/launchAdmission.mjs';
-import {isOnInstance}                                                           from './provisionAgentRepo.mjs';
-import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities}             from './manageCodexDesktopRuntime.mjs';
-import {GIT_IDENTITY_ENV, gitIdentityEnv}                                       from './seatGitIdentity.mjs';
-import {runtimeGenerationPin, readRuntimeGeneration}                            from './runtimeGeneration.mjs';
-import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences}  from './runtimeGenerationLease.mjs';
-import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot} from './seatRuntimeRecord.mjs';
-import {writeFileAtomicSync}                                                    from '../shared/atomicFileWrite.mjs';
+import McpLaunchAdmissionService                                                          from './McpLaunchAdmissionService.mjs';
+import {LAUNCH_ADMISSION_REASONS}                                                         from '../../../src/fleet/contract/launchAdmission.mjs';
+import {isOnInstance}                                                                     from './provisionAgentRepo.mjs';
+import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities}                       from './manageCodexDesktopRuntime.mjs';
+import {GIT_IDENTITY_ENV, gitIdentityEnv}                                                 from './seatGitIdentity.mjs';
+import {runtimeGenerationPin, readRuntimeGeneration, readRuntimeGenerationRecord}         from './runtimeGeneration.mjs';
+import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences}            from './runtimeGenerationLease.mjs';
+import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot}           from './seatRuntimeRecord.mjs';
+import {writeFileAtomicSync}                                                              from '../shared/atomicFileWrite.mjs';
 
 import {createResidentMcpInputOwner, createBridgeTokenOwner, restoreLaunchCredentialOwner}                                                     from './launchCredentialOwners.mjs';
 import {recoverLaunchProfileGrants}                                                                                                            from './launchProfileCustody.mjs';
-import {LAUNCH_ADMISSION_PROTOCOL, LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR}                                                               from './mcpLaunchAdmission.mjs';
+import {LAUNCH_ADMISSION_PROTOCOL, LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR}                                                                from './mcpLaunchAdmission.mjs';
 import {probeAntigravityRuntime}                                                                                                               from './probeAntigravityRuntime.mjs';
 import {isWindowRect, placeSeatWindow, readSeatWindowRecord, readSeatWindowRect, sameWindowRect, waitForSeatWindowRect, writeSeatWindowRecord} from './seatWindowRect.mjs';
 
@@ -2440,12 +2440,16 @@ class FleetLifecycleService extends Base {
      * - a stale generation is carried stale.
      *
      * An unresolved seat keeps running and keeps its runtime retained; only its launch admission ends.
+     *
+     * Pins are proved by their record, never by re-hashing the payload: the successor's recovery re-verifies the
+     * bytes before any generation is active again, while a re-hash costs seconds per runtime inside the handoff's
+     * one deadline. Each survivor's outcome reaches the stage witness, so an overrun names the seat it reached.
      * @param {Object} options Existing tenant owner, with isolated-test seams for runtime/profile reads.
      * @returns {Promise<Object>} The admission owner's terminal handoff disposition.
      */
-    handoffRuntimeCustody({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverLaunchProfileGrants, onStage = null} = {}) {
+    handoffRuntimeCustody({tenantService, verifyRuntime = readRuntimeGenerationRecord, readGrants = recoverLaunchProfileGrants, onStage = null} = {}) {
         const admission = this.getLaunchAdmission();
-        return admission.handoff({onStage, verifySeats: async () => {
+        return admission.handoff({onStage, verifySeats: async witness => {
             if (this.pendingStarts.size) throw new Error('a Start is pending');
             this.adoptLeasedSeats();
             const verified = new Map();
@@ -2459,11 +2463,13 @@ class FleetLifecycleService extends Base {
                 if (verdict.unproved) {
                     record.runtimeUnresolved = true;
                     if (start.admissionGeneration) admission.revoke(start.agentId, LAUNCH_ADMISSION_REASONS.RECOVERY_UNVERIFIED, {generation: start.admissionGeneration});
+                    witness(`survivor ${start.agentId}: unresolved (${verdict.unproved})`);
                     continue
                 }
                 for (const [key, reason] of verdict.unprovedServers) {
                     admission.revokeServerGrant(start.agentId, key, reason, {generation: start.admissionGeneration})
                 }
+                witness(`survivor ${start.agentId}: ${verdict.unprovedServers.length ? verdict.unprovedServers.map(([key]) => key).join(', ') + ' revoked' : 'verified'}`)
             }
         }});
     }
