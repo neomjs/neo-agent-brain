@@ -9,7 +9,7 @@ import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}                           
 import {listHarnessTypes, resolveHarnessSeatSettings}                           from '../../../src/fleet/contract/harnessTypes.mjs';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}                 from './mcpServers.mjs';
 import {deriveAgentInstanceHome}                                                from './deriveAgentInstanceHome.mjs';
-import {deriveCodexHome, deriveHarnessLaunchSpec}                               from './deriveHarnessLaunchSpec.mjs';
+import {deriveCodexHome, deriveHarnessLaunchSpec, guiProfileDir}                from './deriveHarnessLaunchSpec.mjs';
 import {readCodexSeatSettings}                                                  from './codexConfigToml.mjs';
 import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                                 from './deriveNodeRuntimeEnv.mjs';
 import FleetRegistryService                                                     from './FleetRegistryService.mjs';
@@ -2345,9 +2345,17 @@ class FleetLifecycleService extends Base {
             Object.assign(record, {runtimeStart: structuredClone(start), runtimeGeneration: {...start.runtime},
                 runtimeUnresolved: true, admissionGeneration: start.admissionGeneration,
                 cleanupUnresolved: Boolean(record.cleanupUnresolved || saved.cleanupUnresolved)});
-            if (!record.adopted && this.probeSeat(start) === 'gone' && !record.cleanupUnresolved) {
-                Object.assign(record, {state: 'stopped', ownershipUnresolved: false, runtimeUnresolved: false,
-                    failureReason: saved.state === 'running' ? UNSUPERVISED_EXIT : null});
+            if (!record.adopted && this.probeSeat(start) === 'gone') {
+                // The seat process is gone, so its ownership is resolved. What may still be owed is a Codex Desktop
+                // seat's helper cleanup, which the next Stop or Start runs once the record names its profile and app.
+                record.ownershipUnresolved = false;
+                if (!record.cleanupUnresolved) {
+                    Object.assign(record, {state: 'stopped', runtimeUnresolved: false,
+                        failureReason: saved.state === 'running' ? UNSUPERVISED_EXIT : null});
+                } else if (start.harnessType === 'codex-desktop') {
+                    record.electronProfile ??= guiProfileDir(start.harnessType, start.instanceHome);
+                    record.launchCommand   ??= Array.isArray(start.launchCommand) ? start.launchCommand[0] : null;
+                }
             }
         }
 

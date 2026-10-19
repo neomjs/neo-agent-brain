@@ -1134,6 +1134,43 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         expect(spawn.calls).toHaveLength(2);
     });
 
+    test('a recovered codex-desktop seat that exited owing its helper cleanup is not held as alive: the next start runs the cleanup once and spawns', async () => {
+        const spawn        = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
+        const instanceHome = path.join(DESKTOP_ROOT, 'desktop', 'harness', 'codex-desktop'), cleanups = [];
+
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
+        FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
+        FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({available: true, crashpadExecutable: '/app/browser_crashpad_handler'});
+        FleetLifecycleService.codexDesktopCleanupFn         = async options => { cleanups.push(options); return {terminated: [], escalated: []} };
+        // the seat's pid is gone at the next Fleet boot; the new Start's process reads live
+        FleetLifecycleService.processInspectFn = pid => pid === 4242 ? null : {startedAt: 'Thu Oct  1 09:05:00 2026', command: process.execPath};
+        FleetLifecycleService.processSignalFn  = pid => { if (pid === 4242) throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) };
+        // the journal the previous Fleet left: the seat stopped, its helper cleanup unproved
+        FleetLifecycleService.getLaunchAdmission = () => ({
+            journal: {previous: {handoffProved: false, snapshot: {generations: [], seats: [{
+                state: 'stopped', ownershipUnresolved: true, cleanupUnresolved: true,
+                start: {agentId: 'desktop', harnessType: 'codex-desktop', instanceHome, pid: 4242, startedAt: 'Thu Oct  1 09:00:00 2026',
+                    launchCommand: ['/app/ChatGPT', `--user-data-dir=${instanceHome}/electron-profile`], runtime: {directory: '/runtime'},
+                    admissionGeneration: 'generation'}
+            }]}}},
+            recover: async () => [],
+            persistAdmission() {}
+        });
+        try {
+            await FleetLifecycleService.recoverRuntimeCustodyUnderGuard({verifyRuntime: async () => null}, null);
+        } finally {
+            delete FleetLifecycleService.getLaunchAdmission
+        }
+
+        expect(FleetLifecycleService.processes.get('desktop')).toMatchObject({ownershipUnresolved: false, cleanupUnresolved: true,
+            electronProfile: path.join(instanceHome, 'electron-profile'), launchCommand: '/app/ChatGPT'});
+        await expect(FleetLifecycleService.start('desktop', {cwd: '/srv/checkouts/desktop'})).resolves.toMatchObject({
+            state: 'running', cleanupUnresolved: false
+        });
+        expect(cleanups).toEqual([{electronProfile: path.join(instanceHome, 'electron-profile'), crashpadExecutable: '/app/browser_crashpad_handler'}]);
+        expect(spawn.calls).toHaveLength(1);
+    });
+
     test('codex-desktop start refuses with the live-helper or process-table reason when helper cleanup keeps failing, and status carries cleanupUnresolved + failureReason (#1074 AC-2)', async () => {
         for (const [errorMessage, expectedReason] of [
             [

@@ -387,14 +387,13 @@ export function deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath, 
 /**
  * @summary The `--user-data-dir` a Fleet-launched GUI family runs with: `<instanceHome>/electron-profile`
  * for `codex-desktop`, the instance home itself for `claude-desktop`. The launch argv and the wake
- * route both read it from here, so the profile the receiver matches and the profile the window was
- * started with are one value by construction.
+ * route both read it from here, and so does recovery when a seat's helpers still need their cleanup, so the
+ * profile the receiver matches and the profile the window was started with are one value by construction.
  * @param {String} harnessType
  * @param {String} instanceHome
  * @returns {String}
- * @private
  */
-function guiProfileDir(harnessType, instanceHome) {
+export function guiProfileDir(harnessType, instanceHome) {
     return harnessType === 'codex-desktop' ? path.join(instanceHome, 'electron-profile') : instanceHome
 }
 
