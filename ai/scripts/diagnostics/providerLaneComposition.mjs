@@ -144,7 +144,7 @@ export const PROVIDER_LANE_CONSUMER_CENSUS = Object.freeze([
     {id: 'concept-discovery', role: 'graph', source: 'ai/services/ingestion/ConceptDiscoveryService.mjs', anchor: 'const graphProvider = resolveGraphModelProvider(aiConfig);'},
     {id: 'semantic-graph', role: 'graph', source: 'ai/services/graph/SemanticGraphExtractor.mjs', anchor: 'const graphProvider = resolveGraphModelProvider(AiConfig);'},
     {id: 'topology-inference', role: 'graph', source: 'ai/services/graph/TopologyInferenceEngine.mjs', anchor: 'resolveGraphModelProvider(AiConfig)'},
-    {id: 'golden-path-brief', role: 'graph', source: 'ai/services/graph/GoldenPathSynthesizer.mjs', anchor: 'const graphProvider = resolveGraphModelProvider(cfg);'},
+    {id: 'golden-path-brief', role: 'graph', source: 'ai/services/graph/GoldenPathSynthesizer.mjs', anchor: 'const graphProvider = resolveGraphModelProvider(aiConfig);'},
     {id: 'dream-readiness', role: 'graph', source: 'src/evolution/RemDigestion.mjs', anchor: "if (AiConfig.graphProvider === 'openAiCompatible')"},
     {id: 'inference-lifecycle-readiness', role: 'graph', source: 'ai/services/memory-core/lifecycle/InferenceLifecycleService.mjs', anchor: 'getGraphProviderReadinessTarget(aiConfig)'},
     {id: 'knowledge-base-ask', role: 'kbAskSynthesis', source: 'ai/services/knowledge-base/SearchService.mjs', anchor: 'buildAskChatModelOptions(aiConfig'},
@@ -153,7 +153,7 @@ export const PROVIDER_LANE_CONSUMER_CENSUS = Object.freeze([
     {id: 'kb-health-canary', role: 'embedding', source: 'ai/services/knowledge-base/HealthService.mjs', anchor: 'TextEmbeddingService.embedText(text, explicitProvider, options)'},
     {id: 'mc-vector-collections', role: 'embedding', source: 'ai/services/shared/vector/chromaClientPrimitives.mjs', anchor: 'TextEmbeddingService.embedTexts(texts, provider'},
     {id: 'mc-health-canary', role: 'embedding', source: 'ai/services/memory-core/HealthService.mjs', anchor: 'TextEmbeddingService.embedText(text, explicitProvider, options)'},
-    {id: 'golden-path-frontier', role: 'embedding', source: 'ai/services/graph/GoldenPathSynthesizer.mjs', anchor: 'TextEmbeddingService.embedText(frontierText, cfg.embeddingProvider)'},
+    {id: 'golden-path-frontier', role: 'embedding', source: 'ai/services/graph/GoldenPathSynthesizer.mjs', anchor: 'TextEmbeddingService.embedText(frontierText, aiConfig.embeddingProvider)'},
     {id: 'orchestrator-recovery', role: 'embedding', source: 'ai/daemons/orchestrator/Orchestrator.mjs', anchor: 'TextEmbeddingService.embedTexts(documents, AiConfig.embeddingProvider)'},
     {id: 'tenant-repo-recovery', role: 'embedding', source: 'ai/daemons/orchestrator/services/TenantRepoSyncService.mjs', anchor: 'TextEmbeddingService.embedText(text, explicitProvider, options)'},
     {id: 'vector-maintenance', role: 'embedding', source: 'ai/scripts/maintenance/defragChromaDB.mjs', anchor: 'TextEmbeddingService.embedTexts(docs.map'}
