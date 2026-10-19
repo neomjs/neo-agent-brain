@@ -6,7 +6,7 @@ import {withAppendLock}                    from './walAppendLock.mjs';
 /**
  * @summary Durable JSONL write-ahead store for `add_memory` payloads.
  *
- * The per-turn save (AGENTS.md §critical_gates #5) must never fail or stall on the model-dependent
+ * The per-turn save (AGENTS.md §critical_gates Gate 5) must never fail or stall on the model-dependent
  * Chroma embed. `MemoryService.addMemory` therefore appends the FULL turn payload here — a local,
  * append-only filesystem write, the most reliable write available — BEFORE returning, and the embed
  * happens asynchronously afterwards (Phase 1: a transitional fire-and-forget in-process; Phase 2:
@@ -178,7 +178,7 @@ export async function appendWalMemory(record, {dir, planeId, now, lockOptions} =
 
     // Serialize cross-process writers so a SHARED WAL dir cannot interleave multi-KB records; on a
     // bounded acquire-timeout it falls through and writes UNLOCKED, so the never-fail turn-save
-    // (§critical_gates #5) is never blocked by a contended/hung lock.
+    // (§critical_gates Gate 5) is never blocked by a contended/hung lock.
     await withAppendLock(filePath, () => fs.appendFile(filePath, line, 'utf8'), lockOptions);
     deleteReconciledWalSegmentCacheEntries(dir, segmentKey);
 
