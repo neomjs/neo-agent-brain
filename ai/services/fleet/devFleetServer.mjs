@@ -650,20 +650,25 @@ async function boot() {
             ? '[fleet] open-work wakes wired; rounds stay quiet until measured admission holds'
             : '[fleet] open-work wakes requested but unwired: a plane-verified viewer is required');
 
-        // AWAITED plane teardown before every exit: an un-awaited close races process death, which
-        // leaks the proven plane session (the server reaps it only on its own timeline).
         const bridgeSupervisor = superviseFleetBridge({
-            port    : neuralLinkConfig.port,
-            registry: FleetRegistryService,
-            onSettle(settlement) {
+            port             : neuralLinkConfig.port,
+            registry         : FleetRegistryService,
+            initialSettlement: bridgeState,
+            onStateChange(settlement, previousSettlement) {
                 if (settlement?.state !== FLEET_BRIDGE_STATES.READY) {
                     console.warn(`[fleet] Neural Link Bridge ${settlement?.state} on port ${settlement?.port} (${settlement?.reason}): ${settlement?.summary} Next step: ${settlement?.nextStep}`);
-                } else if (settlement.action === 'started' || settlement.action === 'replaced') {
+                } else if (
+                    settlement.action === 'started'
+                    || settlement.action === 'replaced'
+                    || previousSettlement?.state !== FLEET_BRIDGE_STATES.READY
+                ) {
                     console.log(`[fleet] Neural Link Bridge ${settlement.state} on port ${settlement.port} (${settlement.action}; key sha256 ${settlement.publicKeySha256?.slice(0, 12)}…)`);
                 }
             }
         });
 
+        // AWAITED plane teardown before every exit: an un-awaited close races process death, which
+        // leaks the proven plane session (the server reaps it only on its own timeline).
         let shutdown;
         const cleanShutdown = signal => shutdown ??= (async () => {
             const startedAt = Date.now(), elapsed = () => Date.now() - startedAt;

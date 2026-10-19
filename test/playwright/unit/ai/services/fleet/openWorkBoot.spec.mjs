@@ -14,6 +14,7 @@ function bootSlice({enabled = true, plane = true, start}) {
         seams    = {
             startFleetBridgeServer               : async options => { events.push('listen'); return start?.(options) ?? {close() {}} },
             settleFleetBridge                    : async () => ({state: 'ready', port: 1, action: 'verified', publicKeySha256: '0123456789abcdef'}),
+            superviseFleetBridge                 : () => ({stop() {}}),
             FLEET_BRIDGE_STATES                  : {READY: 'ready'},
             neuralLinkConfig                     : {port: 1},
             FleetManager                         : {},

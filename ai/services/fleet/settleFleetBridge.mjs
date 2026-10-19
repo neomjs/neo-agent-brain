@@ -74,6 +74,36 @@ export function defaultProcessCommand(pid) {
 }
 
 /**
+ * @summary Reads the parent PID (`ppid`) for `pid` via `ps`.
+ * @param {Number} pid Process identifier.
+ * @returns {Number|null}
+ */
+export function defaultProcessParentPid(pid) {
+    try {
+        const output = execFileSync(
+            'ps',
+            ['-p', String(pid), '-o', 'ppid='],
+            {encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}
+        );
+        const ppid = Number.parseInt(String(output || '').trim(), 10);
+        return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * @summary Returns whether a listener's parent PID is consistent with a detached Fleet-started Bridge
+ * (`1` / `launchd` or the current Fleet process) rather than another live supervisor such as `hostEdge.mjs`.
+ * @param {Number|null} ppid Parent process identifier from `ps`.
+ * @param {Number} [currentPid=process.pid] Current Fleet process identifier.
+ * @returns {Boolean}
+ */
+export function isFleetOwnedBridgeParentPid(ppid, currentPid = process.pid) {
+    return ppid === 1 || ppid === currentPid;
+}
+
+/**
  * @summary Sends a signal to `pid`.
  * @param {Number} pid Process identifier.
  * @param {String} [signal='SIGTERM'] Signal name.
@@ -139,6 +169,87 @@ export async function defaultWaitForPortRelease(
     }
 
     return !Array.isArray(remaining) || remaining.length === 0;
+}
+
+/**
+ * @summary Resolves the Fleet-owned Bridge PID record file path under the Fleet data directory.
+ * @param {Object} [options={}]
+ * @param {String} [options.dataDir=FleetRegistryService.getDataDir()] Fleet data directory.
+ * @returns {String|null}
+ */
+export function getFleetBridgeOwnerFilePath({
+    dataDir = FleetRegistryService.getDataDir()
+} = {}) {
+    if (typeof dataDir !== 'string' || dataDir.trim() === '') {
+        return null;
+    }
+    return path.join(dataDir, 'neural-link-bridge-owner.json');
+}
+
+/**
+ * @summary Reads the persisted Fleet-started Bridge PID ownership record, if present and valid.
+ * @param {Object} [options={}]
+ * @param {String} [options.dataDir=FleetRegistryService.getDataDir()] Fleet data directory.
+ * @returns {{pid: Number, port: Number, publicKeySha256: String|null, startedAt: Number|null}|null}
+ */
+export function readFleetBridgeOwnerRecord({
+    dataDir = FleetRegistryService.getDataDir()
+} = {}) {
+    const filePath = getFleetBridgeOwnerFilePath({dataDir});
+    if (!filePath) {
+        return null;
+    }
+    try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (
+            Number.isInteger(parsed?.pid) && parsed.pid > 0 &&
+            Number.isInteger(parsed?.port) && parsed.port > 0
+        ) {
+            return {
+                pid            : parsed.pid,
+                port           : parsed.port,
+                publicKeySha256: typeof parsed.publicKeySha256 === 'string' ? parsed.publicKeySha256 : null,
+                startedAt      : Number.isFinite(parsed.startedAt) ? parsed.startedAt : null
+            };
+        }
+    } catch {
+        // Missing or unreadable ownership record fails closed.
+    }
+    return null;
+}
+
+/**
+ * @summary Persists the PID of a Bridge started by Fleet under the Fleet data directory so a
+ * subsequent generation or key rotation can prove Fleet ownership before signaling.
+ * @param {Object} [options={}]
+ * @param {String} [options.dataDir=FleetRegistryService.getDataDir()] Fleet data directory.
+ * @param {Number} options.pid Spawned Bridge process identifier.
+ * @param {Number} options.port Neural Link Bridge WebSocket port.
+ * @param {String|null} [options.publicKeySha256=null] Registry key SHA-256 hex digest.
+ * @returns {String|null} Written file path or `null` when skipped.
+ */
+export function writeFleetBridgeOwnerRecord({
+    dataDir         = FleetRegistryService.getDataDir(),
+    pid,
+    port,
+    publicKeySha256 = null
+} = {}) {
+    const filePath = getFleetBridgeOwnerFilePath({dataDir});
+    if (!filePath || !Number.isInteger(pid) || pid <= 0 || !Number.isInteger(Number(port)) || Number(port) <= 0) {
+        return null;
+    }
+    try {
+        fs.mkdirSync(path.dirname(filePath), {recursive: true});
+        fs.writeFileSync(filePath, JSON.stringify({
+            pid,
+            port     : Number(port),
+            publicKeySha256,
+            startedAt: Date.now()
+        }, null, 2));
+        return filePath;
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -279,8 +390,11 @@ export function describeFleetBridgeState({
  * Adopts an already-running Bridge when its verifier proof matches (`action: 'adopted'`), starts a
  * detached `run-bridge.mjs` when the port is unanswered (`action: 'started'`), and replaces a stale
  * `run-bridge.mjs` listener when the probe is refused due to generation or verifier-key mismatch
- * (`action: 'replaced'`). Foreign listeners whose command line does not match `run-bridge.mjs` are
- * never signaled and fail closed with `bridge-outdated` or `bridge-unkeyed`.
+ * (`action: 'replaced'`) ONLY after proving Fleet started that listener (matching the PID recorded
+ * in `<dataDir>/neural-link-bridge-owner.json`, `run-bridge.mjs` command line, and no live supervisor
+ * parent other than `1` or this Fleet process). Foreign listeners and `run-bridge.mjs` processes
+ * owned by another supervisor (such as `hostEdge.mjs`) are never signaled and fail closed with
+ * `bridge-outdated` or `bridge-unkeyed`.
  *
  * @param {Object} [options={}]
  * @param {Number} options.port Neural Link Bridge WebSocket port.
@@ -292,9 +406,10 @@ export function describeFleetBridgeState({
  * @param {String} [options.nodeBin=process.execPath] Node executable for launching `run-bridge.mjs`.
  * @param {String} [options.bridgeScriptPath=DEFAULT_BRIDGE_SCRIPT] Path to `run-bridge.mjs`.
  * @param {Boolean} [options.startIfAbsent=true] Whether to start or replace a detached keyed Bridge.
- * @param {Boolean} [options.replaceIfRefused=true] Whether to replace a verified stale `run-bridge.mjs` listener on `refused`.
+ * @param {Boolean} [options.replaceIfRefused=true] Whether to replace a verified Fleet-owned `run-bridge.mjs` listener on `refused`.
  * @param {Function} [options.listPortListenersFn=defaultListPortListeners] Resolves listener PIDs on `port`.
  * @param {Function} [options.processCommandFn=defaultProcessCommand] Resolves the command line for a listener PID.
+ * @param {Function} [options.processParentPidFn=defaultProcessParentPid] Resolves the parent PID (`ppid`) for a listener PID.
  * @param {Function} [options.killProcessFn=defaultKillProcess] Sends a signal to a verified stale Bridge PID.
  * @param {Function} [options.waitForPortReleaseFn=defaultWaitForPortRelease] Waits for `port` to release after signaling.
  * @param {Function} [options.sleepFn=defaultSleep] Async sleep helper for port-release and startup polling.
@@ -316,6 +431,7 @@ export async function settleFleetBridge({
     replaceIfRefused     = true,
     listPortListenersFn  = defaultListPortListeners,
     processCommandFn     = defaultProcessCommand,
+    processParentPidFn   = defaultProcessParentPid,
     killProcessFn        = defaultKillProcess,
     waitForPortReleaseFn = defaultWaitForPortRelease,
     sleepFn              = defaultSleep,
@@ -365,10 +481,17 @@ export async function settleFleetBridge({
             });
         }
 
-        const rawListeners = await listPortListenersFn(resolvedPort);
-        const listenerPids = Array.isArray(rawListeners) ? rawListeners : [];
+        const
+            ownerRecord  = readFleetBridgeOwnerRecord({dataDir: registry.getDataDir()}),
+            rawListeners = await listPortListenersFn(resolvedPort),
+            listenerPids = Array.isArray(rawListeners) ? rawListeners : [];
 
-        if (listenerPids.length === 0) {
+        if (
+            !ownerRecord ||
+            ownerRecord.port !== resolvedPort ||
+            listenerPids.length !== 1 ||
+            listenerPids[0] !== ownerRecord.pid
+        ) {
             return describeFleetBridgeState({
                 port : resolvedPort,
                 probe: initialProbe,
@@ -379,6 +502,14 @@ export async function settleFleetBridge({
         for (const listenerPid of listenerPids) {
             const command = await processCommandFn(listenerPid);
             if (!isBridgeListenerCommand(command)) {
+                return describeFleetBridgeState({
+                    port : resolvedPort,
+                    probe: initialProbe,
+                    publicKeySha256
+                });
+            }
+            const ppid = await processParentPidFn(listenerPid);
+            if (!isFleetOwnedBridgeParentPid(ppid)) {
                 return describeFleetBridgeState({
                     port : resolvedPort,
                     probe: initialProbe,
@@ -474,6 +605,15 @@ export async function settleFleetBridge({
         deadline = Date.now() + Math.max(probeTimeoutMs, startupTimeoutMs);
     let lastProbe = initialProbe;
 
+    if (!spawnFailure && Number.isInteger(pid) && pid > 0) {
+        writeFleetBridgeOwnerRecord({
+            dataDir: registry.getDataDir(),
+            pid,
+            port   : resolvedPort,
+            publicKeySha256
+        });
+    }
+
     while (!spawnFailure && Date.now() <= deadline) {
         const probeOutcome = await Promise.race([
             probeFn({
@@ -547,28 +687,30 @@ export async function settleFleetBridge({
  * @param {Number} options.port Neural Link Bridge WebSocket port.
  * @param {Object} [options.registry=FleetRegistryService] Fleet registry holding `signing.key` custody.
  * @param {Number} [options.intervalMs=DEFAULT_SUPERVISE_INTERVAL] Supervision poll interval in milliseconds.
+ * @param {Object|null} [options.initialSettlement=null] Optional initial settlement from boot to suppress duplicate first-tick state change notifications.
  * @param {Object} [options.settleOptions={}] Additional options forwarded to `settleFn`.
  * @param {Function} [options.settleFn=settleFleetBridge] Bridge settlement function.
  * @param {Function|null} [options.onSettle=null] Optional callback invoked after each completed tick.
- * @param {Function|null} [options.onStateChange=null] Optional callback invoked when settlement state or action changes.
+ * @param {Function|null} [options.onStateChange=null] Optional callback invoked when settlement state, action, or reason changes.
  * @param {Function} [options.scheduleFn=setInterval] Interval scheduler.
  * @param {Function} [options.clearScheduleFn=clearInterval] Interval clearer.
  * @returns {{stop: Function, tick: Function, getLastSettlement: Function, isRunning: Function}}
  */
 export function superviseFleetBridge({
     port,
-    registry        = FleetRegistryService,
-    intervalMs      = DEFAULT_SUPERVISE_INTERVAL,
-    settleOptions   = {},
-    settleFn        = settleFleetBridge,
-    onSettle        = null,
-    onStateChange   = null,
-    scheduleFn      = setInterval,
-    clearScheduleFn = clearInterval
+    registry          = FleetRegistryService,
+    intervalMs        = DEFAULT_SUPERVISE_INTERVAL,
+    initialSettlement = null,
+    settleOptions     = {},
+    settleFn          = settleFleetBridge,
+    onSettle          = null,
+    onStateChange     = null,
+    scheduleFn        = setInterval,
+    clearScheduleFn   = clearInterval
 } = {}) {
     let stopped        = false,
         inFlight       = null,
-        lastSettlement = null,
+        lastSettlement = initialSettlement,
         timer          = null;
 
     async function tick() {
@@ -581,15 +723,17 @@ export function superviseFleetBridge({
 
         inFlight = (async () => {
             try {
-                const settlement = await settleFn({
-                    port,
-                    registry,
-                    ...settleOptions
-                });
-                const changed = !lastSettlement
-                    || lastSettlement.state !== settlement?.state
-                    || lastSettlement.action !== settlement?.action
-                    || lastSettlement.reason !== settlement?.reason;
+                const
+                    previousSettlement = lastSettlement,
+                    settlement         = await settleFn({
+                        port,
+                        registry,
+                        ...settleOptions
+                    }),
+                    changed            = !previousSettlement
+                        || previousSettlement.state !== settlement?.state
+                        || previousSettlement.action !== settlement?.action
+                        || previousSettlement.reason !== settlement?.reason;
 
                 lastSettlement = settlement;
 
@@ -597,7 +741,7 @@ export function superviseFleetBridge({
                     onSettle(settlement);
                 }
                 if (changed && typeof onStateChange === 'function') {
-                    onStateChange(settlement);
+                    onStateChange(settlement, previousSettlement);
                 }
 
                 return settlement;

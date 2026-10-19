@@ -16,8 +16,10 @@ import {
     describeFleetBridgeState,
     getFleetBridgeStdioLogPath,
     isBridgeListenerCommand,
+    readFleetBridgeOwnerRecord,
     settleFleetBridge,
-    superviseFleetBridge
+    superviseFleetBridge,
+    writeFleetBridgeOwnerRecord
 } from '../../../../../../ai/services/fleet/settleFleetBridge.mjs';
 import {buildConfiguredTaskDefinitions} from '../../../../../../ai/daemons/orchestrator/services/ConfiguredTaskDefinitionsService.mjs';
 import {buildSupervisedTaskEnv}         from '../../../../../../ai/daemons/orchestrator/services/ProcessSupervisorService.mjs';
@@ -191,6 +193,67 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
             summary        : null,
             nextStep       : null
         });
+        // Real-process witness for AC-2 & AC-3: rotate the registry signing key so the live Bridge
+        // refuses the probe, verify settleFleetBridge replaces the Fleet-started process, then kill
+        // the replacement and verify superviseFleetBridge restarts it within one tick.
+        fs.rmSync(path.join(FleetRegistryService.dataDir, 'signing.key'), {force: true});
+        FleetRegistryService.signingKeyPair = null;
+        FleetRegistryService.getBridgePublicKey();
+        const rotatedAuthority = FleetRegistryService.getBridgeSigningAuthority();
+        expect(rotatedAuthority.publicKeySha256).not.toBe(authority.publicKeySha256);
+
+        const realReplaced = await settleFleetBridge({
+            port,
+            registry        : FleetRegistryService,
+            probeTimeoutMs  : 1000,
+            startupTimeoutMs: 5000
+        });
+        if (realReplaced.pid) {
+            spawnedPids.push(realReplaced.pid);
+        }
+        expect(realReplaced).toMatchObject({
+            state          : FLEET_BRIDGE_STATES.READY,
+            verdict        : 'proved',
+            action         : 'replaced',
+            port,
+            publicKeySha256: rotatedAuthority.publicKeySha256,
+            replacedPids   : [booted.pid]
+        });
+        expect(realReplaced.pid).not.toBe(booted.pid);
+
+        process.kill(realReplaced.pid, 'SIGTERM');
+        await expect.poll(() => {
+            try {
+                process.kill(realReplaced.pid, 0);
+                return true;
+            } catch {
+                return false;
+            }
+        }).toBe(false);
+
+        const liveStateChanges = [];
+        const liveSupervisor   = superviseFleetBridge({
+            port,
+            registry         : FleetRegistryService,
+            intervalMs       : 60000,
+            initialSettlement: realReplaced,
+            onStateChange    : s => liveStateChanges.push(s),
+            settleOptions    : {probeTimeoutMs: 1000, startupTimeoutMs: 5000}
+        });
+        const realRestarted = await liveSupervisor.tick();
+        liveSupervisor.stop();
+        if (realRestarted.pid) {
+            spawnedPids.push(realRestarted.pid);
+        }
+        expect(realRestarted).toMatchObject({
+            state          : FLEET_BRIDGE_STATES.READY,
+            verdict        : 'proved',
+            action         : 'started',
+            port,
+            publicKeySha256: rotatedAuthority.publicKeySha256
+        });
+        expect(realRestarted.pid).not.toBe(realReplaced.pid);
+        expect(liveStateChanges).toHaveLength(1);
     });
 
     test('AC-2 & RA-2 & RA-3: outdated, unkeyed/protocol-mismatched, and spawn-failing Bridges report exact causes and literal next steps', async () => {
@@ -361,7 +424,7 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
         expect(spawned).toBe(0)
     });
 
-    test('AC-2 (#1203): replaces a verified stale run-bridge.mjs listener on bridge-verifier-unsupported, bridge-verifier-unconfigured, and bridge-verifier-mismatch', async () => {
+    test('AC-2 (#1203): replaces a verified Fleet-owned stale run-bridge.mjs listener on bridge-verifier-unsupported, bridge-verifier-unconfigured, and bridge-verifier-mismatch', async () => {
         expect(isBridgeListenerCommand('/opt/homebrew/bin/node /repo/ai/mcp/server/neural-link/run-bridge.mjs')).toBe(true);
         expect(isBridgeListenerCommand('node ai/mcp/server/neural-link/run-bridge.mjs --flag')).toBe(true);
         expect(isBridgeListenerCommand('python3 -m http.server 8081')).toBe(false);
@@ -373,6 +436,12 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
             'bridge-verifier-unconfigured',
             'bridge-verifier-mismatch'
         ]) {
+            writeFleetBridgeOwnerRecord({
+                dataDir: FleetRegistryService.getDataDir(),
+                pid    : 5150,
+                port
+            });
+
             const killedSignals = [];
             let   portReleased  = false;
             let   spawnCalls    = 0;
@@ -389,7 +458,8 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
                 processCommandFn   : pid => (pid === 5150
                     ? '/usr/local/bin/node /Users/test/neo-agent-brain/ai/mcp/server/neural-link/run-bridge.mjs'
                     : ''),
-                killProcessFn      : (pid, signal) => {
+                processParentPidFn: pid => (pid === 5150 ? 1 : null),
+                killProcessFn     : (pid, signal) => {
                     killedSignals.push({pid, signal});
                     portReleased = true;
                 },
@@ -413,14 +483,19 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
                 replacedPids: [5150],
                 reason      : null
             });
+            expect(readFleetBridgeOwnerRecord({dataDir: FleetRegistryService.getDataDir()})).toMatchObject({
+                pid: 6260,
+                port
+            });
         }
     });
 
-    test('AC-2 (#1203): never signals a foreign non-run-bridge.mjs listener on port and fails closed with bridge-outdated or bridge-unkeyed', async () => {
+    test('AC-2 & RA-1 (#1203): never signals a foreign listener or a run-bridge.mjs that Fleet did not start or that another supervisor owns', async () => {
         const port          = await findFreePort();
         const killedSignals = [];
         let   spawnCalls    = 0;
 
+        // 1. Foreign non-run-bridge.mjs listener.
         const outdatedForeign = await settleFleetBridge({
             port,
             registry           : FleetRegistryService,
@@ -447,12 +522,14 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
             reason : 'bridge-verifier-unsupported'
         });
 
-        const unkeyedForeign = await settleFleetBridge({
+        // 2. Unrecorded run-bridge.mjs listener (not started by this Fleet dataDir) is never signaled.
+        const unrecordedBridge = await settleFleetBridge({
             port,
             registry           : FleetRegistryService,
             probeFn            : async () => ({verdict: 'refused', reason: 'bridge-verifier-mismatch'}),
-            listPortListenersFn: () => [9002],
-            processCommandFn   : () => '/usr/bin/nc -l 8081',
+            listPortListenersFn: () => [21546],
+            processCommandFn   : () => 'node /repo/ai/mcp/server/neural-link/run-bridge.mjs',
+            processParentPidFn : () => 1,
             killProcessFn      : (pid, signal) => {
                 killedSignals.push({pid, signal});
             },
@@ -465,7 +542,42 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
 
         expect(killedSignals).toEqual([]);
         expect(spawnCalls).toBe(0);
-        expect(unkeyedForeign).toMatchObject({
+        expect(unrecordedBridge).toMatchObject({
+            state  : FLEET_BRIDGE_STATES.UNKEYED,
+            verdict: 'refused',
+            action : null,
+            port,
+            reason : 'bridge-verifier-mismatch'
+        });
+
+        // 3. Supervised run-bridge.mjs listener (e.g. child of hostEdge.mjs, ppid=21525) is never signaled
+        // even if an owner record matches its PID.
+        writeFleetBridgeOwnerRecord({
+            dataDir: FleetRegistryService.getDataDir(),
+            pid    : 21546,
+            port
+        });
+
+        const supervisedBridge = await settleFleetBridge({
+            port,
+            registry           : FleetRegistryService,
+            probeFn            : async () => ({verdict: 'refused', reason: 'bridge-verifier-mismatch'}),
+            listPortListenersFn: () => [21546],
+            processCommandFn   : () => 'node /repo/ai/mcp/server/neural-link/run-bridge.mjs',
+            processParentPidFn : () => 21525,
+            killProcessFn      : (pid, signal) => {
+                killedSignals.push({pid, signal});
+            },
+            spawnFn            : () => {
+                spawnCalls += 1;
+                return Object.assign(new EventEmitter(), {pid: 9999, unref: () => {}});
+            },
+            probeTimeoutMs     : 50
+        });
+
+        expect(killedSignals).toEqual([]);
+        expect(spawnCalls).toBe(0);
+        expect(supervisedBridge).toMatchObject({
             state  : FLEET_BRIDGE_STATES.UNKEYED,
             verdict: 'refused',
             action : null,
@@ -474,7 +586,7 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
         });
     });
 
-    test('AC-3 & AC-4 (#1203): superviseFleetBridge restarts an exited Bridge mid-session, coalesces overlapping ticks, and stop() leaves the detached Bridge running', async () => {
+    test('AC-3, AC-4 & RA-2 (#1203): superviseFleetBridge restarts an exited Bridge mid-session, deduplicates unchanged non-ready states across ticks, coalesces overlapping ticks, and stop() leaves the detached Bridge running', async () => {
         const port          = await findFreePort();
         let   scheduledCb   = null;
         let   clearedHandle = null;
@@ -492,12 +604,22 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
             resolveSlowSettle = resolve;
         });
 
+        const bootUnkeyed = {
+            state  : FLEET_BRIDGE_STATES.UNKEYED,
+            verdict: 'refused',
+            action : null,
+            port,
+            pid    : null,
+            reason : 'bridge-verifier-mismatch'
+        };
+
         let   callIndex  = 0;
         const supervisor = superviseFleetBridge({
             port,
-            registry  : FleetRegistryService,
-            intervalMs: 5000,
-            scheduleFn: fn => {
+            registry         : FleetRegistryService,
+            intervalMs       : 5000,
+            initialSettlement: bootUnkeyed,
+            scheduleFn       : fn => {
                 scheduledCb = fn;
                 return fakeHandle;
             },
@@ -509,9 +631,12 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
             settleFn     : async ({port: settledPort}) => {
                 callIndex += 1;
                 if (callIndex === 1) {
-                    return slowSettlePromise;
+                    return {...bootUnkeyed, port: settledPort};
                 }
                 if (callIndex === 2) {
+                    return slowSettlePromise;
+                }
+                if (callIndex === 3) {
                     return {
                         state  : FLEET_BRIDGE_STATES.READY,
                         verdict: 'proved',
@@ -537,10 +662,16 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
         expect(unrefCalled).toBe(true);
         expect(supervisor.isRunning()).toBe(true);
 
-        // Trigger overlapping ticks while the first settle is in flight; they must coalesce onto one call.
+        // First tick returns the same non-ready state as initialSettlement: onStateChange must NOT fire.
+        await supervisor.tick();
+        expect(callIndex).toBe(1);
+        expect(settlements).toHaveLength(1);
+        expect(stateChanges).toHaveLength(0);
+
+        // Trigger overlapping ticks while the second settle is in flight; they must coalesce onto one call.
         const firstTick  = supervisor.tick();
         const secondTick = supervisor.tick();
-        expect(callIndex).toBe(1);
+        expect(callIndex).toBe(2);
 
         resolveSlowSettle({
             state  : FLEET_BRIDGE_STATES.READY,
@@ -554,20 +685,20 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
         const [firstOutcome, secondOutcome] = await Promise.all([firstTick, secondTick]);
         expect(firstOutcome).toEqual(secondOutcome);
         expect(firstOutcome.action).toBe('started');
-        expect(settlements).toHaveLength(1);
+        expect(settlements).toHaveLength(2);
         expect(stateChanges).toHaveLength(1);
 
         // Next scheduled tick adopts the healthy running Bridge; stateChange fires because action changed ('started' -> 'adopted').
         scheduledCb();
         await new Promise(resolve => setImmediate(resolve));
-        expect(callIndex).toBe(2);
+        expect(callIndex).toBe(3);
         expect(supervisor.getLastSettlement()?.action).toBe('adopted');
-        expect(settlements).toHaveLength(2);
+        expect(settlements).toHaveLength(3);
         expect(stateChanges).toHaveLength(2);
 
-        // Third tick replaces a drifted Bridge ('adopted' -> 'replaced').
+        // Fourth tick replaces a drifted Bridge ('adopted' -> 'replaced').
         await supervisor.tick();
-        expect(callIndex).toBe(3);
+        expect(callIndex).toBe(4);
         expect(supervisor.getLastSettlement()?.action).toBe('replaced');
         expect(stateChanges).toHaveLength(3);
 
@@ -577,7 +708,7 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
         expect(clearedHandle).toBe(fakeHandle);
 
         const afterStop = await supervisor.tick();
-        expect(callIndex).toBe(3);
+        expect(callIndex).toBe(4);
         expect(afterStop?.pid).toBe(8888);
     });
 });
