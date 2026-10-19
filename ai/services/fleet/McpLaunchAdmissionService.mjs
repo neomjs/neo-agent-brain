@@ -360,7 +360,8 @@ class McpLaunchAdmissionService extends Base {
      * The process owner must stop accepting control mutations before calling. A failed attempt closes
      * custody without a handoff; ordinary process Quit remains the caller's choice, never blocked here.
      * @param {Object} options
-     * @param {Function} options.verifySeats Validates every surviving seat against its original Start.
+     * @param {Function} options.verifySeats `(witness) => Promise`: validates every surviving seat against its
+     *     original Start, reporting each seat through the same witness as the stages.
      * @param {Function} [options.onStage] `(stage) => void`, called as each stage begins and once more on
      *     a refusal (`refused at <stage>: <reason>`), so a caller's log witnesses how far a handoff got
      *     even when the host kills the process mid-stage; never awaited, never trusted with control.
@@ -403,7 +404,7 @@ class McpLaunchAdmissionService extends Base {
                 throw new Error('Fleet continuity refused: endpoint-binding.');
             }
             witness(stage);
-            await bounded(Promise.resolve().then(verifySeats));
+            await bounded(Promise.resolve().then(() => verifySeats(witness)));
             stage = 'proof-drain';
             witness(stage);
             await bounded(Promise.all([...this.generations.values()].flatMap(row => [...row.proofs.values()])));

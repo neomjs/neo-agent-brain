@@ -169,15 +169,8 @@ export function isRuntimeGenerationPin(pin) {
         inside(payload, pin.runtimeRoot) && inside(payload, pin.executable)
 }
 
-/**
- * @summary Verifies a published generation before returning any executable binding.
- * @param {Object} options
- * @param {String} options.directory Generation directory, whose basename is its identity.
- * @param {String} [options.platform=process.platform]
- * @param {String} [options.arch=process.arch]
- * @returns {Promise<Object|null>} Null only when the whole directory is absent.
- */
-export async function readRuntimeGeneration({directory, platform = process.platform, arch = process.arch}) {
+/** @summary The sealed directory's record, checked for identity and host compatibility; null when absent. */
+async function readSealedRecord(directory, platform, arch) {
     let stat;
     try { stat = await fs.lstat(directory) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
     if (!stat.isDirectory() || stat.isSymbolicLink() || stat.mode & 0o222) {
@@ -194,17 +187,51 @@ export async function readRuntimeGeneration({directory, platform = process.platf
         record.compatibility?.launchProtocol !== LAUNCH_ADMISSION_PROTOCOL) {
         throw refusal('runtime-compatibility-failed', 'generation is not verified for this host, Electron version and launch protocol')
     }
+    return record
+}
+
+/** @summary Refuses a descriptor whose receipt, organism root or executable does not match its generation. */
+async function assertRuntimeBindings(result) {
+    const actual     = runtimeGenerationIdentity(await readJson(path.join(result.runtimeRoot, 'organism-build-info.json')));
+    const executable = await fs.stat(result.executable);
+    if (actual.id !== result.id || !executable.isFile() || !(executable.mode & 0o111) ||
+        !(await fs.stat(result.runtimeRoot)).isDirectory()) {
+        throw refusal('runtime-binding-invalid', 'receipt, runtime or executable does not match the generation')
+    }
+}
+
+/**
+ * @summary Verifies a published generation before returning any executable binding.
+ * @param {Object} options
+ * @param {String} options.directory Generation directory, whose basename is its identity.
+ * @param {String} [options.platform=process.platform]
+ * @param {String} [options.arch=process.arch]
+ * @returns {Promise<Object|null>} Null only when the whole directory is absent.
+ */
+export async function readRuntimeGeneration({directory, platform = process.platform, arch = process.arch}) {
+    const record = await readSealedRecord(directory, platform, arch);
+    if (!record) return null;
     const result  = runtimeGenerationDescriptor(directory, record);
     const payload = await inventoryRuntimePayload(path.join(directory, PAYLOAD));
     if (payload.digest !== record.payloadDigest || JSON.stringify(payload.entries) !== JSON.stringify(record.entries)) {
         throw refusal('runtime-integrity-failed', 'published bytes, modes or links differ from their manifest')
     }
-    const actual     = runtimeGenerationIdentity(await readJson(path.join(result.runtimeRoot, 'organism-build-info.json')));
-    const executable = await fs.stat(result.executable);
-    if (actual.id !== record.id || !executable.isFile() || !(executable.mode & 0o111) ||
-        !(await fs.stat(result.runtimeRoot)).isDirectory()) {
-        throw refusal('runtime-binding-invalid', 'receipt, runtime or executable does not match the generation')
-    }
+    await assertRuntimeBindings(result);
+    return result
+}
+
+/**
+ * @summary Proves a published generation's identity, host compatibility and bindings without re-hashing its payload.
+ * Only for a caller whose consumer re-verifies the bytes before trusting them: the continuity handoff, whose
+ * successor runs {@link readRuntimeGeneration} in recovery before any generation is active again.
+ * @param {Object} options Same as {@link readRuntimeGeneration}.
+ * @returns {Promise<Object|null>} The same descriptor; null only when the whole directory is absent.
+ */
+export async function readRuntimeGenerationRecord({directory, platform = process.platform, arch = process.arch}) {
+    const record = await readSealedRecord(directory, platform, arch);
+    if (!record) return null;
+    const result = runtimeGenerationDescriptor(directory, record);
+    await assertRuntimeBindings(result);
     return result
 }
 
