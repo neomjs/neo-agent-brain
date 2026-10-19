@@ -101,11 +101,7 @@ const FORMER_LOGIN_TOKEN_PATTERN = (() => {
         bare    = handles.map(handle => escape(handle.slice(1)));
 
     return bare.length > 0
-        ? new RegExp(
-            `(?<![A-Za-z0-9])@(?:${bare.join('|')})(?![A-Za-z0-9@-])` +
-            `|(?<![A-Za-z0-9@-])(?:${bare.join('|')})(?![A-Za-z0-9@-])`,
-            'g'
-        )
+        ? new RegExp(`(?<![A-Za-z0-9])@(?:${bare.join('|')})(?![A-Za-z0-9@-])`, 'g')
         : null;
 })();
 
@@ -133,8 +129,9 @@ export function resolveAgentIdentityAlias(handle) {
 }
 
 /**
- * @summary Detects whole-handle mentions of former logins in a query or text string without matching
- * sibling prefixes (`@neo-gpt-emmy`) or email addresses (`neo-fable@neomjs.com`), returning the
+ * @summary Detects whole-token `@`-prefixed mentions of former logins in a query or text string
+ * without matching sibling prefixes (`@neo-gpt-emmy`), email addresses (`neo-fable@neomjs.com`),
+ * filesystem paths (`agents/neo-fable/memory`), or bare Fleet ids (`id neo-fable`), returning the
  * matched alias descriptors, an expanded retrieval query, and a human/agent-readable resolution notice.
  * @param {String} text Input query or prose.
  * @returns {{aliases: Object[], expandedQuery: String, notice: (String|null)}}

@@ -247,7 +247,7 @@ test.describe('ai/services/graph/agentFamilyResolution — formerLogins alias & 
         expect(resolveAgentIdentityAlias('@stranger-handle')).toBeNull();
     });
 
-    test('#1190 resolveFormerLoginMentions expands whole-token former handles and ignores sibling prefixes or emails', () => {
+    test('#1190 resolveFormerLoginMentions expands @-prefixed whole-token former handles and ignores sibling prefixes, emails, paths, or bare Fleet ids', () => {
         const resolved = resolveFormerLoginMentions('What did @neo-fable and @neo-gpt build with @neo-gpt-emmy and neo-fable@neomjs.com?');
 
         expect(resolved.aliases.map(a => ({formerLogin: a.formerLogin, id: a.id, displayName: a.displayName}))).toEqual([
@@ -258,10 +258,16 @@ test.describe('ai/services/graph/agentFamilyResolution — formerLogins alias & 
         expect(resolved.expandedQuery).toContain('@neo-gpt-euclid Euclid');
         expect(resolved.notice).toBe('Identity alias resolution: @neo-fable resolves to @neo-fable-mnemosyne (Mnemosyne); @neo-gpt resolves to @neo-gpt-euclid (Euclid).');
 
-        const unchanged = resolveFormerLoginMentions('Ask @neo-gpt-emmy or email neo-fable@neomjs.com');
-        expect(unchanged.aliases).toEqual([]);
-        expect(unchanged.expandedQuery).toBe('Ask @neo-gpt-emmy or email neo-fable@neomjs.com');
-        expect(unchanged.notice).toBeNull();
+        for (const nonMention of [
+            'Ask @neo-gpt-emmy or email neo-fable@neomjs.com',
+            'the seat folder ~/.neo-ai/agents/neo-fable/memory',
+            'registry id neo-fable beside githubUsername neo-fable-mnemosyne'
+        ]) {
+            const unchanged = resolveFormerLoginMentions(nonMention);
+            expect(unchanged.aliases, nonMention).toEqual([]);
+            expect(unchanged.expandedQuery, nonMention).toBe(nonMention);
+            expect(unchanged.notice, nonMention).toBeNull();
+        }
     });
 
     test('#1190 resolveAuthorFamily resolves legacy Authored by … @former-handle self-identification lines', () => {
