@@ -291,6 +291,24 @@ test.describe('pruneHealLedger + self-bounding append — bounded retention (#14
         }
     });
 
+    test('a prune under a stricter umask still keeps the ledger\'s permission bits', async () => {
+        const dir = await tmpDir(), previous = process.umask(0o077);
+        try {
+            for (let i = 0; i < 3; i++) {
+                await appendHealEvent({type: 'heal', collection: 'c1', status: 'healed', at: i}, {dir, triggerBytes: Infinity});
+            }
+            const filePath = getHealLedgerFilePath(dir);
+            await fs.chmod(filePath, 0o640);
+
+            await pruneHealLedger({dir, maxEvents: 1});
+
+            expect((await fs.stat(filePath)).mode & 0o777, 'creating the replacement alone narrows 0640 to 0600').toBe(0o640)
+        } finally {
+            process.umask(previous);
+            await fs.rm(dir, {recursive: true, force: true});
+        }
+    });
+
     test('no-op at/under the cap and on a missing ledger (pruned: 0)', async () => {
         const dir = await tmpDir(), emptyDir = await tmpDir();
         try {

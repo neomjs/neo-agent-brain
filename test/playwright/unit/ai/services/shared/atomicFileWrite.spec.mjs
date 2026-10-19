@@ -109,6 +109,23 @@ test.describe('writeFileAtomic (async surface)', () => {
         expect(fs.readFileSync(target, 'utf8')).toBe('flushed');
         expect(scratchLeftIn(workDir)).toEqual([])
     });
+
+    test('preserveMode keeps an existing target\'s permission bits under a stricter umask; a new file takes mode', async () => {
+        const target = path.join(workDir, 'kept.txt'), fresh = path.join(workDir, 'fresh.txt'), previous = process.umask(0o077);
+        try {
+            fs.writeFileSync(target, 'old');
+            fs.chmodSync(target, 0o640);
+
+            await writeFileAtomic(target, 'new', {preserveMode: true});
+            await writeFileAtomic(fresh, 'new', {preserveMode: true, mode: 0o640});
+
+            expect(fs.statSync(target).mode & 0o777).toBe(0o640);
+            expect(fs.statSync(fresh).mode & 0o777, 'without a target the umask applies to mode, as before').toBe(0o600);
+            expect(scratchLeftIn(workDir)).toEqual([])
+        } finally {
+            process.umask(previous)
+        }
+    });
 });
 
 test.describe('writeFileAtomicSync (sync surface)', () => {
@@ -132,6 +149,23 @@ test.describe('writeFileAtomicSync (sync surface)', () => {
 
         expect(fs.existsSync(target)).toBe(false);
         expect(scratchLeftIn(workDir)).toEqual([])
+    });
+
+    test('preserveMode matches the async surface', () => {
+        const target = path.join(workDir, 'sync-kept.txt'), fresh = path.join(workDir, 'sync-fresh.txt'), previous = process.umask(0o077);
+        try {
+            fs.writeFileSync(target, 'old');
+            fs.chmodSync(target, 0o640);
+
+            writeFileAtomicSync(target, 'new', {preserveMode: true});
+            writeFileAtomicSync(fresh, 'new', {preserveMode: true, mode: 0o640});
+
+            expect(fs.statSync(target).mode & 0o777).toBe(0o640);
+            expect(fs.statSync(fresh).mode & 0o777).toBe(0o600);
+            expect(scratchLeftIn(workDir)).toEqual([])
+        } finally {
+            process.umask(previous)
+        }
     });
 
     test('fsync:true still produces the file', () => {

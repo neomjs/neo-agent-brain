@@ -192,7 +192,7 @@ export async function readHealLedger({dir} = {}) {
 
 /**
  * @summary Bounds the durable ledger to the newest `maxEvents` entries (keep-most-recent), replacing the file
- * atomically with the ledger's own mode. A reader that opened the ledger before the prune — a backup copying it
+ * atomically with the ledger's own permission bits, whatever the process umask. A reader that opened the ledger before the prune — a backup copying it
  * — reads the whole old file, one that opens after reads the whole new one, and a failed write leaves the old
  * ledger as it was. Pure keep-most-recent is correct because the ledger is append-only telemetry — no entry's
  * removal changes a heal decision (the anti-thrash gate reads only a recent window, far inside the retained
@@ -216,12 +216,9 @@ export async function pruneHealLedger({dir, maxEvents} = {}) {
         return {pruned: 0, retained: events.length};
     }
 
-    const
-        filePath = getHealLedgerFilePath(dir),
-        retained = events.slice(events.length - maxEvents), // append order is oldest→newest; keep the tail
-        {mode}   = await stat(filePath);
+    const retained = events.slice(events.length - maxEvents); // append order is oldest→newest; keep the tail
 
-    await writeFileAtomic(filePath, retained.map(event => JSON.stringify(event)).join('\n') + '\n', {mode: mode & 0o777});
+    await writeFileAtomic(getHealLedgerFilePath(dir), retained.map(event => JSON.stringify(event)).join('\n') + '\n', {preserveMode: true});
 
     return {pruned: events.length - retained.length, retained: retained.length};
 }
