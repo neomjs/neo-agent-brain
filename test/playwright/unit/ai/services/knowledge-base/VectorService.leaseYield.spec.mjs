@@ -115,11 +115,11 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
 
     test.afterAll(() => {
         TextEmbeddingService.embedTexts = originalEmbedTexts;
-        kbSnapshot?.restore();
+        kbSnapshot?.();
     });
 
     test.beforeEach(() => {
-        kbSnapshot?.restore();
+        kbSnapshot?.();
         kbSnapshot = snapshotAiConfig(KB_Config, {batchSize: 50, batchDelay: 0, maxRetries: 1});
         // Re-applied per test: the inner-yield cases below swap in their own embedder, and a leaked stub
         // would silently change what a later test is measuring.
@@ -127,7 +127,7 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
     });
 
     test.afterEach(() => {
-        kbSnapshot?.restore();
+        kbSnapshot?.();
         kbSnapshot = null;
     });
 

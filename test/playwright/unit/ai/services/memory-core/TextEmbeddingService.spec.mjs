@@ -134,7 +134,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
 
     test.afterEach(() => {
         // Restore leaf overrides and ollamaProvider slot — fake injection across tests must not leak.
-        configGuard.restore();
+        configGuard();
         TextEmbeddingService.ollamaProvider = null;
         clearAggregatedFrictions();
     });

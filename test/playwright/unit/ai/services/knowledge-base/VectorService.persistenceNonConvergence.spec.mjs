@@ -212,13 +212,13 @@ test.describe('VectorService — persistence failure is an unbounded re-embed lo
         KBRecorderService.db                         = originalRecorderDb;
         KB_ChromaManager.getKnowledgeBaseCollection  = originalGetCollection;
         KB_ChromaManager.invalidateKnowledgeBaseCollectionCache();
-        kbSnapshot?.restore();
-        mcSnapshot?.restore();
+        kbSnapshot?.();
+        mcSnapshot?.();
     });
 
     test.beforeEach(() => {
-        kbSnapshot?.restore();
-        mcSnapshot?.restore();
+        kbSnapshot?.();
+        mcSnapshot?.();
         kbSnapshot = snapshotAiConfig(KB_Config, {
             batchSize : 50,
             batchDelay: 0,
@@ -258,8 +258,8 @@ test.describe('VectorService — persistence failure is an unbounded re-embed lo
 
         rmSync(tempDir, {force: true, recursive: true});
 
-        kbSnapshot?.restore();
-        mcSnapshot?.restore();
+        kbSnapshot?.();
+        mcSnapshot?.();
         kbSnapshot = null;
         mcSnapshot = null;
     });

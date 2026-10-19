@@ -89,7 +89,6 @@ test.describe('VectorService.embed — undeliverable-at-geometry through the pro
         originalEmbedTexts     = TextEmbeddingService.embedTexts.bind(TextEmbeddingService);
         originalGetCollection  = ChromaManager.getKnowledgeBaseCollection;
         originalResumeStateDir = KB_VectorService.resumeStateDir;
-        restoreMemoryConfig    = snapshotAiConfig(Memory_Config);
         originalCeiling        = Memory_Config.embeddingProvider === 'ollama'
             ? Memory_Config.ollama.embeddingTimeoutMs
             : Memory_Config.openAiCompatible.batchEmbeddingTimeoutMs;
@@ -100,7 +99,20 @@ test.describe('VectorService.embed — undeliverable-at-geometry through the pro
         await fs.writeFile(corpusFile, chunks.map(chunk => JSON.stringify(chunk)).join('\n') + '\n');
 
         KB_VectorService.resumeStateDir = path.join(tmpDir, 'state');
-        restoreKbConfig = snapshotAiConfig(KB_Config, {batchSize: 50, batchDelay: 0, maxRetries: 3});
+    });
+
+    test.beforeEach(() => {
+        restoreMemoryConfig?.();
+        restoreKbConfig?.();
+        restoreMemoryConfig = snapshotAiConfig(Memory_Config);
+        restoreKbConfig     = snapshotAiConfig(KB_Config, {batchSize: 50, batchDelay: 0, maxRetries: 3});
+    });
+
+    test.afterEach(() => {
+        restoreKbConfig?.();
+        restoreMemoryConfig?.();
+        restoreKbConfig     = null;
+        restoreMemoryConfig = null;
     });
 
     test.afterAll(async () => {
@@ -211,7 +223,7 @@ test.describe('VectorService.embed — undeliverable-at-geometry through the pro
 
 test.describe('VectorService.embed — DEATH-class graduation through the production path (#17336)', () => {
     let SDK, KB_Config, Memory_Config, KB_VectorService, TextEmbeddingService, ChromaManager;
-    let originalEmbedTexts, originalGetCollection, originalResumeStateDir;
+    let originalEmbedTexts, originalGetCollection, originalResumeStateDir, originalCeiling;
     let restoreKbConfig, restoreMemoryConfig, tmpDir, corpusFile;
 
     const isKillerText = text => text.includes('killer body');
@@ -239,7 +251,9 @@ test.describe('VectorService.embed — DEATH-class graduation through the produc
         originalEmbedTexts     = TextEmbeddingService.embedTexts.bind(TextEmbeddingService);
         originalGetCollection  = ChromaManager.getKnowledgeBaseCollection;
         originalResumeStateDir = KB_VectorService.resumeStateDir;
-        restoreMemoryConfig    = snapshotAiConfig(Memory_Config);
+        originalCeiling        = Memory_Config.embeddingProvider === 'ollama'
+            ? Memory_Config.ollama.embeddingTimeoutMs
+            : Memory_Config.openAiCompatible.batchEmbeddingTimeoutMs;
 
         tmpDir     = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-kb-death-'));
         corpusFile = path.join(tmpDir, 'corpus.jsonl');
@@ -247,7 +261,20 @@ test.describe('VectorService.embed — DEATH-class graduation through the produc
         await fs.writeFile(corpusFile, chunks.map(chunk => JSON.stringify(chunk)).join('\n') + '\n');
 
         KB_VectorService.resumeStateDir = path.join(tmpDir, 'state');
-        restoreKbConfig = snapshotAiConfig(KB_Config, {batchSize: 50, batchDelay: 0, maxRetries: 3});
+    });
+
+    test.beforeEach(() => {
+        restoreMemoryConfig?.();
+        restoreKbConfig?.();
+        restoreMemoryConfig = snapshotAiConfig(Memory_Config);
+        restoreKbConfig     = snapshotAiConfig(KB_Config, {batchSize: 50, batchDelay: 0, maxRetries: 3});
+    });
+
+    test.afterEach(() => {
+        restoreKbConfig?.();
+        restoreMemoryConfig?.();
+        restoreKbConfig     = null;
+        restoreMemoryConfig = null;
     });
 
     test.afterAll(async () => {
@@ -344,18 +371,12 @@ test.describe('VectorService.embed — DEATH-class graduation through the produc
     /**
      * @summary Moves the effective call ceiling, which is part of the poison generation coordinate.
      * @param {Number} deltaMs Offset from the process default.
-     * @returns {void}
+     * @returns {Function} Restore thunk from `snapshotAiConfig`.
      */
     function shiftGeneration(deltaMs) {
-        const base = Memory_Config.embeddingProvider === 'ollama'
-            ? Memory_Config.ollama.embeddingTimeoutMs
-            : Memory_Config.openAiCompatible.batchEmbeddingTimeoutMs;
-
-        if (Memory_Config.embeddingProvider === 'ollama') {
-            snapshotAiConfig(Memory_Config, {'ollama.embeddingTimeoutMs': Number(base) + deltaMs})
-        } else {
-            snapshotAiConfig(Memory_Config, {'openAiCompatible.batchEmbeddingTimeoutMs': Number(base) + deltaMs})
-        }
+        return Memory_Config.embeddingProvider === 'ollama'
+            ? snapshotAiConfig(Memory_Config, {'ollama.embeddingTimeoutMs': Number(originalCeiling) + deltaMs})
+            : snapshotAiConfig(Memory_Config, {'openAiCompatible.batchEmbeddingTimeoutMs': Number(originalCeiling) + deltaMs})
     }
 
     /**
@@ -605,10 +626,10 @@ test.describe('VectorService.embed — DEATH-class graduation through the produc
         const sweep = () => KB_VectorService.embed(armCorpus, {deleteStale: false, tenantContext: scoped})
             .then(result => result, error => error);
 
-        try {
-            // Narrow enough that the killer is dispatched alone and no healthy input has run yet.
-            snapshotAiConfig(KB_Config, {batchSize: 1, maxRetries: 1});
+        // Narrow enough that the killer is dispatched alone and no healthy input has run yet.
+        const restoreInnerKb = snapshotAiConfig(KB_Config, {batchSize: 1, maxRetries: 1});
 
+        try {
             const seeded = await sweep();
 
             expect(seeded, 'the seeding sweep ends on the refusal').toBeInstanceOf(Error);
@@ -624,7 +645,7 @@ test.describe('VectorService.embed — DEATH-class graduation through the produc
             expect(summary, 'the healthy stride completes the sweep and returns its census').not.toBeInstanceOf(Error);
             expect(summary.deathStrikeProgress, 'the failure-carry reset cleared the pending death').toEqual([]);
         } finally {
-            snapshotAiConfig(KB_Config, {batchSize: 50, maxRetries: 3});
+            restoreInnerKb();
         }
     });
 

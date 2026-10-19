@@ -111,13 +111,13 @@ test.describe('VectorService KB ingest — the native Ollama provider seam', () 
 
     test.afterAll(() => {
         TextEmbeddingService.ollamaProvider = originalOllamaProvider;
-        kbSnapshot?.restore();
-        mcSnapshot?.restore();
+        kbSnapshot?.();
+        mcSnapshot?.();
     });
 
     test.beforeEach(() => {
-        kbSnapshot?.restore();
-        mcSnapshot?.restore();
+        kbSnapshot?.();
+        mcSnapshot?.();
         kbSnapshot = snapshotAiConfig(KB_Config, {
             batchSize : 50,
             batchDelay: 0,
@@ -129,8 +129,8 @@ test.describe('VectorService KB ingest — the native Ollama provider seam', () 
     });
 
     test.afterEach(() => {
-        kbSnapshot?.restore();
-        mcSnapshot?.restore();
+        kbSnapshot?.();
+        mcSnapshot?.();
         kbSnapshot = null;
         mcSnapshot = null;
     });

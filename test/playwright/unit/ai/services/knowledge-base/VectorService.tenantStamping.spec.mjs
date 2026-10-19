@@ -95,6 +95,7 @@ function getOnlyRow(spy) {
 
 test.describe('VectorService.embed — tenant stamping (#11631)', () => {
     let SDK, KB_VectorService, KB_DatabaseService, KB_ChromaManager, KB_Config, Logger;
+    let resolveTenantIsolationConfig;
     let TextEmbeddingService;
     let originalGetCollection;
     let originalEmbedTexts;
@@ -114,9 +115,10 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
         const DatabaseServiceModule = await import('../../../../../../ai/services/knowledge-base/DatabaseService.mjs');
         const LoggerModule          = await import('../../../../../../ai/mcp/server/knowledge-base/logger.mjs');
 
-        KB_VectorService   = VectorServiceModule.default;
-        KB_DatabaseService = DatabaseServiceModule.default;
-        Logger             = LoggerModule.default;
+        KB_VectorService             = VectorServiceModule.default;
+        resolveTenantIsolationConfig = VectorServiceModule.resolveTenantIsolationConfig;
+        KB_DatabaseService           = DatabaseServiceModule.default;
+        Logger                       = LoggerModule.default;
 
         originalGetCollection = KB_ChromaManager.getKnowledgeBaseCollection.bind(KB_ChromaManager);
         originalEmbedTexts    = TextEmbeddingService.embedTexts.bind(TextEmbeddingService);
@@ -136,7 +138,7 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
         KB_ChromaManager.getKnowledgeBaseCollection = originalGetCollection;
         TextEmbeddingService.embedTexts             = originalEmbedTexts;
         Logger.warn                                 = originalWarn;
-        kbSnapshot?.restore();
+        kbSnapshot?.();
 
         if (tmpDir && fs.existsSync(tmpDir)) {
             fs.rmSync(tmpDir, {recursive: true, force: true});
@@ -144,7 +146,7 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
     });
 
     test.beforeEach(() => {
-        kbSnapshot?.restore();
+        kbSnapshot?.();
         kbSnapshot = snapshotAiConfig(KB_Config, {
             batchSize         : 50,
             batchDelay        : 0,
@@ -162,7 +164,7 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
     });
 
     test.afterEach(() => {
-        kbSnapshot?.restore();
+        kbSnapshot?.();
         kbSnapshot = null;
     });
 
@@ -315,37 +317,42 @@ test.describe('VectorService.embed — tenant stamping (#11631)', () => {
         expect(warnCalls).toHaveLength(0);
     });
 
-    test('honors nested knowledgeBase isolation config shape', async () => {
-        const spy = createSpyCollection();
-        KB_ChromaManager.getKnowledgeBaseCollection = async () => spy;
-
-        // VectorService.getTenantIsolationConfig() reads `aiConfig.knowledgeBase` when it exposes
-        // a tenant field, so a truthy nested `knowledgeBase` tenant shape takes precedence over the flat keys.
-        snapshotAiConfig(KB_Config, {
-            knowledgeBase: {
+    test('honors nested knowledgeBase isolation config shape', () => {
+        // Pass a plain config object directly to the pure `resolveTenantIsolationConfig(config)`
+        // helper instead of adding non-existing nested keys onto the shared `KB_Config` Provider singleton.
+        const nestedConfig = {
+            defaultTenantId   : 'flat-tenant',
+            defaultRepoSlug   : 'flat-repo',
+            defaultVisibility : 'team',
+            spoofRejectionMode: 'overwrite',
+            knowledgeBase     : {
                 defaultTenantId   : 'nested-tenant',
                 defaultRepoSlug   : 'nested-repo',
                 defaultVisibility : 'private',
-                spoofRejectionMode: 'overwrite'
+                spoofRejectionMode: 'reject'
             }
+        };
+
+        expect(resolveTenantIsolationConfig(nestedConfig)).toEqual({
+            defaultTenantId   : 'nested-tenant',
+            defaultRepoSlug   : 'nested-repo',
+            defaultVisibility : 'private',
+            spoofRejectionMode: 'reject'
         });
 
-        writeFixtureJsonl(fixturePath, [{
-            hash       : 'raw-hash-4',
-            type       : 'guide',
-            name       : 'NestedConfigDoc',
-            className  : '',
-            description: 'nested config',
-            content    : 'body'
-        }]);
+        // Tier-1 OPS `knowledgeBase` shape (alerting / reconciliation / GC without tenant fields)
+        // must fall back to the top-level flat config rather than shadowing it with undefineds.
+        const opsNestedConfig = {
+            defaultTenantId   : 'flat-tenant',
+            defaultRepoSlug   : 'flat-repo',
+            defaultVisibility : 'team',
+            spoofRejectionMode: 'overwrite',
+            knowledgeBase     : {
+                reconciliationIntervalMs: 60_000
+            }
+        };
 
-        await KB_VectorService.embed(fixturePath);
-
-        const row = getOnlyRow(spy);
-
-        expect(row.metadata.tenantId).toBe('nested-tenant');
-        expect(row.metadata.repoSlug).toBe('nested-repo');
-        expect(row.metadata.visibility).toBe('private');
+        expect(resolveTenantIsolationConfig(opsNestedConfig)).toBe(opsNestedConfig);
     });
 
     test('content hashes include tenant and repository identity', () => {

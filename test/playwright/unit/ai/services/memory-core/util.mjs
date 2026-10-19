@@ -170,6 +170,14 @@ export async function drainMemoryWal({ids, collection, SDK} = {}) {
  * leaf before applying any override. Isolate leaves you ADD during a test by construction (`unitTestMode`),
  * not with this helper.
  *
+ * **Root vs. nested snapshot semantics (`activeSnapshots`):**
+ * The first `snapshotAiConfig(aiConfig, ...)` call on a given config instance opens a root baseline
+ * map tracked in `activeSnapshots`. Any nested `snapshotAiConfig(aiConfig, overrides)` calls made while
+ * that root snapshot is active record their pre-mutation values into the root baseline (first-seen wins)
+ * so that invoking the root `restore()` in `afterEach`/`afterAll` restores every leaf mutated during the
+ * test — even when an inner test call applied overrides without retaining the inner restore thunk.
+ * Invoking a nested restore thunk early restores only the leaves captured by that nested call.
+ *
  * @param {Object} aiConfig The `aiConfig` Provider singleton (or a plain fixture).
  * @param {String[]|Object} pathsOrOverrides Either dot-paths to scalar leaves that EXIST at capture
  *     (`['storagePaths.graph', 'handoffFilePath']`) or a plain `{ 'dot.path': nextValue }` override map.
@@ -200,11 +208,7 @@ export function snapshotAiConfig(aiConfig, pathsOrOverrides = []) {
             );
         }
 
-        const isPlainOrProxyObject = Boolean(value) && typeof value === 'object' && !Array.isArray(value),
-              valueKeys            = isPlainOrProxyObject ? new Set(Object.keys(value)) : null,
-              capturedValue        = isPlainOrProxyObject ? {...value} : value;
-
-        return {dotPath, key, parent, value: capturedValue, valueKeys};
+        return {dotPath, key, parent, value};
     });
 
     let   baselineMap = activeSnapshots.get(aiConfig);
@@ -227,17 +231,7 @@ export function snapshotAiConfig(aiConfig, pathsOrOverrides = []) {
         });
     }
 
-    const restoreEntry = ({dotPath, key, parent, value, valueKeys}) => {
-        if (valueKeys && parent[key] && typeof parent[key] === 'object') {
-            for (const currentKey of Object.keys(parent[key])) {
-                if (!valueKeys.has(currentKey)) {
-                    const childPath = `${dotPath}.${currentKey}`;
-                    aiConfig?.getOwnerOfDataProperty?.(childPath)?.owner?.getDataConfig?.(childPath)?.setRaw?.(undefined);
-                    parent[key][currentKey] = undefined;
-                }
-            }
-            aiConfig?.getOwnerOfDataProperty?.(dotPath)?.owner?.getDataConfig?.(dotPath)?.setRaw?.({...value});
-        }
+    const restoreEntry = ({key, parent, value}) => {
         parent[key] = value;
     };
 
@@ -252,8 +246,6 @@ export function snapshotAiConfig(aiConfig, pathsOrOverrides = []) {
             captured.forEach(restoreEntry);
         }
     }
-
-    restore.restore = restore;
 
     return restore;
 }

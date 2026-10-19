@@ -118,7 +118,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
     });
 
     test.afterEach(() => {
-        kbConfigGuard.restore();
+        kbConfigGuard();
     });
 
     test('ZERO chunks issues ZERO provider submissions — the attribution control (#16780 AC-1)', async () => {
@@ -192,7 +192,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
             expect(result.embedded).toBeGreaterThan(0)
         } finally {
             Neo.config.unitTestMode = originalUnitTestMode;
-            mcConfigGuard.restore();
+            mcConfigGuard();
             server.close()
         }
     });
@@ -261,7 +261,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
             expect(spy.calls.upsert).toBe(0)
         } finally {
             Neo.config.unitTestMode = originalUnitTestMode;
-            mcConfigGuard.restore();
+            mcConfigGuard();
             server.close()
         }
     });

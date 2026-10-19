@@ -220,6 +220,29 @@ function resolveEmbeddingInputStrategyVersion(guardrail) {
 }
 
 /**
+ * @summary Resolves the authoritative tenant-isolation config surface from a KB config object.
+ *
+ * The portable nested tenant-shape (`config.knowledgeBase.*`) carries tenant fields when supplied by a
+ * shared config surface. Tier-1's `knowledgeBase` leaf (KB OPS config: alerting / reconciliation / GC)
+ * is inherited via the realm chain and is NOT a tenant-shape — so a naked `?? config` would wrongly
+ * select it and read tenant fields as `undefined`. Prefer the nested object only when it exposes at
+ * least one tenant field; otherwise fall through to the flat top-level config.
+ *
+ * @param {Object} [config=aiConfig] Knowledge Base config object or fixture.
+ * @returns {Object} Tenant-isolation configuration surface.
+ */
+export function resolveTenantIsolationConfig(config = aiConfig) {
+    const nested         = config?.knowledgeBase;
+    const hasTenantShape = nested != null && (
+        nested.defaultTenantId    !== undefined ||
+        nested.defaultRepoSlug    !== undefined ||
+        nested.defaultVisibility  !== undefined ||
+        nested.spoofRejectionMode !== undefined
+    );
+    return hasTenantShape ? nested : config;
+}
+
+/**
  * @summary Manages vector database operations including embedding generation and storage.
  *
  * This service encapsulates all interactions with the vector database (ChromaDB) and the
@@ -312,19 +335,7 @@ class VectorService extends Base {
      * @returns {Object} Tenant-isolation configuration object.
      */
     getTenantIsolationConfig() {
-        const nested = aiConfig.knowledgeBase;
-        // The portable nested tenant-shape carries tenant fields. Tier-1's
-        // `knowledgeBase` leaf (KB OPS config: alerting / reconciliation / GC) is inherited here via
-        // the realm chain and is NOT a tenant-shape — so a naked `?? aiConfig` would wrongly select
-        // it (security regression: tenant fields read as undefined). Prefer the nested object only
-        // when it actually exposes a tenant field; otherwise fall through to the flat top-level config.
-        const hasTenantShape = nested != null && (
-            nested.defaultTenantId    !== undefined ||
-            nested.defaultRepoSlug    !== undefined ||
-            nested.defaultVisibility  !== undefined ||
-            nested.spoofRejectionMode !== undefined
-        );
-        return hasTenantShape ? nested : aiConfig;
+        return resolveTenantIsolationConfig(aiConfig);
     }
 
     /**
@@ -530,9 +541,13 @@ class VectorService extends Base {
     /**
      * @summary Resolves the exact embedding-generation coordinate used by the poison retry fence.
      *
-     * Provider selection remains owned by `TextEmbeddingService`; this method reads the same resolved
-     * AiConfig leaves at the disposition boundary so a provider, model, vector-schema, or input-strategy
-     * change invalidates prior poison evidence instead of silently suppressing work under a new route.
+     * Provider selection and transport timeout enforcement remain owned by `TextEmbeddingService`,
+     * which reads `mcConfig.embeddingProvider`, `mcConfig.ollama.embeddingTimeoutMs`, and
+     * `mcConfig.openAiCompatible.batchEmbeddingTimeoutMs` at call time. Reading those leaves directly
+     * from `mcConfig` here ensures the poison generation records the exact ceiling `TextEmbeddingService`
+     * enforces rather than a KB-tree copy that could diverge under an overlay, so a provider, model,
+     * vector-schema, call-ceiling, or input-strategy change invalidates prior poison evidence instead
+     * of silently suppressing work under a new route.
      *
      * @returns {{provider: String, model: String, vectorDimension: Number, strategyVersion: String}}
      */

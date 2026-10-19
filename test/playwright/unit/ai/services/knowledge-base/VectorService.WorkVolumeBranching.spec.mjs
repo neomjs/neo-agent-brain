@@ -249,8 +249,8 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     test.afterAll(async () => {
         KB_ChromaManager.getKnowledgeBaseCollection = originalGetCollection;
         KB_ChromaManager.client                     = originalClient;
-        kbSnapshot?.restore();
-        mcSnapshot?.restore();
+        kbSnapshot?.();
+        mcSnapshot?.();
         KB_VectorService.resumeStateDir             = originalResumeStateDir;
         TextEmbeddingService.embedTexts             = TextEmbeddingService_orig;
         if (tmpDir && fs.existsSync(tmpDir)) {
@@ -259,8 +259,8 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     });
 
     test.beforeEach(() => {
-        kbSnapshot?.restore();
-        mcSnapshot?.restore();
+        kbSnapshot?.();
+        mcSnapshot?.();
         kbSnapshot                      = snapshotAiConfig(KB_Config, {mcpSyncMaxChunks: 5}); // tight threshold for predictable branching
         mcSnapshot                      = snapshotAiConfig(Memory_Config, {});
         TextEmbeddingService.embedTexts = async texts => texts.map(() => new Array(384).fill(0));
@@ -274,8 +274,8 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     });
 
     test.afterEach(() => {
-        kbSnapshot?.restore();
-        mcSnapshot?.restore();
+        kbSnapshot?.();
+        mcSnapshot?.();
         kbSnapshot = null;
         mcSnapshot = null;
     });

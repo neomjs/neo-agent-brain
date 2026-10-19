@@ -144,16 +144,16 @@ test.describe('VectorService.embedChunks — failure-path work conservation (#17
 
     test.afterAll(() => {
         TextEmbeddingService.embedTexts = originalEmbedTexts;
-        kbSnapshot?.restore();
+        kbSnapshot?.();
     });
 
     test.beforeEach(() => {
-        kbSnapshot?.restore();
+        kbSnapshot?.();
         kbSnapshot = snapshotAiConfig(KB_Config, {batchSize: 50, batchDelay: 0, maxRetries: 3});
     });
 
     test.afterEach(() => {
-        kbSnapshot?.restore();
+        kbSnapshot?.();
         kbSnapshot = null;
     });
 

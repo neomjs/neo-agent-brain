@@ -116,21 +116,21 @@ test.describe('Neo.ai test-isolation — snapshotAiConfig on the real aiConfig P
         expect(() => snapshotAiConfig(aiConfig, [probe])).toThrow(/does not resolve to a value/)
     });
 
-    test('clears newly-added nested keys on an existing Provider object leaf back to undefined (#1150)', () => {
-        expect(aiConfig.knowledgeBase.__probeNestedKey__).toBeUndefined();
-
-        const restore = snapshotAiConfig(aiConfig, {
-            knowledgeBase: {
-                __probeNestedKey__: 'nested-probe-val'
-            }
-        });
+    test('restores nested override-map mutations via the active root snapshot baseline (#1150)', () => {
+        const original    = aiConfig.handoffFilePathProd,
+              rootRestore = snapshotAiConfig(aiConfig);
 
         try {
-            expect(aiConfig.knowledgeBase.__probeNestedKey__).toBe('nested-probe-val');
+            snapshotAiConfig(aiConfig, {handoffFilePathProd: '/tmp/__neo_nested_1__.md'});
+            expect(aiConfig.handoffFilePathProd).toBe('/tmp/__neo_nested_1__.md');
+
+            snapshotAiConfig(aiConfig, {handoffFilePathProd: '/tmp/__neo_nested_2__.md'});
+            expect(aiConfig.handoffFilePathProd).toBe('/tmp/__neo_nested_2__.md');
         } finally {
-            restore();
+            rootRestore();
         }
 
-        expect(aiConfig.knowledgeBase.__probeNestedKey__).toBeUndefined();
+        expect(aiConfig.handoffFilePathProd).toBe(original);
+        expect(() => snapshotAiConfig(aiConfig, ['knowledgeBase.__probeNestedKey__'])).toThrow(/does not resolve to a value/);
     });
 });

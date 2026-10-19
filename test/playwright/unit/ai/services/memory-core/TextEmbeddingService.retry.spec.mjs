@@ -419,7 +419,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
     });
 
     test.afterEach(() => {
-        configGuard.restore();
+        configGuard();
         TextEmbeddingService.openAiCompatibleLoadedModelsProbe = originalLoadedModelsProbe;
         clearAggregatedFrictions();
     });
@@ -460,7 +460,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
             expect(requestCount).toBe(2);
             expect(lastRequest.body.model).toBe('snapshot-isolated-model');
         } finally {
-            localGuard.restore();
+            localGuard();
         }
 
         expect(aiConfig.openAiCompatible.embeddingModel).toBe(canonicalModel);
