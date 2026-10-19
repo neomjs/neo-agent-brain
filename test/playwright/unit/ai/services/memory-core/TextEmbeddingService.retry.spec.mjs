@@ -35,6 +35,7 @@ import {
     getAggregatedFrictions
 } from '../../../../../../ai/services/memory-core/helpers/consumerFrictionHelper.mjs';
 import {MODEL_MISMATCH_CODE} from '../../../../../../ai/provider/createStreamFailureError.mjs';
+import {snapshotAiConfig}    from './util.mjs';
 
 async function waitForCondition(condition, message, timeoutMs = 250) {
     const start = Date.now();
@@ -96,7 +97,7 @@ function buildMinimalGguf({tokens, eosTokenId, eotTokenId, addEosToken = true}) 
 test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openAiCompatible retry, QoS, and lms server start support', () => {
     let TextEmbeddingService, server;
     let spanPlan = {order: [], failLabels: [], holdLabel: null, holdMode: 'succeed', releaseHeld: null, releaseRequested: false};
-    let configSnapshot;
+    let configGuard;
     let requestCount   = 0;
     let serverBehavior = 'succeed';
     let lastRequest;
@@ -141,7 +142,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
                 } else if (serverBehavior === 'succeed-with-local-date-alias') {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({
-                        model: `${configSnapshot.openAiCompatible.embeddingModel}-2024-08-06`,
+                        model: `${aiConfig.openAiCompatible.embeddingModel}-2024-08-06`,
                         data : [{ embedding: [0.1, 0.2, 0.3] }]
                     }));
                 } else if (serverBehavior === 'lms-server-start-succeed') {
@@ -167,7 +168,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
                     }
                 } else if (serverBehavior === 'fail-then-change-model') {
                     if (requestCount === 1) {
-                        configSnapshot.openAiCompatible.embeddingModel = 'runtime-retry-model-b';
+                        snapshotAiConfig(aiConfig, {'openAiCompatible.embeddingModel': 'runtime-retry-model-b'});
                         res.writeHead(400, { 'Content-Type': 'application/json' });
                         res.end(JSON.stringify({ error: 'Model was unloaded while the request was still in queue..' }));
                     } else {
@@ -383,7 +384,6 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
     });
 
     test.afterAll(async () => {
-        TextEmbeddingService.configSnapshot = null;
         await new Promise(resolve => server.close(resolve));
     });
 
@@ -396,36 +396,39 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         spanPlan = {order: [], failLabels: [], holdLabel: null, holdMode: 'succeed', releaseHeld: null, releaseRequested: false};
         originalLoadedModelsProbe = TextEmbeddingService.openAiCompatibleLoadedModelsProbe;
 
-        configSnapshot = TextEmbeddingService.createConfigSnapshot();
-        originalEmbeddingModel = configSnapshot.openAiCompatible.embeddingModel;
+        originalEmbeddingModel = aiConfig.openAiCompatible.embeddingModel;
 
-        configSnapshot.openAiCompatible.host = `http://127.0.0.1:${testPort}`;
-        configSnapshot.openAiCompatible.unloadRetryCount = 3;
-        configSnapshot.openAiCompatible.unloadRetryDelayMs = 10; // fast for tests
-        configSnapshot.openAiCompatible.contentionRetryCount = 2;
-        configSnapshot.openAiCompatible.contentionRetryDelayMs = 10;
-        configSnapshot.openAiCompatible.contentionTimeoutMs = 25;
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 5;
-        configSnapshot.openAiCompatible.batchEmbeddingTimeoutMs = 1000;
-        configSnapshot.openAiCompatible.batchEmbeddingYieldMs = 0;
-        TextEmbeddingService.configSnapshot = configSnapshot;
+        configGuard = snapshotAiConfig(aiConfig, {
+            'localModels.embedding.parallel'          : aiConfig.localModels.embedding.parallel,
+            'openAiCompatible.batchEmbeddingChunkSize': 5,
+            'openAiCompatible.batchEmbeddingTimeoutMs': 1000,
+            'openAiCompatible.batchEmbeddingYieldMs'  : 0,
+            'openAiCompatible.contentionRetryCount'   : 2,
+            'openAiCompatible.contentionRetryDelayMs' : 10, // fast for tests
+            'openAiCompatible.contentionTimeoutMs'    : 25,
+            'openAiCompatible.embeddingModel'         : originalEmbeddingModel,
+            'openAiCompatible.host'                   : `http://127.0.0.1:${testPort}`,
+            'openAiCompatible.unloadRetryCount'       : 3,
+            'openAiCompatible.unloadRetryDelayMs'     : 10,
+            'orchestrator.lms.port'                   : aiConfig.orchestrator.lms.port
+        });
         TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => [{
-            id           : configSnapshot.openAiCompatible.embeddingModel,
-            contextLength: configSnapshot.localModels.embedding.contextLimitTokens
+            id           : aiConfig.openAiCompatible.embeddingModel,
+            contextLength: aiConfig.localModels.embedding.contextLimitTokens
         }];
     });
 
     test.afterEach(() => {
-        TextEmbeddingService.configSnapshot = null;
+        configGuard.restore();
         TextEmbeddingService.openAiCompatibleLoadedModelsProbe = originalLoadedModelsProbe;
         clearAggregatedFrictions();
     });
 
-    test('#541 shared-config isolation: configSnapshot rejects shared aiConfig/subtrees, drives service leaves without mutating aiConfig, and leaves zero shared-config writes in this spec', async () => {
+    test('#541/#1150 shared-config isolation: snapshotAiConfig drives service leaves, restores aiConfig, and retires configSnapshot', async () => {
         const specPath   = fileURLToPath(import.meta.url),
               specSource = fs.readFileSync(specPath, 'utf8');
 
-        // 1. The parser-grade scanner convicts a shared-config write and reports zero on this converted spec.
+        // 1. The parser-grade scanner convicts a shared-config write and reports zero on this spec.
         expect(findSharedConfigMutations('aiConfig.openAiCompatible.unloadRetryCount = 2;')).toEqual([
             {
                 form: 'assignment',
@@ -436,33 +439,30 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         ]);
         expect(findSharedConfigMutations(specSource)).toEqual([]);
 
-        // 2. The runtime seam itself refuses the shared aiConfig singleton or any snapshot sharing a live subtree.
-        expect(() => {
-            TextEmbeddingService.configSnapshot = aiConfig;
-        }).toThrow(TypeError);
-        expect(() => {
-            TextEmbeddingService.configSnapshot = {...aiConfig};
-        }).toThrow(TypeError);
-        expect(() => {
-            TextEmbeddingService.configSnapshot = {
-                ...TextEmbeddingService.createConfigSnapshot(),
-                openAiCompatible: aiConfig.openAiCompatible
-            };
-        }).toThrow(TypeError);
+        // 2. The parallel configSnapshot seam is retired on TextEmbeddingService.
+        expect('configSnapshot' in TextEmbeddingService).toBe(false);
+        expect('createConfigSnapshot' in TextEmbeddingService).toBe(false);
 
-        // 3. Mutating the injected configSnapshot drives TextEmbeddingService while leaving aiConfig untouched.
+        // 3. snapshotAiConfig drives TextEmbeddingService while restoring aiConfig cleanly.
         const canonicalModel      = aiConfig.openAiCompatible.embeddingModel,
-              canonicalRetryCount = aiConfig.openAiCompatible.unloadRetryCount;
+              canonicalRetryCount = aiConfig.openAiCompatible.unloadRetryCount,
+              localGuard          = snapshotAiConfig(aiConfig, {
+                  'openAiCompatible.embeddingModel'  : 'snapshot-isolated-model',
+                  'openAiCompatible.unloadRetryCount': 1
+              });
 
-        serverBehavior = 'fail-all';
-        configSnapshot.openAiCompatible.embeddingModel   = 'snapshot-isolated-model';
-        configSnapshot.openAiCompatible.unloadRetryCount = 1;
+        try {
+            serverBehavior = 'fail-all';
 
-        await expect(TextEmbeddingService.embedText('hello', 'openAiCompatible'))
-            .rejects.toThrow(/Model was unloaded/);
+            await expect(TextEmbeddingService.embedText('hello', 'openAiCompatible'))
+                .rejects.toThrow(/Model was unloaded/);
 
-        expect(requestCount).toBe(2);
-        expect(lastRequest.body.model).toBe('snapshot-isolated-model');
+            expect(requestCount).toBe(2);
+            expect(lastRequest.body.model).toBe('snapshot-isolated-model');
+        } finally {
+            localGuard.restore();
+        }
+
         expect(aiConfig.openAiCompatible.embeddingModel).toBe(canonicalModel);
         expect(aiConfig.openAiCompatible.unloadRetryCount).toBe(canonicalRetryCount);
     });
@@ -484,8 +484,10 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         try {
             Neo.config.unitTestMode = false;
             // Not the LMS lane: the host port is the test server, the LMS port is something else.
-            configSnapshot.orchestrator.lms.port                   = '1234';
-            configSnapshot.openAiCompatible.embeddingModel         = 'qwen3-embedding-0.6b';
+            snapshotAiConfig(aiConfig, {
+                'openAiCompatible.embeddingModel': 'qwen3-embedding-0.6b',
+                'orchestrator.lms.port'          : '1234'
+            });
             // What `/v1/models` actually answered on the incident plane.
             TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => [{id: 'Qwen3-Embedding-8B-Q4_K_M'}];
 
@@ -512,9 +514,11 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         const originalUnitTestMode = Neo.config.unitTestMode;
 
         try {
-            Neo.config.unitTestMode                                = false;
-            configSnapshot.orchestrator.lms.port                   = '1234';
-            configSnapshot.openAiCompatible.embeddingModel         = 'qwen3-embedding-0.6b';
+            Neo.config.unitTestMode = false;
+            snapshotAiConfig(aiConfig, {
+                'openAiCompatible.embeddingModel': 'qwen3-embedding-0.6b',
+                'orchestrator.lms.port'          : '1234'
+            });
             TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => [{id: 'qwen3-embedding-0.6b'}];
 
             expect(await TextEmbeddingService.embedText('hello', 'openAiCompatible')).toEqual([0.1, 0.2, 0.3]);
@@ -536,9 +540,11 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         const originalUnitTestMode = Neo.config.unitTestMode;
 
         try {
-            Neo.config.unitTestMode                                = false;
-            configSnapshot.orchestrator.lms.port                   = '1234';
-            configSnapshot.openAiCompatible.embeddingModel         = 'qwen3-embedding';
+            Neo.config.unitTestMode = false;
+            snapshotAiConfig(aiConfig, {
+                'openAiCompatible.embeddingModel': 'qwen3-embedding',
+                'orchestrator.lms.port'          : '1234'
+            });
             TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => [{id: 'qwen3-embedding:latest'}];
 
             expect(await TextEmbeddingService.embedText('hello', 'openAiCompatible')).toEqual([0.1, 0.2, 0.3]);
@@ -556,9 +562,11 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         const originalUnitTestMode = Neo.config.unitTestMode;
 
         try {
-            Neo.config.unitTestMode                                = false;
-            configSnapshot.orchestrator.lms.port                   = '1234';
-            configSnapshot.openAiCompatible.embeddingModel         = 'qwen3-embedding:latest';
+            Neo.config.unitTestMode = false;
+            snapshotAiConfig(aiConfig, {
+                'openAiCompatible.embeddingModel': 'qwen3-embedding:latest',
+                'orchestrator.lms.port'          : '1234'
+            });
             TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => [{id: 'qwen3-embedding'}];
 
             let thrown;
@@ -581,9 +589,11 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         const originalUnitTestMode = Neo.config.unitTestMode;
 
         try {
-            Neo.config.unitTestMode                                = false;
-            configSnapshot.orchestrator.lms.port                   = '1234';
-            configSnapshot.openAiCompatible.embeddingModel         = 'qwen3-embedding-0.6b';
+            Neo.config.unitTestMode = false;
+            snapshotAiConfig(aiConfig, {
+                'openAiCompatible.embeddingModel': 'qwen3-embedding-0.6b',
+                'orchestrator.lms.port'          : '1234'
+            });
             TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => { throw new Error('connect ECONNREFUSED') };
 
             expect(await TextEmbeddingService.embedText('hello', 'openAiCompatible')).toEqual([0.1, 0.2, 0.3]);
@@ -600,8 +610,8 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
     });
 
     test('a served model mismatch rejects before an embedding vector is returned', async () => {
-        serverBehavior                         = 'succeed-with-mismatched-model';
-        const requested = configSnapshot.openAiCompatible.embeddingModel,
+        serverBehavior  = 'succeed-with-mismatched-model';
+        const requested = aiConfig.openAiCompatible.embeddingModel,
               error     = await TextEmbeddingService.embedText('hello', 'openAiCompatible').then(() => null, err => err);
 
         expect(error?.code).toBe(MODEL_MISMATCH_CODE);
@@ -609,8 +619,8 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
     });
 
     test('a local embedding endpoint rejects a dated model id', async () => {
-        serverBehavior                         = 'succeed-with-local-date-alias';
-        const requested = configSnapshot.openAiCompatible.embeddingModel,
+        serverBehavior  = 'succeed-with-local-date-alias';
+        const requested = aiConfig.openAiCompatible.embeddingModel,
               served    = `${requested}-2024-08-06`,
               error     = await TextEmbeddingService.embedText('hello', 'openAiCompatible').then(() => null, err => err);
 
@@ -629,7 +639,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
             method: 'POST',
             url   : '/v1/embeddings',
             body  : {
-                model: configSnapshot.openAiCompatible.embeddingModel,
+                model: aiConfig.openAiCompatible.embeddingModel,
                 input: 'hello'
             }
         });
@@ -648,8 +658,10 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
     test('#17412 head-of-line: a slow first span does not delay the others, and order still holds', async () => {
         serverBehavior = 'span-controlled';
         spanPlan       = {order: ['a', 'b', 'c', 'd'], failLabels: [], holdLabel: 'a', holdMode: 'succeed', releaseHeld: null, releaseRequested: false};
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 1;
-        configSnapshot.localModels.embedding.parallel           = 5;
+        snapshotAiConfig(aiConfig, {
+            'localModels.embedding.parallel'          : 5,
+            'openAiCompatible.batchEmbeddingChunkSize': 1
+        });
 
         const result = await TextEmbeddingService.embedTexts(['a', 'b', 'c', 'd'], 'openAiCompatible');
 
@@ -665,9 +677,11 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
     test('#17412 an EARLY failure with later successes carries nothing, and reports the drop', async () => {
         serverBehavior = 'span-controlled';
         spanPlan       = {order: ['a', 'b', 'c', 'd'], failLabels: ['a'], holdLabel: null, holdMode: 'succeed', releaseHeld: null, releaseRequested: false};
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 1;
-        configSnapshot.openAiCompatible.unloadRetryCount        = 0;
-        configSnapshot.localModels.embedding.parallel           = 5;
+        snapshotAiConfig(aiConfig, {
+            'localModels.embedding.parallel'          : 5,
+            'openAiCompatible.batchEmbeddingChunkSize': 1,
+            'openAiCompatible.unloadRetryCount'       : 0
+        });
 
         const error = await TextEmbeddingService.embedTexts(['a', 'b', 'c', 'd'], 'openAiCompatible')
             .then(() => null, err => err);
@@ -699,9 +713,11 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
             releaseRequested: false
         };
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 1;
-        configSnapshot.openAiCompatible.unloadRetryCount        = 0;
-        configSnapshot.localModels.embedding.parallel           = 3;
+        snapshotAiConfig(aiConfig, {
+            'localModels.embedding.parallel'          : 3,
+            'openAiCompatible.batchEmbeddingChunkSize': 1,
+            'openAiCompatible.unloadRetryCount'       : 0
+        });
 
         let yieldConsultations = 0;
 
@@ -751,9 +767,11 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
             releaseRequested: false
         };
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 2;
-        configSnapshot.openAiCompatible.unloadRetryCount        = 0;
-        configSnapshot.localModels.embedding.parallel           = 5;
+        snapshotAiConfig(aiConfig, {
+            'localModels.embedding.parallel'          : 5,
+            'openAiCompatible.batchEmbeddingChunkSize': 2,
+            'openAiCompatible.unloadRetryCount'       : 0
+        });
 
         const error = await TextEmbeddingService.embedTexts(['a', 'b', 'c', 'd'], 'openAiCompatible')
             .then(() => null, err => err);
@@ -783,7 +801,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
             method: 'POST',
             url   : '/v1/embeddings',
             body  : {
-                model: configSnapshot.openAiCompatible.embeddingModel,
+                model: aiConfig.openAiCompatible.embeddingModel,
                 input: ['first', 'second']
             }
         });
@@ -821,8 +839,8 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
     test('LMS GGUF embeddings append metadata-derived EOS suffix to request inputs (#14015)', async () => {
         serverBehavior = 'lms-server-start-succeed';
         TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => [{
-            id           : configSnapshot.openAiCompatible.embeddingModel,
-            contextLength: configSnapshot.localModels.embedding.contextLimitTokens,
+            id           : aiConfig.openAiCompatible.embeddingModel,
+            contextLength: aiConfig.localModels.embedding.contextLimitTokens,
             format       : 'gguf',
             architecture : 'qwen3',
             eosTokenText : '<|endoftext|>'
@@ -857,7 +875,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
     test('LM Studio context-policy insufficiency wins over an input that only exceeds the invalid resident (#13944)', async () => {
         serverBehavior = 'succeed';
         TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => [{
-            id           : configSnapshot.openAiCompatible.embeddingModel,
+            id           : aiConfig.openAiCompatible.embeddingModel,
             contextLength: 8192
         }];
 
@@ -878,7 +896,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => {
             probeCount++;
             return [{
-                id           : configSnapshot.openAiCompatible.embeddingModel,
+                id           : aiConfig.openAiCompatible.embeddingModel,
                 contextLength: 8192
             }];
         };
@@ -911,7 +929,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
         try {
             Neo.config.unitTestMode = false;
-            configSnapshot.orchestrator.lms.port = '1234';
+            snapshotAiConfig(aiConfig, {'orchestrator.lms.port': '1234'});
             TextEmbeddingService.openAiCompatibleLoadedModelsProbe = null;
 
             allRequests.length = 0;
@@ -974,7 +992,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('exhausted-retry-final-failure path', async () => {
         serverBehavior = 'fail-all';
-        configSnapshot.openAiCompatible.unloadRetryCount = 2; // N=2
+        snapshotAiConfig(aiConfig, {'openAiCompatible.unloadRetryCount': 2}); // N=2
 
         const error = await TextEmbeddingService.embedText('hello', 'openAiCompatible')
             .then(() => null, observed => observed);
@@ -1023,7 +1041,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('exhausted-retry-final-failure path with shape b', async () => {
         serverBehavior = 'fail-all-shape-b';
-        configSnapshot.openAiCompatible.unloadRetryCount = 2; // N=2
+        snapshotAiConfig(aiConfig, {'openAiCompatible.unloadRetryCount': 2}); // N=2
 
         await expect(TextEmbeddingService.embedText('hello', 'openAiCompatible'))
             .rejects.toThrow(/Failed to load model.*Operation canceled/);
@@ -1050,7 +1068,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('HTTP 404 fails loud after bounded retries — no infinite loop (Shape C, #14247)', async () => {
         serverBehavior = 'fail-all-404';
-        configSnapshot.openAiCompatible.unloadRetryCount = 2; // N=2
+        snapshotAiConfig(aiConfig, {'openAiCompatible.unloadRetryCount': 2}); // N=2
 
         const error = await TextEmbeddingService.embedText('hello', 'openAiCompatible')
             .then(() => null, observed => observed);
@@ -1065,7 +1083,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('contention-timeout single embedding retries and succeeds', async () => {
         serverBehavior = 'timeout-then-succeed';
-        configSnapshot.openAiCompatible.contentionRetryCount = 1;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.contentionRetryCount': 1});
 
         const result = await TextEmbeddingService.embedText('hello', 'openAiCompatible');
 
@@ -1075,7 +1093,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('contention-timeout single embedding fails after bounded retries', async () => {
         serverBehavior = 'timeout-all';
-        configSnapshot.openAiCompatible.contentionRetryCount = 1;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.contentionRetryCount': 1});
 
         await expect(TextEmbeddingService.embedText('hello', 'openAiCompatible'))
             .rejects.toThrow(/openAiCompatible request timed out/);
@@ -1086,9 +1104,11 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('a caller-owned probe deadline outlives the shorter contention ladder with one dispatch (#17111)', async () => {
         serverBehavior = 'delayed-single-succeed';
-        configSnapshot.openAiCompatible.contentionTimeoutMs    = 20;
-        configSnapshot.openAiCompatible.contentionRetryCount   = 2;
-        configSnapshot.openAiCompatible.contentionRetryDelayMs = 10;
+        snapshotAiConfig(aiConfig, {
+            'openAiCompatible.contentionRetryCount'  : 2,
+            'openAiCompatible.contentionRetryDelayMs': 10,
+            'openAiCompatible.contentionTimeoutMs'   : 20
+        });
 
         const startedAt = Date.now();
         const result    = await buildEmbeddingProbeBlock({
@@ -1114,8 +1134,10 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('a caller deadline expires in the queue without dispatching behind active provider work (#17111)', async () => {
         serverBehavior = 'delayed-single-succeed';
-        configSnapshot.openAiCompatible.contentionTimeoutMs  = 250;
-        configSnapshot.openAiCompatible.contentionRetryCount = 0;
+        snapshotAiConfig(aiConfig, {
+            'openAiCompatible.contentionRetryCount': 0,
+            'openAiCompatible.contentionTimeoutMs' : 250
+        });
 
         const laneHolder = TextEmbeddingService.embedText('active-provider-work', 'openAiCompatible');
 
@@ -1147,9 +1169,11 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('a caller deadline shorter than one contention attempt aborts once with no post-abort retry (#17111)', async () => {
         serverBehavior = 'timeout-all';
-        configSnapshot.openAiCompatible.contentionTimeoutMs    = 100;
-        configSnapshot.openAiCompatible.contentionRetryCount   = 2;
-        configSnapshot.openAiCompatible.contentionRetryDelayMs = 25;
+        snapshotAiConfig(aiConfig, {
+            'openAiCompatible.contentionRetryCount'  : 2,
+            'openAiCompatible.contentionRetryDelayMs': 25,
+            'openAiCompatible.contentionTimeoutMs'   : 100
+        });
 
         const result = await buildEmbeddingProbeBlock({
             cfg: {
@@ -1197,7 +1221,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('HTTP contention status single embedding retries and succeeds', async () => {
         serverBehavior = 'http-timeout-then-succeed';
-        configSnapshot.openAiCompatible.contentionRetryCount = 1;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.contentionRetryCount': 1});
 
         const result = await TextEmbeddingService.embedText('hello', 'openAiCompatible');
 
@@ -1207,8 +1231,10 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('batch embeddings use the batch timeout instead of the interactive contention timeout', async () => {
         serverBehavior = 'delayed-batch-succeed';
-        configSnapshot.openAiCompatible.contentionTimeoutMs     = 1;
-        configSnapshot.openAiCompatible.batchEmbeddingTimeoutMs = 100;
+        snapshotAiConfig(aiConfig, {
+            'openAiCompatible.batchEmbeddingTimeoutMs': 100,
+            'openAiCompatible.contentionTimeoutMs'    : 1
+        });
 
         const result = await TextEmbeddingService.embedTexts(['first', 'second'], 'openAiCompatible');
 
@@ -1221,7 +1247,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('batch embeddings time out through the batch timeout and surface ConsumerFriction (#14036)', async () => {
         serverBehavior = 'timeout-all';
-        configSnapshot.openAiCompatible.batchEmbeddingTimeoutMs = 25;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.batchEmbeddingTimeoutMs': 25});
         clearAggregatedFrictions();
 
         for (let i = 0; i < 3; i++) {
@@ -1232,9 +1258,9 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         expect(requestCount).toBe(3);
         expect(getAggregatedFrictions()).toEqual([
             expect.objectContaining({
-                assetRef      : `openAiCompatible:${configSnapshot.openAiCompatible.embeddingModel}`,
+                assetRef      : `openAiCompatible:${aiConfig.openAiCompatible.embeddingModel}`,
                 consumer      : 'TextEmbeddingService.openAiCompatible',
-                model         : configSnapshot.openAiCompatible.embeddingModel,
+                model         : aiConfig.openAiCompatible.embeddingModel,
                 symptom       : 'timeout',
                 emissionPoint : 'post-invocation-failure',
                 suggestionKind: 'unknown',
@@ -1249,7 +1275,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         // Wide enough that repo B finishes its async input prep and genuinely ENTERS the queue
         // before A's timeout fires. At 25ms B never enqueued, so `requestCount === 1` was true for
         // a reason unrelated to the circuit.
-        configSnapshot.openAiCompatible.batchEmbeddingTimeoutMs = 400;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.batchEmbeddingTimeoutMs': 400});
 
         const
             controller   = new AbortController(),
@@ -1312,7 +1338,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         // notification there turns it red with B making a real provider call. Read that one for the
         // ordering proof; read this one for the narrower fact below.
         serverBehavior = 'timeout-all';
-        configSnapshot.openAiCompatible.batchEmbeddingTimeoutMs = 400;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.batchEmbeddingTimeoutMs': 400});
 
         const
             controller   = new AbortController(),
@@ -1362,8 +1388,10 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('a mid-batch provider failure carries the completed prefix on the ORIGINAL error (#17112)', async () => {
         serverBehavior = 'chunk-succeeds-then-dies';
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 2;
-        configSnapshot.openAiCompatible.unloadRetryCount        = 0; // a non-retryable failure needs no ladder
+        snapshotAiConfig(aiConfig, {
+            'openAiCompatible.batchEmbeddingChunkSize': 2,
+            'openAiCompatible.unloadRetryCount'       : 0 // a non-retryable failure needs no ladder
+        });
 
         const outcome = await TextEmbeddingService.embedTexts(['t0', 't1', 't2', 't3'], 'openAiCompatible')
             .then(() => null, error => error);
@@ -1388,8 +1416,10 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('a prefix that cannot prove positional binding leaves the failure UNCARRIED (#17112)', async () => {
         serverBehavior = 'sparse-chunk-then-dies';
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 2;
-        configSnapshot.openAiCompatible.unloadRetryCount        = 0;
+        snapshotAiConfig(aiConfig, {
+            'openAiCompatible.batchEmbeddingChunkSize': 2,
+            'openAiCompatible.unloadRetryCount'       : 0
+        });
 
         const outcome = await TextEmbeddingService.embedTexts(['t0', 't1', 't2', 't3'], 'openAiCompatible')
             .then(() => null, error => error);
@@ -1411,8 +1441,10 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('batch embeddings split large requests into yieldable chunks and preserve global ordering', async () => {
         serverBehavior = 'chunked-batch-succeed';
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 2;
-        configSnapshot.openAiCompatible.batchEmbeddingYieldMs   = 0;
+        snapshotAiConfig(aiConfig, {
+            'openAiCompatible.batchEmbeddingChunkSize': 2,
+            'openAiCompatible.batchEmbeddingYieldMs'  : 0
+        });
 
         const result = await TextEmbeddingService.embedTexts(['a', 'b', 'c', 'd', 'e'], 'openAiCompatible');
 
@@ -1433,7 +1465,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('the lease yield predicate is consulted BETWEEN provider chunks, not only between the caller\'s batches (#16822)', async () => {
         serverBehavior = 'chunked-batch-succeed';
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 2;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.batchEmbeddingChunkSize': 2});
 
         const consultations = [];
         const error         = await TextEmbeddingService
@@ -1462,7 +1494,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('the lease yield predicate is never consulted before the first provider chunk — forward progress (#16822)', async () => {
         serverBehavior = 'chunked-batch-succeed';
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 5;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.batchEmbeddingChunkSize': 5});
 
         let   consulted = 0;
         const result    = await TextEmbeddingService.embedTexts(['a', 'b'], 'openAiCompatible', {
@@ -1482,7 +1514,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('a predicate that never fires leaves batch chunking completely unchanged — negative control (#16822)', async () => {
         serverBehavior = 'chunked-batch-succeed';
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 2;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.batchEmbeddingChunkSize': 2});
 
         let   consulted = 0;
         const result    = await TextEmbeddingService.embedTexts(['a', 'b', 'c', 'd', 'e'], 'openAiCompatible', {
@@ -1502,8 +1534,10 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('the residency preflight is a POINT CHECK licensing N requests — eviction after it is invisible (#16852)', async () => {
         serverBehavior = 'resident-then-evicted';
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 1;
-        configSnapshot.openAiCompatible.unloadRetryCount        = 1;
+        snapshotAiConfig(aiConfig, {
+            'openAiCompatible.batchEmbeddingChunkSize': 1,
+            'openAiCompatible.unloadRetryCount'       : 1
+        });
 
         let probeCount = 0;
 
@@ -1513,8 +1547,8 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => {
             probeCount++;
             return [{
-                id           : configSnapshot.openAiCompatible.embeddingModel,
-                contextLength: configSnapshot.localModels.embedding.contextLimitTokens
+                id           : aiConfig.openAiCompatible.embeddingModel,
+                contextLength: aiConfig.localModels.embedding.contextLimitTokens
             }];
         };
 
@@ -1587,7 +1621,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('a SPARSE provider response is refused rather than silently re-based to position 0 (#16826)', async () => {
         serverBehavior = 'sparse-batch';
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 5;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.batchEmbeddingChunkSize': 5});
 
         // @neo-gpt's falsifier: `[{index: 1, ...}]` sorts to position 0, so the caller binds input 1's
         // vector to input 0's id. Same array length downstream, no error — a permanently wrong row.
@@ -1597,7 +1631,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('a GAPPED provider response of the right length is refused too — count alone is not density (#16826)', async () => {
         serverBehavior = 'gapped-batch';
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 5;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.batchEmbeddingChunkSize': 5});
 
         // The case a length check cannot see: two vectors for two inputs, but indexed 0 and 2. Position 1
         // would silently receive input 2's vector. Density is a separate property from count.
@@ -1607,7 +1641,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('an OUT-OF-ORDER dense response is accepted and re-ordered — the control (#16826)', async () => {
         serverBehavior = 'chunked-batch-succeed'; // returns each chunk's entries reversed
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 2;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.batchEmbeddingChunkSize': 2});
 
         // Density is the requirement, not arrival order. A guard that rejected reordering would break the
         // provider's documented behaviour, so this control shares the property under test and must stay green.
@@ -1629,8 +1663,10 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
 
     test('interactive single embeddings queue ahead of subsequent batch chunks and preserve completion', async () => {
         serverBehavior = 'qos-priority';
-        configSnapshot.openAiCompatible.batchEmbeddingChunkSize = 1;
-        configSnapshot.openAiCompatible.batchEmbeddingYieldMs   = 0;
+        snapshotAiConfig(aiConfig, {
+            'openAiCompatible.batchEmbeddingChunkSize': 1,
+            'openAiCompatible.batchEmbeddingYieldMs'  : 0
+        });
 
         const activityById = new Map();
         const starts       = [];
@@ -1675,7 +1711,7 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         const runtimeModel = 'runtime-embedding-model-b';
 
         expect(starts).toHaveLength(1);
-        configSnapshot.openAiCompatible.embeddingModel = runtimeModel;
+        snapshotAiConfig(aiConfig, {'openAiCompatible.embeddingModel': runtimeModel});
 
         const [batchResult, interactiveResult] = await Promise.all([batchPromise, interactivePromise]);
 

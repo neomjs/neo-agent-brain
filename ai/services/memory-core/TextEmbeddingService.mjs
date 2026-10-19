@@ -5,10 +5,6 @@ import {
 import aiConfig from '../../mcp/server/memory-core/config.mjs';
 import Base     from 'neo.mjs/src/core/Base.mjs';
 import {
-    cloneConfigSubtree,
-    validateConfigSnapshot
-}                           from '../shared/configSnapshot.mjs';
-import {
     resolveCompletedPrefix,
     resolveDispatchPlan,
     resolveEmbeddingTaskBudget
@@ -333,13 +329,12 @@ function normalizeEmbeddingOptions(options, defaultOperationLabel) {
 /**
  * @summary Resolves the configured model identifier for one explicit embedding provider.
  * @param {String} provider Explicit embedding provider.
- * @param {Object} [cfg=aiConfig] Resolved config tree or isolated test snapshot.
  * @returns {String}
  */
-export function getEmbeddingModel(provider, cfg = aiConfig) {
-    if (provider === 'openAiCompatible') return cfg.openAiCompatible.embeddingModel;
-    if (provider === 'ollama') return cfg.ollama.embeddingModel || cfg.ollama.model;
-    if (provider === 'gemini') return cfg.embeddingModel;
+export function getEmbeddingModel(provider) {
+    if (provider === 'openAiCompatible') return aiConfig.openAiCompatible.embeddingModel;
+    if (provider === 'ollama') return aiConfig.ollama.embeddingModel || aiConfig.ollama.model;
+    if (provider === 'gemini') return aiConfig.embeddingModel;
 
     return 'unknown';
 }
@@ -556,11 +551,10 @@ function logEmbeddingAbort({provider, operation, error}) {
 /**
  * @summary The Gemini key from its two carriers, read at the use site: the value leaf, else the file
  * sibling read at this call; `''` when neither is set, an error naming both leaves when both are.
- * @param {Object} [cfg=aiConfig] Resolved config tree or isolated test snapshot.
  * @returns {String}
  */
-function readGeminiApiKey(cfg = aiConfig) {
-    return readSecretCarrier({value: cfg.geminiApiKey, file: cfg.geminiApiKeyFile, valueName: 'geminiApiKey', fileName: 'geminiApiKeyFile'});
+function readGeminiApiKey() {
+    return readSecretCarrier({value: aiConfig.geminiApiKey, file: aiConfig.geminiApiKeyFile, valueName: 'geminiApiKey', fileName: 'geminiApiKeyFile'});
 }
 
 /**
@@ -685,16 +679,6 @@ function assertPositiveTimeoutMs(value, label) {
     return value
 }
 
-const TEXT_EMBEDDING_SNAPSHOT_SUBTREES = Object.freeze([
-    'openAiCompatible',
-    'localModels',
-    'localModels.embedding',
-    'orchestrator',
-    'orchestrator.lms',
-    'orchestrator.providerReadiness',
-    'ollama'
-]);
-
 /**
  * @summary Service for creating embedding vectors for text.
  *
@@ -742,7 +726,6 @@ class TextEmbeddingService extends Base {
         openAiCompatibleLoadedModelsProbe: null
     }
 
-    #configSnapshot                   = null;
     #openAiCompatiblePostQueue        = [];
     // A COUNT, not a boolean. The boolean it replaces was a single-worker re-entrancy guard, and it
     // was the real concurrency bound on this path: the dispatch loop above could issue N requests and
@@ -754,7 +737,7 @@ class TextEmbeddingService extends Base {
     // interactive-headroom ceiling; this queue keeps only its ORDERING — selection among waiting posts
     // is a concern the native path never had, so it is not duplication with the native path.
     #openAiAdmission = new EmbeddingAdmission({
-        resolveBudget   : () => resolveEmbeddingTaskBudget(this.#getConfig().localModels.embedding.parallel),
+        resolveBudget   : () => resolveEmbeddingTaskBudget(aiConfig.localModels.embedding.parallel),
         createAbortError: getEmbeddingAbortError
     });
 
@@ -768,7 +751,7 @@ class TextEmbeddingService extends Base {
     // it cannot honour — a fractional cap would report one number while admitting its ceiling, and a
     // non-finite cap turns the lane into either an unbounded path or a permanent stall.
     #ollamaAdmission = new EmbeddingAdmission({
-        resolveBudget   : () => this.#getConfig().ollama.maxInFlightEmbeddings,
+        resolveBudget   : () => aiConfig.ollama.maxInFlightEmbeddings,
         createAbortError: getEmbeddingAbortError
     });
 
@@ -778,103 +761,15 @@ class TextEmbeddingService extends Base {
     construct(config) {
         super.construct(config);
 
-        const cfg = this.#getConfig();
-
-        if (shouldInitializeGeminiEmbeddingClient(cfg)) {
-            const apiKey = readGeminiApiKey(cfg);
+        if (shouldInitializeGeminiEmbeddingClient(aiConfig)) {
+            const apiKey = readGeminiApiKey();
             if (!apiKey) {
                 logger.warn('⚠️  [TextEmbeddingService] no Gemini key is set (geminiApiKey or geminiApiKeyFile). Semantic search features with Gemini will be unavailable.');
             } else {
                 const genAI = new GoogleGenerativeAI(apiKey);
-                this.embeddingModel = genAI.getGenerativeModel({model: cfg.embeddingModel});
+                this.embeddingModel = genAI.getGenerativeModel({model: aiConfig.embeddingModel});
             }
         }
-    }
-
-    /**
-     * @summary Returns the isolated configuration snapshot injected by unit tests, or `null` when
-     * the service reads the canonical `aiConfig` singleton.
-     *
-     * Kept as an explicit private field with an accessor pair rather than a reactive `configSnapshot_`
-     * slot: `Neo.mjs`'s reactive setter writes via `setRaw` before invoking `beforeSet*` and does not
-     * restore the prior value when `beforeSet*` throws, so a reactive slot cannot host a throwing
-     * validator without leaving the rejected value installed.
-     *
-     * @returns {Object|null}
-     */
-    get configSnapshot() {
-        return this.#configSnapshot;
-    }
-
-    /**
-     * @summary Injects an isolated configuration snapshot for unit testing, or `null` to restore
-     * the canonical `aiConfig` singleton.
-     *
-     * Validates via {@link #beforeSetConfigSnapshot} before assigning `#configSnapshot` so a
-     * rejected value never overwrites the prior snapshot (unlike a reactive `configSnapshot_` setter,
-     * which calls `setRaw` before `beforeSet*`).
-     *
-     * Changing or clearing `configSnapshot` unconditionally resets `this.ollamaProvider = null`,
-     * discarding any cached or previously injected `ollamaProvider` instance so the next native
-     * Ollama call re-binds to the active snapshot. Tests that inject a custom `ollamaProvider`
-     * double must assign `TextEmbeddingService.ollamaProvider` after setting `configSnapshot`.
-     *
-     * @param {Object|null} value Candidate snapshot or `null`.
-     */
-    set configSnapshot(value) {
-        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
-        this.ollamaProvider  = null;
-    }
-
-    /**
-     * @summary Rejects non-isolated config snapshots so `TextEmbeddingService.configSnapshot`
-     * cannot be pointed at the shared `aiConfig` singleton or any of its live subtrees.
-     * @param {Object|null} value Candidate snapshot or `null` to restore canonical `aiConfig`.
-     * @returns {Object|null}
-     * @protected
-     */
-    beforeSetConfigSnapshot(value) {
-        return validateConfigSnapshot(value, {
-            serviceName     : 'TextEmbeddingService',
-            requiredSubtrees: TEXT_EMBEDDING_SNAPSHOT_SUBTREES
-        });
-    }
-
-    /**
-     * @summary Builds a deep, isolated plain-object snapshot of the resolved `aiConfig` subtrees
-     * consumed by `TextEmbeddingService`.
-     *
-     * Tests inject the returned snapshot into `TextEmbeddingService.configSnapshot` and mutate its
-     * leaves freely without touching the shared `aiConfig` singleton or adding per-leaf `*Fn_`
-     * seams on the service.
-     *
-     * @returns {Object}
-     */
-    createConfigSnapshot() {
-        return {
-            embeddingModel   : aiConfig.embeddingModel,
-            embeddingProvider: aiConfig.embeddingProvider,
-            geminiApiKey     : aiConfig.geminiApiKey,
-            geminiApiKeyFile : aiConfig.geminiApiKeyFile,
-            localModels      : {
-                embedding: cloneConfigSubtree(aiConfig, ['localModels', 'embedding'])
-            },
-            ollama          : cloneConfigSubtree(aiConfig, ['ollama']),
-            openAiCompatible: cloneConfigSubtree(aiConfig, ['openAiCompatible']),
-            orchestrator    : {
-                lms              : cloneConfigSubtree(aiConfig, ['orchestrator', 'lms']),
-                providerReadiness: cloneConfigSubtree(aiConfig, ['orchestrator', 'providerReadiness'])
-            }
-        };
-    }
-
-    /**
-     * @summary Returns the active configuration tree (`#configSnapshot` when injected, otherwise `aiConfig`).
-     * @returns {Object}
-     * @private
-     */
-    #getConfig() {
-        return this.#configSnapshot || aiConfig;
     }
 
     /**
@@ -1006,7 +901,7 @@ class TextEmbeddingService extends Base {
         // back down when control reaches this loop — which respawns it, and the pair spins without
         // bound. That shape reads from outside as a hang; it is measured here as the reason admission
         // must decide BEFORE a worker exists.
-        const maxTasks = resolveEmbeddingTaskBudget(this.#getConfig().localModels.embedding.parallel);
+        const maxTasks = resolveEmbeddingTaskBudget(aiConfig.localModels.embedding.parallel);
 
         while (this.#openAiCompatiblePostQueueWorkers < maxTasks && this.#openAiCompatiblePostQueue.length > 0) {
             const {index} = this.#peekNextOpenAiCompatiblePostQueueIndex();
@@ -1214,7 +1109,7 @@ class TextEmbeddingService extends Base {
         // the LM Studio gate. Normalised to the same row shape so the identity comparison below is
         // one code path rather than two.
         const ids = await helper.fetchOpenAiCompatibleModelIds({
-            host: this.#getConfig().openAiCompatible.host,
+            host: aiConfig.openAiCompatible.host,
             timeoutMs
         });
 
@@ -1297,9 +1192,7 @@ class TextEmbeddingService extends Base {
             return false;
         }
 
-        const cfg = this.#getConfig();
-
-        return Boolean(cfg.openAiCompatible.host && cfg.openAiCompatible.embeddingModel);
+        return Boolean(aiConfig.openAiCompatible.host && aiConfig.openAiCompatible.embeddingModel);
     }
 
     /**
@@ -1322,15 +1215,13 @@ class TextEmbeddingService extends Base {
             return false;
         }
 
-        const cfg = this.#getConfig();
-
-        if (cfg.orchestrator.lms.enabled !== true) {
+        if (aiConfig.orchestrator.lms.enabled !== true) {
             return false;
         }
 
         const
-            host    = cfg.openAiCompatible.host,
-            lmsPort = cfg.orchestrator.lms.port;
+            host    = aiConfig.openAiCompatible.host,
+            lmsPort = aiConfig.orchestrator.lms.port;
 
         let endpointUrl;
 
@@ -1365,10 +1256,9 @@ class TextEmbeddingService extends Base {
         }
 
         const
-            cfg                     = this.#getConfig(),
-            configuredContextLength = cfg.localModels.embedding.contextLimitTokens,
-            timeoutMs               = cfg.orchestrator.providerReadiness.timeoutMs,
-            model                   = cfg.openAiCompatible.embeddingModel;
+            configuredContextLength = aiConfig.localModels.embedding.contextLimitTokens,
+            timeoutMs               = aiConfig.orchestrator.providerReadiness.timeoutMs,
+            model                   = aiConfig.openAiCompatible.embeddingModel;
 
         if (!Neo.isNumber(configuredContextLength) || configuredContextLength <= 0) {
             throw new TypeError(`TextEmbeddingService: localModels.embedding.contextLimitTokens must be a positive number, got ${configuredContextLength}`);
@@ -1492,7 +1382,7 @@ class TextEmbeddingService extends Base {
 
         const
             {configuredContextLength, loadedModel, model} = runtime,
-            safeProcessingLimitTokens                     = this.#getConfig().localModels.embedding.safeProcessingLimitTokens,
+            safeProcessingLimitTokens                     = aiConfig.localModels.embedding.safeProcessingLimitTokens,
             estimate                                      = this.#getOpenAiCompatibleInputEstimate(inputData);
 
         const belowConfiguredContext = loadedModel.contextLength < configuredContextLength,
@@ -1584,17 +1474,16 @@ class TextEmbeddingService extends Base {
             operation,
             providerActivityLifecycle
         } = options;
-        const cfg = this.#getConfig();
         const {
             apiKey,
             unloadRetryDelayMs     = 500,
             contentionRetryDelayMs = 1000
-        } = cfg.openAiCompatible;
+        } = aiConfig.openAiCompatible;
         // Read as an explicit member expression rather than destructured off the config block: a
         // destructuring read binds a bare `host` that never reads as `openAiCompatible.host`, so it
         // slips past a grep for the leaf.
-        const host           = cfg.openAiCompatible.host;
-        const embeddingModel = cfg.openAiCompatible.embeddingModel;
+        const host           = aiConfig.openAiCompatible.host;
+        const embeddingModel = aiConfig.openAiCompatible.embeddingModel;
 
         try {
             operation.phase = 'transport-setup';
@@ -1801,9 +1690,7 @@ class TextEmbeddingService extends Base {
      * @private
      */
     #emitOpenAiCompatibleTimeoutFriction(inputData, requestTimeoutMs, err, embeddingModel) {
-        const
-            cfg      = this.#getConfig(),
-            estimate = this.#getOpenAiCompatibleInputEstimate(inputData);
+        const estimate = this.#getOpenAiCompatibleInputEstimate(inputData);
 
         try {
             emitConsumerFriction({
@@ -1815,8 +1702,8 @@ class TextEmbeddingService extends Base {
                 suggestionKind           : 'unknown',
                 inputBytes               : estimate.inputBytes,
                 inputTokensEstimate      : estimate.inputTokensEstimate,
-                contextLimitTokens       : cfg.localModels.embedding.contextLimitTokens,
-                safeProcessingLimitTokens: cfg.localModels.embedding.safeProcessingLimitTokens,
+                contextLimitTokens       : aiConfig.localModels.embedding.contextLimitTokens,
+                safeProcessingLimitTokens: aiConfig.localModels.embedding.safeProcessingLimitTokens,
                 serviceDomain            : 'memory-core',
                 note                     : `OpenAI-compatible embedding request timed out after ${describeOpenAiCompatibleTimeout(requestTimeoutMs)}: ${String(err?.message || err).substring(0, 160)}`
             });
@@ -1834,9 +1721,7 @@ class TextEmbeddingService extends Base {
      * @private
      */
     #emitOpenAiCompatibleModelMismatchFriction(inputData, err, embeddingModel) {
-        const
-            cfg      = this.#getConfig(),
-            estimate = this.#getOpenAiCompatibleInputEstimate(inputData);
+        const estimate = this.#getOpenAiCompatibleInputEstimate(inputData);
 
         try {
             emitConsumerFriction({
@@ -1848,8 +1733,8 @@ class TextEmbeddingService extends Base {
                 suggestionKind           : 'unknown',
                 inputBytes               : estimate.inputBytes,
                 inputTokensEstimate      : estimate.inputTokensEstimate,
-                contextLimitTokens       : cfg.localModels.embedding.contextLimitTokens,
-                safeProcessingLimitTokens: cfg.localModels.embedding.safeProcessingLimitTokens,
+                contextLimitTokens       : aiConfig.localModels.embedding.contextLimitTokens,
+                safeProcessingLimitTokens: aiConfig.localModels.embedding.safeProcessingLimitTokens,
                 serviceDomain            : 'memory-core',
                 note                     : `Served model '${err?.served}' does not match requested model '${err?.requested}'.`
             });
@@ -1872,8 +1757,7 @@ class TextEmbeddingService extends Base {
     #getOllamaProvider() {
         if (this.ollamaProvider) return this.ollamaProvider;
 
-        const cfg      = this.#getConfig();
-        const config   = cfg.ollama;
+        const config   = aiConfig.ollama;
         const provider = Neo.create(OllamaProvider, {
             host          : config.host,
             modelName     : config.model,
@@ -1889,8 +1773,7 @@ class TextEmbeddingService extends Base {
      * @private
      */
     #getOllamaEmbeddingTimeoutMs() {
-        const cfg       = this.#getConfig();
-        const timeoutMs = cfg.ollama.embeddingTimeoutMs;
+        const timeoutMs = aiConfig.ollama.embeddingTimeoutMs;
 
         if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
             throw new TypeError(`TextEmbeddingService: ollama.embeddingTimeoutMs must be a positive number, got ${timeoutMs}`);
@@ -1909,8 +1792,7 @@ class TextEmbeddingService extends Base {
      */
     #emitOllamaEmbeddingTimeoutFriction(inputData, requestTimeoutMs, err) {
         const
-            cfg      = this.#getConfig(),
-            model    = cfg.ollama.embeddingModel || cfg.ollama.model,
+            model    = aiConfig.ollama.embeddingModel || aiConfig.ollama.model,
             estimate = this.#getEmbeddingInputEstimate(inputData);
 
         try {
@@ -1923,8 +1805,8 @@ class TextEmbeddingService extends Base {
                 suggestionKind           : 'unknown',
                 inputBytes               : estimate.inputBytes,
                 inputTokensEstimate      : estimate.inputTokensEstimate,
-                contextLimitTokens       : cfg.localModels.embedding.contextLimitTokens,
-                safeProcessingLimitTokens: cfg.localModels.embedding.safeProcessingLimitTokens,
+                contextLimitTokens       : aiConfig.localModels.embedding.contextLimitTokens,
+                safeProcessingLimitTokens: aiConfig.localModels.embedding.safeProcessingLimitTokens,
                 serviceDomain            : 'memory-core',
                 note                     : `Native Ollama embedding request timed out after ${requestTimeoutMs}ms: ${String(err?.message || err).substring(0, 160)}`
             });
@@ -2042,7 +1924,7 @@ class TextEmbeddingService extends Base {
 
             try {
                 rawProviderPromise = Promise.resolve(provider.embed(inputData, {
-                    num_ctx  : this.#getConfig().localModels.embedding.contextLimitTokens,
+                    num_ctx  : aiConfig.localModels.embedding.contextLimitTokens,
                     operationLabel,
                     timeoutMs: requestTimeoutMs,
                     truncate : false
@@ -2137,13 +2019,12 @@ class TextEmbeddingService extends Base {
             shouldYield,
             signal
         } = options;
-        const cfg = this.#getConfig();
         const {
             unloadRetryCount        = 3,
             batchEmbeddingChunkSize = 5,
             batchEmbeddingTimeoutMs = DEFAULT_OPENAI_COMPATIBLE_REQUEST_TIMEOUT_MS,
             batchEmbeddingYieldMs   = 0
-        } = cfg.openAiCompatible;
+        } = aiConfig.openAiCompatible;
 
         // The provider's capacity unit is a TASK, not a request: one multi-input POST expands to one
         // task per input, so offered work is `concurrency × width`. Width and concurrency are still
@@ -2152,7 +2033,7 @@ class TextEmbeddingService extends Base {
         // resolves both. The predecessor computed a width alone and could not express the constraint;
         // it also fell through unclamped at `parallel <= 1`, the shipped default, where a configured
         // width of 5 offered five tasks against one declared slot.
-        const taskBudget = resolveEmbeddingTaskBudget(cfg.localModels.embedding.parallel),
+        const taskBudget = resolveEmbeddingTaskBudget(aiConfig.localModels.embedding.parallel),
               plan       = resolveDispatchPlan({
                   textCount   : texts.length,
                   requestWidth: batchEmbeddingChunkSize,
@@ -2353,8 +2234,7 @@ class TextEmbeddingService extends Base {
     async embedText(text, explicitProvider, options = {}) {
         if (!explicitProvider) throw new Error('TextEmbeddingService.embedText requires an explicit provider argument');
 
-        const cfg                   = this.#getConfig(),
-              defaultOperationLabel = explicitProvider === 'ollama'
+        const defaultOperationLabel = explicitProvider === 'ollama'
                   ? 'TextEmbeddingService.embedText native Ollama embedding'
                   : `TextEmbeddingService.embedText ${explicitProvider} embedding`,
               {
@@ -2367,7 +2247,7 @@ class TextEmbeddingService extends Base {
                   signal
               } = normalizeEmbeddingOptions(options, defaultOperationLabel),
               providerActivity          = {
-                  model   : getEmbeddingModel(explicitProvider, cfg),
+                  model   : getEmbeddingModel(explicitProvider),
                   operationStage,
                   priority: 'interactive',
                   provider: explicitProvider,
@@ -2384,7 +2264,7 @@ class TextEmbeddingService extends Base {
                     unloadRetryCount          = 3,
                     contentionRetryCount      = 2,
                     contentionTimeoutMs       = 15000
-                } = cfg.openAiCompatible;
+                } = aiConfig.openAiCompatible;
                 const requestText       = await this.#prepareOpenAiCompatibleEmbeddingInput(text, signal, operationLabel, operation);
                 const hasCallerDeadline = deadlineMs !== undefined;
                 const result            = await this.#enqueueOpenAiCompatiblePost(requestText, {
@@ -2413,7 +2293,7 @@ class TextEmbeddingService extends Base {
                 );
                 return result.embeddings?.[0];
             } else if (explicitProvider === 'gemini') {
-                const geminiKey = readGeminiApiKey(cfg);
+                const geminiKey = readGeminiApiKey();
                 if (!geminiKey) {
                      throw new Error('Semantic search unavailable: no Gemini key is set (geminiApiKey or geminiApiKeyFile).');
                 }
@@ -2479,8 +2359,7 @@ class TextEmbeddingService extends Base {
     async embedTexts(texts, explicitProvider, options = {}) {
         if (!explicitProvider) throw new Error('TextEmbeddingService.embedTexts requires an explicit provider argument');
 
-        const cfg                   = this.#getConfig(),
-              defaultOperationLabel = explicitProvider === 'ollama'
+        const defaultOperationLabel = explicitProvider === 'ollama'
                   ? 'TextEmbeddingService.embedTexts native Ollama embedding'
                   : `TextEmbeddingService.embedTexts ${explicitProvider} embedding`,
               {
@@ -2493,7 +2372,7 @@ class TextEmbeddingService extends Base {
                   signal
               } = normalizeEmbeddingOptions(options, defaultOperationLabel),
               providerActivity          = {
-                  model   : getEmbeddingModel(explicitProvider, cfg),
+                  model   : getEmbeddingModel(explicitProvider),
                   operationStage,
                   priority: 'batch',
                   provider: explicitProvider,
@@ -2553,7 +2432,7 @@ class TextEmbeddingService extends Base {
 
                 return ollamaEmbeddings;
             } else if (explicitProvider === 'gemini') {
-                const geminiKey = readGeminiApiKey(cfg);
+                const geminiKey = readGeminiApiKey();
                 if (!geminiKey) {
                      throw new Error('Semantic search unavailable: no Gemini key is set (geminiApiKey or geminiApiKeyFile).');
                 }
@@ -2563,7 +2442,7 @@ class TextEmbeddingService extends Base {
 
                 operation.phase = 'in-flight';
                 const endpointModel = this.embeddingModel.model;
-                const requestModel  = cfg.embeddingModel;
+                const requestModel  = aiConfig.embeddingModel;
                 const dispatchModel = endpointModel || 'unknown';
                 const requests      = texts.map(text => ({model: requestModel, content: {parts: [{text}]}}));
 

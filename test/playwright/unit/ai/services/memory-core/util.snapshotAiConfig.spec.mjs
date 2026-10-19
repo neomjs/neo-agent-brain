@@ -51,6 +51,34 @@ test.describe('Neo.ai test-isolation — snapshotAiConfig (#12435)', () => {
 
         expect(() => snapshotAiConfig(cfg, ['engines.chroma.database'])).toThrow(/does not resolve to a value/);
     });
+
+    test('atomically captures, applies overrides, and restores when given an override map (#1150)', () => {
+        const cfg = {storagePaths: {graph: '/orig/graph.sqlite'}, handoffFilePath: '/orig/handoff.md'};
+
+        const restore = snapshotAiConfig(cfg, {
+            'storagePaths.graph': '/tmp/override.sqlite',
+            handoffFilePath     : '/tmp/override-handoff.md'
+        });
+
+        expect(cfg.storagePaths.graph).toBe('/tmp/override.sqlite');
+        expect(cfg.handoffFilePath).toBe('/tmp/override-handoff.md');
+
+        restore();
+
+        expect(cfg.storagePaths.graph).toBe('/orig/graph.sqlite');
+        expect(cfg.handoffFilePath).toBe('/orig/handoff.md');
+    });
+
+    test('validates all override map paths before mutating any leaf (#1150)', () => {
+        const cfg = {storagePaths: {graph: '/orig/graph.sqlite'}};
+
+        expect(() => snapshotAiConfig(cfg, {
+            'storagePaths.graph': '/tmp/never-written.sqlite',
+            absentLeaf          : 'bad'
+        })).toThrow(/does not resolve to a value/);
+
+        expect(cfg.storagePaths.graph).toBe('/orig/graph.sqlite');
+    });
 });
 
 test.describe('Neo.ai test-isolation — snapshotAiConfig on the real aiConfig Provider', () => {
@@ -86,5 +114,23 @@ test.describe('Neo.ai test-isolation — snapshotAiConfig on the real aiConfig P
 
         expect(aiConfig[probe]).toBeUndefined(); // absent on the real Provider
         expect(() => snapshotAiConfig(aiConfig, [probe])).toThrow(/does not resolve to a value/)
+    });
+
+    test('clears newly-added nested keys on an existing Provider object leaf back to undefined (#1150)', () => {
+        expect(aiConfig.knowledgeBase.__probeNestedKey__).toBeUndefined();
+
+        const restore = snapshotAiConfig(aiConfig, {
+            knowledgeBase: {
+                __probeNestedKey__: 'nested-probe-val'
+            }
+        });
+
+        try {
+            expect(aiConfig.knowledgeBase.__probeNestedKey__).toBe('nested-probe-val');
+        } finally {
+            restore();
+        }
+
+        expect(aiConfig.knowledgeBase.__probeNestedKey__).toBeUndefined();
     });
 });

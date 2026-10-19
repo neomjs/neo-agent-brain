@@ -41,8 +41,8 @@ import {load as yamlLoad} from 'js-yaml';
  */
 
 const
-    repoRoot    = path.resolve(process.cwd()),
-    configText  = fs.readFileSync(path.join(repoRoot, 'ai/configBase.mjs'), 'utf8'),
+    repoRoot   = path.resolve(process.cwd()),
+    configText = fs.readFileSync(path.join(repoRoot, 'ai/configBase.mjs'), 'utf8'),
     // BOTH canonical roots. `docker-compose.dev.yml` states it is a standalone parity stack
     // inheriting nothing from the base, and it instantiates the same three consumers - so a
     // coordinate absent there is exactly as unreachable as one absent from the public root. A guard
@@ -70,14 +70,14 @@ const REQUIRED = [{
     service : 'kb-server',
     env     : 'NEO_ORCHESTRATOR_PROVIDER_READY_TIMEOUT_MS',
     consumer: TES,
-    anchors : ['timeoutMs               = cfg.orchestrator.providerReadiness.timeoutMs,'],
+    anchors : ['timeoutMs               = aiConfig.orchestrator.providerReadiness.timeoutMs,'],
     why     : 'TextEmbeddingService bounds provider model-discovery from inside kb-server; the ' +
               'ingest path waits on it, so a CPU-only plane must raise it from the process that waits'
 }, {
     service : 'mc-server',
     env     : 'NEO_ORCHESTRATOR_PROVIDER_READY_TIMEOUT_MS',
     consumer: TES,
-    anchors : ['timeoutMs               = cfg.orchestrator.providerReadiness.timeoutMs,'],
+    anchors : ['timeoutMs               = aiConfig.orchestrator.providerReadiness.timeoutMs,'],
     why     : 'the same read runs in mc-server, where the WAL drain and the graph extractors wait on it'
 }, {
     service : 'mc-server',

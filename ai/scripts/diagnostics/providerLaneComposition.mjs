@@ -149,7 +149,7 @@ export const PROVIDER_LANE_CONSUMER_CENSUS = Object.freeze([
     {id: 'inference-lifecycle-readiness', role: 'graph', source: 'ai/services/memory-core/lifecycle/InferenceLifecycleService.mjs', anchor: 'getGraphProviderReadinessTarget(aiConfig)'},
     {id: 'knowledge-base-ask', role: 'kbAskSynthesis', source: 'ai/services/knowledge-base/SearchService.mjs', anchor: 'buildAskChatModelOptions(aiConfig'},
     {id: 'kb-query', role: 'embedding', source: 'ai/services/knowledge-base/QueryService.mjs', anchor: 'TextEmbeddingService.embedText(query, mcConfig.embeddingProvider'},
-    {id: 'kb-tenant-ingestion', role: 'embedding', source: 'ai/services/knowledge-base/VectorService.mjs', anchor: 'TextEmbeddingService.embedTexts(textsToEmbed, embeddingProvider'},
+    {id: 'kb-tenant-ingestion', role: 'embedding', source: 'ai/services/knowledge-base/VectorService.mjs', anchor: 'TextEmbeddingService.embedTexts(textsToEmbed, mcConfig.embeddingProvider'},
     {id: 'kb-health-canary', role: 'embedding', source: 'ai/services/knowledge-base/HealthService.mjs', anchor: 'TextEmbeddingService.embedText(text, explicitProvider, options)'},
     {id: 'mc-vector-collections', role: 'embedding', source: 'ai/services/shared/vector/chromaClientPrimitives.mjs', anchor: 'TextEmbeddingService.embedTexts(texts, provider'},
     {id: 'mc-health-canary', role: 'embedding', source: 'ai/services/memory-core/HealthService.mjs', anchor: 'TextEmbeddingService.embedText(text, explicitProvider, options)'},

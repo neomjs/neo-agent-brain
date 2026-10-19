@@ -22,6 +22,7 @@ import Neo                            from 'neo.mjs/src/Neo.mjs';
 import * as core                      from 'neo.mjs/src/core/_export.mjs';
 import {findSharedConfigMutations}    from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 import {EMBEDDING_BATCH_YIELDED_CODE} from '../../../../../../ai/services/memory-core/TextEmbeddingService.mjs';
+import {snapshotAiConfig}             from '../memory-core/util.mjs';
 
 /**
  * Work conservation and undeliverable-at-geometry attribution on the failure path of
@@ -127,11 +128,12 @@ function makeTimeout({failedTextOffset, failedTextCount} = {}) {
 }
 
 test.describe('VectorService.embedChunks — failure-path work conservation (#17112) + undeliverable attribution (#17129)', () => {
-    let SDK, KB_VectorService, TextEmbeddingService;
-    let originalEmbedTexts, kbConfigSnapshot;
+    let SDK, KB_VectorService, KB_Config, TextEmbeddingService;
+    let originalEmbedTexts, kbSnapshot;
 
     test.beforeAll(async () => {
         SDK                  = await import('../../../../../../ai/services.mjs');
+        KB_Config            = SDK.KB_Config;
         TextEmbeddingService = SDK.Memory_TextEmbeddingService;
 
         const VectorServiceModule = await import('../../../../../../ai/services/knowledge-base/VectorService.mjs');
@@ -142,13 +144,17 @@ test.describe('VectorService.embedChunks — failure-path work conservation (#17
 
     test.afterAll(() => {
         TextEmbeddingService.embedTexts = originalEmbedTexts;
-        KB_VectorService.configSnapshot = null;
+        kbSnapshot?.restore();
     });
 
     test.beforeEach(() => {
-        kbConfigSnapshot = KB_VectorService.createConfigSnapshot();
-        Object.assign(kbConfigSnapshot, {batchSize: 50, batchDelay: 0, maxRetries: 3});
-        KB_VectorService.configSnapshot = kbConfigSnapshot;
+        kbSnapshot?.restore();
+        kbSnapshot = snapshotAiConfig(KB_Config, {batchSize: 50, batchDelay: 0, maxRetries: 3});
+    });
+
+    test.afterEach(() => {
+        kbSnapshot?.restore();
+        kbSnapshot = null;
     });
 
     test('a timeout-class failure PERSISTS its carried prefix before the sweep ends', async () => {
@@ -544,7 +550,7 @@ test.describe('VectorService.embedChunks — failure-path work conservation (#17
         const spy    = createSpyCollection();
         const chunks = [{id: 'rst-0', type: 'guide', name: 'r0', content: 'reset body'}];
 
-        Object.assign(kbConfigSnapshot, {maxRetries: 1}); // one 500 exhausts the batch without backoff sleeps
+        snapshotAiConfig(KB_Config, {maxRetries: 1}); // one 500 exhausts the batch without backoff sleeps
 
         const persisted    = [];
         const generationId = makeGenerationId('2');
@@ -583,7 +589,7 @@ test.describe('VectorService.embedChunks — failure-path work conservation (#17
         const spy    = createSpyCollection();
         const chunks = [{id: 'psf-0', type: 'guide', name: 'p0', content: 'storage-failure body'}];
 
-        Object.assign(kbConfigSnapshot, {maxRetries: 1});
+        snapshotAiConfig(KB_Config, {maxRetries: 1});
 
         const persisted    = [];
         const generationId = makeGenerationId('3');

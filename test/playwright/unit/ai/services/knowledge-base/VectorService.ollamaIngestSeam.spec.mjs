@@ -21,6 +21,7 @@ import {test, expect}              from '@playwright/test';
 import Neo                         from 'neo.mjs/src/Neo.mjs';
 import * as core                   from 'neo.mjs/src/core/_export.mjs';
 import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}          from '../memory-core/util.mjs';
 
 /**
  * @summary The KB ingest path driven through the NATIVE OLLAMA provider seam.
@@ -94,12 +95,14 @@ function makeChunks(count) {
 }
 
 test.describe('VectorService KB ingest — the native Ollama provider seam', () => {
-    let KB_VectorService, TextEmbeddingService;
-    let kbConfigSnapshot, originalOllamaProvider;
+    let KB_VectorService, KB_Config, Memory_Config, TextEmbeddingService;
+    let kbSnapshot, mcSnapshot, originalOllamaProvider;
 
     test.beforeAll(async () => {
         const SDK = await import('../../../../../../ai/services.mjs');
 
+        KB_Config            = SDK.KB_Config;
+        Memory_Config        = SDK.Memory_Config;
         TextEmbeddingService = SDK.Memory_TextEmbeddingService;
         KB_VectorService     = (await import('../../../../../../ai/services/knowledge-base/VectorService.mjs')).default;
 
@@ -108,22 +111,28 @@ test.describe('VectorService KB ingest — the native Ollama provider seam', () 
 
     test.afterAll(() => {
         TextEmbeddingService.ollamaProvider = originalOllamaProvider;
-        KB_VectorService.configSnapshot     = null;
+        kbSnapshot?.restore();
+        mcSnapshot?.restore();
     });
 
     test.beforeEach(() => {
-        kbConfigSnapshot = KB_VectorService.createConfigSnapshot();
-        Object.assign(kbConfigSnapshot, {
-            batchSize        : 50,
-            batchDelay       : 0,
-            maxRetries       : 1,
+        kbSnapshot?.restore();
+        mcSnapshot?.restore();
+        kbSnapshot = snapshotAiConfig(KB_Config, {
+            batchSize : 50,
+            batchDelay: 0,
+            maxRetries: 1
+        });
+        mcSnapshot = snapshotAiConfig(Memory_Config, {
             embeddingProvider: 'ollama'
         });
-        KB_VectorService.configSnapshot = kbConfigSnapshot;
     });
 
     test.afterEach(() => {
-        KB_VectorService.configSnapshot = null;
+        kbSnapshot?.restore();
+        mcSnapshot?.restore();
+        kbSnapshot = null;
+        mcSnapshot = null;
     });
 
     test('the collection double REFUSES what ChromaDB refuses — the instrument\'s own control', async () => {

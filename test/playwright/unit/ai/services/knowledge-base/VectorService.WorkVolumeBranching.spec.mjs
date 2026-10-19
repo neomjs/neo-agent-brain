@@ -15,15 +15,16 @@ setup({
     }
 });
 
-import {test, expect}    from '@playwright/test';
-import Neo               from 'neo.mjs/src/Neo.mjs';
-import * as core         from 'neo.mjs/src/core/_export.mjs';
-import fs                from 'fs';
-import path              from 'path';
-import os                from 'os';
-import {fileURLToPath}   from 'url';
+import {test, expect}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import fs                          from 'fs';
+import path                        from 'path';
+import os                          from 'os';
+import {fileURLToPath}             from 'url';
 import {readResumeState}           from '../../../../../../ai/services/knowledge-base/helpers/kbEmbeddingResumeStore.mjs';
 import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}          from '../memory-core/util.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -210,12 +211,12 @@ function writeFixtureJsonl(filePath, chunkCount, hashPrefix = 'chunk-') {
 }
 
 test.describe('VectorService.embed — work-volume branching (#10572)', () => {
-    let SDK, KB_VectorService, KB_ChromaManager, KB_Config;
+    let SDK, KB_VectorService, KB_ChromaManager, KB_Config, Memory_Config;
     let TextEmbeddingService_orig;
     let originalGetCollection;
     let originalClient;
     let originalResumeStateDir;
-    let kbConfigSnapshot;
+    let kbSnapshot, mcSnapshot;
     let tmpDir, fixturePath;
 
     let TextEmbeddingService;
@@ -224,6 +225,7 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
         SDK                  = await import('../../../../../../ai/services.mjs');
         KB_ChromaManager     = SDK.KB_ChromaManager;
         KB_Config            = SDK.KB_Config;
+        Memory_Config        = SDK.Memory_Config;
         TextEmbeddingService = SDK.Memory_TextEmbeddingService;
 
         // VectorService is a helper not exposed via the SDK exports — import directly.
@@ -247,7 +249,8 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     test.afterAll(async () => {
         KB_ChromaManager.getKnowledgeBaseCollection = originalGetCollection;
         KB_ChromaManager.client                     = originalClient;
-        KB_VectorService.configSnapshot             = null;
+        kbSnapshot?.restore();
+        mcSnapshot?.restore();
         KB_VectorService.resumeStateDir             = originalResumeStateDir;
         TextEmbeddingService.embedTexts             = TextEmbeddingService_orig;
         if (tmpDir && fs.existsSync(tmpDir)) {
@@ -256,17 +259,25 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     });
 
     test.beforeEach(() => {
-        kbConfigSnapshot                  = KB_VectorService.createConfigSnapshot();
-        kbConfigSnapshot.mcpSyncMaxChunks = 5; // tight threshold for predictable branching
-        KB_VectorService.configSnapshot   = kbConfigSnapshot;
-        TextEmbeddingService.embedTexts   = async texts => texts.map(() => new Array(384).fill(0));
-        KB_ChromaManager.client           = originalClient;
+        kbSnapshot?.restore();
+        mcSnapshot?.restore();
+        kbSnapshot                      = snapshotAiConfig(KB_Config, {mcpSyncMaxChunks: 5}); // tight threshold for predictable branching
+        mcSnapshot                      = snapshotAiConfig(Memory_Config, {});
+        TextEmbeddingService.embedTexts = async texts => texts.map(() => new Array(384).fill(0));
+        KB_ChromaManager.client         = originalClient;
         KB_ChromaManager.getKnowledgeBaseCollection = originalGetCollection;
         KB_ChromaManager.invalidateKnowledgeBaseCollectionCache();
 
         // Isolate the shadow-swap resume-state marker per test (never touch the real .neo-ai-data tree).
         KB_VectorService.resumeStateDir = path.join(tmpDir, 'kb-resume-state');
         fs.rmSync(KB_VectorService.resumeStateDir, {recursive: true, force: true});
+    });
+
+    test.afterEach(() => {
+        kbSnapshot?.restore();
+        mcSnapshot?.restore();
+        kbSnapshot = null;
+        mcSnapshot = null;
     });
 
     test('resume-state storage uses the explicit seam or the resolved KB config leaf', () => {
@@ -324,7 +335,7 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
         const spy           = createSpyCollection({existingIds: []});
         let   providerCalls = 0;
 
-        Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 1});
+        snapshotAiConfig(KB_Config, {batchSize: 1, batchDelay: 0, maxRetries: 1});
         KB_ChromaManager.getKnowledgeBaseCollection = async () => spy;
 
         TextEmbeddingService.embedTexts = async texts => {
@@ -516,9 +527,11 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
         // Pre-fix this test pinned the fail-open: gemini was outside a hand-maintained local
         // set, so the guard skipped the measurement and the provider was called with an
         // over-band input. The guard now measures every provider.
-        kbConfigSnapshot.embeddingProvider                            = 'gemini';
-        kbConfigSnapshot.localModels.embedding.contextLimitTokens        = 50;
-        kbConfigSnapshot.localModels.embedding.safeProcessingLimitTokens = 1;
+        snapshotAiConfig(Memory_Config, {embeddingProvider: 'gemini'});
+        snapshotAiConfig(KB_Config, {
+            'localModels.embedding.contextLimitTokens'       : 50,
+            'localModels.embedding.safeProcessingLimitTokens': 1
+        });
 
         const explicitProviders = [];
         TextEmbeddingService.embedTexts = async (texts, explicitProvider) => {
@@ -547,9 +560,11 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     });
 
     test('a non-local provider embeds an under-band document — measured, not exempt', async () => {
-        kbConfigSnapshot.embeddingProvider                            = 'gemini';
-        kbConfigSnapshot.localModels.embedding.contextLimitTokens        = 50_000;
-        kbConfigSnapshot.localModels.embedding.safeProcessingLimitTokens = 40_000;
+        snapshotAiConfig(Memory_Config, {embeddingProvider: 'gemini'});
+        snapshotAiConfig(KB_Config, {
+            'localModels.embedding.contextLimitTokens'       : 50_000,
+            'localModels.embedding.safeProcessingLimitTokens': 40_000
+        });
 
         const explicitProviders = [];
         TextEmbeddingService.embedTexts = async (texts, explicitProvider) => {
@@ -627,8 +642,10 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
     });
 
     test('shadow-swap refuses promotion when an over-budget chunk would make the rebuilt corpus incomplete', async () => {
-        kbConfigSnapshot.localModels.embedding.contextLimitTokens        = 50;
-        kbConfigSnapshot.localModels.embedding.safeProcessingLimitTokens = 40;
+        snapshotAiConfig(KB_Config, {
+            'localModels.embedding.contextLimitTokens'       : 50,
+            'localModels.embedding.safeProcessingLimitTokens': 40
+        });
 
         const live = createSpyCollection({existingIds: [], name: KB_Config.data.collectionName});
         let shadow;
@@ -798,7 +815,7 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
         KB_ChromaManager.getKnowledgeBaseCollection = async () => {
             return shadow?.name === KB_Config.data.collectionName ? shadow : live
         };
-        Object.assign(kbConfigSnapshot, {batchDelay: 0, batchSize: 1, maxRetries: 1});
+        snapshotAiConfig(KB_Config, {batchDelay: 0, batchSize: 1, maxRetries: 1});
         writeFixtureJsonl(fixturePath, 3);
 
         const first = await KB_VectorService.embed(fixturePath, {
@@ -1001,7 +1018,7 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
 
         // Zero adds (empty corpus file), 12 deletions, threshold below the deletion count.
         writeFixtureJsonl(fixturePath, 0);
-        kbConfigSnapshot.mcpSyncMaxChunks = 5;
+        snapshotAiConfig(KB_Config, {mcpSyncMaxChunks: 5});
 
         const result = await KB_VectorService.embed(fixturePath, {viaMcp: true, tenantContext: stamp});
 
@@ -1026,7 +1043,7 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
         KB_ChromaManager.getKnowledgeBaseCollection = async () => spy;
 
         writeFixtureJsonl(fixturePath, 0);
-        kbConfigSnapshot.mcpSyncMaxChunks = 500; // gate must not interfere
+        snapshotAiConfig(KB_Config, {mcpSyncMaxChunks: 500}); // gate must not interfere
 
         const result = await KB_VectorService.embed(fixturePath, {tenantContext: stamp});
 

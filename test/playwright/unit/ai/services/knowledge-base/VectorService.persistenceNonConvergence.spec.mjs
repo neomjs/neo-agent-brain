@@ -24,6 +24,7 @@ import Database                                           from 'better-sqlite3';
 import Neo                                                from 'neo.mjs/src/Neo.mjs';
 import * as core                                          from 'neo.mjs/src/core/_export.mjs';
 import {findSharedConfigMutations}                        from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}                                 from '../memory-core/util.mjs';
 
 /**
  * @summary Persistence failure is an UNBOUNDED re-embed loop, proven through PRODUCTION's own selector.
@@ -154,10 +155,10 @@ function writeFixtureJsonl(filePath, chunkCount) {
 }
 
 test.describe('VectorService — persistence failure is an unbounded re-embed loop', () => {
-    let KB_VectorService, TextEmbeddingService, KBRecorderService, KB_ChromaManager;
+    let KB_VectorService, KB_Config, Memory_Config, TextEmbeddingService, KBRecorderService, KB_ChromaManager;
     let originalGetCollection, corpusPath;
     let selectResumableChunks, ensureEmbeddingIdentitySchema, getEmbeddingIdentityWindow;
-    let kbConfigSnapshot, originalOllamaProvider, originalRecorderDb;
+    let kbSnapshot, mcSnapshot, originalOllamaProvider, originalRecorderDb;
     let db, tempDir;
 
     /**
@@ -189,6 +190,8 @@ test.describe('VectorService — persistence failure is an unbounded re-embed lo
     test.beforeAll(async () => {
         const SDK = await import('../../../../../../ai/services.mjs');
 
+        KB_Config            = SDK.KB_Config;
+        Memory_Config        = SDK.Memory_Config;
         TextEmbeddingService = SDK.Memory_TextEmbeddingService;
         KB_VectorService     = (await import('../../../../../../ai/services/knowledge-base/VectorService.mjs')).default;
         KBRecorderService    = (await import('../../../../../../ai/services/knowledge-base/KBRecorderService.mjs')).default;
@@ -209,18 +212,21 @@ test.describe('VectorService — persistence failure is an unbounded re-embed lo
         KBRecorderService.db                         = originalRecorderDb;
         KB_ChromaManager.getKnowledgeBaseCollection  = originalGetCollection;
         KB_ChromaManager.invalidateKnowledgeBaseCollectionCache();
-        KB_VectorService.configSnapshot              = null;
+        kbSnapshot?.restore();
+        mcSnapshot?.restore();
     });
 
     test.beforeEach(() => {
-        kbConfigSnapshot = KB_VectorService.createConfigSnapshot();
-        Object.assign(kbConfigSnapshot, {
-            batchSize        : 50,
-            batchDelay       : 0,
-            maxRetries       : 1,
+        kbSnapshot?.restore();
+        mcSnapshot?.restore();
+        kbSnapshot = snapshotAiConfig(KB_Config, {
+            batchSize : 50,
+            batchDelay: 0,
+            maxRetries: 1
+        });
+        mcSnapshot = snapshotAiConfig(Memory_Config, {
             embeddingProvider: 'ollama'
         });
-        KB_VectorService.configSnapshot = kbConfigSnapshot;
 
         tempDir    = mkdtempSync(path.join(os.tmpdir(), 'neo-kb-nonconvergence-'));
         corpusPath = path.join(tempDir, 'corpus.jsonl');
@@ -252,7 +258,10 @@ test.describe('VectorService — persistence failure is an unbounded re-embed lo
 
         rmSync(tempDir, {force: true, recursive: true});
 
-        KB_VectorService.configSnapshot = null;
+        kbSnapshot?.restore();
+        mcSnapshot?.restore();
+        kbSnapshot = null;
+        mcSnapshot = null;
     });
 
     test('a PROVIDER rejection is STILL retried — the repair caches a result, never a failure', async () => {
@@ -261,7 +270,7 @@ test.describe('VectorService — persistence failure is an unbounded re-embed lo
         // assigns when the await throws, so the next lap must re-attempt the provider. If that were
         // wrong the repair would convert one transient provider blip into a permanently unembeddable
         // batch — strictly worse than the redundant work it removes.
-        kbConfigSnapshot.maxRetries = 3;
+        snapshotAiConfig(KB_Config, {maxRetries: 3});
 
         const corpus = makeChunks(2);
 
@@ -303,7 +312,7 @@ test.describe('VectorService — persistence failure is an unbounded re-embed lo
         // look landed. `embedded` counts what reached the store, so a store that rejects every attempt
         // has to end at zero — otherwise the repair would manufacture exactly the phantom progress this
         // ticket family exists to remove.
-        kbConfigSnapshot.maxRetries = 2;
+        snapshotAiConfig(KB_Config, {maxRetries: 2});
 
         const corpus = makeChunks(2);
 
@@ -346,7 +355,7 @@ test.describe('VectorService — persistence failure is an unbounded re-embed lo
         // seam where that cost was paid: `embedTexts` and `collection.upsert` shared one `try`, so a
         // failed WRITE sent the retry back through the PROVIDER for identical texts. Same model, same
         // inputs — the second purchase could not differ, only be charged.
-        kbConfigSnapshot.maxRetries = 3;
+        snapshotAiConfig(KB_Config, {maxRetries: 3});
 
         const corpus = makeChunks(2);
 
@@ -541,7 +550,7 @@ test.describe('VectorService — persistence failure is an unbounded re-embed lo
         let embedTextsCalls = 0;
 
         try {
-            Object.assign(kbConfigSnapshot, {batchSize: 50, batchDelay: 0, maxRetries: 3});
+            snapshotAiConfig(KB_Config, {batchSize: 50, batchDelay: 0, maxRetries: 3});
 
             TextEmbeddingService.embedTexts = async texts => {
                 embedTextsCalls++;

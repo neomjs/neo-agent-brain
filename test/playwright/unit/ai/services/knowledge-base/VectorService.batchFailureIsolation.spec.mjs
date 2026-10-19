@@ -32,6 +32,7 @@ import {KB_VECTOR_EMBED_PROVIDER_CIRCUIT_OPEN}
     from '../../../../../../ai/services/knowledge-base/helpers/embedFailureClassification.mjs';
 import {EMBEDDING_INPUT_TRUNCATED_CODE}
     from '../../../../../../ai/services/memory-core/TextEmbeddingService.mjs';
+import {snapshotAiConfig} from '../memory-core/util.mjs';
 
 /**
  * Batch-failure isolation for `VectorService.embedChunks`.
@@ -52,8 +53,8 @@ import {EMBEDDING_INPUT_TRUNCATED_CODE}
  * outage into a full-corpus walk at `maxRetries * timeout` per batch — strictly worse than the bug. That case
  * must still stop at the first batch, and must still THROW, so a total outage cannot report as a clean run.
  *
- * Serial mode: specs inject isolated `KB_VectorService.configSnapshot` / `TextEmbeddingService.configSnapshot`
- * snapshots and replace the `TextEmbeddingService.embedTexts` singleton method.
+ * Serial mode: specs override shared KB/Memory config leaves via `snapshotAiConfig` and replace the
+ * `TextEmbeddingService.embedTexts` singleton method.
  */
 test.describe.configure({mode: 'serial'});
 
@@ -86,11 +87,12 @@ function makeChunks(count) {
 }
 
 test.describe('VectorService.embedChunks — one failing batch must not strand the remainder (#16843)', () => {
-    let SDK, KB_VectorService, TextEmbeddingService, ChromaManager;
-    let originalEmbedTexts, kbConfigSnapshot;
+    let SDK, KB_Config, KB_VectorService, TextEmbeddingService, ChromaManager;
+    let originalEmbedTexts, kbConfigGuard;
 
     test.beforeAll(async () => {
         SDK                  = await import('../../../../../../ai/services.mjs');
+        KB_Config            = SDK.KB_Config;
         TextEmbeddingService = SDK.Memory_TextEmbeddingService;
 
         const VectorServiceModule = await import('../../../../../../ai/services/knowledge-base/VectorService.mjs');
@@ -101,18 +103,22 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
     });
 
     test.afterAll(() => {
-        TextEmbeddingService.embedTexts     = originalEmbedTexts;
-        TextEmbeddingService.configSnapshot = null;
-        KB_VectorService.configSnapshot     = null;
+        TextEmbeddingService.embedTexts = originalEmbedTexts;
     });
 
     test.beforeEach(() => {
         // `maxRetries: 1` deliberately: the retry arm backs off `2 ** retries` seconds, so a larger value buys
         // no coverage and spends real wall-clock. One attempt per batch is enough to reach exhaustion.
-        kbConfigSnapshot = KB_VectorService.createConfigSnapshot();
-        Object.assign(kbConfigSnapshot, {batchSize: 50, batchDelay: 0, maxRetries: 1});
-        KB_VectorService.configSnapshot = kbConfigSnapshot;
+        kbConfigGuard = snapshotAiConfig(KB_Config, {
+            batchDelay: 0,
+            batchSize : 50,
+            maxRetries: 1
+        });
         TextEmbeddingService.embedTexts = async texts => texts.map(() => new Array(384).fill(0));
+    });
+
+    test.afterEach(() => {
+        kbConfigGuard.restore();
     });
 
     test('ZERO chunks issues ZERO provider submissions — the attribution control (#16780 AC-1)', async () => {
@@ -171,12 +177,13 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
 
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 
+        const mcConfigGuard = snapshotAiConfig(aiConfig, {
+            'openAiCompatible.host': `http://127.0.0.1:${server.address().port}`
+        });
+
         try {
-            const embeddingSnapshot = TextEmbeddingService.createConfigSnapshot();
-            embeddingSnapshot.openAiCompatible.host = `http://127.0.0.1:${server.address().port}`;
-            TextEmbeddingService.configSnapshot     = embeddingSnapshot;
-            TextEmbeddingService.embedTexts         = originalEmbedTexts;
-            Neo.config.unitTestMode                 = false;
+            TextEmbeddingService.embedTexts = originalEmbedTexts;
+            Neo.config.unitTestMode         = false;
 
             const result = await KB_VectorService.embedChunks({collection: spy, chunksToProcess: chunks});
 
@@ -184,8 +191,8 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
             expect(spy.calls.upsert).toBeGreaterThan(0);
             expect(result.embedded).toBeGreaterThan(0)
         } finally {
-            Neo.config.unitTestMode             = originalUnitTestMode;
-            TextEmbeddingService.configSnapshot = null;
+            Neo.config.unitTestMode = originalUnitTestMode;
+            mcConfigGuard.restore();
             server.close()
         }
     });
@@ -224,11 +231,11 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
 
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 
-        try {
-            const embeddingSnapshot = TextEmbeddingService.createConfigSnapshot();
-            embeddingSnapshot.openAiCompatible.host = `http://127.0.0.1:${server.address().port}`;
-            TextEmbeddingService.configSnapshot     = embeddingSnapshot;
+        const mcConfigGuard = snapshotAiConfig(aiConfig, {
+            'openAiCompatible.host': `http://127.0.0.1:${server.address().port}`
+        });
 
+        try {
             // The real singleton, not a stub: this is the arm's whole point. `originalEmbedTexts` is the
             // describe-scope capture of the untouched method, so restoring it here undoes the `beforeEach`
             // stub rather than re-capturing it. `unitTestMode` off so the genuine HTTP request is issued
@@ -253,8 +260,8 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
             expect(spy.upsertedIds).toHaveLength(before);
             expect(spy.calls.upsert).toBe(0)
         } finally {
-            Neo.config.unitTestMode             = originalUnitTestMode;
-            TextEmbeddingService.configSnapshot = null;
+            Neo.config.unitTestMode = originalUnitTestMode;
+            mcConfigGuard.restore();
             server.close()
         }
     });
@@ -270,7 +277,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         // by paired isolation, and isolation can only PROVE a poison when a control outside the failed
         // batch exists — without one it returns `unproved` and the first-batch abort raises, which
         // would let this arm pass while the isolation path was never exercised at all.
-        Object.assign(kbConfigSnapshot, {batchSize: 2, batchDelay: 0, maxRetries: 4});
+        snapshotAiConfig(KB_Config, {batchDelay: 0, batchSize: 2, maxRetries: 4});
 
         const spy       = createSpyCollection(),
               chunks    = makeChunks(4),
@@ -323,7 +330,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         // circuit-open — so it proves nothing about this guard. An error carrying no code is the
         // honest "unlucky, not futile" case: it maps to `KB_VECTOR_EMBED_FAILED`, sits outside the
         // rejected set, and its retries are the recovery path this guard must leave alone.
-        Object.assign(kbConfigSnapshot, {batchSize: 50, batchDelay: 0, maxRetries: 3});
+        snapshotAiConfig(KB_Config, {batchDelay: 0, batchSize: 50, maxRetries: 3});
 
         const spy    = createSpyCollection(),
               chunks = makeChunks(3);
@@ -375,7 +382,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
     });
 
     test('#17017: paired first-batch isolation fences one poison and lands every recoverable chunk', async () => {
-        Object.assign(kbConfigSnapshot, {batchSize: 2, batchDelay: 0, maxRetries: 1});
+        snapshotAiConfig(KB_Config, {batchDelay: 0, batchSize: 2, maxRetries: 1});
 
         const spy           = createSpyCollection();
         const chunks        = makeChunks(4);
@@ -414,7 +421,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
     });
 
     test('#17017: a dead provider costs one bounded control after first-batch retries, never a corpus walk', async () => {
-        Object.assign(kbConfigSnapshot, {batchSize: 2, batchDelay: 0, maxRetries: 1});
+        snapshotAiConfig(KB_Config, {batchDelay: 0, batchSize: 2, maxRetries: 1});
 
         const spy           = createSpyCollection();
         const chunks        = makeChunks(8);
@@ -438,7 +445,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
     });
 
     test('#17017: A-B-A recovers a one-off first-input failure instead of minting poison', async () => {
-        Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 1});
+        snapshotAiConfig(KB_Config, {batchDelay: 0, batchSize: 1, maxRetries: 1});
 
         const spy           = createSpyCollection();
         const chunks        = makeChunks(2);
@@ -472,7 +479,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         const originalIsolate    = KB_VectorService.isolateFirstFailedBatch.bind(KB_VectorService);
 
         globalThis.setTimeout = (fn, ms, ...args) => originalSetTimeout(fn, 0, ...args);
-        Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 2});
+        snapshotAiConfig(KB_Config, {batchDelay: 0, batchSize: 1, maxRetries: 2});
 
         let providerCalls  = 0,
             isolationCalls = 0,
@@ -609,7 +616,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         globalThis.setTimeout = (fn, ms, ...args) => originalSetTimeout(fn, 0, ...args);
 
         try {
-            Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 5});
+            snapshotAiConfig(KB_Config, {batchDelay: 0, batchSize: 1, maxRetries: 5});
 
             for (const code of [
                 PROVIDER_TIMEOUT_CODE,
@@ -671,7 +678,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         globalThis.setTimeout = (fn, ms, ...args) => originalSetTimeout(fn, 0, ...args);
 
         try {
-            Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 2});
+            snapshotAiConfig(KB_Config, {batchDelay: 0, batchSize: 1, maxRetries: 2});
 
             const chunks        = makeChunks(1);
             let   providerCalls = 0,
@@ -707,7 +714,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
     });
 
     test('#16995: circuit-open is provider-phase terminal and preserves the exact controls', async () => {
-        Object.assign(kbConfigSnapshot, {batchSize: 1, batchDelay: 0, maxRetries: 5});
+        snapshotAiConfig(KB_Config, {batchDelay: 0, batchSize: 1, maxRetries: 5});
 
         const
             spy               = createSpyCollection(),
@@ -909,10 +916,12 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
             'absent upstream must stay absent downstream').toBeUndefined();
     });
 
-    test('zero shared-config mutations and retired openAiCompatibleHostFn seam (#1090)', () => {
+    test('zero shared-config mutations and retired openAiCompatibleHostFn/configSnapshot seams (#1090/#1150)', () => {
         const source = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
 
         expect(findSharedConfigMutations(source)).toEqual([]);
         expect('openAiCompatibleHostFn' in TextEmbeddingService).toBe(false);
+        expect('configSnapshot' in TextEmbeddingService).toBe(false);
+        expect('configSnapshot' in KB_VectorService).toBe(false);
     });
 });

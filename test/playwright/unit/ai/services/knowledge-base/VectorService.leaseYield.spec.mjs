@@ -21,6 +21,7 @@ import {test, expect}              from '@playwright/test';
 import Neo                         from 'neo.mjs/src/Neo.mjs';
 import * as core                   from 'neo.mjs/src/core/_export.mjs';
 import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}          from '../memory-core/util.mjs';
 
 /**
  * Cooperative heavy-maintenance-lease yield-point coverage for `VectorService.embedChunks`.
@@ -86,7 +87,7 @@ function makeChunks(count) {
 
 test.describe('VectorService.embedChunks — cooperative lease yield-point', () => {
     let SDK, KB_VectorService, KB_Config, Memory_Config, TextEmbeddingService, EMBEDDING_BATCH_YIELDED_CODE;
-    let originalEmbedTexts, originalBatchConfig, kbConfigSnapshot;
+    let originalEmbedTexts, originalBatchConfig, kbSnapshot;
 
     test.beforeAll(async () => {
         SDK                  = await import('../../../../../../ai/services.mjs');
@@ -114,16 +115,20 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
 
     test.afterAll(() => {
         TextEmbeddingService.embedTexts = originalEmbedTexts;
-        KB_VectorService.configSnapshot = null;
+        kbSnapshot?.restore();
     });
 
     test.beforeEach(() => {
-        kbConfigSnapshot = KB_VectorService.createConfigSnapshot();
-        Object.assign(kbConfigSnapshot, {batchSize: 50, batchDelay: 0, maxRetries: 1});
-        KB_VectorService.configSnapshot = kbConfigSnapshot;
+        kbSnapshot?.restore();
+        kbSnapshot = snapshotAiConfig(KB_Config, {batchSize: 50, batchDelay: 0, maxRetries: 1});
         // Re-applied per test: the inner-yield cases below swap in their own embedder, and a leaked stub
         // would silently change what a later test is measuring.
         TextEmbeddingService.embedTexts = async texts => texts.map(() => new Array(384).fill(0));
+    });
+
+    test.afterEach(() => {
+        kbSnapshot?.restore();
+        kbSnapshot = null;
     });
 
     test('yields BETWEEN batches — stops the loop, first batch still lands (forward progress)', async () => {
@@ -168,7 +173,7 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
               chunks          = makeChunks(6),
               originalTimeout = KB_VectorService.timeout;
 
-        Object.assign(kbConfigSnapshot, {batchSize: 2, batchDelay: 50});
+        snapshotAiConfig(KB_Config, {batchSize: 2, batchDelay: 50});
 
         let delayCompleted = false;
 
@@ -213,7 +218,7 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
         // 3, not the deployed 5: the retry arm backs off `2 ** retries` seconds, so a maxRetries-5 mutation
         // run exhausts the 30s test timeout before it exhausts the retries — and a timeout-red would leave
         // this test looking falsifiable while proving only that something hung.
-        Object.assign(kbConfigSnapshot, {maxRetries: 3});
+        snapshotAiConfig(KB_Config, {maxRetries: 3});
 
         let embedCalls = 0;
 
@@ -299,7 +304,7 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
         const spy    = createSpyCollection();
         const chunks = makeChunks(50); // 1 batch
 
-        Object.assign(kbConfigSnapshot, {maxRetries: 3});
+        snapshotAiConfig(KB_Config, {maxRetries: 3});
 
         let embedCalls = 0;
 
