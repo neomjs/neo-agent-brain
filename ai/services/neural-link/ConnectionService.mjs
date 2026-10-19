@@ -1,11 +1,12 @@
-import aiConfig  from '../../mcp/server/neural-link/config.mjs';
-import {spawn}   from 'child_process';
-import crypto    from 'crypto';
-import fs        from 'fs';
-import path      from 'path';
-import WebSocket from 'ws';
-import Base      from 'neo.mjs/src/core/Base.mjs';
-import logger    from '../../mcp/server/neural-link/logger.mjs';
+import aiConfig                  from '../../mcp/server/neural-link/config.mjs';
+import {spawn}                   from 'child_process';
+import crypto                    from 'crypto';
+import fs                        from 'fs';
+import path                      from 'path';
+import WebSocket                 from 'ws';
+import Base                      from 'neo.mjs/src/core/Base.mjs';
+import {requestParentEnvRefresh} from '../../mcp/client/fleetMcpLauncher.mjs';
+import logger                    from '../../mcp/server/neural-link/logger.mjs';
 
 /**
  * The npm script `spawnBridge` runs. Exported so an entrypoint deriving its own `cwd` can validate
@@ -195,8 +196,8 @@ export const logBridgePayload = (payload, {logger, debug, maxChars}) => {
  * standalone Neural Link Bridge process (running on port 8081).
  *
  * **Responsibilities:**
- * 1.  **Bridge Management**: Ensures the Bridge process is running (spawns it if missing).
- * 2.  **Agent Identity**: Connects to the Bridge as an 'agent'.
+ * 1.  **Bridge Management**: Ensures the Bridge process is running (spawns it if missing in standalone mode).
+ * 2.  **Agent Identity**: Connects to the Bridge as an 'agent' and refreshes expired Fleet Bridge tokens over parent IPC.
  * 3.  **Session Tracking**: Maintains a local cache of active App Worker sessions based on Bridge events.
  * 4.  **RPC Routing**: Routes requests to specific App Workers via the Bridge.
  *
@@ -267,10 +268,45 @@ class ConnectionService extends Base {
      */
     bridgeSocket = null
     /**
+     * Latest Fleet-minted Bridge token (`NEO_FLEET_BRIDGE_TOKEN`), refreshed on demand via {@link #refreshEnvFn}.
+     * @type {String|null}
+     */
+    bridgeToken = null
+    /**
+     * Whether this instance has already attempted its initial Bridge connection.
+     * @type {Boolean}
+     */
+    hasAttemptedInitialConnect = false
+    /**
+     * True after an explicit `manage_connection({action: 'stop'})` until the next `start`.
+     * @type {Boolean}
+     */
+    manualDisconnect = false
+    /**
+     * Upper bound on automatic Bridge reconnect backoff (ms).
+     * @type {Number}
+     */
+    maxReconnectDelayMs = 5000
+    /**
      * Pending RPC requests awaiting response from Browser.
      * Map<messageId, {sessionId, socket, resolve, reject, timeout}>
      */
     pendingRequests = new Map()
+    /**
+     * Initial automatic Bridge reconnect delay (ms).
+     * @type {Number}
+     */
+    reconnectDelayMs = 500
+    /**
+     * Active timer handle for a scheduled automatic Bridge reconnect.
+     * @type {Timeout|null}
+     */
+    reconnectTimer = null
+    /**
+     * Seam for requesting fresh admitted environment values from the parent `fleetMcpLauncher` process.
+     * @type {Function}
+     */
+    refreshEnvFn = requestParentEnvRefresh
     /**
      * Active App Worker sessions (Metadata only).
      * Map<sessionId, Object>
@@ -310,10 +346,10 @@ class ConnectionService extends Base {
      * @param {Object} [options={}]
      * @param {String} [options.agentId=this.agentId]
      * @param {Number} [options.port=aiConfig.port]
-     * @param {String} [options.token=process.env.NEO_FLEET_BRIDGE_TOKEN]
+     * @param {String} [options.token=this.bridgeToken || process.env.NEO_FLEET_BRIDGE_TOKEN]
      * @returns {String}
      */
-    createBridgeUrl({agentId = this.agentId, port = aiConfig.port, token = process.env.NEO_FLEET_BRIDGE_TOKEN} = {}) {
+    createBridgeUrl({agentId = this.agentId, port = aiConfig.port, token = this.bridgeToken || process.env.NEO_FLEET_BRIDGE_TOKEN} = {}) {
         const url = new URL(`ws://127.0.0.1:${port}`);
 
         url.searchParams.set('role', 'agent');
@@ -324,6 +360,86 @@ class ConnectionService extends Base {
         }
 
         return url.toString()
+    }
+
+    /**
+     * @summary Requests fresh admitted Bridge credentials from the parent `fleetMcpLauncher` process over IPC.
+     *
+     * Updates `bridgeToken` and `process.env.NEO_FLEET_BRIDGE_TOKEN` when the parent returns a non-empty
+     * `NEO_FLEET_BRIDGE_TOKEN`. Never throws if the parent IPC channel is absent or refuses.
+     * @returns {Promise<String|null>} The refreshed or current Bridge token, or `null` when unset.
+     */
+    async refreshBridgeCredentials() {
+        try {
+            const refreshed = await this.refreshEnvFn?.();
+
+            if (refreshed && typeof refreshed.NEO_FLEET_BRIDGE_TOKEN === 'string' && refreshed.NEO_FLEET_BRIDGE_TOKEN.trim() !== '') {
+                this.bridgeToken                   = refreshed.NEO_FLEET_BRIDGE_TOKEN;
+                process.env.NEO_FLEET_BRIDGE_TOKEN = refreshed.NEO_FLEET_BRIDGE_TOKEN
+            }
+        } catch (error) {
+            logger.warn('[ConnectionService] Failed to refresh Bridge credentials from parent launcher:', error?.message ?? error)
+        }
+
+        return this.bridgeToken || process.env.NEO_FLEET_BRIDGE_TOKEN || null
+    }
+
+    /**
+     * @summary Cancels any pending automatic Bridge reconnect timer.
+     * @returns {void}
+     */
+    clearReconnectTimer() {
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null
+        }
+    }
+
+    /**
+     * @summary Whether an unexpected close of the active Bridge socket should schedule an automatic reconnect.
+     * @returns {Boolean}
+     */
+    shouldAutoReconnect() {
+        if (this.manualDisconnect) return false;
+
+        return Boolean(this.bridgeToken || process.env.NEO_FLEET_BRIDGE_TOKEN) ||
+            resolveBridgeAutoConnect({
+                unitTestMode: Neo.config.unitTestMode,
+                autoConnect : aiConfig.autoConnect,
+                cwd         : this.cwd
+            }) === 'connect'
+    }
+
+    /**
+     * @summary Schedules a bounded exponential-backoff reconnect to the Neural Link Bridge after an unexpected close.
+     * @param {Number} [delayMs=this.reconnectDelayMs]
+     * @returns {void}
+     */
+    scheduleReconnect(delayMs = this.reconnectDelayMs) {
+        if (!this.shouldAutoReconnect() || this.reconnectTimer || this.bridgeSocket?.readyState === WebSocket.OPEN) {
+            return
+        }
+
+        const timer = setTimeout(async () => {
+            if (this.reconnectTimer === timer) {
+                this.reconnectTimer = null
+            }
+
+            if (this.manualDisconnect || this.bridgeSocket?.readyState === WebSocket.OPEN) {
+                return
+            }
+
+            try {
+                await this.ensureBridgeAndConnect()
+            } catch {
+                if (this.shouldAutoReconnect() && this.bridgeSocket?.readyState !== WebSocket.OPEN) {
+                    this.scheduleReconnect(Math.min(delayMs * 2, this.maxReconnectDelayMs))
+                }
+            }
+        }, delayMs);
+
+        timer.unref?.();
+        this.reconnectTimer = timer
     }
 
     /**
@@ -387,7 +503,8 @@ class ConnectionService extends Base {
                   url  = this.createBridgeUrl({port}),
                   ws   = new WebSocket(url);
 
-            let settled = false;
+            let established = false,
+                settled     = false;
 
             const rejectOnce = (error, closeSocket = true) => {
                 if (settled) return;
@@ -405,7 +522,8 @@ class ConnectionService extends Base {
             const resolveOnce = () => {
                 if (settled) return;
 
-                settled = true;
+                settled     = true;
+                established = true;
                 clearTimeout(handshakeTimeout);
 
                 this.markBridgeConnected(ws);
@@ -454,9 +572,17 @@ class ConnectionService extends Base {
             });
 
             ws.on('close', (code, reason) => {
-                const reasonText = reason?.toString() || 'none';
+                const reasonText      = reason?.toString() || 'none',
+                      wasActiveSocket = this.bridgeSocket === ws;
+
                 logger.warn(`Disconnected from Neural Link Bridge (code=${code ?? 'none'}, reason=${reasonText})`);
-                if (this.bridgeSocket === ws) this.bridgeSocket = null;
+
+                if (wasActiveSocket) {
+                    this.bridgeSocket = null;
+                    this.sessionData.clear();
+                    this.activeAgents.clear();
+                }
+
                 for (const [id, pending] of this.pendingRequests) {
                     if (pending.socket === ws) {
                         const error = new Error('Neural Link Bridge closed');
@@ -464,8 +590,23 @@ class ConnectionService extends Base {
                         this.settleRequest(id, error);
                     }
                 }
-                rejectOnce(new Error('Neural Link Bridge closed before freshness handshake completed.'), false);
-                // Optional: Auto-reconnect logic could go here
+
+                const closeErr = new Error(
+                    code === 1008
+                        ? `Neural Link Bridge rejected authentication (code=1008, reason=${reasonText}).`
+                        : 'Neural Link Bridge closed before freshness handshake completed.'
+                );
+
+                if (code === 1008) {
+                    closeErr.authenticationFailed = true;
+                    closeErr.closeCode            = 1008;
+                }
+
+                rejectOnce(closeErr, false);
+
+                if (wasActiveSocket && established && !this.manualDisconnect) {
+                    this.scheduleReconnect();
+                }
             });
 
             ws.on('error', (err) => {
@@ -492,6 +633,13 @@ class ConnectionService extends Base {
         }
 
         this.#ensureConnectPromise = (async () => {
+            const isSubsequentAttempt = this.hasAttemptedInitialConnect;
+            this.hasAttemptedInitialConnect = true;
+
+            if (isSubsequentAttempt && Boolean(this.bridgeToken || process.env.NEO_FLEET_BRIDGE_TOKEN)) {
+                await this.refreshBridgeCredentials();
+            }
+
             let connected = false;
 
             // 1. Try to connect to existing Bridge
@@ -499,8 +647,25 @@ class ConnectionService extends Base {
                 await this.connectToBridge();
                 connected = true;
             } catch (e) {
-                if (e.code === STALE_BRIDGE_ERROR_CODE) {
+                if (e?.code === STALE_BRIDGE_ERROR_CODE || e?.protocolFreshnessFailed) {
                     logger.error(e.message);
+                    throw e
+                }
+
+                if (e?.authenticationFailed) {
+                    const previousToken  = this.bridgeToken || process.env.NEO_FLEET_BRIDGE_TOKEN || null,
+                          refreshedToken = await this.refreshBridgeCredentials();
+
+                    if (refreshedToken && refreshedToken !== previousToken) {
+                        await this.connectToBridge();
+                        return
+                    }
+
+                    throw e
+                }
+
+                if (Boolean(this.bridgeToken || process.env.NEO_FLEET_BRIDGE_TOKEN)) {
+                    logger.info('Failed to connect to Fleet-managed Bridge:', e.message);
                     throw e
                 }
 
@@ -645,7 +810,9 @@ class ConnectionService extends Base {
      * @returns {void}
      */
     markBridgeConnected(ws) {
-        this.bridgeSocket = ws;
+        this.bridgeSocket              = ws;
+        this.hasAttemptedInitialConnect = true;
+        this.clearReconnectTimer();
 
         // A live connection is proof the previous failure no longer describes reality. Leaving it set
         // reports `{connected: true, spawnFailure: 'ENOENT'}` — internally contradictory, and it sends
@@ -925,6 +1092,8 @@ class ConnectionService extends Base {
         logger.info(`Tool: manage_connection called with action=${action}`);
 
         if (action === 'start') {
+            this.manualDisconnect = false;
+            this.clearReconnectTimer();
             await this.ensureBridgeAndConnect();
             const status = this.getStatus();
 
@@ -934,11 +1103,17 @@ class ConnectionService extends Base {
                 throw new Error('Failed to connect to Neural Link Bridge after spawn attempt.');
             }
         } else if (action === 'stop') {
+            this.manualDisconnect = true;
+            this.clearReconnectTimer();
+
             // 1. Disconnect Client
             if (this.bridgeSocket) {
                 this.bridgeSocket.close();
                 this.bridgeSocket = null;
             }
+
+            this.sessionData.clear();
+            this.activeAgents.clear();
 
             // 2. Kill Process
             if (this.bridgeProcess) {

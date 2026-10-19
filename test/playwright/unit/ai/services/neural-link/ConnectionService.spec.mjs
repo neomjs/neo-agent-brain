@@ -12,6 +12,7 @@ setup({
 });
 
 import {test, expect}                                     from '@playwright/test';
+import crypto                                             from 'crypto';
 import fs                                                 from 'fs';
 import {once}                                             from 'node:events';
 import os                                                 from 'os';
@@ -19,6 +20,7 @@ import path                                               from 'path';
 import {WebSocketServer}                                  from 'ws';
 import Neo                                                from 'neo.mjs/src/Neo.mjs';
 import * as core                                          from 'neo.mjs/src/core/_export.mjs';
+import Bridge                                             from '../../../../../../ai/mcp/server/neural-link/Bridge.mjs';
 import {createBridgeInfoPayload, STALE_BRIDGE_ERROR_CODE} from '../../../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
 
 /**
@@ -33,7 +35,8 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
     let BRIDGE_CWD_MISSING_SCRIPT, BRIDGE_NPM_SCRIPT, ConnectionService, getBridgeStdioLogPath, logBridgePayload,
         normalizeBridgePayloadDebugMaxChars, stringifyBridgePayloadForDebug,
         TARGET_DISCONNECTED_ERROR_CODE, BRIDGE_CLOSED_ERROR_CODE,
-        originalConnectToBridge, originalCreateBridgeUrl, originalCwd, originalOpenBridgeLogFile,
+        originalBridgeTokenEnv, originalConnectToBridge, originalCreateBridgeUrl, originalCwd,
+        originalOpenBridgeLogFile, originalReconnectDelayMs, originalRefreshEnvFn,
         originalSpawnBridge, originalSpawnBridgeProcess;
     const localBridgeServers = new Set();
 
@@ -52,19 +55,30 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
     });
 
     test.beforeEach(() => {
+        originalBridgeTokenEnv     = process.env.NEO_FLEET_BRIDGE_TOKEN;
         originalConnectToBridge    = ConnectionService.connectToBridge;
         originalCreateBridgeUrl    = ConnectionService.createBridgeUrl;
         originalCwd                = ConnectionService.cwd;
         originalOpenBridgeLogFile  = ConnectionService.openBridgeLogFile;
+        originalReconnectDelayMs   = ConnectionService.reconnectDelayMs;
+        originalRefreshEnvFn       = ConnectionService.refreshEnvFn;
         originalSpawnBridge        = ConnectionService.spawnBridge;
         originalSpawnBridgeProcess = ConnectionService.spawnBridgeProcess;
-        ConnectionService.bridgeSocket = null;
-        ConnectionService.bridgeProcess = null;
+        delete process.env.NEO_FLEET_BRIDGE_TOKEN;
+        ConnectionService.clearReconnectTimer();
+        ConnectionService.bridgeSocket               = null;
+        ConnectionService.bridgeProcess              = null;
+        ConnectionService.bridgeToken                = null;
+        ConnectionService.hasAttemptedInitialConnect = false;
+        ConnectionService.manualDisconnect           = false;
+        ConnectionService.activeAgents.clear();
         ConnectionService.pendingRequests.clear();
         ConnectionService.sessionData.clear();
     });
 
     test.afterEach(async () => {
+        ConnectionService.manualDisconnect = true;
+        ConnectionService.clearReconnectTimer();
         rpcClients.splice(0).forEach(client => {
             client.pendingRequests.forEach(pending => clearTimeout(pending.timeout));
             client.pendingRequests.clear();
@@ -72,15 +86,23 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         ConnectionService.pendingRequests.forEach(pending => clearTimeout(pending.timeout));
         ConnectionService.pendingRequests.clear();
         ConnectionService.sessionData.clear();
+        ConnectionService.activeAgents.clear();
         if (ConnectionService.bridgeSocket?.readyState === 1) ConnectionService.bridgeSocket.close();
-        ConnectionService.bridgeSocket         = null;
-        ConnectionService.bridgeProcess        = null;
-        ConnectionService.connectToBridge      = originalConnectToBridge;
-        ConnectionService.createBridgeUrl      = originalCreateBridgeUrl;
-        ConnectionService.cwd                  = originalCwd;
-        ConnectionService.openBridgeLogFile    = originalOpenBridgeLogFile;
-        ConnectionService.spawnBridge          = originalSpawnBridge;
-        ConnectionService.spawnBridgeProcess   = originalSpawnBridgeProcess;
+        ConnectionService.bridgeSocket               = null;
+        ConnectionService.bridgeProcess              = null;
+        ConnectionService.bridgeToken                = null;
+        ConnectionService.hasAttemptedInitialConnect = false;
+        ConnectionService.manualDisconnect           = false;
+        ConnectionService.connectToBridge            = originalConnectToBridge;
+        ConnectionService.createBridgeUrl            = originalCreateBridgeUrl;
+        ConnectionService.cwd                        = originalCwd;
+        ConnectionService.openBridgeLogFile          = originalOpenBridgeLogFile;
+        ConnectionService.reconnectDelayMs           = originalReconnectDelayMs;
+        ConnectionService.refreshEnvFn               = originalRefreshEnvFn;
+        ConnectionService.spawnBridge                = originalSpawnBridge;
+        ConnectionService.spawnBridgeProcess         = originalSpawnBridgeProcess;
+        if (originalBridgeTokenEnv === undefined) delete process.env.NEO_FLEET_BRIDGE_TOKEN;
+        else process.env.NEO_FLEET_BRIDGE_TOKEN = originalBridgeTokenEnv;
         await Promise.all([...localBridgeServers].map(async server => {
             server.clients.forEach(socket => socket.terminate());
             await new Promise(resolve => server.close(() => resolve()))
@@ -798,5 +820,146 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         expect(rows['app-z']).toMatchObject({appName: 'portal', firstAddressedBy: null, lastAddressedBy: null, addressedBy: [], addressedByMe: false});
         expect(ConnectionService.describeSessions().find(session => session.id === 'app-x'))
             .toEqual({id: 'app-x', appName: 'avatarLab', lastAddressedBy: {agentId: me, at: 3_000}})
+    });
+
+    /** @summary Starts an in-process keyed Bridge delegating to `Bridge.handleConnection` with an Ed25519 keypair. */
+    async function startKeyedBridge() {
+        const
+            {privateKey, publicKey} = crypto.generateKeyPairSync('ed25519'),
+            signToken               = (agentId, expiresAt = Date.now() + 60_000) => {
+                const payload = Buffer.from(JSON.stringify({agentId, expiresAt}));
+                return `${payload.toString('base64url')}.${crypto.sign(null, payload, privateKey).toString('base64url')}`
+            },
+            server = new WebSocketServer({host: '127.0.0.1', port: 0});
+
+        Bridge.agents          = new Map();
+        Bridge.agentSockets    = new Map();
+        Bridge.apps            = new Map();
+        Bridge.bridgePublicKey = publicKey;
+
+        server.on('connection', (socket, request) => Bridge.handleConnection(socket, request));
+        await once(server, 'listening');
+        localBridgeServers.add(server);
+
+        return {port: server.address().port, server, signToken}
+    }
+
+    test('when a keyed Bridge restarts after the initial NEO_FLEET_BRIDGE_TOKEN has expired, ConnectionService refreshes its token, clears stale sessionData/activeAgents, and automatically reconnects (#1215)', async () => {
+        const
+            keyed        = await startKeyedBridge(),
+            initialToken = keyed.signToken('neo-opus-vega', Date.now() + 80),
+            renewedToken = keyed.signToken('neo-opus-vega', Date.now() + 60_000),
+            refreshCalls = [];
+
+        process.env.NEO_FLEET_BRIDGE_TOKEN = initialToken;
+        ConnectionService.reconnectDelayMs = 20;
+        ConnectionService.createBridgeUrl  = ({
+            agentId = ConnectionService.agentId,
+            token   = ConnectionService.bridgeToken || process.env.NEO_FLEET_BRIDGE_TOKEN
+        } = {}) => originalCreateBridgeUrl.call(ConnectionService, {agentId, port: keyed.port, token});
+        ConnectionService.refreshEnvFn     = async () => {
+            refreshCalls.push('refresh');
+            return {NEO_FLEET_BRIDGE_TOKEN: renewedToken}
+        };
+
+        await ConnectionService.ensureBridgeAndConnect();
+        expect(Bridge.agents.has('neo-opus-vega')).toBe(true);
+
+        ConnectionService.handleAppConnected('app-stale', 'Portal');
+        ConnectionService.handleAgentConnected('peer-stale');
+        expect(ConnectionService.sessionData.has('app-stale')).toBe(true);
+        expect(ConnectionService.activeAgents.has('peer-stale')).toBe(true);
+
+        // Wait for initialToken (> 80 ms) to expire, then simulate a Bridge restart dropping all sockets.
+        await new Promise(resolve => setTimeout(resolve, 110));
+        const closed = new Promise(resolve => ConnectionService.bridgeSocket.once('close', resolve));
+        keyed.server.clients.forEach(socket => socket.terminate());
+        Bridge.agents.clear();
+        Bridge.agentSockets.clear();
+        await closed;
+
+        expect(ConnectionService.sessionData.size).toBe(0);
+        expect(ConnectionService.activeAgents.size).toBe(0);
+
+        await expect.poll(() => Bridge.agents.has('neo-opus-vega'), {timeout: 2000}).toBe(true);
+        expect(ConnectionService.getStatus().bridgeConnected).toBe(true);
+        expect(ConnectionService.bridgeToken).toBe(renewedToken);
+        expect(process.env.NEO_FLEET_BRIDGE_TOKEN).toBe(renewedToken);
+        expect(refreshCalls.length).toBeGreaterThanOrEqual(1)
+    });
+
+    test('manageConnection start after token expiry refreshes NEO_FLEET_BRIDGE_TOKEN and connects; stop suppresses auto-reconnect until start is called again (#1215)', async () => {
+        const
+            keyed        = await startKeyedBridge(),
+            expiredToken = keyed.signToken('neo-opus-vega', Date.now() - 1_000),
+            renewedToken = keyed.signToken('neo-opus-vega', Date.now() + 60_000);
+        let refreshes = 0;
+
+        process.env.NEO_FLEET_BRIDGE_TOKEN = expiredToken;
+        ConnectionService.reconnectDelayMs = 20;
+        ConnectionService.createBridgeUrl  = ({
+            agentId = ConnectionService.agentId,
+            token   = ConnectionService.bridgeToken || process.env.NEO_FLEET_BRIDGE_TOKEN
+        } = {}) => originalCreateBridgeUrl.call(ConnectionService, {agentId, port: keyed.port, token});
+        ConnectionService.refreshEnvFn     = async () => {
+            refreshes++;
+            return {NEO_FLEET_BRIDGE_TOKEN: renewedToken}
+        };
+
+        await expect(ConnectionService.manageConnection({action: 'start'})).resolves.toEqual({
+            message: 'Neural Link Bridge started and connected successfully.'
+        });
+        expect(refreshes).toBe(1);
+        expect(ConnectionService.bridgeToken).toBe(renewedToken);
+        expect(Bridge.agents.has('neo-opus-vega')).toBe(true);
+
+        ConnectionService.handleAppConnected('app-1', 'Portal');
+        ConnectionService.handleAgentConnected('peer-1');
+
+        await ConnectionService.manageConnection({action: 'stop'});
+        expect(ConnectionService.manualDisconnect).toBe(true);
+        expect(ConnectionService.reconnectTimer).toBeNull();
+        expect(ConnectionService.sessionData.size).toBe(0);
+        expect(ConnectionService.activeAgents.size).toBe(0);
+
+        await new Promise(resolve => setTimeout(resolve, 60));
+        expect(ConnectionService.getStatus().bridgeConnected).toBe(false);
+        expect(ConnectionService.reconnectTimer).toBeNull();
+
+        await expect(ConnectionService.manageConnection({action: 'start'})).resolves.toEqual({
+            message: 'Neural Link Bridge started and connected successfully.'
+        });
+        expect(ConnectionService.manualDisconnect).toBe(false);
+        expect(ConnectionService.getStatus().bridgeConnected).toBe(true)
+    });
+
+    test('when connectToBridge is rejected with 1008 or when NEO_FLEET_BRIDGE_TOKEN is present, ensureBridgeAndConnect never spawns an unkeyed Bridge (#1215)', async () => {
+        const
+            keyed        = await startKeyedBridge(),
+            expiredToken = keyed.signToken('neo-opus-vega', Date.now() - 1_000);
+        let spawned = 0;
+
+        ConnectionService.spawnBridge        = async () => { spawned++ };
+        ConnectionService.spawnBridgeProcess = () => { spawned++ };
+        ConnectionService.refreshEnvFn       = async () => null;
+        ConnectionService.createBridgeUrl    = ({
+            agentId = ConnectionService.agentId,
+            token   = ConnectionService.bridgeToken || process.env.NEO_FLEET_BRIDGE_TOKEN
+        } = {}) => originalCreateBridgeUrl.call(ConnectionService, {agentId, port: keyed.port, token});
+
+        // 1. Keyed Bridge rejects with 1008 (expired token, no refresh available) -> never spawns Bridge
+        process.env.NEO_FLEET_BRIDGE_TOKEN = expiredToken;
+        await expect(ConnectionService.ensureBridgeAndConnect()).rejects.toMatchObject({
+            authenticationFailed: true,
+            closeCode           : 1008
+        });
+        expect(spawned).toBe(0);
+
+        // 2. Fleet-token-managed seat receives ECONNREFUSED while Bridge is restarting -> never spawns unkeyed Bridge
+        ConnectionService.connectToBridge = async () => {
+            throw new Error('connect ECONNREFUSED 127.0.0.1:8081')
+        };
+        await expect(ConnectionService.ensureBridgeAndConnect()).rejects.toThrow('ECONNREFUSED');
+        expect(spawned).toBe(0)
     });
 });

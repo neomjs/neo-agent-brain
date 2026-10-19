@@ -7,11 +7,14 @@ import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {
     LaunchRefusal,
+    REFRESH_ENV_MESSAGE_TYPE,
+    REFRESH_ENV_RESULT_MESSAGE_TYPE,
     admitLaunch,
     composeTargetEnv,
     issuerOrigin,
     parseLauncherArgs,
     postAdmission,
+    requestParentEnvRefresh,
     resolveTarget,
     runTarget
 } from '../../../../../../ai/mcp/client/fleetMcpLauncher.mjs';
@@ -161,7 +164,7 @@ test.describe('fleetMcpLauncher', () => {
         const base = path.join(REPO_ROOT, 'test/playwright/test-results');
         await fs.mkdir(base, {recursive: true});
         const directory = await fs.mkdtemp(path.join(base, 'launcher-audit-'));
-        const target = path.join(directory, 'target.mjs'), grant = mintLaunchGrant();
+        const target    = path.join(directory, 'target.mjs'), grant = mintLaunchGrant();
         await fs.writeFile(target, 'process.stdout.write("target-ready");');
         const server = http.createServer(async (req, res) => {
             const chunks = [];
@@ -295,5 +298,68 @@ test.describe('fleetMcpLauncher', () => {
 
         expect(await run).toEqual({code: 7, signal: null});
         expect(process.listeners('SIGTERM').filter(listener => !before.has(listener)), 'the forwarders are removed').toEqual([])
+    });
+
+    test('runTarget with refreshEnv answers neo-fleet-mcp-refresh-env over IPC with newly redeemed NEO_FLEET_BRIDGE_TOKEN while grant and issuer stay absent from child env (#1215)', async () => {
+        const
+            grant  = mintLaunchGrant(),
+            tokens = ['bridge-token-initial', 'bridge-token-renewed'],
+            redeem = issuer(grant, async (request, owned) => {
+                if (redeem.calls.length > 1) {
+                    await new Promise(resolve => setTimeout(resolve, 30))
+                }
+                return signLaunchResponse(owned.secret, request, {
+                    outcome       : 'admitted',
+                    generationRoot: REPO_ROOT,
+                    env           : {NEO_FLEET_BRIDGE_TOKEN: tokens[Math.min(redeem.calls.length - 1, tokens.length - 1)]},
+                    args          : [TARGET]
+                })
+            }),
+            env      = rowEnv(grant),
+            launch   = await admitLaunch({argv: ['--server', 'neural-link'], env, request: redeem}),
+            seen     = {options: null, output: ''},
+            launcher = path.join(REPO_ROOT, 'ai/mcp/client/fleetMcpLauncher.mjs'),
+            childSrc = [
+                `import {requestParentEnvRefresh} from ${JSON.stringify(launcher)};`,
+                'const [first, second] = await Promise.all([requestParentEnvRefresh(), requestParentEnvRefresh()]);',
+                'process.stdout.write(JSON.stringify({',
+                '    hasGrant: Object.hasOwn(process.env, "NEO_FLEET_LAUNCH_GRANT"),',
+                '    hasIssuer: Object.hasOwn(process.env, "NEO_FLEET_LAUNCH_ISSUER"),',
+                '    initialToken: process.env.NEO_FLEET_BRIDGE_TOKEN,',
+                '    first,',
+                '    second',
+                '}));'
+            ].join(' ');
+
+        expect(launch.admittedEnv).toEqual({NEO_FLEET_BRIDGE_TOKEN: 'bridge-token-initial'});
+        expect(REFRESH_ENV_MESSAGE_TYPE).toBe('neo-fleet-mcp-refresh-env');
+        expect(REFRESH_ENV_RESULT_MESSAGE_TYPE).toBe('neo-fleet-mcp-refresh-env-result');
+
+        const result = await runTarget({
+            args      : ['--input-type=module', '-e', childSrc],
+            env       : launch.env,
+            refreshEnv: () => admitLaunch({argv: ['--server', 'neural-link'], env, request: redeem}),
+            spawnFn   : (command, args, options) => {
+                seen.options = options;
+                const child = spawn(command, args, {...options, stdio: ['ignore', 'pipe', 'inherit', 'ipc']});
+                child.stdout.on('data', chunk => seen.output += chunk);
+                return child
+            }
+        });
+
+        expect(result).toEqual({code: 0, signal: null});
+        expect(seen.options.stdio).toEqual(['inherit', 'inherit', 'inherit', 'ipc']);
+        expect(redeem.calls).toHaveLength(2);
+
+        const parsed = JSON.parse(seen.output);
+        expect(parsed).toEqual({
+            hasGrant    : false,
+            hasIssuer   : false,
+            initialToken: 'bridge-token-initial',
+            first       : {NEO_FLEET_BRIDGE_TOKEN: 'bridge-token-renewed'},
+            second      : {NEO_FLEET_BRIDGE_TOKEN: 'bridge-token-renewed'}
+        });
+
+        await expect(requestParentEnvRefresh({proc: {send: null, on: null}})).resolves.toBeNull()
     });
 });

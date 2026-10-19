@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import {spawn}                        from 'node:child_process';
+import crypto                         from 'node:crypto';
 import fs                             from 'node:fs';
 import http                           from 'node:http';
 import path                           from 'node:path';
@@ -24,16 +25,21 @@ import {
     verifyLaunchResponse
 }                                               from '../../services/fleet/mcpLaunchAdmission.mjs';
 
+export const
+    REFRESH_ENV_MESSAGE_TYPE        = 'neo-fleet-mcp-refresh-env',
+    REFRESH_ENV_RESULT_MESSAGE_TYPE = 'neo-fleet-mcp-refresh-env-result';
+
 const
     // The installation this launcher belongs to: an admitted target must be one of its files.
     INSTALL_ROOT      = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
     // Longer than the issuer's own bounds together: a Start still in progress, then a credential proof.
     REQUEST_TIMEOUT_MS = 45000,
     STARTUP_BUDGET_MS  = 60000,
-    TRANSIENT_CODES   = new Set([REFUSALS.PROOF_UNAVAILABLE, REFUSALS.ISSUER_UNAVAILABLE, REFUSALS.PENDING_TIMEOUT]),
-    FORWARDED_SIGNALS = ['SIGHUP', 'SIGINT', 'SIGTERM'],
-    REFUSAL_CODES     = new Set(Object.values(REFUSALS)),
-    REFUSAL_REASONS   = new Set([...Object.values(REASONS), ...Object.values(CREDENTIALS)]);
+    PARENT_IPC_ENV_VAR = 'NEO_FLEET_MCP_PARENT_IPC',
+    TRANSIENT_CODES    = new Set([REFUSALS.PROOF_UNAVAILABLE, REFUSALS.ISSUER_UNAVAILABLE, REFUSALS.PENDING_TIMEOUT]),
+    FORWARDED_SIGNALS  = ['SIGHUP', 'SIGINT', 'SIGTERM'],
+    REFUSAL_CODES      = new Set(Object.values(REFUSALS)),
+    REFUSAL_REASONS    = new Set([...Object.values(REASONS), ...Object.values(CREDENTIALS)]);
 
 /**
  * @summary A refusal the launcher reports on its one stderr line: a code and the issuer's reason, each from
@@ -142,7 +148,7 @@ export function composeTargetEnv(env, admitted) {
  * @param {Function} [options.request=postAdmission] `(origin, body, {timeoutMs}) => Promise<parsed answer>`.
  * @param {Function} [options.now=performance.now] Monotonic clock seam for deadline controls.
  * @param {Function} [options.sleep] Backoff seam; production waits with a timer.
- * @returns {Promise<{args: String[], env: Object, generationRoot: String}>}
+ * @returns {Promise<{args: String[], env: Object, admittedEnv: Object, generationRoot: String}>}
  * @throws {LaunchRefusal}
  */
 export async function admitLaunch({argv, env, root = INSTALL_ROOT, request = postAdmission, now = () => performance.now(), sleep = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
@@ -183,7 +189,12 @@ export async function admitLaunch({argv, env, root = INSTALL_ROOT, request = pos
             } catch {
                 throw new LaunchRefusal(REFUSALS.TARGET_INVALID)
             }
-            return {args: resolveTarget(payload.args, root), env: composeTargetEnv(env, payload.env), generationRoot}
+            return {
+                args       : resolveTarget(payload.args, root),
+                env        : composeTargetEnv(env, payload.env),
+                admittedEnv: {...payload.env},
+                generationRoot
+            }
         } catch (error) {
             if (!(error instanceof LaunchRefusal) || !TRANSIENT_CODES.has(error.code)) throw error;
             last = error
@@ -200,23 +211,67 @@ export async function admitLaunch({argv, env, root = INSTALL_ROOT, request = pos
 
 /**
  * @summary Start the admitted target on Desktop's own stdio and wait for it. Signals reach it as they reach
- * the launcher, and its exit is the launcher's exit.
+ * the launcher, and its exit is the launcher's exit. When `refreshEnv` is supplied, opens a 4th IPC descriptor
+ * (`stdio: ['inherit', 'inherit', 'inherit', 'ipc']`) so the child can ask the parent launcher to re-redeem
+ * fresh admitted credentials without exposing `NEO_FLEET_LAUNCH_GRANT` or `NEO_FLEET_LAUNCH_ISSUER` to the child.
  * @param {Object} options
  * @param {String[]} options.args
  * @param {Object} options.env
  * @param {String} [options.execPath=process.execPath] The executable the row runs, Node or Electron as Node.
  * @param {Function} [options.spawnFn=spawn]
+ * @param {Function|null} [options.refreshEnv=null] Optional `() => Promise<{admittedEnv?: Object, env?: Object}>` callback.
  * @returns {Promise<{code: Number|null, signal: String|null}>}
  */
-export function runTarget({args, env, execPath = process.execPath, spawnFn = spawn}) {
+export function runTarget({args, env, execPath = process.execPath, spawnFn = spawn, refreshEnv = null}) {
     return new Promise((resolve, reject) => {
+        const hasRefreshIpc = typeof refreshEnv === 'function';
         let child;
 
         try {
-            child = spawnFn(execPath, args, {stdio: 'inherit', env})
+            child = spawnFn(execPath, args, {
+                stdio: hasRefreshIpc ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit',
+                env  : hasRefreshIpc ? {...env, [PARENT_IPC_ENV_VAR]: '1'} : env
+            })
         } catch {
             reject(new LaunchRefusal(REFUSALS.SPAWN_FAILED));
             return
+        }
+
+        let inFlight = null, onMessage = null;
+
+        if (hasRefreshIpc && typeof child?.on === 'function') {
+            onMessage = async msg => {
+                if (!msg || typeof msg !== 'object' || msg.type !== REFRESH_ENV_MESSAGE_TYPE || typeof msg.id !== 'string') {
+                    return
+                }
+
+                try {
+                    inFlight ??= Promise.resolve().then(() => refreshEnv()).finally(() => { inFlight = null });
+                    const result       = await inFlight,
+                          refreshedEnv = result?.admittedEnv ?? result?.env ?? {};
+
+                    if (child.connected !== false) {
+                        child.send?.({
+                            type: REFRESH_ENV_RESULT_MESSAGE_TYPE,
+                            id  : msg.id,
+                            ok  : true,
+                            env : refreshedEnv && typeof refreshedEnv === 'object' ? {...refreshedEnv} : {}
+                        })
+                    }
+                } catch (error) {
+                    if (child.connected !== false) {
+                        child.send?.({
+                            type  : REFRESH_ENV_RESULT_MESSAGE_TYPE,
+                            id    : msg.id,
+                            ok    : false,
+                            code  : error?.code ?? null,
+                            reason: error?.reason ?? null
+                        })
+                    }
+                }
+            };
+
+            child.on('message', onMessage)
         }
 
         const forward  = signal => () => child.kill(signal);
@@ -224,7 +279,10 @@ export function runTarget({args, env, execPath = process.execPath, spawnFn = spa
 
         handlers.forEach(([signal, handler]) => process.on(signal, handler));
 
-        const settle = () => handlers.forEach(([signal, handler]) => process.off(signal, handler));
+        const settle = () => {
+            if (onMessage) child.off?.('message', onMessage);
+            handlers.forEach(([signal, handler]) => process.off(signal, handler))
+        };
 
         child.once('error', () => {
             settle();
@@ -234,6 +292,62 @@ export function runTarget({args, env, execPath = process.execPath, spawnFn = spa
             settle();
             resolve({code, signal})
         })
+    })
+}
+
+/**
+ * @summary Ask the parent `fleetMcpLauncher` process over Node IPC to re-redeem the launch grant and return
+ * fresh admitted environment values (such as a renewed `NEO_FLEET_BRIDGE_TOKEN`) without exposing
+ * `NEO_FLEET_LAUNCH_GRANT` or `NEO_FLEET_LAUNCH_ISSUER` to the child process.
+ * @param {Object} [options={}]
+ * @param {Object} [options.proc=process] Process-like IPC endpoint (`send`, `on`, `off`).
+ * @param {Number} [options.timeoutMs=15000] Maximum wait for the parent reply.
+ * @returns {Promise<Object|null>} Fresh admitted env map, or `null` when IPC is unavailable or refused.
+ */
+export function requestParentEnvRefresh({proc = process, timeoutMs = 15000} = {}) {
+    if (
+        typeof proc?.send !== 'function' ||
+        typeof proc?.on !== 'function' ||
+        proc.connected === false ||
+        (proc === process && process.env[PARENT_IPC_ENV_VAR] !== '1')
+    ) {
+        return Promise.resolve(null)
+    }
+
+    return new Promise(resolve => {
+        const id      = crypto.randomUUID();
+        let   settled = false, timer = null;
+
+        const finish = value => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            proc.off?.('message', onMessage);
+            proc.off?.('disconnect', onDisconnect);
+            resolve(value)
+        };
+
+        const onMessage = msg => {
+            if (!msg || typeof msg !== 'object' || msg.type !== REFRESH_ENV_RESULT_MESSAGE_TYPE || msg.id !== id) {
+                return
+            }
+
+            finish(msg.ok && msg.env && typeof msg.env === 'object' && !Array.isArray(msg.env) ? {...msg.env} : null)
+        };
+
+        const onDisconnect = () => finish(null);
+
+        timer = setTimeout(() => finish(null), timeoutMs);
+        timer.unref?.();
+
+        proc.on('message', onMessage);
+        proc.on('disconnect', onDisconnect);
+
+        try {
+            proc.send({type: REFRESH_ENV_MESSAGE_TYPE, id})
+        } catch {
+            finish(null)
+        }
     })
 }
 
@@ -290,10 +404,15 @@ export function postAdmission(origin, body, {timeoutMs}) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-    admitLaunch({argv: process.argv.slice(2), env: process.env})
+    const launchArgs = process.argv.slice(2);
+
+    admitLaunch({argv: launchArgs, env: process.env})
         .then(launch => {
             process.stderr.write(`NEO_MCP_LAUNCH_ADMITTED ${JSON.stringify({generationRoot: launch.generationRoot})}\n`);
-            return runTarget(launch)
+            return runTarget({
+                ...launch,
+                refreshEnv: () => admitLaunch({argv: launchArgs, env: process.env})
+            })
         })
         .then(({code, signal}) => {
             if (signal) process.kill(process.pid, signal);
