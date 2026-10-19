@@ -88,18 +88,27 @@ function toRows(servers) {
  * @summary Connect to one row as its harness would and ask `initialize`, `tools/list` and `healthcheck`.
  *
  * A stdio row runs its `command` with its `args` and its `env` over the client's default environment. A Codex `url`
- * row speaks streamable HTTP, with the bearer read from the variable `bearer_token_env_var` names.
+ * row speaks streamable HTTP, with the bearer read from the variable `bearer_token_env_var` names. A row its config
+ * switches off (`enabled = false` in TOML, `"disabled": true` in JSON) is recorded as disabled and never started, as
+ * the app would leave it. A server that lists no `healthcheck` tool, or answers it with `isError`, fails that ask.
  * @param {Object} options
  * @param {Object} options.row
- * @param {Object} options.env The stand-in's own environment, for a row's bearer variable.
+ * @param {Object} options.env     The stand-in's own environment, for a row's bearer variable.
+ * @param {Set}    options.clients Every live client, registered before it connects, so a stop can reap it mid-probe.
  * @returns {Promise<{result: Object, client: Client|null}>} The client stays open on success.
  */
-export async function probeRow({row, env}) {
+export async function probeRow({row, env, clients}) {
+    if (row.enabled === false || row.disabled === true) {
+        return {client: null, result: {name: row.name, disabled: true}}
+    }
+
     const
         started = Date.now(),
         client  = new Client({name: 'neo-seat-stand-in', version: '1.0.0'}),
         stderr  = [];
     let step = 'initialize';
+
+    clients.add(client);
 
     try {
         const transport = row.url
@@ -120,12 +129,14 @@ export async function probeRow({row, env}) {
         step = 'tools/list';
         const {tools} = await withTimeout(client.listTools(), step);
         step = 'healthcheck';
-        const healthcheck = tools.some(tool => tool.name === 'healthcheck')
-            ? readToolResult(await withTimeout(client.callTool({name: 'healthcheck', arguments: {}}), step))
-            : null;
+        if (!tools.some(tool => tool.name === 'healthcheck')) throw new Error('the server lists no healthcheck tool');
 
-        return {client, result: {name: row.name, ok: true, tools: tools.length, healthcheck, ms: Date.now() - started}}
+        const answer = await withTimeout(client.callTool({name: 'healthcheck', arguments: {}}), step);
+        if (answer.isError) throw new Error(`healthcheck answered isError: ${JSON.stringify(readToolResult(answer))}`);
+
+        return {client, result: {name: row.name, ok: true, tools: tools.length, healthcheck: readToolResult(answer), ms: Date.now() - started}}
     } catch (error) {
+        clients.delete(client);
         await client.close().catch(() => {});
 
         return {client: null, result: {
@@ -192,7 +203,9 @@ export function appendRecord(instanceHome, record) {
 }
 
 /**
- * @summary Run as the harness: probe every row, record the launch, then hold the servers until SIGTERM.
+ * @summary Run as the harness: probe every row, record the launch, then hold the servers until SIGTERM. The stop is
+ * owned before the first probe starts, so a Stop that arrives while a server is still answering reaps it too; a
+ * launch stopped before its probes finish writes no record.
  * @param {Object}   options
  * @param {String[]} options.argv
  * @param {Object}   options.env
@@ -204,10 +217,19 @@ export async function main({argv, env}) {
     }
 
     const
+        clients = new Set(),
+        stop    = async () => {
+            await Promise.allSettled([...clients].map(client => client.close()));
+            process.exit(0)
+        };
+
+    process.on('SIGTERM', stop);
+    process.on('SIGINT', stop);
+
+    const
         startedAt = new Date().toISOString(),
         launch    = resolveLaunch({argv, env}),
-        probes    = await Promise.all(launch.rows.map(row => probeRow({row, env}))),
-        clients   = probes.map(probe => probe.client).filter(Boolean);
+        probes    = await Promise.all(launch.rows.map(row => probeRow({row, env, clients})));
 
     appendRecord(launch.instanceHome, {
         family : launch.family,
@@ -218,13 +240,6 @@ export async function main({argv, env}) {
         rows   : probes.map(probe => probe.result)
     });
 
-    const stop = async () => {
-        await Promise.allSettled(clients.map(client => client.close()));
-        process.exit(0)
-    };
-
-    process.on('SIGTERM', stop);
-    process.on('SIGINT', stop);
     setInterval(() => {}, 1 << 30)
 }
 

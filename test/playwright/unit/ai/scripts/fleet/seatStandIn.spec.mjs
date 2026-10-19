@@ -142,5 +142,77 @@ test.describe('ai/scripts/fleet/seatStandIn', () => {
 
     test('a launch without a family environment is refused by name', () => {
         expect(() => resolveLaunch({argv: [], env: {}})).toThrow('expected CLAUDE_USER_DATA_DIR or CODEX_HOME')
+    });
+
+    test('a server without a healthcheck tool, or one answering isError, fails that ask by name', async () => {
+        const
+            silent  = fixtureRow(root, 'no-tool'),
+            failing = fixtureRow(root, 'is-error');
+
+        silent.env.FIXTURE_TOOL    = 'ping';
+        failing.env.FIXTURE_HEALTH = 'error';
+        fs.writeFileSync(path.join(root, 'claude_desktop_config.json'), JSON.stringify({mcpServers: {silent, failing}}));
+
+        const {child, record} = await launch({env: {CLAUDE_USER_DATA_DIR: root}, instanceHome: root});
+
+        child.kill('SIGTERM');
+
+        expect(record.rows.find(row => row.name === 'silent')).toMatchObject({ok: false, step: 'healthcheck', reason: 'the server lists no healthcheck tool'});
+        expect(record.rows.find(row => row.name === 'failing')).toMatchObject({ok: false, step: 'healthcheck'});
+        expect(record.rows.find(row => row.name === 'failing').reason).toContain('answered isError')
+    });
+
+    test('a row its config switches off is recorded as disabled and never started, in both formats', async () => {
+        const codexHome = path.join(root, 'codex-home');
+
+        fs.mkdirSync(codexHome, {recursive: true});
+        fs.writeFileSync(path.join(codexHome, 'config.toml'), [
+            '[mcp_servers.off]',
+            `command = ${JSON.stringify(process.execPath)}`,
+            `args = ${JSON.stringify([fixturePath])}`,
+            'enabled = false',
+            '[mcp_servers.off.env]',
+            `FIXTURE_PID_FILE = ${JSON.stringify(path.join(root, 'toml-off.pid'))}`
+        ].join('\n'));
+        fs.writeFileSync(path.join(root, 'claude_desktop_config.json'), JSON.stringify({mcpServers: {
+            off: {...fixtureRow(root, 'json-off'), disabled: true}
+        }}));
+
+        const codex  = await launch({env: {CODEX_HOME: codexHome}, instanceHome: root}),
+              claude = await launch({env: {CLAUDE_USER_DATA_DIR: root}, instanceHome: root});
+
+        codex.child.kill('SIGTERM');
+        claude.child.kill('SIGTERM');
+
+        expect(codex.record.rows).toEqual([{name: 'off', disabled: true}]);
+        expect(claude.record.rows).toEqual([{name: 'off', disabled: true}]);
+        expect(fs.existsSync(path.join(root, 'toml-off.pid')), 'the TOML row never started').toBe(false);
+        expect(fs.existsSync(path.join(root, 'json-off.pid')), 'the JSON row never started').toBe(false)
+    });
+
+    test('a Stop while a server is still answering reaps that server, and the launch writes no record', async () => {
+        const slow = fixtureRow(root, 'slow');
+
+        slow.env.FIXTURE_DELAY_MS = '30000';
+        fs.writeFileSync(path.join(root, 'claude_desktop_config.json'), JSON.stringify({mcpServers: {slow}}));
+
+        const
+            child   = spawn(process.execPath, [standInPath], {env: {PATH: process.env.PATH, HOME: process.env.HOME, CLAUDE_USER_DATA_DIR: root}, stdio: 'ignore'}),
+            pidFile = path.join(root, 'slow.pid');
+
+        await expect.poll(() => fs.existsSync(pidFile), {timeout: 20_000}).toBe(true);
+        const serverPid = Number(fs.readFileSync(pidFile, 'utf8'));
+
+        // the healthcheck is still pending: the server holds it for 30 s
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        const exitCode = await new Promise(resolve => {
+            child.once('exit', resolve);
+            child.kill('SIGTERM')
+        });
+
+        expect(exitCode).toBe(0);
+        await expect.poll(() => isAlive(serverPid), {timeout: 5_000}).toBe(false);
+        expect(fs.existsSync(path.join(root, STAND_IN_RECORD_FILE))).toBe(false)
     })
 });

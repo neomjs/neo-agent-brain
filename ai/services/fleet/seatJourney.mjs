@@ -1,10 +1,11 @@
-import {spawnSync}                    from 'node:child_process';
-import fs                             from 'node:fs';
-import path                           from 'node:path';
-import {fileURLToPath, pathToFileURL} from 'node:url';
-import {isDeepStrictEqual}            from 'node:util';
-import {parse as parseToml}           from 'smol-toml';
-import {deriveAgentRepoPath}          from './deriveAgentRepoPath.mjs';
+import {spawnSync}                       from 'node:child_process';
+import fs                                from 'node:fs';
+import path                              from 'node:path';
+import {fileURLToPath, pathToFileURL}    from 'node:url';
+import {isDeepStrictEqual}               from 'node:util';
+import {parse as parseToml}              from 'smol-toml';
+import {mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
+import {deriveAgentRepoPath}             from './deriveAgentRepoPath.mjs';
 
 /**
  * @module ai/services/fleet/seatJourney
@@ -18,7 +19,9 @@ import {deriveAgentRepoPath}          from './deriveAgentRepoPath.mjs';
  * in CI and against a packaged candidate before it is installed.
  *
  * Each step yields one row `{seat, family, step, ok, reason, detail}`. The rows are the verdict: the journey never
- * throws for a failed step, so one red step still leaves the rest of the evidence.
+ * throws, a failed wire call included, so one red step still leaves the rest of the evidence. It always attempts a
+ * closing Stop for every seat it defined; the caller owns everything else it started (the fleet server, the Bridge,
+ * the roots).
  * @see ai/scripts/fleet/seatStandIn.mjs
  */
 
@@ -118,8 +121,16 @@ export function seedSeatCheckout({managedRoot, agentId, repoSlug}) {
 }
 
 /**
- * @summary A harness config as data, without the Fleet's own rows: what an operator owns in the file. JSON for
- * Claude Desktop, TOML for Codex Desktop.
+ * The keys inside a Fleet row that are still the operator's: the seat's own on/off switch, which the Fleet carries
+ * through every rewrite and retirement of its tables (`prepareManagedAgentWorkspace`, Codex home convergence).
+ * @type {String[]}
+ */
+export const OPERATOR_ROW_SWITCHES = Object.freeze(['enabled', 'disabled']);
+
+/**
+ * @summary A harness config as data, minus what the Fleet owns: what an operator owns in the file. Inside a Fleet row
+ * only the switch is the operator's; the command, args, env and grant are the Fleet's. JSON for Claude Desktop, TOML
+ * for Codex Desktop.
  * @param {String} file
  * @returns {Object}
  */
@@ -130,7 +141,10 @@ export function readOperatorContent(file) {
         data    = isToml ? parseToml(text) : JSON.parse(text),
         servers = isToml ? data.mcp_servers : data.mcpServers;
 
-    Object.keys(servers ?? {}).filter(name => name.startsWith(FLEET_ROW_PREFIX)).forEach(name => delete servers[name]);
+    Object.keys(servers ?? {}).filter(name => name.startsWith(FLEET_ROW_PREFIX)).forEach(name => {
+        const kept = Object.fromEntries(OPERATOR_ROW_SWITCHES.filter(key => key in servers[name]).map(key => [key, servers[name][key]]));
+        Object.keys(kept).length ? servers[name] = kept : delete servers[name]
+    });
     return data
 }
 
@@ -165,31 +179,55 @@ export function compareOperatorContent(before) {
 }
 
 /**
- * @summary Judges one stand-in record: every row answered all three asks, and Neural Link reports a connected Bridge
- * on the port the run owns. A seat reaching any other Bridge, the host's default among them, fails: the Fleet carries
- * its configured port into every seat (`NEO_NL_PORT`).
- * @param {Object} record
- * @param {Number|null} [bridgePort=null] The run's Bridge port; `null` skips the port check.
+ * @summary The Fleet rows a seat's harness config must carry and answer: `neo-mjs-<server>` for every server its MCP
+ * matrix enables, over its forge's catalog.
+ * @param {Object} definition The seat's `defineAgent` definition.
+ * @returns {String[]}
+ */
+export function expectedRows(definition) {
+    const matrix = resolveMcpMatrix(definition.mcpServers, mcpCatalogFor(definition.forge ?? 'github'));
+
+    return Object.keys(matrix).filter(key => matrix[key]).map(key => FLEET_ROW_PREFIX + key)
+}
+
+/**
+ * @summary Judges one stand-in record by positive evidence only. Every expected row must be present, switched on, and
+ * answer all three asks. A Fleet row nobody expected must not run. Neural Link must report `healthy` with a connected
+ * Bridge on the port the run owns: the Fleet carries its configured port into every seat (`NEO_NL_PORT`), so a seat
+ * reaching any other Bridge, the host's default among them, fails. A missing answer is never a pass.
+ * @param {Object}      record
+ * @param {Object}      options
+ * @param {String[]}    options.expected          From {@link expectedRows}.
+ * @param {Number|null} [options.bridgePort=null] The run's Bridge port; `null` skips the port check.
  * @returns {{ok: Boolean, reason: String|null}}
  */
-export function judgeRecord(record, bridgePort = null) {
-    const failed = record.rows.filter(row => !row.ok);
+export function judgeRecord(record, {expected, bridgePort = null}) {
+    const
+        rows     = new Map(record.rows.map(row => [row.name, row])),
+        failures = [];
 
-    if (failed.length) {
-        return {ok: false, reason: failed.map(row => `${row.name} failed at ${row.step}: ${row.reason}`).join('; ')}
+    for (const name of expected) {
+        const row = rows.get(name);
+
+        if (!row) failures.push(`${name} is missing from the harness config`);
+        else if (row.disabled) failures.push(`${name} is switched off in the harness config`);
+        else if (!row.ok) failures.push(`${name} failed at ${row.step}: ${row.reason}`)
     }
 
-    const bridge = record.rows.find(row => row.name.includes('neural-link'))?.healthcheck?.bridge;
+    record.rows.filter(row => row.name.startsWith(FLEET_ROW_PREFIX) && !expected.includes(row.name) && !row.disabled)
+        .forEach(row => failures.push(`${row.name} runs although the seat's matrix does not enable it`));
 
-    if (bridge && bridgePort !== null && bridge.port !== bridgePort) {
-        return {ok: false, reason: `neural-link reached the Bridge on port ${bridge.port}, not the run's ${bridgePort}`}
+    const neuralLink = expected.includes(FLEET_ROW_PREFIX + 'neural-link') && rows.get(FLEET_ROW_PREFIX + 'neural-link');
+
+    if (neuralLink?.ok) {
+        const {status, bridge} = neuralLink.healthcheck ?? {};
+
+        if (status !== 'healthy') failures.push(`neural-link reported '${status ?? 'no status'}', not healthy`);
+        if (!bridge?.connected) failures.push('neural-link reported no connected Bridge');
+        else if (bridgePort !== null && bridge.port !== bridgePort) failures.push(`neural-link reached the Bridge on port ${bridge.port}, not the run's ${bridgePort}`)
     }
 
-    if (bridge && !bridge.connected) {
-        return {ok: false, reason: `neural-link answered without a connected Bridge on port ${bridge.port}`}
-    }
-
-    return {ok: true, reason: null}
+    return failures.length ? {ok: false, reason: failures.join('; ')} : {ok: true, reason: null}
 }
 
 /**
@@ -304,63 +342,97 @@ export async function runSeatJourney({fleet, restartFleet, seats, bridgePort = n
         }
 
         starts.set(id, record);
-        const verdict = judgeRecord(record, bridgePort);
+        const verdict = judgeRecord(record, {expected: expectedRows(seat.definition), bridgePort});
         add(seat, step, verdict.ok, verdict.reason, {pid: status.pid, rows: record.rows});
         return verdict.ok ? record : null
     }
 
-    for (const seat of seats) {
+    /**
+     * @summary Runs one step's wire calls; a throw becomes that step's failed row instead of ending the journey.
+     * @param {Object}   seat
+     * @param {String}   step
+     * @param {Function} fn
+     * @returns {Promise<*>} The step's value, or `null` once it failed.
+     */
+    async function attempt(seat, step, fn) {
         try {
-            await fleet.defineAgent(seat.definition);
-            await fleet.setRepo({id: seat.definition.id, ...seat.repo});
-            add(seat, 'define', true)
+            return await fn()
         } catch (error) {
-            add(seat, 'define', false, error.message)
+            add(seat, step, false, `the wire call failed: ${error.message}`);
+            return null
         }
     }
 
-    const defined = seats.filter(seat => rows.some(row => row.seat === seat.definition.id && row.step === 'define' && row.ok));
+    let defined = [];
 
-    for (const seat of defined) {
-        const first = await start(seat, 'start');
-        if (!first) continue;
+    try {
+        for (const seat of seats) {
+            await attempt(seat, 'define', async () => {
+                await fleet.defineAgent(seat.definition);
+                await fleet.setRepo({id: seat.definition.id, ...seat.repo});
+                add(seat, 'define', true)
+            })
+        }
 
-        await fleet.stopAgent(seat.definition.id);
-        const stopped = await waitFor(async () => !isAlive(first.pid) && (await rosterRow(fleet, seat.definition.id))?.state === 'stopped', timeoutMs);
-        if (!add(seat, 'stop', Boolean(stopped), stopped ? null : 'the seat did not reach stopped')) continue;
+        defined = seats.filter(seat => rows.some(row => row.seat === seat.definition.id && row.step === 'define' && row.ok));
 
-        // What an operator adds between two Starts must survive the second, while the Fleet's rows take fresh grants.
-        first.configs.forEach(config => seedOperatorContent(config.path, `${seat.definition.id}:${first.pid}`));
-        const before = Object.fromEntries(first.configs.map(config => [config.path, readOperatorContent(config.path)]));
+        for (const seat of defined) {
+            const first = await attempt(seat, 'start', () => start(seat, 'start'));
+            if (!first) continue;
 
-        if (!await start(seat, 'start-again')) continue;
+            const stopped = await attempt(seat, 'stop', async () => {
+                await fleet.stopAgent(seat.definition.id);
+                const reached = await waitFor(async () => !isAlive(first.pid) && (await rosterRow(fleet, seat.definition.id))?.state === 'stopped', timeoutMs);
+                return add(seat, 'stop', Boolean(reached), reached ? null : 'the seat did not reach stopped')
+            });
+            if (!stopped) continue;
 
-        const preserved = compareOperatorContent(before);
-        add(seat, 'operator-content', preserved.ok, preserved.ok ? null : `changed by the second Start: ${preserved.changed.join(', ')}`)
-    }
+            // What an operator adds between two Starts must survive the second, while the Fleet's rows take fresh grants.
+            first.configs.forEach(config => seedOperatorContent(config.path, `${seat.definition.id}:${first.pid}`));
+            const before = Object.fromEntries(first.configs.map(config => [config.path, readOperatorContent(config.path)]));
 
-    // The unclean restart: the Fleet dies with its seats up, and the seats are gone by the next boot. Recovery must
-    // read them as stopped, the state the roster offers Start for.
-    const running = defined.filter(seat => starts.has(seat.definition.id));
+            if (!await attempt(seat, 'start-again', () => start(seat, 'start-again'))) continue;
 
-    if (running.length) {
-        fleet = await restartFleet({beforeBoot: async () => {
-            const pids = running.map(seat => starts.get(seat.definition.id).pid).filter(isAlive);
+            const preserved = compareOperatorContent(before);
+            add(seat, 'operator-content', preserved.ok, preserved.ok ? null : `changed by the second Start: ${preserved.changed.join(', ')}`)
+        }
 
-            pids.forEach(pid => process.kill(pid, 'SIGTERM'));
-            await waitFor(() => pids.every(pid => !isAlive(pid)), timeoutMs)
-        }});
+        // The unclean restart: the Fleet dies with its seats up, and the seats are gone by the next boot. Recovery must
+        // read them as stopped, the state the roster offers Start for.
+        const running = defined.filter(seat => starts.has(seat.definition.id));
 
-        for (const seat of running) {
-            const row = await rosterRow(fleet, seat.definition.id);
+        if (running.length) {
+            try {
+                fleet = await restartFleet({beforeBoot: async () => {
+                    const pids = running.map(seat => starts.get(seat.definition.id).pid).filter(isAlive);
 
-            if (add(seat, 'recover', row?.state === 'stopped', row?.state === 'stopped' ? null : `recovered as '${row?.state ?? 'absent'}'`, row)) {
-                await start(seat, 'start-after-recovery')
+                    pids.forEach(pid => process.kill(pid, 'SIGTERM'));
+                    await waitFor(() => pids.every(pid => !isAlive(pid)), timeoutMs)
+                }})
+            } catch (error) {
+                running.forEach(seat => add(seat, 'recover', false, `the Fleet restart failed: ${error.message}`));
+                return {ok: false, rows}
+            }
+
+            for (const seat of running) {
+                let row;
+
+                try {
+                    row = await rosterRow(fleet, seat.definition.id)
+                } catch (error) {
+                    add(seat, 'recover', false, `the wire call failed: ${error.message}`);
+                    continue
+                }
+
+                if (add(seat, 'recover', row?.state === 'stopped', row?.state === 'stopped' ? null : `recovered as '${row?.state ?? 'absent'}'`, row)) {
+                    await attempt(seat, 'start-after-recovery', () => start(seat, 'start-after-recovery'))
+                }
             }
         }
+
+        return {ok: rows.every(row => row.ok), rows}
+    } finally {
+        // The closing Stop for every seat this journey defined, whatever failed before it.
+        await Promise.allSettled(defined.map(seat => Promise.resolve().then(() => fleet.stopAgent(seat.definition.id))))
     }
-
-    await Promise.allSettled(defined.map(seat => fleet.stopAgent(seat.definition.id)));
-
-    return {ok: rows.every(row => row.ok), rows}
 }

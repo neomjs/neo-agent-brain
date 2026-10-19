@@ -9,6 +9,7 @@ import {fileURLToPath}               from 'node:url';
 import {createOnboardingFleetBridge} from '../../../../../../ai/scripts/fleet/onboardPeer.mjs';
 import {
     compareOperatorContent,
+    expectedRows,
     judgeRecord,
     readOperatorContent,
     runSeatJourney,
@@ -53,14 +54,73 @@ test.describe('ai/services/fleet/seatJourney — judgements', () => {
         }
     });
 
-    test('judgeRecord fails a row that did not answer, a Neural Link without a connected Bridge, and one on another port', () => {
-        const answered = {name: 'neo-mjs-neural-link', ok: true, healthcheck: {status: 'healthy', bridge: {connected: true, port: 4321}}};
+    test("the switch inside a Fleet row is the operator's: a fresh grant passes, a flipped switch fails", () => {
+        const
+            directory = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-journey-switch-')),
+            toml      = path.join(directory, 'config.toml'),
+            write     = (grant, enabled) => fs.writeFileSync(toml, [
+                '[mcp_servers."neo-mjs-neural-link"]', 'command = "node"', `enabled = ${enabled}`,
+                '[mcp_servers."neo-mjs-neural-link".env]', `NEO_FLEET_LAUNCH_GRANT = "${grant}"`
+            ].join('\n'));
 
-        expect(judgeRecord({rows: [answered]}, 4321)).toEqual({ok: true, reason: null});
-        expect(judgeRecord({rows: [answered, {name: 'neo-mjs-github-workflow', ok: false, step: 'initialize', reason: 'exited'}]}).reason)
-            .toBe('neo-mjs-github-workflow failed at initialize: exited');
-        expect(judgeRecord({rows: [{...answered, healthcheck: {bridge: {connected: false, port: 4321}}}]}, 4321).ok).toBe(false);
-        expect(judgeRecord({rows: [answered]}, 8081).reason).toBe("neural-link reached the Bridge on port 4321, not the run's 8081")
+        try {
+            write('a', true);
+            expect(readOperatorContent(toml)).toEqual({mcp_servers: {'neo-mjs-neural-link': {enabled: true}}});
+
+            const before = {[toml]: readOperatorContent(toml)};
+
+            write('b', true);
+            expect(compareOperatorContent(before), 'a fresh grant').toEqual({ok: true, changed: []});
+
+            write('b', false);
+            expect(compareOperatorContent(before), 'the operator switched the row off').toEqual({ok: false, changed: [toml]})
+        } finally {
+            fs.rmSync(directory, {recursive: true, force: true})
+        }
+    });
+
+    test('expectedRows names a Fleet row for every server the seat matrix enables', () => {
+        expect(expectedRows({mcpServers: {'memory-core': false, 'knowledge-base': false, 'github-workflow': false}})).toEqual(['neo-mjs-neural-link']);
+        expect(expectedRows({})).toEqual(['neo-mjs-memory-core', 'neo-mjs-knowledge-base', 'neo-mjs-neural-link', 'neo-mjs-github-workflow'])
+    });
+
+    test('judgeRecord passes only on positive evidence for every expected row', () => {
+        const
+            expected = ['neo-mjs-neural-link'],
+            healthy  = {name: 'neo-mjs-neural-link', ok: true, healthcheck: {status: 'healthy', bridge: {connected: true, port: 4321}}},
+            judge    = (rows, bridgePort = 4321) => judgeRecord({rows}, {expected, bridgePort});
+
+        expect(judge([healthy])).toEqual({ok: true, reason: null});
+        expect(judge([]).reason).toBe('neo-mjs-neural-link is missing from the harness config');
+        expect(judge([{name: 'neo-mjs-neural-link', disabled: true}]).reason).toBe('neo-mjs-neural-link is switched off in the harness config');
+        expect(judge([{name: 'neo-mjs-neural-link', ok: false, step: 'initialize', reason: 'exited'}]).reason).toBe('neo-mjs-neural-link failed at initialize: exited');
+        expect(judge([{...healthy, healthcheck: null}]).reason).toContain("reported 'no status', not healthy");
+        expect(judge([{...healthy, healthcheck: {status: 'unhealthy', bridge: {connected: true, port: 4321}}}]).reason).toBe("neural-link reported 'unhealthy', not healthy");
+        expect(judge([{...healthy, healthcheck: {status: 'healthy'}}]).reason).toBe('neural-link reported no connected Bridge');
+        expect(judge([healthy], 8081).reason).toBe("neural-link reached the Bridge on port 4321, not the run's 8081");
+        expect(judge([healthy, {name: 'neo-mjs-memory-core', ok: true, healthcheck: {}}]).reason).toBe("neo-mjs-memory-core runs although the seat's matrix does not enable it");
+        expect(judge([healthy, {name: 'neo-mjs-memory-core', disabled: true}, {name: 'mine', ok: false, step: 'initialize', reason: 'x'}]), "a switched-off Fleet row and the operator's own rows are not the journey's").toEqual({ok: true, reason: null})
+    });
+
+    test('a failing wire call becomes a named row, and the journey still stops every seat it defined', async () => {
+        const
+            stops = [],
+            fleet = {
+                defineAgent       : async () => ({}),
+                setRepo           : async () => ({}),
+                startAgent        : async () => {throw new Error('connection reset')},
+                stopAgent         : async id => stops.push(id),
+                fleetRuntimeStatus: async () => []
+            },
+            seat   = {definition: {id: 'wire-seat', harnessType: 'claude-desktop', mcpServers: {}}, repo: {repoSlug: 'x/y'}},
+            result = await runSeatJourney({fleet, restartFleet: async () => fleet, seats: [seat], timeoutMs: 1_000});
+
+        expect(result.ok).toBe(false);
+        expect(result.rows.map(row => [row.step, row.ok, row.reason])).toEqual([
+            ['define', true, null],
+            ['start', false, 'the wire call failed: connection reset']
+        ]);
+        expect(stops).toEqual(['wire-seat'])
     });
 
     test('writeStandInLauncher writes an executable that runs the stand-in on the given runtime', () => {
