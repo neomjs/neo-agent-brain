@@ -245,6 +245,7 @@
         "fleet.planeBearerFile",
         "fleet.planeInternalHosts",
         "fleet.port",
+        "fleet.shutdownBudgetMs",
         "fleet.signingKey",
         "fleet.tenantProbeTimeoutMs",
         "fleet.viewerMcAuthorization",

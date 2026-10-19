@@ -670,28 +670,49 @@ async function boot() {
         // AWAITED plane teardown before every exit: an un-awaited close races process death, which
         // leaks the proven plane session (the server reaps it only on its own timeline).
         let shutdown;
+        /** @summary Drains in-flight requests and seals runtime continuity under one whole-quit budget (`AiConfig.fleet.shutdownBudgetMs`). */
         const cleanShutdown = signal => shutdown ??= (async () => {
-            const startedAt = Date.now(), elapsed = () => Date.now() - startedAt;
+            const
+                startedAt      = Date.now(),
+                elapsed        = () => Date.now() - startedAt,
+                proofTimeoutMs = lifecycle.getLaunchAdmission().proofTimeoutMs,
+                budgetMs       = AiConfig.fleet.shutdownBudgetMs > 0 ? AiConfig.fleet.shutdownBudgetMs : proofTimeoutMs,
+                remaining      = () => Math.max(0, budgetMs - elapsed());
             console.log(`[fleet] received ${signal}; stopping.`);
             bridgeSupervisor?.stop();
             try {
                 // The first line lands before the first await: a handoff the host kills mid-way still leaves its trace.
                 if (runtime.generation) {
-                    console.log(`[fleet] continuity handoff starting: ${lifecycle.listRunning().length} running seat(s); drain and proofs bounded by ${lifecycle.getLaunchAdmission().proofTimeoutMs} ms each`);
+                    console.log(`[fleet] continuity handoff starting: ${lifecycle.listRunning().length} running seat(s); shutdown budget ${budgetMs} ms; drain and proofs bounded by ${proofTimeoutMs} ms each`);
                 } else {
                     console.log('[fleet] continuity handoff skipped: no runtime generation, so a successor restores no seat');
                 }
-                runtime.generation && console.log(`[fleet] continuity handoff: draining requests (${elapsed()} ms)`);
-                await server.drainFleetRequests(lifecycle.getLaunchAdmission().proofTimeoutMs);
+                runtime.generation && console.log(`[fleet] continuity handoff: draining requests (${elapsed()} ms / ${budgetMs} ms budget)`);
+                await server.drainFleetRequests(Math.min(proofTimeoutMs, remaining()));
                 if (runtime.generation) {
-                    // Each stage is witnessed before its await, so a kill mid-stage still names the stage it died in.
-                    await lifecycle.handoffRuntimeCustody({tenantService: await FleetManager.getTenantService(),
-                        onStage: stage => console.log(`[fleet] continuity handoff: ${stage} (${elapsed()} ms)`)});
-                    console.log(`[fleet] continuity handoff sealed after ${elapsed()} ms; a successor rebinds the released origin`);
+                    let timer;
+                    const quitDeadline = new Promise((resolve, reject) => {
+                        timer = setTimeout(
+                            () => reject(new Error('Fleet continuity refused: deadline.')),
+                            remaining()
+                        );
+                    });
+                    try {
+                        // Each stage is witnessed before its await, so a kill mid-stage still names the stage it died in.
+                        const handoff = lifecycle.handoffRuntimeCustody({
+                            tenantService: await FleetManager.getTenantService(),
+                            onStage      : stage => console.log(`[fleet] continuity handoff: ${stage} (${elapsed()} ms / ${budgetMs} ms budget)`)
+                        });
+                        handoff.catch(() => {});
+                        await Promise.race([handoff, quitDeadline]);
+                    } finally {
+                        clearTimeout(timer);
+                    }
+                    console.log(`[fleet] continuity handoff sealed after ${elapsed()} ms (budget ${budgetMs} ms); a successor rebinds the released origin`);
                 }
             } catch (error) {
                 // The service names the stage it refused at (`Fleet continuity refused: <stage>.`); the log keeps it with the time it took.
-                console.error(`[fleet] continuity handoff was not completed after ${elapsed()} ms: ${error?.message ?? error}; a package update must refuse surviving-seat continuity.`);
+                console.error(`[fleet] continuity handoff was not completed after ${elapsed()} ms: ${error?.message ?? error} (budget ${budgetMs} ms); a package update must refuse surviving-seat continuity.`);
             } finally {
                 try {
                     await lifecycle.getLaunchAdmission().closeUnclean();

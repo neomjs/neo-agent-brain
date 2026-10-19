@@ -3,6 +3,7 @@ import http                from 'node:http';
 import path                from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import Base                from 'neo.mjs/src/core/Base.mjs';
+import AiConfig            from '../../config.mjs';
 import {
     LAUNCH_ADMISSION_OUTCOMES as OUTCOMES,
     LAUNCH_ADMISSION_REASONS  as REASONS,
@@ -59,6 +60,9 @@ const BRIDGE_ENTRYPOINT = 'ai/mcp/client/stdioToStreamableHttp.mjs';
  * owner or launch override changes, and ends one server's grant when that server is switched off.
  * Nothing re-enables a grant: a server switched back on waits for a managed restart. A successor restores
  * only the positively proved original Start after a consumed clean handoff; every other survivor is stale.
+ * During quit, {@link handoff} bounds survivor validation, proof drain and endpoint release under the
+ * shared `AiConfig.fleet.shutdownBudgetMs` deadline (falling back to {@link proofTimeoutMs} when unset or
+ * non-positive), while individual credential proofs continue to obey {@link proofTimeoutMs}.
  *
  * **Custody.** A seat credential stays with its owner: the registry holds the PAT; the explicit tenant
  * or the plane binding holds the plane credential. Each redemption resolves it from the owner Start
@@ -94,9 +98,10 @@ class McpLaunchAdmissionService extends Base {
     pendingTimeoutMs = 30000
 
     /**
-     * How long a credential proof may take before it is unanswered. Its AbortSignal caps each request's
-     * AiConfig.fleet.tenantProbeTimeoutMs; that per-request ceiling cannot extend this overall proof budget.
-     * With {@link pendingTimeoutMs}, it stays inside the launcher's per-attempt bound.
+     * How long a credential proof may take before it is unanswered, and the fallback bound for
+     * {@link performHandoff} when `AiConfig.fleet.shutdownBudgetMs` resolves to 0. Its AbortSignal caps each
+     * request's `AiConfig.fleet.tenantProbeTimeoutMs`; that per-request ceiling cannot extend this overall
+     * proof budget. With {@link pendingTimeoutMs}, it stays inside the launcher's per-attempt bound.
      * @member {Number} proofTimeoutMs=10000
      */
     proofTimeoutMs = 10000
@@ -382,9 +387,13 @@ class McpLaunchAdmissionService extends Base {
             throw new Error('Fleet continuity refused: custody-unavailable.');
         }
         this.continuityPhase = 'draining';
+        const budgetMs = AiConfig.fleet.shutdownBudgetMs > 0 ? AiConfig.fleet.shutdownBudgetMs : this.proofTimeoutMs;
         let timer, stage = 'survivor-validation';
         const deadline = new Promise((resolve, reject) => {
-            timer = setTimeout(() => reject(new Error('Fleet continuity refused: deadline.')), this.proofTimeoutMs);
+            timer = setTimeout(() => {
+                stage = 'deadline';
+                reject(new Error('Fleet continuity refused: deadline.'));
+            }, budgetMs);
         });
         const bounded = work => Promise.race([work, deadline]);
         const release = () => new Promise((resolve, reject) => {

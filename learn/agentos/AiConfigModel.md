@@ -8,7 +8,7 @@
 
 `Neo.ai.ConfigProvider extends Neo.state.Provider`, so every config *is* a reactive state provider, and they compose into one tree:
 
-- **Tier-1 — `Neo.ai.Config`** (singleton): the *realm root*. It owns the deployment-wide leaves — model providers, `auth`, `ollama` / `openAiCompatible`, storage, the orchestrator intervals.
+- **Tier-1 — `Neo.ai.Config`** (singleton): the *realm root*. It owns the deployment-wide leaves — model providers, `auth`, `ollama` / `openAiCompatible`, storage, `fleet` (transport, plane bindings, `tenantProbeTimeoutMs`, and the whole-quit `shutdownBudgetMs` bound by `NEO_FLEET_SHUTDOWN_BUDGET_MS`), and the orchestrator intervals.
 - **Per-server configs — `Neo.ai.mcp.server.<name>.Config`**: children of the realm root. Each owns only the leaves that are genuinely server-local — the Knowledge Base's `collectionName`, the Memory Core's `memorySharing`, and so on.
 
 A child resolves a leaf it does not own by walking **up** to the owner: `getOwnerOfDataProperty` checks the local data first, then delegates to `getParent()`. The Brain has no component tree, so `ai/ConfigProvider.mjs` overrides `getParent()` to return the Tier-1 singleton — that override is what roots the realm chain.
