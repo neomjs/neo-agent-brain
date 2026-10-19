@@ -2076,15 +2076,16 @@ test.describe('HealthService #10724 — buildSummaryProviderBlock', () => {
  * @see Neo.ai.services.memory-core.HealthService#buildBackupStateBlock
  */
 test.describe('HealthService #10844 — buildBackupStateBlock', () => {
-    let buildBackupStateBlock;
+    let buildBackupStateBlock, resolveComposedBackupBlock;
 
     const mockPath = {
         join: (...args) => args.join('/')
     };
 
     test.beforeAll(async () => {
-        const mod = await import('../../../../../../ai/services/memory-core/HealthService.mjs');
-        buildBackupStateBlock = mod.buildBackupStateBlock;
+        const mod                  = await import('../../../../../../ai/services/memory-core/HealthService.mjs');
+        buildBackupStateBlock      = mod.buildBackupStateBlock;
+        resolveComposedBackupBlock = mod.resolveComposedBackupBlock;
     });
 
     test('distinguishes an unavailable backup root from an observed-empty one (#17495)', async () => {
@@ -2130,35 +2131,41 @@ test.describe('HealthService #10844 — buildBackupStateBlock', () => {
         };
 
         // Container fixture: no mounted backup root, bridge receipt present (AC-1)
-        const containerResult = await buildBackupStateBlock('/unmounted/backups', {
-            pathExists: async () => false
-        }, mockPath, {bridgeReceipt: receipt});
+        const containerResult = resolveComposedBackupBlock(
+            await buildBackupStateBlock('/unmounted/backups', {
+                pathExists: async () => false
+            }, mockPath),
+            receipt
+        );
 
         expect(containerResult).toEqual({
             observationStatus: 'observed',
             source           : 'bridge-receipt',
             restorable       : true,
-            lastSuccessful   : 'backup-2026-10-19T13-27-54.488Z',
-            lastCompleted    : '2026-10-19T13:28:47.768Z',
+            lastSuccessful   : '2026-10-19T13-27-54.488Z',
+            lastCompleted    : '2026-10-19T13-27-54.488Z',
             count            : null,
             unusableCount    : 0,
             unverifiedCount  : 0
         });
 
         // Single-process fixture: mounted backup root present -> local directory scan wins
-        const singleProcessResult = await buildBackupStateBlock('/mounted/backups', {
-            pathExists: async p => p === '/mounted/backups' || p.endsWith('bundle-meta.json'),
-            readdir   : async () => [{isDirectory: () => true, name: 'backup-2026-10-19T13-27-54.488Z'}],
-            readJson  : async () => ({
-                timestamp  : '2026-10-19T13-27-54.488Z',
-                completedAt: '2026-10-19T13:28:47.768Z',
-                integrity  : [
-                    {subsystem: 'kb',    status: 'pass', sourceCount: 10, bundleCount: 10},
-                    {subsystem: 'mc',    status: 'pass', sourceCount: 10, bundleCount: 10},
-                    {subsystem: 'graph', status: 'pass', sourceCount: 10, bundleCount: 10}
-                ]
-            })
-        }, mockPath, {bridgeReceipt: receipt});
+        const singleProcessResult = resolveComposedBackupBlock(
+            await buildBackupStateBlock('/mounted/backups', {
+                pathExists: async p => p === '/mounted/backups' || p.endsWith('bundle-meta.json'),
+                readdir   : async () => [{isDirectory: () => true, name: 'backup-2026-10-19T13-27-54.488Z'}],
+                readJson  : async () => ({
+                    timestamp  : '2026-10-19T13-27-54.488Z',
+                    completedAt: '2026-10-19T13:28:47.768Z',
+                    integrity  : [
+                        {subsystem: 'kb',    status: 'pass', sourceCount: 10, bundleCount: 10},
+                        {subsystem: 'mc',    status: 'pass', sourceCount: 10, bundleCount: 10},
+                        {subsystem: 'graph', status: 'pass', sourceCount: 10, bundleCount: 10}
+                    ]
+                })
+            }, mockPath),
+            receipt
+        );
 
         expect(singleProcessResult).toEqual({
             observationStatus: 'observed',
@@ -2170,9 +2177,12 @@ test.describe('HealthService #10844 — buildBackupStateBlock', () => {
         });
 
         // Neither receipt nor mounted root -> unavailable with reason + owner (AC-2)
-        const neitherResult = await buildBackupStateBlock('/unmounted/backups', {
-            pathExists: async () => false
-        }, mockPath, {bridgeReceipt: null});
+        const neitherResult = resolveComposedBackupBlock(
+            await buildBackupStateBlock('/unmounted/backups', {
+                pathExists: async () => false
+            }, mockPath),
+            null
+        );
 
         expect(neitherResult).toEqual({
             observationStatus: 'unavailable',

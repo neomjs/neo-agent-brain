@@ -161,8 +161,8 @@ test.describe('memory-core healthcheck — the backup detail line derives from t
             observationStatus: 'observed',
             source           : 'bridge-receipt',
             restorable       : true,
-            lastSuccessful   : 'backup-2026-10-19T13-27-54.488Z',
-            lastCompleted    : '2026-10-19T13:28:47.768Z',
+            lastSuccessful   : '2026-10-19T13-27-54.488Z',
+            lastCompleted    : '2026-10-19T13-27-54.488Z',
             count            : null,
             unusableCount    : 0,
             unverifiedCount  : 0
@@ -259,7 +259,7 @@ test.describe('memory-core healthcheck — the backup detail line derives from t
                 expect(composed.maintenance.backup.status).toBe('degraded');
                 expect(composed.maintenance.backup.reasonCodes).toContain('backup-bundle-not-restorable');
             } else {
-                expect(composed.backup.lastSuccessful).toBe('backup-2026-10-19T13-27-54.488Z');
+                expect(composed.backup.lastSuccessful).toBe('2026-10-19T13-27-54.488Z');
                 expect(composed.maintenance.backup.status).toBe('healthy');
             }
         }
