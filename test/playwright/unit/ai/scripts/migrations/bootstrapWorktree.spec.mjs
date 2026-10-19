@@ -244,6 +244,26 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
         expect(copiedServer).toContain(`customKey = 'preserved-server-edit'`);
     });
 
+    test('copies the bytes, not the mode: a read-only runtime root still yields configs the seat owns (#1194)', async () => {
+        // A packaged FM's runtime generation is read-only; copying its mode left the per-server write below EACCES
+        const serverRel = 'ai/mcp/server/memory-core/config.mjs';
+
+        await fs.writeFile(path.join(fakeMainCheckout, serverRel), `import AiConfig from '../../../config.template.mjs';\nexport default {};\n`, 'utf-8');
+        await Promise.all(fixtureConfigs.map(rel => fs.chmod(path.join(fakeMainCheckout, rel), 0o444)));
+
+        const result = await bootstrapWorktree({mainCheckout: fakeMainCheckout, projectRoot: fakeWorktree, log: () => {}});
+
+        expect(result.copied).toEqual(fixtureConfigs);
+        expect(await fs.readFile(path.join(fakeWorktree, serverRel), 'utf-8')).toContain(`from '../../../config.mjs'`);
+
+        for (const rel of fixtureConfigs) {
+            expect((await fs.stat(path.join(fakeWorktree, rel))).mode & 0o200, `${rel} is writable by the seat`).toBe(0o200)
+        }
+
+        // the runtime root stays as it was
+        expect((await fs.stat(path.join(fakeMainCheckout, serverRel))).mode & 0o777).toBe(0o444)
+    });
+
     test('preserves existing destination configs without materializing them (#12051)', async () => {
         const staleServerRel = 'ai/mcp/server/memory-core/config.mjs';
         const dst            = path.join(fakeWorktree, staleServerRel);

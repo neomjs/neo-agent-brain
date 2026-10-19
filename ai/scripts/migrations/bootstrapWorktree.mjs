@@ -563,12 +563,11 @@ export async function bootstrapWorktree({mainCheckout, projectRoot, configs = BO
             continue;
         }
 
+        // The bytes, never the mode: a packaged runtime root is read-only, and the copy is the seat's to write.
+        const bytes = await fs.readFile(src);
+
         await fs.mkdir(path.dirname(dst), {recursive: true});
-        await fs.copyFile(src, dst);
-        if (isPerServerConfig(rel)) {
-            const copiedSrc = await fs.readFile(dst, 'utf-8');
-            await fs.writeFile(dst, materializeServerConfigTemplate(copiedSrc), 'utf-8');
-        }
+        await fs.writeFile(dst, isPerServerConfig(rel) ? materializeServerConfigTemplate(bytes.toString('utf-8')) : bytes);
         result.copied.push(rel);
         log(`copied: ${rel}`);
     }
