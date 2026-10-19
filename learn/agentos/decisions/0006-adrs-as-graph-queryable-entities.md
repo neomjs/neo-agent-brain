@@ -324,9 +324,12 @@ This amendment must merge before dependent implementations adopt the naming cont
 - [Brain #1012](https://github.com/neomjs/neo-agent-brain/issues/1012) owns normal admission,
   scoped slug references, authoritative endpoint typing, batch refusal and author-flow evidence.
 - [Brain #1013](https://github.com/neomjs/neo-agent-brain/issues/1013) owns the bounded alias
-  reader, both KB extraction paths and census/composition consumers. Discovery uses evidenced
-  repository territories, including `learn/agentos/decisions` and `learn/decisions`; discovering
-  private Stage content does not authorize publishing it into a public/shared tenant.
+  reader, both KB extraction paths and census/composition consumers. Every repository keeps its
+  records in one territory, `learn/agentos/decisions`, so discovery reads that path alone;
+  discovering private Stage content does not authorize publishing it into a public/shared tenant.
+- [Brain #1181](https://github.com/neomjs/neo-agent-brain/issues/1181) makes both KB extraction
+  paths and the graph ingestor classify a §2.9 redirect before the numbered-filename heuristic, so
+  a pointer is never read as a record; the admitted catalog stays with #1012 and #1013.
 - [Brain #1014](https://github.com/neomjs/neo-agent-brain/issues/1014) owns reviewed migration
   and recovery using the same admission evidence and the verified reader capability.
 - [Skills #174](https://github.com/neomjs/neo-agent-skills/issues/174) owns guidance and the

@@ -1,13 +1,15 @@
-import Base     from './Base.mjs';
-import fs       from 'fs-extra';
-import path     from 'path';
-import aiConfig from '../../../mcp/server/knowledge-base/config.mjs';
+import Base            from './Base.mjs';
+import fs              from 'fs-extra';
+import path            from 'path';
+import aiConfig        from '../../../mcp/server/knowledge-base/config.mjs';
+import {isAdrRedirect} from '../../shared/adrRedirect.mjs';
 
 /**
  * @summary Extracts knowledge chunks from Architecture Decision Records (ADRs).
  *
  * This source provider reads `learn/agentos/decisions/0NNN-*.md`.
- * Each ADR file is treated as a single knowledge chunk.
+ * Each ADR file is treated as a single knowledge chunk. A redirect left at a moved record's old path
+ * ({@link isAdrRedirect}) is not a record, so neither extraction path indexes it.
  *
  * @class Neo.ai.services.knowledge-base.source.AdrSource
  * @extends Neo.ai.services.knowledge-base.source.Base
@@ -49,6 +51,8 @@ class AdrSource extends Base {
 
                 const filePath   = path.join(adrDir, file);
                 const rawContent = await fs.readFile(filePath, 'utf-8');
+
+                if (isAdrRedirect(rawContent)) continue;
 
                 const chunk = {
                     type   : 'adr',
@@ -107,6 +111,11 @@ class AdrSource extends Base {
                     continue
                 }
                 throw error
+            }
+
+            if (isAdrRedirect(rawContent)) {
+                skippedSourcePaths.push({sourcePath, reason: 'redirect'});
+                continue
             }
 
             const chunk = {

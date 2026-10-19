@@ -168,6 +168,34 @@ Body.
         expect(node.properties.payloadHash).toMatch(/^[a-f0-9]{64}$/);
     });
 
+    test('a redirect at a moved record\'s old path yields no ADR node, no edge and no vector', async () => {
+        writeAdr('0098-moved-record.md', `
+---
+type: redirect
+target: adr:github.com:1347756127:neomjs%2Fneo-agent-institution:0098
+---
+
+# Moved to neomjs/neo-agent-institution
+
+See Issue #1181 for why this is not a record.
+        `);
+        writeAdr('0099-test-decision.md', `
+# ADR 0099: Test Decision Shape
+
+| **Status** | Accepted |
+        `);
+
+        const stats = await AdrIngestor.syncAdrsToGraph(syncOptions());
+
+        expect(stats.adrsProcessed).toBe(1);
+        expect(stats.adrsUpserted).toBe(1);
+        expect(stats.errors).toEqual([]);
+        expect(GraphService.db.nodes.get('adr-0099')).toBeDefined();
+        expect(GraphService.db.nodes.get('adr-0098')).toBeNull();
+        expect(GraphService.db.edges.items.some(edge => edge.source === 'adr-0098' || edge.target === 'adr-0098')).toBe(false);
+        expect(upsertedDocs.some(upsert => upsert.ids.includes('adr-0098'))).toBe(false);
+    });
+
     test('should embed each ADR document into the graph collection (idempotent)', async () => {
         writeAdr('0099-test-decision.md', `
 # ADR 0099: Test Decision Shape

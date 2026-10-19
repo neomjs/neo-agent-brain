@@ -23,6 +23,13 @@ import * as core       from 'neo.mjs/src/core/_export.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 const repoRoot   = path.resolve(__dirname, '../../../../../../..');
+const redirect   = `---
+type: redirect
+target: adr:github.com:1347756127:neomjs%2Fneo-agent-institution:0002
+---
+
+# Moved to neomjs/neo-agent-institution
+`;
 
 test.describe('Neo.ai.services.knowledge-base.source.AdrSource', () => {
     let AdrSource;
@@ -51,6 +58,8 @@ Example decision.`);
 `# Not an ADR
 This should be skipped.`);
 
+        fs.writeFileSync(path.join(adrDir, '0002-moved-record.md'), redirect);
+
         aiConfig.neoRootDir = mockRoot;
     });
 
@@ -65,7 +74,7 @@ This should be skipped.`);
         expect(typeof AdrSource.extract).toBe('function');
     });
 
-    test('extract() emits correctly typed and chunked ADRs, skipping non-matching files', async () => {
+    test('extract() emits correctly typed and chunked ADRs, skipping non-matching files and redirects', async () => {
         const written     = [];
         const writeStream = {
             write(chunkStr) {
@@ -87,5 +96,36 @@ This should be skipped.`);
             name   : '0001-example-adr',
             content: '# ADR 1\nExample decision.'
         });
+    });
+
+    test('extractFromRepository() indexes the record and reports the redirect beside it as skipped', async () => {
+        const
+            files   = {
+                'learn/agentos/decisions/0001-example-adr.md' : '# ADR 1\nExample decision.',
+                'learn/agentos/decisions/0002-moved-record.md': redirect,
+                'learn/agentos/decisions/README.md'           : '# Decisions'
+            },
+            written = [],
+            result  = await AdrSource.extractFromRepository({
+                context: {
+                    repositoryReader: {readText: async sourcePath => files[sourcePath]},
+                    territory       : {
+                        assignments: Object.keys(files).map(sourcePath => ({
+                            entry       : {sourcePath},
+                            relativePath: path.posix.basename(sourcePath)
+                        }))
+                    }
+                },
+                writeStream : {write: line => written.push(JSON.parse(line))},
+                createHashFn: chunk => 'hash:' + chunk.name
+            });
+
+        expect(result.count).toBe(1);
+        expect(result.yieldedSourcePaths).toEqual(['learn/agentos/decisions/0001-example-adr.md']);
+        expect(written.map(chunk => chunk.name)).toEqual(['0001-example-adr']);
+        expect(result.skippedSourcePaths).toEqual([
+            {sourcePath: 'learn/agentos/decisions/0002-moved-record.md', reason: 'redirect'},
+            {sourcePath: 'learn/agentos/decisions/README.md',            reason: 'not-adr'}
+        ]);
     });
 });

@@ -5,6 +5,7 @@ import Base                                                                     
 import {Memory_GraphService as GraphService, Memory_StorageRouter as StorageRouter} from '../../services.mjs';
 import logger                                                                       from '../../mcp/server/memory-core/logger.mjs';
 import {canonicalizeConceptId}                                                      from '../graph/conceptSpineCanonicalization.mjs';
+import {isAdrRedirect}                                                              from '../shared/adrRedirect.mjs';
 
 const
     ADR_EDGE_TYPES = Object.freeze({
@@ -268,7 +269,8 @@ class AdrIngestor extends Base {
 
     /**
      * Main entry point. Scans local ADR markdown files, upserts `ADR` nodes, and refreshes the
-     * deterministic ADR edge taxonomy.
+     * deterministic ADR edge taxonomy. A redirect left at a moved record's old path is not a record, so
+     * it is neither ingested nor counted in `adrsProcessed`.
      * @param {Object} [options]
      * @param {String} [options.decisionsDir] Absolute or repo-relative ADR directory override.
      * @param {String} [options.sourceRoot=process.cwd()] Source-root used for repo-relative paths.
@@ -303,13 +305,18 @@ class AdrIngestor extends Base {
             const nodesCollection = StorageRouter ? await StorageRouter.getGraphCollection() : null;
 
             for (const file of files) {
-                stats.adrsProcessed++;
-
                 try {
                     const
-                        filePath     = path.join(adrDir, file),
+                        filePath = path.join(adrDir, file),
+                        content  = await fs.promises.readFile(filePath, 'utf8');
+
+                    // A redirect left at a moved record's old path is not a record: no node, no edges
+                    if (isAdrRedirect(content)) continue;
+
+                    stats.adrsProcessed++;
+
+                    const
                         source       = path.relative(rootDir, filePath),
-                        content      = await fs.promises.readFile(filePath, 'utf8'),
                         adr          = this.parseAdr(file, content, source),
                         payloadHash  = this.computePayloadHash(adr),
                         existingNode = GraphService.db.nodes.get(adr.id);
