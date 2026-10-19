@@ -2177,6 +2177,64 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         await expect(FleetLifecycleService.inspectPreparedRemoteMcpAdapter(inspection)).rejects.toThrow(/stdio execution contract/);
     });
 
+    test('a server launched through the issuer passes as Fleet\'s launcher table, and any drift from it refuses', async () => {
+        install();
+        const
+            resources = {
+                'memory-core'   : {url: 'https://tenant.example.com/mc/mcp'},
+                'knowledge-base': {url: 'https://tenant.example.com/kb/mcp'}
+            },
+            matrix  = {'memory-core': true, 'knowledge-base': true, 'neural-link': true, 'github-workflow': false, 'gitlab-workflow': false},
+            mcpPlan = tenantMcpPlan(resources, matrix).map(server => ({...server, environment: {ELECTRON_RUN_AS_NODE: '1'},
+                ...(server.key === 'neural-link' ? {runtimeEnv: ['NEO_AGENT_IDENTITY', 'NEO_PLANE_ID']} : {})})),
+            launcher = () => ({
+                type    : 'stdio',
+                command : process.execPath,
+                args    : ['/installed/neo/ai/mcp/client/fleetMcpLauncher.mjs', '--server', 'neural-link'],
+                env     : {ELECTRON_RUN_AS_NODE: '1', NEO_AGENT_IDENTITY: 'neo-gpt', NEO_PLANE_ID: 'plane-a',
+                    NEO_FLEET_LAUNCH_ISSUER: 'http://127.0.0.1:47123', NEO_FLEET_LAUNCH_GRANT: 'grant-minted-for-this-start'},
+                env_vars: [],
+                cwd     : null
+            }),
+            rows = Object.entries(matrix).map(([key, enabled]) => ({
+                name     : `neo-mjs-${key}`,
+                enabled,
+                transport: ['memory-core', 'knowledge-base'].includes(key)
+                    ? {type: 'streamable_http', url: resources[key].url, bearer_token_env_var: 'NEO_MCP_REMOTE_TOKEN', http_headers: null, env_http_headers: null}
+                    : key === 'neural-link' ? launcher() : {type: 'stdio', env: {ELECTRON_RUN_AS_NODE: '1'}}
+            })),
+            nl         = rows.find(row => row.name === 'neo-mjs-neural-link'),
+            inspection = {
+                agent       : {id: 'seat-codex', githubUsername: 'neo-gpt', harnessType: 'codex-desktop'},
+                binaryPath  : process.execPath,
+                repoPath    : '/managed/seat-codex/neo',
+                instanceHome: '/instances/seat-codex',
+                mcpMatrix   : matrix,
+                mcpTarget   : {kind: 'tenant', resources},
+                mcpPlan,
+                launched    : ['neural-link']
+            };
+        FleetLifecycleService.execFileFn = (command, args, opts, callback) => callback(null, JSON.stringify(rows), '');
+
+        await expect(FleetLifecycleService.inspectPreparedRemoteMcpAdapter(inspection)).resolves.toMatchObject({inspected: true});
+        // Not launched, the same row is a stdio server whose env is not the plain Node runtime: refused, as before.
+        await expect(FleetLifecycleService.inspectPreparedRemoteMcpAdapter({...inspection, launched: []})).rejects.toThrow(/stdio execution contract/);
+
+        for (const drift of [
+            transport => { transport.env.NEO_FOREIGN = 'x' },
+            transport => { transport.args[2] = 'memory-core' },
+            transport => { transport.command = '/other/node' },
+            transport => { transport.env.NEO_AGENT_IDENTITY = 'neo-other' },
+            transport => { delete transport.env.NEO_FLEET_LAUNCH_GRANT },
+            transport => { transport.env.ELECTRON_RUN_AS_NODE = '0' },
+            transport => { transport.env_vars = ['HOME'] }
+        ]) {
+            nl.transport = launcher();
+            drift(nl.transport);
+            await expect(FleetLifecycleService.inspectPreparedRemoteMcpAdapter(inspection)).rejects.toThrow(/stdio execution contract/);
+        }
+    });
+
     test('the installed Codex projection fails closed on residue, wrong routing, or static auth', async () => {
         install();
 

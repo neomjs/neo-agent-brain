@@ -737,7 +737,9 @@ async function provisionAgent({
                 mcpTarget   : {
                     kind     : 'tenant',
                     resources: remotePlan.resources
-                }
+                },
+                // the servers this Start launches through the issuer: their rows are Fleet's launcher tables
+                launched    : Object.keys(prepared.launchAdmissionBinding?.grants ?? {})
             })
             startSignal.throwIfAborted();
         }

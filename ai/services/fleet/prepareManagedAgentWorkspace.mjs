@@ -30,6 +30,7 @@ import {
     deriveAgentMemoryDir
 } from './deriveAgentInstanceHome.mjs';
 import {
+    LAUNCHER_ENTRYPOINT,
     MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS as MCP_SERVER_DESCRIPTORS,
     createManagedAgentWorkspacePlan,
     launchRowEnvNames
@@ -52,8 +53,6 @@ const
     CODEX_PROJECT_HEADER_V1  = '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; enabled values are the current Brain projection.',
     CLAUDE_HARNESS_TYPES     = new Set(['claude-code', 'claude-desktop']),
     CLAUDE_MEMORY_SETTING    = 'autoMemoryDirectory',
-    // What a Claude Desktop profile row runs, and what a tenant row's launcher hands to.
-    LAUNCHER_ENTRYPOINT      = 'ai/mcp/client/fleetMcpLauncher.mjs',
     BRIDGE_ENTRYPOINT        = 'ai/mcp/client/stdioToStreamableHttp.mjs',
     // A packaged runtime's organism root inside its bundle: an app bundle, or a generation's host.runtime.
     PACKAGED_ORGANISM        = path.dirname(PACKAGE_RECEIPT_PATH);

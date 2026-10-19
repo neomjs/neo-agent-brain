@@ -773,6 +773,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             binaryPath  : '/bin/harness',
             repoPath    : '/managed/a/neomjs-neo',
             instanceHome: '/instances/a',
+            launched    : [],
             mcpMatrix   : {
                 'memory-core'    : true,
                 'knowledge-base' : true,

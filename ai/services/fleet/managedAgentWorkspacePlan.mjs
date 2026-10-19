@@ -355,6 +355,13 @@ export function mcpDeclarationRefusal({harnessType, mcpMatrix, tenant=false, for
 }
 
 /**
+ * @summary What a launched profile row runs, and what a tenant row's launcher hands to: Fleet's launcher,
+ * relative to the bound runtime's source root. The renderer writes it and the prepared-adapter inspection reads it.
+ * @type {String}
+ */
+export const LAUNCHER_ENTRYPOINT = 'ai/mcp/client/fleetMcpLauncher.mjs';
+
+/**
  * @summary How one bound plan row's environment splits between a Claude Desktop profile row and native
  * launch admission. The row carries the identity, the Node runtime env and, for a
  * resident server, its plane placement: the names Start resolved beyond the descriptor's own runtime

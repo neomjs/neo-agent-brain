@@ -21,7 +21,7 @@ import knowledgeBaseConfig                                                      
 import neuralLinkConfig                                                         from '../../mcp/server/neural-link/config.mjs';
 import githubWorkflowConfig                                                     from '../../mcp/server/github-workflow/config.mjs';
 import gitlabWorkflowConfig                                                     from '../../mcp/server/gitlab-workflow/config.mjs';
-import {MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS}                               from './managedAgentWorkspacePlan.mjs';
+import {LAUNCHER_ENTRYPOINT, MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS, launchRowEnvNames} from './managedAgentWorkspacePlan.mjs';
 import McpLaunchAdmissionService                                                from './McpLaunchAdmissionService.mjs';
 import {LAUNCH_ADMISSION_REASONS}                                               from '../../../src/fleet/contract/launchAdmission.mjs';
 import {isOnInstance}                                                           from './provisionAgentRepo.mjs';
@@ -34,7 +34,7 @@ import {writeFileAtomicSync}                                                    
 
 import {createResidentMcpInputOwner, createBridgeTokenOwner, restoreLaunchCredentialOwner}                                                     from './launchCredentialOwners.mjs';
 import {recoverLaunchProfileGrants}                                                                                                            from './launchProfileCustody.mjs';
-import {LAUNCH_ADMISSION_PROTOCOL}                                                                                                             from './mcpLaunchAdmission.mjs';
+import {LAUNCH_ADMISSION_PROTOCOL, LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR}                                                               from './mcpLaunchAdmission.mjs';
 import {probeAntigravityRuntime}                                                                                                               from './probeAntigravityRuntime.mjs';
 import {isWindowRect, placeSeatWindow, readSeatWindowRecord, readSeatWindowRect, sameWindowRect, waitForSeatWindowRect, writeSeatWindowRecord} from './seatWindowRect.mjs';
 
@@ -100,6 +100,32 @@ function parseCodexMcpList(output) {
     }
 
     return rows
+}
+
+/**
+ * @summary True when an installed Codex row is the launcher table Fleet renders for a server it starts through
+ * the issuer: the bound runtime runs the launcher for that server, nothing is forwarded from the host, and the env
+ * holds the plan's Node runtime env, the seat's login, the plane placement, the issuer and a grant, nothing else.
+ * The grant is minted per Start, so only its presence is compared.
+ * @param {Object} transport The installed row's `transport`.
+ * @param {Object} planRow The bound plan row of that server.
+ * @param {String} identity The seat's forge login.
+ * @returns {Boolean}
+ */
+function isLaunchedRow(transport, planRow, identity) {
+    const
+        env     = transport.env && typeof transport.env === 'object' ? transport.env : {},
+        runtime = planRow.environment || {},
+        allowed = new Set([...Object.keys(runtime), 'NEO_AGENT_IDENTITY', LAUNCH_ISSUER_ENV_VAR, LAUNCH_GRANT_ENV_VAR,
+            ...launchRowEnvNames(planRow).placement]);
+
+    return transport.command === planRow.command &&
+        isDeepStrictEqual(transport.args, [path.join(planRow.sourceRoot, LAUNCHER_ENTRYPOINT), '--server', planRow.key]) &&
+        !(transport.env_vars?.length) &&
+        Object.entries(runtime).every(([name, value]) => env[name] === value) &&
+        env.NEO_AGENT_IDENTITY === identity &&
+        [LAUNCH_ISSUER_ENV_VAR, LAUNCH_GRANT_ENV_VAR].every(name => typeof env[name] === 'string' && env[name] !== '') &&
+        Object.keys(env).every(name => allowed.has(name))
 }
 
 // The AiConfig `fleet.harnessBinaries` leaf key per harness family. An unknown family has no
@@ -3428,6 +3454,8 @@ class FleetLifecycleService extends Base {
      * @param {Object} options.mcpMatrix Effective MCP enabled-state matrix.
      * @param {Object} options.mcpTarget Resolved non-secret tenant target.
      * @param {Object[]} options.mcpPlan Exact non-secret renderer input returned by workspace preparation.
+     * @param {String[]} [options.launched=[]] Servers this Start runs through Fleet's launcher, whose rows carry
+     *     the launcher contract instead of the plain Node runtime env.
      * @returns {Promise<Object>} Redacted receipt plus a producer-bound MC/KB capture plan.
      */
     async inspectPreparedRemoteMcpAdapter({
@@ -3437,7 +3465,8 @@ class FleetLifecycleService extends Base {
         instanceHome,
         mcpMatrix,
         mcpTarget,
-        mcpPlan
+        mcpPlan,
+        launched = []
     } = {}) {
         const
             harnessType   = agent?.harnessType,
@@ -3535,7 +3564,9 @@ class FleetLifecycleService extends Base {
             } else if (transport.type !== 'stdio' ||
                 planRow.target !== 'resident' ||
                 planRow.transport !== 'stdio' ||
-                (planRow.environment && !isDeepStrictEqual(transport.env, NODE_RUNTIME_ENV))) {
+                (launched.includes(key)
+                    ? !isLaunchedRow(transport, planRow, agentIdentity)
+                    : planRow.environment && !isDeepStrictEqual(transport.env, NODE_RUNTIME_ENV))) {
                 throw new Error(`FleetLifecycleService.inspectPreparedRemoteMcpAdapter: installed '${harnessType}' did not preserve '${name}' local stdio execution contract.`)
             }
         }
