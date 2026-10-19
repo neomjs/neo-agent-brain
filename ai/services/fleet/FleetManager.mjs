@@ -258,11 +258,6 @@ class FleetManager extends Base {
      */
     modelCatalogFn = null
     /**
-     * Boot-settled Neural Link Bridge state (`{state, verdict, action, port, publicKeySha256, reason, summary, nextStep}`).
-     * @member {Object|null} bridgeBootState=null
-     */
-    bridgeBootState = null
-    /**
      * The last operation holding each seat's home, keyed by agent id ({@link withSeatHome}).
      * @member {Map<String,Promise>} seatHomeHolds
      * @private

@@ -589,7 +589,6 @@ async function boot() {
             port    : neuralLinkConfig.port,
             registry: FleetRegistryService
         });
-        FleetManager.bridgeBootState = bridgeState;
 
         if (bridgeState.state === FLEET_BRIDGE_STATES.READY) {
             console.log(`[fleet] Neural Link Bridge ${bridgeState.state} on port ${bridgeState.port} (${bridgeState.action}; key sha256 ${bridgeState.publicKeySha256?.slice(0, 12)}…)`);

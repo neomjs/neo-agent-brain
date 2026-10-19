@@ -1,5 +1,6 @@
 import {spawn}               from 'node:child_process';
 import crypto                from 'node:crypto';
+import fs                    from 'node:fs';
 import path                  from 'node:path';
 import {fileURLToPath}       from 'node:url';
 import FleetRegistryService  from './FleetRegistryService.mjs';
@@ -20,6 +21,38 @@ export const FLEET_BRIDGE_STATES = Object.freeze({
 });
 
 /**
+ * @summary Resolves the detached Bridge stdio log file path under the Fleet data directory.
+ * @param {Object} [options={}]
+ * @param {String} [options.dataDir=FleetRegistryService.dataDir] Fleet data directory.
+ * @param {String|null} [options.logFilePath=null] Explicit log file path override.
+ * @returns {String}
+ */
+export function getFleetBridgeStdioLogPath({
+    dataDir     = FleetRegistryService.dataDir,
+    logFilePath = null
+} = {}) {
+    if (typeof logFilePath === 'string' && logFilePath.trim() !== '') {
+        return logFilePath;
+    }
+
+    if (typeof dataDir !== 'string' || dataDir.trim() === '') {
+        throw new Error('Missing Fleet dataDir: Neural Link Bridge stdio log requires a resolved Fleet data directory');
+    }
+
+    return path.join(dataDir, 'logs', 'neural-link-bridge-stdio.log');
+}
+
+/**
+ * @summary Opens the detached Bridge stdout/stderr log file for appending.
+ * @param {String} [filePath=getFleetBridgeStdioLogPath()] Target log file path.
+ * @returns {Number} File descriptor.
+ */
+export function openFleetBridgeLogFile(filePath = getFleetBridgeStdioLogPath()) {
+    fs.mkdirSync(path.dirname(filePath), {recursive: true});
+    return fs.openSync(filePath, 'a');
+}
+
+/**
  * @summary Maps a Bridge verifier probe outcome to one named Fleet boot state and its operator next step.
  * @param {Object} params
  * @param {Number} params.port Neural Link Bridge WebSocket port.
@@ -27,14 +60,18 @@ export const FLEET_BRIDGE_STATES = Object.freeze({
  * @param {'adopted'|'started'|null} [params.action=null] How a ready Bridge was settled.
  * @param {String|null} [params.publicKeySha256=null] Expected registry key SHA-256 hex digest.
  * @param {Number|null} [params.pid=null] Spawned Bridge process id when started by Fleet.
- * @returns {{state: String, verdict: String, action: String|null, port: Number, publicKeySha256: String|null, pid: Number|null, reason: String|null, summary: String|null, nextStep: String|null}}
+ * @param {String|null} [params.logFilePath=null] Detached Bridge stdio log path when started by Fleet.
+ * @param {String|null} [params.spawnFailure=null] Sanitized spawn failure code when process launch failed.
+ * @returns {{state: String, verdict: String, action: String|null, port: Number, publicKeySha256: String|null, pid: Number|null, logFilePath: String|null, reason: String|null, summary: String|null, nextStep: String|null}}
  */
 export function describeFleetBridgeState({
     port,
     probe,
     action          = null,
     publicKeySha256 = null,
-    pid             = null
+    pid             = null,
+    logFilePath     = null,
+    spawnFailure    = null
 }) {
     const resolvedPort = Number(port);
 
@@ -46,6 +83,7 @@ export function describeFleetBridgeState({
             port           : resolvedPort,
             publicKeySha256: publicKeySha256 ?? null,
             pid            : pid ?? null,
+            logFilePath    : logFilePath ?? null,
             reason         : null,
             summary        : null,
             nextStep       : null
@@ -60,9 +98,10 @@ export function describeFleetBridgeState({
             port           : resolvedPort,
             publicKeySha256: publicKeySha256 ?? null,
             pid            : null,
+            logFilePath    : null,
             reason         : 'bridge-verifier-unsupported',
             summary        : `An older Neural Link Bridge on port ${resolvedPort} predates verifier support.`,
-            nextStep       : `Stop or refresh the Neural Link Bridge on port ${resolvedPort} (or restart the host-edge service), then restart Fleet so it can start a keyed Bridge.`
+            nextStep       : `If the Neural Link Bridge on port ${resolvedPort} is supervised (for example by host-edge / launchd), update and restart that supervised service; otherwise stop the process on port ${resolvedPort} and restart the Fleet server so Fleet starts a keyed Bridge from this runtime generation, then reconnect the seat.`
         };
     }
 
@@ -75,11 +114,21 @@ export function describeFleetBridgeState({
             port           : resolvedPort,
             publicKeySha256: publicKeySha256 ?? null,
             pid            : null,
+            logFilePath    : null,
             reason,
-            summary        : `The Neural Link Bridge on port ${resolvedPort} is unkeyed or keyed to another Fleet registry.`,
-            nextStep       : `Stop the Neural Link Bridge on port ${resolvedPort} so Fleet can start one keyed to this registry, then reconnect the seat.`
+            summary        : `The Neural Link Bridge on port ${resolvedPort} is unkeyed, keyed to another Fleet registry, or running an older Bridge protocol.`,
+            nextStep       : `If the Neural Link Bridge on port ${resolvedPort} is supervised (for example by host-edge / launchd), update its supervisor's NEO_FLEET_BRIDGE_PUBLIC_KEY to match this Fleet registry (publicKeySha256 ${publicKeySha256 ?? 'current'}) and restart the supervised Bridge; otherwise stop the process on port ${resolvedPort} and restart the Fleet server so Fleet starts a Bridge from this runtime generation with this registry's key, then reconnect the seat.`
         };
     }
+
+    const
+        failureReason  = spawnFailure || 'bridge-verifier-unavailable',
+        failureSummary = spawnFailure
+            ? `The Neural Link Bridge on port ${resolvedPort} failed to start (${spawnFailure})${logFilePath ? `; stdio log: ${logFilePath}` : ''}.`
+            : `No Neural Link Bridge answered the verifier check on port ${resolvedPort}${logFilePath ? ` (stdio log: ${logFilePath})` : ''}.`,
+        failureStep    = logFilePath
+            ? `Inspect ${logFilePath}, stop any conflicting process on port ${resolvedPort}, and restart the Fleet server to start the Neural Link Bridge.`
+            : `Check that port ${resolvedPort} is free and restart the Fleet server to start the Neural Link Bridge.`;
 
     return {
         state          : FLEET_BRIDGE_STATES.UNAVAILABLE,
@@ -88,19 +137,30 @@ export function describeFleetBridgeState({
         port           : resolvedPort,
         publicKeySha256: publicKeySha256 ?? null,
         pid            : pid ?? null,
-        reason         : 'bridge-verifier-unavailable',
-        summary        : `No Neural Link Bridge answered the verifier check on port ${resolvedPort}.`,
-        nextStep       : `Check that port ${resolvedPort} is free and restart Fleet to start the Neural Link Bridge.`
+        logFilePath    : logFilePath ?? null,
+        reason         : failureReason,
+        summary        : failureSummary,
+        nextStep       : failureStep
     };
 }
 
 /**
  * @summary Settles the Neural Link Bridge at Fleet boot using the registry's signing custody.
+ *
+ * Declared interim: when no Bridge answers on `port`, Fleet boot starts a detached Bridge child
+ * directly with the registry's public key and routes its stdout/stderr to the Fleet log directory
+ * while waiting for the `host-edge` supervised Bridge role to take over continuous lifecycle
+ * ownership (restarts on mid-session exit and runtime-generation switches). Until that supervised
+ * role lands, a Fleet-started Bridge that exits mid-session or predates a protocol generation
+ * update remains until the next Fleet boot.
+ *
  * @param {Object} [options={}]
  * @param {Number} options.port Neural Link Bridge WebSocket port.
  * @param {Object} [options.registry=FleetRegistryService] Fleet registry holding `signing.key` custody.
  * @param {Function} [options.probeFn=probeBridgeVerifier] Verifier probe function.
- * @param {Function} [options.spawnFn=spawn] Child process spawner for detached Bridge supervision.
+ * @param {Function} [options.spawnFn=spawn] Child process spawner for detached Bridge launch.
+ * @param {Function} [options.openLogFileFn=openFleetBridgeLogFile] Opens the Bridge stdio log file descriptor.
+ * @param {String|null} [options.logFilePath=null] Explicit Bridge stdio log file path override.
  * @param {String} [options.nodeBin=process.execPath] Node executable for launching `run-bridge.mjs`.
  * @param {String} [options.bridgeScriptPath=DEFAULT_BRIDGE_SCRIPT] Path to `run-bridge.mjs`.
  * @param {Boolean} [options.startIfAbsent=true] Whether to start a detached keyed Bridge when unanswered.
@@ -114,6 +174,8 @@ export async function settleFleetBridge({
     registry         = FleetRegistryService,
     probeFn          = probeBridgeVerifier,
     spawnFn          = spawn,
+    openLogFileFn    = openFleetBridgeLogFile,
+    logFilePath      = null,
     nodeBin          = process.execPath,
     bridgeScriptPath = DEFAULT_BRIDGE_SCRIPT,
     startIfAbsent    = true,
@@ -151,16 +213,55 @@ export async function settleFleetBridge({
         });
     }
 
-    const childEnv = {
-        ...process.env,
-        NEO_NL_PORT                : String(resolvedPort),
-        NEO_FLEET_BRIDGE_PUBLIC_KEY: publicKey
-    };
-    const child = spawnFn(nodeBin, [bridgeScriptPath], {
-        detached: true,
-        stdio   : 'ignore',
-        env     : childEnv
+    const
+        resolvedLogFilePath = getFleetBridgeStdioLogPath({
+            dataDir: registry?.dataDir ?? FleetRegistryService.dataDir,
+            logFilePath
+        }),
+        childEnv            = {
+            ...process.env,
+            NEO_NL_PORT                : String(resolvedPort),
+            NEO_FLEET_BRIDGE_PUBLIC_KEY: publicKey
+        };
+
+    let logFd        = null,
+        child        = null,
+        spawnFailure = null,
+        resolveSpawnError;
+    const spawnErrorSignal = new Promise(resolve => {
+        resolveSpawnError = resolve;
     });
+
+    try {
+        logFd = openLogFileFn(resolvedLogFilePath);
+        child = spawnFn(nodeBin, [bridgeScriptPath], {
+            detached: true,
+            stdio   : ['ignore', logFd, logFd],
+            env     : childEnv
+        });
+    } catch (error) {
+        spawnFailure = error?.code || 'BRIDGE_SPAWN_FAILED';
+        resolveSpawnError(spawnFailure);
+    } finally {
+        if (typeof logFd === 'number') {
+            try {
+                fs.closeSync(logFd);
+            } catch {
+                // Descriptor is already closed or synthetic in unit tests.
+            }
+        }
+    }
+
+    // A spawn failure arrives as an asynchronous 'error' event on the ChildProcess EventEmitter.
+    // Without a listener, an unhandled 'error' event crashes the Fleet server process instead of
+    // reporting `bridge-unavailable`.
+    if (child && typeof child.once === 'function') {
+        child.once('error', error => {
+            spawnFailure = error?.code || 'BRIDGE_SPAWN_FAILED';
+            resolveSpawnError(spawnFailure);
+        });
+    }
+
     child?.unref?.();
 
     const
@@ -168,28 +269,39 @@ export async function settleFleetBridge({
         deadline = Date.now() + Math.max(probeTimeoutMs, startupTimeoutMs);
     let lastProbe = initialProbe;
 
-    while (Date.now() <= deadline) {
-        lastProbe = await probeFn({
-            port     : resolvedPort,
-            publicKeySha256,
-            timeoutMs: probeTimeoutMs
-        });
+    while (!spawnFailure && Date.now() <= deadline) {
+        const probeOutcome = await Promise.race([
+            probeFn({
+                port     : resolvedPort,
+                publicKeySha256,
+                timeoutMs: probeTimeoutMs
+            }),
+            spawnErrorSignal.then(() => null)
+        ]);
+
+        if (spawnFailure) {
+            break;
+        }
+
+        lastProbe = probeOutcome;
 
         if (lastProbe?.verdict === 'proved') {
             return describeFleetBridgeState({
-                port  : resolvedPort,
-                probe : lastProbe,
-                action: 'started',
+                port       : resolvedPort,
+                probe      : lastProbe,
+                action     : 'started',
                 publicKeySha256,
-                pid
+                pid,
+                logFilePath: resolvedLogFilePath
             });
         }
 
         if (lastProbe?.verdict === 'refused') {
             return describeFleetBridgeState({
-                port : resolvedPort,
-                probe: lastProbe,
-                publicKeySha256
+                port       : resolvedPort,
+                probe      : lastProbe,
+                publicKeySha256,
+                logFilePath: resolvedLogFilePath
             });
         }
 
@@ -197,13 +309,18 @@ export async function settleFleetBridge({
             break;
         }
 
-        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+        await Promise.race([
+            new Promise(resolve => setTimeout(resolve, pollIntervalMs)),
+            spawnErrorSignal
+        ]);
     }
 
     return describeFleetBridgeState({
-        port : resolvedPort,
-        probe: lastProbe,
+        port       : resolvedPort,
+        probe      : lastProbe,
         publicKeySha256,
-        pid
+        pid,
+        logFilePath: resolvedLogFilePath,
+        spawnFailure
     });
 }

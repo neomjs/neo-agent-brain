@@ -282,7 +282,6 @@ export function buildOllamaServeEnv({host, keepAlive, contextLength, requirePara
  * @param {Number} [options.chromaHealthStartupGraceMs=60000] Delay before probing a newly-started Chroma.
  * @param {Function} [options.chromaHealthFetchFn] Optional fetch implementation seam for tests.
  * @param {String|Number} [options.neuralLinkBridgePort] Neural Link Bridge port — sourced from the Neural Link config provider by the orchestrator entrypoint.
- * @param {String} [options.neuralLinkBridgePublicKey] Registry Ed25519 SPKI public key PEM for Bridge token verification (`NEO_FLEET_BRIDGE_PUBLIC_KEY`).
  * @param {Number} [options.neuralLinkBridgeLivenessTimeoutMs] TCP liveness probe timeout.
  * @returns {Object}
  */
@@ -297,11 +296,9 @@ export function buildTaskDefinitions({
     chromaHealthStartupGraceMs    = DEFAULT_CHROMA_HEALTH_STARTUP_GRACE_MS,
     chromaHealthFetchFn,
     neuralLinkBridgePort,
-    neuralLinkBridgePublicKey,
     neuralLinkBridgeLivenessTimeoutMs
 } = {}) {
     const hasNeuralLinkBridgePort         = neuralLinkBridgePort !== undefined && neuralLinkBridgePort !== null;
-    const hasNeuralLinkBridgePublicKey    = typeof neuralLinkBridgePublicKey === 'string' && neuralLinkBridgePublicKey.trim().length > 0;
     let   consecutiveChromaHealthFailures = 0;
 
     const tasks = {
@@ -347,15 +344,12 @@ export function buildTaskDefinitions({
         },
         ...(hasNeuralLinkBridgePort ? {
             neuralLinkBridge: {
-                label          : 'Neural Link Bridge',
-                command        : nodeBin,
-                args           : [path.resolve(scriptDir, '../mcp/server/neural-link/run-bridge.mjs')],
-                pidFileName    : 'neural-link-bridge.pid',
-                expectedCommand: 'mcp/server/neural-link/run-bridge.mjs',
-                env            : {
-                    NEO_NL_PORT: String(neuralLinkBridgePort),
-                    ...(hasNeuralLinkBridgePublicKey ? {NEO_FLEET_BRIDGE_PUBLIC_KEY: neuralLinkBridgePublicKey} : {})
-                },
+                label                  : 'Neural Link Bridge',
+                command                : nodeBin,
+                args                   : [path.resolve(scriptDir, '../mcp/server/neural-link/run-bridge.mjs')],
+                pidFileName            : 'neural-link-bridge.pid',
+                expectedCommand        : 'mcp/server/neural-link/run-bridge.mjs',
+                env                    : {NEO_NL_PORT: String(neuralLinkBridgePort)},
                 singletonPort          : Number(neuralLinkBridgePort),
                 duplicateListenerPolicy: 'defer',
                 livenessProbe          : () => probeTcpPort({

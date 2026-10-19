@@ -1,8 +1,7 @@
-import path                 from 'path';
-import AiConfig             from '../../../config.mjs';
-import FleetRegistryService from '../../../services/fleet/FleetRegistryService.mjs';
-import {readSecretCarrier}  from '../../../services/shared/secretCarrier.mjs';
-import neuralLinkConfig     from '../../../mcp/server/neural-link/config.mjs';
+import path             from 'path';
+import AiConfig         from '../../../config.mjs';
+import {readSecretCarrier} from '../../../services/shared/secretCarrier.mjs';
+import neuralLinkConfig from '../../../mcp/server/neural-link/config.mjs';
 import {
     buildLmsPreloadConfig,
     buildOllamaReadinessConfig,
@@ -21,14 +20,13 @@ import {attachTaskAuthority} from '../taskAuthority.mjs';
  *
  * `taskDefinitions.mjs` remains the pure descriptor/default layer. This service
  * is the daemon-side use site for config-backed task composition, so it reads
- * resolved `AiConfig` leaves and Fleet registry custody directly instead of threading
- * broad value objects through `Orchestrator`.
+ * resolved `AiConfig` leaves directly instead of threading broad value objects
+ * through `Orchestrator`.
  *
  * @param {Object} options
  * @param {String} options.scriptDir Script directory.
  * @param {String} options.nodeBin Node executable.
  * @param {Number} options.neuralLinkBridgeLivenessTimeoutMs Neural Link Bridge liveness timeout.
- * @param {String} [options.neuralLinkBridgePublicKey] Optional public key override; defaults to `FleetRegistryService.getBridgePublicKey()`.
  * @param {Function|null} [options.ensureLmsModelsLoadedFn] Optional process-free unit-test seam.
  * @returns {Object}
  */
@@ -36,8 +34,7 @@ export function buildConfiguredTaskDefinitions({
     scriptDir,
     nodeBin,
     neuralLinkBridgeLivenessTimeoutMs,
-    neuralLinkBridgePublicKey = FleetRegistryService.getBridgePublicKey(),
-    ensureLmsModelsLoadedFn   = null
+    ensureLmsModelsLoadedFn = null
 }) {
     const tasks = buildTaskDefinitions({
         scriptDir,
@@ -46,7 +43,6 @@ export function buildConfiguredTaskDefinitions({
         chromaHost          : AiConfig.engines.chroma.host,
         chromaPort          : AiConfig.engines.chroma.port,
         neuralLinkBridgePort: neuralLinkConfig.port,
-        neuralLinkBridgePublicKey,
         neuralLinkBridgeLivenessTimeoutMs
     });
 
