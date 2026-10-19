@@ -1,5 +1,6 @@
-import {expect, test} from '@playwright/test';
-import fs             from 'node:fs';
+import {expect, test}                                from '@playwright/test';
+import fs                                            from 'node:fs';
+import {FLEET_BOOT_PHASES, formatFleetBootPhaseLine} from '../../../../../../ai/services/fleet/devFleetServer.mjs';
 
 const source = fs.readFileSync(new URL('../../../../../../ai/services/fleet/devFleetServer.mjs', import.meta.url), 'utf8');
 
@@ -74,5 +75,17 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         await expect(running).rejects.toThrow('stop failure');
         expect(events.at(-1)).toBe('plane');
         expect(source.slice(source.indexOf('    } catch (error) {', source.indexOf('// Each seat')))).toContain('await closeObservedWorkAndPlane()')
+    });
+
+    test('boot logs elapsed milliseconds for runtime bind, viewer claim, plane init, recovery, and transport (#1142)', () => {
+        expect(FLEET_BOOT_PHASES).toEqual(['runtime bind', 'viewer claim', 'plane init', 'recovery', 'transport']);
+        expect(formatFleetBootPhaseLine('runtime bind', 5720.4, 'gen=abcd1234')).toBe(
+            '[fleet] boot phase runtime bind: 5720 ms (gen=abcd1234)'
+        );
+        expect(formatFleetBootPhaseLine('recovery', 0.2)).toBe('[fleet] boot phase recovery: 0 ms');
+
+        for (const phase of FLEET_BOOT_PHASES) {
+            expect(source).toContain(`formatFleetBootPhaseLine('${phase}',`);
+        }
     });
 });

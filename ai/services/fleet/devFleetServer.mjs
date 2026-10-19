@@ -91,17 +91,40 @@ import {bindCurrentRuntime}                                              from '.
 import path                                                              from 'node:path';
 import {fileURLToPath, pathToFileURL}                                    from 'node:url';
 
+export const FLEET_BOOT_PHASES = Object.freeze([
+    'runtime bind',
+    'viewer claim',
+    'plane init',
+    'recovery',
+    'transport'
+]);
+
+/**
+ * @summary Formats one per-phase Fleet boot millisecond log line.
+ * @param {String} phase Canonical boot phase name (`FLEET_BOOT_PHASES`).
+ * @param {Number} elapsedMs Measured phase duration in milliseconds.
+ * @param {String} [detail=''] Optional non-secret phase context.
+ * @returns {String}
+ */
+export function formatFleetBootPhaseLine(phase, elapsedMs, detail = '') {
+    const ms = Math.max(0, Math.round(Number(elapsedMs) || 0));
+    return `[fleet] boot phase ${phase}: ${ms} ms${detail ? ` (${detail})` : ''}`;
+}
+
 /**
  * @summary Composes the launch contract and starts the authenticated Fleet transport.
  * @returns {Promise<void>}
  * @private
  */
 async function boot() {
-    const runtime = await bindCurrentRuntime({
+    const runtimeBindStartedAt = Date.now();
+    const runtime              = await bindCurrentRuntime({
         args       : process.argv.slice(2),
         runtimeRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
         executable : process.execPath
     });
+    console.log(formatFleetBootPhaseLine('runtime bind', Date.now() - runtimeBindStartedAt,
+        runtime.generation ? `generation ${runtime.generation.id.slice(0, 12)}` : 'checkout'));
     const lifecycle = FleetManager.getLifecycleService();
     lifecycle.installedRuntime = runtime.generation ? runtime : null;
 
@@ -154,9 +177,15 @@ async function boot() {
     }
 
     if (planeClient) {
+        const viewerClaimStartedAt = Date.now();
         viewer = await resolveFleetViewerClaim();
+        console.log(formatFleetBootPhaseLine('viewer claim', Date.now() - viewerClaimStartedAt,
+            `viewer: ${viewer.agentIdentityNodeId}, mode: plane`));
 
-        const admission = await planeClient.init({expectedIdentity: viewer.agentIdentityNodeId});
+        const planeInitStartedAt = Date.now();
+        const admission          = await planeClient.init({expectedIdentity: viewer.agentIdentityNodeId});
+        console.log(formatFleetBootPhaseLine('plane init', Date.now() - planeInitStartedAt,
+            admission.ok ? `verified: ${admission.identity}` : `refused: ${admission.reason}`));
 
         if (!admission.ok) {
             console.error(`[fleet] plane mode refused (${planeBase}): ${admission.reason} — fix fleet.planeBase / fleet.planeBearer, or empty the base for in-process mode.`);
@@ -167,7 +196,11 @@ async function boot() {
         // shows WHICH plane verified this viewer (and that the host graph was not consulted).
         console.log(`[fleet] mailbox/compose/catch-up seams bound to the containerized plane at ${planeBase} (viewer ${admission.identity} verified plane-side; host graph not consulted)`)
     } else {
+        const viewerClaimStartedAt = Date.now();
         viewer = await resolveFleetViewer();
+        console.log(formatFleetBootPhaseLine('viewer claim', Date.now() - viewerClaimStartedAt,
+            `viewer: ${viewer.agentIdentityNodeId}, mode: host`));
+        console.log(formatFleetBootPhaseLine('plane init', 0, 'skipped: host mode'));
 
         console.log('[fleet] fleet.planeBase is empty — mailbox/compose/catch-up seams stay in-process (host plane; viewer verified against the host graph).')
     }
@@ -178,13 +211,18 @@ async function boot() {
     try {
 
     if (runtime.generation) {
+        const recoveryStartedAt = Date.now();
         lifecycle.openRuntimeCustody({directory: lifecycle.getRegistry().admissionDirectory()});
         const dispositions = await lifecycle.recoverRuntimeCustody({tenantService: await FleetManager.getTenantService()});
+        const recoveryMs   = Date.now() - recoveryStartedAt;
         const record       = lifecycle.getLaunchAdmission().continuityRecord;
         // The successor says what it inherited: a lost handoff is the one fact the roster line cannot name by itself.
         console.log(`[fleet] continuity recovery: previous issuer ${record?.previousReason ?? (record?.handoffProved ? 'handed-off' : 'none')}` +
             (record?.origin ? ` at ${record.origin}` : '') + `; ${dispositions.length} retained generation(s)` +
             (dispositions.length ? ': ' + dispositions.map(row => `${row.agentId} ${row.state}${row.detail ? ` (${row.detail})` : ''}`).join(', ') : ''));
+        console.log(formatFleetBootPhaseLine('recovery', recoveryMs, `${dispositions.length} retained generation(s)`));
+    } else {
+        console.log(formatFleetBootPhaseLine('recovery', 0, 'skipped: no runtime generation'));
     }
 
     // Wire the cross-process boot-identity reader BEFORE serving: getBootIdentity() then serves the
@@ -565,6 +603,8 @@ async function boot() {
         }
     };
 
+        const transportStartedAt = Date.now();
+
         // Claim the transport before starting an observer that can persist or send. A rejected
         // second boot must never compete with the incumbent's ledger or automatic wake path.
         server = await startFleetBridgeServer({
@@ -637,6 +677,7 @@ async function boot() {
         // Identity facts only — the bearer is deliberately absent from every log line this
         // process emits; the launcher that supplied (or will inject) it owns the hand-off.
         console.log(`[fleet] authenticated app<->fleet transport listening on http://127.0.0.1:${server.address().port}/fleet (viewer: ${viewer.agentIdentityNodeId}, bearer: ${AiConfig.fleet.bearer ? 'supplied' : 'generated'})`);
+        console.log(formatFleetBootPhaseLine('transport', Date.now() - transportStartedAt, `port: ${server.address().port}`));
 
         // Seat-conflation honesty at boot: a viewer claim that IS a registered agent identity
         // means every operator action through this transport inherits agent attribution — the
