@@ -2784,8 +2784,9 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
      * issuer, ready for a handoff. The Bridge answers each connection with the next queued key fingerprint, or
      * the right one once the queue is empty; a seat's `birth` overrides what its pid reads as. With `sealed`, each
      * seat pins its own real sealed generation, read by the default verifiers; otherwise `runtime` stands in for them.
+     * With `remote`, each seat plans every server and the issuer admits Neural Link alone: the Codex Desktop shape.
      */
-    async function admittedDesktopSeats(ids, {sealed = false} = {}) {
+    async function admittedDesktopSeats(ids, {sealed = false, remote = false} = {}) {
         const
             initialRoot       = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-handoff-per-seat-')),
             spawn             = install({agents: Object.fromEntries(ids.map(id => [id, curatedAgent(id, 'claude-desktop')]))}),
@@ -2822,12 +2823,12 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             const pin  = pins?.[agentId] ?? generation;
             FleetLifecycleService.installedRuntime = {...pin, generation: pin}; // each seat was Started by a boot of its own runtime
             fs.mkdirSync(home, {recursive: true});
-            agent.mcpServers = {'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': false, 'gitlab-workflow': false};
+            agent.mcpServers = {'memory-core': remote, 'knowledge-base': remote, 'neural-link': true, 'github-workflow': remote, 'gitlab-workflow': false};
             const plan = createManagedAgentWorkspacePlan({agent: {id: agentId, harnessType: 'claude-desktop'}, mcpMatrix: agent.mcpServers}).mcpServers.map(row => ({...row,
                 sourceRoot: pin.runtimeRoot, command: pin.executable,
                 args      : [path.join(pin.runtimeRoot, row.entrypoint), ...(row.key === 'neural-link' ? ['--cwd', pin.runtimeRoot] : [])]}));
             const captured = FleetLifecycleService.captureResidentMcpInputs(agent);
-            const reserved = await reserveWithRuntimeReferences({agent, runtimeGeneration: pin});
+            const reserved = await reserveWithRuntimeReferences({agent, runtimeGeneration: pin, servers: remote ? ['neural-link'] : null});
             const rows     = {'neo-mjs-neural-link': {command: pin.executable,
                 args: [path.join(pin.runtimeRoot, 'ai/mcp/client/fleetMcpLauncher.mjs'), '--server', 'neural-link'],
                 env : {NEO_AGENT_IDENTITY: agentId, NEO_FLEET_LAUNCH_ISSUER: reserved.issuer, NEO_FLEET_LAUNCH_GRANT: reserved.grants['neural-link']}}};
@@ -2904,6 +2905,41 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                     ['seat', damage ? 'stale' : 'active', damage ? 'runtime pin unverified' : null], ['peer', 'active', null]]);
                 expect(await fixture.redeem('peer')).toMatchObject({outcome: 'admitted'});
                 expect(await fixture.redeem('seat'), 'the bad pin keeps no grant').toMatchObject(damage ? {outcome: 'refused', code: 'unknown-grant'} : {outcome: 'admitted'})
+            } finally {
+                await fixture.teardown()
+            }
+        });
+    }
+
+    test('a survivor that plans every server but was admitted only Neural Link seals and recovers active', async () => {
+        const fixture = await admittedDesktopSeats(['seat'], {remote: true}), stages = [];
+        try {
+            expect(fixture.seats.seat.record.runtimeStart.targets.map(row => row.key).sort())
+                .toEqual(['github-workflow', 'knowledge-base', 'memory-core', 'neural-link']);
+            expect(await FleetLifecycleService.handoffRuntimeCustody({verifyRuntime: fixture.runtime, onStage: stage => stages.push(stage)})).toEqual({state: 'handed-off'});
+            expect(stages).toContain('survivor seat: verified');
+            expect(dispositions(fixture.sealed())).toEqual({seat: ['active', {'neural-link': 'active'}]});
+            expect((await fixture.reboot()).map(row => [row.agentId, row.state])).toEqual([['seat', 'active']]);
+            expect(await fixture.redeem('seat')).toMatchObject({outcome: 'admitted'})
+        } finally {
+            await fixture.teardown()
+        }
+    });
+
+    // Only a planned target the issuer never granted is set aside: the granted servers stay the check.
+    for (const [title, change, reason] of [
+        ['a granted server without its target row', start => { start.targets = start.targets.filter(row => row.key !== 'neural-link') },
+            'server set changed'],
+        ['a grant the issuer never minted', start => { start.profile.grants['github-workflow'] = structuredClone(start.profile.grants['neural-link']) },
+            'Launch profile is unverified: row-set-mismatch.']
+    ]) {
+        test(`a survivor with ${title} is still refused`, async () => {
+            const fixture = await admittedDesktopSeats(['seat'], {remote: true}), stages = [];
+            try {
+                change(fixture.seats.seat.record.runtimeStart);
+                expect(await FleetLifecycleService.handoffRuntimeCustody({verifyRuntime: fixture.runtime, onStage: stage => stages.push(stage)})).toEqual({state: 'handed-off'});
+                expect(stages).toContain(`survivor seat: unresolved (${reason})`);
+                expect(dispositions(fixture.sealed())).toEqual({seat: ['revoked', {'neural-link': 'revoked'}]})
             } finally {
                 await fixture.teardown()
             }

@@ -320,15 +320,19 @@ class McpLaunchAdmissionService extends Base {
 
     /**
      * @summary Rebuild fixed server targets from original classified metadata, never a fresh plan or ambient env.
+     * Only the targets the Start admitted are compared with the generation's servers: a Codex Desktop Start
+     * plans every server but admits Neural Link alone, its other rows coming from its own env.
      * @param {Object} options Original journal row, Start record and the lifecycle's custody-checked inputs.
      * @returns {Map} Recovered server states; disabled grants stay revoked.
      * @protected
      */
     recoverServers({saved, start, recovered}) {
-        const {capabilities, owners, residentInputs} = recovered;
-        if (canonicalJson(Object.keys(capabilities).sort()) !== canonicalJson(saved.servers.map(row => row.key).sort()) ||
-            canonicalJson(Object.keys(start.profile.grants).sort()) !== canonicalJson(saved.servers.map(row => row.key).sort()) ||
-            canonicalJson(start.targets.map(row => row.key).sort()) !== canonicalJson(saved.servers.map(row => row.key).sort())) throw new Error('server set changed');
+        const
+            {capabilities, owners, residentInputs} = recovered,
+            admitted                               = new Set(Object.keys(start.profile.grants)),
+            servers                                = canonicalJson(saved.servers.map(row => row.key).sort());
+        if (canonicalJson(Object.keys(capabilities).sort()) !== servers || canonicalJson([...admitted].sort()) !== servers ||
+            canonicalJson(start.targets.map(row => row.key).filter(key => admitted.has(key)).sort()) !== servers) throw new Error('server set changed');
         for (const [name, owner] of Object.entries(owners)) {
             if (!isDeepStrictEqual(owner.binding, saved.credentialBindings[name]) || !owner.matches()) throw new Error(`credential owner changed: ${name}`);
         }
