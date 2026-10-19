@@ -1298,6 +1298,27 @@ test.describe('prepareManagedAgentWorkspace', () => {
                 .every(item => item.status === WORKSPACE_ARTIFACT_STATES.MATCH)).toBe(true)
         });
 
+        test('a seat whose Neural Link runs through the launcher moves too: the project file stays without it', async () => {
+            const bundled    = await packagedRuntime('Neo Harness.app'),
+                  generation = await packagedRuntime('runtime/gen-b/host.runtime'),
+                  launched   = runtime => ({...startFrom(runtime), launchAdmission: desktopAdmission()}),
+                  first      = await prepareManagedAgentWorkspace(launched(bundled)),
+                  configPath = path.join(first.targetRepoRoot, '.codex/config.toml');
+
+            expect(tomlMcpTable(await read(configPath), 'neo-mjs-neural-link')).toBe('');
+            await fs.writeFile(configPath, await read(configPath) + resident);
+            await fs.rm(path.join(root, 'Neo Harness.app'), {recursive: true});
+
+            const moved  = await prepareManagedAgentWorkspace(launched(generation)),
+                  result = await read(configPath);
+
+            expect(moved.artifacts.find(item => item.path === configPath).status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+            expect(result).not.toContain(bundled.agentosRuntimeRoot);
+            expect(result).toContain(generation.nodePath);
+            expect(tomlMcpTable(result, 'neo-mjs-neural-link')).toBe('');
+            expect(result).toContain(resident);
+        });
+
         test('rows rendered before NEO_NL_PORT joined Neural Link move too, with and without a runtime move', async () => {
             const bundled    = await packagedRuntime('Neo Harness.app'),
                   generation = await packagedRuntime('runtime/gen-b/host.runtime');

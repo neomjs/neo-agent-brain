@@ -1212,7 +1212,8 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
         priorRuntimeContent      : existing => {
             const prior = priorPackagedCodexRuntime(existing, plan);
 
-            return prior ? [plan, vocabularyPrevious, formerPlan].filter(Boolean).map(rows => renderCodexProjectConfig(rebindRuntime(rows, prior))) : []
+            // the launched shape too: a seat whose Neural Link runs through the launcher renders `projectPlan`
+            return prior ? [projectPlan, plan, vocabularyPrevious, formerPlan].filter(Boolean).map(rows => renderCodexProjectConfig(rebindRuntime(rows, prior))) : []
         },
         ownedProjection: projectCodexOwnedProjection,
         mergeTransport : mergeCodexTransport,
@@ -3441,7 +3442,8 @@ async function publishTextAtomically({filePath, content, fileSystem}) {
 /**
  * @summary Replace each named managed table with its desired one. A table only one side has moves with the
  * server's carrier: it leaves the file when the server is launched from the seat's home, and comes back when
- * it no longer is. The caller's recognised projection vouched for either move.
+ * it no longer is. A server launched from the home is in neither file; MC and KB always are. The caller's
+ * recognised projection vouched for either move.
  * @private
  */
 function mergeCodexTransport(existing, desired, names = TRANSPORT_SERVER_NAMES) {
@@ -3453,6 +3455,7 @@ function mergeCodexTransport(existing, desired, names = TRANSPORT_SERVER_NAMES) 
             target  = findTomlMcpTable(desired, name);
 
         if (!current && !target) {
+            if (!TRANSPORT_SERVER_NAMES.includes(name)) return [];
             throw transportDivergence(name, 'Codex MCP table', 'managed table is missing')
         }
         if (!current) {
