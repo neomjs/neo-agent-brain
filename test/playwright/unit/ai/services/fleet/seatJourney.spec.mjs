@@ -123,7 +123,7 @@ test.describe('ai/services/fleet/seatJourney — judgements', () => {
         expect(stops).toEqual(['wire-seat'])
     });
 
-    test('a recorded config that is gone becomes a named operator-content row, and the journey still resolves and stops', async () => {
+    test('a recorded config that is gone becomes a named operator-content row, the stopped seat skips recovery, and the closing Stop still runs', async () => {
         const
             home    = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-journey-gone-')),
             deadPid = spawnSync(process.execPath, ['-e', '']).pid,
@@ -149,7 +149,9 @@ test.describe('ai/services/fleet/seatJourney — judgements', () => {
             const failed = result.rows.find(row => row.step === 'operator-content');
 
             expect(result.ok).toBe(false);
-            expect(result.rows.slice(0, 3).map(row => [row.step, row.ok])).toEqual([['define', true], ['start', true], ['stop', true]]);
+            expect(result.rows.map(row => [row.step, row.ok]), 'no recover row for a seat that is not up').toEqual([
+                ['define', true], ['start', true], ['stop', true], ['operator-content', false]
+            ]);
             expect(failed.ok).toBe(false);
             expect(failed.reason).toMatch(/^reading the harness config failed: ENOENT/);
             expect(stops.at(-1), 'the closing Stop ran after the failed step').toBe(seat.definition.id);

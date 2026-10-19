@@ -19,9 +19,9 @@ import {deriveAgentRepoPath}             from './deriveAgentRepoPath.mjs';
  * in CI and against a packaged candidate before it is installed.
  *
  * Each step yields one row `{seat, family, step, ok, reason, detail}`. The rows are the verdict: the journey never
- * throws, a failed wire call included, so one red step still leaves the rest of the evidence. It always attempts a
- * closing Stop for every seat it defined; the caller owns everything else it started (the fleet server, the Bridge,
- * the roots).
+ * throws, a failed wire call or config read included, so one red step still leaves the rest of the evidence. Only a
+ * seat that is up when the Fleet dies goes through recovery. The journey always attempts a closing Stop for every seat
+ * it defined; the caller owns everything else it started (the fleet server, the Bridge, the roots).
  * @see ai/scripts/fleet/seatStandIn.mjs
  */
 
@@ -405,9 +405,9 @@ export async function runSeatJourney({fleet, restartFleet, seats, bridgePort = n
             add(seat, 'operator-content', preserved.ok, preserved.ok ? null : `changed by the second Start: ${preserved.changed.join(', ')}`)
         }
 
-        // The unclean restart: the Fleet dies with its seats up, and the seats are gone by the next boot. Recovery must
-        // read them as stopped, the state the roster offers Start for.
-        const running = defined.filter(seat => starts.has(seat.definition.id));
+        // The unclean restart: the Fleet dies with the seats that are up, and they are gone by the next boot. Recovery
+        // must read them as stopped, the state the roster offers Start for.
+        const running = defined.filter(seat => isAlive(starts.get(seat.definition.id)?.pid));
 
         if (running.length) {
             try {
