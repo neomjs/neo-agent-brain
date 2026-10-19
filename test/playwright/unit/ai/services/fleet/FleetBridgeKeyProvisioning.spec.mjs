@@ -1,4 +1,5 @@
 import {expect, test}           from '@playwright/test';
+import crypto                   from 'node:crypto';
 import {EventEmitter, once}     from 'node:events';
 import fs                       from 'node:fs';
 import net                      from 'node:net';
@@ -309,5 +310,52 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
             summary        : `The Neural Link Bridge on port ${freePort} failed to start (EACCES); stdio log: ${expectedLog}.`,
             nextStep       : `Inspect ${expectedLog}, stop any conflicting process on port ${freePort}, and restart the Fleet server to start the Neural Link Bridge.`
         });
+    });
+
+    // Production never sets the registry's test override: its directory comes from getDataDir()
+    function productionRegistry(dataDir) {
+        const publicKey = crypto.generateKeyPairSync('ed25519').publicKey.export({type: 'spki', format: 'pem'});
+
+        FleetRegistryService.dataDir = null;
+
+        return {getBridgePublicKey: () => publicKey, getDataDir: () => dataDir}
+    }
+
+    test('#1208: without the test override, the Bridge log lands under the resolved data dir and the start proceeds', async () => {
+        const
+            dataDir = path.join(tempRoot, 'resolved'),
+            port    = await findFreePort(),
+            probes  = [{verdict: 'unanswered', reason: 'timeout'}, {verdict: 'proved'}],
+            settled = await settleFleetBridge({
+                port,
+                registry        : productionRegistry(dataDir),
+                probeFn         : async () => probes.shift() ?? {verdict: 'proved'},
+                probeTimeoutMs  : 50,
+                startupTimeoutMs: 250,
+                pollIntervalMs  : 25,
+                spawnFn         : () => Object.assign(new EventEmitter(), {pid: 4242, unref: () => {}})
+            }),
+            logFile  = path.join(dataDir, 'logs', 'neural-link-bridge-stdio.log');
+
+        expect(settled).toMatchObject({state: FLEET_BRIDGE_STATES.READY, action: 'started', pid: 4242, logFilePath: logFile});
+        expect(fs.existsSync(logFile)).toBe(true)
+    });
+
+    test('#1208: a log that cannot be placed reports bridge-unavailable and never rejects the settle', async () => {
+        const port    = await findFreePort();
+        let   spawned = 0;
+
+        const settled = await settleFleetBridge({
+            port,
+            registry        : productionRegistry(''),
+            probeFn         : async () => ({verdict: 'unanswered', reason: 'timeout'}),
+            probeTimeoutMs  : 50,
+            startupTimeoutMs: 100,
+            pollIntervalMs  : 25,
+            spawnFn         : () => {spawned++}
+        });
+
+        expect(settled).toMatchObject({state: FLEET_BRIDGE_STATES.UNAVAILABLE, reason: 'FLEET_DATA_DIR_MISSING', logFilePath: null});
+        expect(spawned).toBe(0)
     });
 });

@@ -23,12 +23,12 @@ export const FLEET_BRIDGE_STATES = Object.freeze({
 /**
  * @summary Resolves the detached Bridge stdio log file path under the Fleet data directory.
  * @param {Object} [options={}]
- * @param {String} [options.dataDir=FleetRegistryService.dataDir] Fleet data directory.
+ * @param {String} [options.dataDir=FleetRegistryService.getDataDir()] Fleet data directory, resolved.
  * @param {String|null} [options.logFilePath=null] Explicit log file path override.
  * @returns {String}
  */
 export function getFleetBridgeStdioLogPath({
-    dataDir     = FleetRegistryService.dataDir,
+    dataDir     = FleetRegistryService.getDataDir(),
     logFilePath = null
 } = {}) {
     if (typeof logFilePath === 'string' && logFilePath.trim() !== '') {
@@ -36,7 +36,7 @@ export function getFleetBridgeStdioLogPath({
     }
 
     if (typeof dataDir !== 'string' || dataDir.trim() === '') {
-        throw new Error('Missing Fleet dataDir: Neural Link Bridge stdio log requires a resolved Fleet data directory');
+        throw Object.assign(new Error('Missing Fleet dataDir: Neural Link Bridge stdio log requires a resolved Fleet data directory'), {code: 'FLEET_DATA_DIR_MISSING'});
     }
 
     return path.join(dataDir, 'logs', 'neural-link-bridge-stdio.log');
@@ -213,26 +213,24 @@ export async function settleFleetBridge({
         });
     }
 
-    const
-        resolvedLogFilePath = getFleetBridgeStdioLogPath({
-            dataDir: registry?.dataDir ?? FleetRegistryService.dataDir,
-            logFilePath
-        }),
-        childEnv            = {
-            ...process.env,
-            NEO_NL_PORT                : String(resolvedPort),
-            NEO_FLEET_BRIDGE_PUBLIC_KEY: publicKey
-        };
+    const childEnv = {
+        ...process.env,
+        NEO_NL_PORT                : String(resolvedPort),
+        NEO_FLEET_BRIDGE_PUBLIC_KEY: publicKey
+    };
 
-    let logFd        = null,
-        child        = null,
-        spawnFailure = null,
+    let logFd               = null,
+        child               = null,
+        resolvedLogFilePath = null,
+        spawnFailure        = null,
         resolveSpawnError;
     const spawnErrorSignal = new Promise(resolve => {
         resolveSpawnError = resolve;
     });
 
+    // Placing the log is part of the start: a failure reports bridge-unavailable and never ends Fleet boot
     try {
+        resolvedLogFilePath = getFleetBridgeStdioLogPath({dataDir: registry.getDataDir(), logFilePath});
         logFd = openLogFileFn(resolvedLogFilePath);
         child = spawnFn(nodeBin, [bridgeScriptPath], {
             detached: true,
