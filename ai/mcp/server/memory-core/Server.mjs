@@ -648,7 +648,8 @@ class Server extends BaseServer {
                     : {lastAuthenticatedAt: now}
                 : fullProperties;
 
-            if (existing && this.isFreshIdentityStamp({existingProps, now, properties})) {
+            // upsertGlobalNode also merges userId: null, so a row that is not global yet is a change
+            if (existing && this.isFreshIdentityStamp({existingProps, now, properties: {...properties, userId: null}})) {
                 return graphNodeId
             }
 
@@ -686,7 +687,7 @@ class Server extends BaseServer {
      * @param {Object} options
      * @param {Object} options.existingProps The stored node's properties.
      * @param {String} options.now           The request's ISO timestamp.
-     * @param {Object} options.properties    The properties the write would merge.
+     * @param {Object} options.properties    The complete merge the write would apply.
      * @returns {Boolean}
      * @protected
      */

@@ -42,7 +42,8 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
         '@benched-gitlab-agent-883',
         '@stamped-gitlab-agent-1204',
         '@renamed-gitlab-agent-1204',
-        '@unthrottled-gitlab-agent-1204'
+        '@unthrottled-gitlab-agent-1204',
+        '@private-gitlab-agent-1204'
     ]);
 
     const silentLogger = {info: () => {}, warn: () => {}, error: () => {}};
@@ -712,6 +713,31 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
             expect(await countIdentityWrites(() => serverInstance.buildRequestContext(renamed))).toBe(1);
             expect(rawGraphNode('@renamed-gitlab-agent-1204').properties.providerDisplayName).toBe('New Name');
             expect(await countIdentityWrites(() => serverInstance.buildRequestContext(renamed))).toBe(0)
+        } finally {
+            serverInstance.destroy();
+        }
+    });
+
+    test('#1204: a fresh stamp on a private identity row still writes, so the row turns global at once', async () => {
+        await GraphService.initAsync();
+
+        GraphService.upsertNode({
+            id        : '@private-gitlab-agent-1204',
+            type      : 'AgentIdentity',
+            name      : 'Private Agent',
+            properties: {lastAuthenticatedAt: new Date().toISOString(), userId: 'legacy-private-owner'}
+        });
+
+        expect(rawGraphNode('@private-gitlab-agent-1204').properties.userId).toBe('legacy-private-owner');
+
+        const
+            request        = {userId: 'private-gitlab-agent-1204', source: 'gitlab-pat', providerUsername: 'private-gitlab-agent-1204'},
+            serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['gitlab-pat'], identityStampIntervalMs: 60000});
+
+        try {
+            expect(await countIdentityWrites(() => serverInstance.buildRequestContext(request))).toBe(1);
+            expect(rawGraphNode('@private-gitlab-agent-1204').properties.userId).toBeNull();
+            expect(await countIdentityWrites(() => serverInstance.buildRequestContext(request))).toBe(0)
         } finally {
             serverInstance.destroy();
         }
