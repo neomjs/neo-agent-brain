@@ -132,20 +132,26 @@ test.describe('resolveTargets — deployment-portable swarm-heartbeat target res
     });
 
     test('active-local-team takes the team from identityRoots and participation from the nodes: a node bench excludes, a root bench the node contradicts does not', async () => {
-        const team = IDENTITIES.filter(i => i.type === 'AgentIdentity').map(i => i.id);
+        const
+            roots = IDENTITIES.filter(i => i.type === 'AgentIdentity'),
+            team  = roots.map(i => i.id),
+            // one root of each status, found by status: which resident is benched is the roster's decision,
+            // not this arm's assumption
+            activeRoot  = roots.find(i => i.properties.participationStatus === 'active'),
+            benchedRoot = roots.find(i => i.properties.participationStatus === 'operator_benched');
 
-        // neo-gpt-euclid's root reads active and neo-gemini-julia's benched; the nodes say the opposite
-        expect(IDENTITIES.find(i => i.id === '@neo-gpt-euclid').properties.participationStatus).toBe('active');
-        expect(IDENTITIES.find(i => i.id === '@neo-gemini-julia').properties.participationStatus).toBe('operator_benched');
+        expect(activeRoot).toBeDefined();
+        expect(benchedRoot).toBeDefined();
 
+        // the nodes say the opposite of both roots
         const result = await resolveTargets({
             selfIdentity         : '@neo-opus-4-7',
             targetSource         : 'active-local-team',
-            participationProvider: () => new Map([['@neo-gpt-euclid', 'operator_benched'], ['@neo-gemini-julia', 'active']])
+            participationProvider: () => new Map([[activeRoot.id, 'operator_benched'], [benchedRoot.id, 'active']])
         });
 
-        expect(result).toEqual(team.filter(id => id !== '@neo-gpt-euclid'));
-        expect(result).toContain('@neo-gemini-julia')
+        expect(result).toEqual(team.filter(id => id !== activeRoot.id));
+        expect(result).toContain(benchedRoot.id)
     });
 
     test('a participation read that cannot answer is named by the caller, never replaced by the roots; an explicit list and disabled never ask it', async () => {

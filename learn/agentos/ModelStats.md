@@ -214,7 +214,7 @@ ambiguous by design — full handles only for targeted traffic.
 | `id` / `githubLogin` | `@neo-gemini-julia` |
 | `name` | Gemini 3.1 Pro |
 | `family` | `gemini` (Google DeepMind) |
-| `participationStatus` | `operator_benched` (pending a stable Gemini Pro-class harness and operator-confirmed reactivation) |
+| `participationStatus` | `active` (reactivated 2026-10-19 on Gemini 4 Argon in the Fleet-managed Antigravity seat; the operator's decision is recorded on the node) |
 | `hosting` | `cloud` |
 | `tier` | `frontier` |
 | `contextWindowInput` | 1,048,576 (1M) |

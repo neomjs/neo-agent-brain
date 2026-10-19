@@ -316,11 +316,14 @@ export const IDENTITIES = [
             releaseDate        : '2026-02-19',
             // Pricing V-B-A pending — model card did not surface pricing at registry-author time.
             // See ModelStats.md §neo_gemini_pro for explicit pending-value annotation.
-            participationStatus: 'operator_benched',
-            statusReason       : 'Operator-benched pending a stable Gemini Pro-class harness',
+            // Mirrors the decision recorded on her node (participation.mjs activate, 2026-10-19): she returned on
+            // Gemini 4 Argon in the Fleet-managed Antigravity seat. A node without a recorded decision takes this
+            // row at boot (seedAgentIdentities), so the row and the record must agree.
+            participationStatus: 'active',
+            statusReason       : 'Reactivated on Gemini 4 Argon (Antigravity seat); the operator recorded the decision on the node',
             authority          : '@tobiu',
-            since              : '2026-05-18T00:00:00.000Z',
-            reactivationTrigger: 'Operator confirms reactivation after the Gemini Pro-class harness passes maintainer preflight',
+            since              : '2026-10-19T02:30:11.025Z',
+            reactivationTrigger: null,
             createdAt          : '2026-04-23T13:03:46.000Z'
         }
     },

@@ -2789,7 +2789,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             'labels:',
             '  - enhancement',
             'assignees:',
-            '  - neo-gemini-julia',
+            '  - neo-benched-owner',
             "createdAt: '2026-06-01T00:00:00Z'",
             "updatedAt: '2026-07-02T11:00:00Z'",
             "githubUrl: 'https://github.com/neomjs/neo/issues/9501'",
@@ -2804,7 +2804,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             'labels:',
             '  - not-code-ready',
             'assignees:',
-            '  - neo-gemini-julia',
+            '  - neo-benched-owner',
             "createdAt: '2026-06-01T00:00:00Z'",
             "updatedAt: '2026-07-02T11:00:00Z'",
             '---',
@@ -2818,7 +2818,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             'labels:',
             '  - epic',
             'assignees:',
-            '  - neo-gemini-julia',
+            '  - neo-benched-owner',
             "createdAt: '2026-05-01T00:00:00Z'",
             "updatedAt: '2026-06-20T00:00:00Z'",
             'subIssuesCompleted: 3',
@@ -2904,8 +2904,12 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             }
         ];
 
-        // the identity nodes a plane seeds from the roots, the records the owner marks read
-        const identities = IDENTITIES.filter(entry => entry.type === 'AgentIdentity').map(({id, properties}) => ({id, label: 'AgentIdentity', properties}));
+        // the identity nodes a plane seeds from the roots, plus the benched owner this arm seeds itself: which
+        // roster resident is benched is the roster's decision, never this arm's assumption
+        const identities = [
+            ...IDENTITIES.filter(entry => entry.type === 'AgentIdentity').map(({id, properties}) => ({id, label: 'AgentIdentity', properties})),
+            {id: '@neo-benched-owner', label: 'AgentIdentity', properties: {githubLogin: '@neo-benched-owner', participationStatus: 'operator_benched', since: '2026-05-18T00:00:00.000Z'}}
+        ];
 
         try {
             const findings = buildWorkGraphStallFindings({issuesDir, now, prs, graphService, identities});
@@ -2926,7 +2930,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
                 verificationSource: 'AgentIdentity node + local issue sync'
             });
             expect(ownerFinding.motionPredicate).toContain('participationStatus');
-            expect(ownerFinding.evidenceRefs).toContain('AgentIdentity:@neo-gemini-julia:operator_benched');
+            expect(ownerFinding.evidenceRefs).toContain('AgentIdentity:@neo-benched-owner:operator_benched');
             expect(ownerFinding.waitingSince).toBe('2026-05-18T00:00:00.000Z');
             expect(ownerFinding.lastSeen).toBe('2026-07-02T12:00:00.000Z');
 
