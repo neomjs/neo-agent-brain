@@ -276,10 +276,12 @@ The files move before custody admission (operator direction, 2026-10-19, for Eng
 this order: every reader classifies the redirect
 ([Brain #1181](https://github.com/neomjs/neo-agent-brain/issues/1181)), Institution publishes the
 records ([Institution #686](https://github.com/neomjs/neo-agent-institution/issues/686)), and the
-Engine paths become pointers ([neo #19730](https://github.com/neomjs/neo/issues/19730)). Nothing
-was admitted for these five records that the move could strand. The graph's ADR ingestor reads
-only the Brain checkout, and the KB reads Engine records only through Brain's pinned `neo.mjs`.
-Admission (the admitted catalog, alias reading and migration under
+Engine paths become pointers ([neo #19730](https://github.com/neomjs/neo/issues/19730)). The move
+admits nothing new and neither prunes nor rekeys graph state: today's ADR ingestor reads only the
+Brain checkout, and the KB reads Engine records only through Brain's pinned `neo.mjs`. Legacy graph
+state from before the extraction stays as it is. Some of the five already carry it (`adr-0037` is an
+`ADR` node with its own vector; other ids hold extracted concept nodes), and the migration reconciles
+it. Admission (the admitted catalog, alias reading and that migration under
 [Brain #1010](https://github.com/neomjs/neo-agent-brain/issues/1010)) and authoring guidance
 ([Skills #174](https://github.com/neomjs/neo-agent-skills/issues/174)) follow the move.
 Institution's records reach the KB before Brain's pin moves past the Engine cut.
