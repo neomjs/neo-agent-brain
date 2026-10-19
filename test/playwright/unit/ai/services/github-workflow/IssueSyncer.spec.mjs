@@ -23,6 +23,7 @@ import matter                      from 'gray-matter';
 import path                        from 'path';
 import {fileURLToPath}             from 'url';
 import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}          from '../../services/memory-core/util.mjs';
 
 /**
  * @summary Regression coverage for IssueSyncer's timeline-based comment accounting.
@@ -46,20 +47,25 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
     let GraphqlService;
     let issueSyncConfig;
     let aiConfig;
+    let restoreAiConfig;
     let originalQuery;
     let tmpRoot;
     let logger;
 
     function applyConfigSnapshot(issueSyncOverrides = {}) {
-        aiConfig = IssueSyncer.createConfigSnapshot({
-            issueSync: {
-                contentRootOverride: tmpRoot,
-                ...issueSyncOverrides
-            }
-        });
-        IssueSyncer.configSnapshot        = aiConfig;
-        ReleaseNotesSyncer.configSnapshot = aiConfig;
-        issueSyncConfig                   = aiConfig.issueSync;
+        const {issueDenylist, ...restOverrides} = issueSyncOverrides,
+              overrides                         = {
+                  'issueSync.contentRootOverride'  : tmpRoot,
+                  'issueSync.issueDenylist.numbers': issueDenylist?.numbers ?? [],
+                  'issueSync.issueDenylist.authors': issueDenylist?.authors ?? []
+              };
+
+        for (const [key, val] of Object.entries(restOverrides)) {
+            overrides[`issueSync.${key}`] = val;
+        }
+
+        snapshotAiConfig(aiConfig, overrides);
+        issueSyncConfig = aiConfig.issueSync;
         return aiConfig;
     }
 
@@ -67,22 +73,29 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         tmpRoot = path.resolve(process.cwd(), 'tmp', `issue-syncer-test-${process.pid}-${Date.now()}`);
         await fs.ensureDir(tmpRoot);
 
+        aiConfig           = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
         GraphqlService     = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
         IssueSyncer        = (await import('../../../../../../ai/services/github-workflow/sync/IssueSyncer.mjs')).default;
         ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
         logger             = (await import('../../../../../../ai/mcp/server/github-workflow/logger.mjs')).default;
-
-        // Redirect local markdown writes to the tmp dir via an isolated configSnapshot so the test
-        // does not mutate shared AiConfig or pollute the real resources/content/issues tree.
-        applyConfigSnapshot();
+        issueSyncConfig    = aiConfig.issueSync;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
     });
 
+    test.beforeEach(() => {
+        // Redirect local markdown writes to the tmp dir via snapshotAiConfig so each test
+        // restores the shared AiConfig singleton cleanly in afterEach.
+        restoreAiConfig = snapshotAiConfig(aiConfig);
+        applyConfigSnapshot();
+    });
+
+    test.afterEach(() => {
+        restoreAiConfig?.();
+    });
+
     test.afterAll(async () => {
-        GraphqlService.query              = originalQuery;
-        IssueSyncer.configSnapshot        = null;
-        ReleaseNotesSyncer.configSnapshot = null;
+        GraphqlService.query = originalQuery;
         await fs.remove(tmpRoot).catch(() => {});
     });
 
@@ -1752,7 +1765,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         expect(await fs.readFile(copies[0], 'utf8')).toContain('Fresh title from the refetch')
     });
 
-    test('IssueSyncer spec uses IssueSyncer.configSnapshot instead of shared-config writes', async () => {
+    test('IssueSyncer spec uses snapshotAiConfig instead of shared-config writes', async () => {
         const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
 
         expect(findSharedConfigMutations(source)).toEqual([]);

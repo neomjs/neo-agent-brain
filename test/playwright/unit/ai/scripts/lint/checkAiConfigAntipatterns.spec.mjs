@@ -1,6 +1,6 @@
 import {test, expect}                                                                      from '@playwright/test';
 import {findAntipatterns, filterAllowlistedHits, ADR_0019_RULES, ALLOWLIST, ESCAPE_MARKER} from '../../../../../../ai/scripts/lint/check-aiconfig-antipatterns.mjs';
-import {A1_IMPORT_GATE, SCAN_ROOTS, collectDefaultFiles}                                    from '../../../../../../ai/scripts/lint/check-aiconfig-antipatterns.mjs';
+import {A1_IMPORT_GATE, SCAN_ROOTS, collectDefaultFiles}                                   from '../../../../../../ai/scripts/lint/check-aiconfig-antipatterns.mjs';
 import {spawnSync}                                                                         from 'node:child_process';
 import fs                                                                                  from 'node:fs';
 import path                                                                                from 'node:path';
@@ -570,5 +570,37 @@ test.describe('PLANE-LITERAL — cwd-relative plane literals', () => {
         const hits = planeLiteralHits("export const DEFAULT_SQLITE_DIR = '.neo-ai-data/sqlite';");
 
         expect(filterAllowlistedHits(hits, 'ai/services/SomeNewService.mjs')).toHaveLength(1)
+    })
+});
+
+/**
+ * @summary Red-proofs rule CONFIG-SNAPSHOT — retired parallel configSnapshot seam and whole-root
+ * `|| aiConfig` / `|| *Config` fallback expressions.
+ */
+test.describe('CONFIG-SNAPSHOT — retired configSnapshot seam and whole-root config fallback (#1151)', () => {
+    const configSnapshotHits = source => findAntipatterns(source).filter(hit => hit.rule === 'CONFIG-SNAPSHOT');
+
+    test('flags executable configSnapshot identifier usages', () => {
+        expect(configSnapshotHits('    configSnapshot = null')).toHaveLength(1);
+        expect(configSnapshotHits('    const cfg = this.configSnapshot ?? aiConfig;')).toHaveLength(1);
+        expect(configSnapshotHits('    Service.configSnapshot = snapshot;')).toHaveLength(1)
+    });
+
+    test('flags whole-root || aiConfig / || AiConfig / || *Config fallbacks', () => {
+        expect(configSnapshotHits('    return this.#configSnapshot || aiConfig;')).toHaveLength(1);
+        expect(configSnapshotHits('    const cfg = override || AiConfig;')).toHaveLength(1);
+        expect(configSnapshotHits('    const cfg = override || EvolutionConfig;')).toHaveLength(1);
+        expect(configSnapshotHits('    const cfg = override || Memory_Config;')).toHaveLength(1)
+    });
+
+    test('does NOT flag leaf-level fallbacks or string/comment mentions', () => {
+        expect(configSnapshotHits('    const host = override || aiConfig.host;')).toEqual([]);
+        expect(configSnapshotHits('    // configSnapshot was retired in #1151')).toEqual([]);
+        expect(configSnapshotHits("    const msg = 'configSnapshot || aiConfig is retired';")).toEqual([]);
+        expect(configSnapshotHits(`    const x = this.configSnapshot; // ${ESCAPE_MARKER}`)).toEqual([])
+    });
+
+    test('ALLOWLIST["CONFIG-SNAPSHOT"] is zero-baseline', () => {
+        expect([...ALLOWLIST['CONFIG-SNAPSHOT']]).toEqual([])
     })
 });

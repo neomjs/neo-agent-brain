@@ -79,6 +79,25 @@ test.describe('Neo.ai test-isolation — snapshotAiConfig (#12435)', () => {
 
         expect(cfg.storagePaths.graph).toBe('/orig/graph.sqlite');
     });
+
+    test('rejects non-scalar object overrides or branch paths (#1151)', () => {
+        const cfg = {storagePaths: {graph: '/orig/graph.sqlite'}, tags: ['a']};
+
+        expect(() => snapshotAiConfig(cfg, {
+            storagePaths: {graph: '/tmp/nested-object-override.sqlite'}
+        })).toThrow('snapshotAiConfig: leaf "storagePaths" must be a scalar or array value; received an object.');
+
+        expect(() => snapshotAiConfig(cfg, {
+            'storagePaths.graph': {nested: true}
+        })).toThrow('snapshotAiConfig: leaf "storagePaths.graph" must be a scalar or array value; received an object.');
+
+        expect(cfg.storagePaths.graph).toBe('/orig/graph.sqlite');
+
+        const restore = snapshotAiConfig(cfg, {tags: ['b', 'c']});
+        expect(cfg.tags).toEqual(['b', 'c']);
+        restore();
+        expect(cfg.tags).toEqual(['a']);
+    });
 });
 
 test.describe('Neo.ai test-isolation — snapshotAiConfig on the real aiConfig Provider', () => {

@@ -21,10 +21,6 @@ import {
     CORPUS_PROJECTION_CONSUMER,
     evaluateCorpusProjectionAdmission
 } from '../../ai/services/graph/corpusProjectionContract.mjs';
-import {
-    cloneConfigSubtree,
-    validateConfigSnapshot
-} from '../../ai/services/shared/configSnapshot.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -270,13 +266,6 @@ function splitFreshAndAgedUndigested(rows, maxToProcess, undigestedSessionFreshR
  * @extends Neo.core.Base
  */
 class RemDigestion extends Base {
-    /**
-     * Service-local test configuration snapshot seam.
-     * @type {Object|null}
-     * @private
-     */
-    #configSnapshot = null;
-
     static config = {
         /**
          * @member {String} className='Neo.brain.evolution.RemDigestion'
@@ -311,128 +300,6 @@ class RemDigestion extends Base {
          * @reactive
          */
         isProcessing_: false
-    }
-
-    /**
-     * @returns {Object|null}
-     */
-    get configSnapshot() {
-        return this.#configSnapshot;
-    }
-
-    /**
-     * @param {Object|null} value
-     */
-    set configSnapshot(value) {
-        const next = this.beforeSetConfigSnapshot(value);
-        this.#configSnapshot = next;
-
-        for (const collaborator of [this.gapInferenceEngine, this.semanticGraphExtractor, this.topologyInferenceEngine]) {
-            if (collaborator && 'configSnapshot' in collaborator) {
-                collaborator.configSnapshot = next;
-            }
-        }
-    }
-
-    /**
-     * Validates a service-local test snapshot before storing it.
-     *
-     * @param {Object|null} value
-     * @returns {Object|null}
-     * @protected
-     */
-    beforeSetConfigSnapshot(value) {
-        return validateConfigSnapshot(value, {
-            requiredSubtrees: ['localModels', 'ollama', 'openAiCompatible', 'orchestrator'],
-            serviceName     : 'RemDigestion'
-        });
-    }
-
-    /**
-     * Clones the live `AiConfig` and `EvolutionConfig` leaves read by `RemDigestion`
-     * into a plain object suitable for `RemDigestion.configSnapshot` in unit tests.
-     *
-     * @param {Object} [overrides={}]
-     * @returns {Object}
-     */
-    createConfigSnapshot(overrides = {}) {
-        const snapshot = {
-            graphProvider                : AiConfig.graphProvider,
-            handoffFilePath              : AiConfig.handoffFilePath,
-            remRunStateDir               : EvolutionConfig.remRunStateDir,
-            lazyEdgesQueuePath           : AiConfig.lazyEdgesQueuePath,
-            guideGapWeightThreshold      : AiConfig.guideGapWeightThreshold,
-            nlActionDigestLookbackMs     : AiConfig.nlActionDigestLookbackMs,
-            nlActionDigestSequenceLimit  : AiConfig.nlActionDigestSequenceLimit,
-            nlActionDigestMinSuccessRate : AiConfig.nlActionDigestMinSuccessRate,
-            nlActionDigestEvidenceWeight : AiConfig.nlActionDigestEvidenceWeight,
-            sessionScanPageLimit         : EvolutionConfig.sessionScanPageLimit,
-            remSleepBatchLimit           : EvolutionConfig.remSleepBatchLimit,
-            undigestedSessionFreshReserve: EvolutionConfig.undigestedSessionFreshReserve,
-            maxDigestAttempts            : EvolutionConfig.maxDigestAttempts,
-            remRunRetentionLimit         : EvolutionConfig.remRunRetentionLimit,
-            localModels                  : cloneConfigSubtree(AiConfig, ['localModels']),
-            ollama                       : cloneConfigSubtree(AiConfig, ['ollama']),
-            openAiCompatible             : cloneConfigSubtree(AiConfig, ['openAiCompatible']),
-            orchestrator                 : cloneConfigSubtree(AiConfig, ['orchestrator'])
-        };
-
-        return {
-            ...snapshot,
-            ...overrides,
-            localModels: overrides.localModels
-                ? {
-                    ...snapshot.localModels,
-                    ...overrides.localModels,
-                    chat: {
-                        ...snapshot.localModels.chat,
-                        ...(overrides.localModels.chat || {})
-                    }
-                }
-                : snapshot.localModels,
-            ollama: overrides.ollama
-                ? {...snapshot.ollama, ...overrides.ollama}
-                : snapshot.ollama,
-            openAiCompatible: overrides.openAiCompatible
-                ? {...snapshot.openAiCompatible, ...overrides.openAiCompatible}
-                : snapshot.openAiCompatible,
-            orchestrator: overrides.orchestrator
-                ? {
-                    ...snapshot.orchestrator,
-                    ...overrides.orchestrator,
-                    providerReadiness: {
-                        ...snapshot.orchestrator.providerReadiness,
-                        ...(overrides.orchestrator.providerReadiness || {})
-                    },
-                    corpusProjection: {
-                        ...snapshot.orchestrator.corpusProjection,
-                        ...(overrides.orchestrator.corpusProjection || {})
-                    }
-                }
-                : snapshot.orchestrator
-        };
-    }
-
-    /**
-     * Resolves the active Brain configuration source: the test `configSnapshot`
-     * when installed, otherwise the live `AiConfig` singleton.
-     *
-     * @returns {Object}
-     * @private
-     */
-    #getConfig() {
-        return this.#configSnapshot || AiConfig;
-    }
-
-    /**
-     * Resolves the active Evolution configuration source: the test `configSnapshot`
-     * when installed, otherwise the live `EvolutionConfig` singleton.
-     *
-     * @returns {Object}
-     * @private
-     */
-    #getEvolutionConfig() {
-        return this.#configSnapshot || EvolutionConfig;
     }
 
     /**
@@ -485,8 +352,7 @@ class RemDigestion extends Base {
         // Since ChromaDB filtering on missing attributes can be tricky depending on version,
         // filter in memory after sampling the collection head and tail. Chroma does not expose
         // SQL-style ORDER BY, so metadata timestamps define the fresh/aged split.
-        const EvolutionConfig      = this.#getEvolutionConfig(),
-              sessionScanPageLimit = EvolutionConfig.sessionScanPageLimit,
+        const sessionScanPageLimit = EvolutionConfig.sessionScanPageLimit,
               remSleepBatchLimit   = EvolutionConfig.remSleepBatchLimit;
 
         if (!Number.isFinite(sessionScanPageLimit)) {
@@ -555,7 +421,7 @@ class RemDigestion extends Base {
         config,
         readReceipt = this.readCorpusProjectionReceiptFn
     } = {}) {
-        const resolvedConfig = config || this.#getConfig().orchestrator.corpusProjection;
+        const resolvedConfig = config || AiConfig.orchestrator.corpusProjection;
 
         if (!resolvedConfig.enabled) {
             return {
@@ -608,9 +474,6 @@ class RemDigestion extends Base {
         cycleBudgetMs         = 0,
         nowFn                 = this.nowFn
     } = {}) {
-        const AiConfig        = this.#getConfig(),
-              EvolutionConfig = this.#getEvolutionConfig();
-
         if (this.isProcessing) {
             this.logger.debug('[RemDigestion] REM pipeline is already running. Skipping trigger.');
             return {
@@ -1149,8 +1012,7 @@ class RemDigestion extends Base {
         overflowThreshold,
         nowFn
     } = {}) {
-        const EvolutionConfig = this.#getEvolutionConfig(),
-              startedAtMs     = this.nowFn();
+        const startedAtMs      = this.nowFn();
         const startedAt        = new Date(startedAtMs);
         const runId            = `rem-${crypto.randomUUID()}`;
         const perPhaseStates   = [];
@@ -1394,9 +1256,8 @@ class RemDigestion extends Base {
      * @returns {Promise<{ready: true} | {ready: false, diagnostic: Object}>}
      */
     async checkProviderReadiness() {
-        const AiConfig        = this.#getConfig(),
-              readinessConfig = this.providerReadiness.assertProviderReadinessConfig(AiConfig.orchestrator.providerReadiness);
-        const target = this.providerReadiness.getGraphProviderReadinessTarget();
+        const readinessConfig = this.providerReadiness.assertProviderReadinessConfig(AiConfig.orchestrator.providerReadiness);
+        const target          = this.providerReadiness.getGraphProviderReadinessTarget();
 
         if (!target.supported) {
             return {

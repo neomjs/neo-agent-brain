@@ -22,10 +22,12 @@ import matter                      from 'gray-matter';
 import path                        from 'path';
 import {fileURLToPath}             from 'url';
 import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}          from '../../services/memory-core/util.mjs';
 import {readContentIndex}          from '../../../../../../ai/services/github-workflow/shared/contentIndex.mjs';
 
 test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
     let aiConfig;
+    let restoreAiConfig;
     let GraphqlService;
     let PullRequestSyncer;
     let ReleaseNotesSyncer;
@@ -34,6 +36,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
     let tmpRoot;
 
     test.beforeAll(async () => {
+        aiConfig           = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
         GraphqlService     = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
         PullRequestSyncer  = (await import('../../../../../../ai/services/github-workflow/sync/PullRequestSyncer.mjs')).default;
         ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
@@ -43,15 +46,17 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
     });
 
     function applyConfigSnapshot(issueSyncOverrides = {}) {
-        aiConfig = PullRequestSyncer.createConfigSnapshot({
-            issueSync: {
-                contentRootOverride   : tmpRoot,
-                versionDirectoryPrefix: 'v',
-                routeByMilestone      : false,
-                ...issueSyncOverrides
-            }
-        });
-        PullRequestSyncer.configSnapshot = aiConfig;
+        const overrides = {
+            'issueSync.contentRootOverride'   : tmpRoot,
+            'issueSync.versionDirectoryPrefix': 'v',
+            'issueSync.routeByMilestone'      : false
+        };
+
+        for (const [key, val] of Object.entries(issueSyncOverrides)) {
+            overrides[`issueSync.${key}`] = val;
+        }
+
+        snapshotAiConfig(aiConfig, overrides);
         return aiConfig;
     }
 
@@ -59,6 +64,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         tmpRoot = path.resolve(process.cwd(), 'tmp', `pull-request-syncer-test-${process.pid}-${Date.now()}`);
         await fs.ensureDir(tmpRoot);
 
+        restoreAiConfig = snapshotAiConfig(aiConfig);
         applyConfigSnapshot();
         ReleaseNotesSyncer.sortedReleases = [];
     });
@@ -66,7 +72,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
     test.afterEach(async () => {
         GraphqlService.query              = originalQuery;
         ReleaseNotesSyncer.sortedReleases = originalSortedReleases;
-        PullRequestSyncer.configSnapshot  = null;
+        restoreAiConfig?.();
 
         await fs.remove(tmpRoot).catch(() => {});
     });
@@ -1051,7 +1057,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         expect(metadata.pulls[prNumber]).toBeUndefined();
     });
 
-    test('PullRequestSyncer spec uses PullRequestSyncer.configSnapshot instead of shared-config writes', async () => {
+    test('PullRequestSyncer spec uses snapshotAiConfig instead of shared-config writes', async () => {
         const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
 
         expect(findSharedConfigMutations(source)).toEqual([]);

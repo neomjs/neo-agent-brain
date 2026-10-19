@@ -1,11 +1,7 @@
-import fs                from 'fs';
-import path              from 'path';
-import AiConfig          from '../../mcp/server/memory-core/config.mjs';
-import {writeFileAtomic} from '../shared/atomicFileWrite.mjs';
-import {
-    cloneConfigSubtree,
-    validateConfigSnapshot
-}                        from '../shared/configSnapshot.mjs';
+import fs                  from 'fs';
+import path                from 'path';
+import AiConfig            from '../../mcp/server/memory-core/config.mjs';
+import {writeFileAtomic}   from '../shared/atomicFileWrite.mjs';
 import {readSecretCarrier} from '../shared/secretCarrier.mjs';
 import Base                from 'neo.mjs/src/core/Base.mjs';
 import Json                from 'neo.mjs/src/util/Json.mjs';
@@ -57,13 +53,6 @@ const
  * @singleton
  */
 class TopologyInferenceEngine extends Base {
-    /**
-     * Service-local test configuration snapshot seam.
-     * @type {Object|null}
-     * @private
-     */
-    #configSnapshot = null;
-
     static config = {
         /**
          * @member {String} className='Neo.ai.daemons.services.TopologyInferenceEngine'
@@ -75,83 +64,6 @@ class TopologyInferenceEngine extends Base {
          * @protected
          */
         singleton: true
-    }
-
-    /**
-     * @returns {Object|null}
-     */
-    get configSnapshot() {
-        return this.#configSnapshot;
-    }
-
-    /**
-     * @param {Object|null} value
-     */
-    set configSnapshot(value) {
-        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
-    }
-
-    /**
-     * Validates a service-local test snapshot before storing it.
-     *
-     * @param {Object|null} value
-     * @returns {Object|null}
-     * @protected
-     */
-    beforeSetConfigSnapshot(value) {
-        return validateConfigSnapshot(value, {
-            requiredSubtrees: ['localModels', 'ollama', 'openAiCompatible'],
-            serviceName     : 'TopologyInferenceEngine'
-        });
-    }
-
-    /**
-     * Clones the live `AiConfig` leaves read by `TopologyInferenceEngine` into a
-     * plain object suitable for `TopologyInferenceEngine.configSnapshot` in unit tests.
-     *
-     * @param {Object} [overrides={}]
-     * @returns {Object}
-     */
-    createConfigSnapshot(overrides = {}) {
-        const snapshot = {
-            graphProvider   : AiConfig.graphProvider,
-            handoffFilePath : AiConfig.handoffFilePath,
-            localModels     : cloneConfigSubtree(AiConfig, ['localModels']),
-            ollama          : cloneConfigSubtree(AiConfig, ['ollama']),
-            openAiCompatible: cloneConfigSubtree(AiConfig, ['openAiCompatible'])
-        };
-
-        return {
-            ...snapshot,
-            ...overrides,
-            localModels: overrides.localModels
-                ? {
-                    ...snapshot.localModels,
-                    ...overrides.localModels,
-                    chat: {
-                        ...snapshot.localModels.chat,
-                        ...(overrides.localModels.chat || {})
-                    }
-                }
-                : snapshot.localModels,
-            ollama: overrides.ollama
-                ? {...snapshot.ollama, ...overrides.ollama}
-                : snapshot.ollama,
-            openAiCompatible: overrides.openAiCompatible
-                ? {...snapshot.openAiCompatible, ...overrides.openAiCompatible}
-                : snapshot.openAiCompatible
-        };
-    }
-
-    /**
-     * Resolves the active configuration source: the test `configSnapshot` when
-     * installed, otherwise the live `AiConfig` singleton.
-     *
-     * @returns {Object}
-     * @private
-     */
-    #getConfig() {
-        return this.#configSnapshot || AiConfig;
     }
 
     /**
@@ -203,8 +115,6 @@ class TopologyInferenceEngine extends Base {
      * @protected
      */
     buildConfiguredGraphProvider(graphProvider) {
-        const AiConfig = this.#getConfig();
-
         return buildGraphProvider({
             modelProvider: graphProvider,
             ollamaConfig : {
@@ -342,8 +252,7 @@ ${contextText}
      * @returns {{chunked: Boolean, totalEstimatedTokens: Number, chunks: Object[]}}
      */
     createTopologyChunks(turnDocuments, sessionId) {
-        const AiConfig       = this.#getConfig(),
-              envelopeTokens = this.estimateTopologyTokens(this.buildTopologyPrompt('', {
+        const envelopeTokens = this.estimateTopologyTokens(this.buildTopologyPrompt('', {
                   chunked    : true,
                   index      : 0,
                   chunkCount : 1,
@@ -374,8 +283,6 @@ ${contextText}
      * @returns {Object} Provider generation options.
      */
     getTopologyProviderOptions() {
-        const AiConfig = this.#getConfig();
-
         return {
             reasoning_effort    : AiConfig.localModels.chat.graphReasoningEffort,
             responseSchema      : topologyConflictSchema,
@@ -396,8 +303,6 @@ ${contextText}
      *     provider/bootstrap errors are caught before a summary can be produced.
      */
     async extractTopology(contextText, sessionId, options = {}) {
-        const AiConfig = this.#getConfig();
-
         logger.info(`[TopologyInferenceEngine] Extracting Topological Conflicts for session ID: ${sessionId}`);
 
         try {
@@ -646,8 +551,7 @@ ${contextText}
      *     0 if file absent / empty / unreadable
      */
     async getTopologyConflictCount() {
-        const AiConfig    = this.#getConfig(),
-              handoffFile = AiConfig.handoffFilePath;
+        const handoffFile = AiConfig.handoffFilePath;
         if (!handoffFile) return 0;
 
         try {

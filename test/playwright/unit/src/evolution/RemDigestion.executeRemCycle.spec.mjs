@@ -3,6 +3,7 @@ import {fileURLToPath}                  from 'url';
 import Neo                              from 'neo.mjs/src/Neo.mjs';
 import * as core                        from 'neo.mjs/src/core/_export.mjs';
 import {findSharedConfigMutations}      from '../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}               from '../../ai/services/memory-core/util.mjs';
 import {createRemDigestion}             from '../../../../../src/evolution/createRemDigestion.mjs';
 import EvolutionConfig                  from '../../../../../src/evolution/config.template.mjs';
 import {mkdtemp, readdir, readFile, rm} from 'fs/promises';
@@ -45,6 +46,7 @@ const ORIGINAL_KEYS = [
 ];
 
 let originals;
+let restoreEvolutionConfig;
 let tmpDir;
 
 async function readOnlyRunStateEntry() {
@@ -60,7 +62,7 @@ test.beforeEach(async () => {
     originals = Object.fromEntries(ORIGINAL_KEYS.map(key => [key, RemDigestion[key]]));
     tmpDir = await mkdtemp(path.join(os.tmpdir(), 'neo-dream-cycle-state-'));
 
-    RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+    restoreEvolutionConfig = snapshotAiConfig(EvolutionConfig, {
         remRunStateDir      : tmpDir,
         remRunRetentionLimit: 3
     });
@@ -76,7 +78,7 @@ test.afterEach(async () => {
         RemDigestion[key] = originals[key];
     }
 
-    RemDigestion.configSnapshot = null;
+    restoreEvolutionConfig();
 
     await rm(tmpDir, {recursive: true, force: true});
 });
@@ -431,7 +433,7 @@ test.describe('RemDigestion.executeRemCycle typed outcome contract', () => {
         // is this mapping — proven-remaining work MUST surface as `remBatchSaturated` so the scheduler's
         // existing catch-up cooldown re-queues the deferred sessions instead of losing them until the
         // next periodic interval.
-        RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+        snapshotAiConfig(EvolutionConfig, {
             remRunStateDir      : tmpDir,
             remRunRetentionLimit: 3,
             remSleepBatchLimit  : 10 // count-saturation cannot fire with 3 sessions — saturation must come from the clip alone
@@ -471,7 +473,7 @@ test.describe('RemDigestion.executeRemCycle typed outcome contract', () => {
     });
 
     test('an unclipped completed cycle keeps reasonCode ok and honest actual counts (#17046)', async () => {
-        RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+        snapshotAiConfig(EvolutionConfig, {
             remRunStateDir      : tmpDir,
             remRunRetentionLimit: 3,
             remSleepBatchLimit  : 10

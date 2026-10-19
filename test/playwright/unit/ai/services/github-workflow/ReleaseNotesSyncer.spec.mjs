@@ -21,12 +21,14 @@ import fs                          from 'fs-extra';
 import path                        from 'path';
 import {fileURLToPath}             from 'url';
 import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}          from '../../services/memory-core/util.mjs';
 
 test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
     let ReleaseNotesSyncer;
     let GraphqlService;
     let issueSyncConfig;
     let aiConfig;
+    let restoreAiConfig;
     let originalQuery;
     let tmpRoot;
     let logger;
@@ -38,16 +40,10 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
         tmpRoot = path.resolve(process.cwd(), 'tmp', `release-syncer-test-${process.pid}-${Date.now()}`);
         await fs.ensureDir(tmpRoot);
 
+        aiConfig           = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
         ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
         GraphqlService     = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
-
-        aiConfig = ReleaseNotesSyncer.createConfigSnapshot({
-            issueSync: {
-                contentRootOverride: tmpRoot
-            }
-        });
-        ReleaseNotesSyncer.configSnapshot = aiConfig;
-        issueSyncConfig                   = aiConfig.issueSync;
+        issueSyncConfig    = aiConfig.issueSync;
 
         logger = (await import('../../../../../../ai/mcp/server/github-workflow/logger.mjs')).default;
         logger.level = 'silent';
@@ -55,13 +51,19 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
         originalQuery = GraphqlService.query;
     });
 
+    test.beforeEach(() => {
+        restoreAiConfig = snapshotAiConfig(aiConfig, {
+            'issueSync.contentRootOverride': tmpRoot
+        });
+    });
+
     test.afterAll(async () => {
-        ReleaseNotesSyncer.configSnapshot = null;
         GraphqlService.query = originalQuery;
         await fs.remove(tmpRoot);
     });
 
     test.afterEach(() => {
+        restoreAiConfig?.();
         GraphqlService.query = originalQuery;
     });
 

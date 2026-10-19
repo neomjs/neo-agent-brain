@@ -8,10 +8,6 @@ import path                                            from 'path';
 import GraphqlService                                  from '../GraphqlService.mjs';
 import {FETCH_RELEASES, FETCH_LATEST_RELEASE}          from '../queries/releaseQueries.mjs';
 import contentPath, {contentBucketDir, chunkNumberFor} from '../shared/contentPath.mjs';
-import {
-    createGitHubWorkflowConfigSnapshot,
-    validateGitHubWorkflowConfigSnapshot
-} from '../shared/configSnapshot.mjs';
 
 /**
  * @param {String} filePath
@@ -57,51 +53,6 @@ class ReleaseNotesSyncer extends Base {
     }
 
     /**
-     * Optional isolated configuration snapshot for unit testing.
-     * @member {Object|null} #configSnapshot=null
-     * @private
-     */
-    #configSnapshot = null;
-
-    /**
-     * @returns {Object|null}
-     */
-    get configSnapshot() {
-        return this.#configSnapshot;
-    }
-
-    /**
-     * @param {Object|null} value
-     */
-    set configSnapshot(value) {
-        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
-    }
-
-    /**
-     * @param {Object|null} value
-     * @returns {Object|null}
-     */
-    beforeSetConfigSnapshot(value) {
-        return validateGitHubWorkflowConfigSnapshot(value, this.constructor.name);
-    }
-
-    /**
-     * @param {Object} [overrides={}]
-     * @returns {Object}
-     */
-    createConfigSnapshot(overrides = {}) {
-        return createGitHubWorkflowConfigSnapshot(aiConfig, overrides);
-    }
-
-    /**
-     * @returns {Object}
-     * @private
-     */
-    #getConfig() {
-        return this.#configSnapshot || aiConfig;
-    }
-
-    /**
      * Calculates a SHA-256 hash of the given content for change detection.
      * @param {string} content The content to hash.
      * @returns {string} The hex-encoded hash.
@@ -119,14 +70,13 @@ class ReleaseNotesSyncer extends Base {
      */
     #notePath(tagName, itemIndex) {
         const
-            config                  = this.#getConfig(),
-            issueSyncConfig         = config.issueSync,
+            issueSyncConfig         = aiConfig.issueSync,
             {releaseFilenamePrefix} = issueSyncConfig,
             filename                = tagName.startsWith(releaseFilenamePrefix) ? tagName : releaseFilenamePrefix + tagName;
 
         return contentPath({
             contentRoot: issueSyncConfig.contentRoot,
-            repoSlug   : config.repo,
+            repoSlug   : aiConfig.repo,
             originRoot : issueSyncConfig.originRoot,
             type       : 'release-notes',
             filename   : `${filename}.md`,
@@ -141,7 +91,7 @@ class ReleaseNotesSyncer extends Base {
      * @private
      */
     async #notesMaterialized(releases) {
-        const issueSyncConfig = this.#getConfig().issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
         const startDate       = new Date(issueSyncConfig.syncStartDate);
 
         for (const [itemIndex, release] of releases.filter(r => new Date(r.publishedAt) >= startDate).entries()) {
@@ -174,8 +124,7 @@ class ReleaseNotesSyncer extends Base {
      * @returns {Promise<void>}
      */
     async fetchAndCacheReleases(metadata, {needNotes=false}={}) {
-        const config          = this.#getConfig();
-        const issueSyncConfig = config.issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
 
         logger.info('Checking for new releases...');
 
@@ -191,8 +140,8 @@ class ReleaseNotesSyncer extends Base {
         if (cachedReleaseArray.length > 0) {
             try {
                 const latestData = await GraphqlService.query(FETCH_LATEST_RELEASE, {
-                    owner: config.owner,
-                    repo : config.repo
+                    owner: aiConfig.owner,
+                    repo : aiConfig.repo
                 });
 
                 const latestRelease = latestData.repository.latestRelease;
@@ -235,8 +184,8 @@ class ReleaseNotesSyncer extends Base {
 
         while (hasNextPage && allReleases.length < maxReleases) {
             const data = await GraphqlService.query(FETCH_RELEASES, {
-                owner: config.owner,
-                repo : config.repo,
+                owner: aiConfig.owner,
+                repo : aiConfig.repo,
                 limit: issueSyncConfig.releaseQueryLimit,
                 cursor
             });
@@ -297,8 +246,7 @@ class ReleaseNotesSyncer extends Base {
      * @throws {Error} Naming every in-window release whose note could not be synced.
      */
     async syncNotes(metadata) {
-        const config          = this.#getConfig();
-        const issueSyncConfig = config.issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
 
         logger.info('📄 Syncing release notes...');
 
@@ -322,7 +270,7 @@ class ReleaseNotesSyncer extends Base {
 
         const releaseDir = contentBucketDir({
             contentRoot: issueSyncConfig.contentRoot,
-            repoSlug   : config.repo,
+            repoSlug   : aiConfig.repo,
             originRoot : issueSyncConfig.originRoot,
             type       : 'release-notes'
         });

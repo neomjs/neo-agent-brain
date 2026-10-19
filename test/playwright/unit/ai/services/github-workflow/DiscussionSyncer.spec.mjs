@@ -21,6 +21,7 @@ import matter                      from 'gray-matter';
 import path                        from 'path';
 import {fileURLToPath}             from 'url';
 import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}          from '../../services/memory-core/util.mjs';
 import {
     FETCH_DISCUSSION_COMMENTS_PAGE,
     FETCH_DISCUSSION_REPLIES_PAGE,
@@ -30,6 +31,7 @@ import {
 
 test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
     let aiConfig;
+    let restoreAiConfig;
     let DiscussionSyncer;
     let GraphqlService;
     let ReleaseNotesSyncer;
@@ -38,6 +40,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
     let tmpRoot;
 
     test.beforeAll(async () => {
+        aiConfig           = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
         DiscussionSyncer   = (await import('../../../../../../ai/services/github-workflow/sync/DiscussionSyncer.mjs')).default;
         GraphqlService     = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
         ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
@@ -47,14 +50,18 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
     });
 
     function applyConfigSnapshot(issueSyncOverrides = {}) {
-        aiConfig = DiscussionSyncer.createConfigSnapshot({
-            issueSync: {
-                contentRootOverride: tmpRoot,
-                discussionDenylist : {numbers: [], authors: []},
-                ...issueSyncOverrides
-            }
-        });
-        DiscussionSyncer.configSnapshot = aiConfig;
+        const {discussionDenylist, ...restOverrides} = issueSyncOverrides,
+              overrides                              = {
+                  'issueSync.contentRootOverride'       : tmpRoot,
+                  'issueSync.discussionDenylist.numbers': discussionDenylist?.numbers ?? [],
+                  'issueSync.discussionDenylist.authors': discussionDenylist?.authors ?? []
+              };
+
+        for (const [key, val] of Object.entries(restOverrides)) {
+            overrides[`issueSync.${key}`] = val;
+        }
+
+        snapshotAiConfig(aiConfig, overrides);
         return aiConfig;
     }
 
@@ -62,6 +69,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
         tmpRoot = path.resolve(process.cwd(), 'tmp', `discussion-syncer-test-${process.pid}-${Date.now()}`);
         await fs.ensureDir(tmpRoot);
 
+        restoreAiConfig = snapshotAiConfig(aiConfig);
         applyConfigSnapshot();
         ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
     });
@@ -69,7 +77,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
     test.afterEach(async () => {
         GraphqlService.query              = originalQuery;
         ReleaseNotesSyncer.sortedReleases = originalSortedReleases;
-        DiscussionSyncer.configSnapshot   = null;
+        restoreAiConfig?.();
 
         await fs.remove(tmpRoot).catch(() => {});
     });

@@ -208,6 +208,18 @@ export function snapshotAiConfig(aiConfig, pathsOrOverrides = []) {
             );
         }
 
+        if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+            throw new Error(`snapshotAiConfig: leaf "${dotPath}" must be a scalar or array value; received an object.`);
+        }
+
+        if (isOverrideMap) {
+            const overrideValue = pathsOrOverrides[dotPath];
+
+            if (overrideValue !== null && typeof overrideValue === 'object' && !Array.isArray(overrideValue)) {
+                throw new Error(`snapshotAiConfig: leaf "${dotPath}" must be a scalar or array value; received an object.`);
+            }
+        }
+
         return {dotPath, key, parent, value};
     });
 

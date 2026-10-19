@@ -21,6 +21,7 @@ import {fileURLToPath}                   from 'url';
 import {computeSessionTurnInputRevision} from '../../../../../ai/services/memory-core/helpers/turnDocumentText.mjs';
 import {NL_ACTION_TELEMETRY_NODE_TYPE}   from '../../../../../ai/services/memory-core/helpers/nlActionTelemetryStore.mjs';
 import {findSharedConfigMutations}       from '../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}                from '../../ai/services/memory-core/util.mjs';
 import {
     beginCorpusProjection,
     commitCorpusProjectionFacet,
@@ -33,6 +34,8 @@ const __filename = fileURLToPath(import.meta.url);
 test.describe('Neo.brain.evolution.RemDigestion', () => {
     let aiConfig;
     let evolutionConfig;
+    let restoreAiConfig;
+    let restoreEvolutionConfig;
     let GraphService;
     let SystemLifecycleService;
     let RemDigestion;
@@ -162,8 +165,10 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
     });
 
     test.beforeEach(async () => {
-        appendedContent = [];
-        providerPrompt  = [];
+        appendedContent        = [];
+        providerPrompt         = [];
+        restoreAiConfig        = snapshotAiConfig(aiConfig);
+        restoreEvolutionConfig = snapshotAiConfig(evolutionConfig);
 
         if (GraphService.db) {
             graphNodeIdsBeforeTest = new Set(GraphService.db.nodes.items.map(node => node.id));
@@ -177,9 +182,8 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
     });
 
     test.afterEach(async () => {
-        RemDigestion.configSnapshot = null;
-        TopologyInferenceEngine.configSnapshot = null;
-        SemanticGraphExtractor.configSnapshot = null;
+        restoreEvolutionConfig?.();
+        restoreAiConfig?.();
         // Telemetry rows are ordinary graph nodes now, so the fixture cleanup that already removes every
         // node this test created removes them too — the bespoke table create/delete/restore dance the
         // old `nl_action_log` fixture needed is simply gone.
@@ -610,15 +614,11 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
     });
 
     test('findUndigestedSessions fails loud when remSleepBatchLimit is malformed in the imported config', async () => {
-        RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+        snapshotAiConfig(evolutionConfig, {
             remSleepBatchLimit: Number.NaN
         });
 
-        try {
-            await expect(RemDigestion.findUndigestedSessions()).rejects.toThrow(/Required EvolutionConfig leaf "remSleepBatchLimit"/);
-        } finally {
-            RemDigestion.configSnapshot = null;
-        }
+        await expect(RemDigestion.findUndigestedSessions()).rejects.toThrow(/Required EvolutionConfig leaf "remSleepBatchLimit"/);
     });
 
     test('findUndigestedSessions mixes a fresh reserve with the aged Chroma tail (#13697)', async () => {
@@ -640,7 +640,7 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         ];
         const calls = [];
 
-        RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+        snapshotAiConfig(evolutionConfig, {
             sessionScanPageLimit: 6,
             remSleepBatchLimit  : 4
         });
@@ -669,7 +669,6 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             expect(result.map(row => row.id)).toEqual(['fresh-5', 'fresh-4', 'old-1', 'old-2']);
             expect(result.map(row => row.meta.sessionId)).toEqual(['fresh-5', 'fresh-4', 'old-1', 'old-2']);
         } finally {
-            RemDigestion.configSnapshot     = null;
             RemDigestion.sessionsCollection = original.sessionsCollection;
         }
     });
@@ -884,23 +883,19 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             properties: {name: 'MidWeight', tier: 2, uniqueToNeo: false, verifiedAt: freshVerifiedAt, weight: 0.5}
         });
 
-        try {
-            // Override the threshold below the concept's weight. The same concept must now pass
-            // the gate and emit gaps through the same branch logic — proving the config is
-            // actually consulted at gate time, not captured at module load.
-            RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
-                guideGapWeightThreshold: 0.3
-            });
+        // Override the threshold below the concept's weight. The same concept must now pass
+        // the gate and emit gaps through the same branch logic — proving the config is
+        // actually consulted at gate time, not captured at module load.
+        snapshotAiConfig(aiConfig, {
+            guideGapWeightThreshold: 0.3
+        });
 
-            await RemDigestion.inferConceptGraphGaps();
+        await RemDigestion.inferConceptGraphGaps();
 
-            const node = GraphService.db.nodes.get('concept-mid-weight');
-            expect(node.properties.capabilityGap).toBeDefined();
-            expect(node.properties.capabilityGap).toContain('[GUIDE_GAP]');
-            expect(node.properties.capabilityGap).toContain('[ORPHAN_CONCEPT]');
-        } finally {
-            RemDigestion.configSnapshot = null;
-        }
+        const node = GraphService.db.nodes.get('concept-mid-weight');
+        expect(node.properties.capabilityGap).toBeDefined();
+        expect(node.properties.capabilityGap).toContain('[GUIDE_GAP]');
+        expect(node.properties.capabilityGap).toContain('[ORPHAN_CONCEPT]');
     });
 
     test('should detect ORPHAN_CONCEPT for concepts with no IMPLEMENTED_BY edge (#10087)', async () => {
@@ -1533,18 +1528,14 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         const infoCalls = [];
 
         try {
-            TopologyInferenceEngine.configSnapshot = TopologyInferenceEngine.createConfigSnapshot({
-                graphProvider   : 'openAiCompatible',
-                openAiCompatible: {model: 'topology-test-model'},
-                localModels     : {
-                    chat: {
-                        contextLimitTokens       : 8192,
-                        graphChunkLimitTokens    : 4800,
-                        graphOutputLimitTokens   : 512,
-                        safeProcessingLimitTokens: 5000,
-                        graphReasoningEffort     : 'none'
-                    }
-                }
+            snapshotAiConfig(aiConfig, {
+                graphProvider                               : 'openAiCompatible',
+                'openAiCompatible.model'                    : 'topology-test-model',
+                'localModels.chat.contextLimitTokens'       : 8192,
+                'localModels.chat.graphChunkLimitTokens'    : 4800,
+                'localModels.chat.graphOutputLimitTokens'   : 512,
+                'localModels.chat.safeProcessingLimitTokens': 5000,
+                'localModels.chat.graphReasoningEffort'     : 'none'
             });
             logger.info = (...args) => infoCalls.push(args.join(' '));
             OpenAiCompatible.prototype.generate = async (prompt, providerOptions) => {
@@ -1573,9 +1564,8 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             expect(providerCalls[0].providerOptions.responseSchema.properties.conflicts.maxItems).toBe(5);
             expect(infoCalls.some(line => line.includes('conflicts=0') && line.includes('outputLimitTokens=512'))).toBe(true);
         } finally {
-            TopologyInferenceEngine.configSnapshot = null;
-            OpenAiCompatible.prototype.generate    = orig.generate;
-            logger.info                            = orig.loggerInfo;
+            OpenAiCompatible.prototype.generate = orig.generate;
+            logger.info                         = orig.loggerInfo;
         }
     });
 
@@ -1595,18 +1585,14 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         try {
             clearAggregatedFrictions();
 
-            TopologyInferenceEngine.configSnapshot = TopologyInferenceEngine.createConfigSnapshot({
-                graphProvider   : 'openAiCompatible',
-                openAiCompatible: {model: 'topology-parse-test-model'},
-                localModels     : {
-                    chat: {
-                        contextLimitTokens       : 8192,
-                        graphChunkLimitTokens    : 4800,
-                        graphOutputLimitTokens   : 512,
-                        safeProcessingLimitTokens: 5000,
-                        graphReasoningEffort     : 'none'
-                    }
-                }
+            snapshotAiConfig(aiConfig, {
+                graphProvider                               : 'openAiCompatible',
+                'openAiCompatible.model'                    : 'topology-parse-test-model',
+                'localModels.chat.contextLimitTokens'       : 8192,
+                'localModels.chat.graphChunkLimitTokens'    : 4800,
+                'localModels.chat.graphOutputLimitTokens'   : 512,
+                'localModels.chat.safeProcessingLimitTokens': 5000,
+                'localModels.chat.graphReasoningEffort'     : 'none'
             });
             logger.warn = (...args) => warnCalls.push(args.join(' '));
             OpenAiCompatible.prototype.generate = async () => ({
@@ -1634,9 +1620,8 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             )).toBe(true);
         } finally {
             clearAggregatedFrictions();
-            TopologyInferenceEngine.configSnapshot = null;
-            OpenAiCompatible.prototype.generate    = orig.generate;
-            logger.warn                            = orig.loggerWarn;
+            OpenAiCompatible.prototype.generate = orig.generate;
+            logger.warn                         = orig.loggerWarn;
         }
     });
 
@@ -1772,7 +1757,7 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             {id: 'undigested-old', document: 'e', meta: {sessionId: 'undigested-old', timestamp: 1000}}
         ];
 
-        RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
+        snapshotAiConfig(evolutionConfig, {
             sessionScanPageLimit: 10,
             remSleepBatchLimit  : 10
         });
@@ -1802,7 +1787,6 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             expect(ids).toContain('undigested-new');
             expect(ids).toContain('undigested-old');
         } finally {
-            RemDigestion.configSnapshot     = null;
             RemDigestion.sessionsCollection = original.sessionsCollection;
         }
     });
@@ -1840,12 +1824,8 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         };
 
         try {
-            RemDigestion.configSnapshot = RemDigestion.createConfigSnapshot({
-                localModels: {
-                    chat: {
-                        safeProcessingLimitTokens: 100_000
-                    }
-                }
+            snapshotAiConfig(aiConfig, {
+                'localModels.chat.safeProcessingLimitTokens': 100_000
             });
             RemDigestion.isProcessing = false;
 
@@ -1882,7 +1862,6 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             expect(meta.digestAttempts).toBe(1);
             expect(meta.deferReason).toBe('skip-over-band');
         } finally {
-            RemDigestion.configSnapshot                       = null;
             RemDigestion.findUndigestedSessions               = orig.findUndigested;
             RemDigestion.sessionsCollection                   = orig.sessionsCollection;
             RemDigestion.inferTestGapsFromSession             = orig.inferTest;
@@ -2467,7 +2446,7 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             };
         };
 
-        SemanticGraphExtractor.configSnapshot = SemanticGraphExtractor.createConfigSnapshot({
+        snapshotAiConfig(aiConfig, {
             graphProvider: 'openAiCompatible'
         });
 
@@ -2491,7 +2470,6 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
             expect(lastMessage.role).toBe('user');
             expect(lastMessage.content).toContain('failed internal schema validation');
         } finally {
-            SemanticGraphExtractor.configSnapshot = null;
             OpenAiCompatible.prototype.generate = baseGenerate;
         }
     });

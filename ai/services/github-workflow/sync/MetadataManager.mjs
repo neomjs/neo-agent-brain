@@ -2,10 +2,6 @@ import aiConfig from '../../../mcp/server/github-workflow/config.mjs';
 import Base     from 'neo.mjs/src/core/Base.mjs';
 import fs       from 'fs/promises';
 import path     from 'path';
-import {
-    createGitHubWorkflowConfigSnapshot,
-    validateGitHubWorkflowConfigSnapshot
-} from '../shared/configSnapshot.mjs';
 
 /**
  * @summary Manages loading, saving, and pruning of the .sync-metadata.json file.
@@ -31,51 +27,6 @@ class MetadataManager extends Base {
          * @protected
          */
         singleton: true
-    }
-
-    /**
-     * Optional isolated configuration snapshot for unit testing.
-     * @member {Object|null} #configSnapshot=null
-     * @private
-     */
-    #configSnapshot = null;
-
-    /**
-     * @returns {Object|null}
-     */
-    get configSnapshot() {
-        return this.#configSnapshot;
-    }
-
-    /**
-     * @param {Object|null} value
-     */
-    set configSnapshot(value) {
-        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
-    }
-
-    /**
-     * @param {Object|null} value
-     * @returns {Object|null}
-     */
-    beforeSetConfigSnapshot(value) {
-        return validateGitHubWorkflowConfigSnapshot(value, this.constructor.name);
-    }
-
-    /**
-     * @param {Object} [overrides={}]
-     * @returns {Object}
-     */
-    createConfigSnapshot(overrides = {}) {
-        return createGitHubWorkflowConfigSnapshot(aiConfig, overrides);
-    }
-
-    /**
-     * @returns {Object}
-     * @private
-     */
-    #getConfig() {
-        return this.#configSnapshot || aiConfig;
     }
 
     /**
@@ -113,7 +64,7 @@ class MetadataManager extends Base {
      * @throws {Error} If reading the file fails for reasons other than not existing.
      */
     async load() {
-        const issueSyncConfig = this.#getConfig().issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
 
         try {
             const data = await fs.readFile(issueSyncConfig.metadataFile, 'utf-8');
@@ -141,7 +92,7 @@ class MetadataManager extends Base {
      * @returns {Promise<void>}
      */
     async save(metadata) {
-        const issueSyncConfig = this.#getConfig().issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
         const prunedMetadata  = {
             lastSync           : metadata.lastSync,
             releasesLastFetched: metadata.releasesLastFetched,

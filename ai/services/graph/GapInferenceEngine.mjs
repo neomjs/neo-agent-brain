@@ -3,7 +3,6 @@ import {Memory_Config as aiConfig, Memory_GraphService as GraphService} from '..
 import KBRecorderService                                                from '../../services/knowledge-base/KBRecorderService.mjs';
 import logger                                                           from '../../mcp/server/memory-core/logger.mjs';
 import {NL_ACTION_TELEMETRY_NODE_TYPE, pruneNlActionTelemetry}          from '../memory-core/helpers/nlActionTelemetryStore.mjs';
-import {validateConfigSnapshot}                                         from '../shared/configSnapshot.mjs';
 
 /**
  * Default freshness window for Concept Ontology source-grounding. Concepts with missing,
@@ -71,13 +70,6 @@ const ISO_VERIFIED_AT_PATTERN = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}\.\d{3}Z
  * @singleton
  */
 class GapInferenceEngine extends Base {
-    /**
-     * Service-local test configuration snapshot seam.
-     * @type {Object|null}
-     * @private
-     */
-    #configSnapshot = null;
-
     static config = {
         /**
          * @member {String} className='Neo.ai.daemons.services.GapInferenceEngine'
@@ -89,62 +81,6 @@ class GapInferenceEngine extends Base {
          * @protected
          */
         singleton: true
-    }
-
-    /**
-     * @returns {Object|null}
-     */
-    get configSnapshot() {
-        return this.#configSnapshot;
-    }
-
-    /**
-     * @param {Object|null} value
-     */
-    set configSnapshot(value) {
-        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
-    }
-
-    /**
-     * Validates a service-local test snapshot before storing it.
-     *
-     * @param {Object|null} value
-     * @returns {Object|null}
-     * @protected
-     */
-    beforeSetConfigSnapshot(value) {
-        return validateConfigSnapshot(value, {
-            serviceName: 'GapInferenceEngine'
-        });
-    }
-
-    /**
-     * Clones the live `aiConfig` leaves read by `GapInferenceEngine` into a plain
-     * object suitable for `GapInferenceEngine.configSnapshot` in unit tests.
-     *
-     * @param {Object} [overrides={}]
-     * @returns {Object}
-     */
-    createConfigSnapshot(overrides = {}) {
-        return {
-            guideGapWeightThreshold     : aiConfig.guideGapWeightThreshold,
-            nlActionDigestLookbackMs    : aiConfig.nlActionDigestLookbackMs,
-            nlActionDigestSequenceLimit : aiConfig.nlActionDigestSequenceLimit,
-            nlActionDigestMinSuccessRate: aiConfig.nlActionDigestMinSuccessRate,
-            nlActionDigestEvidenceWeight: aiConfig.nlActionDigestEvidenceWeight,
-            ...overrides
-        };
-    }
-
-    /**
-     * Resolves the active configuration source: the test `configSnapshot` when
-     * installed, otherwise the live `aiConfig` singleton.
-     *
-     * @returns {Object}
-     * @private
-     */
-    #getConfig() {
-        return this.#configSnapshot || aiConfig;
     }
 
     /**
@@ -355,7 +291,7 @@ class GapInferenceEngine extends Base {
 
         // Resolved once per cycle (not per concept) — the config value is read at gate time so
         // mid-cycle config mutations in tests / runtime take effect without re-importing.
-        const threshold = this.#getConfig().guideGapWeightThreshold;
+        const threshold = aiConfig.guideGapWeightThreshold;
 
         for (const concept of conceptNodes) {
             const
@@ -431,11 +367,10 @@ class GapInferenceEngine extends Base {
      */
     async inferNlActionDigest() {
         const
-            config         = this.#getConfig(),
-            lookbackMs     = config.nlActionDigestLookbackMs,
-            sequenceLimit  = config.nlActionDigestSequenceLimit,
-            minSuccessRate = config.nlActionDigestMinSuccessRate,
-            evidenceWeight = config.nlActionDigestEvidenceWeight,
+            lookbackMs     = aiConfig.nlActionDigestLookbackMs,
+            sequenceLimit  = aiConfig.nlActionDigestSequenceLimit,
+            minSuccessRate = aiConfig.nlActionDigestMinSuccessRate,
+            evidenceWeight = aiConfig.nlActionDigestEvidenceWeight,
             sinceTimestamp = Date.now() - lookbackMs,
             // RETENTION, enforced here because this is where a live caller already runs on a schedule.
             // The cutoff is the same boundary this digest reads from: a row below it cannot influence any
@@ -512,7 +447,7 @@ class GapInferenceEngine extends Base {
         }
 
         try {
-            const safeLimit    = Math.max(1, Number(sequenceLimit) || this.#getConfig().nlActionDigestSequenceLimit);
+            const safeLimit    = Math.max(1, Number(sequenceLimit) || aiConfig.nlActionDigestSequenceLimit);
             const sequenceRows = sqlite.prepare(`
                 SELECT json_extract(data, '$.properties.sequenceId')        AS sequence_id,
                        MAX(json_extract(data, '$.properties.timestamp'))    AS latest_timestamp

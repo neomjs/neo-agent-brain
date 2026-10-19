@@ -13,16 +13,19 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import fs             from 'fs/promises';
-import os             from 'os';
-import path           from 'path';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}     from '@playwright/test';
+import fs                 from 'fs/promises';
+import os                 from 'os';
+import path               from 'path';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import * as core          from 'neo.mjs/src/core/_export.mjs';
+import {snapshotAiConfig} from '../../services/memory-core/util.mjs';
 
 test.describe('SyncService — Stage 2 Ingestion', () => {
     test.describe.configure({mode: 'serial'});
 
+    let aiConfig;
+    let restoreAiConfig;
     let SyncService;
     let IssueSyncer;
     let ReleaseNotesSyncer;
@@ -64,14 +67,15 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         // and avoid ReferenceErrors from circular dependencies in dynamic imports.
         await import('../../../../../../ai/services.mjs');
 
-        SyncService = (await import('../../../../../../ai/services/github-workflow/SyncService.mjs')).default;
-        IssueSyncer = (await import('../../../../../../ai/services/github-workflow/sync/IssueSyncer.mjs')).default;
+        aiConfig           = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
+        SyncService        = (await import('../../../../../../ai/services/github-workflow/SyncService.mjs')).default;
+        IssueSyncer        = (await import('../../../../../../ai/services/github-workflow/sync/IssueSyncer.mjs')).default;
         ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
-        DiscussionSyncer = (await import('../../../../../../ai/services/github-workflow/sync/DiscussionSyncer.mjs')).default;
-        PullRequestSyncer = (await import('../../../../../../ai/services/github-workflow/sync/PullRequestSyncer.mjs')).default;
-        GraphqlService = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
-        MetadataManager = (await import('../../../../../../ai/services/github-workflow/sync/MetadataManager.mjs')).default;
-        IssueIngestor = (await import('../../../../../../ai/services/ingestion/IssueIngestor.mjs')).default;
+        DiscussionSyncer   = (await import('../../../../../../ai/services/github-workflow/sync/DiscussionSyncer.mjs')).default;
+        PullRequestSyncer  = (await import('../../../../../../ai/services/github-workflow/sync/PullRequestSyncer.mjs')).default;
+        GraphqlService     = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
+        MetadataManager    = (await import('../../../../../../ai/services/github-workflow/sync/MetadataManager.mjs')).default;
+        IssueIngestor      = (await import('../../../../../../ai/services/ingestion/IssueIngestor.mjs')).default;
     });
 
     test.beforeEach(() => {
@@ -117,15 +121,15 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         IssueIngestor.ingestDiscussionStates = async () => { stage2Calls.discussionStates++; };
         IssueIngestor.ingestPullRequestFeedback = async () => { stage2Calls.pullRequestFeedback++; };
 
-        // Every arm runs against a declared corpus root, isolated from the shared config.
+        // Every arm runs against a declared corpus root, isolated via snapshotAiConfig.
         // The refusal arm below swaps in an undeclared one.
-        const declared = SyncService.createConfigSnapshot();
-        declared.issueSync.contentRoot = '/mock/corpus';
-        SyncService.configSnapshot = declared;
+        restoreAiConfig = snapshotAiConfig(aiConfig, {
+            'issueSync.contentRootOverride': '/mock/corpus'
+        });
     });
 
     test.afterEach(() => {
-        SyncService.configSnapshot = null;
+        restoreAiConfig?.();
         IssueSyncer.reconcileClosedIssueLocations = originalReconcileArchived;
         IssueSyncer.pullFromGitHub = originalPull;
         ReleaseNotesSyncer.fetchAndCacheReleases = originalFetchReleases;
@@ -146,12 +150,12 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
     });
 
     test('an undeclared corpus root is refused by name before any metadata loads', async () => {
-        const undeclared = SyncService.createConfigSnapshot();
-        let   loads      = 0;
+        let loads = 0;
 
-        undeclared.issueSync.contentRoot = '';
-        SyncService.configSnapshot       = undeclared;
-        MetadataManager.load             = async () => { loads++; return {issues: {}, releases: {}, discussions: {}, pulls: {}} };
+        snapshotAiConfig(aiConfig, {
+            'issueSync.contentRootOverride': null
+        });
+        MetadataManager.load = async () => { loads++; return {issues: {}, releases: {}, discussions: {}, pulls: {}} };
 
         await expect(SyncService.emitGeneratedContent()).rejects.toThrow(
             /SyncService#emitGeneratedContent:.*issueSync\.contentRootOverride \/ NEO_MCP_GITHUB_CONTENT_ROOT/
@@ -534,11 +538,10 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
     });
 
     test.describe('the corpus emit path enforces one artifact per logical name (#457)', () => {
-        let tempRoot,
-            syncSnapshot;
+        let tempRoot;
 
         const writeOriginArchived = async (relative, body = '# artifact\n') => {
-            const absolute = path.join(syncSnapshot.issueSync.archiveRoot, relative);
+            const absolute = path.join(aiConfig.issueSync.archiveRoot, relative);
 
             await fs.mkdir(path.dirname(absolute), {recursive: true});
             await fs.writeFile(absolute, body, 'utf8');
@@ -546,21 +549,15 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         };
 
         test.beforeEach(async () => {
-            tempRoot     = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'neo-emit-corpus-'));
-            syncSnapshot = SyncService.createConfigSnapshot();
+            tempRoot = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'neo-emit-corpus-'));
 
-            const originRoot = path.join(tempRoot, syncSnapshot.repo);
-
-            syncSnapshot.issueSync.contentRootOverride = tempRoot;
-            syncSnapshot.issueSync.contentRoot         = tempRoot;
-            syncSnapshot.issueSync.originRoot          = originRoot;
-            syncSnapshot.issueSync.archiveRoot         = path.join(originRoot, 'archive');
-            SyncService.configSnapshot                 = syncSnapshot;
-            ReleaseNotesSyncer.sortedReleases          = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}]
+            snapshotAiConfig(aiConfig, {
+                'issueSync.contentRootOverride': tempRoot
+            });
+            ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}]
         });
 
         test.afterEach(async () => {
-            SyncService.configSnapshot = null;
             await fs.rm(tempRoot, {force: true, recursive: true})
         });
 
@@ -596,14 +593,14 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             expect(result.facetOutcomes.every(outcome => outcome.advanced)).toBe(true)
         });
 
-        test('AC-3: SyncService no longer imports check-content-logical-identity from neo.mjs and isolates test config via configSnapshot', async () => {
+        test('AC-3: SyncService no longer imports check-content-logical-identity from neo.mjs and isolates test config via snapshotAiConfig', async () => {
             const source                      = await fs.readFile(path.resolve(process.cwd(), 'ai/services/github-workflow/SyncService.mjs'), 'utf8'),
                   specSource                  = await fs.readFile(path.resolve(process.cwd(), 'test/playwright/unit/ai/services/github-workflow/SyncService.Stage2.spec.mjs'), 'utf8'),
                   {findSharedConfigMutations} = await import('../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs');
 
             expect(source).not.toMatch(/check-content-logical-identity/);
             expect(findSharedConfigMutations(specSource)).toEqual([]);
-            expect(() => { SyncService.configSnapshot = {}; }).toThrow(TypeError)
+            expect('configSnapshot' in SyncService).toBe(false)
         })
     })
 });

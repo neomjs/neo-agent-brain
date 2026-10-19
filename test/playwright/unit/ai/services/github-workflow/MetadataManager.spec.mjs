@@ -21,26 +21,34 @@ import {fileURLToPath}             from 'url';
 import Neo                         from 'neo.mjs/src/Neo.mjs';
 import * as core                   from 'neo.mjs/src/core/_export.mjs';
 import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}          from '../../services/memory-core/util.mjs';
 
 test.describe('Neo.ai.services.github-workflow.sync.MetadataManager', () => {
     test.describe.configure({mode: 'serial'});
 
+    let aiConfig;
     let MetadataManager;
+    let restoreAiConfig;
     let testMetadataFile;
 
     test.beforeAll(async () => {
         testMetadataFile = path.join(os.tmpdir(), `neo-metadata-manager-test-${Date.now()}.json`);
 
+        aiConfig        = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
         MetadataManager = (await import('../../../../../../ai/services/github-workflow/sync/MetadataManager.mjs')).default;
-        MetadataManager.configSnapshot = MetadataManager.createConfigSnapshot({
-            issueSync: {
-                metadataFileOverride: testMetadataFile
-            }
+    });
+
+    test.beforeEach(() => {
+        restoreAiConfig = snapshotAiConfig(aiConfig, {
+            'issueSync.metadataFileOverride': testMetadataFile
         });
     });
 
+    test.afterEach(() => {
+        restoreAiConfig?.();
+    });
+
     test.afterAll(async () => {
-        MetadataManager.configSnapshot = null;
         try {
             await fs.unlink(testMetadataFile);
         } catch (e) {

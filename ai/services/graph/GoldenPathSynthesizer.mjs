@@ -8,7 +8,6 @@ import { Memory_TextEmbeddingService as TextEmbeddingService } from '../../servi
 import { Memory_GraphService as GraphService }                 from '../../services.mjs';
 import Json                                                    from 'neo.mjs/src/util/Json.mjs';
 import logger                                                  from '../../mcp/server/memory-core/logger.mjs';
-import {cloneConfigSubtree, validateConfigSnapshot}            from '../shared/configSnapshot.mjs';
 import {buildGraphProvider, resolveGraphModelProvider}         from './providerDispatch.mjs';
 import {
     formatGoldenPathCapturedAt as formatGoldenPathTimestamp
@@ -114,13 +113,6 @@ const SQLITE_ID_CHUNK_SIZE         = 500;
  */
 const ROUTE_ALGORITHM_VERSION = 'golden-path.tri-vector.v1';
 
-const GOLDEN_PATH_SNAPSHOT_SUBTREES = Object.freeze([
-    'orchestrator',
-    'orchestrator.corpusProjection',
-    'ollama',
-    'openAiCompatible'
-]);
-
 // The embedding-dimension helpers were extracted to ./embeddingDimension.mjs (the SRP decomposition). They are
 // imported above for the internal dimension guard, and re-exported here so the public API stays stable.
 export {buildEmbeddingDimensionMismatchMessage, getEmbeddingModelName, getEmbeddingVectorLength};
@@ -144,97 +136,6 @@ class GoldenPathSynthesizer extends Base {
         singleton: true
     }
 
-    static #configSnapshot = null;
-
-    /**
-     * @summary Returns the isolated configuration snapshot injected by unit tests, or `null` when
-     * the service reads the canonical `aiConfig` singleton.
-     * @returns {Object|null}
-     */
-    get configSnapshot() {
-        return GoldenPathSynthesizer.#configSnapshot
-    }
-
-    /**
-     * @summary Injects an isolated configuration snapshot for unit testing, or `null` to restore
-     * the canonical `aiConfig` singleton.
-     * @param {Object|null} value Candidate snapshot or `null`.
-     */
-    set configSnapshot(value) {
-        GoldenPathSynthesizer.#configSnapshot = this.beforeSetConfigSnapshot(value)
-    }
-
-    /**
-     * @summary Rejects non-isolated config snapshots so `GoldenPathSynthesizer.configSnapshot` cannot
-     * be pointed at the shared `aiConfig` singleton or any of its live subtrees.
-     * @param {Object|null} value Candidate snapshot or `null` to restore canonical `aiConfig`.
-     * @returns {Object|null}
-     * @protected
-     */
-    beforeSetConfigSnapshot(value) {
-        return validateConfigSnapshot(value, {
-            serviceName     : 'GoldenPathSynthesizer',
-            requiredSubtrees: GOLDEN_PATH_SNAPSHOT_SUBTREES
-        })
-    }
-
-    /**
-     * @summary Creates a mutable, test-scoped snapshot of the GoldenPathSynthesizer-relevant config
-     * leaves from the live `aiConfig` singleton.
-     *
-     * @returns {Object}
-     */
-    static createConfigSnapshot() {
-        return {
-            embeddingModel                                   : aiConfig.embeddingModel,
-            embeddingProvider                                : aiConfig.embeddingProvider,
-            goldenPathActivePrStateFreshnessMs               : aiConfig.goldenPathActivePrStateFreshnessMs,
-            goldenPathRecentOpenPrRenderLimit                : aiConfig.goldenPathRecentOpenPrRenderLimit,
-            goldenPathRouteAttributionLedgerDir              : aiConfig.goldenPathRouteAttributionLedgerDir,
-            goldenPathRouteAttributionLedgerMaxEvents        : aiConfig.goldenPathRouteAttributionLedgerMaxEvents,
-            goldenPathRouteAttributionLedgerPruneTriggerBytes: aiConfig.goldenPathRouteAttributionLedgerPruneTriggerBytes,
-            goldenPathRouteTtlMs                             : aiConfig.goldenPathRouteTtlMs,
-            goldenPathSilentThreadMinScore                   : aiConfig.goldenPathSilentThreadMinScore,
-            goldenPathSilentThreadRenderLimit                : aiConfig.goldenPathSilentThreadRenderLimit,
-            goldenPathSilentThreadThresholdMs                : aiConfig.goldenPathSilentThreadThresholdMs,
-            goldenPathStaleAssignmentRenderLimit             : aiConfig.goldenPathStaleAssignmentRenderLimit,
-            goldenPathStaleAssignmentThresholdMs             : aiConfig.goldenPathStaleAssignmentThresholdMs,
-            goldenPathStallFindingRenderEnabled              : aiConfig.goldenPathStallFindingRenderEnabled,
-            goldenPathStallFindingRenderLimit                : aiConfig.goldenPathStallFindingRenderLimit,
-            goldenPathTopNodeRenderLimit                     : aiConfig.goldenPathTopNodeRenderLimit,
-            graphProvider                                    : aiConfig.graphProvider,
-            handoffFilePath                                  : aiConfig.handoffFilePath,
-            ollama                                           : cloneConfigSubtree(aiConfig, ['ollama']),
-            openAiCompatible                                 : cloneConfigSubtree(aiConfig, ['openAiCompatible']),
-            orchestrator                                     : {
-                corpusProjection: cloneConfigSubtree(aiConfig, ['orchestrator', 'corpusProjection'])
-            },
-            projectRoot    : aiConfig.projectRoot,
-            vectorDimension: aiConfig.vectorDimension
-        }
-    }
-
-    /**
-     * @returns {Object}
-     */
-    createConfigSnapshot() {
-        return this.constructor.createConfigSnapshot()
-    }
-
-    /**
-     * @returns {Object}
-     */
-    static #getStaticConfig() {
-        return GoldenPathSynthesizer.#configSnapshot ?? aiConfig
-    }
-
-    /**
-     * @returns {Object}
-     */
-    #getConfig() {
-        return this.constructor.#getStaticConfig()
-    }
-
     /**
      * @summary Resolves the D2 corpus-projection admission before Golden Path reads either live store.
      *
@@ -245,7 +146,7 @@ class GoldenPathSynthesizer extends Base {
      * @returns {Promise<Object>}
      */
     static async getCorpusProjectionAdmission() {
-        const config = this.#getStaticConfig().orchestrator.corpusProjection;
+        const config = aiConfig.orchestrator.corpusProjection;
 
         if (!config.enabled) {
             return {
@@ -365,12 +266,10 @@ class GoldenPathSynthesizer extends Base {
      * @returns {Array<Object>} Stale candidates sorted by oldest qualifying activity first.
      */
     static buildStaleAssignmentCandidates(options = {}) {
-        const cfg = this.#getStaticConfig();
-
         return buildIssueFocusStaleAssignmentCandidates({
             ...options,
             maintainers: options.maintainers || this.getStaleAssignmentMaintainers(),
-            thresholdMs: options.thresholdMs ?? cfg.goldenPathStaleAssignmentThresholdMs
+            thresholdMs: options.thresholdMs ?? aiConfig.goldenPathStaleAssignmentThresholdMs
         })
     }
 
@@ -383,11 +282,9 @@ class GoldenPathSynthesizer extends Base {
      * @returns {String}
      */
     static renderStaleAssignmentCandidatesSection(candidates, options = {}) {
-        const cfg = this.#getStaticConfig();
-
         return renderIssueFocusStaleAssignmentCandidatesSection(candidates, {
             ...options,
-            limit: options.limit ?? cfg.goldenPathStaleAssignmentRenderLimit
+            limit: options.limit ?? aiConfig.goldenPathStaleAssignmentRenderLimit
         })
     }
 
@@ -437,13 +334,11 @@ class GoldenPathSynthesizer extends Base {
      * @returns {Array<Object>} Silent-thread candidates sorted by silence score.
      */
     static buildSilentThreadCandidates(options = {}) {
-        const cfg = this.#getStaticConfig();
-
         return buildIssueFocusSilentThreadCandidates({
             ...options,
             getStructuralWeight: options.getStructuralWeight || this.getIssueStructuralWeight.bind(this),
-            minScore           : options.minScore ?? cfg.goldenPathSilentThreadMinScore,
-            thresholdMs        : options.thresholdMs ?? cfg.goldenPathSilentThreadThresholdMs
+            minScore           : options.minScore ?? aiConfig.goldenPathSilentThreadMinScore,
+            thresholdMs        : options.thresholdMs ?? aiConfig.goldenPathSilentThreadThresholdMs
         })
     }
 
@@ -456,11 +351,9 @@ class GoldenPathSynthesizer extends Base {
      * @returns {String}
      */
     static renderSilentThreadCandidatesSection(candidates, options = {}) {
-        const cfg = this.#getStaticConfig();
-
         return renderIssueFocusSilentThreadCandidatesSection(candidates, {
             ...options,
-            limit: options.limit ?? cfg.goldenPathSilentThreadRenderLimit
+            limit: options.limit ?? aiConfig.goldenPathSilentThreadRenderLimit
         })
     }
 
@@ -480,12 +373,10 @@ class GoldenPathSynthesizer extends Base {
      * @returns {String}
      */
     static renderWorkGraphStallFindingsSection(findings, options = {}) {
-        const cfg = this.#getStaticConfig();
-
         return renderIssueFocusWorkGraphStallFindingsSection(findings, {
             ...options,
-            limit        : options.limit ?? cfg.goldenPathStallFindingRenderLimit,
-            renderEnabled: options.renderEnabled ?? cfg.goldenPathStallFindingRenderEnabled
+            limit        : options.limit ?? aiConfig.goldenPathStallFindingRenderLimit,
+            renderEnabled: options.renderEnabled ?? aiConfig.goldenPathStallFindingRenderEnabled
         })
     }
 
@@ -741,7 +632,7 @@ class GoldenPathSynthesizer extends Base {
 
         // Renders `''` for an empty set, so an unavailable/short-circuited compute keeps the
         // caller's normal empty section — the pre-extraction behavior.
-        return renderDeclaredIntentFallback(items, this.#getStaticConfig().goldenPathTopNodeRenderLimit, cause)
+        return renderDeclaredIntentFallback(items, aiConfig.goldenPathTopNodeRenderLimit, cause)
     }
 
     /**
@@ -865,8 +756,7 @@ class GoldenPathSynthesizer extends Base {
      * @returns {void}
      */
     static publishUnavailableComputedRoute(now, runId) {
-        const cfg       = this.#getStaticConfig(),
-              routePath = path.join(path.dirname(cfg.handoffFilePath), 'computed-route.json');
+        const routePath = path.join(path.dirname(aiConfig.handoffFilePath), 'computed-route.json');
 
         try {
             const route = buildComputedRouteFromPass({
@@ -875,7 +765,7 @@ class GoldenPathSynthesizer extends Base {
                 scoredSourceIds : [],
                 now,
                 runId,
-                ttlMs           : cfg.goldenPathRouteTtlMs,
+                ttlMs           : aiConfig.goldenPathRouteTtlMs,
                 routeVersion    : ROUTE_ALGORITHM_VERSION,
                 algorithmVersion: ROUTE_ALGORITHM_VERSION
             });
@@ -997,11 +887,9 @@ class GoldenPathSynthesizer extends Base {
      * @returns {String}
      */
     static renderRecentOpenPrSummary(prs, options = {}) {
-        const cfg = this.#getStaticConfig();
-
         return renderRecentOpenPrSummarySection(prs, {
             ...options,
-            limit: options.limit ?? cfg.goldenPathRecentOpenPrRenderLimit
+            limit: options.limit ?? aiConfig.goldenPathRecentOpenPrRenderLimit
         })
     }
 
@@ -1023,12 +911,10 @@ class GoldenPathSynthesizer extends Base {
      * @returns {String}
      */
     static renderActivePrCycleState(options = {}) {
-        const cfg = this.#getStaticConfig();
-
         return renderActivePrCycleStateSection({
             ...options,
-            freshnessMs: options.freshnessMs ?? cfg.goldenPathActivePrStateFreshnessMs,
-            limit      : options.limit ?? cfg.goldenPathRecentOpenPrRenderLimit
+            freshnessMs: options.freshnessMs ?? aiConfig.goldenPathActivePrStateFreshnessMs,
+            limit      : options.limit ?? aiConfig.goldenPathRecentOpenPrRenderLimit
         })
     }
 
@@ -1127,10 +1013,8 @@ class GoldenPathSynthesizer extends Base {
             return issuesDir;
         }
 
-        const cfg = this.#getStaticConfig();
-
-        if (cfg.orchestrator.corpusProjection.enabled && cfg.orchestrator.corpusProjection.materializedRoot) {
-            return path.resolve(cfg.orchestrator.corpusProjection.materializedRoot, 'issues');
+        if (aiConfig.orchestrator.corpusProjection.enabled && aiConfig.orchestrator.corpusProjection.materializedRoot) {
+            return path.resolve(aiConfig.orchestrator.corpusProjection.materializedRoot, 'issues');
         }
 
         throw new Error(
@@ -1160,8 +1044,6 @@ class GoldenPathSynthesizer extends Base {
         now   = new Date(),
         runId = randomUUID()
     } = {}) {
-        const cfg = this.#getConfig();
-
         logger.info(`[GoldenPathSynthesizer] Initializing Hybrid GraphRAG Strategic Traversal (run ${runId})...`);
 
         const projectionAdmission = await this.constructor.getCorpusProjectionAdmission();
@@ -1213,7 +1095,7 @@ class GoldenPathSynthesizer extends Base {
             }
 
             logger.debug('[GoldenPathSynthesizer] Computing Frontier Baseline Vector...');
-            frontierEmbedding = await TextEmbeddingService.embedText(frontierText, cfg.embeddingProvider);
+            frontierEmbedding = await TextEmbeddingService.embedText(frontierText, aiConfig.embeddingProvider);
         } catch (e) {
             logger.warn('[GoldenPathSynthesizer] Failed to generate Frontier Baseline Vector. Aborting Hybrid route.', e);
             this.constructor.publishUnavailableComputedRoute(now, runId);
@@ -1221,14 +1103,14 @@ class GoldenPathSynthesizer extends Base {
         }
 
         const actualDimension     = getEmbeddingVectorLength(frontierEmbedding);
-        const configuredDimension = Number(cfg.vectorDimension);
+        const configuredDimension = Number(aiConfig.vectorDimension);
 
         if (!Number.isInteger(actualDimension) ||
             !Number.isInteger(configuredDimension) ||
             configuredDimension <= 0 ||
             actualDimension !== configuredDimension) {
-            const provider = cfg.embeddingProvider;
-            const model    = getEmbeddingModelName(cfg, provider);
+            const provider = aiConfig.embeddingProvider;
+            const model    = getEmbeddingModelName(aiConfig, provider);
 
             const message = buildEmbeddingDimensionMismatchMessage({
                 provider,
@@ -1264,7 +1146,7 @@ class GoldenPathSynthesizer extends Base {
         };
         const SEMANTIC_WEIGHT    = 2.0;
         const STRUCTURAL_WEIGHT  = 1.0;
-        const admissionTarget    = this.constructor.normalizeAdmissionTarget(cfg.goldenPathTopNodeRenderLimit);
+        const admissionTarget    = this.constructor.normalizeAdmissionTarget(aiConfig.goldenPathTopNodeRenderLimit);
         let   routeFailure       = null;
         let   semanticCorpusSize = null;
 
@@ -1536,9 +1418,9 @@ class GoldenPathSynthesizer extends Base {
         // method; never gates synthesis. This is the live record-seam the one-shot measurement dataset snapshotted.
         if (focusContradiction) {
             await this.constructor.recordRouteAttribution(focusContradiction, now, {
-                dir         : cfg.goldenPathRouteAttributionLedgerDir,
-                maxEvents   : cfg.goldenPathRouteAttributionLedgerMaxEvents,
-                triggerBytes: cfg.goldenPathRouteAttributionLedgerPruneTriggerBytes
+                dir         : aiConfig.goldenPathRouteAttributionLedgerDir,
+                maxEvents   : aiConfig.goldenPathRouteAttributionLedgerMaxEvents,
+                triggerBytes: aiConfig.goldenPathRouteAttributionLedgerPruneTriggerBytes
             })
         }
 
@@ -1548,9 +1430,9 @@ class GoldenPathSynthesizer extends Base {
             ...typeGateRejections,
             ...discussionLivenessRejections
         ], now, {
-            dir         : cfg.goldenPathRouteAttributionLedgerDir,
-            maxEvents   : cfg.goldenPathRouteAttributionLedgerMaxEvents,
-            triggerBytes: cfg.goldenPathRouteAttributionLedgerPruneTriggerBytes
+            dir         : aiConfig.goldenPathRouteAttributionLedgerDir,
+            maxEvents   : aiConfig.goldenPathRouteAttributionLedgerMaxEvents,
+            triggerBytes: aiConfig.goldenPathRouteAttributionLedgerPruneTriggerBytes
         })
 
         const handoffTimestamp = now instanceof Date ? now : new Date(now);
@@ -1597,10 +1479,10 @@ class GoldenPathSynthesizer extends Base {
                 scoredSourceIds,
                 now             : handoffTimestamp,
                 runId,
-                ttlMs           : cfg.goldenPathRouteTtlMs,
+                ttlMs           : aiConfig.goldenPathRouteTtlMs,
                 routeVersion    : ROUTE_ALGORITHM_VERSION,
                 algorithmVersion: ROUTE_ALGORITHM_VERSION,
-                renderLimit     : cfg.goldenPathTopNodeRenderLimit
+                renderLimit     : aiConfig.goldenPathTopNodeRenderLimit
             })
         } catch (routeError) {
             computedRoute = null;
@@ -1675,12 +1557,22 @@ class GoldenPathSynthesizer extends Base {
                 strategicInterpretationError      = '';
 
             try {
-                const graphProvider = resolveGraphModelProvider(cfg);
+                const graphProvider = resolveGraphModelProvider(aiConfig);
                 logger.info(`[GoldenPathSynthesizer] Instantiating ${graphProvider} provider to interpret Mathematical Golden Path...`);
                 const provider = buildGraphProvider({
-                    modelProvider         : graphProvider,
-                    ollamaConfig          : cfg.ollama,
-                    openAiCompatibleConfig: cfg.openAiCompatible
+                    modelProvider: graphProvider,
+                    ollamaConfig : {
+                        embeddingModel: aiConfig.ollama.embeddingModel,
+                        host          : aiConfig.ollama.host,
+                        keep_alive    : aiConfig.ollama.keep_alive,
+                        model         : aiConfig.ollama.model
+                    },
+                    openAiCompatibleConfig: {
+                        apiKey    : aiConfig.openAiCompatible.apiKey,
+                        host      : aiConfig.openAiCompatible.host,
+                        keep_alive: aiConfig.openAiCompatible.keep_alive,
+                        model     : aiConfig.openAiCompatible.model
+                    }
                 });
 
                 // Get adjacent frontier topology for context
@@ -1744,7 +1636,7 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
             // leaves.
             const declaredIntentFallback = renderDeclaredIntentFallback(
                 declaredIntent.items,
-                cfg.goldenPathTopNodeRenderLimit,
+                aiConfig.goldenPathTopNodeRenderLimit,
                 declaredIntent.cause
             );
 
@@ -2059,7 +1951,7 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
             }
         }
 
-        const handoffFile = cfg.handoffFilePath;
+        const handoffFile = aiConfig.handoffFilePath;
         fs.mkdirSync(path.dirname(handoffFile), {recursive: true});
         fs.writeFileSync(handoffFile, handoffContent.trim() + '\n', 'utf-8');
         logger.info(`[GoldenPathSynthesizer] sandman_handoff.md freshly generated via Centralized Pipeline. Golden Path integrated.`);

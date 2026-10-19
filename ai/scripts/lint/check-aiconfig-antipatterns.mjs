@@ -128,6 +128,14 @@ export const PLANE_ROOT_REDERIVATION = /\bpath\.(?:join|resolve)\s*\(\s*__dirnam
  */
 export const PLANE_LITERAL_ASSIGNMENT = /(?:\b(?:const|let|var)\s+[\w$]+|[\w$]+\s*)=\s*['"`]\.neo-ai-data\//;
 
+/*
+ * Rule CONFIG-SNAPSHOT — bans re-introduction of the retired parallel `configSnapshot` test seam or
+ * whole-root `|| aiConfig` / `|| AiConfig` / `|| *Config` fallback expressions in `ai/` and `src/`.
+ * Services must read resolved leaves directly from the imported config singleton; tests isolate via
+ * `snapshotAiConfig` in test hooks.
+ */
+export const CONFIG_SNAPSHOT_SEAM = /\bconfigSnapshot\b|\|\|\s*(?:aiConfig|AiConfig|Memory_Config|[a-zA-Z]+Config)\b(?!\s*\.)/;
+
 /**
  * @summary AiConfig catalog rules enforced by this guard, with each id attached to the
  * executable predicate it names.
@@ -162,7 +170,8 @@ export const ALLOWLIST = Object.freeze({
         'ai/daemons/wake/daemon.mjs',
         'ai/services/fleet/devFleetServer.mjs'
     ]),
-    A5: new Set(),
+    A5               : new Set(),
+    'CONFIG-SNAPSHOT': new Set(),
     // Zero baseline for THIS rule's population — the `__dirname`-derived roots, and nothing wider.
     // An empty set here is not evidence that the plane is unforked; PLANE-LITERAL below covers a
     // class this rule is structurally unable to see, and neither rule reaches a root assembled
@@ -191,8 +200,9 @@ export const ALLOWLIST = Object.freeze({
 const A1_RULE = ADR_0019_RULES.find(rule => rule.id === 'A1');
 const RULES   = Object.freeze([
     ...ADR_0019_RULES.filter(rule => rule !== A1_RULE),
-    Object.freeze({id: 'PLANE-ROOT',    pattern: new RegExp(PLANE_ROOT_REDERIVATION.source, 'g')}),
-    Object.freeze({id: 'PLANE-LITERAL', pattern: new RegExp(PLANE_LITERAL_ASSIGNMENT.source, 'g')})
+    Object.freeze({id: 'CONFIG-SNAPSHOT', pattern: new RegExp(CONFIG_SNAPSHOT_SEAM.source, 'g')}),
+    Object.freeze({id: 'PLANE-ROOT',      pattern: new RegExp(PLANE_ROOT_REDERIVATION.source, 'g')}),
+    Object.freeze({id: 'PLANE-LITERAL',   pattern: new RegExp(PLANE_LITERAL_ASSIGNMENT.source, 'g')})
 ]);
 
 /**

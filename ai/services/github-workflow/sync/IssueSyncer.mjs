@@ -15,10 +15,6 @@ import {buildContentInventory}                                                fr
 import {createContentIndexEntry, updateContentIndex}                          from '../shared/contentIndex.mjs';
 import {createContentTrustSummary, projectAuthoredNodeTrust}                  from '../shared/conversationTrust.mjs';
 import pruneEmptyDirs                                                         from '../shared/pruneEmptyDirs.mjs';
-import {
-    createGitHubWorkflowConfigSnapshot,
-    validateGitHubWorkflowConfigSnapshot
-} from '../shared/configSnapshot.mjs';
 
 const lineBreaksRegex = /[\r\n]+/g;
 
@@ -52,51 +48,6 @@ class IssueSyncer extends Base {
     }
 
     /**
-     * Optional isolated configuration snapshot for unit testing.
-     * @member {Object|null} #configSnapshot=null
-     * @private
-     */
-    #configSnapshot = null;
-
-    /**
-     * @returns {Object|null}
-     */
-    get configSnapshot() {
-        return this.#configSnapshot;
-    }
-
-    /**
-     * @param {Object|null} value
-     */
-    set configSnapshot(value) {
-        this.#configSnapshot = this.beforeSetConfigSnapshot(value);
-    }
-
-    /**
-     * @param {Object|null} value
-     * @returns {Object|null}
-     */
-    beforeSetConfigSnapshot(value) {
-        return validateGitHubWorkflowConfigSnapshot(value, this.constructor.name);
-    }
-
-    /**
-     * @param {Object} [overrides={}]
-     * @returns {Object}
-     */
-    createConfigSnapshot(overrides = {}) {
-        return createGitHubWorkflowConfigSnapshot(aiConfig, overrides);
-    }
-
-    /**
-     * @returns {Object}
-     * @private
-     */
-    #getConfig() {
-        return this.#configSnapshot || aiConfig;
-    }
-
-    /**
      * Per-sync-cycle dedupe set tracking issue numbers already emitted as ARCHIVE ANOMALY WARN.
      * `#planBuckets` is invoked from multiple sync entry points (pullFromGitHub, refetchIssuesByNumber,
      * reconcileClosedIssueLocations) which would otherwise duplicate-warn for the same issue within
@@ -123,7 +74,7 @@ class IssueSyncer extends Base {
      * @private
      */
     #deriveClosedAtVersion(closedAt) {
-        const issueSyncConfig = this.#getConfig().issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
         const closed          = new Date(closedAt);
         const release         = (ReleaseNotesSyncer.sortedReleases || []).find(r => new Date(r.publishedAt) > closed);
 
@@ -141,7 +92,7 @@ class IssueSyncer extends Base {
      * @private
      */
     #deriveMilestoneVersion(issue) {
-        const issueSyncConfig = this.#getConfig().issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
         const title           = issue.milestone?.title;
 
         if (!issueSyncConfig.routeByMilestone || !title || !semver.valid(semver.clean(title))) {
@@ -177,8 +128,7 @@ class IssueSyncer extends Base {
     async #exhaustTimelineItems(issue) {
         if (!issue.timelineItems?.pageInfo?.hasNextPage) return;
 
-        const config          = this.#getConfig();
-        const issueSyncConfig = config.issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
         const startCount      = issue.timelineItems.nodes.length;
         let   cursor          = issue.timelineItems.pageInfo.endCursor;
         const allNodes        = [...issue.timelineItems.nodes];
@@ -189,8 +139,8 @@ class IssueSyncer extends Base {
             const data = await GraphqlService.query(
                 FETCH_ISSUE_TIMELINE_PAGE,
                 {
-                    owner           : config.owner,
-                    repo            : config.repo,
+                    owner           : aiConfig.owner,
+                    repo            : aiConfig.repo,
                     number          : issue.number,
                     maxTimelineItems: issueSyncConfig.maxTimelineItemsPerIssue,
                     cursor
@@ -237,7 +187,7 @@ class IssueSyncer extends Base {
      * @private
      */
     #projectAuthoredNode(node, summary, signalPath) {
-        const issueSyncConfig = this.#getConfig().issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
 
         return projectAuthoredNodeTrust(node, {
             summary,
@@ -418,7 +368,7 @@ class IssueSyncer extends Base {
      * @private
      */
     #planBuckets(metadata, fetchedIssues = [], {ignoreOldVersion = false, inventory = null} = {}) {
-        const issueSyncConfig = this.#getConfig().issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
         const combined        = new Map();
 
         for (const [idStr, issue] of Object.entries(metadata.issues || {})) {
@@ -610,7 +560,7 @@ class IssueSyncer extends Base {
      * @private
      */
     #isDenylisted(issue) {
-        const denylist = this.#getConfig().issueSync.issueDenylist;
+        const denylist = aiConfig.issueSync.issueDenylist;
 
         return denylist.numbers.includes(issue.number) ||
                denylist.authors.includes(issue.author?.login)
@@ -631,8 +581,7 @@ class IssueSyncer extends Base {
             return null
         }
 
-        const config          = this.#getConfig();
-        const issueSyncConfig = config.issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
         const filename        = `${issueSyncConfig.issueFilenamePrefix}${issue.number}.md`;
 
         // Handle both GraphQL (issue.labels.nodes) and potential direct array.
@@ -650,7 +599,7 @@ class IssueSyncer extends Base {
 
         const pathConfig = {
             contentRoot  : issueSyncConfig.contentRoot,
-            repoSlug     : config.repo,
+            repoSlug     : aiConfig.repo,
             originRoot   : issueSyncConfig.originRoot,
             type         : 'issues',
             filename,
@@ -675,7 +624,7 @@ class IssueSyncer extends Base {
     #resolvePath(p) {
         if (!p) return null;
         if (path.isAbsolute(p)) return p;
-        return path.resolve(this.#getConfig().issueSync.metadataBaseRoot, p);
+        return path.resolve(aiConfig.issueSync.metadataBaseRoot, p);
     }
 
     /**
@@ -686,7 +635,7 @@ class IssueSyncer extends Base {
      */
     #relativePath(p) {
         if (!p) return null;
-        return path.relative(this.#getConfig().issueSync.metadataBaseRoot, p);
+        return path.relative(aiConfig.issueSync.metadataBaseRoot, p);
     }
 
     /**
@@ -704,7 +653,7 @@ class IssueSyncer extends Base {
      * @private
      */
     async #removeOtherCopies(issueNumber, targetPath, inventory, oldAbsolutePath) {
-        const issueSyncConfig = this.#getConfig().issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
         // Compared resolved: an absolute metadata path may spell the target differently (`..`)
         const archiveRoot = path.resolve(issueSyncConfig.archiveRoot),
               candidates  = new Set((inventory.get(issueNumber) || [])
@@ -738,8 +687,7 @@ class IssueSyncer extends Base {
      * @returns {Promise<{newMetadata: object, stats: object}>}
      */
     async pullFromGitHub(metadata, {refetchIssues = []} = {}) {
-        const config          = this.#getConfig();
-        const issueSyncConfig = config.issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
 
         logger.info('📥 Fetching issues from GitHub via GraphQL...');
 
@@ -759,8 +707,8 @@ class IssueSyncer extends Base {
             const data = await GraphqlService.query(
                 FETCH_ISSUES_FOR_SYNC,
                 {
-                    owner : config.owner,
-                    repo  : config.repo,
+                    owner : aiConfig.owner,
+                    repo  : aiConfig.repo,
                     limit : 100,
                     cursor,
                     states: ['OPEN', 'CLOSED'],
@@ -808,7 +756,7 @@ class IssueSyncer extends Base {
         const indexMutations       = {upsert: [], remove: []};
         let   shouldPruneEmptyDirs = false;
 
-        const inventory   = await buildContentInventory(issueSyncConfig, {repoSlug: config.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
+        const inventory   = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
         const planBuckets = this.#planBuckets(metadata, allIssues, {inventory});
 
         // Process each issue
@@ -849,7 +797,7 @@ class IssueSyncer extends Base {
 
                 delete newMetadata.issues[issueNumber];
 
-                indexMutations.remove.push({ repoSlug: config.repo, type: 'issues', id: issueNumber });
+                indexMutations.remove.push({ repoSlug: aiConfig.repo, type: 'issues', id: issueNumber });
                 continue;
             }
 
@@ -931,7 +879,7 @@ class IssueSyncer extends Base {
             const plan = planBuckets.get(issueNumber);
             indexMutations.upsert.push(createContentIndexEntry({
                 issueSyncConfig,
-                repoSlug : config.repo,
+                repoSlug : aiConfig.repo,
                 type     : 'issues',
                 id       : issueNumber,
                 filePath : this.#resolvePath(this.#relativePath(targetPath)),
@@ -1048,22 +996,21 @@ class IssueSyncer extends Base {
      * @returns {Promise<{refetched: {count: number, issues: number[]}, errors: Array<{issueNumber: number, error: string}>}>}
      */
     async refetchIssuesByNumber(numbers, metadata, indexMutations = null) {
-        const config          = this.#getConfig();
-        const issueSyncConfig = config.issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
         const stats           = {refetched: {count: 0, issues: []}, errors: []};
         const list            = [...numbers];
 
         // Build the complete-membership inventory ONCE for the whole refetch batch — a full corpus scan
         // per issue would be pathological; every planned ordinal reads the same complete membership.
-        const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: config.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
+        const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
 
         for (const issueNumber of list) {
             try {
                 const data = await GraphqlService.query(
                     FETCH_SINGLE_ISSUE,
                     {
-                        owner           : config.owner,
-                        repo            : config.repo,
+                        owner           : aiConfig.owner,
+                        repo            : aiConfig.repo,
                         number          : issueNumber,
                         maxLabels       : issueSyncConfig.maxLabelsPerIssue,
                         maxAssignees    : issueSyncConfig.maxAssigneesPerIssue,
@@ -1085,7 +1032,7 @@ class IssueSyncer extends Base {
                 const targetPath  = this.#getIssuePath(issue, planBuckets);
                 if (!targetPath) {
                     if (indexMutations) {
-                        indexMutations.remove.push({ repoSlug: config.repo, type: 'issues', id: issueNumber });
+                        indexMutations.remove.push({ repoSlug: aiConfig.repo, type: 'issues', id: issueNumber });
                     }
                     continue;
                 }
@@ -1118,7 +1065,7 @@ class IssueSyncer extends Base {
                     const plan = planBuckets.get(issueNumber);
                     indexMutations.upsert.push(createContentIndexEntry({
                         issueSyncConfig,
-                        repoSlug : config.repo,
+                        repoSlug : aiConfig.repo,
                         type     : 'issues',
                         id       : issueNumber,
                         filePath : this.#resolvePath(this.#relativePath(targetPath)),
@@ -1149,8 +1096,7 @@ class IssueSyncer extends Base {
      * @returns {Promise<object>} Stats about reconciled issues
      */
     async reconcileClosedIssueLocations(metadata) {
-        const config          = this.#getConfig();
-        const issueSyncConfig = config.issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
 
         logger.info('🔄 Reconciling closed issue locations...');
 
@@ -1165,7 +1111,7 @@ class IssueSyncer extends Base {
 
         // Build the complete-membership inventory ONCE for the reconcile pass (not per closed issue) —
         // every "where SHOULD this land" ordinal reads the same complete membership.
-        const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: config.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
+        const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
 
         // One bucket plan per pass as well, re-planned only when a move CUTS an archive bucket that did
         // not exist before it. That is the one planner input this pass mutates: `#deriveMilestoneVersion`
@@ -1285,8 +1231,7 @@ class IssueSyncer extends Base {
      * @returns {Promise<object>} `{moved, unchanged, byVersion, dryRun, moves: [{number, from, to}]}`
      */
     async migrateArchiveBuckets(metadata, {dryRun = false} = {}) {
-        const config          = this.#getConfig();
-        const issueSyncConfig = config.issueSync;
+        const issueSyncConfig = aiConfig.issueSync;
 
         await ReleaseNotesSyncer.fetchAndCacheReleases(metadata);
 
@@ -1296,7 +1241,7 @@ class IssueSyncer extends Base {
 
         // Recompute from scratch: ignore the cached-path `oldVersion` (which would re-pin the existing
         // mis-bucketing) so each closed issue resolves via milestone-guard / closedAt→release.
-        const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: config.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
+        const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
         const plan      = this.#planBuckets(metadata, [], {ignoreOldVersion: true, inventory});
 
         const moves     = [];
@@ -1321,7 +1266,7 @@ class IssueSyncer extends Base {
             moves.push({number, from: currentRel, to: targetRel, targetAbs});
             upserts.push(createContentIndexEntry({
                 issueSyncConfig,
-                repoSlug : config.repo,
+                repoSlug : aiConfig.repo,
                 type     : 'issues',
                 id       : number,
                 filePath : targetAbs,
