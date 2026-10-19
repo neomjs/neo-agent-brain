@@ -15,7 +15,9 @@ import {
     FLEET_BRIDGE_STATES,
     describeFleetBridgeState,
     getFleetBridgeStdioLogPath,
-    settleFleetBridge
+    isBridgeListenerCommand,
+    settleFleetBridge,
+    superviseFleetBridge
 } from '../../../../../../ai/services/fleet/settleFleetBridge.mjs';
 import {buildConfiguredTaskDefinitions} from '../../../../../../ai/daemons/orchestrator/services/ConfiguredTaskDefinitionsService.mjs';
 import {buildSupervisedTaskEnv}         from '../../../../../../ai/daemons/orchestrator/services/ProcessSupervisorService.mjs';
@@ -357,5 +359,225 @@ test.describe('Neural Link Bridge registry key provisioning & Fleet boot states 
 
         expect(settled).toMatchObject({state: FLEET_BRIDGE_STATES.UNAVAILABLE, reason: 'FLEET_DATA_DIR_MISSING', logFilePath: null});
         expect(spawned).toBe(0)
+    });
+
+    test('AC-2 (#1203): replaces a verified stale run-bridge.mjs listener on bridge-verifier-unsupported, bridge-verifier-unconfigured, and bridge-verifier-mismatch', async () => {
+        expect(isBridgeListenerCommand('/opt/homebrew/bin/node /repo/ai/mcp/server/neural-link/run-bridge.mjs')).toBe(true);
+        expect(isBridgeListenerCommand('node ai/mcp/server/neural-link/run-bridge.mjs --flag')).toBe(true);
+        expect(isBridgeListenerCommand('python3 -m http.server 8081')).toBe(false);
+
+        const port = await findFreePort();
+
+        for (const refusalReason of [
+            'bridge-verifier-unsupported',
+            'bridge-verifier-unconfigured',
+            'bridge-verifier-mismatch'
+        ]) {
+            const killedSignals = [];
+            let   portReleased  = false;
+            let   spawnCalls    = 0;
+            const probes        = [
+                {verdict: 'refused', reason: refusalReason},
+                {verdict: 'proved'}
+            ];
+
+            const settled = await settleFleetBridge({
+                port,
+                registry           : FleetRegistryService,
+                probeFn            : async () => probes.shift() ?? {verdict: 'proved'},
+                listPortListenersFn: () => (portReleased ? [] : [5150]),
+                processCommandFn   : pid => (pid === 5150
+                    ? '/usr/local/bin/node /Users/test/neo-agent-brain/ai/mcp/server/neural-link/run-bridge.mjs'
+                    : ''),
+                killProcessFn      : (pid, signal) => {
+                    killedSignals.push({pid, signal});
+                    portReleased = true;
+                },
+                spawnFn            : () => {
+                    spawnCalls += 1;
+                    return Object.assign(new EventEmitter(), {pid: 6260, unref: () => {}});
+                },
+                probeTimeoutMs  : 50,
+                startupTimeoutMs: 250,
+                pollIntervalMs  : 10
+            });
+
+            expect(killedSignals).toEqual([{pid: 5150, signal: 'SIGTERM'}]);
+            expect(spawnCalls).toBe(1);
+            expect(settled).toMatchObject({
+                state       : FLEET_BRIDGE_STATES.READY,
+                verdict     : 'proved',
+                action      : 'replaced',
+                port,
+                pid         : 6260,
+                replacedPids: [5150],
+                reason      : null
+            });
+        }
+    });
+
+    test('AC-2 (#1203): never signals a foreign non-run-bridge.mjs listener on port and fails closed with bridge-outdated or bridge-unkeyed', async () => {
+        const port          = await findFreePort();
+        const killedSignals = [];
+        let   spawnCalls    = 0;
+
+        const outdatedForeign = await settleFleetBridge({
+            port,
+            registry           : FleetRegistryService,
+            probeFn            : async () => ({verdict: 'refused', reason: 'bridge-verifier-unsupported'}),
+            listPortListenersFn: () => [9001],
+            processCommandFn   : () => 'python3 -m http.server 8081',
+            killProcessFn      : (pid, signal) => {
+                killedSignals.push({pid, signal});
+            },
+            spawnFn            : () => {
+                spawnCalls += 1;
+                return Object.assign(new EventEmitter(), {pid: 9999, unref: () => {}});
+            },
+            probeTimeoutMs     : 50
+        });
+
+        expect(killedSignals).toEqual([]);
+        expect(spawnCalls).toBe(0);
+        expect(outdatedForeign).toMatchObject({
+            state  : FLEET_BRIDGE_STATES.OUTDATED,
+            verdict: 'refused',
+            action : null,
+            port,
+            reason : 'bridge-verifier-unsupported'
+        });
+
+        const unkeyedForeign = await settleFleetBridge({
+            port,
+            registry           : FleetRegistryService,
+            probeFn            : async () => ({verdict: 'refused', reason: 'bridge-verifier-mismatch'}),
+            listPortListenersFn: () => [9002],
+            processCommandFn   : () => '/usr/bin/nc -l 8081',
+            killProcessFn      : (pid, signal) => {
+                killedSignals.push({pid, signal});
+            },
+            spawnFn            : () => {
+                spawnCalls += 1;
+                return Object.assign(new EventEmitter(), {pid: 9999, unref: () => {}});
+            },
+            probeTimeoutMs     : 50
+        });
+
+        expect(killedSignals).toEqual([]);
+        expect(spawnCalls).toBe(0);
+        expect(unkeyedForeign).toMatchObject({
+            state  : FLEET_BRIDGE_STATES.UNKEYED,
+            verdict: 'refused',
+            action : null,
+            port,
+            reason : 'bridge-verifier-mismatch'
+        });
+    });
+
+    test('AC-3 & AC-4 (#1203): superviseFleetBridge restarts an exited Bridge mid-session, coalesces overlapping ticks, and stop() leaves the detached Bridge running', async () => {
+        const port          = await findFreePort();
+        let   scheduledCb   = null;
+        let   clearedHandle = null;
+        let   unrefCalled   = false;
+        const fakeHandle    = {
+            unref() {
+                unrefCalled = true;
+            }
+        };
+
+        const settlements  = [];
+        const stateChanges = [];
+        let   resolveSlowSettle;
+        const slowSettlePromise = new Promise(resolve => {
+            resolveSlowSettle = resolve;
+        });
+
+        let   callIndex  = 0;
+        const supervisor = superviseFleetBridge({
+            port,
+            registry  : FleetRegistryService,
+            intervalMs: 5000,
+            scheduleFn: fn => {
+                scheduledCb = fn;
+                return fakeHandle;
+            },
+            clearScheduleFn: handle => {
+                clearedHandle = handle;
+            },
+            onSettle     : s => settlements.push(s),
+            onStateChange: s => stateChanges.push(s),
+            settleFn     : async ({port: settledPort}) => {
+                callIndex += 1;
+                if (callIndex === 1) {
+                    return slowSettlePromise;
+                }
+                if (callIndex === 2) {
+                    return {
+                        state  : FLEET_BRIDGE_STATES.READY,
+                        verdict: 'proved',
+                        action : 'adopted',
+                        port   : settledPort,
+                        pid    : 7777,
+                        reason : null
+                    };
+                }
+                return {
+                    state       : FLEET_BRIDGE_STATES.READY,
+                    verdict     : 'proved',
+                    action      : 'replaced',
+                    port        : settledPort,
+                    pid         : 8888,
+                    replacedPids: [7777],
+                    reason      : null
+                };
+            }
+        });
+
+        expect(typeof scheduledCb).toBe('function');
+        expect(unrefCalled).toBe(true);
+        expect(supervisor.isRunning()).toBe(true);
+
+        // Trigger overlapping ticks while the first settle is in flight; they must coalesce onto one call.
+        const firstTick  = supervisor.tick();
+        const secondTick = supervisor.tick();
+        expect(callIndex).toBe(1);
+
+        resolveSlowSettle({
+            state  : FLEET_BRIDGE_STATES.READY,
+            verdict: 'proved',
+            action : 'started',
+            port,
+            pid    : 7777,
+            reason : null
+        });
+
+        const [firstOutcome, secondOutcome] = await Promise.all([firstTick, secondTick]);
+        expect(firstOutcome).toEqual(secondOutcome);
+        expect(firstOutcome.action).toBe('started');
+        expect(settlements).toHaveLength(1);
+        expect(stateChanges).toHaveLength(1);
+
+        // Next scheduled tick adopts the healthy running Bridge; stateChange fires because action changed ('started' -> 'adopted').
+        scheduledCb();
+        await new Promise(resolve => setImmediate(resolve));
+        expect(callIndex).toBe(2);
+        expect(supervisor.getLastSettlement()?.action).toBe('adopted');
+        expect(settlements).toHaveLength(2);
+        expect(stateChanges).toHaveLength(2);
+
+        // Third tick replaces a drifted Bridge ('adopted' -> 'replaced').
+        await supervisor.tick();
+        expect(callIndex).toBe(3);
+        expect(supervisor.getLastSettlement()?.action).toBe('replaced');
+        expect(stateChanges).toHaveLength(3);
+
+        // Stopping the supervisor on Fleet shutdown clears the timer without killing the detached Bridge.
+        supervisor.stop();
+        expect(supervisor.isRunning()).toBe(false);
+        expect(clearedHandle).toBe(fakeHandle);
+
+        const afterStop = await supervisor.tick();
+        expect(callIndex).toBe(3);
+        expect(afterStop?.pid).toBe(8888);
     });
 });
