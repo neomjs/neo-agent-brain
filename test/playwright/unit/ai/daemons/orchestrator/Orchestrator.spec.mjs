@@ -1354,7 +1354,7 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
         await expect(taskDefinitions.chroma.healthProbe()).resolves.toBe(false);
     });
 
-    test('defines Neural Link Bridge as a defer-safe local shared-infra task (#13483)', () => {
+    test('defines Neural Link Bridge as a defer-safe local shared-infra task (#13483, #1144)', () => {
         const taskDefinitions = buildTaskDefinitions({
             scriptDir                        : '/repo/ai/scripts',
             nodeBin                          : '/node',
@@ -1373,6 +1373,18 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
             duplicateListenerPolicy: 'defer'
         });
         expect(typeof taskDefinitions.neuralLinkBridge.livenessProbe).toBe('function');
+
+        const keyedDefinitions = buildTaskDefinitions({
+            scriptDir                        : '/repo/ai/scripts',
+            nodeBin                          : '/node',
+            neuralLinkBridgePort             : 4242,
+            neuralLinkBridgePublicKey        : '-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----',
+            neuralLinkBridgeLivenessTimeoutMs: 50
+        });
+        expect(keyedDefinitions.neuralLinkBridge.env).toEqual({
+            NEO_NL_PORT                : '4242',
+            NEO_FLEET_BRIDGE_PUBLIC_KEY: '-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----'
+        });
     });
 
     test('supervises Neural Link Bridge in local mode and skips it in cloud mode (#13483)', async () => {

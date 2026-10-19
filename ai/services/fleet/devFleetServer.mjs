@@ -48,10 +48,12 @@ import * as core                                                       from 'neo
 import InstanceManager                                                 from 'neo.mjs/src/manager/Instance.mjs';
 import AiConfig                                                        from '../../config.mjs';
 import memoryCoreConfig                                                from '../../mcp/server/memory-core/config.mjs';
+import neuralLinkConfig                                                from '../../mcp/server/neural-link/config.mjs';
 import RequestContextService                                           from '../../mcp/server/shared/services/RequestContextService.mjs';
 import FleetControlBridge                                              from './FleetControlBridge.mjs';
 import FleetManager                                                    from './FleetManager.mjs';
 import FleetRegistryService                                            from './FleetRegistryService.mjs';
+import {FLEET_BRIDGE_STATES, settleFleetBridge}                        from './settleFleetBridge.mjs';
 import {detectMemoryCandidates}                                        from './seatMemoryImport.mjs';
 import {readGithubToken}                                               from '../ingestion/githubActions.mjs';
 import {describeOperatorSeatConflation, operatorSeatConflationWarning} from './operatorSeatConflation.mjs';
@@ -582,6 +584,18 @@ async function boot() {
             mcAuthorization: assertFleetViewerMcAuthorizationClass() || null,
             runInContext   : (context, fn) => RequestContextService.run(context, fn)
         });
+
+        const bridgeState = await settleFleetBridge({
+            port    : neuralLinkConfig.port,
+            registry: FleetRegistryService
+        });
+        FleetManager.bridgeBootState = bridgeState;
+
+        if (bridgeState.state === FLEET_BRIDGE_STATES.READY) {
+            console.log(`[fleet] Neural Link Bridge ${bridgeState.state} on port ${bridgeState.port} (${bridgeState.action}; key sha256 ${bridgeState.publicKeySha256?.slice(0, 12)}…)`);
+        } else {
+            console.warn(`[fleet] Neural Link Bridge ${bridgeState.state} on port ${bridgeState.port} (${bridgeState.reason}): ${bridgeState.summary} Next step: ${bridgeState.nextStep}`);
+        }
 
         // Each seat reads with its own PAT; a process token is the explicit headless/dev override.
         // This entrypoint owns the one enable switch after the plane proved the sending viewer.
