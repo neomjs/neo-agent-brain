@@ -17,11 +17,13 @@ import {
 /**
  * @summary Builds and seals one generation under `root`, its directory named by its identity.
  * @param {String} root A canonical (realpath) disposable directory.
+ * @param {Object} [options]
+ * @param {String} [options.revision='a'] One hex digit of the product revision, so one root can hold distinct generations.
  * @returns {Promise<{directory: String, runtimeRoot: String, executable: String, retainedVerifier: String, record: Object}>}
  */
-export async function sealRuntimeGeneration(root) {
+export async function sealRuntimeGeneration(root, {revision = 'a'} = {}) {
     const receipt = {electronVersion: '43.5.0', owners: {
-        product: {revision: 'a'.repeat(40)}, brain: {revision: 'b'.repeat(40)}, engine: {revision: 'c'.repeat(40)}
+        product: {revision: revision.repeat(40)}, brain: {revision: 'b'.repeat(40)}, engine: {revision: 'c'.repeat(40)}
     }};
     const identity         = runtimeGenerationIdentity(receipt), directory = path.join(root, identity.id);
     const payloadRoot      = path.join(directory, RUNTIME_GENERATION_PAYLOAD);
@@ -56,6 +58,14 @@ export async function changePayloadBytes({executable}) {
     await fs.chmod(executable, 0o755);
     await fs.writeFile(executable, 'changed payload');
     await fs.chmod(executable, 0o555);
+}
+
+/** @summary Adds a link escaping the payload after publication; the record and every binding stay intact. */
+export async function addEscapingLink({runtimeRoot}) {
+    const mode = (await fs.stat(runtimeRoot)).mode & 0o777;
+    await fs.chmod(runtimeRoot, 0o755);
+    await fs.symlink('/etc', path.join(runtimeRoot, 'escape'));
+    await fs.chmod(runtimeRoot, mode);
 }
 
 /** @summary Unlocks only fixture directories, never following links during cleanup. */

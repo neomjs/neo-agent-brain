@@ -11,21 +11,21 @@ setup({
     }
 });
 
-import {test, expect}                                            from '@playwright/test';
-import {execFile, execFileSync, spawn}                           from 'child_process';
-import {EventEmitter}                                            from 'events';
-import fs                                                        from 'fs';
-import os                                                        from 'os';
-import path                                                      from 'path';
-import {WebSocketServer}                                         from 'ws';
-import {once}                                                    from 'node:events';
-import {createHash, generateKeyPairSync, sign as cryptoSign}     from 'node:crypto';
-import {verifyBridgeToken}                                       from '../../../../ai/mcp/server/neural-link/verifyBridgeToken.mjs';
-import {generateAntigravityMcpFiles}                             from '../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
-import {createBridgeVerifierPayload}                             from '../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
-import {holdRuntimeGenerationReferences}                         from '../../../../ai/services/fleet/runtimeGenerationLease.mjs';
-import {readRuntimeGeneration, runtimeGenerationPin}             from '../../../../ai/services/fleet/runtimeGeneration.mjs';
-import {changePayloadBytes, removeSealed, sealRuntimeGeneration} from './services/fleet/fixtures/sealedRuntimeGeneration.mjs';
+import {test, expect}                                                             from '@playwright/test';
+import {execFile, execFileSync, spawn}                                            from 'child_process';
+import {EventEmitter}                                                             from 'events';
+import fs                                                                         from 'fs';
+import os                                                                         from 'os';
+import path                                                                       from 'path';
+import {WebSocketServer}                                                          from 'ws';
+import {once}                                                                     from 'node:events';
+import {createHash, generateKeyPairSync, sign as cryptoSign}                      from 'node:crypto';
+import {verifyBridgeToken}                                                        from '../../../../ai/mcp/server/neural-link/verifyBridgeToken.mjs';
+import {generateAntigravityMcpFiles}                                              from '../../../../ai/services/fleet/generateAntigravityMcpFiles.mjs';
+import {createBridgeVerifierPayload}                                              from '../../../../ai/mcp/server/neural-link/BridgeProtocol.mjs';
+import {holdRuntimeGenerationReferences}                                          from '../../../../ai/services/fleet/runtimeGenerationLease.mjs';
+import {readRuntimeGeneration, runtimeGenerationPin}                              from '../../../../ai/services/fleet/runtimeGeneration.mjs';
+import {addEscapingLink, changePayloadBytes, removeSealed, sealRuntimeGeneration} from './services/fleet/fixtures/sealedRuntimeGeneration.mjs';
 
 
 import Neo                                                                                    from 'neo.mjs/src/Neo.mjs';
@@ -2782,26 +2782,28 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
     /**
      * Admitted, running Claude Desktop seats with Neural Link through Fleet's launcher, under one root and one
      * issuer, ready for a handoff. The Bridge answers each connection with the next queued key fingerprint, or
-     * the right one once the queue is empty; a seat's `birth` overrides what its pid reads as. With `sealed`, the
-     * seats pin a real sealed generation the default verifiers read; otherwise `runtime` stands in for them.
+     * the right one once the queue is empty; a seat's `birth` overrides what its pid reads as. With `sealed`, each
+     * seat pins its own real sealed generation, read by the default verifiers; otherwise `runtime` stands in for them.
      */
     async function admittedDesktopSeats(ids, {sealed = false} = {}) {
         const
-            initialRoot      = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-handoff-per-seat-')),
-            spawn            = install({agents: Object.fromEntries(ids.map(id => [id, curatedAgent(id, 'claude-desktop')]))}),
-            root             = fs.realpathSync(initialRoot),
-            directory        = path.join(root, 'custody'),
-            service          = McpLaunchAdmissionService,
-            id               = 'a'.repeat(64),
-            runtimeDir       = path.join(root, id),
-            sealedGeneration = sealed ? await sealRuntimeGeneration(root) : null,
-            generation       = sealedGeneration ? runtimeGenerationPin(await readRuntimeGeneration({directory: sealedGeneration.directory}))
-                : {id, directory: runtimeDir, payloadDigest: 'b'.repeat(64),
-                    runtimeRoot: `${runtimeDir}/host.runtime/organism`, executable: `${runtimeDir}/host.runtime/node`},
-            runtime          = async () => ({...generation, compatibility: {launchProtocol: 'neo-fleet-mcp-launch/v1'}}),
-            answers          = [],
-            bridge           = new WebSocketServer({host: '127.0.0.1', port: 0}),
-            seats            = {};
+            initialRoot       = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-handoff-per-seat-')),
+            spawn             = install({agents: Object.fromEntries(ids.map(id => [id, curatedAgent(id, 'claude-desktop')]))}),
+            root              = fs.realpathSync(initialRoot),
+            directory         = path.join(root, 'custody'),
+            service           = McpLaunchAdmissionService,
+            id                = 'a'.repeat(64),
+            runtimeDir        = path.join(root, id),
+            sealedGenerations = sealed ? Object.fromEntries(await Promise.all(ids.map(async (agentId, index) =>
+                [agentId, await sealRuntimeGeneration(root, {revision: (index + 10).toString(16)})]))) : null,
+            pins              = sealedGenerations && Object.fromEntries(await Promise.all(Object.entries(sealedGenerations).map(async ([agentId, sealedGeneration]) =>
+                [agentId, runtimeGenerationPin(await readRuntimeGeneration({directory: sealedGeneration.directory}))]))),
+            generation        = pins?.[ids[0]] ?? {id, directory: runtimeDir, payloadDigest: 'b'.repeat(64),
+                runtimeRoot: `${runtimeDir}/host.runtime/organism`, executable: `${runtimeDir}/host.runtime/node`},
+            runtime           = async () => ({...generation, compatibility: {launchProtocol: 'neo-fleet-mcp-launch/v1'}}),
+            answers           = [],
+            bridge            = new WebSocketServer({host: '127.0.0.1', port: 0}),
+            seats             = {};
 
         bridge.on('connection', socket => { socket.send(JSON.stringify(createBridgeVerifierPayload(answers.shift() ?? 'e'.repeat(64)))); socket.close() });
         await once(bridge, 'listening');
@@ -2817,25 +2819,28 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
 
         for (const agentId of ids) {
             const home = path.join(root, agentId, 'harness', 'claude-desktop'), agent = FleetLifecycleService.registry.getDefinition(agentId);
+            const pin  = pins?.[agentId] ?? generation;
+            FleetLifecycleService.installedRuntime = {...pin, generation: pin}; // each seat was Started by a boot of its own runtime
             fs.mkdirSync(home, {recursive: true});
             agent.mcpServers = {'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': false, 'gitlab-workflow': false};
             const plan = createManagedAgentWorkspacePlan({agent: {id: agentId, harnessType: 'claude-desktop'}, mcpMatrix: agent.mcpServers}).mcpServers.map(row => ({...row,
-                sourceRoot: generation.runtimeRoot, command: generation.executable,
-                args      : [path.join(generation.runtimeRoot, row.entrypoint), ...(row.key === 'neural-link' ? ['--cwd', generation.runtimeRoot] : [])]}));
+                sourceRoot: pin.runtimeRoot, command: pin.executable,
+                args      : [path.join(pin.runtimeRoot, row.entrypoint), ...(row.key === 'neural-link' ? ['--cwd', pin.runtimeRoot] : [])]}));
             const captured = FleetLifecycleService.captureResidentMcpInputs(agent);
-            const reserved = await reserveWithRuntimeReferences({agent, runtimeGeneration: generation});
-            const rows     = {'neo-mjs-neural-link': {command: generation.executable,
-                args: [path.join(generation.runtimeRoot, 'ai/mcp/client/fleetMcpLauncher.mjs'), '--server', 'neural-link'],
+            const reserved = await reserveWithRuntimeReferences({agent, runtimeGeneration: pin});
+            const rows     = {'neo-mjs-neural-link': {command: pin.executable,
+                args: [path.join(pin.runtimeRoot, 'ai/mcp/client/fleetMcpLauncher.mjs'), '--server', 'neural-link'],
                 env : {NEO_AGENT_IDENTITY: agentId, NEO_FLEET_LAUNCH_ISSUER: reserved.issuer, NEO_FLEET_LAUNCH_GRANT: reserved.grants['neural-link']}}};
             const profile = createDesktopLaunchBinding({identity: agentId, issuer: reserved.issuer, rows});
             fs.writeFileSync(path.join(home, 'claude_desktop_config.json'), JSON.stringify({mcpServers: rows}), {mode: 0o600});
             fs.writeFileSync(path.join(home, '.neo-fleet-claude-desktop-profile.json'), JSON.stringify({version: 2,
                 artifact: 'claude_desktop_config.json', sha256: profile.projectionSha256}), {mode: 0o600});
-            startWithRuntimeReferences(agentId, {cwd: CHECKOUT, runtimeGeneration: generation, runtimePlan: plan,
+            startWithRuntimeReferences(agentId, {cwd: CHECKOUT, runtimeGeneration: pin, runtimePlan: plan,
                 resolvedResidentMcpEnv: captured.environment,
                 launchAdmission       : {generation: reserved.generation, plan, profile, residentInputs: captured.owners}});
             seats[agentId] = {reserved, record: FleetLifecycleService.processes.get(agentId), call: spawn.calls.at(-1), birth: null};
         }
+        FleetLifecycleService.installedRuntime = {...generation, generation};
 
         const byPid = new Map(Object.values(seats).map(seat => [seat.record.pid, seat]));
         FleetLifecycleService.processInspectFn = pid => {
@@ -2847,7 +2852,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         FleetLifecycleService.registry.renewBridgeToken          = () => ({token: 'renewed-fixture-token'});
 
         return {
-            seats, spawn, runtime, answers, sealedGeneration,
+            seats, spawn, runtime, answers, sealedGenerations,
             sealed: () => JSON.parse(fs.readFileSync(path.join(directory, 'issuer.json'), 'utf8')).snapshot,
             /** The next Fleet boot, recovering from what the handoff sealed; `{}` recovers with the default verifier. */
             async reboot(options = {verifyRuntime: runtime}) {
@@ -2872,7 +2877,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 FleetLifecycleService.processes.clear();
                 bridge.clients.forEach(socket => socket.terminate());
                 await new Promise(resolve => bridge.close(resolve));
-                if (sealedGeneration) await removeSealed(sealedGeneration.directory);
+                for (const sealedGeneration of Object.values(sealedGenerations ?? {})) await removeSealed(sealedGeneration.directory);
                 fs.rmSync(root, {recursive: true, force: true})
             }
         }
@@ -2882,20 +2887,23 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
     const dispositions = snapshot => Object.fromEntries(snapshot.generations.map(row =>
         [row.agentId, [row.state, Object.fromEntries(row.servers.map(server => [server.key, server.state]))]]));
 
-    // A real pin is proved by its record at handoff; its bytes are the successor's to verify before authority returns.
-    for (const changed of [false, true]) {
-        test(changed
-            ? 'a real pin whose bytes changed after Start still seals; the successor re-hashes and keeps both seats stale'
-            : 'a real pin seals by its record and the successor\'s full read restores both seats', async () => {
+    // Real pins are proved by their record at handoff; their bytes are the successor's to verify before authority returns.
+    for (const [title, damage] of [
+        ['real pins seal by their record and the successor\'s full read restores every seat', null],
+        ['a pin whose payload bytes changed after Start still seals; the successor keeps only that seat stale', changePayloadBytes],
+        ['a pin that gained an escaping link after Start still seals; the successor keeps only that seat stale', addEscapingLink]
+    ]) {
+        test(title, async () => {
             const fixture = await admittedDesktopSeats(['seat', 'peer'], {sealed: true}), stages = [];
             try {
-                if (changed) await changePayloadBytes(fixture.sealedGeneration);
+                if (damage) await damage(fixture.sealedGenerations.seat);
                 expect(await FleetLifecycleService.handoffRuntimeCustody({onStage: stage => stages.push(stage)})).toEqual({state: 'handed-off'});
                 expect(stages.slice(0, 4)).toEqual(['survivor-validation', 'survivor seat: verified', 'survivor peer: verified', 'proof-drain']);
                 expect(dispositions(fixture.sealed())).toEqual({seat: ['active', {'neural-link': 'active'}], peer: ['active', {'neural-link': 'active'}]});
-                expect((await fixture.reboot({})).map(row => [row.agentId, row.state, row.detail])).toEqual(changed
-                    ? [['seat', 'stale', 'runtime pin unverified'], ['peer', 'stale', 'runtime pin unverified']]
-                    : [['seat', 'active', null], ['peer', 'active', null]])
+                expect((await fixture.reboot({})).map(row => [row.agentId, row.state, row.detail])).toEqual([
+                    ['seat', damage ? 'stale' : 'active', damage ? 'runtime pin unverified' : null], ['peer', 'active', null]]);
+                expect(await fixture.redeem('peer')).toMatchObject({outcome: 'admitted'});
+                expect(await fixture.redeem('seat'), 'the bad pin keeps no grant').toMatchObject(damage ? {outcome: 'refused', code: 'unknown-grant'} : {outcome: 'admitted'})
             } finally {
                 await fixture.teardown()
             }

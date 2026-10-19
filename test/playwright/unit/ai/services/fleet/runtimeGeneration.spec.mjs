@@ -83,6 +83,13 @@ test('the record read returns the full read\'s descriptor and leaves changed pay
     expect(await readRuntimeGenerationRecord({directory: input.directory})).toEqual(verified)
 });
 
+test('the full read keeps its order: a payload change is named before the broken binding the record read names', async () => {
+    const input = await fixture();
+    await fs.chmod(input.executable, 0o444); // a recorded mode changed, and the binding is no longer executable
+    await expect(readRuntimeGeneration({directory: input.directory})).rejects.toMatchObject({code: 'runtime-integrity-failed'});
+    await expect(readRuntimeGenerationRecord({directory: input.directory})).rejects.toMatchObject({code: 'runtime-binding-invalid'})
+});
+
 // Both reads refuse everything but the payload's bytes alike.
 for (const read of [readRuntimeGeneration, readRuntimeGenerationRecord]) {
     test(`${read.name}: missing or incompatible launcher protocol refuses a sealed generation`, async () => {
