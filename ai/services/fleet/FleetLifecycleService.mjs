@@ -2380,7 +2380,7 @@ class FleetLifecycleService extends Base {
                         failureReason: saved.state === 'running' ? UNSUPERVISED_EXIT : null});
                 } else if (start.harnessType === 'codex-desktop') {
                     record.electronProfile ??= guiProfileDir(start.harnessType, start.instanceHome);
-                    record.launchCommand   ??= Array.isArray(start.launchCommand) ? start.launchCommand[0] : null;
+                    record.launchCommand   ??= start.launchCommand;
                 }
             }
         }

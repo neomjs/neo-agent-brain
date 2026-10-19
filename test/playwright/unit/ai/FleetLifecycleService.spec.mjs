@@ -1140,18 +1140,21 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
 
         FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
-        FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({available: true, crashpadExecutable: '/app/browser_crashpad_handler'});
+        // the helper is found only from the app the seat was started with
+        FleetLifecycleService.codexDesktopCapabilityProbeFn = ({binaryPath}) => ['/app/ChatGPT', process.execPath].includes(binaryPath)
+            ? {available: true, crashpadExecutable: '/app/browser_crashpad_handler'} : {available: false};
         FleetLifecycleService.codexDesktopCleanupFn         = async options => { cleanups.push(options); return {terminated: [], escalated: []} };
         // the seat's pid is gone at the next Fleet boot; the new Start's process reads live
         FleetLifecycleService.processInspectFn = pid => pid === 4242 ? null : {startedAt: 'Thu Oct  1 09:05:00 2026', command: process.execPath};
         FleetLifecycleService.processSignalFn  = pid => { if (pid === 4242) throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) };
-        // the journal the previous Fleet left: the seat stopped, its helper cleanup unproved
+        // the journal the previous Fleet left: the seat stopped, its helper cleanup unproved; the saved Start
+        // in the seat runtime record's own shape (`launchCommand` is one absolute path, the profile its own arg)
         FleetLifecycleService.getLaunchAdmission = () => ({
             journal: {previous: {handoffProved: false, snapshot: {generations: [], seats: [{
                 state: 'stopped', ownershipUnresolved: true, cleanupUnresolved: true,
                 start: {agentId: 'desktop', harnessType: 'codex-desktop', instanceHome, pid: 4242, startedAt: 'Thu Oct  1 09:00:00 2026',
-                    launchCommand: ['/app/ChatGPT', `--user-data-dir=${instanceHome}/electron-profile`], runtime: {directory: '/runtime'},
-                    admissionGeneration: 'generation'}
+                    launchCommand: '/app/ChatGPT', profileArg: `--user-data-dir=${instanceHome}/electron-profile`,
+                    runtime: {directory: '/runtime'}, admissionGeneration: 'generation'}
             }]}}},
             recover: async () => [],
             persistAdmission() {}
