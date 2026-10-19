@@ -1,4 +1,5 @@
 import {spawn}               from 'node:child_process';
+import crypto                from 'node:crypto';
 import path                  from 'node:path';
 import {fileURLToPath}       from 'node:url';
 import FleetRegistryService  from './FleetRegistryService.mjs';
@@ -123,8 +124,10 @@ export async function settleFleetBridge({
     const
         resolvedPort    = Number(port),
         publicKey       = registry.getBridgePublicKey(),
-        authority       = registry.getBridgeSigningAuthority(),
-        publicKeySha256 = authority.publicKeySha256,
+        publicKeySha256 = crypto
+            .createHash('sha256')
+            .update(crypto.createPublicKey(publicKey).export({type: 'spki', format: 'der'}))
+            .digest('hex'),
         initialProbe    = await probeFn({
             port     : resolvedPort,
             publicKeySha256,
