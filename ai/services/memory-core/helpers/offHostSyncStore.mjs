@@ -436,6 +436,20 @@ export function validateReceiptShape(parsed) {
     if (offHostSync.descendants !== 'unknown') return null;
     if (typeof offHostSync.stderrTail !== 'string') return null;
 
+    let integrity = {emptySubsystems: [], restorable: null};
+
+    if (parsed.integrity !== undefined && parsed.integrity !== null) {
+        if (typeof parsed.integrity !== 'object' || Array.isArray(parsed.integrity)) return null;
+        if (!(parsed.integrity.restorable === null || typeof parsed.integrity.restorable === 'boolean')) return null;
+        if (!Array.isArray(parsed.integrity.emptySubsystems) ||
+            !parsed.integrity.emptySubsystems.every(item => typeof item === 'string')) return null;
+
+        integrity = {
+            emptySubsystems: [...parsed.integrity.emptySubsystems],
+            restorable     : parsed.integrity.restorable
+        };
+    }
+
     // Read-side bounds: a hostile or legacy writer's oversized diagnostics are sanitized at the
     // projection boundary, never projected wholesale.
     const boundError = backup.error === null ? null : utf8SafeTail(backup.error, MAX_TAIL_BYTES);
@@ -445,6 +459,7 @@ export function validateReceiptShape(parsed) {
         bundleCompletedAt: parsed.bundleCompletedAt,
         bundleName       : parsed.bundleName,
         finishedAt       : parsed.finishedAt,
+        integrity,
         offHostSync      : {
             completionScope: offHostSync.completionScope,
             descendants    : offHostSync.descendants,

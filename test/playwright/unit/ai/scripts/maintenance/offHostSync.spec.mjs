@@ -371,7 +371,7 @@ test.describe('backup receipt store', () => {
         }
     });
 
-    // #233. `missing` is consumed as a POSITIVE claim — "the root was readable and held no receipt".
+    // `missing` is consumed as a POSITIVE claim — "the root was readable and held no receipt".
     // An unmounted backup root raises the identical `ENOENT` as an empty one, so the two were
     // indistinguishable here, and the verdict layer published `backup-never-succeeded` against a
     // plane holding 31 restorable bundles. These arms bind the discrimination at its only seam.
@@ -779,7 +779,7 @@ test.describe('wrapper + projection behavioral witnesses', () => {
             expect(unreadable.lastBackup).toEqual({finishedAt: null, kind: 'corrupt', status: 'unreadable'});
             expect(unreadable.health.reasonCodes).toContain('backup-receipt-unreadable');
 
-            // #233 RA-1 (@neo-gpt): bind the BRIDGE seam, not just the reader and the scorer. Those
+            // Bind the BRIDGE seam, not just the reader and the scorer. Those
             // two were covered independently, so deleting the projection's `unreachable` branch left
             // every other spec green while the snapshot silently reverted to `lastBackup: undefined`
             // — which the scorer reads as OBSERVED-ABSENT and turns back into a definite negative.
@@ -1066,4 +1066,39 @@ test.describe('backup receipt — the integrity verdict travels with the status'
 
         expect(receipt.schemaVersion).toBe(1);
     });
+
+    test('#1207 — readBackupReceipt / validateReceiptShape preserves integrity across disk round-trip and rejects malformed integrity', async () => {
+        const root = makeTmp();
+        try {
+            const filePath = path.join(root, 'last-backup-receipt.json');
+            const written  = buildBackupReceipt({
+                backup           : {durationMs: 42, error: null, status: 'success'},
+                bundleCompletedAt: '2026-10-19T13:28:47.768Z',
+                bundleName       : 'backup-2026-10-19T13-27-54.488Z',
+                integrity        : CLEAN
+            });
+
+            await writeBackupReceipt({filePath, receipt: written});
+            const read = await readBackupReceipt({filePath});
+
+            expect(read.status).toBe('ok');
+            expect(read.receipt.integrity).toEqual({
+                emptySubsystems: [],
+                restorable     : true
+            });
+
+            writeFileSync(filePath, JSON.stringify({
+                ...written,
+                integrity: {emptySubsystems: [123], restorable: 'invalid'}
+            }));
+            expect(await readBackupReceipt({filePath})).toEqual({
+                finishedAt: written.finishedAt,
+                kind      : 'corrupt',
+                status    : 'unreadable'
+            });
+        } finally {
+            rmSync(root, {force: true, recursive: true});
+        }
+    });
 });
+

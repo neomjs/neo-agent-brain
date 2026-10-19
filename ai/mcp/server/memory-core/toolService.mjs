@@ -9,7 +9,8 @@ import GraphService              from '../../../services/memory-core/GraphServic
 import HealthService, {
     foldHeavyMaintenanceStarvation,
     foldServiceMemoryPressure,
-    noteHealthAdvisory
+    noteHealthAdvisory,
+    resolveComposedBackupBlock
 }                                                      from '../../../services/memory-core/HealthService.mjs';
 import MemoryService                from '../../../services/memory-core/MemoryService.mjs';
 import SessionService               from '../../../services/memory-core/SessionService.mjs';
@@ -352,15 +353,44 @@ export function composeMemoryCoreHealthcheck({
     deathChannelEnabled = null
 }) {
     const
-        backupHealth = deploymentInspection?.ok === true
+        bridgeReceipt   = deploymentInspection?.ok === true
+            ? deploymentInspection.snapshot?.maintenance?.lastBackup ?? null
+            : null,
+        backupBlock     = resolveComposedBackupBlock(health.backup, bridgeReceipt),
+        rawBackupHealth = deploymentInspection?.ok === true
             ? deploymentInspection.snapshot?.maintenance?.health ?? null
             : null,
-        maintenance  = {
+        backupHealth    = rawBackupHealth && bridgeReceipt?.backup
+            ? (() => {
+                const
+                    restorable  = 'restorable' in rawBackupHealth
+                        ? rawBackupHealth.restorable
+                        : (backupBlock.restorable ?? null),
+                    reasonCodes = Array.isArray(rawBackupHealth.reasonCodes)
+                        ? [...rawBackupHealth.reasonCodes]
+                        : [];
+
+                if (restorable === false && !reasonCodes.includes('backup-bundle-not-restorable')) {
+                    reasonCodes.push('backup-bundle-not-restorable');
+                }
+
+                return {
+                    ...rawBackupHealth,
+                    status: restorable === false && rawBackupHealth.status === 'healthy'
+                        ? 'degraded'
+                        : rawBackupHealth.status,
+                    reasonCodes,
+                    restorable
+                };
+            })()
+            : rawBackupHealth,
+        maintenance     = {
             observationStatus: deploymentInspection?.status ?? 'unavailable',
             backup           : backupHealth
         },
         response       = {
             ...health,
+            backup   : backupBlock,
             memoryWalDrain,
             plane,
             vectorGeneration,

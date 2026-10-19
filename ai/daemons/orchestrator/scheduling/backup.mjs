@@ -384,6 +384,8 @@ export function describeBackupMaintenanceHealth({
         reasonCodes.push('backup-receipt-unreadable')
     } else if (lastBackup?.backup?.status === 'failed') {
         reasonCodes.push('backup-last-run-failed')
+    } else if (lastBackup?.backup?.status === 'success' && lastBackup?.integrity?.restorable === false) {
+        reasonCodes.push('backup-bundle-not-restorable')
     }
     // `unanchored` is the expected pre-first-run state: it stays pending rather than turning every
     // fresh deployment into a never-succeeded incident before the lane has had one opportunity.
@@ -451,7 +453,7 @@ export function describeBackupMaintenanceHealth({
 
     // An unread input can therefore never reach `healthy` by either route: with a receipt the code
     // above forces `degraded`, and without one the `!lastBackup && !retryState` arm forces `pending`.
-    return {
+    const verdict = {
         observationStatus: retryRead ? 'observed' : 'partial',
         reasonCodes      : [...new Set(reasonCodes)],
         staleAfterMs,
@@ -460,7 +462,13 @@ export function describeBackupMaintenanceHealth({
             : (!lastBackup && (!retryState || retryState.phase === BACKUP_RETRY_PHASE.unanchored)
                 ? 'pending'
                 : 'healthy')
+    };
+
+    if (lastBackup?.integrity && 'restorable' in lastBackup.integrity) {
+        verdict.restorable = lastBackup.backup?.status === 'success' ? lastBackup.integrity.restorable : null;
     }
+
+    return verdict
 }
 
 /**

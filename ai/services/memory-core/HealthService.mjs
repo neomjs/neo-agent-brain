@@ -735,18 +735,88 @@ async function buildSubscriptionArmingBlock() {
  *     lastSuccessful: String|null, lastCompleted: String|null, count: Number|null,
  *     unusableCount: Number|null, unverifiedCount: Number|null, error: String|undefined}>}
  */
-export async function buildBackupStateBlock(backupPath, fs, path) {
+export const BACKUP_UNAVAILABLE_REASON =
+    'no backup receipt in deployment state and no mounted backup root; the orchestrator owns backups';
+export const BACKUP_OWNER = 'orchestrator';
+
+/**
+ * @summary Projects the healthcheck `backup` block from the orchestrator's bridge receipt.
+ * @param {Object|null} receipt Validated `snapshot.maintenance.lastBackup` record.
+ * @returns {Object|null}
+ */
+export function projectBackupBlockFromReceipt(receipt) {
+    if (!receipt || typeof receipt !== 'object' || !receipt.backup) {
+        return null;
+    }
+
+    const status = receipt.backup.status;
+    if (status !== 'success' && status !== 'failed') {
+        return null;
+    }
+
     const
+        succeeded   = status === 'success',
+        restorable  = succeeded ? (receipt.integrity?.restorable ?? null) : null,
+        bundleId    = receipt.bundleName ?? receipt.bundleCompletedAt ?? null,
+        completedId = receipt.bundleCompletedAt ?? receipt.bundleName ?? null;
+
+    return {
+        observationStatus: 'observed',
+        source           : 'bridge-receipt',
+        restorable,
+        lastSuccessful   : succeeded && restorable !== false ? bundleId : null,
+        lastCompleted    : succeeded ? completedId : null,
+        count            : typeof receipt.count === 'number' ? receipt.count : null,
+        unusableCount    : succeeded ? (restorable === false ? 1 : 0) : null,
+        unverifiedCount  : succeeded ? (restorable === null ? 1 : 0) : null
+    };
+}
+
+/**
+ * @summary Resolves the composed healthcheck `backup` block from a local observation or bridge receipt.
+ * @param {Object|null} localBackup Block returned by `buildBackupStateBlock`.
+ * @param {Object|null} bridgeReceipt `deploymentInspection.snapshot.maintenance.lastBackup`.
+ * @returns {Object}
+ */
+export function resolveComposedBackupBlock(localBackup, bridgeReceipt = null) {
+    if (localBackup?.observationStatus === 'observed' || localBackup?.observationStatus === 'unreadable') {
+        return localBackup;
+    }
+
+    const projected = projectBackupBlockFromReceipt(bridgeReceipt);
+    if (projected) {
+        return projected;
+    }
+
+    return {
+        observationStatus: 'unavailable',
+        reason           : localBackup?.reason ?? BACKUP_UNAVAILABLE_REASON,
+        owner            : localBackup?.owner ?? BACKUP_OWNER,
+        lastSuccessful   : null,
+        lastCompleted    : null,
+        count            : null,
+        unusableCount    : null,
+        unverifiedCount  : null
+    };
+}
+
+export async function buildBackupStateBlock(backupPath, fs, path, {bridgeReceipt = null} = {}) {
+    const
+        baseNullCounts = {
+            lastSuccessful : null,
+            lastCompleted  : null,
+            count          : null,
+            unusableCount  : null,
+            unverifiedCount: null
+        },
         unavailable = {
             observationStatus: 'unavailable',
-            lastSuccessful   : null,
-            lastCompleted    : null,
-            count            : null,
-            unusableCount    : null,
-            unverifiedCount  : null
+            reason           : BACKUP_UNAVAILABLE_REASON,
+            owner            : BACKUP_OWNER,
+            ...baseNullCounts
         },
         observedEmpty = {
-            ...unavailable,
+            ...baseNullCounts,
             observationStatus: 'observed',
             count            : 0,
             unusableCount    : 0,
@@ -755,7 +825,7 @@ export async function buildBackupStateBlock(backupPath, fs, path) {
 
     try {
         if (!await fs.pathExists(backupPath)) {
-            return {...unavailable};
+            return projectBackupBlockFromReceipt(bridgeReceipt) ?? {...unavailable};
         }
 
         const entries = await fs.readdir(backupPath, { withFileTypes: true });
@@ -832,7 +902,7 @@ export async function buildBackupStateBlock(backupPath, fs, path) {
         };
     } catch (e) {
         return {
-            ...unavailable,
+            ...baseNullCounts,
             observationStatus: 'unreadable',
             error            : e.message
         };
