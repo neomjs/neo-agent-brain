@@ -810,7 +810,17 @@ class ConfigBase extends ConfigProvider {
                  * @summary Effective request-time identity-provisioning provenance.
                  * @type {String[]}
                  */
-                autoProvisionIdentitySources: leaf([])
+                autoProvisionIdentitySources: leaf([]),
+                /**
+                 * @summary How often, in milliseconds, an authenticated request may restamp an existing
+                 * AgentIdentity's `lastAuthenticatedAt`.
+                 *
+                 * A request whose identity write would change nothing but that stamp writes it at most
+                 * once per interval; provisioning and every other property change still write at once.
+                 * `0` stamps every request.
+                 * @type {Number}
+                 */
+                identityStampIntervalMs: leaf(60000, 'NEO_AUTH_IDENTITY_STAMP_INTERVAL_MS', 'number')
             },
             /**
              * @summary Deployment-wide chat / generation model provider. Supported values today:

@@ -182,6 +182,7 @@
         "auth.githubApiBaseUrl",
         "auth.gitlabApiBaseUrl",
         "auth.host",
+        "auth.identityStampIntervalMs",
         "auth.issuerUrl",
         "auth.localBearerToken",
         "auth.mode",

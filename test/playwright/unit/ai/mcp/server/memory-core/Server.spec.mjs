@@ -39,14 +39,17 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
         '@colliding-gitlab-agent-14388',
         '@concurrent-gitlab-agent-14388',
         '@xprovider-shared-login',
-        '@benched-gitlab-agent-883'
+        '@benched-gitlab-agent-883',
+        '@stamped-gitlab-agent-1204',
+        '@renamed-gitlab-agent-1204',
+        '@unthrottled-gitlab-agent-1204'
     ]);
 
     const silentLogger = {info: () => {}, warn: () => {}, error: () => {}};
 
     class FakeInvalidTokenError extends Error {}
 
-    async function createServerWithoutBoot({autoProvisionIdentitySources} = {}) {
+    async function createServerWithoutBoot({autoProvisionIdentitySources, identityStampIntervalMs} = {}) {
         const originalBoot = Server.prototype.boot;
 
         Server.prototype.boot = async () => {};
@@ -57,7 +60,7 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
             await serverInstance.ready();
 
             if (autoProvisionIdentitySources) {
-                serverInstance.aiConfig = {auth: {autoProvisionIdentitySources}}
+                serverInstance.aiConfig = {auth: {autoProvisionIdentitySources, identityStampIntervalMs}}
             }
         } finally {
             Server.prototype.boot = originalBoot;
@@ -69,6 +72,25 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
     function rawGraphNode(id) {
         const row = GraphService.db.storage.db.prepare('SELECT data FROM Nodes WHERE id = ?').get(id);
         return row ? JSON.parse(row.data) : null;
+    }
+
+    // Each identity write is one upsert, and on SQLite one GraphLog row through the update trigger
+    async function countIdentityWrites(run) {
+        const original = GraphService.upsertGlobalNode;
+        let   writes   = 0;
+
+        GraphService.upsertGlobalNode = function(...args) {
+            writes++;
+            return original.apply(this, args)
+        };
+
+        try {
+            await run()
+        } finally {
+            GraphService.upsertGlobalNode = original
+        }
+
+        return writes
     }
 
     test.beforeAll(async () => {
@@ -638,6 +660,92 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
                 since                 : '2026-10-01T00:00:00.000Z',
                 participationDecidedBy: 'os-user:operator'
             });
+        } finally {
+            serverInstance.destroy();
+        }
+    });
+
+    test('#1204: an existing identity is stamped at most once per interval, and a stale stamp writes again', async () => {
+        await GraphService.initAsync();
+
+        GraphService.upsertGlobalNode({
+            id        : '@stamped-gitlab-agent-1204',
+            type      : 'AgentIdentity',
+            name      : 'Stamped Agent',
+            properties: {accountType: 'agent', createdAt: '2026-01-01T00:00:00.000Z'}
+        });
+
+        const
+            request        = {userId: 'stamped-gitlab-agent-1204', source: 'gitlab-pat', providerUsername: 'stamped-gitlab-agent-1204'},
+            serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['gitlab-pat'], identityStampIntervalMs: 60000});
+
+        try {
+            const writes = await countIdentityWrites(async () => {
+                expect((await serverInstance.buildRequestContext(request)).agentIdentityNodeId).toBe('@stamped-gitlab-agent-1204');
+                expect((await serverInstance.buildRequestContext(request)).agentIdentityNodeId).toBe('@stamped-gitlab-agent-1204')
+            });
+
+            expect(writes).toBe(1);
+
+            GraphService.upsertGlobalNode({id: '@stamped-gitlab-agent-1204', type: 'AgentIdentity', properties: {lastAuthenticatedAt: '2026-01-01T00:00:00.000Z'}});
+
+            expect(await countIdentityWrites(() => serverInstance.buildRequestContext(request))).toBe(1);
+            expect(rawGraphNode('@stamped-gitlab-agent-1204').properties.lastAuthenticatedAt > '2026-01-01T00:00:00.000Z').toBe(true)
+        } finally {
+            serverInstance.destroy();
+        }
+    });
+
+    test('#1204: first sight provisions at once, and a changed provider fact writes inside the interval', async () => {
+        await GraphService.initAsync();
+
+        const
+            request        = {userId: 'renamed-gitlab-agent-1204', source: 'gitlab-pat', providerUsername: 'renamed-gitlab-agent-1204', providerDisplayName: 'Old Name'},
+            serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['gitlab-pat'], identityStampIntervalMs: 60000});
+
+        try {
+            expect(await countIdentityWrites(() => serverInstance.buildRequestContext(request))).toBe(1);
+            expect(rawGraphNode('@renamed-gitlab-agent-1204').properties.providerDisplayName).toBe('Old Name');
+
+            const renamed = {...request, providerDisplayName: 'New Name'};
+
+            expect(await countIdentityWrites(() => serverInstance.buildRequestContext(renamed))).toBe(1);
+            expect(rawGraphNode('@renamed-gitlab-agent-1204').properties.providerDisplayName).toBe('New Name');
+            expect(await countIdentityWrites(() => serverInstance.buildRequestContext(renamed))).toBe(0)
+        } finally {
+            serverInstance.destroy();
+        }
+    });
+
+    test('#1204: an interval of 0 stamps every request, as before the throttle', async () => {
+        await GraphService.initAsync();
+
+        GraphService.upsertGlobalNode({
+            id        : '@unthrottled-gitlab-agent-1204',
+            type      : 'AgentIdentity',
+            name      : 'Unthrottled Agent',
+            properties: {accountType: 'agent', createdAt: '2026-01-01T00:00:00.000Z'}
+        });
+
+        const
+            request        = {userId: 'unthrottled-gitlab-agent-1204', source: 'gitlab-pat', providerUsername: 'unthrottled-gitlab-agent-1204'},
+            serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['gitlab-pat'], identityStampIntervalMs: 0});
+
+        try {
+            expect(await countIdentityWrites(async () => {
+                await serverInstance.buildRequestContext(request);
+                await serverInstance.buildRequestContext(request)
+            })).toBe(2)
+        } finally {
+            serverInstance.destroy();
+        }
+    });
+
+    test('#1204: the stamp interval is a declared auth leaf the server reads, 60 s by default', async () => {
+        const serverInstance = await createServerWithoutBoot();
+
+        try {
+            expect(serverInstance.aiConfig.auth.identityStampIntervalMs).toBe(60000)
         } finally {
             serverInstance.destroy();
         }

@@ -600,7 +600,9 @@ class Server extends BaseServer {
      * separate orchestrator process can observe them through GraphLog invalidation and lazy-load.
      * Existing AgentIdentity nodes are preserved; seeded nodes receive only `lastAuthenticatedAt`,
      * while already-auto-provisioned nodes can refresh provider-neutral metadata, never their
-     * participation. Non-identity collisions and malformed ids fail closed.
+     * participation. A write that would change only that stamp happens at most once per
+     * `auth.identityStampIntervalMs` ({@link isFreshIdentityStamp}). Non-identity collisions and
+     * malformed ids fail closed.
      * @param {Object} reqAuth Server-stamped auth context from the validated bearer request.
      * @returns {Promise<String|null>} Bound AgentIdentity node id, or null when graph startup is degraded.
      * @protected
@@ -646,6 +648,10 @@ class Server extends BaseServer {
                     : {lastAuthenticatedAt: now}
                 : fullProperties;
 
+            if (existing && this.isFreshIdentityStamp({existingProps, now, properties})) {
+                return graphNodeId
+            }
+
             GraphService.upsertGlobalNode({
                 id         : graphNodeId,
                 type       : 'AgentIdentity',
@@ -671,6 +677,24 @@ class Server extends BaseServer {
             logger.warn(`[neo-memory-core MCP] AgentIdentity auto-provision failed for ${graphNodeId}: ${error.message}`);
             return this.bindAgentIdentity(userId);
         }
+    }
+
+    /**
+     * @summary True when an identity write would change nothing but `lastAuthenticatedAt` and the stored
+     * stamp is younger than `auth.identityStampIntervalMs`, so the write can be skipped. Any other change,
+     * an absent or unreadable stamp, and an interval of `0` all write.
+     * @param {Object} options
+     * @param {Object} options.existingProps The stored node's properties.
+     * @param {String} options.now           The request's ISO timestamp.
+     * @param {Object} options.properties    The properties the write would merge.
+     * @returns {Boolean}
+     * @protected
+     */
+    isFreshIdentityStamp({existingProps, now, properties}) {
+        const age = Date.parse(now) - Date.parse(existingProps.lastAuthenticatedAt);
+
+        return age >= 0 && age < this.aiConfig.auth.identityStampIntervalMs &&
+            Object.entries(properties).every(([key, value]) => key === 'lastAuthenticatedAt' || existingProps[key] === value)
     }
 
     /**
