@@ -240,4 +240,50 @@ test.describe('Neo.ai.services.memory-core.helpers.memoryWalStore', () => {
         // `null` is treated as absent (no hidden fallback may paper over it).
         expect(getMissingMemoryWalLeaves({dir: null}, ['dir'])).toEqual(['dir']);
     });
+
+    test('readPendingWalRecords skips re-reading unchanged reconciled segments and invalidates on file change (#1196)', async () => {
+        const {segmentKey} = await appendWalMemory(
+            record('reconciled-1', DAY1),
+            {dir: tmpDir, planeId: 'test-memory-plane'}
+        );
+        await appendWalEmbedMarker({id: 'reconciled-1', segmentKey}, {dir: tmpDir});
+
+        // First scan observes 0 pending records and caches the segment's stat signature.
+        expect(await readPendingWalRecords({dir: tmpDir})).toEqual([]);
+
+        const originalReadFile = fs.readFile;
+        let   readCount        = 0;
+
+        fs.readFile = async (filePath, ...args) => {
+            if (String(filePath).startsWith(tmpDir)) readCount++;
+            return originalReadFile(filePath, ...args);
+        };
+
+        try {
+            expect(await readPendingWalRecords({dir: tmpDir})).toEqual([]);
+            expect(readCount).toBe(0);
+
+            // External/cross-process append changes file size/mtime and invalidates the stat signature.
+            const recordsPath = path.join(tmpDir, `wal-${segmentKey}.jsonl`);
+            await fs.appendFile(
+                recordsPath,
+                `${JSON.stringify({...record('pending-2', DAY1), segmentKey, planeId: 'test-memory-plane'})}\n`,
+                'utf8'
+            );
+
+            const pending = await readPendingWalRecords({dir: tmpDir});
+            expect(pending.map(item => item.id)).toEqual(['pending-2']);
+            expect(readCount).toBeGreaterThan(0);
+
+            // Reconciling the new record re-establishes the stat-cached skip on subsequent polls.
+            await appendWalEmbedMarker({id: 'pending-2', segmentKey}, {dir: tmpDir});
+            expect(await readPendingWalRecords({dir: tmpDir})).toEqual([]);
+
+            readCount = 0;
+            expect(await readPendingWalRecords({dir: tmpDir})).toEqual([]);
+            expect(readCount).toBe(0);
+        } finally {
+            fs.readFile = originalReadFile;
+        }
+    });
 });

@@ -180,6 +180,7 @@ export async function appendWalMemory(record, {dir, planeId, now, lockOptions} =
     // bounded acquire-timeout it falls through and writes UNLOCKED, so the never-fail turn-save
     // (§critical_gates #5) is never blocked by a contended/hung lock.
     await withAppendLock(filePath, () => fs.appendFile(filePath, line, 'utf8'), lockOptions);
+    deleteReconciledWalSegmentCacheEntries(dir, segmentKey);
 
     return {filePath, segmentKey};
 }
@@ -209,6 +210,7 @@ export async function appendWalEmbedMarker({id, segmentKey, embeddedAt}, {dir} =
     const filePath = path.join(dir, getWalMarkersFileName(segmentKey));
 
     await fs.appendFile(filePath, `${JSON.stringify({id, embeddedAt: embeddedAt ?? Date.now()})}\n`, 'utf8');
+    deleteReconciledWalSegmentCacheEntries(dir, segmentKey);
 
     return filePath;
 }
@@ -241,6 +243,7 @@ export async function appendWalGraphProjectionMarker({id, segmentKey, projectedA
     const filePath = path.join(dir, getWalGraphMarkersFileName(segmentKey));
 
     await fs.appendFile(filePath, `${JSON.stringify({id, projectedAt: projectedAt ?? Date.now()})}\n`, 'utf8');
+    deleteReconciledWalSegmentCacheEntries(dir, segmentKey);
 
     return filePath;
 }
@@ -404,6 +407,76 @@ export async function readWalMarkedIds({dir, segmentKey, markerType = 'embed'} =
     )
 }
 
+const reconciledWalSegmentCache = new Map();
+
+/**
+ * @summary Builds a cache key for a reconciled WAL segment's stat signature.
+ * @param {String} dir Directory for WAL segment files.
+ * @param {String} markerType Reconciliation marker stream (`'embed'` or `'graph'`).
+ * @param {String} segmentKey UTC-day segment key.
+ * @returns {String}
+ * @private
+ */
+function getReconciledWalSegmentCacheKey(dir, markerType, segmentKey) {
+    return `${path.resolve(dir)}\u0000${markerType}\u0000${segmentKey}`;
+}
+
+/**
+ * @summary Invalidates cached reconciled-segment signatures for one segment key across marker streams.
+ * @param {String} dir Directory for WAL segment files.
+ * @param {String} segmentKey UTC-day segment key.
+ * @returns {void}
+ * @private
+ */
+function deleteReconciledWalSegmentCacheEntries(dir, segmentKey) {
+    if (!dir || !segmentKey) return;
+    const resolvedDir = path.resolve(dir);
+    reconciledWalSegmentCache.delete(`${resolvedDir}\u0000embed\u0000${segmentKey}`);
+    reconciledWalSegmentCache.delete(`${resolvedDir}\u0000graph\u0000${segmentKey}`);
+}
+
+/**
+ * @summary Reads a change-sensitive metadata signature for a single WAL file.
+ * @param {String} filePath File path to stat.
+ * @returns {Promise<String|null>} Signature string, `'missing'` on `ENOENT`, or `null` when non-regular/unstatable.
+ * @private
+ */
+async function getWalFileStatSignature(filePath) {
+    try {
+        const stat = await fs.stat(filePath);
+        if (!stat.isFile()) return null;
+        return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    } catch (error) {
+        if (error?.code === 'ENOENT') {
+            return 'missing';
+        }
+        return null;
+    }
+}
+
+/**
+ * @summary Computes the composite stat signature of a segment's records file and marker file.
+ * @param {String} dir Directory for WAL segment files.
+ * @param {String} segmentKey UTC-day segment key.
+ * @param {String} markerType Reconciliation marker stream (`'embed'` or `'graph'`).
+ * @returns {Promise<String|null>}
+ * @private
+ */
+async function getWalSegmentStatSignature(dir, segmentKey, markerType) {
+    const recordsPath = path.join(dir, getWalRecordsFileName(segmentKey));
+    const markerFile  = markerType === 'graph'
+        ? getWalGraphMarkersFileName(segmentKey)
+        : getWalMarkersFileName(segmentKey);
+    const markersPath              = path.join(dir, markerFile);
+    const [recordsSig, markersSig] = await Promise.all([
+        getWalFileStatSignature(recordsPath),
+        getWalFileStatSignature(markersPath)
+    ]);
+
+    if (!recordsSig || !markersSig) return null;
+    return `${recordsSig}|${markersSig}`;
+}
+
 /**
  * @summary Reads pending (appended but not yet embed-marked) WAL records, newest segment first.
  *
@@ -411,6 +484,10 @@ export async function readWalMarkedIds({dir, segmentKey, markerType = 'embed'} =
  * backlog, and `MemoryService`'s recency-hydration fallback reading specific ids whose content is
  * not yet in Chroma — the pending-overlay that keeps `query_recent_turns` content-complete while
  * the embed is deferred or failing.
+ *
+ * Segments confirmed to have `0` pending records for `(dir, markerType, segmentKey)` are cached
+ * by their records + marker file stat signature so steady-state 250 ms drain polls skip re-reading
+ * and `JSON.parse`-ing historical JSONL files unless a file changes on disk.
  *
  * @param {Object} options
  * @param {String} options.dir Directory for WAL segment files.
@@ -430,20 +507,48 @@ export async function readPendingWalRecords({dir, ids, limit, markerType = 'embe
     for (const segmentKey of await listWalSegmentKeys(dir)) {
         if (pending.length >= bounded) break;
 
+        const cacheKey      = !idFilter ? getReconciledWalSegmentCacheKey(dir, markerType, segmentKey) : null;
+        const statSignature = cacheKey ? await getWalSegmentStatSignature(dir, segmentKey, markerType) : null;
+
+        if (cacheKey && statSignature && reconciledWalSegmentCache.get(cacheKey) === statSignature) {
+            continue;
+        }
+
         const records = (await readJsonlEntries(path.join(dir, getWalRecordsFileName(segmentKey))))
             .map(surfaceWalPlaneProvenance);
-        if (records.length === 0) continue;
+        if (records.length === 0) {
+            if (cacheKey && statSignature) {
+                reconciledWalSegmentCache.set(cacheKey, statSignature);
+            }
+            continue;
+        }
 
         // Same marker read the per-write disclosure uses, so "pending" here and "reconciled" there
         // can never disagree about one record.
-        const markedIds = await readWalMarkedIds({dir, segmentKey, markerType});
+        const markedIds           = await readWalMarkedIds({dir, segmentKey, markerType});
+        let   segmentPendingCount = 0;
+        let   truncatedByLimit    = false;
 
         for (const record of records) {
-            if (pending.length >= bounded) break;
             if (!record?.id || markedIds.has(record.id)) continue;
             if (markerType === 'graph' && record.graphProjectionVersion !== 1) continue;
+
+            segmentPendingCount++;
+
             if (idFilter && !idFilter.has(record.id)) continue;
+            if (pending.length >= bounded) {
+                truncatedByLimit = true;
+                break;
+            }
             pending.push(record);
+        }
+
+        if (cacheKey && statSignature && !truncatedByLimit) {
+            if (segmentPendingCount === 0) {
+                reconciledWalSegmentCache.set(cacheKey, statSignature);
+            } else {
+                reconciledWalSegmentCache.delete(cacheKey);
+            }
         }
     }
 
@@ -471,11 +576,16 @@ export async function pruneReconciledWalSegments({dir, retentionLimit, activeSeg
         return 0;
     }
 
+    const segmentKeys = (await listWalSegmentKeys(dir))
+        .filter(segmentKey => segmentKey !== activeSegmentKey);
+
+    if (segmentKeys.length <= retentionLimit) {
+        return 0;
+    }
+
     const reconciled = [];
 
-    for (const segmentKey of await listWalSegmentKeys(dir)) {
-        if (segmentKey === activeSegmentKey) continue;
-
+    for (const segmentKey of segmentKeys) {
         const records = await readJsonlEntries(path.join(dir, getWalRecordsFileName(segmentKey)));
         const marked  = new Set(
             (await readJsonlEntries(path.join(dir, getWalMarkersFileName(segmentKey)))).map(entry => entry.id)
@@ -501,6 +611,10 @@ export async function pruneReconciledWalSegments({dir, retentionLimit, activeSeg
         fs.rm(path.join(dir, getWalMarkersFileName(segmentKey)), {force: true}),
         fs.rm(path.join(dir, getWalGraphMarkersFileName(segmentKey)), {force: true})
     ]));
+
+    for (const segmentKey of toRemove) {
+        deleteReconciledWalSegmentCacheEntries(dir, segmentKey);
+    }
 
     return toRemove.length;
 }

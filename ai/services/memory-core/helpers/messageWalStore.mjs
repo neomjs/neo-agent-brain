@@ -151,7 +151,8 @@ export function getMessageWalGraphMarkersFileName(segmentKey) {
 }
 
 /**
- * @summary Appends one accepted A2A message intent to its UTC-day WAL segment.
+ * @summary Appends one accepted A2A message intent to its UTC-day WAL segment, optionally pruning
+ * reconciled non-active segments beyond `retentionLimit`.
  * @param {Object} record
  * @param {String} record.id Stable `MESSAGE:*` id.
  * @param {Number} record.timestamp Epoch-ms write time.
@@ -160,9 +161,11 @@ export function getMessageWalGraphMarkersFileName(segmentKey) {
  * @param {String} options.planeId Resolved server plane identity; stamped after caller fields.
  * @param {Date|Number} [options.now] Clock source for the segment key.
  * @param {Object} [options.lockOptions] Forwarded to {@link withAppendLock}.
+ * @param {Number} [options.retentionLimit] Maximum reconciled non-active segments to retain; older
+ *   ones are pruned after the append when positive.
  * @returns {Promise<{filePath: String, segmentKey: String}>}
  */
-export async function appendWalMessage(record, {dir, planeId, now, lockOptions} = {}) {
+export async function appendWalMessage(record, {dir, planeId, now, lockOptions, retentionLimit} = {}) {
     if (!dir) {
         throw new TypeError('appendWalMessage: dir is required');
     }
@@ -181,6 +184,15 @@ export async function appendWalMessage(record, {dir, planeId, now, lockOptions} 
     const line = `${JSON.stringify({...record, segmentKey, planeId})}\n`;
 
     await withAppendLock(filePath, () => fs.appendFile(filePath, line, 'utf8'), lockOptions);
+    deleteReconciledMessageSegmentCacheEntry(dir, segmentKey);
+
+    if (Number.isFinite(retentionLimit) && retentionLimit > 0) {
+        await pruneReconciledMessageWalSegments({
+            dir,
+            retentionLimit,
+            activeSegmentKey: segmentKey
+        });
+    }
 
     return {filePath, segmentKey};
 }
@@ -242,6 +254,7 @@ export async function appendMessageWalGraphProjectionMarker({
     };
 
     await fs.appendFile(filePath, `${JSON.stringify(marker)}\n`, 'utf8');
+    deleteReconciledMessageSegmentCacheEntry(dir, segmentKey);
 
     return filePath;
 }
@@ -599,8 +612,76 @@ export async function readWalMessagesByIds({dir, ids, limit} = {}) {
     return records;
 }
 
+const reconciledMessageSegmentCache = new Map();
+
+/**
+ * @summary Builds a cache key for a reconciled message WAL segment's stat signature.
+ * @param {String} dir Message WAL directory.
+ * @param {String} segmentKey UTC-day segment key.
+ * @returns {String}
+ * @private
+ */
+function getReconciledMessageSegmentCacheKey(dir, segmentKey) {
+    return `${path.resolve(dir)}\u0000${segmentKey}`;
+}
+
+/**
+ * @summary Invalidates the cached reconciled-segment signature for one segment key.
+ * @param {String} dir Message WAL directory.
+ * @param {String} segmentKey UTC-day segment key.
+ * @returns {void}
+ * @private
+ */
+function deleteReconciledMessageSegmentCacheEntry(dir, segmentKey) {
+    if (!dir || !segmentKey) return;
+    reconciledMessageSegmentCache.delete(getReconciledMessageSegmentCacheKey(dir, segmentKey));
+}
+
+/**
+ * @summary Reads a change-sensitive metadata signature for a single message WAL file.
+ * @param {String} filePath File path to stat.
+ * @returns {Promise<String|null>} Signature string, `'missing'` on `ENOENT`, or `null` when non-regular/unstatable.
+ * @private
+ */
+async function getMessageWalFileStatSignature(filePath) {
+    try {
+        const stat = await fs.stat(filePath);
+        if (!stat.isFile()) return null;
+        return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    } catch (error) {
+        if (error?.code === 'ENOENT') {
+            return 'missing';
+        }
+        return null;
+    }
+}
+
+/**
+ * @summary Computes the composite stat signature of a message segment's payload file and graph marker file.
+ * @param {String} dir Message WAL directory.
+ * @param {String} segmentKey UTC-day segment key.
+ * @returns {Promise<String|null>}
+ * @private
+ */
+async function getMessageWalSegmentStatSignature(dir, segmentKey) {
+    const recordsPath              = path.join(dir, getMessageWalRecordsFileName(segmentKey));
+    const markersPath              = path.join(dir, getMessageWalGraphMarkersFileName(segmentKey));
+    const [recordsSig, markersSig] = await Promise.all([
+        getMessageWalFileStatSignature(recordsPath),
+        getMessageWalFileStatSignature(markersPath)
+    ]);
+
+    if (!recordsSig || !markersSig) return null;
+    return `${recordsSig}|${markersSig}`;
+}
+
 /**
  * @summary Reads accepted message WAL records whose graph-projection marker is still absent.
+ *
+ * Segments confirmed to have `0` pending records for `(dir, segmentKey)` are cached by their
+ * payload + marker file stat signature so steady-state 250 ms drain polls skip re-reading and
+ * `JSON.parse`-ing historical JSONL files unless a file changes on disk.
+ *
  * @param {Object} options
  * @param {String} options.dir Message WAL directory.
  * @param {String[]} [options.ids] Optional targeted record ids.
@@ -617,22 +698,116 @@ export async function readPendingMessageWalRecords({dir, ids, limit} = {}) {
     for (const segmentKey of await listMessageWalSegmentKeys(dir)) {
         if (pending.length >= bounded) break;
 
+        const cacheKey      = !idFilter ? getReconciledMessageSegmentCacheKey(dir, segmentKey) : null;
+        const statSignature = cacheKey ? await getMessageWalSegmentStatSignature(dir, segmentKey) : null;
+
+        if (cacheKey && statSignature && reconciledMessageSegmentCache.get(cacheKey) === statSignature) {
+            continue;
+        }
+
         const records = (await readJsonlEntries(path.join(dir, getMessageWalRecordsFileName(segmentKey))))
             .map(surfaceWalPlaneProvenance);
-        if (records.length === 0) continue;
+        if (records.length === 0) {
+            if (cacheKey && statSignature) {
+                reconciledMessageSegmentCache.set(cacheKey, statSignature);
+            }
+            continue;
+        }
 
         const markedIds = new Set(
             (await readJsonlEntries(path.join(dir, getMessageWalGraphMarkersFileName(segmentKey)))).map(entry => entry.id)
         );
+        let segmentPendingCount = 0;
+        let truncatedByLimit    = false;
 
         for (const record of records) {
-            if (pending.length >= bounded) break;
             if (!record?.id || markedIds.has(record.id)) continue;
             if (record.graphProjectionVersion !== 1) continue;
+
+            segmentPendingCount++;
+
             if (idFilter && !idFilter.has(record.id)) continue;
+            if (pending.length >= bounded) {
+                truncatedByLimit = true;
+                break;
+            }
             pending.push(record);
+        }
+
+        if (cacheKey && statSignature && !truncatedByLimit) {
+            if (segmentPendingCount === 0) {
+                reconciledMessageSegmentCache.set(cacheKey, statSignature);
+            } else {
+                reconciledMessageSegmentCache.delete(cacheKey);
+            }
         }
     }
 
     return pending;
+}
+
+/**
+ * @summary Removes fully-reconciled, non-active message WAL segments beyond a retention bound.
+ *
+ * Mirrors `pruneReconciledWalSegments` in `memoryWalStore.mjs`: bounding on append keeps both the
+ * directory file count and the read-path fan-out from growing unbounded with deployment age.
+ * Segments with ANY unprojected record are never removed, and the active segment is excluded.
+ *
+ * @param {Object} options
+ * @param {String} options.dir Message WAL directory.
+ * @param {Number} options.retentionLimit Maximum reconciled segments to retain; older ones are removed.
+ *   Non-positive / non-finite values disable pruning (no-op).
+ * @param {String} [options.activeSegmentKey] Segment key currently being written; always retained.
+ * @returns {Promise<Number>} Count of removed segments.
+ */
+export async function pruneReconciledMessageWalSegments({dir, retentionLimit, activeSegmentKey} = {}) {
+    if (!dir || !Number.isFinite(retentionLimit) || retentionLimit <= 0) {
+        return 0;
+    }
+
+    const segmentKeys = (await listMessageWalSegmentKeys(dir))
+        .filter(segmentKey => segmentKey !== activeSegmentKey);
+
+    if (segmentKeys.length <= retentionLimit) {
+        return 0;
+    }
+
+    const reconciled = [];
+
+    for (const segmentKey of segmentKeys) {
+        let records, marked;
+
+        try {
+            records = await readJsonlEntries(path.join(dir, getMessageWalRecordsFileName(segmentKey)));
+            marked  = new Set(
+                (await readJsonlEntries(path.join(dir, getMessageWalGraphMarkersFileName(segmentKey)))).map(entry => entry.id)
+            );
+        } catch {
+            continue;
+        }
+
+        if (records.every(record =>
+            record?.id &&
+            (record.graphProjectionVersion !== 1 || marked.has(record.id))
+        )) {
+            reconciled.push(segmentKey);
+        }
+    }
+
+    // listMessageWalSegmentKeys returns newest-first; everything beyond the bound is oldest.
+    const toRemove = reconciled.slice(retentionLimit);
+
+    await Promise.all(toRemove.flatMap(segmentKey => [
+        fs.rm(path.join(dir, getMessageWalRecordsFileName(segmentKey)),      {force: true}),
+        fs.rm(path.join(dir, getMessageWalGraphMarkersFileName(segmentKey)), {force: true})
+    ]));
+
+    if (toRemove.length > 0) {
+        projectionStatsCache.delete(dir);
+        for (const segmentKey of toRemove) {
+            deleteReconciledMessageSegmentCacheEntry(dir, segmentKey);
+        }
+    }
+
+    return toRemove.length;
 }

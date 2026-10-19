@@ -13,6 +13,7 @@ import {
     getMessageWalGraphMarkersFileName,
     getMessageWalRecordsFileName,
     getMessageWalSegmentKey,
+    pruneReconciledMessageWalSegments,
     readMessageWalProvenanceSegments,
     readPendingMessageWalRecords,
     readWalMessages,
@@ -212,5 +213,88 @@ test.describe('Neo.ai.services.memory-core.helpers.messageWalStore', () => {
 
         expect(strict.ok).toBe(false);
         expect(strict.reason).toContain('line 2 is not valid JSON');
+    });
+
+    test('readPendingMessageWalRecords skips re-reading unchanged reconciled segments and invalidates on file change (#1196)', async () => {
+        const {segmentKey} = await appendWalMessage(record('MESSAGE:reconciled-1'), {
+            dir    : tmpDir,
+            planeId: PLANE_ID
+        });
+        await appendMessageWalGraphProjectionMarker({id: 'MESSAGE:reconciled-1', segmentKey}, {dir: tmpDir});
+
+        expect(await readPendingMessageWalRecords({dir: tmpDir})).toEqual([]);
+
+        const originalReadFile = fs.readFile;
+        let   readCount        = 0;
+
+        fs.readFile = async (filePath, ...args) => {
+            if (String(filePath).startsWith(tmpDir)) readCount++;
+            return originalReadFile(filePath, ...args);
+        };
+
+        try {
+            expect(await readPendingMessageWalRecords({dir: tmpDir})).toEqual([]);
+            expect(readCount).toBe(0);
+
+            const recordsPath = path.join(tmpDir, getMessageWalRecordsFileName(segmentKey));
+            await fs.appendFile(
+                recordsPath,
+                `${JSON.stringify({...record('MESSAGE:pending-2'), segmentKey, planeId: PLANE_ID})}\n`,
+                'utf8'
+            );
+
+            const pending = await readPendingMessageWalRecords({dir: tmpDir});
+            expect(pending.map(item => item.id)).toEqual(['MESSAGE:pending-2']);
+            expect(readCount).toBeGreaterThan(0);
+
+            await appendMessageWalGraphProjectionMarker({id: 'MESSAGE:pending-2', segmentKey}, {dir: tmpDir});
+            expect(await readPendingMessageWalRecords({dir: tmpDir})).toEqual([]);
+
+            readCount = 0;
+            expect(await readPendingMessageWalRecords({dir: tmpDir})).toEqual([]);
+            expect(readCount).toBe(0);
+        } finally {
+            fs.readFile = originalReadFile;
+        }
+    });
+
+    test('pruneReconciledMessageWalSegments and appendWalMessage retentionLimit prune reconciled historical segments while preserving active and pending (#1196)', async () => {
+        const day0 = Date.UTC(2026, 6, 27, 12); // 2026-07-27 (pending — never pruned)
+        const day1 = Date.UTC(2026, 6, 28, 12); // 2026-07-28 (reconciled oldest — pruned)
+        const day2 = Date.UTC(2026, 6, 29, 12); // 2026-07-29 (reconciled within bound — kept)
+        const day3 = Date.UTC(2026, 6, 30, 12); // 2026-07-30 (active — kept)
+
+        await appendWalMessage({...record('MESSAGE:pending-0'), timestamp: day0}, {
+            dir    : tmpDir,
+            planeId: PLANE_ID,
+            now    : day0
+        });
+
+        for (const [id, ms] of [['MESSAGE:done-1', day1], ['MESSAGE:done-2', day2]]) {
+            const {segmentKey} = await appendWalMessage({...record(id), timestamp: ms}, {
+                dir    : tmpDir,
+                planeId: PLANE_ID,
+                now    : ms
+            });
+            await appendMessageWalGraphProjectionMarker({id, segmentKey}, {dir: tmpDir});
+        }
+
+        // Appending to the active segment with retentionLimit=1 prunes 2026-07-28 while keeping 2026-07-29, 2026-07-30, and pending 2026-07-27.
+        await appendWalMessage({...record('MESSAGE:active-3'), timestamp: day3}, {
+            dir           : tmpDir,
+            planeId       : PLANE_ID,
+            now           : day3,
+            retentionLimit: 1
+        });
+
+        const names = await fs.readdir(tmpDir);
+        expect(names).toContain('message-wal-2026-07-30.jsonl');
+        expect(names).toContain('message-wal-2026-07-29.jsonl');
+        expect(names).not.toContain('message-wal-2026-07-28.jsonl');
+        expect(names).not.toContain('message-wal-2026-07-28.graph.jsonl');
+        expect(names).toContain('message-wal-2026-07-27.jsonl');
+
+        expect(await pruneReconciledMessageWalSegments({dir: tmpDir, retentionLimit: 0})).toBe(0);
+        expect(await pruneReconciledMessageWalSegments({dir: path.join(tmpDir, 'missing'), retentionLimit: 5})).toBe(0);
     });
 });
