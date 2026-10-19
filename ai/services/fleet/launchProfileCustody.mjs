@@ -25,6 +25,7 @@ export const DESKTOP_PROFILE_RECEIPT = '.neo-fleet-claude-desktop-profile.json';
 export const CODEX_HOME_CONFIG = 'config.toml';
 const PROFILE = 'claude_desktop_config.json', PREFIX = 'neo-mjs-', MAX_BYTES = 8 * 1024 * 1024;
 const CODEX_PROJECT_CONFIG = path.join('.codex', 'config.toml');
+const SEAT_SETTINGS        = new Set(['enabled', 'tools']);
 const digest  = value => createHash('sha256').update(value).digest('hex');
 const isHash  = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const exact   = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
@@ -108,8 +109,9 @@ export function createAntigravityLaunchBinding({identity, issuer, instanceHome, 
 
 /**
  * @summary The canonical Neo-owned MCP tables of a Codex config, the projection binding and recovery both hash.
- * A table's `enabled` key is the seat's own switch, which the Codex app writes into this layer, so it stays
- * outside the projection; a table holding nothing else is the switch alone.
+ * A table's `enabled` switch and its `tools` approvals are the seat's own settings, which the Codex app writes into
+ * either layer, so they stay outside the projection; a table holding nothing else names no launcher. Codex merges
+ * layers key by key (codex-rs config/src/merge.rs), so those settings never displace a launcher.
  * @param {String} source TOML.
  * @returns {Object} The `neo-mjs-*` server tables.
  */
@@ -119,14 +121,14 @@ export function codexProfileProjection(source) {
     const table = value => value && typeof value === 'object' && !Array.isArray(value);
     return JSON.parse(canonicalJson(Object.fromEntries(Object.entries(parsed?.mcp_servers || {})
         .filter(([name]) => name.startsWith(PREFIX))
-        .map(([name, value]) => [name, table(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'enabled')) : value])
+        .map(([name, value]) => [name, table(value) ? Object.fromEntries(Object.entries(value).filter(([key]) => !SEAT_SETTINGS.has(key))) : value])
         .filter(([, value]) => !table(value) || Object.keys(value).length))))
 }
 
 /**
  * @summary Binds a Codex seat's original Start to the capability-bearing tables of its home config.
- * The home config is the carrier because it lives outside every checkout; a project config would override
- * a bound table through any launcher key it names, so recovery also proves the original workspace names none.
+ * The home config is the carrier because it lives outside every checkout; a project config would win over
+ * it for a table both name, so recovery also proves the original workspace names none of them.
  * @param {Object} options
  * @param {String} options.identity Validated forge login.
  * @param {String} options.issuer The original loopback origin.
@@ -294,17 +296,14 @@ export async function recoverLaunchProfileGrants({managedRoot, instanceHome, wor
             if (digest(canonicalJson(rows)) !== binding.projectionSha256) throw refuse('projection-mismatch');
             if (canonicalJson(Object.keys(rows).sort()) !== canonicalJson(Object.keys(binding.grants).map(key => PREFIX + key).sort())) throw refuse('row-set-mismatch');
             for (const key of Object.keys(binding.grants)) capabilities[key] = capability(rows[PREFIX + key], key);
-            // Codex merges config layers key by key (codex-rs config/src/merge.rs): a project table overrides home through
-            // the keys it names, so tool approvals ride along and any other key would replace the bound launcher.
+            // A project launcher key wins over home for a table both name: the workspace must leave the bound ones to home.
             await directory(workspaceRoot);
             const project = path.join(workspaceRoot, CODEX_PROJECT_CONFIG);
             if (await present(path.dirname(project))) {
                 await directory(path.dirname(project));
                 if (await present(project)) {
                     const named = codexProfileProjection((await read(project, false)).toString('utf8'));
-                    if (Object.keys(binding.grants).some(key => Object.keys(named[PREFIX + key] ?? {}).some(field => field !== 'tools'))) {
-                        throw refuse('workspace-mismatch');
-                    }
+                    if (Object.keys(binding.grants).some(key => Object.hasOwn(named, PREFIX + key))) throw refuse('workspace-mismatch');
                 }
             }
         } else {
