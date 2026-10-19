@@ -202,7 +202,7 @@ function buildPreparedMcpPlan(args, mcpMatrix) {
 }
 
 /** Recording post-provisioning workspace/home preparation seam. */
-function makePrepareWorkspace(events, {antigravityProject} = {}) {
+function makePrepareWorkspace(events, {antigravityProject, launchAdmissionBinding} = {}) {
     const calls = [];
     const fn    = async args => {
         events?.push('prepare');
@@ -222,7 +222,8 @@ function makePrepareWorkspace(events, {antigravityProject} = {}) {
             instanceHome      : `/instances/${args.agent.id}`,
             mcpMatrix,
             mcpPlan           : buildPreparedMcpPlan(args, mcpMatrix),
-            ...(antigravityProject ? {antigravityProject} : {})
+            ...(antigravityProject ? {antigravityProject} : {}),
+            ...(launchAdmissionBinding ? {launchAdmissionBinding} : {})
         }
     };
     fn.calls    = calls;
@@ -709,6 +710,27 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             expect(events).toEqual(['credential']);
             expect(lifecycle.calls.start).toEqual([])
         }
+    });
+
+    test('a plane-attached Codex Desktop Start hands the inspection exactly the servers its binding launches', async () => {
+        const
+            agents           = remoteRepoAgent('a'),
+            lifecycle        = makeLifecycle({agents, credentials: {a: 'ghp_exact_repository_pat'}}),
+            tenantService    = makeTenantService({credential: 'glpat_exact_plane_pat'}),
+            prepareWorkspace = makePrepareWorkspace(null, {launchAdmissionBinding: {kind: 'codex', grants: {'neural-link': 'a'.repeat(64)}}});
+
+        agents.a.harnessType = 'codex-desktop';
+        await startAgentProvisioned({
+            lifecycleService  : lifecycle,
+            tenantService,
+            agentId           : 'a',
+            managedRoot       : '/managed',
+            agentosRuntimeRoot: '/installed/neo',
+            ensureRepo        : makeEnsureRepo('/managed/a/neomjs-neo'),
+            prepareWorkspace
+        });
+
+        expect(lifecycle.calls.inspection.map(call => call.launched)).toEqual([['neural-link']]);
     });
 
     test('a remote seat keeps repository and plane credentials distinct through readiness and spawn', async () => {
