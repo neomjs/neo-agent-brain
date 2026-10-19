@@ -123,6 +123,44 @@ test.describe('ai/services/fleet/seatJourney — judgements', () => {
         expect(stops).toEqual(['wire-seat'])
     });
 
+    test('a recorded config that is gone becomes a named operator-content row, and the journey still resolves and stops', async () => {
+        const
+            home    = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-journey-gone-')),
+            deadPid = spawnSync(process.execPath, ['-e', '']).pid,
+            stops   = [];
+        let phase = 'stopped';
+
+        fs.writeFileSync(path.join(home, 'seat-stand-in.json'), JSON.stringify({version: 1, records: [
+            {family: 'claude-desktop', pid: deadPid, configs: [{path: path.join(home, 'gone.json'), sha256: 'x'}], rows: []}
+        ]}));
+
+        const
+            seat  = {definition: {id: 'gone-config-seat', harnessType: 'claude-desktop', mcpServers: {'memory-core': false, 'knowledge-base': false, 'neural-link': false, 'github-workflow': false}}, repo: {repoSlug: 'x/y'}},
+            fleet = {
+                defineAgent       : async () => ({}),
+                setRepo           : async () => ({}),
+                startAgent        : async () => {phase = 'running'; return {pid: deadPid, instanceHome: home}},
+                stopAgent         : async id => {stops.push(id); phase = 'stopped'},
+                fleetRuntimeStatus: async () => [{agentId: seat.definition.id, state: phase}]
+            };
+
+        try {
+            const result = await runSeatJourney({fleet, restartFleet: async () => {throw new Error('no restart in this control')}, seats: [seat], timeoutMs: 2_000});
+            const failed = result.rows.find(row => row.step === 'operator-content');
+
+            expect(result.ok).toBe(false);
+            expect(result.rows.slice(0, 3).map(row => [row.step, row.ok])).toEqual([['define', true], ['start', true], ['stop', true]]);
+            expect(failed.ok).toBe(false);
+            expect(failed.reason).toMatch(/^reading the harness config failed: ENOENT/);
+            expect(stops.at(-1), 'the closing Stop ran after the failed step').toBe(seat.definition.id);
+            expect(fs.existsSync(path.join(home, 'gone.json')), 'the gone config is not written anew').toBe(false);
+            expect(() => seedOperatorContent(path.join(home, 'gone.toml'), 'marker'), 'nor is a gone TOML config').toThrow(/ENOENT/);
+            expect(fs.existsSync(path.join(home, 'gone.toml'))).toBe(false)
+        } finally {
+            fs.rmSync(home, {recursive: true, force: true})
+        }
+    });
+
     test('writeStandInLauncher writes an executable that runs the stand-in on the given runtime', () => {
         const
             directory = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-journey-launcher-')),

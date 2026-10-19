@@ -149,15 +149,18 @@ export function readOperatorContent(file) {
 }
 
 /**
- * @summary Adds content the Fleet does not own, as an operator would between two Starts.
+ * @summary Adds content the Fleet does not own, as an operator would between two Starts. A config that is gone throws
+ * in either format; it is never written anew.
  * @param {String} file
  * @param {String} marker
  */
 export function seedOperatorContent(file, marker) {
+    const text = fs.readFileSync(file, 'utf8');
+
     if (file.endsWith('.toml')) {
-        fs.appendFileSync(file, `\n[neo_seat_journey]\nmarker = ${JSON.stringify(marker)}\n`)
+        fs.writeFileSync(file, `${text}\n[neo_seat_journey]\nmarker = ${JSON.stringify(marker)}\n`)
     } else {
-        fs.writeFileSync(file, JSON.stringify({...JSON.parse(fs.readFileSync(file, 'utf8')), neoSeatJourney: {marker}}, null, 2))
+        fs.writeFileSync(file, JSON.stringify({...JSON.parse(text), neoSeatJourney: {marker}}, null, 2))
     }
 }
 
@@ -348,17 +351,19 @@ export async function runSeatJourney({fleet, restartFleet, seats, bridgePort = n
     }
 
     /**
-     * @summary Runs one step's wire calls; a throw becomes that step's failed row instead of ending the journey.
+     * @summary Runs one step; a throw becomes that step's failed row, named for what failed, instead of ending the
+     * journey.
      * @param {Object}   seat
      * @param {String}   step
      * @param {Function} fn
+     * @param {String}   [what='the wire call'] What the step does, for the failure's reason.
      * @returns {Promise<*>} The step's value, or `null` once it failed.
      */
-    async function attempt(seat, step, fn) {
+    async function attempt(seat, step, fn, what = 'the wire call') {
         try {
             return await fn()
         } catch (error) {
-            add(seat, step, false, `the wire call failed: ${error.message}`);
+            add(seat, step, false, `${what} failed: ${error.message}`);
             return null
         }
     }
@@ -388,8 +393,11 @@ export async function runSeatJourney({fleet, restartFleet, seats, bridgePort = n
             if (!stopped) continue;
 
             // What an operator adds between two Starts must survive the second, while the Fleet's rows take fresh grants.
-            first.configs.forEach(config => seedOperatorContent(config.path, `${seat.definition.id}:${first.pid}`));
-            const before = Object.fromEntries(first.configs.map(config => [config.path, readOperatorContent(config.path)]));
+            const before = await attempt(seat, 'operator-content', () => {
+                first.configs.forEach(config => seedOperatorContent(config.path, `${seat.definition.id}:${first.pid}`));
+                return Object.fromEntries(first.configs.map(config => [config.path, readOperatorContent(config.path)]))
+            }, 'reading the harness config');
+            if (!before) continue;
 
             if (!await attempt(seat, 'start-again', () => start(seat, 'start-again'))) continue;
 
