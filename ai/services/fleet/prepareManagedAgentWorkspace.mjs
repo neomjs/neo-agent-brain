@@ -3081,7 +3081,7 @@ const CODEX_LAUNCH_RECEIPT = '.neo-fleet-codex-launch.json';
 
 /**
  * @summary Recognize the former exact invocation without widening any other managed setting.
- * Retirement trigger: delete once every active seat has completed one Start recording `PROJECT_MCP_RECEIPT_FILE`.
+ * Retirement trigger: delete once every active seat has recorded `PROJECT_MCP_RECEIPT_FILE` past the pre-receipt rollback horizon.
  * @private
  */
 function previousNodeRuntimePlan(plan) {
@@ -3093,7 +3093,7 @@ function previousNodeRuntimePlan(plan) {
 /**
  * @summary Exact pre-placement slot vocabulary for upgrading only an untouched Fleet projection.
  * Descriptor history is bounded here; unrelated operator edits remain a divergence.
- * Retirement trigger: delete once every active seat has completed one Start recording `PROJECT_MCP_RECEIPT_FILE`.
+ * Retirement trigger: delete once every active seat has recorded `PROJECT_MCP_RECEIPT_FILE` past the pre-receipt rollback horizon.
  * @param {Object[]} plan Bound current plan.
  * @returns {Object[]} Prior generated plan.
  * @private
@@ -3109,7 +3109,7 @@ function previousPlacementPlan(plan) {
  * @summary The current plan in each server's vocabulary before its latest addition (`previousRuntimeEnv`):
  * the added names leave the row and the resident names stay, so a row Fleet rendered before the addition
  * is recognised exactly.
- * Retirement trigger: delete once every active seat has completed one Start recording `PROJECT_MCP_RECEIPT_FILE`.
+ * Retirement trigger: delete once every active seat has recorded `PROJECT_MCP_RECEIPT_FILE` past the pre-receipt rollback horizon.
  * @param {Object[]} plan Bound current plan.
  * @returns {Object[]|null} `null` when the plan carries no declared addition.
  * @private
@@ -3139,7 +3139,7 @@ function previousVocabularyPlan(plan) {
  * one root, and that pair has the current runtime's packaged shape — the organism at `PACKAGED_ORGANISM`
  * inside a bundle, the executable at the current executable's place in it. A hand-pointed executable,
  * another root shape, two runtimes or the current runtime answer `null`.
- * Retirement trigger: delete once every active seat has completed one Start recording `PROJECT_MCP_RECEIPT_FILE`.
+ * Retirement trigger: delete once every active seat has recorded `PROJECT_MCP_RECEIPT_FILE` past the pre-receipt rollback horizon.
  * @param {String} source The existing project config.
  * @param {Object[]} plan Bound current plan.
  * @returns {{agentosRuntimeRoot: String, nodePath: String}|null}
@@ -3204,10 +3204,11 @@ function createRemoteServerMap(plan) {
 
 /**
  * @summary Converge the seat's project MCP file by its recorded owned-projection receipt (`PROJECT_MCP_RECEIPT_FILE`),
- * falling back to the legacy candidate list only to migrate pre-receipt files on their first Start.
+ * consulting the enumerated fallback candidates whenever the receipt does not vouch for the on-disk projection
+ * (both for pre-receipt seats and for seats whose receipt was left stale by a rollback to a pre-receipt build).
  * Retirement trigger for the fallback candidate list (`legacyContent`, `runtimeLegacyContent`,
  * `runtimeLegacyStdioContent`, `placementLegacyContent`, `priorRuntimeContent`): delete once every active
- * seat has completed one Start on a build that writes `PROJECT_MCP_RECEIPT_FILE`.
+ * seat has recorded `PROJECT_MCP_RECEIPT_FILE` past the pre-receipt rollback horizon.
  * @private
  */
 async function convergeTransportArtifact({

@@ -3872,4 +3872,38 @@ test.describe('prepareManagedAgentWorkspace: project MCP files recognised by rec
             previous: expect.stringMatching(/^[a-f0-9]{64}$/)
         });
     });
+
+    test('a stale receipt left behind by a rollback to a pre-receipt build still converges via the fallback candidate list and refreshes the receipt', async () => {
+        const
+            opts               = options(makeAgent('codex'), 'rollback-seat'),
+            first              = await prepareManagedAgentWorkspace({...opts, runtime: {execPath: NODE_PATH, versions: {}}}),
+            projectPath        = path.join(opts.targetRepoRoot, '.codex', 'config.toml'),
+            projectReceiptPath = path.join(first.instanceHome, PROJECT_RECEIPT);
+
+        // Simulate a seat that ran a receipt-writing build (`sha256: 'f'.repeat(64)`), rolled back to a
+        // pre-receipt build that rewrote the project file to the recognized pre-Electron shape without
+        // touching `.neo-fleet-mcp-project.json`, and then upgraded again.
+        await fs.writeFile(projectReceiptPath, JSON.stringify({
+            version : 1,
+            artifact: 'config.toml',
+            sha256  : 'f'.repeat(64),
+            previous: null
+        }, null, 2) + '\n', 'utf8');
+
+        const upgraded = await prepareManagedAgentWorkspace({
+            ...opts,
+            runtime: {execPath: NODE_PATH, versions: {electron: '43.5.0'}}
+        });
+        const refreshedReceipt = JSON.parse(await read(projectReceiptPath));
+
+        expect(upgraded.artifacts[0].status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+        expect(await read(projectPath)).toContain('ELECTRON_RUN_AS_NODE');
+        expect(refreshedReceipt.sha256).not.toBe('f'.repeat(64));
+        expect(refreshedReceipt).toEqual({
+            version : 1,
+            artifact: 'config.toml',
+            sha256  : expect.stringMatching(/^[a-f0-9]{64}$/),
+            previous: expect.stringMatching(/^[a-f0-9]{64}$/)
+        });
+    });
 });
