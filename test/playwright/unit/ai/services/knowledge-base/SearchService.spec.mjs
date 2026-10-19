@@ -699,4 +699,43 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
         expect(() => buildAskRequestQueue({askSynthesis: {maxParallel: 0}}))
             .toThrow(/capacity must be an integer >= 1/)
     });
+
+    test('#1190 ask expands formerLogins handles across retrieval and prepends the canonical identity notice', async () => {
+        let capturedQuery  = null,
+            capturedPrompt = null;
+
+        QueryService.queryDocuments = async ({query}) => {
+            capturedQuery = query;
+            return {
+                topResult: tmpFileRelativeToRoot,
+                results  : [{source: tmpFileRelativeToRoot, score: '1234'}]
+            };
+        };
+
+        SearchService.model = {
+            generateContent: async (prompt) => {
+                capturedPrompt = prompt;
+                return {response: {text: () => 'Synthesized history across both handles.'}};
+            }
+        };
+
+        const result = await SearchService.ask({
+            query: 'What did @neo-fable build before the rename?',
+            type : 'src'
+        });
+
+        expect(capturedQuery).toContain('@neo-fable');
+        expect(capturedQuery).toContain('@neo-fable-mnemosyne Mnemosyne');
+        expect(capturedPrompt).toContain('Identity alias resolution: @neo-fable resolves to @neo-fable-mnemosyne (Mnemosyne).');
+        expect(result.answer).toBe('Identity alias resolution: @neo-fable resolves to @neo-fable-mnemosyne (Mnemosyne).\n\nSynthesized history across both handles.');
+        expect(result.resolvedIdentityAliases).toEqual([{
+            id          : '@neo-fable-mnemosyne',
+            githubLogin : 'neo-fable-mnemosyne',
+            displayName : 'Mnemosyne',
+            formerLogin : '@neo-fable',
+            formerLogins: ['@neo-fable'],
+            notice      : '@neo-fable resolved to @neo-fable-mnemosyne (Mnemosyne)'
+        }]);
+    });
 });
+

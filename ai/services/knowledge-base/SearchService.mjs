@@ -14,6 +14,7 @@ import {isRemoteKnowledgeBaseDeployment}                                        
 import {getMissingAskSynthesisLeaves}                                                from './helpers/askSynthesisGuard.mjs';
 import GraphService                                                                  from '../memory-core/GraphService.mjs';
 import {CONCEPT_EXPANSION_EDGE_TYPES, KB_TERMINAL_EDGE_TYPES, enrichWithConceptWalk} from '../graph/conceptAnchoredRetrieval.mjs';
+import {resolveFormerLoginMentions}                                                  from '../graph/agentFamilyResolution.mjs';
 import {buildKbFileResolveCandidate}                                                 from './conceptWalkKbFileGate.mjs';
 import KBRecorderService                                                             from './KBRecorderService.mjs';
 
@@ -495,8 +496,23 @@ class SearchService extends Base {
     async ask({query, type = 'all', limit = 5, conceptWalk = false}) {
         logger.info(`[SearchService] Processing RAG query: "${query}" (Type: ${type})`);
 
+        const
+            formerMentions = resolveFormerLoginMentions(query),
+            retrievalQuery = formerMentions.expandedQuery,
+            withAliases    = result => {
+                if (formerMentions.aliases.length === 0) return result;
+                const answer = typeof result.answer === 'string' && !result.answer.includes(formerMentions.notice)
+                    ? `${formerMentions.notice}\n\n${result.answer}`
+                    : result.answer;
+                return {
+                    ...result,
+                    answer,
+                    resolvedIdentityAliases: formerMentions.aliases
+                };
+            };
+
         // 1. Retrieve most relevant files using QueryService's scoring logic
-        const queryResult = await QueryService.queryDocuments({query, type, limit, includeMetadata: true});
+        const queryResult = await QueryService.queryDocuments({query: retrievalQuery, type, limit, includeMetadata: true});
 
         const emptyFlat = queryResult.message || !queryResult.results || queryResult.results.length === 0;
 
@@ -505,7 +521,7 @@ class SearchService extends Base {
         // structurally RESCUE docs the embedding search missed. A flat miss must not skip the graph; if
         // the walk ALSO finds nothing, the post-walk guard below returns the same honest empty answer.
         if (emptyFlat && !conceptWalk) {
-            return this.#emptyFlatResponse();
+            return withAliases(await this.#emptyFlatResponse());
         }
 
         const references = (queryResult.results || []).map(r => ({
@@ -535,7 +551,7 @@ class SearchService extends Base {
 
             const enriched = await enrichWithConceptWalk({
                 graphService         : GraphService,
-                query,
+                query                : retrievalQuery,
                 candidates           : references,
                 conceptWalk          : true,
                 getCandidateId       : ref => ref.source,
@@ -560,7 +576,7 @@ class SearchService extends Base {
 
         // Adds the concept-walk event to any return envelope ONLY when the walk ran — the default
         // path returns the exact legacy shapes.
-        const withWalk = result => conceptWalkEvent ? {...result, conceptWalk: conceptWalkEvent} : result;
+        const withWalk = result => withAliases(conceptWalkEvent ? {...result, conceptWalk: conceptWalkEvent} : result);
 
         // Post-walk empty guard: an empty flat result the walk could not rescue (empty collection, or no
         // concept-neighborhood match) returns the honest empty answer — never synthesize on zero context.
@@ -643,7 +659,8 @@ class SearchService extends Base {
                 budgetChars        : askBudget.contextBudgetChars,
                 maxCharsPerDocument: askBudget.contextMaxCharsPerDocument
             }),
-            contextDocs = assembled.context;
+            contextDocs = assembled.context,
+            identityNote = formerMentions.notice ? `\n${formerMentions.notice}\n` : '';
 
         const prompt = `
 You are an expert Neo.mjs architect.
@@ -652,7 +669,7 @@ You are an expert Neo.mjs architect.
 Answer the following question using **ONLY** the provided context documents.
 If the answer cannot be found in the documents, state that you don't have enough information.
 
-Question: ${query}
+Question: ${query}${identityNote}
 
 Context:
 ${contextDocs}

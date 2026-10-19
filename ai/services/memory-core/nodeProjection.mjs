@@ -31,8 +31,8 @@
  */
 const PUBLIC_NODE_FIELDS = new Map([
     ['AgentIdentity', Object.freeze([
-        'accountType', 'createdAt', 'displayName', 'githubLogin',
-        'modelFamily', 'participationStatus', 'trustTier'
+        'accountType', 'createdAt', 'displayName', 'formerLogins',
+        'githubLogin', 'modelFamily', 'participationStatus', 'trustTier'
     ])]
 ]);
 

@@ -756,4 +756,56 @@ test.describe('ai/scripts/migrations/renameAgentIdentities', () => {
 
         db.close();
     });
+
+    test('#1190 runGraphMigration seeds and preserves formerLogins on merged and newly inserted AgentIdentity rows', () => {
+        const db = new Database(':memory:');
+        createGraphSchema(db);
+
+        // Merged target: @neo-fable merges into existing @neo-fable-mnemosyne
+        insertNode(db, {
+            id     : '@neo-fable',
+            user_id: 'neo-fable',
+            data   : {
+                id        : '@neo-fable',
+                label     : 'AgentIdentity',
+                properties: {createdAt: '2026-06-05T00:00:00.000Z', githubLogin: '@neo-fable', userId: 'neo-fable'}
+            }
+        });
+        insertNode(db, {
+            id     : '@neo-fable-mnemosyne',
+            user_id: 'neo-fable-mnemosyne',
+            data   : {
+                id        : '@neo-fable-mnemosyne',
+                label     : 'AgentIdentity',
+                properties: {createdAt: '2026-10-18T00:00:00.000Z', githubLogin: '@neo-fable-mnemosyne', userId: 'neo-fable-mnemosyne'}
+            }
+        });
+
+        // Newly inserted multi-hop target: @neo-gemini-3-1-pro rewrites to @neo-gemini-julia
+        insertNode(db, {
+            id     : '@neo-gemini-3-1-pro',
+            user_id: 'neo-gemini-3-1-pro',
+            data   : {
+                id        : '@neo-gemini-3-1-pro',
+                label     : 'AgentIdentity',
+                properties: {createdAt: '2026-04-30T00:00:00.000Z', githubLogin: '@neo-gemini-3-1-pro', userId: 'neo-gemini-3-1-pro'}
+            }
+        });
+
+        runGraphMigration(db, true);
+
+        const mnemosyne = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get('@neo-fable-mnemosyne').data);
+        expect(mnemosyne.properties.formerLogins).toEqual(['@neo-fable']);
+        expect(mnemosyne.properties.createdAt).toBe('2026-06-05T00:00:00.000Z');
+
+        const julia = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get('@neo-gemini-julia').data);
+        expect(julia.properties.formerLogins).toEqual(['@neo-gemini-pro', '@neo-gemini-3-1-pro']);
+        expect(julia.properties.githubLogin).toBe('@neo-gemini-julia');
+
+        // Idempotent on second apply
+        const second = runGraphMigration(db, true);
+        expect(second).toMatchObject({nodeMetadataRowsUpdated: 0, nodesInserted: 0, nodesMerged: 0});
+
+        db.close();
+    });
 });

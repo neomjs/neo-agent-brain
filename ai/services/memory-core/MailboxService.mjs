@@ -1,15 +1,15 @@
-import {resolveTicketReference}                       from '../graph/ticketReferences.mjs';
-import Base                                           from 'neo.mjs/src/core/Base.mjs';
-import aiConfig                                       from '../../mcp/server/memory-core/config.mjs';
-import logger                                         from '../../mcp/server/memory-core/logger.mjs';
-import RequestContextService, {normalizeUserId}       from '../../mcp/server/shared/services/RequestContextService.mjs';
-import {canonicalizeTaggedConceptIds}                 from '../graph/conceptSpineCanonicalization.mjs';
-import GraphService, {isRlsVisible, resolveRlsUserId} from './GraphService.mjs';
-import PermissionService                        from './PermissionService.mjs';
-import WakeSubscriptionService                  from './WakeSubscriptionService.mjs';
-import {inspectDefectNoteCapture}               from './helpers/defectObservationFold.mjs';
+import {resolveTicketReference}                           from '../graph/ticketReferences.mjs';
+import Base                                               from 'neo.mjs/src/core/Base.mjs';
+import aiConfig                                           from '../../mcp/server/memory-core/config.mjs';
+import logger                                             from '../../mcp/server/memory-core/logger.mjs';
+import RequestContextService, {normalizeUserId}           from '../../mcp/server/shared/services/RequestContextService.mjs';
+import {canonicalizeTaggedConceptIds}                     from '../graph/conceptSpineCanonicalization.mjs';
+import GraphService, {isRlsVisible, resolveRlsUserId}     from './GraphService.mjs';
+import PermissionService                                  from './PermissionService.mjs';
+import WakeSubscriptionService                            from './WakeSubscriptionService.mjs';
+import {inspectDefectNoteCapture}                         from './helpers/defectObservationFold.mjs';
 import {normalizeMailboxObserver, readMailboxObservation} from './helpers/mailboxObservation.mjs';
-import {resolveSharingPolicy} from './helpers/resolveSharingPolicy.mjs';
+import {resolveSharingPolicy}                             from './helpers/resolveSharingPolicy.mjs';
 import {
     TASK_ASSIGNMENT_AUTHORITY,
     TASK_STATES,
@@ -28,7 +28,10 @@ import {
 import {IDENTITIES}                   from '../../graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {SQLITE_IN_CLAUSE_BATCH_SIZE}  from '../../graph/storage/constants.mjs';
-import {resolveResidentFamilyById}    from '../graph/agentFamilyResolution.mjs';
+import {
+    resolveAgentIdentityAlias,
+    resolveResidentFamilyById
+} from '../graph/agentFamilyResolution.mjs';
 import {getMissingMemoryWalLeaves}    from './helpers/memoryWalStore.mjs';
 import {
     classifyMailboxReadState,
@@ -257,13 +260,23 @@ function getCanonicalTaskAssigneeForTarget(target, db = GraphService.requireDb('
  * @private
  */
 function getMailboxIdentityStorageVariants(identity) {
-    const canonical = normalizeMailboxIdentityForComparison(identity);
+    const
+        normalized = normalizeMailboxIdentityForComparison(identity),
+        canonical  = resolveAgentIdentityAlias(normalized)?.id ?? normalized;
     if (typeof canonical !== 'string' || !canonical.startsWith('@') || canonical.includes(':')) {
         return [canonical];
     }
 
-    const bare = canonical.slice(1);
-    return [...new Set([canonical, bare, `@${canonical}`, `AGENT:${canonical}`, `AGENT:${bare}`])];
+    const
+        root         = IDENTITY_ROOTS_BY_ID.get(canonical),
+        formerLogins = Array.isArray(root?.properties?.formerLogins) ? root.properties.formerLogins : [],
+        handles      = [canonical, ...formerLogins.map(item => normalizeMailboxIdentityForComparison(item))]
+            .filter(item => typeof item === 'string' && item.startsWith('@') && !item.includes(':'));
+
+    return [...new Set(handles.flatMap(handle => {
+        const bare = handle.slice(1);
+        return [handle, bare, `@${handle}`, `AGENT:${handle}`, `AGENT:${bare}`];
+    }))];
 }
 
 /**
@@ -302,6 +315,16 @@ function validateMailboxTarget(normalizedTo, originalTo, db = GraphService.requi
     // target turns out to be orphan, the FK guard will surface that separately — this
     // validator focuses on the @<identity> + AGENT:<family>/<model> failure surface.
     if (normalizedTo.startsWith('role:') || normalizedTo.startsWith('human:')) return normalizedTo;
+
+    const formerAlias = resolveAgentIdentityAlias(originalTo) ?? resolveAgentIdentityAlias(normalizedTo);
+    if (formerAlias) {
+        let canonicalExists = db?.nodes?.has(formerAlias.id);
+        if (!canonicalExists && db?.getAdjacentNodes) {
+            db.getAdjacentNodes(formerAlias.id, 'both');
+            canonicalExists = db.nodes.has(formerAlias.id);
+        }
+        if (canonicalExists) return formerAlias.id;
+    }
 
     // Warm cache once before declaring "not found" so we don't reject legitimate targets
     // that exist in WAL but have not reached this connection's in-memory cache yet.
@@ -2805,6 +2828,9 @@ class MailboxService extends Base {
         // Alias-format mistakes must fail loudly instead of producing orphan messages invisible
         // to their intended recipient.
         to = validateMailboxTarget(to, preNormalizeTo, db);
+        const
+            recipientAlias         = resolveAgentIdentityAlias(preNormalizeTo) ?? resolveAgentIdentityAlias(postNormalizeTo),
+            resolvedRecipientAlias = recipientAlias && to === recipientAlias.id ? recipientAlias : null;
 
         const messageId = `MESSAGE:${crypto.randomUUID()}`;
         const timestamp = new Date().toISOString();
@@ -3013,7 +3039,8 @@ class MailboxService extends Base {
                 priority,
                 status          : 'sent',
                 projectionStatus: 'pending',
-                ...(defectNote ? {defectNote} : {})
+                ...(defectNote ? {defectNote} : {}),
+                ...(resolvedRecipientAlias ? {resolvedRecipientAlias} : {})
             }
         }
 
@@ -3035,7 +3062,8 @@ class MailboxService extends Base {
             priority,
             status: 'sent',
             ...(defectNote ? {defectNote} : {}),
-            ...(projectionStatus === 'pending' ? {projectionStatus} : {})
+            ...(projectionStatus === 'pending' ? {projectionStatus} : {}),
+            ...(resolvedRecipientAlias ? {resolvedRecipientAlias} : {})
         };
     }
 
@@ -3639,9 +3667,17 @@ class MailboxService extends Base {
         }
 
         const
-            me                           = normalizeMailboxIdentityForComparison(boundIdentity),
-            target                       = normalizeMailboxIdentityForComparison(to || me),
-            normalizedFromIdentity       = normalizeMailboxIdentityForComparison(fromIdentity),
+            me                      = normalizeMailboxIdentityForComparison(boundIdentity),
+            rawTarget               = normalizeMailboxIdentityForComparison(to || me),
+            toAlias                 = to ? resolveAgentIdentityAlias(rawTarget) : null,
+            target                  = toAlias?.id ?? rawTarget,
+            rawFromIdentity         = normalizeMailboxIdentityForComparison(fromIdentity),
+            fromIdentityAlias       = fromIdentity ? resolveAgentIdentityAlias(rawFromIdentity) : null,
+            normalizedFromIdentity  = fromIdentityAlias?.id ?? rawFromIdentity,
+            resolvedIdentityAliases = {
+                ...(toAlias ? {to: toAlias} : {}),
+                ...(fromIdentityAlias ? {fromIdentity: fromIdentityAlias} : {})
+            },
             requestedTaggedConceptGroups = buildTaggedConceptFilterGroups(taggedConcepts);
 
         if (!sameMailboxIdentity(target, me) && target !== 'AGENT:*') {
@@ -3766,7 +3802,8 @@ class MailboxService extends Base {
             truncated,
             nextOffset,
             limit             : appliedLimit,
-            offset            : appliedOffset
+            offset            : appliedOffset,
+            ...(Object.keys(resolvedIdentityAliases).length > 0 ? {resolvedIdentityAliases} : {})
         };
     }
 
@@ -3948,8 +3985,8 @@ class MailboxService extends Base {
         if (!boundIdentity) throw RequestContextService.unboundIdentityError('observe messages');
 
         const observer = normalizeMailboxObserver(args.observer),
-            viewer = normalizeMailboxIdentityForComparison(boundIdentity),
-            db = GraphService.requireDb('MailboxService.observeMessages');
+            viewer     = normalizeMailboxIdentityForComparison(boundIdentity),
+            db         = GraphService.requireDb('MailboxService.observeMessages');
 
         if (args.to !== undefined || (args.box !== undefined && !['inbox', 'all'].includes(args.box)) ||
             (args.status !== undefined && args.status !== 'all')) {
@@ -3969,7 +4006,7 @@ class MailboxService extends Base {
         return sqlite.transaction(() => {
             const sharing = resolveSharingPolicy({
                 configuredDefault: aiConfig.memorySharing.defaultPolicy,
-                requested: observer.memorySharing
+                requested        : observer.memorySharing
             }), permissions = sharing.policy !== 'team' && observer.scope === 'all'
                 ? PermissionService.readPermissions({}, {fromStorage: true}).capabilities
                 : [],
@@ -3978,8 +4015,8 @@ class MailboxService extends Base {
                 observation = {
                     viewer,
                     planeId: aiConfig.plane.id,
-                    scope: observer.scope,
-                    policy: sharing.policy,
+                    scope  : observer.scope,
+                    policy : sharing.policy,
                     clamped: sharing.clamped
                 };
             observation.admissionKey = crypto.createHash('sha256')
@@ -3987,18 +4024,18 @@ class MailboxService extends Base {
 
             const result = readMailboxObservation({
                 sqlite,
-                viewerVariants: getMailboxIdentityStorageVariants(viewer),
+                viewerVariants      : getMailboxIdentityStorageVariants(viewer),
                 grantedInboxVariants: grants.flatMap(getMailboxIdentityStorageVariants),
-                scope: observer.scope,
-                policy: sharing.policy,
-                limit: args.limit,
-                offset: args.offset,
-                taskStates: args.taskStates,
-                taskOrder: args.taskOrder,
-                fromVariants: args.fromIdentity ? getMailboxIdentityStorageVariants(args.fromIdentity) : [],
-                threadId: args.threadId,
-                taggedConceptGroups: buildTaggedConceptFilterGroups(args.taggedConcepts),
-                messageId: messageId === null ? undefined : messageId
+                scope               : observer.scope,
+                policy              : sharing.policy,
+                limit               : args.limit,
+                offset              : args.offset,
+                taskStates          : args.taskStates,
+                taskOrder           : args.taskOrder,
+                fromVariants        : args.fromIdentity ? getMailboxIdentityStorageVariants(args.fromIdentity) : [],
+                threadId            : args.threadId,
+                taggedConceptGroups : buildTaggedConceptFilterGroups(args.taggedConcepts),
+                messageId           : messageId === null ? undefined : messageId
             });
             if (messageId !== null && result === null) {
                 throw Object.assign(new Error('Message is absent or not admitted to this observer scope'),

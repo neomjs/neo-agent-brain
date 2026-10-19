@@ -2609,6 +2609,91 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         });
     });
 
+    test('#1190 addMessage and listMessages resolve formerLogins to canonical AgentIdentity seats and surface alias receipts', async () => {
+        GraphService.upsertNode({
+            id        : '@neo-fable-mnemosyne',
+            type      : 'AgentIdentity',
+            name      : 'Mnemosyne',
+            properties: {
+                accountType : 'agent',
+                githubLogin : '@neo-fable-mnemosyne',
+                formerLogins: ['@neo-fable']
+            }
+        });
+
+        await RequestContextService.run({agentIdentityNodeId: '@neo-fable-mnemosyne'}, async () => {
+            await PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'});
+        });
+        await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+            await PermissionService.grantPermission({to: '@neo-fable-mnemosyne', scope: 'CAN_REPLY_TO'});
+        });
+
+        // 1. Sending to former login @neo-fable routes to canonical @neo-fable-mnemosyne with resolvedRecipientAlias receipt
+        const sendRes = await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+            return await MailboxService.addMessage({
+                to     : '@neo-fable',
+                subject: 'Addressed to former login',
+                body   : 'Should land in Mnemosyne inbox'
+            });
+        });
+
+        expect(sendRes.status).toBe('sent');
+        expect(sendRes.resolvedRecipientAlias).toEqual({
+            id          : '@neo-fable-mnemosyne',
+            githubLogin : 'neo-fable-mnemosyne',
+            displayName : 'Mnemosyne',
+            formerLogin : '@neo-fable',
+            formerLogins: ['@neo-fable'],
+            notice      : '@neo-fable resolved to @neo-fable-mnemosyne (Mnemosyne)'
+        });
+
+        const mnemosyneInbox = await RequestContextService.run({agentIdentityNodeId: '@neo-fable-mnemosyne'}, async () => {
+            return await MailboxService.listMessages({box: 'inbox', status: 'all'});
+        });
+        expect(mnemosyneInbox.messages).toHaveLength(1);
+        expect(mnemosyneInbox.messages[0].to).toBe('@neo-fable-mnemosyne');
+
+        // 2. Listing inbox with to: '@neo-fable' resolves to @neo-fable-mnemosyne (sameMailboxIdentity passes) and surfaces resolvedIdentityAliases
+        const mnemosyneInboxByOldTo = await RequestContextService.run({agentIdentityNodeId: '@neo-fable-mnemosyne'}, async () => {
+            return await MailboxService.listMessages({box: 'inbox', to: '@neo-fable', status: 'all'});
+        });
+        expect(mnemosyneInboxByOldTo.messages.map(m => m.messageId)).toEqual([sendRes.messageId]);
+        expect(mnemosyneInboxByOldTo.resolvedIdentityAliases).toEqual({
+            to: {
+                id          : '@neo-fable-mnemosyne',
+                githubLogin : 'neo-fable-mnemosyne',
+                displayName : 'Mnemosyne',
+                formerLogin : '@neo-fable',
+                formerLogins: ['@neo-fable'],
+                notice      : '@neo-fable resolved to @neo-fable-mnemosyne (Mnemosyne)'
+            }
+        });
+
+        // 3. Listing inbox filtered by fromIdentity: '@neo-fable' matches messages sent by @neo-fable-mnemosyne
+        const replyRes = await RequestContextService.run({agentIdentityNodeId: '@neo-fable-mnemosyne'}, async () => {
+            return await MailboxService.addMessage({
+                to     : '@alice',
+                subject: 'Reply from canonical seat',
+                body   : 'Found under old or new handle'
+            });
+        });
+
+        const aliceInboxByOldFrom = await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+            return await MailboxService.listMessages({box: 'inbox', fromIdentity: '@neo-fable', status: 'all'});
+        });
+        expect(aliceInboxByOldFrom.messages.map(m => m.messageId)).toEqual([replyRes.messageId]);
+        expect(aliceInboxByOldFrom.resolvedIdentityAliases).toEqual({
+            fromIdentity: {
+                id          : '@neo-fable-mnemosyne',
+                githubLogin : 'neo-fable-mnemosyne',
+                displayName : 'Mnemosyne',
+                formerLogin : '@neo-fable',
+                formerLogins: ['@neo-fable'],
+                notice      : '@neo-fable resolved to @neo-fable-mnemosyne (Mnemosyne)'
+            }
+        });
+    });
+
     test('markRead updates the readAt property', async () => {
         await RequestContextService.run({ agentIdentityNodeId: '@bob' }, async () => {
             await PermissionService.grantPermission({ to: '@alice', scope: 'CAN_REPLY_TO' });

@@ -64,6 +64,111 @@ export const SOCIAL_NAME_TO_LOGIN = Object.freeze(Object.fromEntries(
 ));
 
 /**
+ * Former `@<login>` handle → canonical resident resolution descriptor, derived from
+ * `properties.formerLogins` in `ai/graph/identityRoots.mjs`.
+ */
+export const FORMER_LOGIN_TO_IDENTITY = Object.freeze(Object.fromEntries(
+    IDENTITIES
+        .filter(identity => identity.type === 'AgentIdentity' && Array.isArray(identity.properties?.formerLogins))
+        .flatMap(identity => {
+            const
+                displayName  = identity.properties.displayName || identity.name || identity.id,
+                githubLogin  = identity.properties.githubLogin.replace(/^@/, ''),
+                formerLogins = Object.freeze([...identity.properties.formerLogins]);
+
+            return identity.properties.formerLogins.map(rawFormer => {
+                const formerLogin = rawFormer.startsWith('@') ? rawFormer : `@${rawFormer}`;
+
+                return [
+                    formerLogin,
+                    Object.freeze({
+                        id    : identity.id,
+                        githubLogin,
+                        displayName,
+                        formerLogin,
+                        formerLogins,
+                        notice: `${formerLogin} resolved to ${identity.id} (${displayName})`
+                    })
+                ];
+            });
+        })
+));
+
+const FORMER_LOGIN_TOKEN_PATTERN = (() => {
+    const
+        escape  = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+        handles = Object.keys(FORMER_LOGIN_TO_IDENTITY).sort((a, b) => b.length - a.length),
+        bare    = handles.map(handle => escape(handle.slice(1)));
+
+    return bare.length > 0
+        ? new RegExp(
+            `(?<![A-Za-z0-9])@(?:${bare.join('|')})(?![A-Za-z0-9@-])` +
+            `|(?<![A-Za-z0-9@-])(?:${bare.join('|')})(?![A-Za-z0-9@-])`,
+            'g'
+        )
+        : null;
+})();
+
+/**
+ * @summary Resolves a former maintainer handle (`@neo-fable`, `@neo-gpt`, `@neo-gemini-pro`, bare
+ * or `AGENT:`-prefixed) to its current canonical `AgentIdentity` descriptor.
+ * @param {*} handle Candidate handle or mailbox target.
+ * @returns {Readonly<{id: String, githubLogin: String, displayName: String, formerLogin: String, formerLogins: ReadonlyArray<String>, notice: String}>|null}
+ */
+export function resolveAgentIdentityAlias(handle) {
+    if (typeof handle !== 'string') return null;
+
+    let value = handle.trim();
+    if (!value) return null;
+
+    if (value.startsWith('AGENT:')) {
+        value = value.slice('AGENT:'.length).trim();
+    }
+    if (!value || value.includes(':')) return null;
+
+    const bare = value.replace(/^@+/, '');
+    if (!bare) return null;
+
+    return FORMER_LOGIN_TO_IDENTITY[`@${bare}`] ?? null;
+}
+
+/**
+ * @summary Detects whole-handle mentions of former logins in a query or text string without matching
+ * sibling prefixes (`@neo-gpt-emmy`) or email addresses (`neo-fable@neomjs.com`), returning the
+ * matched alias descriptors, an expanded retrieval query, and a human/agent-readable resolution notice.
+ * @param {String} text Input query or prose.
+ * @returns {{aliases: Object[], expandedQuery: String, notice: (String|null)}}
+ */
+export function resolveFormerLoginMentions(text) {
+    if (typeof text !== 'string' || !text || !FORMER_LOGIN_TOKEN_PATTERN) {
+        return {aliases: [], expandedQuery: typeof text === 'string' ? text : '', notice: null};
+    }
+
+    const
+        seen    = new Set(),
+        aliases = [];
+
+    for (const match of text.matchAll(FORMER_LOGIN_TOKEN_PATTERN)) {
+        const alias = resolveAgentIdentityAlias(match[0]);
+        if (alias && !seen.has(alias.formerLogin)) {
+            seen.add(alias.formerLogin);
+            aliases.push(alias);
+        }
+    }
+
+    if (aliases.length === 0) {
+        return {aliases: [], expandedQuery: text, notice: null};
+    }
+
+    const
+        canonicalTerms = [...new Set(aliases.map(alias => `${alias.id} ${alias.displayName}`))].join(' '),
+        expandedQuery  = `${text} (${canonicalTerms})`,
+        notice         = `Identity alias resolution: ${aliases.map(alias => `${alias.formerLogin} resolves to ${alias.id} (${alias.displayName})`).join('; ')}.`;
+
+    return {aliases, expandedQuery, notice};
+}
+
+/**
  * @summary Normalizes an `identityRoots.mjs` GitHub login for local GitHub payload matching.
  *
  * AgentIdentity roots store canonical handles with a leading `@`, while GitHub API
@@ -189,7 +294,9 @@ export function parseSelfIdLogin(body) {
 
     // Legacy form first: `Authored by … @identity` (transitional / pre-trim bodies).
     const legacyMatch = body.match(/^Authored by[^\n]*?@([A-Za-z0-9-]+)/m);
-    if (legacyMatch) return legacyMatch[1];
+    if (legacyMatch) {
+        return resolveAgentIdentityAlias(legacyMatch[1])?.githubLogin || legacyMatch[1];
+    }
 
     // Current form: `Authored by <Social Name> (…)` — resolve the Social Name to a login via the roster.
     const socialMatch = body.match(/^Authored by (.+?) \(/m);

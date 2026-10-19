@@ -6,8 +6,10 @@ import 'neo.mjs/src/core/_export.mjs';
 import {
     getCoreSwarmAgentFamilies,
     groupReviewsByFamily,
+    resolveAgentIdentityAlias,
     resolveAuthorFamily,
     resolveAuthorFamilyFromLogins,
+    resolveFormerLoginMentions,
     resolveResidentFamily,
     resolveReviewerFamily
 } from '../../../../../../ai/services/graph/agentFamilyResolution.mjs';
@@ -216,3 +218,60 @@ test.describe('ai/services/graph/agentFamilyResolution — reviewer-side budget 
         expect(resolveReviewerFamily(review('neo-kimi-phoebe'),live).family).toBe('kimi');
     });
 });
+
+test.describe('ai/services/graph/agentFamilyResolution — formerLogins alias & mention resolution (#1190)', () => {
+    test('#1190 resolveAgentIdentityAlias resolves former logins and returns null for current or unknown handles', () => {
+        expect(resolveAgentIdentityAlias('@neo-fable')).toEqual({
+            id          : '@neo-fable-mnemosyne',
+            githubLogin : 'neo-fable-mnemosyne',
+            displayName : 'Mnemosyne',
+            formerLogin : '@neo-fable',
+            formerLogins: ['@neo-fable'],
+            notice      : '@neo-fable resolved to @neo-fable-mnemosyne (Mnemosyne)'
+        });
+        expect(resolveAgentIdentityAlias('neo-gpt')).toEqual({
+            id          : '@neo-gpt-euclid',
+            githubLogin : 'neo-gpt-euclid',
+            displayName : 'Euclid',
+            formerLogin : '@neo-gpt',
+            formerLogins: ['@neo-gpt'],
+            notice      : '@neo-gpt resolved to @neo-gpt-euclid (Euclid)'
+        });
+        expect(resolveAgentIdentityAlias('AGENT:@neo-gemini-pro')).toMatchObject({
+            id         : '@neo-gemini-julia',
+            githubLogin: 'neo-gemini-julia',
+            displayName: 'Julia',
+            formerLogin: '@neo-gemini-pro'
+        });
+        expect(resolveAgentIdentityAlias('@neo-fable-mnemosyne')).toBeNull();
+        expect(resolveAgentIdentityAlias('@stranger-handle')).toBeNull();
+    });
+
+    test('#1190 resolveFormerLoginMentions expands whole-token former handles and ignores sibling prefixes or emails', () => {
+        const resolved = resolveFormerLoginMentions('What did @neo-fable and @neo-gpt build with @neo-gpt-emmy and neo-fable@neomjs.com?');
+
+        expect(resolved.aliases.map(a => ({formerLogin: a.formerLogin, id: a.id, displayName: a.displayName}))).toEqual([
+            {formerLogin: '@neo-fable', id: '@neo-fable-mnemosyne', displayName: 'Mnemosyne'},
+            {formerLogin: '@neo-gpt',   id: '@neo-gpt-euclid',      displayName: 'Euclid'}
+        ]);
+        expect(resolved.expandedQuery).toContain('@neo-fable-mnemosyne Mnemosyne');
+        expect(resolved.expandedQuery).toContain('@neo-gpt-euclid Euclid');
+        expect(resolved.notice).toBe('Identity alias resolution: @neo-fable resolves to @neo-fable-mnemosyne (Mnemosyne); @neo-gpt resolves to @neo-gpt-euclid (Euclid).');
+
+        const unchanged = resolveFormerLoginMentions('Ask @neo-gpt-emmy or email neo-fable@neomjs.com');
+        expect(unchanged.aliases).toEqual([]);
+        expect(unchanged.expandedQuery).toBe('Ask @neo-gpt-emmy or email neo-fable@neomjs.com');
+        expect(unchanged.notice).toBeNull();
+    });
+
+    test('#1190 resolveAuthorFamily resolves legacy Authored by … @former-handle self-identification lines', () => {
+        const live = getCoreSwarmAgentFamilies();
+
+        expect(resolveAuthorFamily({
+            number: 1190,
+            author: {login: 'neo-fable-mnemosyne'},
+            body  : 'Authored by Mnemosyne (Claude Fable 5.1, Claude Code) @neo-fable. Session test.'
+        }, live)).toBe('claude');
+    });
+});
+

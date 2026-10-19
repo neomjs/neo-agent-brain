@@ -109,5 +109,25 @@ test.describe('memory-core nodeProjection — the lean/full policy (#15430)', ()
 
         expect(full.properties).toEqual({});
         expect(full.name).toBeUndefined()
+    });
+
+    test('#1190 formerLogins crosses the AgentIdentity full projection while lean stays six-field clean', () => {
+        const node = {
+            id        : '@neo-fable-mnemosyne',
+            label     : 'AgentIdentity',
+            properties: {
+                name               : 'Mnemosyne',
+                githubLogin        : '@neo-fable-mnemosyne',
+                formerLogins       : ['@neo-fable'],
+                participationStatus: 'active_full_member'
+            }
+        };
+
+        const lean = projectNode(node),
+              full = projectNode(node, 'full');
+
+        expect(lean.properties).toBeUndefined();
+        expect(full.properties.formerLogins).toEqual(['@neo-fable']);
+        expect(full.properties.githubLogin).toBe('@neo-fable-mnemosyne')
     })
 });

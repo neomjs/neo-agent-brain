@@ -360,6 +360,51 @@ function parseGraphData(raw) {
 }
 
 /**
+ * @summary Returns the ordered former `@<handle>` logins that resolve to `targetNodeId`
+ * (most recent predecessor first, matching `ai/graph/identityRoots.mjs`).
+ * @param {String} targetNodeId Canonical target `@<handle>` node id.
+ * @returns {String[]}
+ */
+function getFormerLoginsForTarget(targetNodeId) {
+    const chain   = [];
+    let   current = targetNodeId;
+
+    for (let hops = 0; hops < IDENTITY_RENAMES.length; hops++) {
+        const step = IDENTITY_RENAMES.find(entry => entry.toNodeId === current);
+        if (!step) break;
+        chain.push(step.fromNodeId);
+        current = step.fromNodeId;
+    }
+
+    return chain;
+}
+
+/**
+ * @summary Merges canonical and persisted `formerLogins` onto an `AgentIdentity` node's properties
+ * without clobbering existing lineage entries.
+ * @param {Object} nodeData Parsed graph node payload.
+ * @param {String} targetNodeId Canonical target `@<handle>` node id.
+ * @param {String[]} [extraFormerLogins=[]] Additional former logins from a merged predecessor row.
+ * @returns {Object}
+ */
+function withFormerLogins(nodeData, targetNodeId, extraFormerLogins = []) {
+    if (nodeData?.label !== 'AgentIdentity') return nodeData;
+
+    const existing = Array.isArray(nodeData.properties?.formerLogins) ? nodeData.properties.formerLogins : [];
+    const merged   = [...new Set([...getFormerLoginsForTarget(targetNodeId), ...existing, ...extraFormerLogins])];
+
+    if (merged.length === 0) return nodeData;
+
+    return {
+        ...nodeData,
+        properties: {
+            ...(nodeData.properties || {}),
+            formerLogins: merged
+        }
+    };
+}
+
+/**
  * @summary Merges an old AgentIdentity node into the current canonical node data.
  * @param {Object} oldData Old node data.
  * @param {Object} targetData Canonical node data.
@@ -375,7 +420,8 @@ function mergeIdentityNodeData(oldData, targetData) {
         merged.properties.createdAt = oldCreatedAt;
     }
 
-    return merged;
+    const oldFormer = Array.isArray(oldData?.properties?.formerLogins) ? oldData.properties.formerLogins : [];
+    return withFormerLogins(merged, merged.id, oldFormer);
 }
 
 /**
@@ -396,7 +442,7 @@ function ensureTargetIdentityNode(db, rename, apply, stats) {
 
     if (!oldRow && targetRow) {
         const targetData = parseGraphData(targetRow.data);
-        const nextData   = rewriteIdentityFields(targetData);
+        const nextData   = withFormerLogins(rewriteIdentityFields(targetData), rename.toNodeId);
         const nextUserId = rewriteUserIdColumn(targetRow.user_id);
 
         if (changedJson(targetData, nextData) || nextUserId !== targetRow.user_id) {
@@ -409,10 +455,11 @@ function ensureTargetIdentityNode(db, rename, apply, stats) {
         return;
     }
 
-    const oldData  = parseGraphData(oldRow.data);
-    const nextData = targetRow
+    const oldData   = parseGraphData(oldRow.data);
+    const oldFormer = Array.isArray(oldData?.properties?.formerLogins) ? oldData.properties.formerLogins : [];
+    const nextData  = targetRow
         ? mergeIdentityNodeData(oldData, parseGraphData(targetRow.data))
-        : rewriteIdentityFields({...oldData, id: rename.toNodeId});
+        : withFormerLogins(rewriteIdentityFields({...oldData, id: rename.toNodeId}), rename.toNodeId, oldFormer);
 
     if (targetRow) {
         if (apply) {
