@@ -558,11 +558,11 @@ export async function readPendingWalRecords({dir, ids, limit, markerType = 'embe
 /**
  * @summary Removes fully-reconciled, non-active WAL segments beyond a retention bound.
  *
- * Write-side retention (sibling discipline to `pruneRemRunStates`): bounding on append keeps both
- * the directory file count and the read-path fan-out from growing with deployment age. Segments
- * with ANY pending record are never removed — the WAL is a durability buffer first, a log second;
- * pruning must never lose an un-embedded payload. The active segment is excluded so the file the
- * server is currently appending to is never deleted underneath it.
+ * Write-side retention (sibling discipline to `pruneRemRunStates`): callers schedule this detached
+ * (`pruneReconciledWalSegments(...).catch(() => {})`) off the awaited `add_memory` return path so
+ * appends never wait on historical segment reads. Segments with ANY pending record and the active
+ * segment are never removed. Bound defaults to `aiConfig.memoryWal.retentionLimit` (shared with
+ * `messageWalStore`).
  *
  * @param {Object} options
  * @param {String} options.dir Directory for WAL segment files.

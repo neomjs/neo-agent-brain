@@ -443,8 +443,9 @@ class ConfigBase extends ConfigProvider {
                  */
                 useTestDatabase: leaf(false, 'UNIT_TEST_MODE', 'boolean'),
                 /**
-                 * Maximum fully-reconciled (every record embed-marked) WAL day-segments retained on
-                 * disk. Pruned on append; segments holding ANY pending record are never pruned —
+                 * Maximum fully-reconciled non-active WAL day-segments retained on disk across both
+                 * `memory-wal` (all records embed-marked) and `message-wal` (all records graph-marked).
+                 * Pruned detached on append; segments holding ANY pending record are never pruned —
                  * the WAL is a durability buffer first, a log second.
                  * @type {number}
                  */

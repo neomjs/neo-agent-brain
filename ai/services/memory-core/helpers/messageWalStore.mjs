@@ -161,8 +161,9 @@ export function getMessageWalGraphMarkersFileName(segmentKey) {
  * @param {String} options.planeId Resolved server plane identity; stamped after caller fields.
  * @param {Date|Number} [options.now] Clock source for the segment key.
  * @param {Object} [options.lockOptions] Forwarded to {@link withAppendLock}.
- * @param {Number} [options.retentionLimit] Maximum reconciled non-active segments to retain; older
- *   ones are pruned after the append when positive.
+ * @param {Number} [options.retentionLimit] Maximum reconciled non-active segments to retain
+ *   (`aiConfig.memoryWal.retentionLimit`, shared across both WAL families); scheduled detached via
+ *   `.catch(() => {})` off the awaited append return path when positive.
  * @returns {Promise<{filePath: String, segmentKey: String}>}
  */
 export async function appendWalMessage(record, {dir, planeId, now, lockOptions, retentionLimit} = {}) {
@@ -187,11 +188,11 @@ export async function appendWalMessage(record, {dir, planeId, now, lockOptions, 
     deleteReconciledMessageSegmentCacheEntry(dir, segmentKey);
 
     if (Number.isFinite(retentionLimit) && retentionLimit > 0) {
-        await pruneReconciledMessageWalSegments({
+        pruneReconciledMessageWalSegments({
             dir,
             retentionLimit,
             activeSegmentKey: segmentKey
-        });
+        }).catch(() => {});
     }
 
     return {filePath, segmentKey};
@@ -749,9 +750,11 @@ export async function readPendingMessageWalRecords({dir, ids, limit} = {}) {
 /**
  * @summary Removes fully-reconciled, non-active message WAL segments beyond a retention bound.
  *
- * Mirrors `pruneReconciledWalSegments` in `memoryWalStore.mjs`: bounding on append keeps both the
- * directory file count and the read-path fan-out from growing unbounded with deployment age.
- * Segments with ANY unprojected record are never removed, and the active segment is excluded.
+ * Mirrors `pruneReconciledWalSegments` in `memoryWalStore.mjs`: `appendWalMessage` schedules this
+ * detached (`.catch(() => {})`) off the awaited `add_message` return path (`aiConfig.memoryWal.retentionLimit`,
+ * shared across both WAL families) so writes never wait on historical segment reads. Mailbox views read
+ * the graph (not WAL segment files) and only boot-time `ensureBroadcastCohortStamps` (`readMessageWalCandidateRecords`)
+ * scans historical segments; segments with ANY unprojected record and the active segment are kept.
  *
  * @param {Object} options
  * @param {String} options.dir Message WAL directory.

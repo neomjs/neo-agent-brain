@@ -258,7 +258,7 @@ test.describe('Neo.ai.services.memory-core.helpers.messageWalStore', () => {
         }
     });
 
-    test('pruneReconciledMessageWalSegments and appendWalMessage retentionLimit prune reconciled historical segments while preserving active and pending (#1196)', async () => {
+    test('pruneReconciledMessageWalSegments and appendWalMessage retentionLimit prune reconciled historical segments detached off the append return path (#1196)', async () => {
         const day0 = Date.UTC(2026, 6, 27, 12); // 2026-07-27 (pending — never pruned)
         const day1 = Date.UTC(2026, 6, 28, 12); // 2026-07-28 (reconciled oldest — pruned)
         const day2 = Date.UTC(2026, 6, 29, 12); // 2026-07-29 (reconciled within bound — kept)
@@ -279,13 +279,42 @@ test.describe('Neo.ai.services.memory-core.helpers.messageWalStore', () => {
             await appendMessageWalGraphProjectionMarker({id, segmentKey}, {dir: tmpDir});
         }
 
-        // Appending to the active segment with retentionLimit=1 prunes 2026-07-28 while keeping 2026-07-29, 2026-07-30, and pending 2026-07-27.
-        await appendWalMessage({...record('MESSAGE:active-3'), timestamp: day3}, {
-            dir           : tmpDir,
-            planeId       : PLANE_ID,
-            now           : day3,
-            retentionLimit: 1
+        const originalReadFile = fs.readFile;
+        let   releasePruneReadGate;
+        const pruneReadGate    = new Promise(resolve => {
+            releasePruneReadGate = resolve;
         });
+        let pruneReadsCompleted = false;
+
+        fs.readFile = async (filePath, ...args) => {
+            if (String(filePath).startsWith(tmpDir) && !String(filePath).endsWith('.lock')) {
+                await pruneReadGate;
+                pruneReadsCompleted = true;
+            }
+            return originalReadFile(filePath, ...args);
+        };
+
+        try {
+            // Appending to the active segment with retentionLimit=1 resolves BEFORE detached prune segment reads complete.
+            await appendWalMessage({...record('MESSAGE:active-3'), timestamp: day3}, {
+                dir           : tmpDir,
+                planeId       : PLANE_ID,
+                now           : day3,
+                retentionLimit: 1
+            });
+
+            expect(pruneReadsCompleted).toBe(false);
+            releasePruneReadGate();
+
+            await expect.poll(async () => {
+                const currentNames = await fs.readdir(tmpDir);
+                return !currentNames.includes('message-wal-2026-07-28.jsonl') &&
+                    !currentNames.includes('message-wal-2026-07-28.graph.jsonl');
+            }).toBe(true);
+        } finally {
+            releasePruneReadGate();
+            fs.readFile = originalReadFile;
+        }
 
         const names = await fs.readdir(tmpDir);
         expect(names).toContain('message-wal-2026-07-30.jsonl');
