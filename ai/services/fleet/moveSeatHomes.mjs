@@ -195,9 +195,8 @@ async function applyRow({row, registry, destination, token}) {
  * @param {String} from An existing seat home.
  * @param {String} to   A path that does not exist yet.
  * @returns {Promise<String[]>} The sockets and pipes left behind, relative to `from`.
- * @private
  */
-async function copyTree(from, to) {
+export async function copyTree(from, to) {
     const skipped = [];
 
     await fs.cp(from, to, {
@@ -227,9 +226,8 @@ async function copyTree(from, to) {
  * @param {String} destination
  * @param {String} id
  * @returns {{staging: String, marker: String}}
- * @private
  */
-function stagingPaths(destination, id) {
+export function stagingPaths(destination, id) {
     const staging = path.join(destination, `.moving-${id}`);
 
     return {staging, marker: `${staging}.owner`}
@@ -265,9 +263,8 @@ async function realLocation(file) {
  * @param {String} a
  * @param {String} b
  * @returns {Promise<Boolean>}
- * @private
  */
-async function sameTree(a, b) {
+export async function sameTree(a, b) {
     const [left, right] = await Promise.all([treeManifest(a), treeManifest(b)]);
 
     return JSON.stringify(left) === JSON.stringify(right)
@@ -315,9 +312,8 @@ async function sha256(file) {
  * @param {Object} options.agent  The row's public definition.
  * @param {String} options.source The root the seat's home lives under.
  * @returns {Promise<String|null>}
- * @private
  */
-async function leaseEvidence({agent, source}) {
+export async function leaseEvidence({agent, source}) {
     const leasePath = path.join(deriveAgentInstanceHome({instanceRoot: source, agentId: agent.id, harnessType: agent.harnessType}), SEAT_LEASE_FILE);
     let   raw, pid;
 
@@ -346,8 +342,12 @@ async function leaseEvidence({agent, source}) {
     }
 }
 
-/** @private */
-function lstatOrNull(file) {
+/**
+ * @summary A path's `lstat`, or `null` when nothing exists there; any other failure throws.
+ * @param {String} file
+ * @returns {Promise<fs.Stats|null>}
+ */
+export function lstatOrNull(file) {
     return fs.lstat(file).catch(error => {
         if (error?.code === 'ENOENT') return null;
         throw error

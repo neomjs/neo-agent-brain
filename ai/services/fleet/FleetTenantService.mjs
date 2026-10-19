@@ -390,6 +390,37 @@ class FleetTenantService extends Base {
     }
 
     /**
+     * @summary Carries a renamed seat's plane credentials to its new id, on every plane, in one write of the
+     * store. A plane that already holds a credential for the new id keeps it, so a re-run after the write moves
+     * nothing. Brain-internal only, like {@link resolveSeatPlaneCredential}: no wire allowlist names it.
+     * @param {Object} params
+     * @param {String} params.from The seat's previous id.
+     * @param {String} params.to   Its new id.
+     * @returns {{status: 'renamed'|'unchanged', endpoints: String[]}} The planes whose record moved.
+     * @throws {Error} For an invalid id, or a store this Fleet cannot read, which stays byte-identical.
+     */
+    renameSeatPlaneCredentials({from, to} = {}) {
+        assertSeatSegment(from, 'from', 'FleetTenantService.renameSeatPlaneCredentials');
+        assertSeatSegment(to, 'to', 'FleetTenantService.renameSeatPlaneCredentials');
+
+        const
+            record    = this.readSeatPlaneCredentialsForMutation(),
+            endpoints = [];
+
+        for (const [endpoint, seats] of Object.entries(record)) {
+            if (!seats || typeof seats !== 'object' || Array.isArray(seats) || !Object.hasOwn(seats, from)) continue;
+
+            Object.hasOwn(seats, to) || (seats[to] = seats[from]);
+            delete seats[from];
+            endpoints.push(endpoint)
+        }
+
+        endpoints.length && this.publishAtomically(path.join(this.getDataDir(), SEAT_PLANE_CREDENTIALS), this.encrypt(JSON.stringify(record)));
+
+        return {status: endpoints.length ? 'renamed' : 'unchanged', endpoints}
+    }
+
+    /**
      * @summary The stored plane credential of one seat and the plane it was proven on, for the
      * Node-side start that presents it. Brain-internal only: this method is NOT on any wire allowlist
      * and must never be added to one.

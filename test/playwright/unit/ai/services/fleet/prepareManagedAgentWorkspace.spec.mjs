@@ -26,6 +26,7 @@ import {importSeatMemory}                               from '../../../../../../
 import {startAgentProvisioned}                          from '../../../../../../ai/services/fleet/startAgentProvisioned.mjs';
 import {excludeManagedWorkspaceFiles}                   from '../../../../../../ai/services/fleet/excludeManagedWorkspaceFiles.mjs';
 import {registerAntigravityProject}                     from '../../../../../../ai/services/fleet/antigravityProjectRegistry.mjs';
+import {carrySeatSessions}                              from '../../../../../../ai/services/fleet/carrySeatSessions.mjs';
 
 // Temp-filesystem contract tests: the real artifact writer runs, while checkout hydration is an
 // injected recorder. `hydrateCurrentWorktree` has its own real temp-checkout suite; this spec proves
@@ -3592,6 +3593,82 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
                 expect(config.permission.external_directory[oldMemory + '/**']).not.toBe('allow')
             }
         }
+    });
+
+    test('a renamed seat\'s Kimi and OpenCode files rendered under its previous id are re-derived, not read as hand edits (#1173)', async () => {
+        for (const harnessType of ['kimi-code', 'opencode']) {
+            const
+                previousId = `neo-${harnessType}`,
+                id         = `${previousId}-renamed`,
+                opts       = options(makeAgent(harnessType, {id: previousId})),
+                first      = await prepareManagedAgentWorkspace(opts),
+                oldMemory  = path.join(instanceRoot, previousId, 'memory'),
+                newMemory  = path.join(instanceRoot, id, 'memory'),
+                renamed    = {...options(makeAgent(harnessType, {id}), previousId), previousInstanceRoot: instanceRoot};
+
+            // the rename copied the seat's folder under its new id; the checkout keeps its place
+            await fs.cp(path.join(instanceRoot, previousId), path.join(instanceRoot, id), {recursive: true, verbatimSymlinks: true});
+
+            await expect(prepareManagedAgentWorkspace(renamed), 'without the previous id, the old rendering is a hand edit')
+                .rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+
+            const moved = await prepareManagedAgentWorkspace({...renamed, previousAgentId: previousId});
+
+            expect(first.instanceHome).toBe(path.join(instanceRoot, previousId, 'harness', harnessType));
+            expect(moved.instanceHome).toBe(path.join(instanceRoot, id, 'harness', harnessType));
+
+            if (harnessType === 'kimi-code') {
+                const hook = await read(path.join(moved.instanceHome, 'hooks', 'identityAnchorHook.mjs'));
+
+                expect(hook).toContain(`const MEMORY_DIR  = "${newMemory}";`);
+                expect(hook).not.toContain(oldMemory)
+            } else {
+                const
+                    jsonc  = await read(path.join(renamed.targetRepoRoot, 'opencode.jsonc')),
+                    config = JSON.parse(jsonc.split('\n').filter(line => !line.trimStart().startsWith('//')).join('\n'));
+
+                expect(config.instructions).toEqual([path.join(newMemory, 'MEMORY.md'), path.join(newMemory, 'identity.md')]);
+                expect(config.permission.external_directory[oldMemory + '/**']).not.toBe('allow')
+            }
+        }
+    });
+
+    test('a renamed Antigravity seat starts on its same project, and its loader rendered under the old id and login is re-derived; a hand-edited loader is still refused (#1173)', async () => {
+        const
+            previous          = makeAgent('antigravity', {id: 'neo-gemini-pro'}),
+            agent             = makeAgent('antigravity', {id: 'neo-gemini-julia'}),
+            opts              = options(previous),
+            renamed           = {...options(agent, previous.id), previousInstanceRoot: instanceRoot, previousAgentId: previous.id},
+            registryDirectory = path.join(root, '.gemini', 'config', 'projects'),
+            binaryPath        = '/Applications/Antigravity.app/Contents/MacOS/Antigravity',
+            loaderPath        = path.join(opts.targetRepoRoot, 'GEMINI.md'),
+            capability        = {harnessType: 'antigravity', binaryPath, launchBinaryPath: binaryPath, nativeRuntime: {available: true, fingerprints: ANTIGRAVITY_RUNTIME_FIXTURE}};
+
+        await trustCheckout({repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'}, opts.targetRepoRoot);
+        await fs.mkdir(registryDirectory, {recursive: true});
+
+        const
+            antigravityStart = {capability, registryDirectory, processEnvironment: {HOME: root, PATH: '/usr/bin:/bin'},
+                exclusion: excludeManagedWorkspaceFiles({targetRepoRoot: opts.targetRepoRoot})},
+            first            = await prepareManagedAgentWorkspace({...opts, antigravityStart, launchAdmission: desktopAdmission('neo-gemini-pro')});
+
+        await fs.cp(path.join(instanceRoot, previous.id), path.join(instanceRoot, agent.id), {recursive: true, verbatimSymlinks: true});
+        await carrySeatSessions({harnessType: 'antigravity', instanceHome: path.join(instanceRoot, agent.id, 'harness', 'antigravity'),
+            from: path.join(instanceRoot, previous.id), to: path.join(instanceRoot, agent.id), previousId: previous.id, id: agent.id, homeDir: root});
+
+        const result = await prepareManagedAgentWorkspace({...renamed, antigravityStart, launchAdmission: desktopAdmission('neo-gemini-julia')}),
+              loader = await read(loaderPath);
+
+        expect(result.antigravityProject, 'the conversations stay with the same project').toEqual({...first.antigravityProject, name: 'neo-gemini-julia'});
+        expect(result.artifacts.find(artifact => artifact.path === loaderPath).status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+        expect(loader).toContain('@neo-gemini-julia');
+        expect(loader).toContain(`@[Seat memory](${path.join(instanceRoot, agent.id, 'memory', 'MEMORY.md')})`);
+        expect(loader).not.toContain('neo-gemini-pro');
+
+        await fs.appendFile(loaderPath, 'A bearer line.\n');
+        await expect(prepareManagedAgentWorkspace({...renamed, antigravityStart, launchAdmission: desktopAdmission('neo-gemini-julia')}))
+            .rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+        expect(await read(loaderPath)).toBe(`${loader}A bearer line.\n`)
     });
 
     test('a Codex seat on an unsupported repository still gets its seat-memory home file', async () => {

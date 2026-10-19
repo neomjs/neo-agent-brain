@@ -1174,6 +1174,20 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
         expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-emmy'}).credential).toBe('emmy-plane-pat')
     })
 
+    test('a renamed seat\'s plane credential follows it to its new id, another seat\'s stays, and a re-run moves nothing (#1173)', async () => {
+        FleetTenantService.probeFn = AS_SEAT
+
+        await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt', identity: '@neo-gpt-euclid', credential: 'euclid-plane-pat'})
+        await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-emmy', identity: '@neo-gpt-emmy', credential: 'emmy-plane-pat'})
+
+        expect(FleetTenantService.renameSeatPlaneCredentials({from: 'neo-gpt', to: 'neo-gpt-euclid'})).toEqual({status: 'renamed', endpoints: [PLANE]})
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-euclid'})).toEqual({credential: 'euclid-plane-pat', plane: SERVED})
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt'})).toBeNull()
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-emmy'}).credential).toBe('emmy-plane-pat')
+        expect(fs.readFileSync(STORE()).includes(Buffer.from('euclid-plane-pat')), 'the store stays encrypted').toBe(false)
+        expect(FleetTenantService.renameSeatPlaneCredentials({from: 'neo-gpt', to: 'neo-gpt-euclid'})).toEqual({status: 'unchanged', endpoints: []})
+    })
+
     test('a create-only binding retains an explicit credential committed while its proof awaits', async () => {
         const
             agentId  = 'neo-gpt-sophie',

@@ -297,6 +297,8 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
  * @param {String} options.instanceRoot Absolute Fleet harness-home root.
  * @param {String|null} [options.previousInstanceRoot=null] The agents root a relocated seat's folder was
  *     copied from. Each Fleet-owned file still exactly as Fleet rendered it there is re-derived for this root.
+ * @param {String|null} [options.previousAgentId=null] The id a renamed seat had when Fleet rendered its files
+ *     there; `null` for the seat's own id. A rename keeps the root and changes this.
  * @param {String} options.agentosRuntimeRoot Installed AgentOS runtime root.
  * @param {String} [options.nodePath] Node executable used for installed MCP entrypoints.
  * @param {Object} [options.runtime=process] Host runtime facts for child execution mode.
@@ -343,6 +345,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
     repoSlug = null,
     instanceRoot,
     previousInstanceRoot = null,
+    previousAgentId = null,
     agentosRuntimeRoot,
     nodePath = process.execPath,
     runtime = process,
@@ -383,6 +386,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         }),
         previous                    = previousSeatPlacement({
             previousInstanceRoot,
+            previousAgentId,
             instanceRoot  : canonicalInstanceRoot,
             targetRepoRoot: canonicalTargetRepoRoot,
             agent,
@@ -520,6 +524,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
  * @param {String}   options.targetRepoRoot      Absolute provisioned target checkout path.
  * @param {String}   options.instanceRoot        Absolute Fleet harness-home root.
  * @param {String}  [options.previousInstanceRoot] The agents root a relocated seat's folder was copied from.
+ * @param {String}  [options.previousAgentId]    The id a renamed seat had there; defaults to its own.
  * @param {String}   options.agentosRuntimeRoot  Installed AgentOS runtime root.
  * @param {String}  [options.nodePath]           Node executable used for installed MCP entrypoints.
  * @param {Object}  [options.mcpTarget]          Resolved non-secret tenant target:
@@ -550,6 +555,7 @@ export async function prepareManagedAgentWorkspace({
     targetRepoRoot,
     instanceRoot,
     previousInstanceRoot = null,
+    previousAgentId = null,
     agentosRuntimeRoot,
     nodePath = process.execPath,
     runtime = process,
@@ -617,6 +623,7 @@ export async function prepareManagedAgentWorkspace({
         repoSlug: agent.metadata?.repo?.repoSlug ?? null,
         instanceRoot,
         previousInstanceRoot,
+        previousAgentId,
         agentosRuntimeRoot,
         nodePath,
         runtime,
@@ -841,17 +848,13 @@ async function prepareHarnessArtifacts({
                 targetRepoRoot, instanceHome, mcpServers: generated.mcpServers,
                 exclusion: antigravityStart.exclusion, fileSystem
             });
-            const memoryDir    = deriveAgentMemoryDir({instanceRoot, agentId: agent.id}),
-                  memoryLoader = await convergeTextArtifact({
-                filePath      : path.join(targetRepoRoot, ANTIGRAVITY_MEMORY_FILE),
-                desiredContent: '# Fleet seat memory\n\n' +
-                    `Operational identity for this managed workspace: @${launchAdmission.identity}.\n` +
-                    'Use the current Fleet-issued identity and loaded seat memory when legacy global harness notes differ.\n\n' +
-                    `@[Seat memory](${path.join(memoryDir, 'MEMORY.md')})\n` +
-                    `@[Bearer identity](${path.join(memoryDir, 'identity.md')})\n`,
-                ownedProjection: wholeFileOwnedProjection, ownedLabel: 'Antigravity memory loader',
-                trustedRoot    : targetRepoRoot, fileSystem
-            });
+            const loader = {
+                      filePath       : path.join(targetRepoRoot, ANTIGRAVITY_MEMORY_FILE),
+                      desiredContent : renderAntigravityMemoryLoader({identity: launchAdmission.identity, memoryDir: deriveAgentMemoryDir({instanceRoot, agentId: agent.id})}),
+                      ownedProjection: wholeFileOwnedProjection, ownedLabel: 'Antigravity memory loader',
+                      trustedRoot    : targetRepoRoot, fileSystem
+                  },
+                  memoryLoader = await refreshAntigravityMemoryLoader(loader) ?? await convergeTextArtifact(loader);
             const project = await registerAntigravityProject({
                 registryDirectory   : antigravityStart.registryDirectory,
                 profileDirectory    : instanceHome, projectRoot: targetRepoRoot, name: agent.id,
@@ -1023,7 +1026,7 @@ async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, previous
             filePath     : path.join(targetRepoRoot, '.claude', 'settings.local.json'),
             key          : CLAUDE_MEMORY_SETTING,
             value        : memoryDir,
-            previousValue: previous && deriveAgentMemoryDir({instanceRoot: previous.instanceRoot, agentId: agent.id}),
+            previousValue: previous && deriveAgentMemoryDir({instanceRoot: previous.instanceRoot, agentId: previous.agentId}),
             trustedRoot  : targetRepoRoot,
             fileSystem
         }));
@@ -1177,8 +1180,8 @@ function parseJsonObject(source) {
  */
 async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan, previous, residentMcpEnv = {}, launchAdmission = null, fileSystem}) {
     const
-        launched           = launchAdmission ? plan.filter(server => server.key === 'neural-link' && server.enabled) : [],
-        projectPlan        = plan.filter(server => !launched.includes(server)),
+        launched    = launchAdmission ? plan.filter(server => server.key === 'neural-link' && server.enabled) : [],
+        projectPlan = plan.filter(server => !launched.includes(server)),
         // the project file as the other launch mode renders it: Fleet's own, so a seat may move between the two
         formerPlan         = launched.length ? plan : plan.filter(server => server.key !== 'neural-link'),
         projectPath        = path.join(targetRepoRoot, '.codex', 'config.toml'),
@@ -1202,10 +1205,10 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
     const contextSeed = await readCodexContextSeed({targetRepoRoot, projectPath, homePath, instanceHome, fileSystem});
 
     artifacts.push(...await convergeTransportArtifact({
-        filePath                 : projectPath,
-        desiredContent           : contextSeed + renderCodexProjectConfig(projectPlan),
+        filePath              : projectPath,
+        desiredContent        : contextSeed + renderCodexProjectConfig(projectPlan),
         legacyContent,
-        placementLegacyContent   : [previousPlacementPlan(plan), vocabularyPrevious, formerPlan]
+        placementLegacyContent: [previousPlacementPlan(plan), vocabularyPrevious, formerPlan]
             .filter(Boolean).map(rows => renderCodexProjectConfig(rows)),
         runtimeLegacyContent     : runtimePrevious && renderCodexProjectConfig(runtimePrevious),
         runtimeLegacyStdioContent: runtimePrevious && renderCodexProjectConfig(localizePlan(runtimePrevious)),
@@ -2159,7 +2162,7 @@ async function prepareKimiArtifacts({agent, instanceRoot, targetRepoRoot, instan
             targetRepoRoot: placement.targetRepoRoot,
             seatEnvFile   : path.join(placement.targetRepoRoot, '.env'),
             kimiHome      : placement.instanceHome,
-            memoryDir     : deriveAgentMemoryDir({instanceRoot: placement.instanceRoot, agentId: agent.id}),
+            memoryDir     : deriveAgentMemoryDir({instanceRoot: placement.instanceRoot, agentId: placement.agentId ?? agent.id}),
             nodeBinary    : plan[0].command,
             servers
         }),
@@ -2212,7 +2215,7 @@ async function prepareOpenCodeArtifacts({agent, instanceRoot, targetRepoRoot, in
             agentosRuntimeRoot,
             targetRepoRoot: placement.targetRepoRoot,
             seatEnvFile   : path.join(placement.targetRepoRoot, '.env'),
-            memoryDir     : deriveAgentMemoryDir({instanceRoot: placement.instanceRoot, agentId: agent.id}),
+            memoryDir     : deriveAgentMemoryDir({instanceRoot: placement.instanceRoot, agentId: placement.agentId ?? agent.id}),
             nodeBinary    : plan[0].command,
             environment   : plan[0].environment,
             seatHome      : placement.instanceHome,
@@ -2435,35 +2438,88 @@ async function relocateGeneratedText({filePath, previousContent, desiredContent,
 }
 
 /**
- * @summary Where a relocated seat's paths pointed before its folder was copied to this agents root: the
- * previous root's harness home, and its checkout when that sat inside the seat's folder (one outside it
- * did not move). `null` without a previous root, or when it is this root.
+ * The Antigravity memory loader's exact shape, whatever identity and paths it names ({@link
+ * renderAntigravityMemoryLoader}).
+ * @private
+ */
+const ANTIGRAVITY_MEMORY_LOADER_SHAPE = /^# Fleet seat memory\n\nOperational identity for this managed workspace: @\S+\.\nUse the current Fleet-issued identity and loaded seat memory when legacy global harness notes differ\.\n\n@\[Seat memory\]\(\/[^()\n]+\/MEMORY\.md\)\n@\[Bearer identity\]\(\/[^()\n]+\/identity\.md\)\n$/;
+
+/**
+ * @summary The Antigravity workspace file that loads a seat's memory, rendered whole by Fleet.
+ * @param {Object} options
+ * @param {String} options.identity  The seat's launch identity.
+ * @param {String} options.memoryDir The seat's memory folder.
+ * @returns {String}
+ */
+export function renderAntigravityMemoryLoader({identity, memoryDir}) {
+    return '# Fleet seat memory\n\n' +
+        `Operational identity for this managed workspace: @${identity}.\n` +
+        'Use the current Fleet-issued identity and loaded seat memory when legacy global harness notes differ.\n\n' +
+        `@[Seat memory](${path.join(memoryDir, 'MEMORY.md')})\n` +
+        `@[Bearer identity](${path.join(memoryDir, 'identity.md')})\n`
+}
+
+/**
+ * @summary Brings an Antigravity memory loader up to date when it still has the loader's exact shape. Its only
+ * variable parts are the identity and the memory paths, which a seat move, a rename or a new login changes, so
+ * a file of that shape is a Fleet rendering to replace. Any other content is left to the convergence, which
+ * refuses it.
+ * @param {Object} loader The convergence's `{filePath, desiredContent, ownedLabel, trustedRoot, fileSystem}`.
+ * @returns {Promise<Object|null>} The `updated` artifact, or `null` when the convergence should decide.
+ * @private
+ */
+async function refreshAntigravityMemoryLoader({filePath, desiredContent, ownedLabel, trustedRoot, fileSystem}) {
+    let existing;
+
+    try {
+        existing = await fileSystem.readFile(filePath, 'utf8')
+    } catch (error) {
+        if (error?.code === 'ENOENT') return null;
+        throw error
+    }
+
+    if (existing === desiredContent || !ANTIGRAVITY_MEMORY_LOADER_SHAPE.test(existing)) return null;
+
+    await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: ownedLabel});
+    await publishTextAtomically({filePath, content: desiredContent, fileSystem});
+
+    return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.UPDATED, ownedKeys: ownedLabel}
+}
+
+/**
+ * @summary Where a moved seat's paths pointed before its folder was copied: the previous root's harness home
+ * under the seat's previous id, and its checkout when that sat inside the seat's folder (one outside it did
+ * not move). A root move keeps the id and a rename keeps the root. `null` without a previous root, or when
+ * neither the root nor the id changed.
  * @param {Object}      options
  * @param {String|null} options.previousInstanceRoot The agents root the seat's folder was copied from.
+ * @param {String|null} [options.previousAgentId]    The id the seat had there; `null` for its own.
  * @param {String}      options.instanceRoot         This agents root, resolved.
  * @param {String}      options.targetRepoRoot       This checkout, resolved.
  * @param {Object}      options.agent                The plan's `{id, harnessType}`.
  * @param {Function}    options.deriveInstanceHome   Per-agent home derivation seam.
- * @returns {{instanceRoot: String, instanceHome: String, targetRepoRoot: String}|null}
+ * @returns {{agentId: String, instanceRoot: String, instanceHome: String, targetRepoRoot: String}|null}
  * @private
  */
-function previousSeatPlacement({previousInstanceRoot, instanceRoot, targetRepoRoot, agent, deriveInstanceHome}) {
+function previousSeatPlacement({previousInstanceRoot, previousAgentId = null, instanceRoot, targetRepoRoot, agent, deriveInstanceHome}) {
     if (previousInstanceRoot === null) return null;
 
     assertAbsolutePath(previousInstanceRoot, 'previousInstanceRoot');
 
     const
-        root   = path.resolve(previousInstanceRoot),
-        inSeat = path.relative(path.join(instanceRoot, agent.id), targetRepoRoot);
+        root    = path.resolve(previousInstanceRoot),
+        agentId = previousAgentId ?? agent.id,
+        inSeat  = path.relative(path.join(instanceRoot, agent.id), targetRepoRoot);
 
-    if (root === instanceRoot) return null;
+    if (root === instanceRoot && agentId === agent.id) return null;
 
     return {
+        agentId,
         instanceRoot  : root,
-        instanceHome  : deriveInstanceHome({instanceRoot: root, agentId: agent.id, harnessType: agent.harnessType}),
+        instanceHome  : deriveInstanceHome({instanceRoot: root, agentId, harnessType: agent.harnessType}),
         targetRepoRoot: inSeat === '..' || inSeat.startsWith(`..${path.sep}`) || path.isAbsolute(inSeat)
             ? targetRepoRoot
-            : path.join(root, agent.id, inSeat)
+            : path.join(root, agentId, inSeat)
     }
 }
 

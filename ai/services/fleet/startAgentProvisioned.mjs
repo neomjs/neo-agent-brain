@@ -656,14 +656,16 @@ async function provisionAgent({
     // propagates, so `start` is never called over divergent or unsupported resident state.
     const seatInstanceRoot = instanceRoot ?? lifecycleService.getInstanceRoot?.();
 
-    // A moved seat's row names the home it left (`relocateSeatHome`). When the harness homes live in the
-    // seat folders, as they do under one agents root, that home's root is where Fleet rendered the files
-    // the copy carries, and the preparation re-derives them for this root.
-    const previousInstanceRoot = typeof agent.previousSeatHome === 'string' &&
-        path.basename(agent.previousSeatHome) === agentId &&
-        path.resolve(seatInstanceRoot) === path.resolve(managedRoot)
-        ? path.dirname(agent.previousSeatHome)
-        : null;
+    // A moved seat's row names the home it left (`relocateSeatHome`), and a renamed one also its former id
+    // (`renameAgent`). When the harness homes live in the seat folders, as they do under one agents root, that
+    // home is where Fleet rendered the files the copy carries, under the id it is named after, and the
+    // preparation re-derives them for this home. The home may be named after this id (a later root move) or the
+    // former one, and nothing else.
+    const
+        previousName    = typeof agent.previousSeatHome === 'string' ? path.basename(agent.previousSeatHome) : null,
+        previousAgentId = previousName && [agentId, agent.previousId].includes(previousName) &&
+            path.resolve(seatInstanceRoot) === path.resolve(managedRoot) ? previousName : null,
+        previousInstanceRoot = previousAgentId ? path.dirname(agent.previousSeatHome) : null;
 
     // A Claude Desktop seat's profile rows carry one launch grant per enabled server, reserved before the rows
     // are written. The lifecycle activates them once the seat runs and is leased; a Start that fails before
@@ -689,6 +691,7 @@ async function provisionAgent({
             assignedRepos      : checkouts,
             instanceRoot       : seatInstanceRoot,
             previousInstanceRoot,
+            previousAgentId,
             agentosRuntimeRoot,
             nodePath,
             residentMcpEnv     : resolvedResidentMcpEnv,

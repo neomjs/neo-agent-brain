@@ -5,17 +5,17 @@ setup({
     appConfig: {name: 'SeatOperatorRegistryTest'}
 });
 
-import {test, expect}              from '@playwright/test';
-import fs                          from 'node:fs';
-import os                          from 'node:os';
-import path                        from 'node:path';
-import Neo                         from 'neo.mjs/src/Neo.mjs';
-import * as core                   from 'neo.mjs/src/core/_export.mjs';
-import FleetRegistryService        from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
-import SeatOperatorRegistryService from '../../../../../../ai/services/fleet/SeatOperatorRegistryService.mjs';
-import {dispatchFleetRequest}      from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
+import {test, expect}                                       from '@playwright/test';
+import fs                                                   from 'node:fs';
+import os                                                   from 'node:os';
+import path                                                 from 'node:path';
+import Neo                                                  from 'neo.mjs/src/Neo.mjs';
+import * as core                                            from 'neo.mjs/src/core/_export.mjs';
+import FleetRegistryService                                 from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import SeatOperatorRegistryService                          from '../../../../../../ai/services/fleet/SeatOperatorRegistryService.mjs';
+import {dispatchFleetRequest}                               from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
 import {dispatchFleetS1Request, FLEET_METHOD_SCOPE_CLASSES} from '../../../../../../ai/services/fleet/fleetServerPolicy.mjs';
-import {createFleetWireRequest}    from '../../../../../../src/fleet/contract/wire.mjs';
+import {createFleetWireRequest}                             from '../../../../../../src/fleet/contract/wire.mjs';
 
 /**
  * @summary The seat operator relation, on real stores in a temp Fleet root: a define records its admitted
@@ -60,6 +60,20 @@ test.describe('the seat operator relation — one principal per seat, written by
 
         define('legacy');
         expect(registry.operatesSeat(A, 'legacy')).toEqual({operates: false, reason: 'unowned'})
+    });
+
+    test('a renamed seat keeps its operator under its new id in one logged event, and a re-run moves nothing (#1173)', () => {
+        define('neo-gpt', {ownerPrincipal: A});
+        registry.renameAgent('neo-gpt', {to: 'neo-gpt-euclid', from: registry.getAgent('neo-gpt').seatHome, seatHome: path.join(dir, 'agents', 'neo-gpt-euclid')});
+
+        expect(registry.operatesSeat(A, 'neo-gpt-euclid')).toEqual({operates: true});
+        expect(operators.operatorOf('neo-gpt')).toEqual({state: 'ok', principal: null});
+
+        const {events} = JSON.parse(fs.readFileSync(storeOf(), 'utf8'));
+
+        expect(events.at(-1)).toMatchObject({op: 'rename', actor: null, from: 'neo-gpt', to: 'neo-gpt-euclid', principal: A});
+        expect(operators.rename({from: 'neo-gpt', to: 'neo-gpt-euclid'})).toMatchObject({ok: true, applied: false});
+        expect(JSON.parse(fs.readFileSync(storeOf(), 'utf8')).events).toHaveLength(events.length)
     });
 
     test('adopting a seat leaves its operator untouched: adoptAgent receives no admission, and its launch-owner write moves no relation', async () => {

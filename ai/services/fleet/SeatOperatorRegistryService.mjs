@@ -263,6 +263,31 @@ class SeatOperatorRegistryService extends Base {
     }
 
     /**
+     * @summary Carries a seat's operator to its new id when `renameAgent` renames the seat, so the renamed seat
+     * keeps its operator. The registry has already refused a rename onto an existing seat, so a record at the
+     * new id is a leftover of a removed seat and is replaced, as {@link claim} replaces one. A seat no one
+     * operates moves nothing, and so does a re-run after the record moved.
+     * @param {Object} options
+     * @param {String} options.from The seat's previous id.
+     * @param {String} options.to   Its new id.
+     * @returns {Object} `{ok: true, applied, version}` or `{ok: false, refused, reason}`.
+     */
+    rename({from, to}) {
+        return this.mutate({actor: null, apply: true, op: 'rename', idle: result => !result.principal}, store => {
+            const record = store.operators[from];
+
+            if (!record) return {ok: true, from, principal: null, to};
+
+            const replaced = store.operators[to]?.principal ?? null;
+
+            store.operators[to] = record;
+            delete store.operators[from];
+
+            return {ok: true, from, principal: record.principal, replaced, to}
+        })
+    }
+
+    /**
      * @summary The seats one principal operates, read fresh. Never throws.
      * @param {String} principal
      * @returns {{state: 'ok', seats: String[]}|{state: 'unavailable', reason: String}}

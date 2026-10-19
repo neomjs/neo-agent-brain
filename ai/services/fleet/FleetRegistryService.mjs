@@ -8,7 +8,7 @@ import Observable                                               from 'neo.mjs/sr
 import {HARNESS_TYPES}                                          from '../../../src/fleet/contract/harnessTypes.mjs';
 import {writeFileAtomicSync}                                    from '../shared/atomicFileWrite.mjs';
 import {mcpCatalogFor, normalizeMcpOverrides, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
-import {REPO_FORGES}                                            from './deriveAgentRepoPath.mjs';
+import {REPO_FORGES, assertSeatSegment}                         from './deriveAgentRepoPath.mjs';
 import {mcpDeclarationRefusal}                                  from './managedAgentWorkspacePlan.mjs';
 import {normalizeMcpTarget}                                     from './mcpServers.mjs';
 import {normalizeMemoryImport}                                  from './seatMemoryImport.mjs';
@@ -867,6 +867,92 @@ class FleetRegistryService extends Base {
         this.announceDefinition(id, existing, def);
 
         return this.toPublic(def);
+    }
+
+    /**
+     * @summary The one re-key of a row: a seat's Fleet id changes after its folder was copied to the new name
+     * ({@link Neo.ai.services.fleet.renameSeat}). Like {@link relocateSeatHome} it is Brain/operator-only and a
+     * compare-and-set over the recorded seat home. The row keeps what it left, `previousSeatHome` and
+     * `previousId`, from which the next start re-derives the Fleet-owned files rendered under the old id.
+     *
+     * The PAT and the seat's operator follow the row. The PAT is copied to the new id before the registry write
+     * and removed from the old one after it, so an interruption leaves a startable seat, and a re-run, which
+     * finds the row under its new id, completes the PAT and operator moves.
+     * @param {String} id             The row's current id.
+     * @param {Object} rename
+     * @param {String} rename.to       The new id: a seat segment no row uses.
+     * @param {String} rename.from     The seat home the row records now.
+     * @param {String} rename.seatHome The absolute folder the copied seat lives in.
+     * @returns {Object|null} The renamed public definition, or `null` when neither id names the seat.
+     * @throws {Error} For an invalid id or home, a row already at `to`, or a `from` that is not the recorded
+     *     seat home.
+     */
+    renameAgent(id, {to, from, seatHome} = {}) {
+        assertSeatSegment(to, 'to', 'FleetRegistryService.renameAgent');
+        assertSeatHome(seatHome, 'renameAgent');
+        this.ensureLoaded();
+
+        const
+            existing = this.agents.get(id),
+            renamed  = this.agents.get(to);
+
+        if (!existing) {
+            if (renamed?.previousId !== id) return null;
+
+            this.completeRename(id, to);
+
+            return this.toPublic(renamed)
+        }
+
+        if (renamed) throw new Error(`FleetRegistryService.renameAgent: '${to}' already names a seat.`);
+
+        if ((existing.seatHome ?? null) !== (from ?? null)) {
+            throw new Error(`FleetRegistryService.renameAgent: agent '${id}' records seat home '${existing.seatHome ?? 'none'}', not '${from ?? 'none'}'.`)
+        }
+
+        this.carryCredential(id, to);
+
+        const
+            def        = {...existing, id: to, seatHome, previousSeatHome: existing.seatHome ?? null, previousId: id, updatedAt: new Date().toISOString()},
+            nextAgents = new Map([...this.agents].map(([key, value]) => key === id ? [to, def] : [key, value]));
+
+        this.writeRegistry(nextAgents);
+        this.agents = nextAgents;
+        this.announceDefinition(id, existing, null);
+        this.announceDefinition(to, null, def);
+        this.completeRename(id, to);
+
+        return this.toPublic(def);
+    }
+
+    /**
+     * @summary The moves a rename finishes after its registry write: the old id's PAT and the seat's operator.
+     * @param {String} from
+     * @param {String} to
+     * @private
+     */
+    completeRename(from, to) {
+        this.carryCredential(from, to);
+        this.removeCredential(from);
+
+        const moved = SeatOperatorRegistryService.rename({from, to});
+
+        moved.ok || console.warn(`[FleetRegistryService] seat '${to}' (was '${from}') kept no operator: ${moved.reason}`)
+    }
+
+    /**
+     * @summary Stores the PAT of `from` under `to` too, unless `to` already has one.
+     * @param {String} from
+     * @param {String} to
+     * @private
+     */
+    carryCredential(from, to) {
+        const credentials = this.readCredentialsForMutation();
+
+        if (Object.hasOwn(credentials, from) && !Object.hasOwn(credentials, to)) {
+            credentials[to] = credentials[from];
+            this.writeCredentials(credentials)
+        }
     }
 
     /**
