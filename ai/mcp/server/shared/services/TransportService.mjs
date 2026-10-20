@@ -360,6 +360,10 @@ class TransportService extends Base {
             await RequestContextService.run(requestContext, () => transport.handleRequest(req, res, req.body));
         });
 
+        if (typeof server.registerHttpRoutes === 'function') {
+            await server.registerHttpRoutes(app);
+        }
+
         const port = aiConfig.mcpHttpPort;
         await new Promise((resolve, reject) => {
             const onListening = () => {

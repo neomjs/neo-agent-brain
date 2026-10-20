@@ -13,14 +13,17 @@ setup({
     }
 });
 
-import {test, expect}  from '@playwright/test';
-import {execFileSync}  from 'child_process';
-import Database        from 'better-sqlite3';
-import fs              from 'fs-extra';
-import path            from 'path';
-import {fileURLToPath} from 'url';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}           from '@playwright/test';
+import {execFile, execFileSync} from 'child_process';
+import Database                 from 'better-sqlite3';
+import fs                       from 'fs-extra';
+import path                     from 'path';
+import {fileURLToPath}          from 'url';
+import {promisify}              from 'util';
+import Neo                      from 'neo.mjs/src/Neo.mjs';
+import * as core                from 'neo.mjs/src/core/_export.mjs';
+
+const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -1128,5 +1131,500 @@ This should be skipped.`);
             canonicalKey: stageKey,
             kbAvailable : true
         });
+    });
+
+    test('AC9 (#1232): reads live Memory Core ADR admission projection across separate KB and Memory Core processes (AC1 extraction + 0042, AC2 5-state reconciliation, AC3 slug/alias/locator + private neo-stage reader auth, AC4 outage preservation + recovery)', async () => {
+        const
+            http                                  = await import('node:http'),
+            {
+                ADR_ADMISSION_PROJECTION_PATH,
+                createAdrAdmissionProjectionHandler
+            }                                     = await import('../../../../../../../ai/services/ingestion/adrAdmissionCatalog.mjs'),
+            {default: MemoryCoreServer}           = await import('../../../../../../../ai/mcp/server/memory-core/Server.mjs'),
+            registeredRoutes                      = new Map(),
+            liveMcSqlite                          = path.join(mockRoot, 'live-mc-projection-1232.sqlite'),
+            missingKbSqlite                       = path.join(mockRoot, 'missing-kb-local-1232.sqlite'),
+            key0020                               = 'adr:github.com:220867748:neomjs%2Fneo:0020',
+            key0034                               = 'adr:github.com:220867748:neomjs%2Fneo:0034',
+            key0042                               = 'adr:github.com:220867748:neomjs%2Fneo:0042',
+            brainKey0001                          = 'adr:github.com:1344062228:neomjs%2Fneo-agent-brain:0001',
+            stageKey0001                          = 'adr:github.com:1350000001:neomjs%2Fneo-stage:0001',
+            record0020Initial                     = buildRetainedRecord({
+                canonicalKey: key0020,
+                adrNumber   : '0020',
+                title       : 'Agent Harness Concept',
+                currentSlug : 'agent-harness-concept',
+                repositoryId: '220867748',
+                namespace   : 'neomjs/neo',
+                sourcePath  : 'learn/agentos/decisions/0020-agent-harness-concept.md'
+            }),
+            record0020Moved                        = {
+                ...record0020Initial,
+                sourceTuple: {
+                    forge       : 'github.com',
+                    repositoryId: '1347756127',
+                    namespace   : 'neomjs/neo-agent-institution',
+                    path        : 'learn/agentos/decisions/0020-agent-harness-concept.md'
+                },
+                aliasBindings: [
+                    ...record0020Initial.aliasBindings.map(b => ({...b, current: false})),
+                    {
+                        kind        : 'slug',
+                        value       : 'agent-harness-concept',
+                        forge       : 'github.com',
+                        repositoryId: '1347756127',
+                        namespace   : 'neomjs/neo-agent-institution',
+                        targetKey   : key0020,
+                        current     : true
+                    },
+                    {
+                        kind        : 'legacy-number',
+                        value       : '0020',
+                        forge       : 'github.com',
+                        repositoryId: '1347756127',
+                        namespace   : 'neomjs/neo-agent-institution',
+                        targetKey   : key0020,
+                        current     : true
+                    }
+                ],
+                provenance: {
+                    ...record0020Initial.provenance,
+                    custodyTransitions: [{
+                        adrNumber       : '0020',
+                        canonicalKey    : key0020,
+                        fromRepositoryId: '220867748',
+                        toRepositoryId  : '1347756127',
+                        toNamespace     : 'neomjs/neo-agent-institution',
+                        proof           : 'git-log-follow-0020'
+                    }]
+                }
+            },
+            record0034                             = buildRetainedRecord({
+                canonicalKey: key0034,
+                adrNumber   : '0034',
+                title       : 'Electron Shell Architecture',
+                currentSlug : 'electron-shell-architecture',
+                aliases     : ['electron-shell-v1'],
+                repositoryId: '220867748',
+                namespace   : 'neomjs/neo',
+                sourcePath  : 'learn/agentos/decisions/0034-electron-shell-architecture.md'
+            }),
+            record0042                             = buildRetainedRecord({
+                canonicalKey: key0042,
+                adrNumber   : '0042',
+                title       : 'Live Cross-Process Admission Channel',
+                currentSlug : 'live-cross-process-admission-channel',
+                repositoryId: '220867748',
+                namespace   : 'neomjs/neo',
+                sourcePath  : 'learn/agentos/decisions/0042-live-cross-process-admission-channel.md'
+            }),
+            recordBrain0001                        = buildRetainedRecord({
+                canonicalKey: brainKey0001,
+                adrNumber   : '0001',
+                title       : 'Cross-Process Cache Coherence',
+                currentSlug : 'cross-process-cache-coherence',
+                aliases     : ['cache-coherence-v1', 'graph-cache-sync'],
+                repositoryId: '1344062228',
+                namespace   : 'neomjs/neo-agent-brain',
+                sourcePath  : 'learn/agentos/decisions/0001-cross-process-cache-coherence.md'
+            }),
+            recordStage0001                        = buildRetainedRecord({
+                canonicalKey: stageKey0001,
+                adrNumber   : '0001',
+                title       : 'The Engine Contract',
+                currentSlug : 'the-engine-contract',
+                repositoryId: '1350000001',
+                namespace   : 'neomjs/neo-stage',
+                sourcePath  : 'learn/decisions/0001-the-engine-contract.md',
+                tenantId    : 'stage-private',
+                visibility  : 'private'
+            });
+
+        const db = new Database(liveMcSqlite);
+        db.exec(`CREATE TABLE Nodes (id TEXT PRIMARY KEY, data TEXT NOT NULL)`);
+        const upsertNode = db.prepare(`INSERT OR REPLACE INTO Nodes (id, data) VALUES (?, ?)`);
+        for (const rec of [record0020Initial, record0034, record0042, recordBrain0001, recordStage0001]) {
+            upsertNode.run(rec.canonicalKey, JSON.stringify({
+                id        : rec.canonicalKey,
+                label     : 'ADR',
+                properties: {
+                    adrAuthority      : {admitted: true, canonicalKey: rec.canonicalKey},
+                    adrAdmissionRecord: rec
+                }
+            }));
+        }
+
+        MemoryCoreServer.prototype.registerHttpRoutes({
+            get(routePath, routeHandler) {
+                registeredRoutes.set(routePath, routeHandler);
+            }
+        });
+        expect(registeredRoutes.has(ADR_ADMISSION_PROJECTION_PATH)).toBe(true);
+        expect(typeof registeredRoutes.get(ADR_ADMISSION_PROJECTION_PATH)).toBe('function');
+
+        let   projectionAvailable = true;
+        const handler             = createAdrAdmissionProjectionHandler({
+            sqlitePath     : () => liveMcSqlite,
+            includeInMemory: false,
+            getAvailable   : () => projectionAvailable
+        });
+
+        const server = http.createServer((req, res) => {
+            if (req.url === '/control/move-0020') {
+                upsertNode.run(key0020, JSON.stringify({
+                    id        : key0020,
+                    label     : 'ADR',
+                    properties: {
+                        adrAuthority      : {admitted: true, canonicalKey: key0020},
+                        adrAdmissionRecord: record0020Moved
+                    }
+                }));
+                res.writeHead(200, {'Content-Type': 'application/json'});
+                res.end(JSON.stringify({ok: true}));
+                return;
+            }
+            if (req.url === '/control/outage') {
+                projectionAvailable = false;
+                res.writeHead(200, {'Content-Type': 'application/json'});
+                res.end(JSON.stringify({ok: true}));
+                return;
+            }
+            if (req.url === '/control/recover') {
+                projectionAvailable = true;
+                res.writeHead(200, {'Content-Type': 'application/json'});
+                res.end(JSON.stringify({ok: true}));
+                return;
+            }
+            handler(req, res);
+        });
+
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        const {port}        = server.address();
+        const projectionUrl = `http://127.0.0.1:${port}/adr-admission-projection`;
+        const baseUrl       = `http://127.0.0.1:${port}`;
+
+        try {
+            const kbChildScript = `
+                import fs from 'fs-extra';
+                import path from 'path';
+                import Neo from 'neo.mjs/src/Neo.mjs';
+                import * as core from 'neo.mjs/src/core/_export.mjs';
+                import AdrSource from './ai/services/knowledge-base/source/AdrSource.mjs';
+                import {buildIngestEnvelope} from './ai/services/knowledge-base/helpers/tenantRepoIngestEnvelopeBuilder.mjs';
+                import {deriveTenantRepoMirrorPath} from './ai/services/knowledge-base/helpers/tenantRepoAccessContract.mjs';
+                import {createCoreCorpusProfilePlan} from './ai/services/knowledge-base/helpers/coreCorpusProfilePlan.mjs';
+
+                const projectionUrl = ${JSON.stringify(projectionUrl)};
+                const baseUrl       = ${JSON.stringify(baseUrl)};
+                const mockRoot      = ${JSON.stringify(mockRoot)};
+
+                AdrSource.resetCatalog();
+                AdrSource.setLiveAdmissionProjectionConfig({admissionProjectionUrl: projectionUrl});
+
+                const neoRepo   = {forge: 'github.com', repositoryId: '220867748',  namespace: 'neomjs/neo'};
+                const instRepo  = {forge: 'github.com', repositoryId: '1347756127', namespace: 'neomjs/neo-agent-institution'};
+                const brainRepo = {forge: 'github.com', repositoryId: '1344062228', namespace: 'neomjs/neo-agent-brain', visibility: 'public'};
+                const stageRepo = {forge: 'github.com', repositoryId: '1350000001', namespace: 'neomjs/neo-stage', tenantId: 'stage-private', visibility: 'private'};
+
+                // 1. AC1: KB extraction over live Memory Core projection without AdrIngestor loaded
+                const extractFiles = {
+                    'learn/agentos/decisions/0034-electron-shell-architecture.md': '# ADR 0034: Electron Shell Architecture\\n\\n| Attribute | Value |\\n|---|---|\\n| **Status** | Accepted |\\n| **Aliases** | \`electron-shell-v1\` |\\n\\n## 1. Context\\nBody.',
+                    'learn/agentos/decisions/0042-live-cross-process-admission-channel.md': '# ADR 0042: Live Cross-Process Admission Channel\\n\\n| Attribute | Value |\\n|---|---|\\n| **Status** | Accepted |\\n\\n## 1. Context\\nNewly authored decision.',
+                    'learn/agentos/decisions/0099-unproved.md': '# ADR 0099: Unproved\\n\\nBody.',
+                    'learn/agentos/decisions/0002-moved-record.md': ${JSON.stringify(redirect)}
+                };
+                const extractedChunks = [];
+                const ac1Res = await AdrSource.extractFromRepository({
+                    context: {
+                        repository: neoRepo,
+                        repositoryReader: {readText: async p => extractFiles[p]},
+                        territory: {
+                            assignments: Object.keys(extractFiles).map(sourcePath => ({
+                                entry: {sourcePath},
+                                relativePath: sourcePath.split('/').pop()
+                            }))
+                        }
+                    },
+                    writeStream: {write: line => extractedChunks.push(JSON.parse(line))},
+                    createHashFn: c => 'hash:' + c.name
+                });
+
+                // 2. AC2: 5-state reconciliation across processes against live Memory Core projection
+                const key0020     = '${key0020}';
+                const body0020    = '# ADR 0020: Agent Harness Concept\\n\\n| Attribute | Value |\\n|---|---|\\n| **Status** | Accepted |\\n\\n## 1. Context\\nThe harness concept.';
+                const pointer0020 = '---\\ntype: redirect\\ntarget: ' + key0020 + '\\n---\\n# Moved to neomjs/neo-agent-institution';
+
+                const oldOnly = await AdrSource.reconcileDecisionStates({
+                    repositories: [{repository: neoRepo, files: {'learn/agentos/decisions/0020-agent-harness-concept.md': body0020}}]
+                });
+                const neitherPresent = await AdrSource.reconcileDecisionStates({
+                    repositories: [{repository: neoRepo, files: {'learn/agentos/decisions/0020-agent-harness-concept.md': pointer0020}}]
+                });
+                const neitherRef = await AdrSource.resolveAdrReferenceAsync(key0020);
+
+                // Memory Core admits the custody move of 0020 to neo-agent-institution
+                await fetch(baseUrl + '/control/move-0020');
+
+                // KB reconciles new-only, both-present, and interrupted/retried WITHOUT local custodyTransitions
+                const newOnly = await AdrSource.reconcileDecisionStates({
+                    repositories: [{repository: instRepo, files: {'learn/agentos/decisions/0020-agent-harness-concept.md': body0020}}]
+                });
+                const bothPresent = await AdrSource.reconcileDecisionStates({
+                    repositories: [
+                        {repository: neoRepo,  files: {'learn/agentos/decisions/0020-agent-harness-concept.md': pointer0020}},
+                        {repository: instRepo, files: {'learn/agentos/decisions/0020-agent-harness-concept.md': body0020}}
+                    ]
+                });
+                const retried = await AdrSource.reconcileDecisionStates({
+                    retryAttempt: 2,
+                    repositories: [
+                        {repository: neoRepo,  files: {'learn/agentos/decisions/0020-agent-harness-concept.md': pointer0020}},
+                        {repository: instRepo, files: {'learn/agentos/decisions/0020-agent-harness-concept.md': body0020}}
+                    ]
+                });
+
+                // 3. AC3: Cross-process slug, alias, and repository-locator resolution + private neo-stage reader auth
+                await AdrSource.reconcileDecisionStates({
+                    repositories: [
+                        {repository: brainRepo, files: {'learn/agentos/decisions/0001-cross-process-cache-coherence.md': '# ADR 0001: Cross-Process Cache Coherence\\n\\n| Attribute | Value |\\n|---|---|\\n| **Status** | Accepted |\\n| **Aliases** | \`cache-coherence-v1\`, \`graph-cache-sync\` |\\n\\n## 1. Context\\nBrain 0001.'}},
+                        {repository: stageRepo, files: {'learn/decisions/0001-the-engine-contract.md': '# ADR 0001: The Engine Contract\\n\\n**Status:** Accepted — 2026-10-18\\n\\n## 1. Context\\nStage 0001.'}}
+                    ]
+                });
+
+                const ref0042Slug        = await AdrSource.resolveAdrReferenceAsync('neomjs/neo#adr:live-cross-process-admission-channel', {forge: 'github.com'});
+                const refBrainAlias      = await AdrSource.resolveAdrReferenceAsync('NeoMjs/Neo-Agent-Brain#adr:cache-coherence-v1', {forge: 'github.com'});
+                const refMoved0020Origin = await AdrSource.resolveAdrReferenceAsync('neomjs/neo#adr:agent-harness-concept', {forge: 'github.com'});
+                const refMoved0020Dest   = await AdrSource.resolveAdrReferenceAsync('neomjs/neo-agent-institution#adr:agent-harness-concept', {forge: 'github.com'});
+                const refUnqualified0001 = await AdrSource.resolveAdrReferenceAsync('adr-0001', {surface: 'organization_discussion', forge: 'github.com'});
+                const refStageDenied     = await AdrSource.resolveAdrReferenceAsync('neomjs/neo-stage#adr:the-engine-contract', {forge: 'github.com'});
+                const refStageAllowed    = await AdrSource.resolveAdrReferenceAsync('neomjs/neo-stage#adr:the-engine-contract', {forge: 'github.com', tenantId: 'stage-private'});
+
+                // 4. AC4: Live admission channel failure preserves existing admitted production data and recovers cleanly
+                const sourcePath0042 = 'learn/agentos/decisions/0042-live-cross-process-admission-channel.md';
+                const rev1           = 'a'.repeat(40);
+                const rev2           = 'b'.repeat(40);
+                const mirrorRoot     = path.join(mockRoot, 'mirrors-1232');
+                const mirrorPath     = deriveTenantRepoMirrorPath({mirrorRoot, tenantId: 'neo-shared', repoSlug: 'neomjs/neo'});
+                fs.ensureDirSync(mirrorPath);
+
+                const plan = createCoreCorpusProfilePlan('neo');
+                const adrProfile = {
+                    ...plan.profile,
+                    routes: plan.profile.routes.filter(route => route.extractorId === 'AdrSource')
+                };
+                const revisions = {
+                    [rev1]: {[sourcePath0042]: extractFiles[sourcePath0042]},
+                    [rev2]: {[sourcePath0042]: extractFiles[sourcePath0042] + '\\nUpdated.'}
+                };
+                const gitMirror = {
+                    async resolveHead({ref}) { return ref; },
+                    async isAncestor() { return true; },
+                    async diffRevisions() { return {addedOrChanged: [sourcePath0042], deleted: []}; },
+                    async listRevisionEntries({revision}) {
+                        return Object.keys(revisions[revision] || {}).map(p => ({sourcePath: p, mode: '100644', type: 'blob', oid: revision}));
+                    },
+                    async readRevisionBlob({revision, sourcePath: p}) {
+                        return Buffer.from(revisions[revision][p], 'utf8');
+                    },
+                    async prefetchRevisionBlobs() { return {status: 'local'}; }
+                };
+
+                // Simulate Memory Core projection endpoint outage (HTTP 503) AFTER catalog was already populated
+                await fetch(baseUrl + '/control/outage');
+
+                const outageFullEnvelope = await buildIngestEnvelope({
+                    tenantId         : 'neo-shared',
+                    repoSlug         : 'neomjs/neo',
+                    mirrorRoot,
+                    rootKind         : 'bare-repo',
+                    lastIngestedRev  : null,
+                    newHead          : rev1,
+                    extractionProfile: adrProfile,
+                    gitMirror
+                });
+                const outageDeltaEnvelope = await buildIngestEnvelope({
+                    tenantId         : 'neo-shared',
+                    repoSlug         : 'neomjs/neo',
+                    mirrorRoot,
+                    rootKind         : 'bare-repo',
+                    lastIngestedRev  : rev1,
+                    newHead          : rev2,
+                    extractionProfile: adrProfile,
+                    gitMirror
+                });
+                const outageRef = await AdrSource.resolveAdrReferenceAsync('neomjs/neo#adr:live-cross-process-admission-channel', {forge: 'github.com'});
+
+                // Recover Memory Core projection endpoint (HTTP 200)
+                await fetch(baseUrl + '/control/recover');
+
+                const recoveredEnvelope = await buildIngestEnvelope({
+                    tenantId         : 'neo-shared',
+                    repoSlug         : 'neomjs/neo',
+                    mirrorRoot,
+                    rootKind         : 'bare-repo',
+                    lastIngestedRev  : null,
+                    newHead          : rev2,
+                    extractionProfile: adrProfile,
+                    gitMirror
+                });
+
+                process.stdout.write(JSON.stringify({
+                    adrIngestorLoaded: Boolean(Neo.ai?.daemons?.services?.AdrIngestor),
+                    ac1: {
+                        count       : ac1Res.count,
+                        chunkKeys   : extractedChunks.map(c => c.canonicalKey),
+                        refusedCodes: ac1Res.refusedSourcePaths.map(r => r.code),
+                        redirects   : ac1Res.redirects.length
+                    },
+                    ac2: {
+                        oldOnly       : oldOnly.reconciliation[key0020],
+                        neitherPresent: neitherPresent.reconciliation[key0020],
+                        neitherRef    : {
+                            identityResolved : neitherRef.identityResolved,
+                            documentAvailable: neitherRef.documentAvailable,
+                            kbAvailable      : neitherRef.kbAvailable
+                        },
+                        newOnly    : newOnly.reconciliation[key0020],
+                        bothPresent: bothPresent.reconciliation[key0020],
+                        retried    : retried.reconciliation[key0020]
+                    },
+                    ac3: {
+                        ref0042Slug       : {resolved: ref0042Slug.resolved, canonicalKey: ref0042Slug.canonicalKey, kbAvailable: ref0042Slug.kbAvailable},
+                        refBrainAlias     : {resolved: refBrainAlias.resolved, canonicalKey: refBrainAlias.canonicalKey, kbAvailable: refBrainAlias.kbAvailable},
+                        refMoved0020Origin: {resolved: refMoved0020Origin.resolved, canonicalKey: refMoved0020Origin.canonicalKey, kbAvailable: refMoved0020Origin.kbAvailable},
+                        refMoved0020Dest  : {resolved: refMoved0020Dest.resolved, canonicalKey: refMoved0020Dest.canonicalKey, kbAvailable: refMoved0020Dest.kbAvailable},
+                        refUnqualified0001: {resolved: refUnqualified0001.resolved, reasonCode: refUnqualified0001.reasonCode, candidates: refUnqualified0001.candidates},
+                        refStageDenied    : {resolved: refStageDenied.resolved, reasonCode: refStageDenied.reasonCode},
+                        refStageAllowed   : {resolved: refStageAllowed.resolved, canonicalKey: refStageAllowed.canonicalKey, kbAvailable: refStageAllowed.kbAvailable}
+                    },
+                    ac4: {
+                        outageFull: {
+                            admissionAvailable       : outageFullEnvelope.admissionAvailable,
+                            admissionUnavailablePaths: outageFullEnvelope.admissionUnavailablePaths,
+                            filesCount               : outageFullEnvelope.files.length,
+                            hasYieldedSourcePaths    : Object.hasOwn(outageFullEnvelope.manifestSnapshot, 'yieldedSourcePaths')
+                        },
+                        outageDelta: {
+                            admissionAvailable       : outageDeltaEnvelope.admissionAvailable,
+                            admissionUnavailablePaths: outageDeltaEnvelope.admissionUnavailablePaths,
+                            filesCount               : outageDeltaEnvelope.files.length,
+                            deleted                  : outageDeltaEnvelope.deleted
+                        },
+                        outageRef: {
+                            status    : outageRef.status,
+                            resolved  : outageRef.resolved,
+                            reasonCode: outageRef.reasonCode
+                        },
+                        recovered: {
+                            admissionAvailable: recoveredEnvelope.admissionAvailable,
+                            filesCount        : recoveredEnvelope.files.length,
+                            yieldedSourcePaths: recoveredEnvelope.manifestSnapshot.yieldedSourcePaths,
+                            canonicalKey      : recoveredEnvelope.files[0]?.profileChunk?.canonicalKey
+                        }
+                    }
+                }));
+            `;
+
+            const {stdout} = await execFileAsync(
+                process.execPath,
+                ['--input-type=module', '-e', kbChildScript],
+                {
+                    cwd     : repoRoot,
+                    encoding: 'utf8',
+                    env     : {
+                        ...process.env,
+                        NEO_MEMORY_DB_PATH        : missingKbSqlite,
+                        NEO_TELEMETRY_DB_PATH_TEST: missingKbSqlite
+                    }
+                }
+            );
+            const report = JSON.parse(stdout.trim().split('\n').pop());
+
+            expect(report.adrIngestorLoaded).toBe(false);
+            expect(report.ac1).toEqual({
+                count       : 2,
+                chunkKeys   : [key0034, key0042],
+                refusedCodes: ['ADR_ADMISSION_EVIDENCE_UNAVAILABLE'],
+                redirects   : 1
+            });
+
+            expect(report.ac2.oldOnly).toMatchObject({
+                state            : 'old-only',
+                identityResolved : true,
+                documentAvailable: true,
+                kbAvailable      : true
+            });
+            expect(report.ac2.neitherPresent).toMatchObject({
+                state            : 'neither-present',
+                identityResolved : true,
+                documentAvailable: false,
+                kbAvailable      : false,
+                redirectSkipped  : true
+            });
+            expect(report.ac2.neitherRef).toEqual({
+                identityResolved : true,
+                documentAvailable: false,
+                kbAvailable      : false
+            });
+            expect(report.ac2.newOnly).toMatchObject({
+                state            : 'new-only',
+                identityResolved : true,
+                documentAvailable: true,
+                kbAvailable      : true
+            });
+            expect(report.ac2.bothPresent).toMatchObject({
+                state            : 'both-present',
+                identityResolved : true,
+                documentAvailable: true,
+                kbAvailable      : true,
+                redirectSkipped  : true
+            });
+            expect(report.ac2.retried).toMatchObject({
+                state            : 'interrupted/retried',
+                identityResolved : true,
+                documentAvailable: true,
+                kbAvailable      : true,
+                retryAttempt     : 2
+            });
+
+            expect(report.ac3).toEqual({
+                ref0042Slug       : {resolved: true, canonicalKey: key0042, kbAvailable: true},
+                refBrainAlias     : {resolved: true, canonicalKey: brainKey0001, kbAvailable: true},
+                refMoved0020Origin: {resolved: true, canonicalKey: key0020, kbAvailable: true},
+                refMoved0020Dest  : {resolved: true, canonicalKey: key0020, kbAvailable: true},
+                refUnqualified0001: {resolved: false, reasonCode: 'MISSING_REPOSITORY_CONTEXT', candidates: [brainKey0001]},
+                refStageDenied    : {resolved: false, reasonCode: 'NOT_FOUND'},
+                refStageAllowed   : {resolved: true, canonicalKey: stageKey0001, kbAvailable: true}
+            });
+
+            expect(report.ac4).toEqual({
+                outageFull: {
+                    admissionAvailable       : false,
+                    admissionUnavailablePaths: ['learn/agentos/decisions/0042-live-cross-process-admission-channel.md'],
+                    filesCount               : 0,
+                    hasYieldedSourcePaths    : false
+                },
+                outageDelta: {
+                    admissionAvailable       : false,
+                    admissionUnavailablePaths: ['learn/agentos/decisions/0042-live-cross-process-admission-channel.md'],
+                    filesCount               : 0,
+                    deleted                  : []
+                },
+                outageRef: {
+                    status    : 'unavailable',
+                    resolved  : false,
+                    reasonCode: 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE'
+                },
+                recovered: {
+                    admissionAvailable: true,
+                    filesCount        : 1,
+                    yieldedSourcePaths: ['learn/agentos/decisions/0042-live-cross-process-admission-channel.md'],
+                    canonicalKey      : key0042
+                }
+            });
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+            try { db.close(); } catch {}
+        }
     });
 });

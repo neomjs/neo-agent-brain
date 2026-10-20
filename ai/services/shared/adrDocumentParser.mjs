@@ -941,7 +941,14 @@ export function buildAdmittedAdrRecord({existingRecord, adr, identityInfo, specR
         };
 
     if (identityInfo.custodyTransition) {
-        record.provenance.custodyTransitions.push({...identityInfo.custodyTransition, appliedAtRevision: revision});
+        const alreadyRecorded = record.provenance.custodyTransitions.some(
+            t => t.canonicalKey === identityInfo.custodyTransition.canonicalKey &&
+                 t.fromRepositoryId === identityInfo.custodyTransition.fromRepositoryId &&
+                 t.toRepositoryId === identityInfo.custodyTransition.toRepositoryId
+        );
+        if (!alreadyRecorded) {
+            record.provenance.custodyTransitions.push({...identityInfo.custodyTransition, appliedAtRevision: revision});
+        }
     }
 
     return record;

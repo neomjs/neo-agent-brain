@@ -87,25 +87,91 @@ export function resetSharedAdrCatalog() {
 
 /**
  * @summary Hydrates admitted `adrAdmissionRecord` payloads into `SHARED_ADR_CATALOG_STATE`.
+ * When `replaceExisting` is true (default), refreshes existing catalog records with live
+ * cross-process updates (such as custody moves, newly bound aliases, or status updates)
+ * while preserving any already-recorded in-memory renames and alias bindings.
  * @param {Object[]} [records=[]]
- * @returns {Number} Number of newly hydrated records.
+ * @param {Object} [options={}]
+ * @param {Boolean} [options.replaceExisting=true]
+ * @returns {Number} Number of hydrated or refreshed records.
  */
-export function hydrateAdrAdmissionRecords(records = []) {
+export function hydrateAdrAdmissionRecords(records = [], {replaceExisting = true} = {}) {
     let hydratedCount = 0;
 
     for (const rawRecord of records) {
-        if (!rawRecord?.canonicalKey || SHARED_ADR_CATALOG_STATE.admissionCatalog.has(rawRecord.canonicalKey)) continue;
+        if (!rawRecord?.canonicalKey) continue;
+        const existing = SHARED_ADR_CATALOG_STATE.admissionCatalog.get(rawRecord.canonicalKey) || null;
+        if (existing && !replaceExisting) continue;
+
+        const
+            mergedAliasBindings = (rawRecord.aliasBindings || []).map(b => ({...b})),
+            mergedReservations  = (rawRecord.reservations || []).map(r => ({...r})),
+            mergedTransitions   = [...(rawRecord.provenance?.custodyTransitions || [])],
+            mergedRenames       = [...(rawRecord.provenance?.repositoryRenames || [])],
+            mergedLineage       = [...(rawRecord.provenance?.sourceLineage || [])];
+
+        if (existing) {
+            for (const prevBinding of existing.aliasBindings || []) {
+                const alreadyInRaw = mergedAliasBindings.some(
+                    b => b.kind === prevBinding.kind &&
+                         b.value === prevBinding.value &&
+                         b.forge === prevBinding.forge &&
+                         b.repositoryId === prevBinding.repositoryId &&
+                         String(b.namespace || '').toLowerCase() === String(prevBinding.namespace || '').toLowerCase()
+                );
+                if (!alreadyInRaw) {
+                    mergedAliasBindings.push({...prevBinding});
+                }
+            }
+
+            for (const prevRes of existing.reservations || []) {
+                const alreadyInRaw = mergedReservations.some(
+                    r => r.kind === prevRes.kind &&
+                         r.value === prevRes.value &&
+                         r.forge === prevRes.forge &&
+                         r.repositoryId === prevRes.repositoryId &&
+                         String(r.namespace || '').toLowerCase() === String(prevRes.namespace || '').toLowerCase()
+                );
+                if (!alreadyInRaw) {
+                    mergedReservations.push({...prevRes});
+                }
+            }
+
+            for (const prevRename of existing.provenance?.repositoryRenames || []) {
+                const alreadyInRaw = mergedRenames.some(
+                    r => r.repositoryId === prevRename.repositoryId &&
+                         r.previousNamespace === prevRename.previousNamespace &&
+                         r.currentNamespace === prevRename.currentNamespace
+                );
+                if (!alreadyInRaw) {
+                    mergedRenames.push({...prevRename});
+                }
+            }
+
+            for (const prevTrans of existing.provenance?.custodyTransitions || []) {
+                const alreadyInRaw = mergedTransitions.some(
+                    t => t.canonicalKey === prevTrans.canonicalKey &&
+                         t.fromRepositoryId === prevTrans.fromRepositoryId &&
+                         t.toRepositoryId === prevTrans.toRepositoryId
+                );
+                if (!alreadyInRaw) {
+                    mergedTransitions.push({...prevTrans});
+                }
+            }
+        }
 
         const record = {
+            ...(existing || {}),
             ...rawRecord,
-            historicalAliases: [...(rawRecord.historicalAliases || [])],
-            aliasBindings    : (rawRecord.aliasBindings || []).map(b => ({...b})),
-            reservations     : (rawRecord.reservations || []).map(r => ({...r})),
+            historicalAliases: [...(rawRecord.historicalAliases || existing?.historicalAliases || [])],
+            aliasBindings    : mergedAliasBindings,
+            reservations     : mergedReservations,
             provenance       : {
+                ...(existing?.provenance || {}),
                 ...(rawRecord.provenance || {}),
-                custodyTransitions: [...(rawRecord.provenance?.custodyTransitions || [])],
-                repositoryRenames : [...(rawRecord.provenance?.repositoryRenames || [])],
-                sourceLineage     : [...(rawRecord.provenance?.sourceLineage || [])]
+                custodyTransitions: mergedTransitions,
+                repositoryRenames : mergedRenames,
+                sourceLineage     : mergedLineage
             }
         };
 
@@ -149,18 +215,310 @@ export function hydrateAdrAdmissionRecords(records = []) {
 }
 
 /**
+ * @summary Collects deduplicated custody transitions across a list of `adrAdmissionRecord` entries.
+ * @param {Iterable<Object>} records
+ * @param {Object[]} [seedTransitions=[]]
+ * @returns {Object[]}
+ * @private
+ */
+function collectCustodyTransitionsFromRecords(records, seedTransitions = []) {
+    const
+        transitions = [],
+        seen        = new Set();
+
+    const addTransition = (t) => {
+        if (!t || (!t.canonicalKey && !t.adrNumber)) return;
+        const key = `${t.canonicalKey || t.adrNumber}|${t.fromRepositoryId || ''}|${t.toRepositoryId || ''}|${t.toNamespace || ''}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            transitions.push({...t});
+        }
+    };
+
+    for (const t of seedTransitions || []) {
+        addTransition(t);
+    }
+
+    for (const rec of records || []) {
+        for (const t of rec?.provenance?.custodyTransitions || []) {
+            addTransition({
+                adrNumber   : rec.adrNumber,
+                canonicalKey: rec.canonicalKey,
+                ...t
+            });
+        }
+    }
+
+    return transitions;
+}
+
+/**
+ * @summary Reads the live admitted ADR projection from Memory Core (`graphDb`, `sqlitePath`,
+ * and/or the in-memory `SHARED_ADR_CATALOG_STATE`) into a serializable cross-process snapshot.
+ * @param {Object} [options={}]
+ * @param {Object|null} [options.graphDb=null]
+ * @param {String|null} [options.sqlitePath=null]
+ * @param {Boolean} [options.includeInMemory=true]
+ * @returns {{version: Number, admissionAvailable: Boolean, records: Object[], custodyTransitions: Object[], repositoryRenames: Object[]}}
+ */
+export function buildAdrAdmissionProjectionSnapshot({
+    graphDb         = null,
+    sqlitePath      = null,
+    includeInMemory = true
+} = {}) {
+    const
+        byKey   = new Map(),
+        renames = [];
+    let evidenceReadable = false;
+
+    const collectRecord = (candidate) => {
+        if (candidate?.canonicalKey) {
+            byKey.set(candidate.canonicalKey, candidate);
+        }
+    };
+
+    if (includeInMemory && SHARED_ADR_CATALOG_STATE.admissionCatalog.size > 0) {
+        evidenceReadable = true;
+        for (const rec of SHARED_ADR_CATALOG_STATE.admissionCatalog.values()) {
+            collectRecord(rec);
+        }
+    }
+
+    if (graphDb?.nodes?.items) {
+        evidenceReadable = true;
+        for (const node of graphDb.nodes.items) {
+            const
+                label = node.isRecord ? node.get('label') : node.label,
+                props = (node.isRecord ? node.get('properties') : node.properties) || {};
+            if (label === 'ADR' && props.adrAuthority?.admitted === true && props.adrAdmissionRecord) {
+                collectRecord(props.adrAdmissionRecord);
+            }
+        }
+    }
+
+    const openSqlite = graphDb?.storage?.db || null;
+    if (openSqlite) {
+        try {
+            const rows = openSqlite.prepare(`
+                SELECT id, data FROM Nodes WHERE json_extract(data, '$.label') = 'ADR'
+            `).all();
+            evidenceReadable = true;
+            for (const row of rows) {
+                try {
+                    const parsed = JSON.parse(row.data);
+                    if (parsed?.properties?.adrAuthority?.admitted === true && parsed.properties.adrAdmissionRecord) {
+                        collectRecord(parsed.properties.adrAdmissionRecord);
+                    }
+                } catch {}
+            }
+        } catch {}
+    } else if (typeof sqlitePath === 'string' && sqlitePath.trim() && sqlitePath !== ':memory:' && fs.existsSync(sqlitePath)) {
+        let readonlyDb = null;
+        try {
+            const Database = createRequire(import.meta.url)('better-sqlite3');
+            readonlyDb = new Database(sqlitePath, {readonly: true, fileMustExist: true});
+            const hasNodesTable = readonlyDb.prepare(`
+                SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'Nodes'
+            `).get();
+
+            if (hasNodesTable) {
+                evidenceReadable = true;
+                const rows = readonlyDb.prepare(`
+                    SELECT id, data FROM Nodes WHERE json_extract(data, '$.label') = 'ADR'
+                `).all();
+                for (const row of rows) {
+                    try {
+                        const parsed = JSON.parse(row.data);
+                        if (parsed?.properties?.adrAuthority?.admitted === true && parsed.properties.adrAdmissionRecord) {
+                            collectRecord(parsed.properties.adrAdmissionRecord);
+                        }
+                    } catch {}
+                }
+            }
+        } catch {} finally {
+            try { readonlyDb?.close(); } catch {}
+        }
+    }
+
+    const
+        records            = Array.from(byKey.values()),
+        custodyTransitions = collectCustodyTransitionsFromRecords(records);
+
+    for (const rec of records) {
+        for (const rename of rec?.provenance?.repositoryRenames || []) {
+            if (!renames.some(r => r.repositoryId === rename.repositoryId && r.previousNamespace === rename.previousNamespace && r.currentNamespace === rename.currentNamespace)) {
+                renames.push({...rename});
+            }
+        }
+    }
+
+    return {
+        version           : 1,
+        admissionAvailable: records.length > 0 || evidenceReadable,
+        records,
+        custodyTransitions,
+        repositoryRenames : renames
+    };
+}
+
+export const ADR_ADMISSION_PROJECTION_PATH = '/adr-admission-projection';
+
+/**
+ * @summary Creates an HTTP request listener that serves Memory Core's live admitted ADR projection
+ * (`GET /adr-admission-projection`) to a separate Knowledge Base process.
+ * @param {Object} [options={}]
+ * @param {Object|Function|null} [options.graphDb=null]
+ * @param {String|Function|null} [options.sqlitePath=null]
+ * @param {Boolean} [options.includeInMemory=true]
+ * @param {Function|null} [options.getAvailable=null]
+ * @returns {Function} Node `http` request listener `(req, res) => void`.
+ */
+export function createAdrAdmissionProjectionHandler({
+    graphDb         = null,
+    sqlitePath      = null,
+    includeInMemory = true,
+    getAvailable    = null
+} = {}) {
+    return (req, res) => {
+        if (req.method && req.method !== 'GET') {
+            res.writeHead(405, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({error: 'Method Not Allowed'}));
+            return;
+        }
+
+        if (typeof getAvailable === 'function' && !getAvailable(req)) {
+            res.writeHead(503, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({
+                version           : 1,
+                admissionAvailable: false,
+                code              : 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE',
+                records           : [],
+                custodyTransitions: [],
+                repositoryRenames : []
+            }));
+            return;
+        }
+
+        try {
+            const
+                resolvedGraphDb    = typeof graphDb === 'function' ? graphDb() : graphDb,
+                resolvedSqlitePath = typeof sqlitePath === 'function' ? sqlitePath() : sqlitePath,
+                snapshot           = buildAdrAdmissionProjectionSnapshot({
+                    graphDb   : resolvedGraphDb,
+                    sqlitePath: resolvedSqlitePath,
+                    includeInMemory
+                });
+            res.writeHead(snapshot.admissionAvailable ? 200 : 503, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify(snapshot));
+        } catch (error) {
+            res.writeHead(503, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({
+                version           : 1,
+                admissionAvailable: false,
+                code              : 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE',
+                message           : error.message,
+                records           : [],
+                custodyTransitions: [],
+                repositoryRenames : []
+            }));
+        }
+    };
+}
+
+/**
+ * @summary Fetches the live admitted ADR projection across process boundaries via an async reader
+ * callback (`admissionProjectionReader`) or an HTTP projection endpoint (`admissionProjectionUrl`).
+ * Never throws on transport/HTTP errors; returns `available: false` and `source: 'projection-unavailable'`.
+ * @param {Object} [options={}]
+ * @param {String|null} [options.admissionProjectionUrl=null]
+ * @param {Function|null} [options.admissionProjectionReader=null]
+ * @param {Number} [options.timeoutMs=5000]
+ * @param {Object} [options.headers={}]
+ * @returns {Promise<{available: Boolean, records: Object[], custodyTransitions: Object[], repositoryRenames: Object[], source: String, code?: String}>}
+ */
+export async function fetchAdrAdmissionProjection({
+    admissionProjectionUrl    = null,
+    admissionProjectionReader = null,
+    timeoutMs                 = 5000,
+    headers                   = {}
+} = {}) {
+    const unavailable = (reason) => ({
+        available         : false,
+        records           : [],
+        custodyTransitions: [],
+        repositoryRenames : [],
+        source            : 'projection-unavailable',
+        code              : 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE',
+        reason
+    });
+
+    if (typeof admissionProjectionReader === 'function') {
+        try {
+            const payload = await admissionProjectionReader({timeoutMs, headers});
+            if (!payload || payload.admissionAvailable === false || !Array.isArray(payload.records)) {
+                return unavailable(payload?.code || 'READER_REPORTED_UNAVAILABLE');
+            }
+            const records = payload.records.map(r => r?.adrAdmissionRecord || r).filter(r => r?.canonicalKey);
+            return {
+                available         : records.length > 0 || payload.admissionAvailable === true,
+                records,
+                custodyTransitions: collectCustodyTransitionsFromRecords(records, payload.custodyTransitions || []),
+                repositoryRenames : Array.isArray(payload.repositoryRenames) ? payload.repositoryRenames : [],
+                source            : 'projection-reader'
+            };
+        } catch (error) {
+            return unavailable(error?.message || 'READER_ERROR');
+        }
+    }
+
+    if (typeof admissionProjectionUrl === 'string' && admissionProjectionUrl.trim()) {
+        try {
+            const response = await fetch(admissionProjectionUrl.trim(), {
+                method : 'GET',
+                headers: {Accept: 'application/json', ...headers},
+                signal : AbortSignal.timeout(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5000)
+            });
+
+            if (!response.ok) {
+                return unavailable(`HTTP_${response.status}`);
+            }
+
+            const payload = await response.json();
+            if (!payload || payload.admissionAvailable === false || !Array.isArray(payload.records)) {
+                return unavailable(payload?.code || 'INVALID_PROJECTION_PAYLOAD');
+            }
+
+            const records = payload.records.map(r => r?.adrAdmissionRecord || r).filter(r => r?.canonicalKey);
+            return {
+                available         : records.length > 0 || payload.admissionAvailable === true,
+                records,
+                custodyTransitions: collectCustodyTransitionsFromRecords(records, payload.custodyTransitions || []),
+                repositoryRenames : Array.isArray(payload.repositoryRenames) ? payload.repositoryRenames : [],
+                source            : 'http-projection'
+            };
+        } catch (error) {
+            return unavailable(error?.message || 'FETCH_ERROR');
+        }
+    }
+
+    return unavailable('NO_PROJECTION_CHANNEL');
+}
+
+/**
  * @summary Rehydrates `SHARED_ADR_CATALOG_STATE` from retained admission evidence:
  * explicit `retainedAdmissionRecords`, an open `graphDb` (`GraphService.db`), or the
  * persisted Memory Core SQLite `Nodes` table at `sqlitePath`.
  * @param {Object} [options={}]
  * @param {Object|null} [options.graphDb=null]
  * @param {String|null} [options.sqlitePath=null]
+ * @param {Boolean} [options.sqlitePathExplicit=false]
  * @param {Object[]|null} [options.retainedAdmissionRecords=null]
- * @returns {{available: Boolean, recordCount: Number, hydratedCount: Number, source: String}}
+ * @returns {{available: Boolean, recordCount: Number, hydratedCount: Number, source: String, custodyTransitions: Object[], code?: String}}
  */
 export function rehydrateAdrCatalogFromEvidence({
     graphDb                  = null,
     sqlitePath               = null,
+    sqlitePathExplicit       = false,
     retainedAdmissionRecords = null
 } = {}) {
     const
@@ -246,17 +604,77 @@ export function rehydrateAdrCatalogFromEvidence({
         }
     }
 
+    if (sqlitePathExplicit && !evidenceReadable && !Array.isArray(retainedAdmissionRecords) && !graphDb) {
+        return {
+            available         : false,
+            recordCount       : 0,
+            hydratedCount     : 0,
+            source            : 'projection-unavailable',
+            code              : 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE',
+            custodyTransitions: []
+        };
+    }
+
     const
-        hydratedCount = hydrateAdrAdmissionRecords(records),
-        recordCount   = SHARED_ADR_CATALOG_STATE.admissionCatalog.size,
-        available     = recordCount > 0 || (evidenceReadable && Array.isArray(retainedAdmissionRecords));
+        hydratedCount      = hydrateAdrAdmissionRecords(records, {replaceExisting: true}),
+        recordCount        = SHARED_ADR_CATALOG_STATE.admissionCatalog.size,
+        available          = recordCount > 0 || (evidenceReadable && Array.isArray(retainedAdmissionRecords)),
+        custodyTransitions = collectCustodyTransitionsFromRecords(SHARED_ADR_CATALOG_STATE.admissionCatalog.values());
 
     return {
         available,
         recordCount,
         hydratedCount,
-        source: recordCount > 0 && evidenceSource === 'none' ? 'in-memory-catalog' : evidenceSource
+        source: recordCount > 0 && evidenceSource === 'none' ? 'in-memory-catalog' : evidenceSource,
+        custodyTransitions
     };
+}
+
+/**
+ * @summary Asynchronously rehydrates `SHARED_ADR_CATALOG_STATE` from a live cross-process admission
+ * projection (`admissionProjectionUrl` or `admissionProjectionReader`) or falls back to
+ * `rehydrateAdrCatalogFromEvidence` (`retainedAdmissionRecords`, `graphDb`, `sqlitePath`).
+ * When a configured live admission projection channel fails, returns `available: false` and
+ * `source: 'projection-unavailable'` (`code: 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE'`) without
+ * admitting from markdown files or falling back to stale unverified state.
+ * @param {Object} [options={}]
+ * @returns {Promise<{available: Boolean, recordCount: Number, hydratedCount: Number, source: String, custodyTransitions: Object[], code?: String}>}
+ */
+export async function rehydrateAdrCatalogFromEvidenceAsync(options = {}) {
+    const hasAsyncChannel = typeof options.admissionProjectionReader === 'function' ||
+        (typeof options.admissionProjectionUrl === 'string' && Boolean(options.admissionProjectionUrl.trim()));
+
+    if (hasAsyncChannel) {
+        const proj = await fetchAdrAdmissionProjection(options);
+        if (!proj.available) {
+            return {
+                available         : false,
+                recordCount       : 0,
+                hydratedCount     : 0,
+                source            : 'projection-unavailable',
+                code              : 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE',
+                custodyTransitions: []
+            };
+        }
+
+        const
+            hydratedCount      = hydrateAdrAdmissionRecords(proj.records, {replaceExisting: true}),
+            recordCount        = SHARED_ADR_CATALOG_STATE.admissionCatalog.size,
+            custodyTransitions = collectCustodyTransitionsFromRecords(
+                SHARED_ADR_CATALOG_STATE.admissionCatalog.values(),
+                proj.custodyTransitions || []
+            );
+
+        return {
+            available: recordCount > 0 || proj.available,
+            recordCount,
+            hydratedCount,
+            source   : proj.source,
+            custodyTransitions
+        };
+    }
+
+    return rehydrateAdrCatalogFromEvidence(options);
 }
 
 /**

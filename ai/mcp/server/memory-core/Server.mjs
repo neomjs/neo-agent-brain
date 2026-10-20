@@ -39,6 +39,10 @@ import {TRUST_TIERS}                    from '../../../graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId}   from '../../../graph/normalizeAgentIdentityNodeId.mjs';
 import ConfigBase, {PLANE_MEMBER_PATHS} from './configBase.mjs';
 import {readBackgroundDeliveryState}    from '../../../services/memory-core/MailboxService.mjs';
+import {
+    ADR_ADMISSION_PROJECTION_PATH,
+    createAdrAdmissionProjectionHandler
+}                                       from '../../../services/ingestion/adrAdmissionCatalog.mjs';
 
 // Security invariant, not deployment policy: graph ids must remain namespace/path/control safe.
 const AUTH_IDENTITY_USER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
@@ -141,6 +145,24 @@ class Server extends BaseServer {
      */
     getHealthService() {
         return HealthService;
+    }
+
+    /**
+     * @summary Mounts the live ADR admission projection endpoint (`GET /adr-admission-projection`)
+     * on Memory Core's Streamable HTTP Express application so separate Knowledge Base processes
+     * can read the authoritative admitted ADR catalog across process boundaries.
+     * @param {Object} app Express application instance.
+     * @returns {void}
+     */
+    registerHttpRoutes(app) {
+        if (!app || typeof app.get !== 'function') {
+            return;
+        }
+
+        app.get(ADR_ADMISSION_PROJECTION_PATH, createAdrAdmissionProjectionHandler({
+            graphDb   : () => GraphService.db,
+            sqlitePath: () => aiConfig.storagePaths.graph
+        }));
     }
 
     /**
