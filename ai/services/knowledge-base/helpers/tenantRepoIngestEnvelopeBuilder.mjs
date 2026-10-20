@@ -500,25 +500,30 @@ export async function buildIngestEnvelope({
         await repositoryReader.close()
     }
     const envelope = {
-        tenantId          : identity.tenantId,
-        repoSlug          : identity.repoSlug,
-        files             : collector.files,
+        tenantId                 : identity.tenantId,
+        repoSlug                 : identity.repoSlug,
+        files                    : collector.files,
         headRevision,
-        extractionIdentity: derivedExtractionIdentity
+        extractionIdentity       : derivedExtractionIdentity,
+        admissionAvailable       : execution.admissionAvailable !== false,
+        admissionUnavailablePaths: execution.admissionUnavailablePaths || []
     };
 
     if (fullMaterialization) {
         envelope.manifestSnapshot = {
-            repoSlug          : identity.repoSlug,
-            pathsAfterPush    : entries.map(entry => entry.sourcePath),
-            yieldedSourcePaths: execution.yieldedSourcePaths,
+            repoSlug      : identity.repoSlug,
+            pathsAfterPush: entries.map(entry => entry.sourcePath),
+            ...(execution.admissionAvailable !== false ? {
+                yieldedSourcePaths: execution.yieldedSourcePaths
+            } : {}),
             extractionIdentity: derivedExtractionIdentity
         }
     } else {
         const
-            yielded         = new Set(execution.yieldedSourcePaths),
-            stoppedYielding = [...new Set(diff?.addedOrChanged || [])]
-                .filter(sourcePath => !yielded.has(sourcePath));
+            yielded              = new Set(execution.yieldedSourcePaths),
+            unavailableAdmission = new Set(execution.admissionUnavailablePaths || []),
+            stoppedYielding      = [...new Set(diff?.addedOrChanged || [])]
+                .filter(sourcePath => !yielded.has(sourcePath) && !unavailableAdmission.has(sourcePath));
 
         envelope.deleted = [...new Set([
             ...(diff?.deleted || []),

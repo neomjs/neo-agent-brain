@@ -16,16 +16,11 @@ import {
     ensureSharedReservationBucket,
     hydrateAdrAdmissionRecords,
     isAdrReaderAuthorized,
-    isReviewedAdrBaselineActive,
     registerSharedForgeRepository,
     rehydrateAdrCatalogFromEvidence,
     resetSharedAdrCatalog,
     resolveSharedAdrReference
 } from '../../ingestion/adrAdmissionCatalog.mjs';
-import {
-    REVIEWED_ADR_CUSTODY_TRANSITIONS,
-    REVIEWED_ADR_LEGACY_MANIFEST
-} from '../../ingestion/adrRetainedAdmissionRecords.mjs';
 import {
     buildAdmittedAdrRecord,
     computeAdrPayloadHash,
@@ -104,18 +99,10 @@ class AdrSource extends Base {
      * @returns {{available: Boolean, recordCount: Number, hydratedCount: Number, source: String}}
      */
     rehydrateCatalogFromEvidence(options = {}) {
-        const hasExplicitSqliteOption = Boolean(
-            options &&
-            Object.prototype.hasOwnProperty.call(options, 'sqlitePath') &&
-            options.sqlitePath !== undefined &&
-            options.sqlitePath !== null
-        );
         return rehydrateAdrCatalogFromEvidence({
             graphDb                 : options.graphDb || null,
             sqlitePath              : options.sqlitePath || aiConfig.memoryCoreDbPath,
-            explicitSqlitePath      : hasExplicitSqliteOption,
-            retainedAdmissionRecords: options.retainedAdmissionRecords || null,
-            includeReviewedBaseline : options.includeReviewedBaseline !== false
+            retainedAdmissionRecords: options.retainedAdmissionRecords || null
         });
     }
 
@@ -490,7 +477,15 @@ class AdrSource extends Base {
                     code,
                     message
                 });
-                skippedSourcePaths.push({sourcePath: cand.sourcePath, reason: code});
+                skippedSourcePaths.push(code === 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE' ? {
+                    sourcePath: cand.sourcePath,
+                    path      : cand.sourcePath,
+                    reason    : code,
+                    message   : 'Retained ADR admission evidence is unavailable for candidate decision'
+                } : {
+                    sourcePath: cand.sourcePath,
+                    reason    : code
+                });
             };
 
         for (const cand of candidates) {
@@ -697,15 +692,18 @@ class AdrSource extends Base {
             }
         }
 
-        const admissionAvailable = unavailableCandidates.size === 0 && (
-            admittedByCanonicalKey.size > 0 ||
-            catalog.size > 0 ||
-            Boolean(evidenceState?.available)
-        );
+        const
+            admissionAvailable = unavailableCandidates.size === 0 && (
+                admittedByCanonicalKey.size > 0 ||
+                catalog.size > 0 ||
+                Boolean(evidenceState?.available)
+            ),
+            code = admissionAvailable ? null : 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE';
 
         return {
             count         : yieldedSourcePaths.length,
             admissionAvailable,
+            ...(code ? {code} : {}),
             yieldedSourcePaths,
             skippedSourcePaths,
             redirects,
@@ -840,9 +838,9 @@ class AdrSource extends Base {
 
         const result = this.#processCandidateEntries({
             rawEntries,
-            custodyTransitions   : options.custodyTransitions || (isReviewedAdrBaselineActive() ? REVIEWED_ADR_CUSTODY_TRANSITIONS : []),
+            custodyTransitions   : options.custodyTransitions || [],
             sourceLineageEvidence: options.sourceLineageEvidence || [],
-            legacyManifest       : options.legacyManifest || (isReviewedAdrBaselineActive() ? REVIEWED_ADR_LEGACY_MANIFEST : null),
+            legacyManifest       : options.legacyManifest || null,
             expectedDecisions    : options.expectedDecisions || [],
             retryAttempt         : options.retryAttempt || 1,
             evidenceState,
@@ -856,7 +854,7 @@ class AdrSource extends Base {
     /**
      * @summary Extracts top-level ADR files from one assigned repository territory against retained admission evidence.
      * @param {Object} params Repository-bound route invocation.
-     * @returns {Promise<{count: Number, admissionAvailable: Boolean, yieldedSourcePaths: String[], skippedSourcePaths: Object[], redirects: Object[], admittedDecisions: Object[], refusedSourcePaths: Object[], reconciliation: Object}>}
+     * @returns {Promise<{count: Number, admissionAvailable: Boolean, code?: String, yieldedSourcePaths: String[], skippedSourcePaths: Object[], redirects: Object[], admittedDecisions: Object[], refusedSourcePaths: Object[], reconciliation: Object}>}
      */
     async extractFromRepository({context, writeStream, createHashFn} = {}) {
         const reader = context?.repositoryReader;
@@ -907,9 +905,9 @@ class AdrSource extends Base {
 
         const processed = this.#processCandidateEntries({
             rawEntries,
-            custodyTransitions   : context?.custodyTransitions || (isReviewedAdrBaselineActive() ? REVIEWED_ADR_CUSTODY_TRANSITIONS : []),
+            custodyTransitions   : context?.custodyTransitions || [],
             sourceLineageEvidence: context?.sourceLineageEvidence || [],
-            legacyManifest       : context?.legacyManifest || (isReviewedAdrBaselineActive() ? REVIEWED_ADR_LEGACY_MANIFEST : null),
+            legacyManifest       : context?.legacyManifest || null,
             expectedDecisions    : context?.expectedDecisions || [],
             retryAttempt         : context?.retryAttempt || 1,
             evidenceState,
@@ -925,6 +923,7 @@ class AdrSource extends Base {
         return {
             count             : processed.count,
             admissionAvailable: processed.admissionAvailable,
+            ...(processed.code ? {code: processed.code} : {}),
             yieldedSourcePaths: processed.yieldedSourcePaths,
             skippedSourcePaths,
             redirects         : processed.redirects,

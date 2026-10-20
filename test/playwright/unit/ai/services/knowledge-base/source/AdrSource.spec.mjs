@@ -270,7 +270,14 @@ This should be skipped.`);
 
         expect(unprovedResult.count).toBe(0);
         expect(unprovedResult.admissionAvailable).toBe(false);
+        expect(unprovedResult.code).toBe('ADR_ADMISSION_EVIDENCE_UNAVAILABLE');
         expect(unprovedChunks).toHaveLength(0);
+        expect(unprovedResult.skippedSourcePaths).toEqual([{
+            sourcePath: 'learn/agentos/decisions/0099-unadmitted-candidate.md',
+            path      : 'learn/agentos/decisions/0099-unadmitted-candidate.md',
+            reason    : 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE',
+            message   : 'Retained ADR admission evidence is unavailable for candidate decision'
+        }]);
         expect(unprovedResult.refusedSourcePaths).toEqual([
             expect.objectContaining({
                 sourcePath  : 'learn/agentos/decisions/0099-unadmitted-candidate.md',
@@ -290,6 +297,7 @@ This should be skipped.`);
         // 2. Cross-process: run ExtractorCatalogue('AdrSource') in a fresh Node process where AdrIngestor is NEVER loaded
         const
             canonicalKey0034 = 'adr:github.com:220867748:neomjs%2Fneo:0034',
+            canonicalKey0042 = 'adr:github.com:220867748:neomjs%2Fneo:0042',
             sqliteFile       = path.join(mockRoot, 'cross-process-admission.sqlite'),
             missingSqlite    = path.join(mockRoot, 'missing-admission.sqlite'),
             retained0034     = buildRetainedRecord({
@@ -301,11 +309,21 @@ This should be skipped.`);
                 repositoryId: '220867748',
                 namespace   : 'neomjs/neo',
                 sourcePath  : 'learn/agentos/decisions/0034-electron-shell-architecture.md'
+            }),
+            retained0042     = buildRetainedRecord({
+                canonicalKey: canonicalKey0042,
+                adrNumber   : '0042',
+                title       : 'Live Admission Projection',
+                currentSlug : 'live-admission-projection',
+                repositoryId: '220867748',
+                namespace   : 'neomjs/neo',
+                sourcePath  : 'learn/agentos/decisions/0042-live-admission-projection.md'
             });
 
         const db = new Database(sqliteFile);
         db.exec(`CREATE TABLE Nodes (id TEXT PRIMARY KEY, data TEXT NOT NULL)`);
-        db.prepare(`INSERT INTO Nodes (id, data) VALUES (?, ?)`).run(
+        const insertNode = db.prepare(`INSERT INTO Nodes (id, data) VALUES (?, ?)`);
+        insertNode.run(
             canonicalKey0034,
             JSON.stringify({
                 id        : canonicalKey0034,
@@ -313,6 +331,17 @@ This should be skipped.`);
                 properties: {
                     adrAuthority      : {admitted: true, canonicalKey: canonicalKey0034},
                     adrAdmissionRecord: retained0034
+                }
+            })
+        );
+        insertNode.run(
+            canonicalKey0042,
+            JSON.stringify({
+                id        : canonicalKey0042,
+                label     : 'ADR',
+                properties: {
+                    adrAuthority      : {admitted: true, canonicalKey: canonicalKey0042},
+                    adrAdmissionRecord: retained0042
                 }
             })
         );
@@ -326,6 +355,7 @@ This should be skipped.`);
             const descriptor = ExtractorCatalogue.get('AdrSource');
             const files = {
                 'learn/agentos/decisions/0034-electron-shell-architecture.md': '# ADR 0034: Electron Shell Architecture\\n\\n| Attribute | Value |\\n|---|---|\\n| **Status** | Accepted |\\n| **Aliases** | \`electron-shell-v1\` |\\n\\n## 1. Context\\nBody.',
+                'learn/agentos/decisions/0042-live-admission-projection.md': '# ADR 0042: Live Admission Projection\\n\\n| Attribute | Value |\\n|---|---|\\n| **Status** | Accepted |\\n\\n## 1. Context\\nNewly authored decision.',
                 'learn/agentos/decisions/0002-moved-record.md': ${JSON.stringify(redirect)}
             };
             const chunks = [];
@@ -348,103 +378,18 @@ This should be skipped.`);
                 adrIngestorLoaded: Boolean(Neo.ai?.daemons?.services?.AdrIngestor),
                 count: res.count,
                 admissionAvailable: res.admissionAvailable,
+                code: res.code || null,
                 refusedCodes: res.refusedSourcePaths.map(r => r.code),
                 redirectsCount: res.redirects.length,
                 chunkKeys: chunks.map(c => c.canonicalKey)
             }));
         `;
 
-        // 2a. Child process without AdrIngestor and with no context.sqlitePath / graphDb / retainedAdmissionRecords
-        // resolves ADR references and runs ExtractorCatalogue('AdrSource').extract(...) against the reviewed 42-record baseline,
-        // while still refusing unproved files (0099)
-        const defaultBaselineScript = `
-            import fs from 'fs';
-            import Neo from 'neo.mjs/src/Neo.mjs';
-            import * as core from 'neo.mjs/src/core/_export.mjs';
-            import AdrSource from './ai/services/knowledge-base/source/AdrSource.mjs';
-            import {ExtractorCatalogue} from './ai/services/knowledge-base/source/ExtractorCatalogue.mjs';
-
-            const catalogSizeBefore = AdrSource.getAdmissionCatalog().size;
-            const refRes = AdrSource.resolveAdrReference('neomjs/neo-agent-brain#adr:adrs-as-graph-queryable-entities');
-            const catalogSizeAfter = AdrSource.getAdmissionCatalog().size;
-
-            const descriptor = ExtractorCatalogue.get('AdrSource');
-            const raw0006 = fs.readFileSync('./learn/agentos/decisions/0006-adrs-as-graph-queryable-entities.md', 'utf8');
-            const chunks = [];
-            const extractRes = await descriptor.extract({
-                context: {
-                    repositoryReader: {
-                        readText: async p => p.endsWith('0006-adrs-as-graph-queryable-entities.md')
-                            ? raw0006
-                            : (p.endsWith('0002-moved-record.md') ? ${JSON.stringify(redirect)} : '# ADR 0099: Unadmitted Candidate\\n\\nBody.')
-                    },
-                    territory: {
-                        assignments: [
-                            {
-                                entry: {sourcePath: 'learn/agentos/decisions/0006-adrs-as-graph-queryable-entities.md'},
-                                relativePath: '0006-adrs-as-graph-queryable-entities.md'
-                            },
-                            {
-                                entry: {sourcePath: 'learn/agentos/decisions/0002-moved-record.md'},
-                                relativePath: '0002-moved-record.md'
-                            },
-                            {
-                                entry: {sourcePath: 'learn/agentos/decisions/0099-unadmitted-candidate.md'},
-                                relativePath: '0099-unadmitted-candidate.md'
-                            }
-                        ]
-                    }
-                },
-                writeStream: {write: line => chunks.push(JSON.parse(line))},
-                createHashFn: c => 'hash:' + c.name
-            });
-
-            process.stdout.write(JSON.stringify({
-                adrIngestorLoaded: Boolean(Neo.ai?.daemons?.services?.AdrIngestor),
-                catalogSizeBefore,
-                catalogSizeAfter,
-                resolved: refRes.resolved,
-                resolvedKey: refRes.canonicalKey,
-                count: extractRes.count,
-                redirectsCount: extractRes.redirects.length,
-                refusedCodes: extractRes.refusedSourcePaths.map(r => r.code),
-                chunkKeys: chunks.map(c => c.canonicalKey)
-            }));
-        `;
-        const defaultBaselineStdout = execFileSync(
-            process.execPath,
-            ['--input-type=module', '-e', defaultBaselineScript],
-            {
-                cwd     : repoRoot,
-                encoding: 'utf8',
-                env     : {
-                    ...process.env,
-                    NEO_MEMORY_DB_PATH        : missingSqlite,
-                    NEO_TELEMETRY_DB_PATH_TEST: missingSqlite
-                }
-            }
-        );
-        const defaultBaselineChild = JSON.parse(defaultBaselineStdout.trim().split('\n').pop());
-        expect(defaultBaselineChild).toEqual({
-            adrIngestorLoaded: false,
-            catalogSizeBefore: 0,
-            catalogSizeAfter : 42,
-            resolved         : true,
-            resolvedKey      : 'adr:github.com:1344062228:neomjs%2Fneo-agent-brain:0006',
-            count            : 1,
-            redirectsCount   : 1,
-            refusedCodes     : ['ADR_ADMISSION_EVIDENCE_UNAVAILABLE'],
-            chunkKeys        : ['adr:github.com:1344062228:neomjs%2Fneo-agent-brain:0006']
-        });
-
-        // 2b. Child process without AdrIngestor and with explicit unreadable sqlitePath refuses admission
-        const unavailableScript = childScript.replace(
-            'repository: {forge: \'github.com\', repositoryId: \'220867748\', namespace: \'neomjs/neo\'},',
-            `repository: {forge: 'github.com', repositoryId: '220867748', namespace: 'neomjs/neo'}, sqlitePath: ${JSON.stringify(missingSqlite)},`
-        );
+        // 2a. Child process without AdrIngestor and with no retained admission evidence in SQLite
+        // never admits from markdown files alone or a static code-list, reporting ADR_ADMISSION_EVIDENCE_UNAVAILABLE
         const unavailableStdout = execFileSync(
             process.execPath,
-            ['--input-type=module', '-e', unavailableScript],
+            ['--input-type=module', '-e', childScript],
             {
                 cwd     : repoRoot,
                 encoding: 'utf8',
@@ -460,12 +405,14 @@ This should be skipped.`);
             adrIngestorLoaded : false,
             count             : 0,
             admissionAvailable: false,
-            refusedCodes      : ['ADR_ADMISSION_EVIDENCE_UNAVAILABLE'],
+            code              : 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE',
+            refusedCodes      : ['ADR_ADMISSION_EVIDENCE_UNAVAILABLE', 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE'],
             redirectsCount    : 1,
             chunkKeys         : []
         });
 
-        // 2c. Child process without AdrIngestor rehydrates retained admission evidence from SQLite (aiConfig.memoryCoreDbPath)
+        // 2b. Child process without AdrIngestor rehydrates retained admission evidence from SQLite (aiConfig.memoryCoreDbPath),
+        // admitting both 0034 and newly authored 0042 without any static code-list edit
         const admittedStdout = execFileSync(
             process.execPath,
             ['--input-type=module', '-e', childScript],
@@ -482,11 +429,12 @@ This should be skipped.`);
         const admittedChild = JSON.parse(admittedStdout.trim().split('\n').pop());
         expect(admittedChild).toEqual({
             adrIngestorLoaded : false,
-            count             : 1,
+            count             : 2,
             admissionAvailable: true,
+            code              : null,
             refusedCodes      : [],
             redirectsCount    : 1,
-            chunkKeys         : [canonicalKey0034]
+            chunkKeys         : [canonicalKey0034, canonicalKey0042]
         });
     });
 
@@ -676,6 +624,7 @@ This should be skipped.`);
             sourcePath = 'learn/agentos/decisions/0020-agent-harness-concept.md',
             rev1       = '1'.repeat(40),
             rev2       = '2'.repeat(40),
+            rev3       = '3'.repeat(40),
             mirrorRoot = path.join(mockRoot, 'mirrors'),
             mirrorPath = deriveTenantRepoMirrorPath({mirrorRoot, tenantId: 'neo-shared', repoSlug: 'neomjs/neo'}),
             body0020   = [
@@ -688,6 +637,16 @@ This should be skipped.`);
                 '## 1. Context',
                 'Revision-bound KB projection test.'
             ].join('\n'),
+            body0020Updated = [
+                '# ADR 0020: Agent Harness Concept',
+                '',
+                '| Attribute | Value |',
+                '|---|---|',
+                '| **Status** | Accepted |',
+                '',
+                '## 1. Context',
+                'Updated revision-bound KB projection test.'
+            ].join('\n'),
             pointer0020 = [
                 '---',
                 'type: redirect',
@@ -698,18 +657,6 @@ This should be skipped.`);
 
         fs.ensureDirSync(mirrorPath);
 
-        AdrSource.hydrateAdmissionEvidence([
-            buildRetainedRecord({
-                canonicalKey: key0020,
-                adrNumber   : '0020',
-                title       : 'Agent Harness Concept',
-                currentSlug : 'agent-harness-concept',
-                repositoryId: '220867748',
-                namespace   : 'neomjs/neo',
-                sourcePath
-            })
-        ]);
-
         const
             plan       = createCoreCorpusProfilePlan('neo'),
             adrProfile = {
@@ -718,7 +665,8 @@ This should be skipped.`);
             },
             revisions = {
                 [rev1]: {[sourcePath]: body0020},
-                [rev2]: {[sourcePath]: pointer0020}
+                [rev2]: {[sourcePath]: pointer0020},
+                [rev3]: {[sourcePath]: body0020Updated}
             },
             gitMirror = {
                 async resolveHead({ref}) {
@@ -753,6 +701,50 @@ This should be skipped.`);
                 }
             };
 
+        // 0. When retained admission evidence is absent, full and delta envelopes preserve existing admitted
+        //    production data instead of masquerading as an empty extraction that tombstones prior documents.
+        const unverifiedFullEnvelope = await buildIngestEnvelope({
+            tenantId         : 'neo-shared',
+            repoSlug         : 'neomjs/neo',
+            mirrorRoot,
+            rootKind         : 'bare-repo',
+            lastIngestedRev  : null,
+            newHead          : rev1,
+            extractionProfile: adrProfile,
+            gitMirror
+        });
+        expect(unverifiedFullEnvelope.admissionAvailable).toBe(false);
+        expect(unverifiedFullEnvelope.admissionUnavailablePaths).toEqual([sourcePath]);
+        expect(unverifiedFullEnvelope.files).toEqual([]);
+        expect(unverifiedFullEnvelope.manifestSnapshot.yieldedSourcePaths).toBeUndefined();
+
+        const unverifiedDeltaEnvelope = await buildIngestEnvelope({
+            tenantId         : 'neo-shared',
+            repoSlug         : 'neomjs/neo',
+            mirrorRoot,
+            rootKind         : 'bare-repo',
+            lastIngestedRev  : rev1,
+            newHead          : rev3,
+            extractionProfile: adrProfile,
+            gitMirror
+        });
+        expect(unverifiedDeltaEnvelope.admissionAvailable).toBe(false);
+        expect(unverifiedDeltaEnvelope.admissionUnavailablePaths).toEqual([sourcePath]);
+        expect(unverifiedDeltaEnvelope.files).toEqual([]);
+        expect(unverifiedDeltaEnvelope.deleted).toEqual([]);
+
+        AdrSource.hydrateAdmissionEvidence([
+            buildRetainedRecord({
+                canonicalKey: key0020,
+                adrNumber   : '0020',
+                title       : 'Agent Harness Concept',
+                currentSlug : 'agent-harness-concept',
+                repositoryId: '220867748',
+                namespace   : 'neomjs/neo',
+                sourcePath
+            })
+        ]);
+
         // 1. Initial revision (rev1): revision-bound reader yields the admitted ADR chunk
         const rev1Envelope = await buildIngestEnvelope({
             tenantId         : 'neo-shared',
@@ -766,6 +758,7 @@ This should be skipped.`);
         });
 
         expect(rev1Envelope.headRevision).toBe(rev1);
+        expect(rev1Envelope.admissionAvailable).toBe(true);
         expect(rev1Envelope.deleted).toBeUndefined();
         expect(rev1Envelope.files).toHaveLength(1);
         expect(rev1Envelope.files[0]).toMatchObject({

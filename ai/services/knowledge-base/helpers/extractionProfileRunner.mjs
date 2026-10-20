@@ -479,9 +479,11 @@ export async function runExtractionProfile({
         ? new Set(changedPaths.map(normalizeRevisionSourcePath))
         : null;
     const
-        routeResults          = [],
-        yieldedSourcePaths    = new Set(),
-        extractorSkippedPaths = [];
+        routeResults              = [],
+        yieldedSourcePaths        = new Set(),
+        extractorSkippedPaths     = [],
+        admissionUnavailablePaths = new Set();
+    let admissionAvailable = true;
 
     for (const group of groupAssignments(compiled)) {
         const
@@ -561,8 +563,14 @@ export async function runExtractionProfile({
 
             yieldedSourcePaths.add(normalized);
         });
+        if (result?.admissionAvailable === false) {
+            admissionAvailable = false;
+        }
+
         for (const skipped of Array.isArray(result?.skippedSourcePaths) ? result.skippedSourcePaths : []) {
-            const sourcePath = normalizeRevisionSourcePath(skipped?.sourcePath);
+            const
+                sourcePath = normalizeRevisionSourcePath(skipped?.sourcePath || skipped?.path),
+                reason     = String(skipped?.reason || 'extractor-skip');
 
             if (!selectedPaths.has(sourcePath)) {
                 throw createRunnerError(
@@ -571,9 +579,14 @@ export async function runExtractionProfile({
                 )
             }
 
+            if (reason === 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE') {
+                admissionAvailable = false;
+                admissionUnavailablePaths.add(sourcePath);
+            }
+
             extractorSkippedPaths.push(Object.freeze({
                 sourcePath,
-                reason    : String(skipped?.reason || 'extractor-skip')
+                reason
             }));
         }
         routeResults.push(Object.freeze({
@@ -584,13 +597,15 @@ export async function runExtractionProfile({
     }
 
     return Object.freeze({
-        count                : routeResults.reduce((sum, result) => sum + result.count, 0),
-        materializationInput : compiled.materializationInput,
-        rootObservations     : compiled.rootObservations,
-        routeResults         : Object.freeze(routeResults),
-        skippedByType        : compiled.skippedByType,
-        skippedPaths         : compiled.skippedPaths,
-        extractorSkippedPaths: Object.freeze(extractorSkippedPaths
+        count                    : routeResults.reduce((sum, result) => sum + result.count, 0),
+        admissionAvailable,
+        admissionUnavailablePaths: Object.freeze([...admissionUnavailablePaths].sort()),
+        materializationInput     : compiled.materializationInput,
+        rootObservations         : compiled.rootObservations,
+        routeResults             : Object.freeze(routeResults),
+        skippedByType            : compiled.skippedByType,
+        skippedPaths             : compiled.skippedPaths,
+        extractorSkippedPaths    : Object.freeze(extractorSkippedPaths
             .sort((left, right) => left.sourcePath === right.sourcePath
                 ? 0
                 : left.sourcePath < right.sourcePath ? -1 : 1)),
