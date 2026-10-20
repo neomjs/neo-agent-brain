@@ -11,6 +11,47 @@ import {deriveRepoSlugFromCloneUrl} from './tenantRepoAccessContract.mjs';
 const ENGINE_REPO_SLUG = 'neo',
       BRAIN_REPO_SLUG  = 'neo-agent-brain';
 
+export const EVIDENCED_ADR_TERRITORY_ROOTS = Object.freeze([
+    'learn/agentos/decisions',
+    'learn/decisions'
+]);
+
+const LEARNING_ADR_EXCLUDES = Object.freeze([
+    'agentos/decisions/**',
+    'decisions/**'
+]);
+
+/**
+ * @summary Builds an AdrSource route covering the evidenced ADR territory layouts (`learn/agentos/decisions`
+ * and `learn/decisions`) without hardcoding a single repository's path as universal.
+ * @param {Object} [params={}]
+ * @param {String[]} [params.requiredRoots=[]]
+ * @param {String[]} [params.optionalRoots=EVIDENCED_ADR_TERRITORY_ROOTS]
+ * @param {Object} [params.options]
+ * @returns {Object}
+ */
+export function createAdrTerritoryRoute({
+    requiredRoots = [],
+    optionalRoots = EVIDENCED_ADR_TERRITORY_ROOTS,
+    options
+} = {}) {
+    const
+        reqSet = new Set(requiredRoots),
+        roots  = [
+            ...requiredRoots.map(rootPath => ({path: rootPath, optional: false})),
+            ...optionalRoots.filter(rootPath => !reqSet.has(rootPath)).map(rootPath => ({path: rootPath, optional: true}))
+        ];
+
+    return {
+        extractorId: 'AdrSource',
+        territory  : {
+            roots,
+            include: ['[0-9][0-9][0-9][0-9]-*.md']
+        },
+        ...(options ? {options} : {})
+    };
+}
+
 /**
  * @summary Creates one route rooted inside a single repository revision.
  * @param {String} extractorId
@@ -52,10 +93,10 @@ export function createCoreCorpusProfilePlan(repoSlug) {
                     route('ApiSource', 'apps',     ['**/*.mjs'], {type: 'app',     hierarchyScope: 'source-path'}),
                     route('ApiSource', 'examples', ['**/*.mjs'], {type: 'example', hierarchyScope: 'source-path'}),
                     route('ApiSource', 'docs/app', ['**/*.mjs'], {type: 'app',     hierarchyScope: 'source-path'}),
-                    route('AdrSource', 'learn/agentos/decisions', ['[0-9][0-9][0-9][0-9]-*.md']),
+                    createAdrTerritoryRoute({requiredRoots: ['learn/agentos/decisions']}),
                     route('ConceptSource', 'resources/content/concepts', ['*.md']),
                     route('LearningSource', 'learn', ['tree.json', '**/*.md'],
-                        {treePath: 'learn/tree.json'}, ['agentos/decisions/**']),
+                        {treePath: 'learn/tree.json'}, [...LEARNING_ADR_EXCLUDES]),
                     route('TestSource', 'test/playwright', ['**/*.mjs'])
                 ],
                 fallback: {action: 'exclude'}
@@ -72,9 +113,9 @@ export function createCoreCorpusProfilePlan(repoSlug) {
                 routes              : [
                     route('ApiSource', 'src', ['**/*.mjs'], {type: 'brain-source',       hierarchyScope: 'source-path'}),
                     route('ApiSource', 'ai',  ['**/*.mjs'], {type: 'ai-infrastructure', hierarchyScope: 'source-path'}),
-                    route('AdrSource', 'learn/agentos/decisions', ['[0-9][0-9][0-9][0-9]-*.md']),
+                    createAdrTerritoryRoute({requiredRoots: ['learn/agentos/decisions']}),
                     route('LearningSource', 'learn', ['**/*.md'], {mode: 'files'},
-                        ['agentos/decisions/**']),
+                        [...LEARNING_ADR_EXCLUDES]),
                     route('TestSource', 'test/playwright', ['**/*.mjs'])
                 ],
                 fallback: {action: 'exclude'}

@@ -14,11 +14,17 @@ import {
     FORGE_AUTHORITY_REGEX,
     FULL_NAMESPACE_REGEX,
     KNOWN_CUT_REPOSITORIES,
+    SHARED_ADR_CATALOG_STATE,
+    bindSharedAdrRecordAliases,
     buildCanonicalAdrKey,
     createCodedError,
     decodeAdrKeyField,
     encodeAdrKeyField,
+    ensureSharedReservationBucket,
     parseCanonicalAdrKey,
+    registerSharedForgeRepository,
+    resetSharedAdrCatalog,
+    resolveSharedAdrReference,
     validateAdrIdentityFields
 } from '../shared/adrIdentityCodec.mjs';
 import {
@@ -122,9 +128,9 @@ class AdrIngestor extends Base {
         singleton: true
     }
 
-    admissionCatalog       = new Map()
-    repositoryReservations = new Map()
-    forgeDirectory         = new Map()
+    admissionCatalog       = SHARED_ADR_CATALOG_STATE.admissionCatalog
+    repositoryReservations = SHARED_ADR_CATALOG_STATE.repositoryReservations
+    forgeDirectory         = SHARED_ADR_CATALOG_STATE.forgeDirectory
 
     construct(config) {
         super.construct(config);
@@ -135,12 +141,7 @@ class AdrIngestor extends Base {
      * @summary Resets the in-memory admission catalog and seeds the default cut repositories.
      */
     resetCatalog() {
-        this.admissionCatalog.clear();
-        this.repositoryReservations.clear();
-        this.forgeDirectory.clear();
-        for (const repo of KNOWN_CUT_REPOSITORIES) {
-            this.registerForgeRepository(repo);
-        }
+        resetSharedAdrCatalog();
     }
 
     /**
@@ -236,23 +237,8 @@ class AdrIngestor extends Base {
      * @summary Registers a repository's current namespace occupancy in the forge provider directory.
      * @param {Object} repo
      */
-    registerForgeRepository({forge = 'github.com', repositoryId, namespace, aliases = []} = {}) {
-        validateAdrIdentityFields({forge, repositoryId, namespace, number: '0001'});
-        if (!this.forgeDirectory.has(forge)) this.forgeDirectory.set(forge, new Map());
-
-        const dir = this.forgeDirectory.get(forge);
-        dir.set(namespace.toLowerCase(), {forge, repositoryId, currentNamespace: namespace});
-
-        for (const aliasNs of aliases) {
-            if (typeof aliasNs === 'string' && FULL_NAMESPACE_REGEX.test(aliasNs)) {
-                const existing = dir.get(aliasNs.toLowerCase());
-                if (!existing || existing.repositoryId === repositoryId) {
-                    dir.set(aliasNs.toLowerCase(), {forge, repositoryId, currentNamespace: namespace});
-                }
-            }
-        }
-
-        this.#ensureReservationBucket(forge, repositoryId);
+    registerForgeRepository(repo = {}) {
+        registerSharedForgeRepository(repo);
     }
 
     /**
@@ -769,27 +755,6 @@ class AdrIngestor extends Base {
         return Array.from(owners.values());
     }
 
-    #isReaderAuthorizedForRecord(record, context = {}) {
-        if (!record) return false;
-        if (typeof context.isAuthorized === 'function') return Boolean(context.isAuthorized(record));
-
-        if (Array.isArray(context.authorizedRepositoryIds)) {
-            const
-                allowedIds = new Set(context.authorizedRepositoryIds.map(String)),
-                repoId     = record.sourceTuple?.repositoryId || record.assignmentEvidence?.repositoryId;
-            if (!allowedIds.has(String(repoId))) return false;
-        }
-
-        if (Array.isArray(context.authorizedNamespaces)) {
-            const
-                allowedNs = new Set(context.authorizedNamespaces.map(ns => String(ns).toLowerCase())),
-                ns        = (record.sourceTuple?.namespace || record.assignmentEvidence?.namespace || '').toLowerCase();
-            if (!allowedNs.has(ns)) return false;
-        }
-
-        return true;
-    }
-
     /**
      * @summary Resolves a human or machine ADR citation against the admitted catalog using evidenced
      * citation context, forge-adapter repository identity lookup, rename/reuse conflict rules, and
@@ -800,126 +765,7 @@ class AdrIngestor extends Base {
      */
     resolveAdrReference(reference, context = {}) {
         this.rehydrateCatalogFromGraph();
-        const raw = typeof reference === 'string' ? reference.trim() : '';
-        if (!raw) return unresolvedResult('EMPTY_REFERENCE');
-
-        if (raw.startsWith('adr:') && raw.split(':').length === 5) {
-            let parsedKey;
-            try {
-                parsedKey = parseCanonicalAdrKey(raw);
-            } catch (e) {
-                return unresolvedResult(e.code || 'ADR_INVALID_CANONICAL_KEY');
-            }
-            const record = this.admissionCatalog.get(parsedKey.canonicalKey);
-            if (!record || !this.#isReaderAuthorizedForRecord(record, context)) {
-                return unresolvedResult('NOT_FOUND');
-            }
-            return resolvedResult(record);
-        }
-
-        const parsedRef = parseHumanOrNumericAdrReference(raw);
-        if (!parsedRef.ok) return unresolvedResult(parsedRef.reasonCode);
-
-        const
-            {explicitForge, explicitNamespace, targetKind, targetValue} = parsedRef,
-            surfaceContext                                              = extractCitationSurfaceContext(context),
-            effectiveForge                                              = explicitForge || surfaceContext.forge,
-            hasRepositoryContext                                        = Boolean(explicitNamespace || surfaceContext.repositoryId || surfaceContext.namespace);
-
-        if (!hasRepositoryContext) {
-            const matchingAuthorized = [];
-            for (const record of this.admissionCatalog.values()) {
-                if (!this.#isReaderAuthorizedForRecord(record, context)) continue;
-                const matches = record.aliasBindings?.some(
-                    b => b.kind === targetKind && b.value === targetValue && (!effectiveForge || b.forge === effectiveForge)
-                ) || (targetKind === 'legacy-number' && record.adrNumber === targetValue && !record.assignmentEvidence?.repositoryId);
-                if (matches) matchingAuthorized.push(record.canonicalKey);
-            }
-
-            if (matchingAuthorized.length === 1 &&
-                matchingAuthorized[0] === `adr-${targetValue}` &&
-                !context.surface &&
-                !context.requireRepositoryContext) {
-                return resolvedResult(this.admissionCatalog.get(matchingAuthorized[0]));
-            }
-            return unresolvedResult('MISSING_REPOSITORY_CONTEXT', matchingAuthorized);
-        }
-
-        if (!effectiveForge) return unresolvedResult('MISSING_FORGE_CONTEXT');
-
-        const
-            targetNamespace   = explicitNamespace || surfaceContext.namespace,
-            lowerTargetNs     = targetNamespace ? targetNamespace.toLowerCase() : null,
-            forgeMap          = this.forgeDirectory.get(effectiveForge),
-            adapterResolution = lowerTargetNs && forgeMap ? forgeMap.get(lowerTargetNs) : null,
-            currentOccupantId = (!explicitNamespace && surfaceContext.repositoryId)
-                ? surfaceContext.repositoryId
-                : (adapterResolution?.repositoryId || null),
-            namespaceBindings = [],
-            repoIdBindings    = [];
-
-        for (const record of this.admissionCatalog.values()) {
-            for (const binding of record.aliasBindings || []) {
-                if (binding.forge !== effectiveForge || binding.kind !== targetKind || binding.value !== targetValue) continue;
-                if (lowerTargetNs && binding.namespace.toLowerCase() === lowerTargetNs) namespaceBindings.push({binding, record});
-                if (currentOccupantId && binding.repositoryId === currentOccupantId) repoIdBindings.push({binding, record});
-            }
-        }
-
-        if (lowerTargetNs && currentOccupantId) {
-            const conflictingHistorical = namespaceBindings.filter(entry => entry.binding.repositoryId !== currentOccupantId);
-            if (conflictingHistorical.length > 0) {
-                const candidateSet = new Set();
-                for (const entry of [...conflictingHistorical, ...namespaceBindings.filter(e => e.binding.repositoryId === currentOccupantId)]) {
-                    if (this.#isReaderAuthorizedForRecord(entry.record, context)) candidateSet.add(entry.record.canonicalKey);
-                }
-                const authorizedCandidates = Array.from(candidateSet);
-                if (authorizedCandidates.length === 0) return unresolvedResult('NOT_FOUND');
-
-                return {
-                    status              : 'conflict',
-                    resolved            : false,
-                    canonicalKey        : null,
-                    identityResolved    : false,
-                    documentAvailable   : false,
-                    requiresCanonicalKey: true,
-                    candidates          : authorizedCandidates,
-                    reasonCode          : 'RESERVED_NAMESPACE_OCCUPANCY_CONFLICT'
-                };
-            }
-        }
-
-        let matchedEntries = [];
-        if (lowerTargetNs) {
-            matchedEntries = namespaceBindings;
-            if (matchedEntries.length === 0 && currentOccupantId && adapterResolution) {
-                matchedEntries = repoIdBindings.filter(entry =>
-                    entry.record.provenance?.repositoryRenames?.some(
-                        r => r.forge === effectiveForge &&
-                             r.repositoryId === currentOccupantId &&
-                             (r.currentNamespace.toLowerCase() === lowerTargetNs || r.previousNamespace.toLowerCase() === lowerTargetNs)
-                    )
-                );
-            }
-        } else if (currentOccupantId) {
-            matchedEntries = repoIdBindings;
-        }
-
-        const
-            authorizedRecords = [],
-            seenKeys          = new Set();
-
-        for (const entry of matchedEntries) {
-            if (!seenKeys.has(entry.record.canonicalKey) && this.#isReaderAuthorizedForRecord(entry.record, context)) {
-                seenKeys.add(entry.record.canonicalKey);
-                authorizedRecords.push(entry.record);
-            }
-        }
-
-        if (authorizedRecords.length === 0) return unresolvedResult('NOT_FOUND');
-        if (authorizedRecords.length > 1)   return unresolvedResult('AMBIGUOUS_REFERENCE', authorizedRecords.map(r => r.canonicalKey));
-
-        return resolvedResult(authorizedRecords[0]);
+        return resolveSharedAdrReference(reference, context);
     }
 
     /**

@@ -22,7 +22,9 @@ import {
     checkSeamTable,
     findCompositionAdr,
     listPresentAdrIds,
-    listSeamTableRowIds
+    listPresentAdrRecords,
+    listSeamTableRowIds,
+    listSeamTableRows
 } from '../../../../../../ai/scripts/lint/lint-adr-seam-table.mjs';
 
 const TABLE = (rows) => [
@@ -158,5 +160,107 @@ test.describe('ai.scripts.lint.lint-adr-seam-table (#14525)', () => {
         expect(result.ok).toBe(false);
         expect(result.ambiguousFiles).toEqual(['0001-a.md', '0002-comp.md']);
         fs.rmSync(dir, {recursive: true, force: true});
+    });
+
+    test('AC3: ignores redirect pointers in listPresentAdrIds and listPresentAdrRecords and accepts explicit compositionAdr authority across repositories', () => {
+        const
+            redirect0034 = [
+                '---',
+                'type: redirect',
+                'target: adr:github.com:220867748:neomjs%2Fneo:0034',
+                '---',
+                '# Moved to neomjs/neo-agent-institution'
+            ].join('\n'),
+            neoDir = fixtureDir({
+                '0031-target-architecture-composition.md': TABLE(['0001', '0031', '0034']),
+                '0034-electron-shell-architecture.md'    : redirect0034
+            }),
+            brainDir = fixtureDir({
+                '0001-cross-process-cache-coherence.md': '# ADR 0001: Cache Coherence'
+            }),
+            instDir = fixtureDir({
+                '0034-electron-shell-architecture.md': '# ADR 0034: Electron Shell'
+            });
+
+        expect(listPresentAdrIds(neoDir)).toEqual(['0031']);
+
+        const multiResult = checkSeamTable({
+            compositionAdr: path.join(neoDir, '0031-target-architecture-composition.md'),
+            sources       : [
+                {dir: neoDir,   repositoryId: '220867748',  namespace: 'neomjs/neo'},
+                {dir: brainDir, repositoryId: '1344062228', namespace: 'neomjs/neo-agent-brain'},
+                {dir: instDir,  repositoryId: '1347756127', namespace: 'neomjs/neo-agent-institution'}
+            ]
+        });
+
+        expect(multiResult.ok).toBe(true);
+        expect(multiResult.missingRows).toEqual([]);
+        expect(multiResult.ghostRows).toEqual([]);
+        expect(multiResult.redirects).toHaveLength(1);
+        expect(multiResult.redirects[0].target).toBe('adr:github.com:220867748:neomjs%2Fneo:0034');
+        expect(multiResult.presentRecords.map(r => r.qualifiedId).sort()).toEqual([
+            'neomjs/neo#0031',
+            'neomjs/neo-agent-brain#0001',
+            'neomjs/neo-agent-institution#0034'
+        ]);
+
+        fs.rmSync(neoDir,   {recursive: true, force: true});
+        fs.rmSync(brainDir, {recursive: true, force: true});
+        fs.rmSync(instDir,  {recursive: true, force: true});
+    });
+
+    test('AC3 & AC5: equal bare numbers across separate repositories (neomjs/neo-stage 0001 and neomjs/neo-agent-brain 0001) coexist without collision or silent winner selection', () => {
+        const
+            brainDir = fixtureDir({
+                '0001-cross-process-cache-coherence.md': '# ADR 0001: Cross-Process Cache Coherence'
+            }),
+            stageDir = fixtureDir({
+                '0001-the-engine-contract.md': '# ADR 0001: The Engine Contract'
+            }),
+            sources = [
+                {dir: brainDir, repositoryId: '1344062228', namespace: 'neomjs/neo-agent-brain'},
+                {dir: stageDir, repositoryId: '1350000001', namespace: 'neomjs/neo-stage'}
+            ];
+
+        const {records, intraRepoDuplicates} = listPresentAdrRecords(sources);
+        expect(intraRepoDuplicates).toEqual([]);
+        expect(records.map(r => r.canonicalKey)).toEqual([
+            'adr:github.com:1344062228:neomjs%2Fneo-agent-brain:0001',
+            'adr:github.com:1350000001:neomjs%2Fneo-stage:0001'
+        ]);
+
+        // 1. Qualified seam table rows validate both 0001 records distinctly
+        const qualifiedTable = TABLE(['neomjs/neo-agent-brain#0001', 'neomjs/neo-stage#0001']);
+        expect(listSeamTableRows(qualifiedTable).map(r => r.qualifiedId)).toEqual([
+            'neomjs/neo-agent-brain#0001',
+            'neomjs/neo-stage#0001'
+        ]);
+
+        const qualifiedResult = checkSeamTable({
+            compositionAdr: {file: '0031-comp.md', content: qualifiedTable},
+            sources
+        });
+        expect(qualifiedResult.ok).toBe(true);
+        expect(qualifiedResult.duplicateRows).toEqual([]);
+        expect(qualifiedResult.ambiguousRows).toEqual([]);
+
+        // 2. AgentOS 0031 cut table coexists with non-cut neo-stage 0001 without collision
+        const cutResult = checkSeamTable({
+            compositionAdr: {file: '0031-target-architecture-composition.md', content: TABLE(['0001'])},
+            sources
+        });
+        expect(cutResult.ok).toBe(true);
+        expect(cutResult.presentRecords).toHaveLength(2);
+
+        // 3. When both repos are explicitly governed against an unqualified 0001 row, refuses silent winner selection
+        const ambiguousResult = checkSeamTable({
+            compositionAdr: {file: '0031-comp.md', content: TABLE(['0001'])},
+            sources       : sources.map(s => ({...s, governedByComposition: true}))
+        });
+        expect(ambiguousResult.ok).toBe(false);
+        expect(ambiguousResult.ambiguousRows).toEqual(['0001']);
+
+        fs.rmSync(brainDir, {recursive: true, force: true});
+        fs.rmSync(stageDir, {recursive: true, force: true});
     });
 });
