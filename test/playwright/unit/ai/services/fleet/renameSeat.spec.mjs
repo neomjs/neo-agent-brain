@@ -226,6 +226,31 @@ test('a re-run after the re-key finishes what follows it, and a further run chan
     expect(SeatOperatorRegistryService.operatorOf('neo-fable-mnemosyne').principal).toBe(OPERATOR)
 });
 
+test('an existing same-day retired seat copy is preserved and the newly retired seat home takes the next -N sibling', async () => {
+    await seat('neo-gpt');
+    const
+        today        = new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+        retiredRoot  = path.join(root, 'retired-seats'),
+        existingCopy = path.join(retiredRoot, `neo-gpt.pre-rename-${today}`),
+        secondCopy   = `${existingCopy}-2`;
+
+    await fs.mkdir(existingCopy, {recursive: true});
+    await fs.writeFile(path.join(existingCopy, 'earlier-backup.txt'), 'keep me\n');
+
+    const first = await rename('neo-gpt', 'neo-gpt-euclid');
+
+    expect(first.state).toBe('renamed');
+    expect(first.plan.retiredSeatHome).toBe(secondCopy);
+    expect(await fs.readFile(path.join(existingCopy, 'earlier-backup.txt'), 'utf8')).toBe('keep me\n');
+    expect(await fs.readFile(path.join(secondCopy, 'neomjs', 'neo', 'README.md'), 'utf8')).toBe('# neo-gpt\n');
+
+    const second = await rename('neo-gpt', 'neo-gpt-euclid');
+
+    expect(second.state).toBe('renamed');
+    expect(second.plan.retiredSeatHome).toBe(secondCopy);
+    expect(await fs.readFile(path.join(existingCopy, 'earlier-backup.txt'), 'utf8')).toBe('keep me\n')
+});
+
 test('a seat the registry does not know is refused with the NEO_FLEET_DATA_DIR hint', async () => {
     expect(await rename('neo-nobody', 'neo-somebody')).toEqual({
         state : 'refused',

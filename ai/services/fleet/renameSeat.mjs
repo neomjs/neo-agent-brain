@@ -317,8 +317,8 @@ async function repointSeatLinks({from, to}) {
 }
 
 /**
- * @summary Moves the old seat folder off the agents root to `<agentsRoot>/../retired-seats/<id>.pre-rename-<YYYYMMDD>`,
- * or finds the copy an earlier run already retired.
+ * @summary Moves the old seat folder off the agents root to `<agentsRoot>/../retired-seats/<id>.pre-rename-<YYYYMMDD>`
+ * (or the first free `-N` sibling when one already exists), or finds the newest copy an earlier run already retired.
  * @param {Object} options
  * @param {String} options.id
  * @param {String} options.seatHome
@@ -332,22 +332,33 @@ async function retireSeatHome({id, seatHome}) {
         retiredRoot = path.join(path.dirname(path.dirname(seatHome)), 'retired-seats'),
         prefix      = `${id}.pre-rename-`,
         today       = new Date().toISOString().slice(0, 10).replace(/-/g, ''),
-        target      = path.join(retiredRoot, `${prefix}${today}`);
+        baseName    = `${prefix}${today}`,
+        pattern     = new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.pre-rename-(\\d{8})(?:-(\\d+))?$`);
 
     if ((await lstatOrNull(seatHome))?.isDirectory()) {
         await fs.mkdir(retiredRoot, {recursive: true, mode: 0o700});
-        await fs.rm(target, {recursive: true, force: true});
+        let target = path.join(retiredRoot, baseName);
+
+        for (let suffix = 2; await lstatOrNull(target); suffix++) {
+            target = path.join(retiredRoot, `${baseName}-${suffix}`)
+        }
+
         await fs.rename(seatHome, target);
         return target
     }
 
     const existing = (await fs.readdir(retiredRoot, {withFileTypes: true}).catch(() => []))
-        .filter(entry => entry.isDirectory() && entry.name.startsWith(prefix))
-        .map(entry => entry.name)
-        .sort()
+        .filter(entry => entry.isDirectory())
+        .map(entry => {
+            const match = pattern.exec(entry.name);
+
+            return match && {name: entry.name, date: Number(match[1]), suffix: match[2] ? Number(match[2]) : 1}
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.date - b.date || a.suffix - b.suffix)
         .at(-1);
 
-    return existing ? path.join(retiredRoot, existing) : null
+    return existing ? path.join(retiredRoot, existing.name) : null
 }
 
 /**
