@@ -16,9 +16,11 @@ setup({
 import {test, expect}                                from '@playwright/test';
 import Neo                                           from 'neo.mjs/src/Neo.mjs';
 import * as core                                     from 'neo.mjs/src/core/_export.mjs';
+import {execFileSync, spawnSync}                     from 'node:child_process';
 import fs                                            from 'node:fs/promises';
 import os                                            from 'node:os';
 import path                                          from 'node:path';
+import {fileURLToPath}                               from 'node:url';
 import FleetRegistryService                          from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
 import SeatOperatorRegistryService                   from '../../../../../../ai/services/fleet/SeatOperatorRegistryService.mjs';
 import {SEAT_LEASE_FILE}                             from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
@@ -26,6 +28,8 @@ import {deriveAgentInstanceHome}                     from '../../../../../../ai/
 import {renameSeat}                                  from '../../../../../../ai/services/fleet/renameSeat.mjs';
 import {claudeSlug}                                  from '../../../../../../ai/services/fleet/carrySeatSessions.mjs';
 import {readSeatWindowRecord, writeSeatWindowRecord} from '../../../../../../ai/services/fleet/seatWindowRect.mjs';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..');
 
 /**
  * @summary A seat's Fleet id rename on real temp folders and the real registry: the folder is copied, proven and
@@ -120,8 +124,9 @@ test('the folder is copied and published under the new name, and the row, PAT, o
     expect(result.plan.sessions).toEqual({transcripts: [`${claudeSlug(path.join(home, clone))} → ${claudeSlug(path.join(destination, clone))}`]});
     expect(await fs.readdir(path.join(homeOf('neo-gpt-euclid'), 'projects'))).toEqual([claudeSlug(path.join(destination, clone))]);
     expect(await fs.readFile(path.join(destination, clone, 'README.md'), 'utf8')).toBe('# neo-gpt\n');
-    expect(await fs.readFile(path.join(home, clone, 'README.md'), 'utf8'), 'the old folder is the cold copy').toBe('# neo-gpt\n');
-    expect((await fs.readdir(agents)).sort(), 'no staging folder or marker remains').toEqual(['neo-gpt', 'neo-gpt-euclid'])
+    expect(result.plan.retiredSeatHome).toMatch(/^.*\/retired-seats\/neo-gpt\.pre-rename-\d{8}$/);
+    expect(await fs.readFile(path.join(result.plan.retiredSeatHome, clone, 'README.md'), 'utf8'), 'the old folder is retired off agentsRoot').toBe('# neo-gpt\n');
+    expect(await fs.readdir(agents), 'neither the old home nor any staging file remains under agentsRoot').toEqual(['neo-gpt-euclid'])
 });
 
 test('a seat never materialized keeps no folder, and only its row is re-keyed', async () => {
@@ -183,7 +188,7 @@ test('a re-run discards its own staging folder and completes the rename', async 
 
     expect(result).toMatchObject({state: 'renamed', plan: {state: 'copy'}});
     expect(await fs.readdir(path.join(agents, 'neo-gemini-julia'))).not.toContain('partial');
-    expect((await fs.readdir(agents)).sort()).toEqual(['neo-gemini-julia', 'neo-gemini-pro'])
+    expect(await fs.readdir(agents)).toEqual(['neo-gemini-julia'])
 });
 
 test('a re-run after the copy was published keeps the verified copy and re-keys the row', async () => {
@@ -210,15 +215,152 @@ test('a re-run after the re-key finishes what follows it, and a further run chan
 
     expect(first).toMatchObject({state: 'renamed', plan: {state: 'done', seatHome: home, destination, windowRecord: 'renamed'}});
     expect(first.plan.sessions.transcripts).toHaveLength(1);
+    expect(first.plan.retiredSeatHome).toMatch(/^.*\/retired-seats\/neo-fable\.pre-rename-\d{8}$/);
+    expect(await fs.readdir(agents)).toEqual(['neo-fable-mnemosyne']);
     expect(tenants.calls).toEqual([{from: 'neo-fable', to: 'neo-fable-mnemosyne'}]);
 
     const second = await rename('neo-fable', 'neo-fable-mnemosyne');
 
-    expect(second.plan).toMatchObject({state: 'done', windowRecord: 'current', sessions: {transcripts: []}});
+    expect(second.plan).toMatchObject({state: 'done', windowRecord: 'current', sessions: {transcripts: []}, links: {worktrees: [], symlinks: []}, retiredSeatHome: first.plan.retiredSeatHome});
     expect(FleetRegistryService.resolveCredential('neo-fable-mnemosyne')).toBe(PAT);
     expect(SeatOperatorRegistryService.operatorOf('neo-fable-mnemosyne').principal).toBe(OPERATOR)
 });
 
-test('a seat the registry does not know is refused', async () => {
-    expect(await rename('neo-nobody', 'neo-somebody')).toEqual({state: 'refused', reason: 'no seat \'neo-nobody\' is defined', plan: {id: 'neo-nobody', to: 'neo-somebody'}})
+test('a seat the registry does not know is refused with the NEO_FLEET_DATA_DIR hint', async () => {
+    expect(await rename('neo-nobody', 'neo-somebody')).toEqual({
+        state : 'refused',
+        reason: `no seat 'neo-nobody' is defined in '${path.join(root, 'fleet')}'; set NEO_FLEET_DATA_DIR to the Fleet Manager's fleet directory if it lives elsewhere`,
+        plan  : {id: 'neo-nobody', to: 'neo-somebody'}
+    })
+});
+
+test('a Claude Desktop seat whose preset target.cwd and git-worktrees.json name the old home names the new home after the rename', async () => {
+    const
+        home         = path.join(agents, 'neo-fable'),
+        destination  = path.join(agents, 'neo-fable-mnemosyne'),
+        oldClone     = path.join(home, 'neomjs', 'neo'),
+        newClone     = path.join(destination, 'neomjs', 'neo'),
+        instanceHome = deriveAgentInstanceHome({instanceRoot: agents, agentId: 'neo-fable', harnessType: 'claude-desktop'}),
+        newHome      = deriveAgentInstanceHome({instanceRoot: agents, agentId: 'neo-fable-mnemosyne', harnessType: 'claude-desktop'});
+
+    FleetRegistryService.defineAgent({githubUsername: 'neo-fable-mnemosyne', id: 'neo-fable', harnessType: 'claude-desktop', credential: PAT});
+    await fs.mkdir(instanceHome, {recursive: true});
+    await fs.mkdir(oldClone, {recursive: true});
+    await fs.writeFile(path.join(instanceHome, 'ccd-session-presets.json'), JSON.stringify({
+        byAccount: {account: {presets: [{name: 'neo', target: {cwd: oldClone}, seededFromDraft: true}]}}
+    }, null, 2));
+    await fs.writeFile(path.join(instanceHome, 'git-worktrees.json'), JSON.stringify({
+        [oldClone]: {originUrl: 'https://github.com/neomjs/neo.git', gitDir: path.join(oldClone, '.git')}
+    }, null, 2));
+
+    const result = await rename('neo-fable', 'neo-fable-mnemosyne');
+
+    expect(result).toMatchObject({state: 'renamed', plan: {sessions: {records: 2, transcripts: []}}});
+    expect(JSON.parse(await fs.readFile(path.join(newHome, 'ccd-session-presets.json'), 'utf8'))).toEqual({
+        byAccount: {account: {presets: [{name: 'neo', target: {cwd: newClone}, seededFromDraft: true}]}}
+    });
+    expect(JSON.parse(await fs.readFile(path.join(newHome, 'git-worktrees.json'), 'utf8'))).toEqual({
+        [newClone]: {originUrl: 'https://github.com/neomjs/neo.git', gitDir: path.join(newClone, '.git')}
+    })
+});
+
+test('a git worktree under the seat passes git status after the rename, and symlinks into the old home resolve under the new home', async () => {
+    const
+        home        = await seat('neo-gemini-pro'),
+        destination = path.join(agents, 'neo-gemini-julia'),
+        mainRepo    = path.join(home, 'neomjs', 'neo'),
+        worktree    = path.join(home, 'neomjs', 'neo-1217'),
+        extRepo     = path.join(root, 'external-repo'),
+        extWorktree = path.join(home, 'neomjs', 'ext-1217'),
+        initRepo    = dir => {
+            execFileSync('git', ['init', '-q'], {cwd: dir});
+            execFileSync('git', ['config', 'user.email', 'test@neomjs.com'], {cwd: dir});
+            execFileSync('git', ['config', 'user.name', 'Test'], {cwd: dir});
+            execFileSync('git', ['add', '.'], {cwd: dir});
+            execFileSync('git', ['commit', '-q', '-m', 'init'], {cwd: dir})
+        };
+
+    initRepo(mainRepo);
+    await fs.mkdir(path.join(mainRepo, 'node_modules', 'pkg'), {recursive: true});
+    await fs.writeFile(path.join(mainRepo, 'node_modules', 'pkg', 'index.js'), 'export default 1;\n');
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'feat/1217', worktree], {cwd: mainRepo});
+    await fs.symlink(path.join(mainRepo, 'node_modules'), path.join(worktree, 'node_modules'));
+
+    await fs.mkdir(extRepo, {recursive: true});
+    await fs.writeFile(path.join(extRepo, 'README.md'), '# ext\n');
+    initRepo(extRepo);
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'feat/ext', extWorktree], {cwd: extRepo});
+    await fs.symlink(path.join('..', '..', '..', 'neo-gemini-pro', 'neomjs', 'neo', 'README.md'), path.join(extWorktree, 'seat-readme.md'));
+
+    const result = await rename('neo-gemini-pro', 'neo-gemini-julia');
+
+    expect(result).toMatchObject({
+        state: 'renamed',
+        plan : {
+            links: {
+                worktrees: [path.join('neomjs', 'ext-1217'), path.join('neomjs', 'neo-1217')],
+                symlinks : [path.join('neomjs', 'ext-1217', 'seat-readme.md'), path.join('neomjs', 'neo-1217', 'node_modules')]
+            }
+        }
+    });
+
+    const
+        newWorktree    = path.join(destination, 'neomjs', 'neo-1217'),
+        newExtWorktree = path.join(destination, 'neomjs', 'ext-1217');
+
+    expect(execFileSync('git', ['-C', newWorktree, 'rev-parse', '--abbrev-ref', 'HEAD'], {encoding: 'utf8'}).trim()).toBe('feat/1217');
+    expect(execFileSync('git', ['-C', newWorktree, 'status', '--short'], {encoding: 'utf8'})).toBe('?? node_modules\n');
+    expect(execFileSync('git', ['-C', newExtWorktree, 'status', '--short'], {encoding: 'utf8'})).toBe('?? seat-readme.md\n');
+    expect(await fs.realpath(path.join(newWorktree, 'node_modules'))).toBe(path.join(destination, 'neomjs', 'neo', 'node_modules'));
+    expect(await fs.realpath(path.join(newExtWorktree, 'seat-readme.md'))).toBe(path.join(destination, 'neomjs', 'neo', 'README.md'));
+
+    // re-running is idempotent
+    const second = await rename('neo-gemini-pro', 'neo-gemini-julia');
+
+    expect(second).toMatchObject({
+        state: 'renamed',
+        plan : {links: {worktrees: [], symlinks: []}}
+    });
+    expect(execFileSync('git', ['-C', newWorktree, 'status', '--short'], {encoding: 'utf8'})).toBe('?? node_modules\n');
+    expect(await fs.realpath(path.join(newWorktree, 'node_modules'))).toBe(path.join(destination, 'neomjs', 'neo', 'node_modules'));
+    expect(await fs.realpath(path.join(newExtWorktree, 'seat-readme.md'))).toBe(path.join(destination, 'neomjs', 'neo', 'README.md'))
+});
+
+test('the CLI refuses and names NEO_FLEET_DATA_DIR with the default data dir and no such seat, and refuses when a live Fleet lease holds the registry', async () => {
+    const
+        home   = await seat('neo-gpt'),
+        runCli = (args, env = {}) => {
+            const envCopy = {...process.env, ...env};
+            if (env.NEO_FLEET_DATA_DIR === undefined) delete envCopy.NEO_FLEET_DATA_DIR;
+
+            const out = spawnSync(process.execPath, ['ai/scripts/fleet/renameSeat.mjs', ...args], {
+                cwd     : repoRoot,
+                encoding: 'utf8',
+                env     : envCopy,
+                timeout : 30_000
+            });
+
+            return {status: out.status, json: JSON.parse(out.stdout)}
+        };
+
+    const missing = runCli(['--id', 'neo-nobody', '--to', 'neo-somebody']);
+
+    expect(missing.status).toBe(1);
+    expect(missing.json.state).toBe('refused');
+    expect(missing.json.reason).toContain('NEO_FLEET_DATA_DIR');
+
+    const leasePath = path.join(root, 'fleet', 'launch-admission', 'issuer.lock');
+
+    await fs.mkdir(path.dirname(leasePath), {recursive: true});
+    await fs.writeFile(leasePath, JSON.stringify({pid: process.pid, owner: 'fleet-launch-admission', ownerToken: 't-1', startedAt: new Date().toISOString(), lastPulse: new Date().toISOString()}));
+
+    const held = runCli(['--id', 'neo-gpt', '--to', 'neo-gpt-euclid', '--apply'], {NEO_FLEET_DATA_DIR: path.join(root, 'fleet')});
+
+    expect(held.status).toBe(1);
+    expect(held.json).toEqual({
+        state : 'refused',
+        reason: `the Fleet may still be running: its lease names live pid ${process.pid}. Quit the Fleet Manager, then rename again`,
+        plan  : {id: 'neo-gpt', to: 'neo-gpt-euclid'}
+    });
+    expect(FleetRegistryService.getAgent('neo-gpt')).toMatchObject({seatHome: home})
 });

@@ -1,11 +1,15 @@
-import crypto                                                         from 'node:crypto';
-import fs                                                             from 'node:fs/promises';
-import path                                                           from 'node:path';
-import {carrySeatSessions}                                            from './carrySeatSessions.mjs';
-import {deriveAgentInstanceHome}                                      from './deriveAgentInstanceHome.mjs';
-import {assertSeatSegment}                                            from './deriveAgentRepoPath.mjs';
-import {copyTree, leaseEvidence, lstatOrNull, sameTree, stagingPaths} from './moveSeatHomes.mjs';
-import {readSeatWindowRecord, writeSeatWindowRecord}                  from './seatWindowRect.mjs';
+import {execFile as execFileCb}                                                          from 'node:child_process';
+import crypto                                                                            from 'node:crypto';
+import fs                                                                                from 'node:fs/promises';
+import path                                                                              from 'node:path';
+import {promisify}                                                                       from 'node:util';
+import {carrySeatSessions, rehomePath}                                                   from './carrySeatSessions.mjs';
+import {deriveAgentInstanceHome}                                                         from './deriveAgentInstanceHome.mjs';
+import {assertSeatSegment}                                                               from './deriveAgentRepoPath.mjs';
+import {copyTree, leaseEvidence, leaseFileEvidence, lstatOrNull, sameTree, stagingPaths} from './moveSeatHomes.mjs';
+import {readSeatWindowRecord, writeSeatWindowRecord}                                     from './seatWindowRect.mjs';
+
+const execFile = promisify(execFileCb);
 
 /**
  * @summary Renames one seat: its Fleet id, and the folder named after it under the same agents root. The
@@ -13,17 +17,19 @@ import {readSeatWindowRecord, writeSeatWindowRecord}                  from './se
  * and published under the new name. Only then does the registry re-key the row
  * ({@link Neo.ai.services.fleet.FleetRegistryService#renameAgent}), and the seat's PAT and operator follow it.
  * Until that write the registry still reads the old row and folder, so a refusal or an interruption leaves the
- * seat startable under its old id. After it, the old folder is a cold copy the operator retires once the seat
- * has started green under its new id.
+ * seat startable under its old id.
  *
  * The rename then carries what the registry does not hold: the seat's plane credentials, its window record,
- * and its harness sessions, which each harness indexes by the folder they ran in ({@link
- * module:ai/services/fleet/carrySeatSessions}), so the seat resumes them under its new id. Fleet-owned files
- * that embed the old path or id are not rewritten here. The first Start re-derives them from the row's
+ * its harness sessions, which each harness indexes by the folder they ran in ({@link
+ * module:ai/services/fleet/carrySeatSessions}), and any git worktrees or symbolic links under the new folder that
+ * still point into the old one. Once those succeed, the old folder is moved off the agents root to
+ * `<agentsRoot>/../retired-seats/<id>.pre-rename-<YYYYMMDD>` so no stale pointer can open it silently. Fleet-owned
+ * files that embed the old path or id are not rewritten here. The first Start re-derives them from the row's
  * `previousId` and `previousSeatHome`, as it does after a seat-root move ({@link
  * Neo.ai.services.fleet.moveSeatHomes}).
  *
  * Nothing changes when:
+ * - the Fleet itself may still be running, because its admission lease names a live process or cannot be read;
  * - the new id already names a seat;
  * - the seat is bound to no folder named after its id;
  * - the destination holds anything but a verified copy of the seat, or a staging folder this rename did not
@@ -47,7 +53,7 @@ import {readSeatWindowRecord, writeSeatWindowRecord}                  from './se
  *     `{id, to, seatHome, destination, materialized, state}`, where `state` is `copy`, `relocate` (a verified copy
  *     is already published), `rebind` (never materialized, so only the row is re-keyed) or `done` (the registry
  *     already carries the rename). A finished rename adds `skipped` sockets, the re-keyed `planeCredentials`
- *     endpoints, the `windowRecord` outcome and the carried `sessions`.
+ *     endpoints, the `windowRecord` outcome, the carried `sessions`, the repaired `links` and `retiredSeatHome`.
  * @throws {Error} For an invalid id, or a copy that is not identical to its source; nothing was re-keyed then.
  */
 export async function renameSeat({registry, tenants = null, id, to, moveId = null, dryRun = false, homeDir}) {
@@ -56,13 +62,27 @@ export async function renameSeat({registry, tenants = null, id, to, moveId = nul
 
     if (id === to) throw new Error(`renameSeat: seat '${id}' already has that id.`);
 
+    const fleetRunning = await fleetLeaseEvidence(registry);
+
+    if (fleetRunning) {
+        return {state: 'refused', reason: `the Fleet may still be running: ${fleetRunning}. Quit the Fleet Manager, then rename again`, plan: {id, to}}
+    }
+
     const
         agents  = registry.listAgents(),
         agent   = agents.find(row => row.id === id),
         renamed = agents.find(row => row.id === to);
 
     if (!agent) {
-        if (renamed?.previousId !== id) return {state: 'refused', reason: `no seat '${id}' is defined`, plan: {id, to}};
+        if (renamed?.previousId !== id) {
+            const dataDir = registry.getDataDir?.();
+
+            return {
+                state : 'refused',
+                reason: `no seat '${id}' is defined${dataDir ? ` in '${dataDir}'` : ''}; set NEO_FLEET_DATA_DIR to the Fleet Manager's fleet directory if it lives elsewhere`,
+                plan  : {id, to}
+            }
+        }
 
         const plan = {
             id, to,
@@ -193,8 +213,9 @@ async function publishCopy({plan, token}) {
 
 /**
  * @summary The re-key and the moves that follow it: the registry row with its PAT and operator, the plane
- * credentials, the window record and the harness sessions. Each is a no-op once done, so a re-run completes
- * whatever an interruption left.
+ * credentials, the window record, the harness sessions, the git worktrees and symlinks under the new folder, and
+ * the retirement of the old folder off the agents root. Each is a no-op once done, so a re-run completes whatever
+ * an interruption left.
  * @param {Object} options
  * @param {Object} options.registry
  * @param {Object} [options.tenants]
@@ -213,8 +234,120 @@ async function finishRename({registry, tenants, harnessType, plan, homeDir}) {
 
     const instanceHome = deriveAgentInstanceHome({instanceRoot: path.dirname(plan.destination), agentId: plan.to, harnessType});
 
-    plan.windowRecord = rekeyWindowRecord({instanceHome, to: plan.to});
-    plan.sessions     = await carrySeatSessions({harnessType, instanceHome, from: plan.seatHome, to: plan.destination, previousId: plan.id, id: plan.to, homeDir})
+    plan.windowRecord    = rekeyWindowRecord({instanceHome, to: plan.to});
+    plan.sessions        = await carrySeatSessions({harnessType, instanceHome, from: plan.seatHome, to: plan.destination, previousId: plan.id, id: plan.to, homeDir});
+    plan.links           = await repointSeatLinks({from: plan.seatHome, to: plan.destination});
+    plan.retiredSeatHome = await retireSeatHome({id: plan.id, seatHome: plan.seatHome})
+}
+
+/**
+ * @summary Why the Fleet may still be running against `registry`, or `null` when its lease is absent or stale.
+ * @param {Object} registry
+ * @returns {Promise<String|null>}
+ * @private
+ */
+async function fleetLeaseEvidence(registry) {
+    const
+        dataDir      = registry.getDataDir?.(),
+        admissionDir = registry.admissionDirectory?.() ?? (dataDir ? path.join(dataDir, 'launch-admission') : null),
+        candidates   = [admissionDir && path.join(admissionDir, 'issuer.lock'), dataDir && path.join(dataDir, 'issuer.lock')].filter(Boolean);
+
+    for (const file of candidates) {
+        const evidence = await leaseFileEvidence(file);
+
+        if (evidence) return evidence
+    }
+
+    return null
+}
+
+/**
+ * @summary Repairs git worktrees and repoints symbolic links under `to` whose targets lie under `from`.
+ * @param {Object} options
+ * @param {String} options.from
+ * @param {String} options.to
+ * @returns {Promise<{worktrees: String[], symlinks: String[]}>} Relative paths under `to` of repaired worktrees
+ *     and repointed symlinks.
+ * @private
+ */
+async function repointSeatLinks({from, to}) {
+    const worktrees = [], symlinks = [];
+
+    for (const entry of await fs.readdir(to, {recursive: true, withFileTypes: true})) {
+        const file = path.join(entry.parentPath, entry.name);
+
+        if (entry.isSymbolicLink()) {
+            const
+                target   = await fs.readlink(file),
+                resolved = path.resolve(entry.parentPath, target),
+                moved    = rehomePath(resolved, from, to);
+
+            if (moved !== resolved) {
+                await fs.unlink(file);
+                await fs.symlink(path.isAbsolute(target) ? moved : path.relative(entry.parentPath, moved), file);
+                symlinks.push(path.relative(to, file))
+            }
+        } else if (entry.isFile() && entry.name === '.git') {
+            const
+                worktree = entry.parentPath,
+                raw      = await fs.readFile(file, 'utf8'),
+                match    = /^gitdir:\s*(.+?)\r?\n?$/.exec(raw);
+
+            if (!match) continue;
+
+            const
+                gitdir   = match[1],
+                resolved = path.resolve(worktree, gitdir),
+                moved    = rehomePath(resolved, from, to),
+                realFile = await fs.realpath(file).catch(() => file),
+                backlink = await fs.readFile(path.join(moved, 'gitdir'), 'utf8').then(value => value.trim(), () => null);
+
+            if (moved === resolved && (backlink === file || backlink === realFile)) continue;
+
+            if (moved !== resolved) {
+                await fs.writeFile(file, `gitdir: ${path.isAbsolute(gitdir) ? moved : path.relative(worktree, moved)}\n`)
+            }
+
+            await execFile('git', ['-C', worktree, 'worktree', 'repair']);
+            worktrees.push(path.relative(to, worktree) || '.')
+        }
+    }
+
+    return {worktrees: worktrees.sort(), symlinks: symlinks.sort()}
+}
+
+/**
+ * @summary Moves the old seat folder off the agents root to `<agentsRoot>/../retired-seats/<id>.pre-rename-<YYYYMMDD>`,
+ * or finds the copy an earlier run already retired.
+ * @param {Object} options
+ * @param {String} options.id
+ * @param {String} options.seatHome
+ * @returns {Promise<String|null>}
+ * @private
+ */
+async function retireSeatHome({id, seatHome}) {
+    if (!seatHome) return null;
+
+    const
+        retiredRoot = path.join(path.dirname(path.dirname(seatHome)), 'retired-seats'),
+        prefix      = `${id}.pre-rename-`,
+        today       = new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+        target      = path.join(retiredRoot, `${prefix}${today}`);
+
+    if ((await lstatOrNull(seatHome))?.isDirectory()) {
+        await fs.mkdir(retiredRoot, {recursive: true, mode: 0o700});
+        await fs.rm(target, {recursive: true, force: true});
+        await fs.rename(seatHome, target);
+        return target
+    }
+
+    const existing = (await fs.readdir(retiredRoot, {withFileTypes: true}).catch(() => []))
+        .filter(entry => entry.isDirectory() && entry.name.startsWith(prefix))
+        .map(entry => entry.name)
+        .sort()
+        .at(-1);
+
+    return existing ? path.join(retiredRoot, existing) : null
 }
 
 /**

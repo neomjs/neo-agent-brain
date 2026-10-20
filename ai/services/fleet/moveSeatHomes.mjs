@@ -314,8 +314,16 @@ async function sha256(file) {
  * @returns {Promise<String|null>}
  */
 export async function leaseEvidence({agent, source}) {
-    const leasePath = path.join(deriveAgentInstanceHome({instanceRoot: source, agentId: agent.id, harnessType: agent.harnessType}), SEAT_LEASE_FILE);
-    let   raw, pid;
+    return leaseFileEvidence(path.join(deriveAgentInstanceHome({instanceRoot: source, agentId: agent.id, harnessType: agent.harnessType}), SEAT_LEASE_FILE))
+}
+
+/**
+ * @summary Why a lease file may name a running process, or `null` when it is absent or its pid is gone.
+ * @param {String} leasePath
+ * @returns {Promise<String|null>}
+ */
+export async function leaseFileEvidence(leasePath) {
+    let raw, pid;
 
     try {
         raw = await fs.readFile(leasePath, 'utf8')

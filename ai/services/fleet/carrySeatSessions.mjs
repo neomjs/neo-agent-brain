@@ -11,13 +11,16 @@ import {writeFileAtomic} from '../shared/atomicFileWrite.mjs';
  * seat resumes the very same sessions. Each harness indexes its sessions by the absolute folder they ran in, and
  * each keeps that index somewhere else:
  * - Claude Desktop lists sessions from its own records (`claude-code-sessions/`; a new session's folder in
- *   `ccd-session-presets.json`) and finds their transcripts in the shared `~/.claude/projects`, in a folder named
- *   after the session's folder. Claude Code keeps those folders in its own config home.
+ *   `ccd-session-presets.json`, cached repo paths in `git-worktrees.json`) and finds their transcripts in the shared
+ *   `~/.claude/projects`, in a folder named after the session's folder. Claude Code keeps those folders in its own
+ *   config home.
  * - Codex lists threads from its state database (each thread's folder and the rollout it appends to, each
  *   project's root); its global state names projects and its host by path, and `config.toml` paths in the seat.
  *   The rollouts stay byte-identical: its thread history indexes them by byte offset.
  * - Antigravity keeps conversations outside the seat, by the project the Fleet registered. The project keeps its
- *   id under the new name and folder, so the next Start verifies the same project.
+ *   id under the new name and folder, so the next Start verifies the same project. Each existing conversation's
+ *   protobuf record in `~/.gemini/antigravity/conversations` keeps the workspace URI it started with, so the seat
+ *   starts a new conversation after the rename.
  *
  * Only a value that is the previous folder or a path inside it changes; text that mentions it stays. Each step
  * leaves what is already carried as it is, so a re-run completes an interrupted one.
@@ -159,7 +162,8 @@ async function sessionFolderOf(folder) {
 }
 
 /**
- * @summary Points Claude Desktop's session records, and the folder its new sessions open in, at the new folder.
+ * @summary Points Claude Desktop's session records, the folder its new sessions open in, and its worktree cache
+ * at the new folder.
  * @param {Object} options
  * @param {String} options.instanceHome
  * @param {String} options.from
@@ -176,8 +180,8 @@ async function carryClaudeDesktopRecords({instanceHome, from, to}) {
 
     let changed = 0;
 
-    for (const file of [...files, path.join(instanceHome, 'ccd-session-presets.json')]) {
-        await rewriteJsonFile(file, value => rehomeJson(value, from, to)) && changed++
+    for (const file of [...files, path.join(instanceHome, 'ccd-session-presets.json'), path.join(instanceHome, 'git-worktrees.json')]) {
+        await rewriteJsonFile(file, value => rehomeJson(value, from, to, {keys: true})) && changed++
     }
 
     return changed
@@ -251,7 +255,9 @@ function rehomeStateDatabase(file, from, to) {
 
 /**
  * @summary Keeps the project the Fleet registered for an Antigravity seat: its receipt and Antigravity's own
- * record of it take the new name and folder, under the same project id.
+ * record of it take the new name and folder, under the same project id. Per-conversation protobuf trajectories
+ * under `~/.gemini/antigravity/conversations` embed the workspace URI at their original byte length and cannot
+ * be rewritten safely, so the result reports that a new conversation is needed.
  * @param {Object} options
  * @param {String} options.instanceHome
  * @param {String} options.from
@@ -259,7 +265,7 @@ function rehomeStateDatabase(file, from, to) {
  * @param {String} options.previousId
  * @param {String} options.id
  * @param {String} options.homeDir
- * @returns {Promise<{receipt: String, project: String}>} Each `repointed`, `current` or `absent`.
+ * @returns {Promise<{receipt: String, project: String, conversations?: String}>} Each `repointed`, `current` or `absent`.
  * @private
  */
 async function carryAntigravityProject({instanceHome, from, to, previousId, id, homeDir}) {
@@ -277,7 +283,8 @@ async function carryAntigravityProject({instanceHome, from, to, previousId, id, 
     return {
         receipt: outcome(await rewriteJsonFile(receiptPath, value => ({...value, projectName: rename(value.projectName), projectRoot: rehomePath(value.projectRoot, from, to)}))),
         project: outcome(await rewriteJsonFile(path.join(homeDir, '.gemini', 'config', 'projects', `${projectId}.json`),
-            value => ({...value, name: rename(value.name), projectResources: rehomeJson(value.projectResources, from, to)})))
+            value => ({...value, name: rename(value.name), projectResources: rehomeJson(value.projectResources, from, to)}))),
+        conversations: 'kept: ~/.gemini/antigravity/conversations protobufs keep the old workspace URI; start a new conversation'
     }
 }
 

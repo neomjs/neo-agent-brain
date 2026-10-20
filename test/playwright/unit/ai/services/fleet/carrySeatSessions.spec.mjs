@@ -72,12 +72,14 @@ test('Claude Desktop: its session records and new-session folder point at the ne
         instanceHome = path.join(to, 'harness', 'claude-desktop'),
         record       = path.join(instanceHome, 'claude-code-sessions', 'account', 'org', 'local_1.json'),
         presets      = path.join(instanceHome, 'ccd-session-presets.json'),
+        worktrees    = path.join(instanceHome, 'git-worktrees.json'),
         projects     = path.join(homeDir, '.claude', 'projects'),
         clone        = dir => path.join(dir, 'neomjs', 'neo'),
         stage        = dir => path.join(dir, 'neomjs', 'neo-stage');
 
     await put(record, {cliSessionId: 's-1', cwd: clone(from), originCwd: clone(from), gitAnchors: [{gitRoot: clone(from), commonDir: path.join(clone(from), '.git')}], title: `Work in ${clone(from)}`});
     await put(presets, {byAccount: {account: {presets: [{target: {cwd: clone(from)}}]}}}, {indent: 2});
+    await put(worktrees, {[clone(from)]: {originUrl: 'https://github.com/neomjs/neo.git', gitDir: path.join(clone(from), '.git')}, [clio]: {originUrl: 'https://github.com/neomjs/neo.git'}}, {indent: 2});
     await put(path.join(projects, claudeSlug(clone(from)), 's-1.jsonl'), `${JSON.stringify({type: 'summary'})}\n${JSON.stringify({type: 'user', cwd: clone(from)})}\n`);
     // the slug of neo-fable-clio/neomjs/neo extends the old one, but its transcripts ran in another seat
     await put(path.join(projects, claudeSlug(clio), 's-2.jsonl'), `${JSON.stringify({type: 'user', cwd: clio})}\n`);
@@ -89,9 +91,10 @@ test('Claude Desktop: its session records and new-session folder point at the ne
           kept   = `${claudeSlug(stage(from))} → kept: ${claudeSlug(stage(to))} exists`,
           result = await carry();
 
-    expect(result).toEqual({records: 2, transcripts: [`${claudeSlug(clone(from))} → ${claudeSlug(clone(to))}`, kept]});
+    expect(result).toEqual({records: 3, transcripts: [`${claudeSlug(clone(from))} → ${claudeSlug(clone(to))}`, kept]});
     expect(await readJson(record)).toEqual({cliSessionId: 's-1', cwd: clone(to), originCwd: clone(to), gitAnchors: [{gitRoot: clone(to), commonDir: path.join(clone(to), '.git')}], title: `Work in ${clone(from)}`});
     expect(await readJson(presets)).toEqual({byAccount: {account: {presets: [{target: {cwd: clone(to)}}]}}});
+    expect(await readJson(worktrees)).toEqual({[clone(to)]: {originUrl: 'https://github.com/neomjs/neo.git', gitDir: path.join(clone(to), '.git')}, [clio]: {originUrl: 'https://github.com/neomjs/neo.git'}});
     expect(await fs.readFile(presets, 'utf8'), 'its indentation is kept').toContain('\n  "byAccount"');
     expect((await fs.readdir(projects)).sort()).toEqual([claudeSlug(clone(to)), claudeSlug(clio), claudeSlug(stage(from)), claudeSlug(stage(to))].sort());
     expect(await fs.readFile(path.join(projects, claudeSlug(clone(to)), 's-1.jsonl'), 'utf8'), 'a transcript is history, kept as written').toContain(`"cwd":"${clone(from)}"`);
@@ -209,9 +212,11 @@ test('Antigravity: the project keeps its id under the new name and folder, and t
     await put(projectPath, {id: projectId, name: 'neo-gemini-pro', projectResources: {resources: [{gitFolder: {folderUri: pathToFileURL(path.join(from, 'neomjs', 'neo')).href}}]}, permissionGrants: grants, settings: {}, isWorkspaceOnly: false});
     await fs.mkdir(path.join(to, 'neomjs', 'neo'), {recursive: true});
 
-    const carry = () => carrySeatSessions({harnessType: 'antigravity', instanceHome, from, to, previousId: 'neo-gemini-pro', id: 'neo-gemini-julia', homeDir});
+    const
+        carry         = () => carrySeatSessions({harnessType: 'antigravity', instanceHome, from, to, previousId: 'neo-gemini-pro', id: 'neo-gemini-julia', homeDir}),
+        conversations = 'kept: ~/.gemini/antigravity/conversations protobufs keep the old workspace URI; start a new conversation';
 
-    expect(await carry()).toEqual({receipt: 'repointed', project: 'repointed'});
+    expect(await carry()).toEqual({receipt: 'repointed', project: 'repointed', conversations});
     expect(await readJson(receiptPath)).toEqual({version: 1, projectId, projectName: 'neo-gemini-julia', projectRoot: path.join(to, 'neomjs', 'neo')});
     expect((await fs.stat(receiptPath)).mode & 0o777, 'the receipt stays private').toBe(0o600);
     expect(await readJson(projectPath)).toEqual({id: projectId, name: 'neo-gemini-julia', projectResources: {resources: [{gitFolder: {folderUri: pathToFileURL(path.join(to, 'neomjs', 'neo')).href}}]}, permissionGrants: grants, settings: {}, isWorkspaceOnly: false});
@@ -219,7 +224,7 @@ test('Antigravity: the project keeps its id under the new name and folder, and t
     const registered = await registerAntigravityProject({registryDirectory: registry, profileDirectory: instanceHome, projectRoot: path.join(to, 'neomjs', 'neo'), name: 'neo-gemini-julia', projectMcpAllowRules: rules});
 
     expect(registered, 'no new project: the conversations stay with this one').toMatchObject({verified: true, created: false, projectId});
-    expect(await carry(), 'a re-run changes nothing').toEqual({receipt: 'current', project: 'current'})
+    expect(await carry(), 'a re-run changes nothing').toEqual({receipt: 'current', project: 'current', conversations})
 });
 
 test('a seat without a project receipt, or a harness whose sessions the Fleet does not know, carries nothing', async () => {
