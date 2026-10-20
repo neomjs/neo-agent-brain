@@ -426,6 +426,14 @@ Codifies CONCEPT:adr-0038 and CONCEPT:golden-path.
         expect(afterNode.properties.status).toBe('Accepted');
         expect(afterNode.properties.source).toBe('learn/agentos/decisions/0038-canonical-adr.md');
 
+        // Read-modify-write CONCEPT upsert echoing existing properties (including adrAuthority) must keep label === 'ADR'
+        GraphService.upsertNode({
+            id        : 'adr-0038',
+            type      : 'CONCEPT',
+            properties: {...afterNode.properties}
+        });
+        expect(GraphService.db.nodes.get('adr-0038').label).toBe('ADR');
+
         // Undeclared competing authoritative ADR claim from a different canonicalKey must be refused by GraphService.upsertNode
         expect(() => {
             GraphService.upsertNode({
@@ -1057,7 +1065,17 @@ Codifies CONCEPT:adr-0038 and CONCEPT:golden-path.
         });
         expect(renameStats.errors).toEqual([]);
 
+        // Simulate a process restart (clear in-memory admissionCatalog while GraphService.db stays intact):
+        // resolveAdrReference and subsequent syncs must rehydrate from persisted adrAdmissionRecord on the graph node.
+        AdrIngestor.resetCatalog();
+        expect(AdrIngestor.admissionCatalog.size).toBe(0);
+        expect(AdrIngestor.resolveAdrReference('neomjs/neo-agent-brain#adr:original-owner', {
+            surface  : 'organization_discussion',
+            webOrigin: {forge: 'github.com'}
+        }).canonicalKey).toBe(canonical50);
+
         // Vector 16: Two new files claiming the same ADR number (0060) in one batch -> both refused (ADR_BATCH_CONFLICT), neither admitted
+        AdrIngestor.resetCatalog();
         writeAdr('0060-claimant-a.md', `
 # ADR 0060: Claimant A
 | **Status** | Proposed |
@@ -1077,7 +1095,8 @@ Codifies CONCEPT:adr-0038 and CONCEPT:golden-path.
         fs.unlinkSync(path.join(decisionsDir, '0060-claimant-a.md'));
         fs.unlinkSync(path.join(decisionsDir, '0060-claimant-b.md'));
 
-        // Vector 17: Competing file 0050-hijacker.md alongside admitted owner 0050-renamed-owner.md -> refused (ADR_COMPETING_CLAIM_REFUSED)
+        // Vector 17: Competing file 0050-hijacker.md alongside admitted owner 0050-renamed-owner.md across resetCatalog() -> refused (ADR_COMPETING_CLAIM_REFUSED)
+        AdrIngestor.resetCatalog();
         writeAdr('0050-hijacker.md', `
 # ADR 0050: Hijacker Title
 | **Status** | Accepted |
@@ -1092,7 +1111,8 @@ Codifies CONCEPT:adr-0038 and CONCEPT:golden-path.
 
         fs.unlinkSync(path.join(decisionsDir, '0050-hijacker.md'));
 
-        // Vector 18: Removing previously admitted alias 'original-owner' from 0050-renamed-owner.md is refused (ADR_REMOVED_ADMITTED_ALIAS)
+        // Vector 18: Removing previously admitted alias 'original-owner' from 0050-renamed-owner.md across resetCatalog() is refused (ADR_REMOVED_ADMITTED_ALIAS)
+        AdrIngestor.resetCatalog();
         writeAdr('0050-renamed-owner.md', `
 # ADR 0050: Original Owner Mutated Without Alias
 | Attribute | Value |

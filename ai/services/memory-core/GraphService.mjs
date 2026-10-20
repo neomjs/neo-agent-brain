@@ -393,8 +393,9 @@ class GraphService extends Base {
      * admitted as a source-backed `ADR` (`label === 'ADR'` and `properties.adrAuthority?.admitted === true`),
      * non-authoritative writers (such as REM Tri-Vector `SemanticGraphExtractor`, `ConceptIngestor`, or
      * concept-spine merges) may enrich relationships and non-reserved properties, but cannot overwrite
-     * the `ADR` label, canonical `semanticVectorId`, or authoritative ADR metadata fields. Membership is
-     * proved by admission (`adrAuthority.admitted === true`), never by an `adr-` or `adr:` prefix.
+     * the `ADR` label, canonical `semanticVectorId`, or authoritative ADR metadata fields. A write is
+     * authoritative only when it declares `type === 'ADR'` alongside `adrAuthority.admitted === true`,
+     * so echoing an existing node's `adrAuthority` on a non-`ADR` write never relabels or overwrites it.
      * An undeclared competing canonical ADR claim refuses mutation and retains the last admitted state.
      *
      * @important The `type` string is mapped directly to `node.label` to comply with strict Graph Database taxonomy (Node Labels).
@@ -423,7 +424,7 @@ class GraphService extends Base {
                 currentAuth             = currentProperties.adrAuthority,
                 isAdmittedAdr           = currentLabel === 'ADR' && currentAuth?.admitted === true,
                 incomingAuth            = properties?.adrAuthority,
-                isAuthoritativeAdrWrite = incomingAuth?.admitted === true;
+                isAuthoritativeAdrWrite = type === 'ADR' && incomingAuth?.admitted === true;
 
             if (isAdmittedAdr && isAuthoritativeAdrWrite) {
                 const
