@@ -121,6 +121,65 @@ function isMessageRecordEdge(edge) {
 const ORPHAN_COLLECTABLE_LABELS = Object.freeze(['CONCEPT']);
 
 /**
+ * Authoritative property keys owned by an admitted, source-backed `ADR` node.
+ * Non-authoritative graph writers (such as REM Tri-Vector extraction or concept-spine merges)
+ * may enrich an admitted ADR node with relationships or non-reserved properties, but cannot
+ * overwrite its `ADR` label, canonical document vector, or identity/metadata fields.
+ * @see learn/agentos/decisions/0006-adrs-as-graph-queryable-entities.md §2.7
+ */
+export const ADR_PROTECTED_PROPERTY_KEYS = Object.freeze([
+    'adrAdmissionRecord',
+    'adrAuthority',
+    'adrNumber',
+    'adrNumberValue',
+    'canonicalKey',
+    'name',
+    'payloadHash',
+    'rawStatus',
+    'semanticVectorId',
+    'source',
+    'status',
+    'supersedes',
+    'title'
+]);
+const ADR_PROTECTED_PROPERTY_KEY_SET = new Set(ADR_PROTECTED_PROPERTY_KEYS);
+
+/**
+ * Complete inventory of graph node writers across `ai/`.
+ * Only `AdrIngestor` (and reviewed migration/recovery carrying verified `adrAuthority` proof)
+ * may mutate an admitted ADR's identity, `ADR` type label, or canonical document-vector binding.
+ * @see learn/agentos/decisions/0006-adrs-as-graph-queryable-entities.md §§2.7–2.8
+ */
+export const GRAPH_NODE_WRITER_INVENTORY = Object.freeze([
+    Object.freeze({id: 'AdrIngestor',                        path: 'ai/services/ingestion/AdrIngestor.mjs',                                  role: 'Authoritative source-backed ADR node and deterministic edge-stub writer', canMutateAdrAuthority: true}),
+    Object.freeze({id: 'SemanticGraphExtractor',             path: 'ai/services/graph/SemanticGraphExtractor.mjs',                           role: 'REM Tri-Vector session extraction writer (CONCEPT/CLASS/PROCESS + summary vector)', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'conceptSpineCanonicalization',       path: 'ai/services/graph/conceptSpineCanonicalization.mjs',                     role: 'Concept-spine alias cluster merge and tombstone writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'ConceptIngestor',                    path: 'ai/services/ingestion/ConceptIngestor.mjs',                              role: 'Deterministic Concept Ontology writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'ConceptDiscoveryService',            path: 'ai/services/ingestion/ConceptDiscoveryService.mjs',                      role: 'Discovered concept candidate writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'IssueIngestor',                      path: 'ai/services/ingestion/IssueIngestor.mjs',                                role: 'Corpus projection writer for ISSUE, DISCUSSION, PULL_REQUEST, and PR gap nodes', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'MemorySessionIngestor',              path: 'ai/services/ingestion/MemorySessionIngestor.mjs',                        role: 'Memory and session graph projection writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'KnowledgeBaseIngestionService',      path: 'ai/services/knowledge-base/IngestionService.mjs',                        role: 'Knowledge Base structural class/guide/blog/test graph writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'FileSystemIngestor',                 path: 'ai/services/memory-core/FileSystemIngestor.mjs',                         role: 'Workspace filesystem DIRECTORY and FILE topology writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'GraphService',                       path: 'ai/services/memory-core/GraphService.mjs',                               role: 'Core graph write seam, boot seeds, identity roots, and _SYSTEM_STATE clock', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'GapInferenceEngine',                 path: 'ai/services/graph/GapInferenceEngine.mjs',                               role: 'Structural gap and telemetry node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'GoldenPathSynthesizer',              path: 'ai/services/graph/GoldenPathSynthesizer.mjs',                            role: 'Golden Path synthesis frontier node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'TemporalSummaryAggregationService',  path: 'ai/daemons/temporal-summary/TemporalSummaryAggregationService.mjs',      role: 'Temporal rollup summary node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'MailboxService',                     path: 'ai/services/memory-core/MailboxService.mjs',                             role: 'A2A MESSAGE and TASK lifecycle node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'MemoryService',                      path: 'ai/services/memory-core/MemoryService.mjs',                              role: 'Turn AGENT_MEMORY node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'SessionService',                     path: 'ai/services/memory-core/SessionService.mjs',                             role: 'SESSION summary node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'TurnPresenceService',                path: 'ai/services/memory-core/TurnPresenceService.mjs',                        role: 'Turn-presence node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'WakeSubscriptionService',            path: 'ai/services/memory-core/WakeSubscriptionService.mjs',                    role: 'Wake subscription state node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'WebhookDeliveryService',             path: 'ai/services/memory-core/WebhookDeliveryService.mjs',                     role: 'Webhook delivery subscription status writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'nlActionTelemetryStore',             path: 'ai/services/memory-core/helpers/nlActionTelemetryStore.mjs',             role: 'Neural Link action telemetry node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'nlTransactionArchiveStore',          path: 'ai/services/memory-core/helpers/nlTransactionArchiveStore.mjs',          role: 'Neural Link transaction archive node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'recoveryRunStateStore',              path: 'ai/services/memory-core/helpers/recoveryRunStateStore.mjs',              role: 'Recovery actuator run-state node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'businessMetricsProbeCore',           path: 'ai/scripts/maintenance/businessMetricsProbeCore.mjs',                    role: 'METRIC node writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'seedAgentIdentities',                path: 'ai/scripts/setup/seedAgentIdentities.mjs',                               role: 'Explicit AgentIdentity registry seed writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'reconcileRawMemoryGraphIdentities',  path: 'ai/scripts/migrations/reconcileRawMemoryGraphIdentities.mjs',            role: 'One-shot raw memory identity migration writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'normalizeGraphIdentities',           path: 'ai/scripts/migrations/normalizeGraphIdentities.mjs',                     role: 'One-shot graph identity normalization migration writer', canMutateAdrAuthority: false})
+]);
+
+/**
  * @summary Service that manages the SQLite Knowledge Graph (Nodes and Edges).
  *
  * It provides the topological layout of the Neo.mjs namespace, knowledge,
@@ -329,8 +388,18 @@ class GraphService extends Base {
 
     /**
      * Upserts a Node representation into the graph securely linking the ID.
+     *
+     * @summary Enforces the ADR authority boundary at the graph-write seam: once a node is
+     * admitted as a source-backed `ADR` (`label === 'ADR'` and `properties.adrAuthority?.admitted === true`),
+     * non-authoritative writers (such as REM Tri-Vector `SemanticGraphExtractor`, `ConceptIngestor`, or
+     * concept-spine merges) may enrich relationships and non-reserved properties, but cannot overwrite
+     * the `ADR` label, canonical `semanticVectorId`, or authoritative ADR metadata fields. Membership is
+     * proved by admission (`adrAuthority.admitted === true`), never by an `adr-` or `adr:` prefix.
+     * An undeclared competing canonical ADR claim refuses mutation and retains the last admitted state.
+     *
      * @important The `type` string is mapped directly to `node.label` to comply with strict Graph Database taxonomy (Node Labels).
      * @param {Object} nodeData
+     * @see learn/agentos/decisions/0006-adrs-as-graph-queryable-entities.md §§2.7–2.8
      */
     upsertNode({id, type, name, description, semanticVectorId, state, updatedAt, properties}) {
         if (!isValidGraphNodeId(id)) {
@@ -348,8 +417,32 @@ class GraphService extends Base {
         let currentUserId = resolveRlsUserId(this.db.storage?.RequestContextService) ?? undefined;
 
         if (node) {
-            const currentLabel = node.isRecord ? node.get('label') : node.label;
-            const updatedLabel = type || currentLabel || 'NODE';
+            const
+                currentLabel            = node.isRecord ? node.get('label') : node.label,
+                currentProperties       = (node.isRecord ? node.get('properties') : node.properties) || {},
+                currentAuth             = currentProperties.adrAuthority,
+                isAdmittedAdr           = currentLabel === 'ADR' && currentAuth?.admitted === true,
+                incomingAuth            = properties?.adrAuthority,
+                isAuthoritativeAdrWrite = incomingAuth?.admitted === true;
+
+            if (isAdmittedAdr && isAuthoritativeAdrWrite) {
+                const
+                    canonicalMismatch  = Boolean(currentAuth.canonicalKey && incomingAuth.canonicalKey && currentAuth.canonicalKey !== incomingAuth.canonicalKey),
+                    repoMismatch       = Boolean(currentAuth.repositoryId && incomingAuth.repositoryId && currentAuth.repositoryId !== incomingAuth.repositoryId),
+                    namespaceMismatch  = Boolean(currentAuth.namespace && incomingAuth.namespace && currentAuth.namespace !== incomingAuth.namespace),
+                    sourceMismatch     = Boolean(currentAuth.source && incomingAuth.source && currentAuth.source !== incomingAuth.source),
+                    transitionVerified = incomingAuth.custodyTransitionVerified === true || incomingAuth.renameVerified === true;
+
+                if (canonicalMismatch || ((repoMismatch || namespaceMismatch || sourceMismatch) && !transitionVerified)) {
+                    const err = new Error(`[GraphService] Undeclared competing canonical ADR claim refused for '${id}'; retaining last admitted state.`);
+                    err.code  = 'ADR_UNDECLARED_COMPETING_CLAIM';
+                    throw err;
+                }
+            }
+
+            const
+                preserveAdrAuthority = isAdmittedAdr && !isAuthoritativeAdrWrite,
+                updatedLabel         = preserveAdrAuthority ? 'ADR' : (type || currentLabel || 'NODE');
 
             if (node.isRecord) {
                 node.set({ label: updatedLabel });
@@ -357,15 +450,14 @@ class GraphService extends Base {
                 node.label = updatedLabel;
             }
 
-            const currentProperties = node.isRecord ? node.get('properties') : node.properties;
-            let   p                 = Object.assign({}, currentProperties || {});
-            if (name !== undefined) {
+            let p = Object.assign({}, currentProperties);
+            if (name !== undefined && !preserveAdrAuthority) {
                 p.name = name;
             }
             if (description !== undefined) {
                 p.description = description;
             }
-            if (semanticVectorId !== undefined) {
+            if (semanticVectorId !== undefined && !preserveAdrAuthority) {
                 p.semanticVectorId = semanticVectorId;
             }
             if (state !== undefined) {
@@ -376,7 +468,19 @@ class GraphService extends Base {
             }
 
             if (properties !== undefined && typeof properties === 'object') {
-                Object.assign(p, properties);
+                if (preserveAdrAuthority) {
+                    for (const [k, v] of Object.entries(properties)) {
+                        if (!ADR_PROTECTED_PROPERTY_KEY_SET.has(k)) {
+                            p[k] = v;
+                        }
+                    }
+                } else {
+                    Object.assign(p, properties);
+                }
+            }
+
+            if (preserveAdrAuthority && currentAuth.semanticVectorId) {
+                p.semanticVectorId = currentAuth.semanticVectorId;
             }
 
             if (currentUserId !== undefined && p.userId === undefined) {
