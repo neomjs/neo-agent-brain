@@ -1146,7 +1146,10 @@ class FleetLifecycleService extends Base {
 
         if (agent.harnessType === 'claude-desktop' && launch.instanceHome) {
             if (opts.startSignal?.aborted) return this.canceledStart(id);
-            convergeSeatSessionPreset({instanceHome: launch.instanceHome, cwd});
+            const preset = convergeSeatSessionPreset({instanceHome: launch.instanceHome, cwd});
+            if (preset.status !== 'unchanged') {
+                console.info(`[FleetLifecycleService] seat '${id}' session preset ${preset.status} for '${preset.cwd}'.`);
+            }
         }
 
         let child;

@@ -77,8 +77,73 @@ test.describe('convergeSeatSessionPreset — preset convergence before claude-de
         expect(statAfterSecondCall.mtimeMs).toBe(statBeforeSecondCall.mtimeMs)
     });
 
-    test('AC-2: seeds one preset pointing at the checkout when the profile has no preset file', () => {
+    test('converges only local presets and leaves a non-local preset (e.g. ssh) untouched', () => {
         fs.mkdirSync(instanceHome, {recursive: true});
+
+        const
+            sshPreset = {
+                id        : '11111111-2222-4333-8444-555555555555',
+                name      : 'devbox',
+                createdAt : 1789984860000,
+                lastUsedAt: 1789984860000,
+                target    : {
+                    kind: 'ssh',
+                    host: 'devbox',
+                    cwd : '/home/me/neo'
+                }
+            },
+            staleLocalPreset = {
+                id        : '78c5d999-a73b-4239-994f-70d2332da522',
+                name      : 'neo',
+                createdAt : 1789984863649,
+                lastUsedAt: 1789984863649,
+                target    : {
+                    kind: 'local',
+                    cwd : staleFolder
+                }
+            };
+
+        fs.writeFileSync(presetPath, `${JSON.stringify({
+            byAccount: {
+                [accountId]: {
+                    presets        : [sshPreset, staleLocalPreset],
+                    builtIns       : {},
+                    seededFromDraft: true
+                }
+            }
+        }, null, '\t')}\n`, {mode: 0o600});
+
+        const updated = convergeSeatSessionPreset({instanceHome, cwd: checkout});
+
+        expect(updated).toEqual({path: presetPath, status: 'updated', cwd: checkout});
+
+        const afterUpdateBytes = fs.readFileSync(presetPath, 'utf8');
+        const parsed           = JSON.parse(afterUpdateBytes);
+
+        expect(parsed.byAccount[accountId].presets).toEqual([
+            sshPreset,
+            {
+                ...staleLocalPreset,
+                target: {
+                    kind: 'local',
+                    cwd : checkout
+                }
+            }
+        ]);
+
+        const repeat = convergeSeatSessionPreset({instanceHome, cwd: checkout});
+        expect(repeat).toEqual({path: presetPath, status: 'unchanged', cwd: checkout});
+        expect(fs.readFileSync(presetPath, 'utf8')).toBe(afterUpdateBytes)
+    });
+
+    test('AC-2: seeds one preset pointing at the checkout when a signed-in profile has no preset file, and writes nothing when the profile has no account', () => {
+        fs.mkdirSync(instanceHome, {recursive: true});
+
+        const noAccount = convergeSeatSessionPreset({instanceHome, cwd: checkout});
+
+        expect(noAccount).toEqual({path: presetPath, status: 'no-account', cwd: checkout});
+        expect(fs.existsSync(presetPath)).toBe(false);
+
         fs.writeFileSync(path.join(instanceHome, 'config.json'), JSON.stringify({lastKnownAccountUuid: accountId}));
 
         const created = convergeSeatSessionPreset({instanceHome, cwd: checkout});

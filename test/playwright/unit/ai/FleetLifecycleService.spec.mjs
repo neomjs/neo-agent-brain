@@ -4297,70 +4297,118 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
         }
     });
 
-    test('claude-desktop Start converges ccd-session-presets.json to cwd before spawn, seeds when missing, and refuses a missing or relative cwd (#1223)', async () => {
+    test('claude-desktop Start converges ccd-session-presets.json to cwd before spawn, seeds when signed in, skips when no account, and refuses a missing or relative cwd (#1223)', async () => {
         const
             {spawn, home} = installDesktopSeat(),
             presetPath    = path.join(home, 'ccd-session-presets.json'),
             accountId     = 'd6da8ba9-b0ba-403e-bb82-53fc76bc6a08',
-            staleCheckout = '/Users/tobiasuhlig/.neo-ai/agents/neo-fable/neomjs/neo';
-
-        // AC-3: missing or relative cwd refuses before spawn and before touching the profile
-        for (const badCwd of [undefined, null, '', 'relative/checkout']) {
-            expect(() => FleetLifecycleService.start('seat', {cwd: badCwd}))
-                .toThrow(/must be an absolute provisioned checkout for claude-desktop/);
-        }
-        expect(spawn.calls).toEqual([]);
-        expect(fs.existsSync(presetPath)).toBe(false);
-
-        // AC-2: profile with no preset file gets one preset at the checkout before spawn
-        let presetAtSpawn = null;
-        FleetLifecycleService.spawnFn = (cmd, args, opts) => {
-            presetAtSpawn = JSON.parse(fs.readFileSync(presetPath, 'utf8'));
-            return spawn(cmd, args, opts)
-        };
-
-        FleetLifecycleService.start('seat', {cwd: CHECKOUT});
-        expect(presetAtSpawn?.byAccount?.['00000000-0000-0000-0000-000000000000']?.presets?.[0]?.target).toEqual({
-            kind: 'local',
-            cwd : CHECKOUT
-        });
-        await FleetLifecycleService.stop('seat');
-
-        // AC-1: stale preset folder is rewritten to the provisioned checkout before spawn; matching preset stays byte-identical
-        fs.writeFileSync(presetPath, `${JSON.stringify({
-            byAccount: {
-                [accountId]: {
-                    presets: [{
-                        id        : '78c5d999-a73b-4239-994f-70d2332da522',
-                        name      : 'neo',
-                        createdAt : 1789984863649,
-                        lastUsedAt: 1789984863649,
-                        target    : {
-                            kind: 'local',
-                            cwd : staleCheckout
-                        }
-                    }],
-                    builtIns       : {},
-                    seededFromDraft: true
+            staleCheckout = '/Users/tobiasuhlig/.neo-ai/agents/neo-fable/neomjs/neo',
+            sshPreset     = {
+                id        : '11111111-2222-4333-8444-555555555555',
+                name      : 'devbox',
+                createdAt : 1789984860000,
+                lastUsedAt: 1789984860000,
+                target    : {
+                    kind: 'ssh',
+                    host: 'devbox',
+                    cwd : '/home/me/neo'
                 }
+            },
+            infoLogs      = [],
+            originalInfo  = console.info;
+
+        console.info = (...args) => infoLogs.push(args.map(String).join(' '));
+
+        try {
+            // AC-3: missing or relative cwd refuses before spawn and before touching the profile
+            for (const badCwd of [undefined, null, '', 'relative/checkout']) {
+                expect(() => FleetLifecycleService.start('seat', {cwd: badCwd}))
+                    .toThrow(/must be an absolute provisioned checkout for claude-desktop/);
             }
-        }, null, '\t')}\n`);
+            expect(spawn.calls).toEqual([]);
+            expect(fs.existsSync(presetPath)).toBe(false);
+            expect(infoLogs).toEqual([]);
 
-        FleetLifecycleService.start('seat', {cwd: CHECKOUT});
-        expect(presetAtSpawn?.byAccount?.[accountId]?.presets?.[0]?.target).toEqual({
-            kind: 'local',
-            cwd : CHECKOUT
-        });
-        const convergedBytes = fs.readFileSync(presetPath, 'utf8');
-        const convergedStat  = fs.statSync(presetPath);
-        await FleetLifecycleService.stop('seat');
+            // a profile with no account gets no preset file and logs no-account
+            let presetExistsAtSpawn = null;
+            let presetAtSpawn       = null;
+            FleetLifecycleService.spawnFn = (cmd, args, opts) => {
+                presetExistsAtSpawn = fs.existsSync(presetPath);
+                presetAtSpawn       = presetExistsAtSpawn ? JSON.parse(fs.readFileSync(presetPath, 'utf8')) : null;
+                return spawn(cmd, args, opts)
+            };
 
-        FleetLifecycleService.start('seat', {cwd: CHECKOUT});
-        const repeatStat = fs.statSync(presetPath);
-        expect(fs.readFileSync(presetPath, 'utf8')).toBe(convergedBytes);
-        expect(repeatStat.ino).toBe(convergedStat.ino);
-        expect(repeatStat.mtimeMs).toBe(convergedStat.mtimeMs);
-        await FleetLifecycleService.stop('seat')
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
+            expect(presetExistsAtSpawn).toBe(false);
+            expect(infoLogs).toEqual([`[FleetLifecycleService] seat 'seat' session preset no-account for '${CHECKOUT}'.`]);
+            await FleetLifecycleService.stop('seat');
+
+            // AC-2: a signed-in profile with no preset file gets one preset at the checkout before spawn
+            infoLogs.length = 0;
+            fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({lastKnownAccountUuid: accountId}));
+
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
+            expect(presetAtSpawn?.byAccount?.[accountId]?.presets?.[0]?.target).toEqual({
+                kind: 'local',
+                cwd : CHECKOUT
+            });
+            expect(infoLogs).toEqual([`[FleetLifecycleService] seat 'seat' session preset created for '${CHECKOUT}'.`]);
+            await FleetLifecycleService.stop('seat');
+
+            // AC-1: stale local preset is rewritten while non-local preset survives; matching preset stays byte-identical and silent
+            infoLogs.length = 0;
+            fs.writeFileSync(presetPath, `${JSON.stringify({
+                byAccount: {
+                    [accountId]: {
+                        presets: [
+                            sshPreset,
+                            {
+                                id        : '78c5d999-a73b-4239-994f-70d2332da522',
+                                name      : 'neo',
+                                createdAt : 1789984863649,
+                                lastUsedAt: 1789984863649,
+                                target    : {
+                                    kind: 'local',
+                                    cwd : staleCheckout
+                                }
+                            }
+                        ],
+                        builtIns       : {},
+                        seededFromDraft: true
+                    }
+                }
+            }, null, '\t')}\n`);
+
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
+            expect(presetAtSpawn?.byAccount?.[accountId]?.presets).toEqual([
+                sshPreset,
+                {
+                    id        : '78c5d999-a73b-4239-994f-70d2332da522',
+                    name      : 'neo',
+                    createdAt : 1789984863649,
+                    lastUsedAt: 1789984863649,
+                    target    : {
+                        kind: 'local',
+                        cwd : CHECKOUT
+                    }
+                }
+            ]);
+            expect(infoLogs).toEqual([`[FleetLifecycleService] seat 'seat' session preset updated for '${CHECKOUT}'.`]);
+            const convergedBytes = fs.readFileSync(presetPath, 'utf8');
+            const convergedStat  = fs.statSync(presetPath);
+            await FleetLifecycleService.stop('seat');
+
+            infoLogs.length = 0;
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
+            const repeatStat = fs.statSync(presetPath);
+            expect(fs.readFileSync(presetPath, 'utf8')).toBe(convergedBytes);
+            expect(repeatStat.ino).toBe(convergedStat.ino);
+            expect(repeatStat.mtimeMs).toBe(convergedStat.mtimeMs);
+            expect(infoLogs).toEqual([]);
+            await FleetLifecycleService.stop('seat')
+        } finally {
+            console.info = originalInfo
+        }
     });
 
     test('PRODUCTION COMPOSER: Stop cancels a pending managed Start before or after reservation; a later Start is fresh', async () => {

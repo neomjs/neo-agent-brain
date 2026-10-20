@@ -5,14 +5,15 @@ import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
 
 /**
  * @module ai/services/fleet/seatSessionFolder
- * @summary Converges a Claude Desktop seat's session preset to its provisioned checkout before spawn,
- * and reads where the running seat's session opened from the seat's own profile.
+ * @summary Converges a Claude Desktop seat's local session presets to its provisioned checkout before
+ * spawn, and reads where the running seat's session opened from the seat's own profile.
  *
  * Claude Desktop passes only `--user-data-dir=<instanceHome>` on the command line and opens the
  * folder recorded in `<instanceHome>/ccd-session-presets.json`. Before spawn (while the app is
- * stopped), {@link convergeSeatSessionPreset} rewrites any stale preset folder to the provisioned
- * checkout, seeds one preset when the profile has none, and leaves the file byte-identical when its
- * preset already names the checkout.
+ * stopped), {@link convergeSeatSessionPreset} rewrites any stale local preset (`target.kind` absent or
+ * `'local'`) to the provisioned checkout, leaves non-local presets untouched, seeds one preset when a
+ * signed-in profile has none, returns `'no-account'` without writing when the profile has no signed-in
+ * account yet, and leaves the file byte-identical when its local presets already name the checkout.
  *
  * Once running, the seat's Desktop profile records each Code-tab session under
  * `claude-code-sessions/<account>/<org>/local_<id>.json` with the folder it opened in. The profile is
@@ -22,9 +23,7 @@ import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
  * reader cannot read answers `unknown` with the reason and never `ok`.
  */
 
-const
-    DEFAULT_ACCOUNT_KEY = '00000000-0000-0000-0000-000000000000',
-    UUID_PATTERN        = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** @private */
 function isPlainObject(value) {
@@ -35,12 +34,10 @@ function isPlainObject(value) {
  * @summary Discover the signed-in account UUID recorded in a Claude Desktop profile, if any.
  * @param {String} instanceHome
  * @param {Object} fileSystem
- * @param {Object} [options]
- * @param {String|null} [options.fallback=DEFAULT_ACCOUNT_KEY]
  * @returns {String|null}
  * @private
  */
-function discoverAccountKey(instanceHome, fileSystem, {fallback = DEFAULT_ACCOUNT_KEY} = {}) {
+function discoverAccountKey(instanceHome, fileSystem) {
     const readJson = file => {
         try {
             return JSON.parse(fileSystem.readFileSync(path.join(instanceHome, file), 'utf8'))
@@ -69,7 +66,7 @@ function discoverAccountKey(instanceHome, fileSystem, {fallback = DEFAULT_ACCOUN
         } catch {}
     }
 
-    return fallback
+    return null
 }
 
 /**
@@ -119,14 +116,15 @@ function writePresetFile(filePath, content, {mode = 0o600, preserveMode = false}
 
 /**
  * @summary Converge `<instanceHome>/ccd-session-presets.json` to the provisioned checkout `cwd` before
- * spawning Claude Desktop. Rewrites any stale preset folder to `cwd`, seeds one preset when the
- * profile has no preset file (or an empty account bucket), and leaves the file byte-identical when its
- * presets already name `cwd`.
+ * spawning Claude Desktop. Rewrites any stale local preset (`target.kind` absent or `'local'`) to `cwd`,
+ * leaves non-local presets untouched, seeds one preset when a signed-in profile has no preset file (or
+ * an empty account bucket), returns `'no-account'` without writing when the profile has no signed-in
+ * account yet, and leaves the file byte-identical when its local presets already name `cwd`.
  * @param {Object} options
  * @param {String} options.instanceHome The seat's Claude Desktop profile directory.
  * @param {String} options.cwd          The absolute provisioned checkout path.
  * @param {Object} [options.fileSystem=fs]
- * @returns {{path: String, status: 'created'|'updated'|'unchanged', cwd: String}}
+ * @returns {{path: String, status: 'created'|'updated'|'unchanged'|'no-account', cwd: String}}
  */
 export function convergeSeatSessionPreset({instanceHome, cwd, fileSystem = fs} = {}) {
     if (typeof instanceHome !== 'string' || !path.isAbsolute(instanceHome)) {
@@ -150,9 +148,13 @@ export function convergeSeatSessionPreset({instanceHome, cwd, fileSystem = fs} =
     }
 
     if (!stat) {
-        const
-            accountKey = discoverAccountKey(instanceHome, fileSystem),
-            content    = `${JSON.stringify({byAccount: {[accountKey]: createAccountBucket(cwd)}}, null, '\t')}\n`;
+        const accountKey = discoverAccountKey(instanceHome, fileSystem);
+
+        if (!accountKey) {
+            return {path: presetPath, status: 'no-account', cwd}
+        }
+
+        const content = `${JSON.stringify({byAccount: {[accountKey]: createAccountBucket(cwd)}}, null, '\t')}\n`;
 
         fileSystem.mkdirSync(instanceHome, {recursive: true});
         writePresetFile(presetPath, content, {mode: 0o600}, fileSystem);
@@ -174,17 +176,15 @@ export function convergeSeatSessionPreset({instanceHome, cwd, fileSystem = fs} =
 
     const
         byAccount     = isPlainObject(parsed.byAccount) ? {...parsed.byAccount} : {},
-        discoveredKey = discoverAccountKey(instanceHome, fileSystem, {fallback: null}),
+        discoveredKey = discoverAccountKey(instanceHome, fileSystem),
         accountKeys   = Object.keys(byAccount);
     let changed = !isPlainObject(parsed.byAccount);
 
     if (accountKeys.length === 0) {
-        byAccount[discoveredKey ?? DEFAULT_ACCOUNT_KEY] = createAccountBucket(cwd);
-        changed = true
-    } else if (discoveredKey && !Object.hasOwn(byAccount, discoveredKey) && accountKeys.length === 1 && accountKeys[0] === DEFAULT_ACCOUNT_KEY) {
-        const seedBucket = byAccount[DEFAULT_ACCOUNT_KEY];
-        delete byAccount[DEFAULT_ACCOUNT_KEY];
-        byAccount[discoveredKey] = seedBucket;
+        if (!discoveredKey) {
+            return {path: presetPath, status: 'no-account', cwd}
+        }
+        byAccount[discoveredKey] = createAccountBucket(cwd);
         changed = true
     }
 
@@ -207,27 +207,22 @@ export function convergeSeatSessionPreset({instanceHome, cwd, fileSystem = fs} =
                 return createSessionPreset(cwd)
             }
 
-            const
-                target    = isPlainObject(preset.target) ? preset.target : null,
-                targetCwd = target?.cwd,
-                kindOk    = target ? (target.kind === undefined || target.kind === 'local') : false;
+            const target = isPlainObject(preset.target) ? preset.target : null;
 
-            if (target && kindOk && targetCwd === cwd) {
+            if (target && target.kind !== undefined && target.kind !== 'local') {
+                return preset
+            }
+
+            const targetCwd = target?.cwd;
+
+            if (target && targetCwd === cwd) {
                 return preset
             }
 
             bucketChanged = true;
-            const
-                nextTarget = target
-                    ? {...target, ...(target.kind === undefined || target.kind === 'local' ? {} : {kind: 'local'}), cwd}
-                    : {kind: 'local', cwd},
-                nextPreset = {...preset, target: nextTarget};
+            const nextTarget = target ? {...target, cwd} : {kind: 'local', cwd};
 
-            if (typeof preset.name === 'string' && typeof targetCwd === 'string' && preset.name === path.basename(targetCwd) && preset.name !== path.basename(cwd)) {
-                nextPreset.name = path.basename(cwd) || cwd
-            }
-
-            return nextPreset
+            return {...preset, target: nextTarget}
         });
 
         if (bucketChanged) {
