@@ -28,32 +28,33 @@ import {writeFileAtomic} from '../shared/atomicFileWrite.mjs';
 
 /**
  * @summary Carries one seat's sessions after its folder moved from `from` to `to`.
- * @param {Object} options
- * @param {String} options.harnessType  The seat's harness.
- * @param {String} options.instanceHome The seat's harness home, under its new folder.
- * @param {String} options.from         The seat's previous folder.
- * @param {String} options.to           Its new folder.
- * @param {String} options.previousId   The seat's previous id.
- * @param {String} options.id           Its new id.
- * @param {String} [options.homeDir]    The home of the account the harnesses run as.
+ * @param {Object}  options
+ * @param {String}  options.harnessType   The seat's harness.
+ * @param {String}  options.instanceHome  The seat's harness home, under its new folder (or its current folder on a dry run).
+ * @param {String}  options.from          The seat's previous folder.
+ * @param {String}  options.to            Its new folder.
+ * @param {String}  options.previousId    The seat's previous id.
+ * @param {String}  options.id            Its new id.
+ * @param {String}  [options.homeDir]     The home of the account the harnesses run as.
+ * @param {Boolean} [options.dryRun=false] Report what would be carried and change nothing.
  * @returns {Promise<Object|null>} What was carried, per harness; `null` for a harness whose sessions the Fleet does
  *     not know where to find.
  */
-export async function carrySeatSessions({harnessType, instanceHome, from, to, previousId, id, homeDir = os.homedir()}) {
+export async function carrySeatSessions({harnessType, instanceHome, from, to, previousId, id, homeDir = os.homedir(), dryRun = false}) {
     switch (harnessType) {
         case 'claude-code':
-            return {transcripts: await carryTranscripts({projects: path.join(instanceHome, 'projects'), from, to})};
+            return {transcripts: await carryTranscripts({projects: path.join(instanceHome, 'projects'), from, to, dryRun})};
         case 'claude-desktop':
             return {
-                records    : await carryClaudeDesktopRecords({instanceHome, from, to}),
-                transcripts: await carryTranscripts({projects: path.join(homeDir, '.claude', 'projects'), from, to})
+                records    : await carryClaudeDesktopRecords({instanceHome, from, to, dryRun}),
+                transcripts: await carryTranscripts({projects: path.join(homeDir, '.claude', 'projects'), from, to, dryRun})
             };
         case 'codex':
-            return carryCodexHome({codexHome: instanceHome, from, to});
+            return carryCodexHome({codexHome: instanceHome, from, to, dryRun});
         case 'codex-desktop':
-            return carryCodexHome({codexHome: path.join(instanceHome, 'codex-home'), from, to});
+            return carryCodexHome({codexHome: path.join(instanceHome, 'codex-home'), from, to, dryRun});
         case 'antigravity':
-            return carryAntigravityProject({instanceHome, from, to, previousId, id, homeDir});
+            return carryAntigravityProject({instanceHome, from, to, previousId, id, homeDir, dryRun});
         default:
             return null
     }
@@ -93,15 +94,16 @@ export function claudeSlug(folder) {
  * the `cwd` its own transcripts record, never by its name alone: a slug loses the separators, so the folder of
  * `neo-fable-clio/neomjs` and that of `neo-fable/clio/neomjs` share one name. A folder whose new name is taken
  * stays as it is, and the result says so: its sessions stay listed under the old folder.
- * @param {Object} options
- * @param {String} options.projects The `projects` folder of the Claude config home.
- * @param {String} options.from
- * @param {String} options.to
+ * @param {Object}  options
+ * @param {String}  options.projects      The `projects` folder of the Claude config home.
+ * @param {String}  options.from
+ * @param {String}  options.to
+ * @param {Boolean} [options.dryRun=false]
  * @returns {Promise<String[]>} By folder name, each renamed folder as `old → new` and each kept one as
  *     `old → kept: new exists`.
  * @private
  */
-async function carryTranscripts({projects, from, to}) {
+async function carryTranscripts({projects, from, to, dryRun = false}) {
     const carried = [], prefix = claudeSlug(from);
 
     for (const entry of (await readdirOrEmpty(projects)).sort((a, b) => a.name.localeCompare(b.name))) {
@@ -121,7 +123,7 @@ async function carryTranscripts({projects, from, to}) {
             continue
         }
 
-        await fs.rename(path.join(projects, entry.name), path.join(projects, name));
+        !dryRun && await fs.rename(path.join(projects, entry.name), path.join(projects, name));
         carried.push(`${entry.name} → ${name}`)
     }
 
@@ -164,14 +166,15 @@ async function sessionFolderOf(folder) {
 /**
  * @summary Points Claude Desktop's session records, the folder its new sessions open in, and its worktree cache
  * at the new folder.
- * @param {Object} options
- * @param {String} options.instanceHome
- * @param {String} options.from
- * @param {String} options.to
+ * @param {Object}  options
+ * @param {String}  options.instanceHome
+ * @param {String}  options.from
+ * @param {String}  options.to
+ * @param {Boolean} [options.dryRun=false]
  * @returns {Promise<Number>} How many files changed.
  * @private
  */
-async function carryClaudeDesktopRecords({instanceHome, from, to}) {
+async function carryClaudeDesktopRecords({instanceHome, from, to, dryRun = false}) {
     const
         sessions = path.join(instanceHome, 'claude-code-sessions'),
         files    = (await readdirOrEmpty(sessions, {recursive: true}))
@@ -181,7 +184,7 @@ async function carryClaudeDesktopRecords({instanceHome, from, to}) {
     let changed = 0;
 
     for (const file of [...files, path.join(instanceHome, 'ccd-session-presets.json'), path.join(instanceHome, 'git-worktrees.json')]) {
-        await rewriteJsonFile(file, value => rehomeJson(value, from, to, {keys: true})) && changed++
+        await rewriteJsonFile(file, value => rehomeJson(value, from, to, {keys: true}), {dryRun}) && changed++
     }
 
     return changed
@@ -189,26 +192,27 @@ async function carryClaudeDesktopRecords({instanceHome, from, to}) {
 
 /**
  * @summary Points Codex Desktop's threads, projects and config at the new folder.
- * @param {Object} options
- * @param {String} options.codexHome
- * @param {String} options.from
- * @param {String} options.to
+ * @param {Object}  options
+ * @param {String}  options.codexHome
+ * @param {String}  options.from
+ * @param {String}  options.to
+ * @param {Boolean} [options.dryRun=false]
  * @returns {Promise<{threads: Number, files: String[]}>} How many database values changed, and which files.
  * @private
  */
-async function carryCodexHome({codexHome, from, to}) {
+async function carryCodexHome({codexHome, from, to, dryRun = false}) {
     const names   = (await readdirOrEmpty(codexHome)).map(entry => entry.name), files = [];
     let   threads = 0;
 
     for (const name of names.filter(name => /^state_\d+\.sqlite$/.test(name))) {
-        threads += rehomeStateDatabase(path.join(codexHome, name), from, to)
+        threads += rehomeStateDatabase(path.join(codexHome, name), from, to, {dryRun})
     }
 
     for (const name of ['.codex-global-state.json', '.codex-global-state.json.bak']) {
-        await rewriteJsonFile(path.join(codexHome, name), value => rehomeJson(value, from, to, {keys: true})) && files.push(name)
+        await rewriteJsonFile(path.join(codexHome, name), value => rehomeJson(value, from, to, {keys: true}), {dryRun}) && files.push(name)
     }
 
-    await rewriteTextFile(path.join(codexHome, 'config.toml'), text => rehomeText(text, from, to)) && files.push('config.toml');
+    await rewriteTextFile(path.join(codexHome, 'config.toml'), text => rehomeText(text, from, to), {dryRun}) && files.push('config.toml');
 
     return {threads, files}
 }
@@ -217,37 +221,42 @@ async function carryCodexHome({codexHome, from, to}) {
  * @summary Rewrites the path columns of one Codex state database in one transaction: each thread's `cwd` and
  * `rollout_path`, each project root's `path`. A column the database does not have is left out, so a later
  * schema changes only what it still names.
- * @param {String} file
- * @param {String} from
- * @param {String} to
+ * @param {String}  file
+ * @param {String}  from
+ * @param {String}  to
+ * @param {Object}  [options]
+ * @param {Boolean} [options.dryRun=false]
  * @returns {Number} How many values changed.
  * @private
  */
-function rehomeStateDatabase(file, from, to) {
-    const db = new Database(file, {fileMustExist: true});
+function rehomeStateDatabase(file, from, to, {dryRun = false} = {}) {
+    const db = new Database(file, {fileMustExist: true, readonly: dryRun});
 
     try {
-        const has     = (table, column) => db.prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?').get(table, column) !== undefined;
-        let   changed = 0;
+        const
+            has  = (table, column) => db.prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?').get(table, column) !== undefined,
+            walk = () => {
+                let changed = 0;
 
-        db.transaction(() => {
-            for (const [table, column] of [['threads', 'cwd'], ['threads', 'rollout_path'], ['project_roots', 'path']]) {
-                if (!has(table, column)) continue;
+                for (const [table, column] of [['threads', 'cwd'], ['threads', 'rollout_path'], ['project_roots', 'path']]) {
+                    if (!has(table, column)) continue;
 
-                const update = db.prepare(`UPDATE "${table}" SET "${column}" = ? WHERE rowid = ?`);
+                    const update = dryRun ? null : db.prepare(`UPDATE "${table}" SET "${column}" = ? WHERE rowid = ?`);
 
-                for (const {key, value} of db.prepare(`SELECT rowid AS key, "${column}" AS value FROM "${table}"`).all()) {
-                    const next = rehomePath(value, from, to);
+                    for (const {key, value} of db.prepare(`SELECT rowid AS key, "${column}" AS value FROM "${table}"`).all()) {
+                        const next = rehomePath(value, from, to);
 
-                    if (next !== value) {
-                        update.run(next, key);
-                        changed++
+                        if (next !== value) {
+                            update?.run(next, key);
+                            changed++
+                        }
                     }
                 }
-            }
-        })();
 
-        return changed
+                return changed
+            };
+
+        return dryRun ? walk() : db.transaction(walk)()
     } finally {
         db.close()
     }
@@ -258,17 +267,18 @@ function rehomeStateDatabase(file, from, to) {
  * record of it take the new name and folder, under the same project id. Per-conversation protobuf trajectories
  * under `~/.gemini/antigravity/conversations` embed the workspace URI at their original byte length and cannot
  * be rewritten safely, so the result reports that a new conversation is needed.
- * @param {Object} options
- * @param {String} options.instanceHome
- * @param {String} options.from
- * @param {String} options.to
- * @param {String} options.previousId
- * @param {String} options.id
- * @param {String} options.homeDir
+ * @param {Object}  options
+ * @param {String}  options.instanceHome
+ * @param {String}  options.from
+ * @param {String}  options.to
+ * @param {String}  options.previousId
+ * @param {String}  options.id
+ * @param {String}  options.homeDir
+ * @param {Boolean} [options.dryRun=false]
  * @returns {Promise<{receipt: String, project: String, conversations?: String}>} Each `repointed`, `current` or `absent`.
  * @private
  */
-async function carryAntigravityProject({instanceHome, from, to, previousId, id, homeDir}) {
+async function carryAntigravityProject({instanceHome, from, to, previousId, id, homeDir, dryRun = false}) {
     const
         receiptPath = path.join(instanceHome, '.neo-fleet-project-binding.json'),
         projectId   = (await readJsonOrNull(receiptPath))?.projectId,
@@ -281,9 +291,10 @@ async function carryAntigravityProject({instanceHome, from, to, previousId, id, 
     }
 
     return {
-        receipt: outcome(await rewriteJsonFile(receiptPath, value => ({...value, projectName: rename(value.projectName), projectRoot: rehomePath(value.projectRoot, from, to)}))),
+        receipt: outcome(await rewriteJsonFile(receiptPath,
+            value => ({...value, projectName: rename(value.projectName), projectRoot: rehomePath(value.projectRoot, from, to)}), {dryRun})),
         project: outcome(await rewriteJsonFile(path.join(homeDir, '.gemini', 'config', 'projects', `${projectId}.json`),
-            value => ({...value, name: rename(value.name), projectResources: rehomeJson(value.projectResources, from, to)}))),
+            value => ({...value, name: rename(value.name), projectResources: rehomeJson(value.projectResources, from, to)}), {dryRun})),
         conversations: 'kept: ~/.gemini/antigravity/conversations protobufs keep the old workspace URI; start a new conversation'
     }
 }
@@ -325,27 +336,31 @@ function rehomeText(text, from, to) {
  * @summary Rewrites one JSON file through `map`, keeping its indentation, its final newline and its mode.
  * @param {String}   file
  * @param {Function} map
+ * @param {Object}   [options]
+ * @param {Boolean}  [options.dryRun=false]
  * @returns {Promise<Boolean|null>} Whether it changed; `null` when there is no such file.
  * @private
  */
-async function rewriteJsonFile(file, map) {
+async function rewriteJsonFile(file, map, {dryRun = false} = {}) {
     return rewriteTextFile(file, text => {
         const value = JSON.parse(text), next = map(value);
 
         if (JSON.stringify(next) === JSON.stringify(value)) return text;
 
         return JSON.stringify(next, null, /^[{[]\r?\n([ \t]+)/.exec(text)?.[1]) + (text.endsWith('\n') ? '\n' : '')
-    })
+    }, {dryRun})
 }
 
 /**
  * @summary Rewrites one text file through `map`, atomically and keeping its mode.
  * @param {String}   file
  * @param {Function} map
+ * @param {Object}   [options]
+ * @param {Boolean}  [options.dryRun=false]
  * @returns {Promise<Boolean|null>} Whether it changed; `null` when there is no such file.
  * @private
  */
-async function rewriteTextFile(file, map) {
+async function rewriteTextFile(file, map, {dryRun = false} = {}) {
     let text;
 
     try {
@@ -359,7 +374,7 @@ async function rewriteTextFile(file, map) {
 
     if (next === text) return false;
 
-    await writeFileAtomic(file, next, {preserveMode: true});
+    !dryRun && await writeFileAtomic(file, next, {preserveMode: true});
 
     return true
 }

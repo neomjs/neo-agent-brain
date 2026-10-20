@@ -52,8 +52,9 @@ const execFile = promisify(execFileCb);
  * @returns {Promise<{state: 'renamed'|'planned'|'refused', reason?: String, plan: Object}>} The plan is
  *     `{id, to, seatHome, destination, materialized, state}`, where `state` is `copy`, `relocate` (a verified copy
  *     is already published), `rebind` (never materialized, so only the row is re-keyed) or `done` (the registry
- *     already carries the rename). A finished rename adds `skipped` sockets, the re-keyed `planeCredentials`
- *     endpoints, the `windowRecord` outcome, the carried `sessions`, the repaired `links` and `retiredSeatHome`.
+ *     already carries the rename). Both a planned dry run and a finished rename add the re-keyed `planeCredentials`
+ *     endpoints, the `windowRecord` outcome, the carried `sessions`, the repaired `links` and `retiredSeatHome`;
+ *     a finished rename also adds `skipped` sockets when the copy skipped any.
  * @throws {Error} For an invalid id, or a copy that is not identical to its source; nothing was re-keyed then.
  */
 export async function renameSeat({registry, tenants = null, id, to, moveId = null, dryRun = false, homeDir}) {
@@ -92,11 +93,9 @@ export async function renameSeat({registry, tenants = null, id, to, moveId = nul
             state       : 'done'
         };
 
-        if (dryRun) return {state: 'planned', plan};
+        await finishRename({registry, tenants, harnessType: renamed.harnessType, plan, homeDir, dryRun});
 
-        await finishRename({registry, tenants, harnessType: renamed.harnessType, plan, homeDir});
-
-        return {state: 'renamed', plan}
+        return {state: dryRun ? 'planned' : 'renamed', plan}
     }
 
     if (renamed) return {state: 'refused', reason: `'${to}' already names a seat`, plan: {id, to}};
@@ -109,14 +108,17 @@ export async function renameSeat({registry, tenants = null, id, to, moveId = nul
 
     const plan = await planRename({agent, to, moveId});
 
-    if (plan.refusal || dryRun) {
-        return {state: plan.refusal ? 'refused' : 'planned', ...(plan.refusal && {reason: plan.refusal}), plan: publicPlan(plan)}
+    if (plan.refusal) {
+        return {state: 'refused', reason: plan.refusal, plan: publicPlan(plan)}
     }
 
-    await publishCopy({plan, token: moveId ?? crypto.randomUUID()});
-    await finishRename({registry, tenants, harnessType: agent.harnessType, plan, homeDir});
+    if (!dryRun) {
+        await publishCopy({plan, token: moveId ?? crypto.randomUUID()})
+    }
 
-    return {state: 'renamed', plan: publicPlan(plan)}
+    await finishRename({registry, tenants, harnessType: agent.harnessType, plan, homeDir, dryRun});
+
+    return {state: dryRun ? 'planned' : 'renamed', plan: publicPlan(plan)}
 }
 
 /**
@@ -215,29 +217,38 @@ async function publishCopy({plan, token}) {
  * @summary The re-key and the moves that follow it: the registry row with its PAT and operator, the plane
  * credentials, the window record, the harness sessions, the git worktrees and symlinks under the new folder, and
  * the retirement of the old folder off the agents root. Each is a no-op once done, so a re-run completes whatever
- * an interruption left.
- * @param {Object} options
- * @param {Object} options.registry
- * @param {Object} [options.tenants]
- * @param {String} options.harnessType
- * @param {Object} options.plan
- * @param {String} [options.homeDir]
+ * an interruption left. On a dry run, each step reports what it would move and changes nothing.
+ * @param {Object}  options
+ * @param {Object}  options.registry
+ * @param {Object}  [options.tenants]
+ * @param {String}  options.harnessType
+ * @param {Object}  options.plan
+ * @param {String}  [options.homeDir]
+ * @param {Boolean} [options.dryRun=false]
  * @returns {Promise<void>}
  * @private
  */
-async function finishRename({registry, tenants, harnessType, plan, homeDir}) {
-    registry.renameAgent(plan.id, {to: plan.to, from: plan.seatHome, seatHome: plan.destination});
+async function finishRename({registry, tenants, harnessType, plan, homeDir, dryRun = false}) {
+    !dryRun && registry.renameAgent(plan.id, {to: plan.to, from: plan.seatHome, seatHome: plan.destination});
 
-    plan.planeCredentials = tenants ? tenants.renameSeatPlaneCredentials({from: plan.id, to: plan.to}).endpoints : [];
+    plan.planeCredentials = tenants
+        ? tenants.renameSeatPlaneCredentials({from: plan.id, to: plan.to, ...(dryRun && {dryRun: true})}).endpoints
+        : [];
 
     if (!plan.materialized) return;
 
-    const instanceHome = deriveAgentInstanceHome({instanceRoot: path.dirname(plan.destination), agentId: plan.to, harnessType});
+    const
+        atDestination = !dryRun || !!(await lstatOrNull(plan.destination))?.isDirectory(),
+        instanceHome  = deriveAgentInstanceHome({
+            instanceRoot: path.dirname(atDestination ? plan.destination : plan.seatHome),
+            agentId     : atDestination ? plan.to : plan.id,
+            harnessType
+        });
 
-    plan.windowRecord    = rekeyWindowRecord({instanceHome, to: plan.to});
-    plan.sessions        = await carrySeatSessions({harnessType, instanceHome, from: plan.seatHome, to: plan.destination, previousId: plan.id, id: plan.to, homeDir});
-    plan.links           = await repointSeatLinks({from: plan.seatHome, to: plan.destination});
-    plan.retiredSeatHome = await retireSeatHome({id: plan.id, seatHome: plan.seatHome})
+    plan.windowRecord    = rekeyWindowRecord({instanceHome, to: plan.to, dryRun});
+    plan.sessions        = await carrySeatSessions({harnessType, instanceHome, from: plan.seatHome, to: plan.destination, previousId: plan.id, id: plan.to, homeDir, dryRun});
+    plan.links           = await repointSeatLinks({from: plan.seatHome, to: plan.destination, dryRun});
+    plan.retiredSeatHome = await retireSeatHome({id: plan.id, seatHome: plan.seatHome, dryRun})
 }
 
 /**
@@ -263,53 +274,68 @@ async function fleetLeaseEvidence(registry) {
 
 /**
  * @summary Repairs git worktrees and repoints symbolic links under `to` whose targets lie under `from`.
- * @param {Object} options
- * @param {String} options.from
- * @param {String} options.to
+ * @param {Object}  options
+ * @param {String}  options.from
+ * @param {String}  options.to
+ * @param {Boolean} [options.dryRun=false]
  * @returns {Promise<{worktrees: String[], symlinks: String[]}>} Relative paths under `to` of repaired worktrees
  *     and repointed symlinks.
  * @private
  */
-async function repointSeatLinks({from, to}) {
-    const worktrees = [], symlinks = [];
+async function repointSeatLinks({from, to, dryRun = false}) {
+    const
+        scanRoot  = (await lstatOrNull(to))?.isDirectory() ? to : from,
+        worktrees = [],
+        symlinks  = [];
 
-    for (const entry of await fs.readdir(to, {recursive: true, withFileTypes: true})) {
+    for (const entry of await fs.readdir(scanRoot, {recursive: true, withFileTypes: true})) {
         const file = path.join(entry.parentPath, entry.name);
 
         if (entry.isSymbolicLink()) {
             const
-                target   = await fs.readlink(file),
-                resolved = path.resolve(entry.parentPath, target),
-                moved    = rehomePath(resolved, from, to);
+                destFile   = scanRoot === from ? rehomePath(file, from, to) : file,
+                destParent = path.dirname(destFile),
+                target     = await fs.readlink(file),
+                resolved   = path.resolve(destParent, target),
+                moved      = rehomePath(resolved, from, to);
 
             if (moved !== resolved) {
-                await fs.unlink(file);
-                await fs.symlink(path.isAbsolute(target) ? moved : path.relative(entry.parentPath, moved), file);
-                symlinks.push(path.relative(to, file))
+                if (!dryRun) {
+                    await fs.unlink(file);
+                    await fs.symlink(path.isAbsolute(target) ? moved : path.relative(destParent, moved), file)
+                }
+
+                symlinks.push(path.relative(to, destFile))
             }
         } else if (entry.isFile() && entry.name === '.git') {
             const
-                worktree = entry.parentPath,
-                raw      = await fs.readFile(file, 'utf8'),
-                match    = /^gitdir:\s*(.+?)\r?\n?$/.exec(raw);
+                worktree     = entry.parentPath,
+                destWorktree = scanRoot === from ? rehomePath(worktree, from, to) : worktree,
+                destFile     = path.join(destWorktree, '.git'),
+                raw          = await fs.readFile(file, 'utf8'),
+                match        = /^gitdir:\s*(.+?)\r?\n?$/.exec(raw);
 
             if (!match) continue;
 
             const
-                gitdir   = match[1],
-                resolved = path.resolve(worktree, gitdir),
-                moved    = rehomePath(resolved, from, to),
-                realFile = await fs.realpath(file).catch(() => file),
-                backlink = await fs.readFile(path.join(moved, 'gitdir'), 'utf8').then(value => value.trim(), () => null);
+                gitdir       = match[1],
+                resolved     = path.resolve(destWorktree, gitdir),
+                moved        = rehomePath(resolved, from, to),
+                destRealFile = await fs.realpath(destFile).catch(() => destFile),
+                gitdirFolder = scanRoot === from ? rehomePath(moved, to, from) : moved,
+                backlink     = await fs.readFile(path.join(gitdirFolder, 'gitdir'), 'utf8').then(value => value.trim(), () => null);
 
-            if (moved === resolved && (backlink === file || backlink === realFile)) continue;
+            if (moved === resolved && (backlink === destFile || backlink === destRealFile)) continue;
 
-            if (moved !== resolved) {
-                await fs.writeFile(file, `gitdir: ${path.isAbsolute(gitdir) ? moved : path.relative(worktree, moved)}\n`)
+            if (!dryRun) {
+                if (moved !== resolved) {
+                    await fs.writeFile(file, `gitdir: ${path.isAbsolute(gitdir) ? moved : path.relative(destWorktree, moved)}\n`)
+                }
+
+                await execFile('git', ['-C', worktree, 'worktree', 'repair'])
             }
 
-            await execFile('git', ['-C', worktree, 'worktree', 'repair']);
-            worktrees.push(path.relative(to, worktree) || '.')
+            worktrees.push(path.relative(to, destWorktree) || '.')
         }
     }
 
@@ -319,13 +345,14 @@ async function repointSeatLinks({from, to}) {
 /**
  * @summary Moves the old seat folder off the agents root to `<agentsRoot>/../retired-seats/<id>.pre-rename-<YYYYMMDD>`
  * (or the first free `-N` sibling when one already exists), or finds the newest copy an earlier run already retired.
- * @param {Object} options
- * @param {String} options.id
- * @param {String} options.seatHome
+ * @param {Object}  options
+ * @param {String}  options.id
+ * @param {String}  options.seatHome
+ * @param {Boolean} [options.dryRun=false]
  * @returns {Promise<String|null>}
  * @private
  */
-async function retireSeatHome({id, seatHome}) {
+async function retireSeatHome({id, seatHome, dryRun = false}) {
     if (!seatHome) return null;
 
     const
@@ -336,14 +363,17 @@ async function retireSeatHome({id, seatHome}) {
         pattern     = new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.pre-rename-(\\d{8})(?:-(\\d+))?$`);
 
     if ((await lstatOrNull(seatHome))?.isDirectory()) {
-        await fs.mkdir(retiredRoot, {recursive: true, mode: 0o700});
         let target = path.join(retiredRoot, baseName);
 
         for (let suffix = 2; await lstatOrNull(target); suffix++) {
             target = path.join(retiredRoot, `${baseName}-${suffix}`)
         }
 
-        await fs.rename(seatHome, target);
+        if (!dryRun) {
+            await fs.mkdir(retiredRoot, {recursive: true, mode: 0o700});
+            await fs.rename(seatHome, target)
+        }
+
         return target
     }
 
@@ -363,17 +393,19 @@ async function retireSeatHome({id, seatHome}) {
 
 /**
  * @summary Re-keys the seat's window record, which names the seat by id, keeping its rectangle and capture time.
- * @param {Object} options
- * @param {String} options.instanceHome The renamed seat's harness home.
- * @param {String} options.to           The new id.
+ * @param {Object}  options
+ * @param {String}  options.instanceHome  The renamed seat's harness home.
+ * @param {String}  options.to            The new id.
+ * @param {Boolean} [options.dryRun=false]
  * @returns {String} `renamed`, `current`, `absent`, or why it could not be written.
  * @private
  */
-function rekeyWindowRecord({instanceHome, to}) {
+function rekeyWindowRecord({instanceHome, to, dryRun = false}) {
     const record = readSeatWindowRecord(instanceHome);
 
     if (!record)             return 'absent';
     if (record.agentId === to) return 'current';
+    if (dryRun)              return 'renamed';
 
     return writeSeatWindowRecord({instanceHome, agentId: to, harnessType: record.harnessType, rect: record.rect, capturedAt: record.capturedAt}) ?? 'renamed'
 }

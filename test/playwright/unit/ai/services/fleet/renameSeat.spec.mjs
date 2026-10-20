@@ -48,7 +48,7 @@ test.beforeEach(async () => {
     root    = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'rename-seat-')));
     agents  = path.join(root, 'agents');
     homeDir = path.join(root, 'home');
-    tenants = {calls: [], renameSeatPlaneCredentials(args) { this.calls.push(args); return {status: 'renamed', endpoints: ['http://127.0.0.1:3102']} }};
+    tenants = {calls: [], renameSeatPlaneCredentials({dryRun = false, ...args}) { !dryRun && this.calls.push(args); return {status: dryRun ? 'planned' : 'renamed', endpoints: ['http://127.0.0.1:3102']} }};
 
     FleetRegistryService.dataDir        = path.join(root, 'fleet');
     FleetRegistryService.agentsRoot     = agents;
@@ -88,15 +88,34 @@ async function seat(id, {materialized = true} = {}) {
 
 const rename = (id, to, options = {}) => renameSeat({registry: FleetRegistryService, tenants, id, to, homeDir, ...options});
 
-test('a dry run plans the copy and changes nothing', async () => {
-    const home = await seat('neo-gpt');
+test('a dry run plans the copy, reports sessions, links, windowRecord, planeCredentials and retiredSeatHome, and changes nothing (#1226)', async () => {
+    const
+        home        = await seat('neo-gpt'),
+        destination = path.join(agents, 'neo-gpt-euclid'),
+        clone       = path.join('neomjs', 'neo'),
+        today       = new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+        result      = await rename('neo-gpt', 'neo-gpt-euclid', {dryRun: true});
 
-    const result = await rename('neo-gpt', 'neo-gpt-euclid', {dryRun: true});
-
-    expect(result).toEqual({state: 'planned', plan: {id: 'neo-gpt', to: 'neo-gpt-euclid', seatHome: home, destination: path.join(agents, 'neo-gpt-euclid'), materialized: true, state: 'copy'}});
+    expect(result).toEqual({
+        state: 'planned',
+        plan : {
+            id              : 'neo-gpt',
+            to              : 'neo-gpt-euclid',
+            seatHome        : home,
+            destination,
+            materialized    : true,
+            state           : 'copy',
+            planeCredentials: ['http://127.0.0.1:3102'],
+            windowRecord    : 'renamed',
+            sessions        : {transcripts: [`${claudeSlug(path.join(home, clone))} → ${claudeSlug(path.join(destination, clone))}`]},
+            links           : {worktrees: [], symlinks: []},
+            retiredSeatHome : path.join(root, 'retired-seats', `neo-gpt.pre-rename-${today}`)
+        }
+    });
     expect(FleetRegistryService.getAgent('neo-gpt')).toMatchObject({seatHome: home});
     expect(FleetRegistryService.getAgent('neo-gpt-euclid')).toBeNull();
     expect(await fs.readdir(agents)).toEqual(['neo-gpt']);
+    expect(await fs.readdir(path.join(root, 'retired-seats')).catch(() => [])).toEqual([]);
     expect(tenants.calls).toEqual([])
 });
 
@@ -388,4 +407,104 @@ test('the CLI refuses and names NEO_FLEET_DATA_DIR with the default data dir and
         plan  : {id: 'neo-gpt', to: 'neo-gpt-euclid'}
     });
     expect(FleetRegistryService.getAgent('neo-gpt')).toMatchObject({seatHome: home})
+});
+
+test('a dry run reports the exact sessions, links, retiredSeatHome (-N sibling), windowRecord and planeCredentials that a subsequent apply produces, ignoring sibling-prefix transcripts (#1226)', async () => {
+    const
+        home         = path.join(agents, 'neo-fable'),
+        destination  = path.join(agents, 'neo-fable-mnemosyne'),
+        oldClone     = path.join(home, 'neomjs', 'neo'),
+        newClone     = path.join(destination, 'neomjs', 'neo'),
+        worktree     = path.join(home, 'neomjs', 'neo-1226'),
+        extRepo      = path.join(root, 'external-repo'),
+        extWorktree  = path.join(home, 'neomjs', 'ext-1226'),
+        clioClone    = path.join(agents, 'neo-fable-clio', 'neomjs', 'neo'),
+        projects     = path.join(homeDir, '.claude', 'projects'),
+        instanceHome = deriveAgentInstanceHome({instanceRoot: agents, agentId: 'neo-fable', harnessType: 'claude-desktop'}),
+        today        = new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+        retiredRoot  = path.join(root, 'retired-seats'),
+        existingCopy = path.join(retiredRoot, `neo-fable.pre-rename-${today}`),
+        secondCopy   = `${existingCopy}-2`,
+        initRepo     = dir => {
+            execFileSync('git', ['init', '-q'], {cwd: dir});
+            execFileSync('git', ['config', 'user.email', 'test@neomjs.com'], {cwd: dir});
+            execFileSync('git', ['config', 'user.name', 'Test'], {cwd: dir});
+            execFileSync('git', ['add', '.'], {cwd: dir});
+            execFileSync('git', ['commit', '-q', '-m', 'init'], {cwd: dir})
+        };
+
+    FleetRegistryService.defineAgent({githubUsername: 'neo-fable-mnemosyne', id: 'neo-fable', harnessType: 'claude-desktop', credential: PAT});
+    SeatOperatorRegistryService.claim({principal: OPERATOR, seatId: 'neo-fable'});
+    await fs.mkdir(instanceHome, {recursive: true});
+    await fs.mkdir(oldClone, {recursive: true});
+    await fs.writeFile(path.join(oldClone, 'README.md'), '# neo-fable\n');
+    writeSeatWindowRecord({instanceHome, agentId: 'neo-fable', harnessType: 'claude-desktop', rect: RECT, capturedAt: '2026-10-19T12:00:00.000Z'});
+
+    await fs.writeFile(path.join(instanceHome, 'ccd-session-presets.json'), JSON.stringify({
+        byAccount: {account: {presets: [{name: 'neo', target: {cwd: oldClone}, seededFromDraft: true}]}}
+    }, null, 2));
+    await fs.writeFile(path.join(instanceHome, 'git-worktrees.json'), JSON.stringify({
+        [oldClone]: {originUrl: 'https://github.com/neomjs/neo.git', gitDir: path.join(oldClone, '.git')}
+    }, null, 2));
+
+    await fs.mkdir(path.join(projects, claudeSlug(oldClone)), {recursive: true});
+    await fs.writeFile(path.join(projects, claudeSlug(oldClone), 's-1.jsonl'), `${JSON.stringify({type: 'user', cwd: oldClone})}\n`);
+    await fs.mkdir(path.join(projects, claudeSlug(clioClone)), {recursive: true});
+    await fs.writeFile(path.join(projects, claudeSlug(clioClone), 's-2.jsonl'), `${JSON.stringify({type: 'user', cwd: clioClone})}\n`);
+
+    initRepo(oldClone);
+    await fs.mkdir(path.join(oldClone, 'node_modules', 'pkg'), {recursive: true});
+    await fs.writeFile(path.join(oldClone, 'node_modules', 'pkg', 'index.js'), 'export default 1;\n');
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'feat/1226', worktree], {cwd: oldClone});
+    await fs.symlink(path.join(oldClone, 'node_modules'), path.join(worktree, 'node_modules'));
+
+    await fs.mkdir(extRepo, {recursive: true});
+    await fs.writeFile(path.join(extRepo, 'README.md'), '# ext\n');
+    initRepo(extRepo);
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'feat/ext', extWorktree], {cwd: extRepo});
+    await fs.symlink(path.join('..', '..', '..', 'neo-fable', 'neomjs', 'neo', 'README.md'), path.join(extWorktree, 'seat-readme.md'));
+
+    await fs.mkdir(existingCopy, {recursive: true});
+
+    const dry = await rename('neo-fable', 'neo-fable-mnemosyne', {dryRun: true});
+
+    expect(dry).toEqual({
+        state: 'planned',
+        plan : {
+            id              : 'neo-fable',
+            to              : 'neo-fable-mnemosyne',
+            seatHome        : home,
+            destination,
+            materialized    : true,
+            state           : 'copy',
+            planeCredentials: ['http://127.0.0.1:3102'],
+            windowRecord    : 'renamed',
+            sessions        : {
+                records    : 2,
+                transcripts: [`${claudeSlug(oldClone)} → ${claudeSlug(newClone)}`]
+            },
+            links           : {
+                worktrees: [path.join('neomjs', 'ext-1226'), path.join('neomjs', 'neo-1226')],
+                symlinks : [path.join('neomjs', 'ext-1226', 'seat-readme.md'), path.join('neomjs', 'neo-1226', 'node_modules')]
+            },
+            retiredSeatHome : secondCopy
+        }
+    });
+
+    // verify dryRun mutated nothing on disk, in the registry, in window records, in transcripts, or in tenants
+    expect(FleetRegistryService.getAgent('neo-fable')).toMatchObject({seatHome: home});
+    expect(FleetRegistryService.getAgent('neo-fable-mnemosyne')).toBeNull();
+    expect(readSeatWindowRecord(instanceHome)).toMatchObject({agentId: 'neo-fable'});
+    expect(JSON.parse(await fs.readFile(path.join(instanceHome, 'ccd-session-presets.json'), 'utf8')).byAccount.account.presets[0].target.cwd).toBe(oldClone);
+    expect((await fs.readdir(projects)).sort()).toEqual([claudeSlug(oldClone), claudeSlug(clioClone)].sort());
+    expect(await fs.readdir(retiredRoot)).toEqual([`neo-fable.pre-rename-${today}`]);
+    expect(tenants.calls).toEqual([]);
+
+    const applied = await rename('neo-fable', 'neo-fable-mnemosyne');
+
+    expect(applied).toEqual({
+        state: 'renamed',
+        plan : dry.plan
+    });
+    expect((await fs.readdir(projects)).sort()).toEqual([claudeSlug(newClone), claudeSlug(clioClone)].sort())
 });

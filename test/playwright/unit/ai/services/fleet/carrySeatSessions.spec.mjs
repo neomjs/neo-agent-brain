@@ -158,10 +158,12 @@ test('Codex Desktop: its threads, projects, host keys and config point at the ne
         ''
     ].join('\n'), {mode: 0o600});
 
-    const carry  = () => carrySeatSessions({harnessType: 'codex-desktop', instanceHome, from, to, previousId: 'neo-gpt', id: 'neo-gpt-euclid', homeDir}),
+    const carry  = ({dryRun = false} = {}) => carrySeatSessions({harnessType: 'codex-desktop', instanceHome, from, to, previousId: 'neo-gpt', id: 'neo-gpt-euclid', homeDir, dryRun}),
+          dry    = await carry({dryRun: true}),
           result = await carry();
 
-    expect(result).toEqual({threads: 3, files: ['.codex-global-state.json', '.codex-global-state.json.bak', 'config.toml']});
+    expect(dry).toEqual({threads: 3, files: ['.codex-global-state.json', '.codex-global-state.json.bak', 'config.toml']});
+    expect(result).toEqual(dry);
 
     const state = new Database(path.join(codexHome, 'state_5.sqlite'), {readonly: true});
 
@@ -213,9 +215,11 @@ test('Antigravity: the project keeps its id under the new name and folder, and t
     await fs.mkdir(path.join(to, 'neomjs', 'neo'), {recursive: true});
 
     const
-        carry         = () => carrySeatSessions({harnessType: 'antigravity', instanceHome, from, to, previousId: 'neo-gemini-pro', id: 'neo-gemini-julia', homeDir}),
+        carry         = ({dryRun = false} = {}) => carrySeatSessions({harnessType: 'antigravity', instanceHome, from, to, previousId: 'neo-gemini-pro', id: 'neo-gemini-julia', homeDir, dryRun}),
         conversations = 'kept: ~/.gemini/antigravity/conversations protobufs keep the old workspace URI; start a new conversation';
 
+    expect(await carry({dryRun: true})).toEqual({receipt: 'repointed', project: 'repointed', conversations});
+    expect(await readJson(receiptPath), 'dryRun leaves the receipt untouched').toEqual({version: 1, projectId, projectName: 'neo-gemini-pro', projectRoot: path.join(from, 'neomjs', 'neo')});
     expect(await carry()).toEqual({receipt: 'repointed', project: 'repointed', conversations});
     expect(await readJson(receiptPath)).toEqual({version: 1, projectId, projectName: 'neo-gemini-julia', projectRoot: path.join(to, 'neomjs', 'neo')});
     expect((await fs.stat(receiptPath)).mode & 0o777, 'the receipt stays private').toBe(0o600);

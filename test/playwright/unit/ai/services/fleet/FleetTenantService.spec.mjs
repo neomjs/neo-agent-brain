@@ -1180,6 +1180,10 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
         await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt', identity: '@neo-gpt-euclid', credential: 'euclid-plane-pat'})
         await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-emmy', identity: '@neo-gpt-emmy', credential: 'emmy-plane-pat'})
 
+        expect(FleetTenantService.renameSeatPlaneCredentials({from: 'neo-gpt', to: 'neo-gpt-euclid', dryRun: true})).toEqual({status: 'planned', endpoints: [PLANE]})
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt'})).toEqual({credential: 'euclid-plane-pat', plane: SERVED})
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-euclid'})).toBeNull()
+
         expect(FleetTenantService.renameSeatPlaneCredentials({from: 'neo-gpt', to: 'neo-gpt-euclid'})).toEqual({status: 'renamed', endpoints: [PLANE]})
         expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-euclid'})).toEqual({credential: 'euclid-plane-pat', plane: SERVED})
         expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt'})).toBeNull()
