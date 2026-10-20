@@ -24,7 +24,6 @@ import {readSeatModelCatalog}           from './seatModelCatalog.mjs';
 import {startAgentProvisioned}          from './startAgentProvisioned.mjs';
 import {readInstalledRuntimeGeneration} from './runtimeGeneration.mjs';
 import {REPLACE_SEAT_CREDENTIAL_SCOPES} from '../../../src/fleet/contract/wire.mjs';
-import crypto                           from 'node:crypto';
 import path                             from 'node:path';
 
 export {REPLACE_SEAT_CREDENTIAL_SCOPES};
@@ -55,16 +54,12 @@ function buildCredentialReplacementReceipt({
             forge,
             plane: planeState
         },
-        forge,
-        plane             : planeState,
-        boundPlane        : boundPlane ? {endpoint: boundPlane.endpoint, id: boundPlane.id, dataRoot: boundPlane.dataRoot} : null,
+        boundPlane: boundPlane ? {endpoint: boundPlane.endpoint, id: boundPlane.id, dataRoot: boundPlane.dataRoot} : null,
         coherent,
         incomplete,
-        carrier           : 'deferred-until-start',
-        carrierPreparation: 'deferred-until-start',
+        carrier   : 'deferred-until-start',
         session,
-        runningSession    : session,
-        nextStep          : incomplete ? 'replace-seat-credential' : (forge === 'replaced' ? 'start-agent' : 'fix-and-retry')
+        nextStep  : incomplete ? 'replace-seat-credential' : (forge === 'replaced' ? 'start-agent' : 'fix-and-retry')
     }
 }
 
@@ -1181,8 +1176,8 @@ class FleetManager extends Base {
      * `{id, dataRoot}` without implicit rebinding). Writes per-seat deltas over freshly read strict maps,
      * records durable incomplete-publication state across the multi-store boundary, verifies readback on
      * all selected stores before returning `status: 'replaced'`, and returns a non-secret receipt that
-     * separates persisted authority, carrier preparation (`'deferred-until-start'`), and running-session
-     * state (`'stopped'`).
+     * separates `persistedAuthority` (`{forge, plane}`), `carrier` (`'deferred-until-start'`), and `session`
+     * (`'stopped'`).
      * @param {Object} payload `{id, credential, scope}`
      * @returns {Promise<Object>}
      */
@@ -1277,8 +1272,7 @@ class FleetManager extends Base {
             }
 
             if (['claude-desktop', 'antigravity'].includes(agent.harnessType) &&
-                typeof lifecycle.desktopProfileInUse === 'function' &&
-                (lifecycle.processListFn != null || lifecycle !== FleetLifecycleService)) {
+                typeof lifecycle.desktopProfileInUse === 'function') {
                 const inUse = lifecycle.desktopProfileInUse(agent);
                 if (inUse !== false) {
                     return {
@@ -1461,15 +1455,12 @@ class FleetManager extends Base {
                 }
             }
 
-            const targetSha256 = crypto.createHash('sha256').update(trimmed).digest('hex');
-
             try {
                 registry.beginCredentialReplacement?.({
                     id,
                     scope,
                     planeBase: boundPlane?.endpoint ?? null,
-                    boundPlane,
-                    targetSha256
+                    boundPlane
                 })
             } catch {
                 return {

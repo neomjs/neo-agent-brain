@@ -1426,21 +1426,19 @@ class FleetRegistryService extends Base {
      * @param {'forge'|'forge-and-bound-plane'} params.scope
      * @param {String|null} [params.planeBase=null]
      * @param {Object|null} [params.boundPlane=null]
-     * @param {String} params.targetSha256
      * @returns {Object} The non-secret journal entry.
      */
-    beginCredentialReplacement({id, scope, planeBase = null, boundPlane = null, targetSha256}) {
+    beginCredentialReplacement({id, scope, planeBase = null, boundPlane = null}) {
         const
             map   = this.readReplacementJournalForMutation(),
             entry = {
                 id,
                 scope,
-                planeBase   : planeBase ?? null,
-                boundPlane  : boundPlane ? {id: boundPlane.id, dataRoot: boundPlane.dataRoot} : null,
-                targetSha256: targetSha256 ?? null,
-                state       : 'in-progress',
-                surface     : scope === 'forge-and-bound-plane' ? 'plane' : 'forge',
-                updatedAt   : new Date().toISOString()
+                planeBase : planeBase ?? null,
+                boundPlane: boundPlane ? {id: boundPlane.id, dataRoot: boundPlane.dataRoot} : null,
+                state     : 'in-progress',
+                surface   : scope === 'forge-and-bound-plane' ? 'plane' : 'forge',
+                updatedAt : new Date().toISOString()
             };
         map[id] = entry;
         this.writeReplacementJournal(map);

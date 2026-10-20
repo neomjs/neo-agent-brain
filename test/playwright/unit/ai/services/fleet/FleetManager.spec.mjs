@@ -1965,8 +1965,6 @@ test.describe.serial('Neo.ai.services.fleet.FleetManager — replaceSeatCredenti
             reason : "agent 'alice' is running; stop it before replacing its credential",
             receipt: {
                 scope             : 'forge-and-bound-plane',
-                forge             : 'unchanged',
-                plane             : 'unchanged',
                 persistedAuthority: {forge: 'unchanged', plane: 'unchanged'},
                 carrier           : 'deferred-until-start',
                 session           : 'running'
@@ -1987,16 +1985,124 @@ test.describe.serial('Neo.ai.services.fleet.FleetManager — replaceSeatCredenti
             reason : "agent 'alice' has unresolved helper processes holding its profile; resolve or stop them before replacing its credential",
             receipt: {
                 scope             : 'forge-and-bound-plane',
-                forge             : 'unchanged',
-                plane             : 'unchanged',
                 persistedAuthority: {forge: 'unchanged', plane: 'unchanged'},
                 carrier           : 'deferred-until-start',
                 session           : 'stopped'
             }
         });
+        cleanupUnresolved.delete('alice');
+
+        // Shared-seat-home refusal: another running seat shares this seat's recorded seatHome
+        const
+            aliceDef = FleetRegistryService.getAgent('alice'),
+            bobDef   = FleetRegistryService.defineAgent({
+                id            : 'bob',
+                githubUsername: 'bob',
+                harnessType   : 'codex',
+                credential    : OLD_PAT,
+                launchOwner   : 'fleet'
+            });
+        FleetRegistryService.relocateSeatHome('bob', {from: bobDef.seatHome, to: aliceDef.seatHome});
+        running.add('bob');
+
+        expect(await FleetManager.replaceSeatCredential({
+            id        : 'alice',
+            credential: NEW_PAT,
+            scope     : 'forge'
+        })).toMatchObject({
+            status : 'rejected',
+            id     : 'alice',
+            scope  : 'forge',
+            cause  : 'profile-in-use',
+            reason : "agent 'alice' shares its seat home with running agent 'bob'; stop it before replacing its credential",
+            receipt: {
+                scope             : 'forge',
+                persistedAuthority: {forge: 'unchanged', plane: 'not-selected'},
+                carrier           : 'deferred-until-start',
+                session           : 'stopped'
+            }
+        });
+        running.delete('bob');
+        FleetRegistryService.removeAgent('bob');
+
+        // Real FleetLifecycleService singleton desktopProfileInUse check runs unconditionally for Claude Desktop / Antigravity seats (even with processListFn === null)
+        FleetRegistryService.defineAgent({
+            id            : 'claire',
+            githubUsername: 'claire',
+            harnessType   : 'claude-desktop',
+            credential    : OLD_PAT,
+            launchOwner   : 'fleet'
+        });
+
+        const
+            originalRegistry      = FleetLifecycleService.registry,
+            originalInstanceRoot  = FleetLifecycleService.instanceRoot,
+            originalProcessListFn = FleetLifecycleService.processListFn,
+            originalDesktopCheck  = FleetLifecycleService.desktopProfileInUse;
+        let desktopCheckCalls     = 0,
+            desktopCheckOutcome   = true;
+
+        FleetManager.lifecycleService             = null;
+        FleetLifecycleService.registry            = FleetRegistryService;
+        FleetLifecycleService.instanceRoot        = managedRoot;
+        FleetLifecycleService.processListFn       = null;
+        FleetLifecycleService.desktopProfileInUse = function(agent) {
+            desktopCheckCalls++;
+            expect(this).toBe(FleetLifecycleService);
+            expect(this.processListFn).toBeNull();
+            expect(agent.id).toBe('claire');
+            return desktopCheckOutcome
+        };
+
+        try {
+            expect(await FleetManager.replaceSeatCredential({
+                id        : 'claire',
+                credential: NEW_PAT,
+                scope     : 'forge'
+            })).toMatchObject({
+                status : 'rejected',
+                id     : 'claire',
+                scope  : 'forge',
+                cause  : 'profile-in-use',
+                reason : "agent 'claire' has its desktop profile open in another process; quit that application before replacing its credential",
+                receipt: {
+                    scope             : 'forge',
+                    persistedAuthority: {forge: 'unchanged', plane: 'not-selected'},
+                    carrier           : 'deferred-until-start',
+                    session           : 'stopped'
+                }
+            });
+
+            desktopCheckOutcome = null;
+            expect(await FleetManager.replaceSeatCredential({
+                id        : 'claire',
+                credential: NEW_PAT,
+                scope     : 'forge'
+            })).toMatchObject({
+                status : 'rejected',
+                id     : 'claire',
+                scope  : 'forge',
+                cause  : 'profile-in-use',
+                reason : "the process table could not be read to confirm agent 'claire's desktop profile is closed",
+                receipt: {
+                    scope             : 'forge',
+                    persistedAuthority: {forge: 'unchanged', plane: 'not-selected'},
+                    carrier           : 'deferred-until-start',
+                    session           : 'stopped'
+                }
+            });
+            expect(desktopCheckCalls).toBe(2);
+        } finally {
+            FleetLifecycleService.desktopProfileInUse = originalDesktopCheck;
+            FleetLifecycleService.processListFn       = originalProcessListFn;
+            FleetLifecycleService.instanceRoot        = originalInstanceRoot;
+            FleetLifecycleService.registry            = originalRegistry;
+            FleetManager.lifecycleService             = createLifecycle();
+        }
 
         expect(forgeCalls).toBe(0);
         expect(FleetRegistryService.resolveCredential('alice')).toBe(OLD_PAT);
+        expect(FleetRegistryService.resolveCredential('claire')).toBe(OLD_PAT);
     });
 
     test('replaces forge-only or forge-and-bound-plane coherently, returns a non-secret receipt, and recovers startAgentProvisioned (AC-1, AC-2, AC-5)', async () => {
@@ -2018,19 +2124,25 @@ test.describe.serial('Neo.ai.services.fleet.FleetManager — replaceSeatCredenti
                 scope  : 'forge',
                 receipt: {
                     scope             : 'forge',
-                    forge             : 'replaced',
-                    plane             : 'not-selected',
                     persistedAuthority: {forge: 'replaced', plane: 'not-selected'},
                     carrier           : 'deferred-until-start',
-                    carrierPreparation: 'deferred-until-start',
                     session           : 'stopped',
-                    runningSession    : 'stopped',
                     coherent          : true,
                     incomplete        : false,
                     nextStep          : 'start-agent'
                 }
             }
         });
+        expect(Object.keys(forgeOnly.result.receipt).sort()).toEqual([
+            'boundPlane',
+            'carrier',
+            'coherent',
+            'incomplete',
+            'nextStep',
+            'persistedAuthority',
+            'scope',
+            'session'
+        ]);
         expect(JSON.stringify(forgeOnly)).not.toContain(OLD_PAT);
         expect(JSON.stringify(forgeOnly)).not.toContain(NEW_PAT);
         expect(FleetRegistryService.resolveCredential('alice')).toBe(NEW_PAT);
@@ -2098,14 +2210,10 @@ test.describe.serial('Neo.ai.services.fleet.FleetManager — replaceSeatCredenti
             scope  : 'forge-and-bound-plane',
             receipt: {
                 scope             : 'forge-and-bound-plane',
-                forge             : 'replaced',
-                plane             : 'replaced',
                 persistedAuthority: {forge: 'replaced', plane: 'replaced'},
                 boundPlane        : {endpoint: PLANE, id: SERVED.id, dataRoot: SERVED.dataRoot},
                 carrier           : 'deferred-until-start',
-                carrierPreparation: 'deferred-until-start',
                 session           : 'stopped',
-                runningSession    : 'stopped',
                 coherent          : true,
                 incomplete        : false,
                 nextStep          : 'start-agent'
@@ -2312,8 +2420,6 @@ test.describe.serial('Neo.ai.services.fleet.FleetManager — replaceSeatCredenti
                 reason    : 'simulated second-store write failure',
                 receipt   : {
                     scope             : 'forge-and-bound-plane',
-                    forge             : 'replaced',
-                    plane             : 'unchanged',
                     persistedAuthority: {forge: 'replaced', plane: 'unchanged'},
                     coherent          : false,
                     incomplete        : true,
@@ -2321,7 +2427,8 @@ test.describe.serial('Neo.ai.services.fleet.FleetManager — replaceSeatCredenti
                 }
             });
             expect(JSON.stringify(partial)).not.toContain(NEXT_PAT);
-            expect(FleetRegistryService.getCredentialReplacementState('alice')).toMatchObject({
+            const journalState = FleetRegistryService.getCredentialReplacementState('alice');
+            expect(journalState).toMatchObject({
                 id     : 'alice',
                 scope  : 'forge-and-bound-plane',
                 state  : 'incomplete',
@@ -2329,6 +2436,7 @@ test.describe.serial('Neo.ai.services.fleet.FleetManager — replaceSeatCredenti
                 forge  : 'replaced',
                 plane  : 'unchanged'
             });
+            expect(journalState).not.toHaveProperty('targetSha256');
 
             // Start is refused while the replacement is incomplete
             FleetManager.provisionAndStartFn = options => startAgentProvisioned({
@@ -2378,8 +2486,6 @@ test.describe.serial('Neo.ai.services.fleet.FleetManager — replaceSeatCredenti
             scope  : 'forge-and-bound-plane',
             receipt: {
                 scope             : 'forge-and-bound-plane',
-                forge             : 'replaced',
-                plane             : 'replaced',
                 persistedAuthority: {forge: 'replaced', plane: 'replaced'},
                 carrier           : 'deferred-until-start',
                 session           : 'stopped',
