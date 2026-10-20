@@ -811,6 +811,10 @@ class FleetLifecycleService extends Base {
         }
 
         if (opts.startSignal?.aborted) return this.canceledStart(id);
+        if (this.installedRuntime?.failureReason) throw new Error(`Fleet Start refused: ${this.installedRuntime.failureReason}.`);
+        if (this.installedRuntime?.verify && !this.installedRuntime.verified) {
+            throw new Error('Fleet Start refused: running runtime generation is not verified.');
+        }
         if (this.getLaunchAdmission().continuityPhase !== 'ready') throw new Error('Fleet Start refused: launch continuity is not ready.');
         if (this.isRunning(id)) {
             if (bindAntigravityProject) throw new Error('FleetLifecycleService.start: Antigravity project binding requires a new Start.');
@@ -2339,7 +2343,9 @@ class FleetLifecycleService extends Base {
      * @summary Re-attach original runtime pins and reconstruct native admission without preparing a profile.
      * Lease adoption remains the process owner. A different or unobserved process retains an unknown pin;
      * it cannot inherit the old Start's grants. A seat whose process is gone reads `stopped`, the reason
-     * naming an unsupervised exit only when it was saved running. Runtime verification uses this process's trusted reader.
+     * naming an unsupervised exit only when it was saved running. Authority-returning recovery runs full
+     * payload verification (`verifyRuntime`, seeded from the running generation's verified read so it is
+     * inventoried at most once per boot), while retained non-restored pins check records only (`readRuntimeGenerationRecord`).
      * @param {Object} options
      * @param {Object} options.tenantService Original plane/tenant credential owner.
      * @param {Function} [options.verifyRuntime=readRuntimeGeneration] Isolated-test seam for payload verification.
@@ -2357,11 +2363,27 @@ class FleetLifecycleService extends Base {
         } finally { guard.release(); }
     }
 
-    /** @summary Reconstructs retained references while publication and retirement share exclusion. @private */
+    /**
+     * @summary Reconstructs retained references while publication and retirement share exclusion.
+     * Seeds `verified` from the running generation's verified read (`this.installedRuntime`), checks full
+     * payloads in `restoreSeat`, and uses record reads (`readRuntimeGenerationRecord`, with injected
+     * `verifyRuntime` fallback for unsealed test fixtures) on the post-recovery `runtimeUnresolved` pass.
+     * @private
+     */
     async recoverRuntimeCustodyUnderGuard({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverLaunchProfileGrants}, runtimeReferenceGuard) {
         const admission = this.getLaunchAdmission();
         if (!admission.journal) throw new Error('Runtime custody must be attached before recovery.');
-        const previous = admission.journal.previous, registry = this.getRegistry(), verified = new Map();
+        if (admission.continuityPhase === 'recovering' && !admission.generations.size && !admission.listening) {
+            admission.continuityPhase = 'ready';
+        }
+        const previous = admission.journal.previous, registry = this.getRegistry(), verified = new Map(),
+              current  = this.installedRuntime?.verified ??
+                  (this.installedRuntime?.generation?.compatibility?.launchProtocol === LAUNCH_ADMISSION_PROTOCOL &&
+                      typeof this.installedRuntime.verify !== 'function' ? this.installedRuntime.generation : null),
+              currentPin = this.installedRuntime?.generation ? runtimeGenerationPin(this.installedRuntime.generation) : null,
+              readRecord = async options => (await readRuntimeGenerationRecord(options)) ??
+                  (verifyRuntime !== readRuntimeGeneration ? verifyRuntime(options) : null);
+        if (current) verified.set(JSON.stringify(runtimeGenerationPin(current)), Promise.resolve(current));
         this.adoptLeasedSeats();
         for (const saved of previous?.snapshot.seats ?? []) {
             const start  = saved.start;
@@ -2390,11 +2412,16 @@ class FleetLifecycleService extends Base {
         }
 
         /** @summary Verify a retained pin without importing its code or replacing its lifecycle record. */
-        const verifyPin = async start => {
+        const verifyPin = async (start, read = verifyRuntime) => {
             const record = this.processes.get(start.agentId);
             if (!record || !this.matchesRuntimeStart(record, start)) return false;
             const key = JSON.stringify(start.runtime);
-            if (!verified.has(key)) verified.set(key, Promise.resolve().then(() => verifyRuntime({directory: start.runtime.directory})));
+            if (!verified.has(key)) {
+                verified.set(key, read === verifyRuntime && isDeepStrictEqual(start.runtime, currentPin) &&
+                    typeof this.installedRuntime?.verify === 'function'
+                    ? this.installedRuntime.verify(verifyRuntime)
+                    : Promise.resolve().then(() => read({directory: start.runtime.directory})));
+            }
             try {
                 const runtime = await verified.get(key);
                 record.runtimeUnresolved = !runtime || !isDeepStrictEqual(runtimeGenerationPin(runtime), start.runtime) ||
@@ -2404,10 +2431,10 @@ class FleetLifecycleService extends Base {
             return !record.runtimeUnresolved;
         };
         const dispositions = await admission.recover({registry, runtimeReferenceGuard, restoreSeat: async (start, saved) => {
-            if (!await verifyPin(start)) throw new Error('runtime pin unverified');
+            if (!await verifyPin(start, verifyRuntime)) throw new Error('runtime pin unverified');
             return this.readOriginalRuntimeInputs(start, saved, {tenantService, readGrants});
         }});
-        for (const {start} of previous?.snapshot.seats ?? []) await verifyPin(start);
+        for (const {start} of previous?.snapshot.seats ?? []) await verifyPin(start, readRecord);
         admission.persistAdmission();
         return dispositions;
     }

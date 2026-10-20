@@ -192,5 +192,105 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         expect(fastLogs.some(line => /continuity handoff sealed after \d+ ms \(budget 300 ms\); a successor rebinds the released origin/.test(line))).toBe(true);
         expect(fastEvents).toEqual(['close-unclean', 'close-plane', ['exit', 0]]);
     });
+
+    test('transport listens before runtime payload inventory or recovery runs, and Starts stay fenced until recovery settles (#1198 AC-4)', async () => {
+        const preBegin  = source.indexOf('    if (runtime.generation) {'),
+              preEnd    = source.indexOf('    // Wire the cross-process boot-identity reader', preBegin),
+              postBegin = source.indexOf('        const transportStartedAt = Date.now();'),
+              postEnd   = source.indexOf('        // Seat-conflation honesty at boot:', postBegin);
+        expect(preBegin).toBeGreaterThan(0);
+        expect(postBegin).toBeGreaterThan(preEnd);
+        expect(postEnd).toBeGreaterThan(postBegin);
+
+        let releaseVerify, releaseRecover;
+        const events    = [],
+              logs      = [],
+              admission = {continuityPhase: 'ready', proofTimeoutMs: 5000, closeUnclean: async () => {}, continuityRecord: {handoffProved: true}},
+              runtime   = {
+                  generation: {id: 'a'.repeat(64)},
+                  verify    : () => new Promise(resolve => {
+                      events.push(['verify-start', admission.continuityPhase]);
+                      releaseVerify = () => {
+                          runtime.verified = runtime.generation;
+                          events.push('verify-done');
+                          resolve(runtime.generation);
+                      };
+                  })
+              },
+              lifecycle = {
+                  openRuntimeCustody   : () => events.push('open-custody'),
+                  getRegistry          : () => ({admissionDirectory: () => '/tmp/custody'}),
+                  getLaunchAdmission   : () => admission,
+                  recoverRuntimeCustody: () => new Promise(resolve => {
+                      events.push(['recover-start', Boolean(runtime.verified), admission.continuityPhase]);
+                      releaseRecover = () => {
+                          admission.continuityPhase = 'ready';
+                          events.push('recover-done');
+                          resolve([{agentId: 'seat', state: 'active', detail: null}]);
+                      };
+                  })
+              },
+              seams = {
+                  runtime,
+                  lifecycle,
+                  startFleetBridgeServer: async () => {
+                      events.push(['listen', Boolean(runtime.verified), admission.continuityPhase]);
+                      return {address: () => ({port: 8083}), drainFleetRequests: async () => {}};
+                  },
+                  settleFleetBridge                    : async () => ({state: 'ready', port: 1, action: 'verified', publicKeySha256: '0123456789abcdef'}),
+                  superviseFleetBridge                 : () => ({stop() {}}),
+                  FLEET_BRIDGE_STATES                  : {READY: 'ready'},
+                  neuralLinkConfig                     : {port: 1},
+                  FleetManager                         : {getTenantService: async () => ({})},
+                  AiConfig                             : {fleet: {openWorkWakes: false, bearerHandshake: false, bearer: 'supplied'}},
+                  planeClient                          : null,
+                  FleetRegistryService                 : {},
+                  RequestContextService                : {run() {}},
+                  wireFleetOpenWorkWakes               : () => null,
+                  wireFleetOpenWorkSource              : () => ({}),
+                  readGithubToken                      : () => null,
+                  readPresence                         : async () => ({}),
+                  assertFleetViewerMcAuthorizationClass: () => null,
+                  formatFleetBootPhaseLine,
+                  process                              : {on() {}},
+                  console                              : {log: line => logs.push(line), warn() {}, error() {}},
+                  port                                 : 8083,
+                  bearerToken                          : 'fixture',
+                  viewer                               : {agentIdentityNodeId: 'AGENT:tobiu'},
+                  origins                              : []
+              },
+              run = new Function(...Object.keys(seams), `return (async () => { let server, wakeRound, openWork; ${source.slice(preBegin, preEnd)}\n${source.slice(postBegin, postEnd)} })()`);
+
+        const running = run(...Object.values(seams));
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(events).toEqual([
+            'open-custody',
+            ['listen', false, 'recovering'],
+            ['verify-start', 'recovering']
+        ]);
+        expect(logs.some(line => line.includes('[fleet] boot phase transport:'))).toBe(true);
+        expect(logs.some(line => line.includes('[fleet] boot phase recovery:'))).toBe(false);
+
+        releaseVerify();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(events).toEqual([
+            'open-custody',
+            ['listen', false, 'recovering'],
+            ['verify-start', 'recovering'],
+            'verify-done',
+            ['recover-start', true, 'recovering']
+        ]);
+
+        releaseRecover();
+        await running;
+
+        expect(admission.continuityPhase).toBe('ready');
+        expect(logs.some(line => line.includes('[fleet] boot phase recovery:'))).toBe(true);
+    });
 });
+
 

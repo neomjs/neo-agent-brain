@@ -222,8 +222,9 @@ export async function readRuntimeGeneration({directory, platform = process.platf
 
 /**
  * @summary Proves a published generation's identity, host compatibility and bindings without re-hashing its payload.
- * Only for a caller whose consumer re-verifies the bytes before trusting them: the continuity handoff, whose
- * successor runs {@link readRuntimeGeneration} in recovery before any generation is active again.
+ * Used when the caller either defers full payload inventory until after transport bind (`bindCurrentRuntime`),
+ * proves continuity handoff before a successor's recovery, or resolves a stopped seat's retained record pin
+ * without restoring authority. Any live Start or surviving-seat restoration runs {@link readRuntimeGeneration}.
  * @param {Object} options Same as {@link readRuntimeGeneration}.
  * @returns {Promise<Object|null>} The same descriptor; null only when the whole directory is absent.
  */
@@ -284,13 +285,16 @@ export function runtimeGenerationArguments(generation) {
  * @summary Binds Fleet boot to the runtime it actually executes, refusing a missing packaged binding.
  * A checkout without a package receipt remains explicit checkout mode. No ancestor search or bundle
  * fallback discovers authority; the host supplies exactly one directory and the verifier checks it.
+ * Boot reads the sealed record and bindings immediately; `result.verify()` runs the full payload
+ * inventory before any Start or survivor restoration trusts the running generation's bytes.
  * @param {Object} options
  * @param {String[]} options.args Script arguments, after Node's own options.
  * @param {String} options.runtimeRoot This entrypoint's own code root.
  * @param {String} options.executable The actual process executable.
+ * @param {Function} [options.verifyRuntime=readRuntimeGeneration] Isolated-test seam for payload verification.
  * @returns {Promise<{runtimeRoot:String, executable:String, generation:Object|null}>}
  */
-export async function bindCurrentRuntime({args, runtimeRoot, executable}) {
+export async function bindCurrentRuntime({args, runtimeRoot, executable, verifyRuntime = readRuntimeGeneration}) {
     if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string') ||
         !path.isAbsolute(runtimeRoot || '') || !path.isAbsolute(executable || '')) {
         throw refusal('runtime-binding-invalid', 'explicit arguments, code root and executable are required')
@@ -307,15 +311,38 @@ export async function bindCurrentRuntime({args, runtimeRoot, executable}) {
     }
     if (!roots.length) {
         if (receipt) throw refusal('runtime-generation-required', 'a packaged Fleet must carry its verified generation');
-        return {runtimeRoot: root, executable: binary, generation: null}
+        const checkout = {runtimeRoot: root, executable: binary, generation: null};
+        Object.defineProperty(checkout, 'verify', {value: async () => null});
+        return checkout
     }
     const directory = roots[0].slice(RUNTIME_ARGUMENT.length);
     if (!path.isAbsolute(directory)) throw refusal('runtime-binding-invalid', 'the generation directory must be absolute');
-    const generation = await readRuntimeGeneration({directory});
+    const generation = await readRuntimeGenerationRecord({directory});
     if (!generation || generation.runtimeRoot !== root || generation.executable !== binary) {
         throw refusal('runtime-binding-invalid', 'the generation does not bind this code root and executable')
     }
-    return {runtimeRoot: root, executable: binary, generation}
+    const bound = {runtimeRoot: root, executable: binary, generation}, pin = runtimeGenerationPin(generation);
+    let verification;
+    Object.defineProperty(bound, 'verify', {
+        value: (read = verifyRuntime) => verification ??= Promise.resolve().then(async () => {
+            try {
+                const verified = await read({directory: generation.directory});
+                if (!verified || !isDeepStrictEqual(runtimeGenerationPin(verified), pin) ||
+                    verified.compatibility?.launchProtocol !== LAUNCH_ADMISSION_PROTOCOL) {
+                    throw refusal('runtime-integrity-failed', 'verified generation does not match the bound runtime record')
+                }
+                Object.defineProperty(bound, 'verified', {value: verified, configurable: true});
+                return verified
+            } catch (error) {
+                Object.defineProperty(bound, 'failureReason', {
+                    value       : `running runtime generation failed verification (${error?.code || 'runtime-integrity-failed'})`,
+                    configurable: true
+                });
+                throw error
+            }
+        })
+    });
+    return bound
 }
 
 /**

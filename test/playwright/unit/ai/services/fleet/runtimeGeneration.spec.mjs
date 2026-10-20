@@ -152,3 +152,28 @@ test('a real checkout stays explicit and an invalid package marker never becomes
     await fs.writeFile(path.join(root, 'organism-build-info.json'), '{broken');
     await expect(bindCurrentRuntime(options)).rejects.toMatchObject({code: 'runtime-receipt-invalid'});
 });
+
+test('bindCurrentRuntime binds by the record at boot and defers full payload verification until verify() (#1198)', async () => {
+    const input         = await fixture(), calls = [];
+    const verifyRuntime = options => {
+        calls.push(options.directory);
+        return readRuntimeGeneration(options)
+    };
+    await fs.chmod(input.executable, 0o755);
+    await fs.writeFile(input.executable, 'tampered-after-seal');
+    await fs.chmod(input.executable, 0o555);
+
+    const bound = await bindCurrentRuntime({
+        args       : runtimeGenerationArguments({directory: input.directory}),
+        runtimeRoot: input.runtimeRoot,
+        executable : input.executable,
+        verifyRuntime
+    });
+    expect(calls, 'boot bind reads the record only, without hashing the payload').toEqual([]);
+    expect(bound.verified).toBeUndefined();
+
+    await expect(bound.verify()).rejects.toMatchObject({code: 'runtime-integrity-failed'});
+    expect(calls).toEqual([input.directory]);
+    expect(bound.failureReason).toBe('running runtime generation failed verification (runtime-integrity-failed)');
+});
+
