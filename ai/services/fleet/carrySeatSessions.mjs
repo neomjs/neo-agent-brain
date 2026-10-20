@@ -37,18 +37,23 @@ import {writeFileAtomic} from '../shared/atomicFileWrite.mjs';
  * @param {String}  options.id            Its new id.
  * @param {String}  [options.homeDir]     The home of the account the harnesses run as.
  * @param {Boolean} [options.dryRun=false] Report what would be carried and change nothing.
- * @returns {Promise<Object|null>} What was carried, per harness; `null` for a harness whose sessions the Fleet does
- *     not know where to find.
+ * @returns {Promise<Object|null>} What was carried, per harness (including a normalized `count` and any
+ *     post-rename `nextStep`); `null` for a harness whose sessions the Fleet does not know where to find.
  */
 export async function carrySeatSessions({harnessType, instanceHome, from, to, previousId, id, homeDir = os.homedir(), dryRun = false}) {
     switch (harnessType) {
-        case 'claude-code':
-            return {transcripts: await carryTranscripts({projects: path.join(instanceHome, 'projects'), from, to, dryRun})};
-        case 'claude-desktop':
-            return {
-                records    : await carryClaudeDesktopRecords({instanceHome, from, to, dryRun}),
-                transcripts: await carryTranscripts({projects: path.join(homeDir, '.claude', 'projects'), from, to, dryRun})
-            };
+        case 'claude-code': {
+            const transcripts = await carryTranscripts({projects: path.join(instanceHome, 'projects'), from, to, dryRun});
+
+            return {transcripts, count: transcripts.filter(item => !item.includes(' → kept:')).length}
+        }
+        case 'claude-desktop': {
+            const
+                records     = await carryClaudeDesktopRecords({instanceHome, from, to, dryRun}),
+                transcripts = await carryTranscripts({projects: path.join(homeDir, '.claude', 'projects'), from, to, dryRun});
+
+            return {records, transcripts, count: transcripts.filter(item => !item.includes(' → kept:')).length}
+        }
         case 'codex':
             return carryCodexHome({codexHome: instanceHome, from, to, dryRun});
         case 'codex-desktop':
@@ -197,15 +202,19 @@ async function carryClaudeDesktopRecords({instanceHome, from, to, dryRun = false
  * @param {String}  options.from
  * @param {String}  options.to
  * @param {Boolean} [options.dryRun=false]
- * @returns {Promise<{threads: Number, files: String[]}>} How many database values changed, and which files.
+ * @returns {Promise<{threads: Number, count: Number, files: String[]}>} How many database values changed, how many
+ *     thread rows changed, and which files.
  * @private
  */
 async function carryCodexHome({codexHome, from, to, dryRun = false}) {
     const names   = (await readdirOrEmpty(codexHome)).map(entry => entry.name), files = [];
-    let   threads = 0;
+    let   threads = 0, count = 0;
 
     for (const name of names.filter(name => /^state_\d+\.sqlite$/.test(name))) {
-        threads += rehomeStateDatabase(path.join(codexHome, name), from, to, {dryRun})
+        const {values, rows} = rehomeStateDatabase(path.join(codexHome, name), from, to, {dryRun});
+
+        threads += values;
+        count   += rows
     }
 
     for (const name of ['.codex-global-state.json', '.codex-global-state.json.bak']) {
@@ -214,7 +223,7 @@ async function carryCodexHome({codexHome, from, to, dryRun = false}) {
 
     await rewriteTextFile(path.join(codexHome, 'config.toml'), text => rehomeText(text, from, to), {dryRun}) && files.push('config.toml');
 
-    return {threads, files}
+    return {threads, count, files}
 }
 
 /**
@@ -226,7 +235,7 @@ async function carryCodexHome({codexHome, from, to, dryRun = false}) {
  * @param {String}  to
  * @param {Object}  [options]
  * @param {Boolean} [options.dryRun=false]
- * @returns {Number} How many values changed.
+ * @returns {{values: Number, rows: Number}} How many values and distinct `threads` rows changed.
  * @private
  */
 function rehomeStateDatabase(file, from, to, {dryRun = false} = {}) {
@@ -236,7 +245,8 @@ function rehomeStateDatabase(file, from, to, {dryRun = false} = {}) {
         const
             has  = (table, column) => db.prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?').get(table, column) !== undefined,
             walk = () => {
-                let changed = 0;
+                const threadRows = new Set();
+                let   values     = 0;
 
                 for (const [table, column] of [['threads', 'cwd'], ['threads', 'rollout_path'], ['project_roots', 'path']]) {
                     if (!has(table, column)) continue;
@@ -248,12 +258,13 @@ function rehomeStateDatabase(file, from, to, {dryRun = false} = {}) {
 
                         if (next !== value) {
                             update?.run(next, key);
-                            changed++
+                            values++;
+                            table === 'threads' && threadRows.add(key)
                         }
                     }
                 }
 
-                return changed
+                return {values, rows: threadRows.size}
             };
 
         return dryRun ? walk() : db.transaction(walk)()
@@ -275,7 +286,8 @@ function rehomeStateDatabase(file, from, to, {dryRun = false} = {}) {
  * @param {String}  options.id
  * @param {String}  options.homeDir
  * @param {Boolean} [options.dryRun=false]
- * @returns {Promise<{receipt: String, project: String, conversations?: String}>} Each `repointed`, `current` or `absent`.
+ * @returns {Promise<{receipt: String, project: String, count: Number, conversations?: String, nextStep?: String}>}
+ *     Each `repointed`, `current` or `absent`.
  * @private
  */
 async function carryAntigravityProject({instanceHome, from, to, previousId, id, homeDir, dryRun = false}) {
@@ -287,15 +299,21 @@ async function carryAntigravityProject({instanceHome, from, to, previousId, id, 
 
     // the receipt names the project file, so an id that is no UUID names no file of the Fleet's
     if (typeof projectId !== 'string' || !/^[A-Fa-f0-9]{8}(-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}$/.test(projectId)) {
-        return {receipt: 'absent', project: 'absent'}
+        return {receipt: 'absent', project: 'absent', count: 0}
     }
 
-    return {
-        receipt: outcome(await rewriteJsonFile(receiptPath,
+    const
+        receipt = outcome(await rewriteJsonFile(receiptPath,
             value => ({...value, projectName: rename(value.projectName), projectRoot: rehomePath(value.projectRoot, from, to)}), {dryRun})),
-        project: outcome(await rewriteJsonFile(path.join(homeDir, '.gemini', 'config', 'projects', `${projectId}.json`),
-            value => ({...value, name: rename(value.name), projectResources: rehomeJson(value.projectResources, from, to)}), {dryRun})),
-        conversations: 'kept: ~/.gemini/antigravity/conversations protobufs keep the old workspace URI; start a new conversation'
+        project = outcome(await rewriteJsonFile(path.join(homeDir, '.gemini', 'config', 'projects', `${projectId}.json`),
+            value => ({...value, name: rename(value.name), projectResources: rehomeJson(value.projectResources, from, to)}), {dryRun}));
+
+    return {
+        receipt,
+        project,
+        count        : receipt === 'repointed' || project === 'repointed' ? 1 : 0,
+        conversations: 'kept: ~/.gemini/antigravity/conversations protobufs keep the old workspace URI; start a new conversation',
+        nextStep     : 'start a new conversation'
     }
 }
 

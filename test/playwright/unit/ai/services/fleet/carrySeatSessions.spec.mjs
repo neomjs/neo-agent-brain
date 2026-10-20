@@ -91,7 +91,7 @@ test('Claude Desktop: its session records and new-session folder point at the ne
           kept   = `${claudeSlug(stage(from))} → kept: ${claudeSlug(stage(to))} exists`,
           result = await carry();
 
-    expect(result).toEqual({records: 3, transcripts: [`${claudeSlug(clone(from))} → ${claudeSlug(clone(to))}`, kept]});
+    expect(result).toEqual({records: 3, transcripts: [`${claudeSlug(clone(from))} → ${claudeSlug(clone(to))}`, kept], count: 1});
     expect(await readJson(record)).toEqual({cliSessionId: 's-1', cwd: clone(to), originCwd: clone(to), gitAnchors: [{gitRoot: clone(to), commonDir: path.join(clone(to), '.git')}], title: `Work in ${clone(from)}`});
     expect(await readJson(presets)).toEqual({byAccount: {account: {presets: [{target: {cwd: clone(to)}}]}}});
     expect(await readJson(worktrees)).toEqual({[clone(to)]: {originUrl: 'https://github.com/neomjs/neo.git', gitDir: path.join(clone(to), '.git')}, [clio]: {originUrl: 'https://github.com/neomjs/neo.git'}});
@@ -99,7 +99,7 @@ test('Claude Desktop: its session records and new-session folder point at the ne
     expect((await fs.readdir(projects)).sort()).toEqual([claudeSlug(clone(to)), claudeSlug(clio), claudeSlug(stage(from)), claudeSlug(stage(to))].sort());
     expect(await fs.readFile(path.join(projects, claudeSlug(clone(to)), 's-1.jsonl'), 'utf8'), 'a transcript is history, kept as written').toContain(`"cwd":"${clone(from)}"`);
 
-    expect(await carry(), 'a re-run moves nothing, and still reports the kept folder').toEqual({records: 0, transcripts: [kept]})
+    expect(await carry(), 'a re-run moves nothing, and still reports the kept folder').toEqual({records: 0, transcripts: [kept], count: 0})
 });
 
 test('Claude Code: the transcripts in its own config home follow', async () => {
@@ -112,7 +112,7 @@ test('Claude Code: the transcripts in its own config home follow', async () => {
     await put(path.join(instanceHome, 'projects', claudeSlug(cwd), 's.jsonl'), `${JSON.stringify({cwd})}\n`);
 
     expect(await carrySeatSessions({harnessType: 'claude-code', instanceHome, from, to, previousId: 'neo-opus', id: 'neo-opus-vega', homeDir}))
-        .toEqual({transcripts: [`${claudeSlug(cwd)} → ${claudeSlug(path.join(to, 'neomjs', 'neo'))}`]})
+        .toEqual({transcripts: [`${claudeSlug(cwd)} → ${claudeSlug(path.join(to, 'neomjs', 'neo'))}`], count: 1})
 });
 
 test('Codex Desktop: its threads, projects, host keys and config point at the new folder; its rollouts stay byte-identical', async () => {
@@ -162,7 +162,7 @@ test('Codex Desktop: its threads, projects, host keys and config point at the ne
           dry    = await carry({dryRun: true}),
           result = await carry();
 
-    expect(dry).toEqual({threads: 3, files: ['.codex-global-state.json', '.codex-global-state.json.bak', 'config.toml']});
+    expect(dry).toEqual({threads: 3, count: 1, files: ['.codex-global-state.json', '.codex-global-state.json.bak', 'config.toml']});
     expect(result).toEqual(dry);
 
     const state = new Database(path.join(codexHome, 'state_5.sqlite'), {readonly: true});
@@ -194,7 +194,7 @@ test('Codex Desktop: its threads, projects, host keys and config point at the ne
     expect((await fs.stat(path.join(codexHome, 'config.toml'))).mode & 0o777, 'its mode is kept').toBe(0o600);
     expect(await fs.readFile(rollout, 'utf8'), 'its thread history indexes the rollout by byte offset').toBe(rolloutText);
 
-    expect(await carry(), 'a re-run changes nothing').toEqual({threads: 0, files: []})
+    expect(await carry(), 'a re-run changes nothing').toEqual({threads: 0, count: 0, files: []})
 });
 
 test('Antigravity: the project keeps its id under the new name and folder, and the next Start verifies that same project', async () => {
@@ -216,11 +216,12 @@ test('Antigravity: the project keeps its id under the new name and folder, and t
 
     const
         carry         = ({dryRun = false} = {}) => carrySeatSessions({harnessType: 'antigravity', instanceHome, from, to, previousId: 'neo-gemini-pro', id: 'neo-gemini-julia', homeDir, dryRun}),
-        conversations = 'kept: ~/.gemini/antigravity/conversations protobufs keep the old workspace URI; start a new conversation';
+        conversations = 'kept: ~/.gemini/antigravity/conversations protobufs keep the old workspace URI; start a new conversation',
+        nextStep      = 'start a new conversation';
 
-    expect(await carry({dryRun: true})).toEqual({receipt: 'repointed', project: 'repointed', conversations});
+    expect(await carry({dryRun: true})).toEqual({receipt: 'repointed', project: 'repointed', count: 1, conversations, nextStep});
     expect(await readJson(receiptPath), 'dryRun leaves the receipt untouched').toEqual({version: 1, projectId, projectName: 'neo-gemini-pro', projectRoot: path.join(from, 'neomjs', 'neo')});
-    expect(await carry()).toEqual({receipt: 'repointed', project: 'repointed', conversations});
+    expect(await carry()).toEqual({receipt: 'repointed', project: 'repointed', count: 1, conversations, nextStep});
     expect(await readJson(receiptPath)).toEqual({version: 1, projectId, projectName: 'neo-gemini-julia', projectRoot: path.join(to, 'neomjs', 'neo')});
     expect((await fs.stat(receiptPath)).mode & 0o777, 'the receipt stays private').toBe(0o600);
     expect(await readJson(projectPath)).toEqual({id: projectId, name: 'neo-gemini-julia', projectResources: {resources: [{gitFolder: {folderUri: pathToFileURL(path.join(to, 'neomjs', 'neo')).href}}]}, permissionGrants: grants, settings: {}, isWorkspaceOnly: false});
@@ -228,13 +229,13 @@ test('Antigravity: the project keeps its id under the new name and folder, and t
     const registered = await registerAntigravityProject({registryDirectory: registry, profileDirectory: instanceHome, projectRoot: path.join(to, 'neomjs', 'neo'), name: 'neo-gemini-julia', projectMcpAllowRules: rules});
 
     expect(registered, 'no new project: the conversations stay with this one').toMatchObject({verified: true, created: false, projectId});
-    expect(await carry(), 'a re-run changes nothing').toEqual({receipt: 'current', project: 'current', conversations})
+    expect(await carry(), 'a re-run changes nothing').toEqual({receipt: 'current', project: 'current', count: 0, conversations, nextStep})
 });
 
 test('a seat without a project receipt, or a harness whose sessions the Fleet does not know, carries nothing', async () => {
     const from = path.join(agents, 'neo-x'), to = path.join(agents, 'neo-y');
 
     expect(await carrySeatSessions({harnessType: 'antigravity', instanceHome: path.join(to, 'harness', 'antigravity'), from, to, previousId: 'neo-x', id: 'neo-y', homeDir}))
-        .toEqual({receipt: 'absent', project: 'absent'});
+        .toEqual({receipt: 'absent', project: 'absent', count: 0});
     expect(await carrySeatSessions({harnessType: 'kimi-code', instanceHome: path.join(to, 'harness', 'kimi-code'), from, to, previousId: 'neo-x', id: 'neo-y', homeDir})).toBeNull()
 });

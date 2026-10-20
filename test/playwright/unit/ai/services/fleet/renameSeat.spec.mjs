@@ -107,7 +107,7 @@ test('a dry run plans the copy, reports sessions, links, windowRecord, planeCred
             state           : 'copy',
             planeCredentials: ['http://127.0.0.1:3102'],
             windowRecord    : 'renamed',
-            sessions        : {transcripts: [`${claudeSlug(path.join(home, clone))} → ${claudeSlug(path.join(destination, clone))}`]},
+            sessions        : {transcripts: [`${claudeSlug(path.join(home, clone))} → ${claudeSlug(path.join(destination, clone))}`], count: 1},
             links           : {worktrees: [], symlinks: []},
             retiredSeatHome : path.join(root, 'retired-seats', `neo-gpt.pre-rename-${today}`)
         }
@@ -140,7 +140,7 @@ test('the folder is copied and published under the new name, and the row, PAT, o
 
     const clone = path.join('neomjs', 'neo');
 
-    expect(result.plan.sessions).toEqual({transcripts: [`${claudeSlug(path.join(home, clone))} → ${claudeSlug(path.join(destination, clone))}`]});
+    expect(result.plan.sessions).toEqual({transcripts: [`${claudeSlug(path.join(home, clone))} → ${claudeSlug(path.join(destination, clone))}`], count: 1});
     expect(await fs.readdir(path.join(homeOf('neo-gpt-euclid'), 'projects'))).toEqual([claudeSlug(path.join(destination, clone))]);
     expect(await fs.readFile(path.join(destination, clone, 'README.md'), 'utf8')).toBe('# neo-gpt\n');
     expect(result.plan.retiredSeatHome).toMatch(/^.*\/retired-seats\/neo-gpt\.pre-rename-\d{8}$/);
@@ -240,7 +240,7 @@ test('a re-run after the re-key finishes what follows it, and a further run chan
 
     const second = await rename('neo-fable', 'neo-fable-mnemosyne');
 
-    expect(second.plan).toMatchObject({state: 'done', windowRecord: 'current', sessions: {transcripts: []}, links: {worktrees: [], symlinks: []}, retiredSeatHome: first.plan.retiredSeatHome});
+    expect(second.plan).toMatchObject({state: 'done', windowRecord: 'current', sessions: {transcripts: [], count: 0}, links: {worktrees: [], symlinks: []}, retiredSeatHome: first.plan.retiredSeatHome});
     expect(FleetRegistryService.resolveCredential('neo-fable-mnemosyne')).toBe(PAT);
     expect(SeatOperatorRegistryService.operatorOf('neo-fable-mnemosyne').principal).toBe(OPERATOR)
 });
@@ -299,7 +299,7 @@ test('a Claude Desktop seat whose preset target.cwd and git-worktrees.json name 
 
     const result = await rename('neo-fable', 'neo-fable-mnemosyne');
 
-    expect(result).toMatchObject({state: 'renamed', plan: {sessions: {records: 2, transcripts: []}}});
+    expect(result).toMatchObject({state: 'renamed', plan: {sessions: {records: 2, transcripts: [], count: 0}}});
     expect(JSON.parse(await fs.readFile(path.join(newHome, 'ccd-session-presets.json'), 'utf8'))).toEqual({
         byAccount: {account: {presets: [{name: 'neo', target: {cwd: newClone}, seededFromDraft: true}]}}
     });
@@ -481,7 +481,8 @@ test('a dry run reports the exact sessions, links, retiredSeatHome (-N sibling),
             windowRecord    : 'renamed',
             sessions        : {
                 records    : 2,
-                transcripts: [`${claudeSlug(oldClone)} → ${claudeSlug(newClone)}`]
+                transcripts: [`${claudeSlug(oldClone)} → ${claudeSlug(newClone)}`],
+                count      : 1
             },
             links           : {
                 worktrees: [path.join('neomjs', 'ext-1226'), path.join('neomjs', 'neo-1226')],
