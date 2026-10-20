@@ -239,7 +239,7 @@ async function carryCodexHome({codexHome, from, to, dryRun = false}) {
  * @private
  */
 function rehomeStateDatabase(file, from, to, {dryRun = false} = {}) {
-    const db = new Database(file, {fileMustExist: true, readonly: dryRun});
+    const db = new Database(file, {fileMustExist: true});
 
     try {
         const

@@ -159,8 +159,12 @@ test('Codex Desktop: its threads, projects, host keys and config point at the ne
     ].join('\n'), {mode: 0o600});
 
     const carry  = ({dryRun = false} = {}) => carrySeatSessions({harnessType: 'codex-desktop', instanceHome, from, to, previousId: 'neo-gpt', id: 'neo-gpt-euclid', homeDir, dryRun}),
-          dry    = await carry({dryRun: true}),
-          result = await carry();
+          before = (await fs.readdir(codexHome)).sort(),
+          dry    = await carry({dryRun: true});
+
+    expect((await fs.readdir(codexHome)).sort(), 'dryRun leaves no -wal/-shm files behind').toEqual(before);
+
+    const result = await carry();
 
     expect(dry).toEqual({threads: 3, count: 1, files: ['.codex-global-state.json', '.codex-global-state.json.bak', 'config.toml']});
     expect(result).toEqual(dry);
