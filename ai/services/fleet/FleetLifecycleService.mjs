@@ -14,7 +14,7 @@ import {readCodexSeatSettings}                                                  
 import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                                           from './deriveNodeRuntimeEnv.mjs';
 import FleetRegistryService                                                               from './FleetRegistryService.mjs';
 import {readSeatEnvOperatorKeys, SEAT_ENV_NOT_REGULAR}                                    from './seatEnvFile.mjs';
-import {readSeatSessionFolder}                                                            from './seatSessionFolder.mjs';
+import {convergeSeatSessionPreset, readSeatSessionFolder}                                 from './seatSessionFolder.mjs';
 import {readSeatExitReason}                                                               from './seatExitReason.mjs';
 import memoryCoreConfig                                                                   from '../../mcp/server/memory-core/config.mjs';
 import knowledgeBaseConfig                                                                from '../../mcp/server/knowledge-base/config.mjs';
@@ -1142,6 +1142,11 @@ class FleetLifecycleService extends Base {
                 envelopePath,
                 hookPath
             };
+        }
+
+        if (agent.harnessType === 'claude-desktop' && launch.instanceHome) {
+            if (opts.startSignal?.aborted) return this.canceledStart(id);
+            convergeSeatSessionPreset({instanceHome: launch.instanceHome, cwd});
         }
 
         let child;
@@ -2892,6 +2897,9 @@ class FleetLifecycleService extends Base {
             }
             if (!binaryPath) {
                 throw new Error(`FleetLifecycleService: agent '${agent.id}' (harnessType '${agent.harnessType}') has no launch template. Use a templated harnessType, or have the Brain/operator set a launch override via FleetRegistryService.setLaunchOverride.`);
+            }
+            if (agent.harnessType === 'claude-desktop' && (typeof opts.cwd !== 'string' || !path.isAbsolute(opts.cwd))) {
+                throw new Error("FleetLifecycleService.start: 'cwd' must be an absolute provisioned checkout for claude-desktop.")
             }
             const instanceHome = deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: agent.id, harnessType: agent.harnessType});
             return {

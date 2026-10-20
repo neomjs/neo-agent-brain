@@ -1,19 +1,253 @@
-import fs   from 'fs';
-import path from 'path';
+import crypto                from 'crypto';
+import fs                    from 'fs';
+import path                  from 'path';
+import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
 
 /**
  * @module ai/services/fleet/seatSessionFolder
- * @summary Where a Claude Desktop seat's session opened, read from the seat's own profile.
+ * @summary Converges a Claude Desktop seat's session preset to its provisioned checkout before spawn,
+ * and reads where the running seat's session opened from the seat's own profile.
  *
- * Claude Desktop cannot be launched into a folder, and a session opened anywhere but the
- * managed checkout loads none of what the Fleet projects there while the process reads ready. The
- * seat's Desktop profile records each Code-tab session under
+ * Claude Desktop passes only `--user-data-dir=<instanceHome>` on the command line and opens the
+ * folder recorded in `<instanceHome>/ccd-session-presets.json`. Before spawn (while the app is
+ * stopped), {@link convergeSeatSessionPreset} rewrites any stale preset folder to the provisioned
+ * checkout, seeds one preset when the profile has none, and leaves the file byte-identical when its
+ * preset already names the checkout.
+ *
+ * Once running, the seat's Desktop profile records each Code-tab session under
  * `claude-code-sessions/<account>/<org>/local_<id>.json` with the folder it opened in. The profile is
- * the seat's alone, which is why this reads it rather than the host's shared `~/.claude/projects`
- * transcripts: every session on the machine writes those, so they cannot say whose a session is.
- * The record format is Claude Desktop's own and undocumented, so a record set this reader cannot
- * read answers `unknown` with the reason and never `ok`.
+ * the seat's alone, which is why {@link readSeatSessionFolder} reads it rather than the host's shared
+ * `~/.claude/projects` transcripts: every session on the machine writes those, so they cannot say
+ * whose a session is. The record format is Claude Desktop's own and undocumented, so a record set this
+ * reader cannot read answers `unknown` with the reason and never `ok`.
  */
+
+const
+    DEFAULT_ACCOUNT_KEY = '00000000-0000-0000-0000-000000000000',
+    UUID_PATTERN        = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** @private */
+function isPlainObject(value) {
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+/**
+ * @summary Discover the signed-in account UUID recorded in a Claude Desktop profile, if any.
+ * @param {String} instanceHome
+ * @param {Object} fileSystem
+ * @param {Object} [options]
+ * @param {String|null} [options.fallback=DEFAULT_ACCOUNT_KEY]
+ * @returns {String|null}
+ * @private
+ */
+function discoverAccountKey(instanceHome, fileSystem, {fallback = DEFAULT_ACCOUNT_KEY} = {}) {
+    const readJson = file => {
+        try {
+            return JSON.parse(fileSystem.readFileSync(path.join(instanceHome, file), 'utf8'))
+        } catch {
+            return null
+        }
+    };
+
+    const configAccount = readJson('config.json')?.lastKnownAccountUuid;
+    if (typeof configAccount === 'string' && UUID_PATTERN.test(configAccount)) return configAccount;
+
+    const cliOpsAccount = readJson('cowork-enabled-cli-ops.json')?.ownerAccountId;
+    if (typeof cliOpsAccount === 'string' && UUID_PATTERN.test(cliOpsAccount)) return cliOpsAccount;
+
+    const registry = readJson('ant-device-registry.json');
+    if (isPlainObject(registry)) {
+        const key = Object.keys(registry).find(candidate => UUID_PATTERN.test(candidate));
+        if (key) return key
+    }
+
+    for (const dirName of ['claude-code-sessions', 'local-agent-mode-sessions']) {
+        try {
+            const entry = fileSystem.readdirSync(path.join(instanceHome, dirName), {withFileTypes: true})
+                .find(item => item.isDirectory() && UUID_PATTERN.test(item.name));
+            if (entry) return entry.name
+        } catch {}
+    }
+
+    return fallback
+}
+
+/**
+ * @summary Create one local session preset pointing at `cwd`.
+ * @param {String} cwd
+ * @returns {Object}
+ * @private
+ */
+function createSessionPreset(cwd) {
+    const now = Date.now();
+
+    return {
+        id        : crypto.randomUUID(),
+        name      : path.basename(cwd) || cwd,
+        createdAt : now,
+        lastUsedAt: now,
+        target    : {
+            kind: 'local',
+            cwd
+        }
+    }
+}
+
+/**
+ * @summary Create one account bucket with a single preset pointing at `cwd`.
+ * @param {String} cwd
+ * @returns {Object}
+ * @private
+ */
+function createAccountBucket(cwd) {
+    return {
+        presets        : [createSessionPreset(cwd)],
+        builtIns       : {},
+        seededFromDraft: true
+    }
+}
+
+/** @private */
+function writePresetFile(filePath, content, {mode = 0o600, preserveMode = false} = {}, fileSystem = fs) {
+    if (fileSystem === fs) {
+        writeFileAtomicSync(filePath, content, {mode, preserveMode});
+        return
+    }
+
+    fileSystem.writeFileSync(filePath, content, {mode})
+}
+
+/**
+ * @summary Converge `<instanceHome>/ccd-session-presets.json` to the provisioned checkout `cwd` before
+ * spawning Claude Desktop. Rewrites any stale preset folder to `cwd`, seeds one preset when the
+ * profile has no preset file (or an empty account bucket), and leaves the file byte-identical when its
+ * presets already name `cwd`.
+ * @param {Object} options
+ * @param {String} options.instanceHome The seat's Claude Desktop profile directory.
+ * @param {String} options.cwd          The absolute provisioned checkout path.
+ * @param {Object} [options.fileSystem=fs]
+ * @returns {{path: String, status: 'created'|'updated'|'unchanged', cwd: String}}
+ */
+export function convergeSeatSessionPreset({instanceHome, cwd, fileSystem = fs} = {}) {
+    if (typeof instanceHome !== 'string' || !path.isAbsolute(instanceHome)) {
+        throw new Error(`convergeSeatSessionPreset: 'instanceHome' must be an absolute path for claude-desktop, received '${instanceHome}'.`)
+    }
+    if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) {
+        throw new Error("convergeSeatSessionPreset: 'cwd' must be an absolute provisioned checkout for claude-desktop.")
+    }
+
+    const presetPath = path.join(instanceHome, 'ccd-session-presets.json');
+    let   stat       = null;
+
+    try {
+        stat = fileSystem.lstatSync(presetPath)
+    } catch (error) {
+        if (error?.code !== 'ENOENT') throw error
+    }
+
+    if (stat && (stat.isSymbolicLink() || !stat.isFile())) {
+        throw new Error(`convergeSeatSessionPreset: '${presetPath}' must be a regular file.`)
+    }
+
+    if (!stat) {
+        const
+            accountKey = discoverAccountKey(instanceHome, fileSystem),
+            content    = `${JSON.stringify({byAccount: {[accountKey]: createAccountBucket(cwd)}}, null, '\t')}\n`;
+
+        fileSystem.mkdirSync(instanceHome, {recursive: true});
+        writePresetFile(presetPath, content, {mode: 0o600}, fileSystem);
+        return {path: presetPath, status: 'created', cwd}
+    }
+
+    const raw = fileSystem.readFileSync(presetPath, 'utf8');
+    let   parsed;
+
+    try {
+        parsed = JSON.parse(raw)
+    } catch {
+        throw new Error(`convergeSeatSessionPreset: '${presetPath}' is not valid JSON.`)
+    }
+
+    if (!isPlainObject(parsed) || (parsed.byAccount !== undefined && !isPlainObject(parsed.byAccount))) {
+        throw new Error(`convergeSeatSessionPreset: '${presetPath}' has an invalid byAccount root.`)
+    }
+
+    const
+        byAccount     = isPlainObject(parsed.byAccount) ? {...parsed.byAccount} : {},
+        discoveredKey = discoverAccountKey(instanceHome, fileSystem, {fallback: null}),
+        accountKeys   = Object.keys(byAccount);
+    let changed = !isPlainObject(parsed.byAccount);
+
+    if (accountKeys.length === 0) {
+        byAccount[discoveredKey ?? DEFAULT_ACCOUNT_KEY] = createAccountBucket(cwd);
+        changed = true
+    } else if (discoveredKey && !Object.hasOwn(byAccount, discoveredKey) && accountKeys.length === 1 && accountKeys[0] === DEFAULT_ACCOUNT_KEY) {
+        const seedBucket = byAccount[DEFAULT_ACCOUNT_KEY];
+        delete byAccount[DEFAULT_ACCOUNT_KEY];
+        byAccount[discoveredKey] = seedBucket;
+        changed = true
+    }
+
+    for (const [accountKey, bucket] of Object.entries(byAccount)) {
+        if (!isPlainObject(bucket) || !Array.isArray(bucket.presets) || bucket.presets.length === 0) {
+            byAccount[accountKey] = {
+                ...(isPlainObject(bucket) ? bucket : {}),
+                presets        : [createSessionPreset(cwd)],
+                builtIns       : isPlainObject(bucket?.builtIns) ? bucket.builtIns : {},
+                seededFromDraft: typeof bucket?.seededFromDraft === 'boolean' ? bucket.seededFromDraft : true
+            };
+            changed = true;
+            continue
+        }
+
+        let   bucketChanged = false;
+        const presets       = bucket.presets.map(preset => {
+            if (!isPlainObject(preset)) {
+                bucketChanged = true;
+                return createSessionPreset(cwd)
+            }
+
+            const
+                target    = isPlainObject(preset.target) ? preset.target : null,
+                targetCwd = target?.cwd,
+                kindOk    = target ? (target.kind === undefined || target.kind === 'local') : false;
+
+            if (target && kindOk && targetCwd === cwd) {
+                return preset
+            }
+
+            bucketChanged = true;
+            const
+                nextTarget = target
+                    ? {...target, ...(target.kind === undefined || target.kind === 'local' ? {} : {kind: 'local'}), cwd}
+                    : {kind: 'local', cwd},
+                nextPreset = {...preset, target: nextTarget};
+
+            if (typeof preset.name === 'string' && typeof targetCwd === 'string' && preset.name === path.basename(targetCwd) && preset.name !== path.basename(cwd)) {
+                nextPreset.name = path.basename(cwd) || cwd
+            }
+
+            return nextPreset
+        });
+
+        if (bucketChanged) {
+            byAccount[accountKey] = {...bucket, presets};
+            changed = true
+        }
+    }
+
+    if (!changed) {
+        return {path: presetPath, status: 'unchanged', cwd}
+    }
+
+    const
+        indent  = /^[{[]\r?\n([ \t]+)/.exec(raw)?.[1],
+        newline = raw.endsWith('\r\n') ? '\r\n' : raw.endsWith('\n') ? '\n' : '',
+        content = JSON.stringify({...parsed, byAccount}, null, indent) + newline;
+
+    writePresetFile(presetPath, content, {preserveMode: true, mode: stat.mode & 0o777}, fileSystem);
+    return {path: presetPath, status: 'updated', cwd}
+}
 
 /**
  * @summary The record files of a profile's session store: two levels of real folders, then

@@ -130,6 +130,7 @@ const FIXTURE_PAT = 'ghp_fixture_only';
 
 /** App-bundle seats lease their pid in the harness home, so their agents root must be writable. */
 const DESKTOP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-desktop-instances-'));
+const CHECKOUT     = '/srv/checkouts/agent-a';
 
 /** A minimal registry stub so lifecycle specs never touch the real on-disk credential store. */
 function makeRegistry(agents, creds) {
@@ -1782,7 +1783,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
             calls.push(key);
             return {NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane'), NEO_CHROMA_PORT: '3456'};
         };
-        await FleetLifecycleService.start('a');
+        await FleetLifecycleService.start('a', {cwd: CHECKOUT});
         expect(calls).toEqual(['memory-core', 'knowledge-base', 'neural-link', 'github-workflow']);
         const env = spawnStub.calls[0].opts.env;
         expect(env.NEO_PLANE_DATA_ROOT).toBe(path.join(DESKTOP_ROOT, 'plane'));
@@ -1791,7 +1792,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         expect(env.NEO_AGENT_IDENTITY).toBe('a');
         await FleetLifecycleService.stop('a');
         FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane'), GH_TOKEN: 'parent-token'});
-        expect(() => FleetLifecycleService.start('a')).toThrow(/reserved resident MCP/);
+        expect(() => FleetLifecycleService.start('a', {cwd: CHECKOUT})).toThrow(/reserved resident MCP/);
         expect(spawnStub.calls).toHaveLength(1);
     });
 
@@ -1880,7 +1881,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
             calls.push(key);
             return {NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane')};
         };
-        await FleetLifecycleService.start('a');
+        await FleetLifecycleService.start('a', {cwd: CHECKOUT});
         const env = spawnStub.calls[0].opts.env;
         expect(calls).toEqual(['memory-core', 'knowledge-base', 'neural-link', 'gitlab-workflow']);
         expect(env).toMatchObject({NEO_GITLAB_PAT: FIXTURE_PAT, NEO_GITLAB_HOST: ORIGIN, NEO_GITLAB_PROJECT: 'group/sub/project'});
@@ -1888,7 +1889,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         await FleetLifecycleService.stop('a');
         // a host GitLab token in the envelope is refused, never spawned
         FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane'), NEO_GITLAB_PAT: 'host-token'});
-        expect(() => FleetLifecycleService.start('a')).toThrow(/reserved resident MCP/);
+        expect(() => FleetLifecycleService.start('a', {cwd: CHECKOUT})).toThrow(/reserved resident MCP/);
         expect(spawnStub.calls).toHaveLength(1);
     });
 
@@ -3201,7 +3202,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         FleetLifecycleService.processInspectFn = () => ({startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=${home}`});
 
         const
-            {pid} = FleetLifecycleService.start('seat'),
+            {pid} = FleetLifecycleService.start('seat', {cwd: CHECKOUT}),
             raw   = fs.readFileSync(path.join(home, LEASE_FILE), 'utf8');
 
         expect(Object.keys(JSON.parse(raw)).sort()).toEqual(['agentId', 'cwd', 'harnessType', 'pid', 'pidStartedAt', 'startedAt', 'version']);
@@ -3348,9 +3349,13 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             birth : ({home}) => {
                 FleetLifecycleService.processInspectFn = () => null
             },
-            write : ({home}) => {
-                fs.rmSync(home, {recursive: true, force: true});
-                fs.writeFileSync(home, '')   // a file where the harness home belongs
+            write : ({home, spawn}) => {
+                FleetLifecycleService.spawnFn = (...args) => {
+                    const child = spawn(...args);
+                    fs.rmSync(home, {recursive: true, force: true});
+                    fs.writeFileSync(home, '');   // a file where the harness home belongs
+                    return child
+                }
             },
             rename: ({home}) => {
                 fs.mkdirSync(path.join(home, LEASE_FILE, 'occupied'), {recursive: true})
@@ -3363,7 +3368,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             FleetLifecycleService.processInspectFn = () => ({startedAt: STARTED_AT, command: ''});
             breakLease(seat);
 
-            expect(() => FleetLifecycleService.start('seat'), name).toThrow(/the seat could not be leased \(.+\), so it was stopped/);
+            expect(() => FleetLifecycleService.start('seat', {cwd: CHECKOUT}), name).toThrow(/the seat could not be leased \(.+\), so it was stopped/);
             expect(seat.spawn.calls[0].child.signals, name).toEqual(['SIGTERM']);
             expect(fs.existsSync(path.join(seat.home, `${LEASE_FILE}.${process.pid}.tmp`)), name).toBe(false)
         }
@@ -3377,7 +3382,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             logged   = [];
 
         FleetManager.managedRoot         = '/managed';
-        FleetManager.provisionAndStartFn = ({lifecycleService, agentId}) => lifecycleService.start(agentId);
+        FleetManager.provisionAndStartFn = ({lifecycleService, agentId}) => lifecycleService.start(agentId, {cwd: CHECKOUT});
         FleetControlBridge.manager       = FleetManager;
         console.error                    = (...args) => logged.push(args.map(String).join(' '));
 
@@ -3533,7 +3538,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         FleetLifecycleService.sigkillTimeoutMs    = 2000;
 
         const
-            {pid}  = FleetLifecycleService.start('seat'),
+            {pid}  = FleetLifecycleService.start('seat', {cwd: root}),
             // This runner is the seat's parent here, so the seat lingers as a zombie until it is reaped.
             reaped = new Promise(resolve => FleetLifecycleService.processes.get('seat').child.once('exit', resolve));
 
@@ -3584,7 +3589,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 let   signalsAtRead = null;
 
                 windowSeams();
-                const {pid} = FleetLifecycleService.start('seat'), child = spawn.calls.at(-1).child;
+                const {pid} = FleetLifecycleService.start('seat', {cwd: CHECKOUT}), child = spawn.calls.at(-1).child;
                 FleetLifecycleService.windowRectReadFn = async () => { signalsAtRead = [...child.signals]; return {...RECT} };
 
                 await FleetLifecycleService.stop('seat');
@@ -3599,7 +3604,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
 
                 // a failed read keeps the previous record byte for byte
                 const before = fs.readFileSync(file, 'utf8');
-                FleetLifecycleService.start('seat');
+                FleetLifecycleService.start('seat', {cwd: CHECKOUT});
                 FleetLifecycleService.windowRectReadFn = async () => null;
                 await FleetLifecycleService.stop('seat');
                 expect(fs.readFileSync(file, 'utf8'), harnessType).toBe(before)
@@ -3623,7 +3628,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             writeRecord(home, 'claude-desktop');
             const log = windowSeams({reads: [null, OTHER], place: rect => ({...rect})});
 
-            FleetLifecycleService.start('seat');
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
 
             const record = FleetLifecycleService.processes.get('seat');
 
@@ -3664,7 +3669,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
 
             ({home} = installSeat('claude-desktop'));
             windowSeams({reads: [RECT]});
-            FleetLifecycleService.start('seat');
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
             expect(await FleetLifecycleService.processes.get('seat').windowRestore).toMatchObject({state: 'none', requested: null, observed: null});
             await FleetLifecycleService.stop('seat');
 
@@ -3672,7 +3677,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             writeRecord(home, 'claude-desktop');
             windowSeams({reads: [null]});
             FleetLifecycleService.windowRestoreTimeoutMs = 20;
-            FleetLifecycleService.start('seat');
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
             const timedOut = await FleetLifecycleService.processes.get('seat').windowRestore;
             expect(timedOut).toMatchObject({state: 'refused', requested: RECT, observed: null});
             expect(timedOut.reason).toContain('no window appeared');
@@ -3686,7 +3691,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             FleetLifecycleService.windowRectReadFn  = null;
             FleetLifecycleService.windowRectPlaceFn = null;
 
-            FleetLifecycleService.start('seat');
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
 
             expect(await FleetLifecycleService.processes.get('seat').windowRestore).toMatchObject({state: 'unsupported'});
             expect(FleetLifecycleService.status('seat').windowPlacement.reason).toContain('linux');
@@ -4270,26 +4275,92 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
 
         try {
             agent.reasoningEffort = 'max';
-            FleetLifecycleService.start('seat');
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
             expect(spawn.calls[0].opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('max');
             expect(spawn.calls[0].args.some(arg => arg.startsWith('--effort'))).toBe(false);
 
             agent.reasoningEffort = 'high';
-            FleetLifecycleService.start('seat');
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
             expect(spawn.calls, 'an already-running Start keeps the launched environment').toHaveLength(1);
             expect(spawn.calls[0].opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('max');
 
             await FleetLifecycleService.stop('seat');
-            FleetLifecycleService.start('seat');
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
             expect(spawn.calls[1].opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('high');
 
             await FleetLifecycleService.stop('seat');
             delete agent.reasoningEffort;
-            FleetLifecycleService.start('seat');
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
             expect(spawn.calls[2].opts.env).not.toHaveProperty('CLAUDE_CODE_EFFORT_LEVEL');
         } finally {
             await FleetLifecycleService.stop('seat')
         }
+    });
+
+    test('claude-desktop Start converges ccd-session-presets.json to cwd before spawn, seeds when missing, and refuses a missing or relative cwd (#1223)', async () => {
+        const
+            {spawn, home} = installDesktopSeat(),
+            presetPath    = path.join(home, 'ccd-session-presets.json'),
+            accountId     = 'd6da8ba9-b0ba-403e-bb82-53fc76bc6a08',
+            staleCheckout = '/Users/tobiasuhlig/.neo-ai/agents/neo-fable/neomjs/neo';
+
+        // AC-3: missing or relative cwd refuses before spawn and before touching the profile
+        for (const badCwd of [undefined, null, '', 'relative/checkout']) {
+            expect(() => FleetLifecycleService.start('seat', {cwd: badCwd}))
+                .toThrow(/must be an absolute provisioned checkout for claude-desktop/);
+        }
+        expect(spawn.calls).toEqual([]);
+        expect(fs.existsSync(presetPath)).toBe(false);
+
+        // AC-2: profile with no preset file gets one preset at the checkout before spawn
+        let presetAtSpawn = null;
+        FleetLifecycleService.spawnFn = (cmd, args, opts) => {
+            presetAtSpawn = JSON.parse(fs.readFileSync(presetPath, 'utf8'));
+            return spawn(cmd, args, opts)
+        };
+
+        FleetLifecycleService.start('seat', {cwd: CHECKOUT});
+        expect(presetAtSpawn?.byAccount?.['00000000-0000-0000-0000-000000000000']?.presets?.[0]?.target).toEqual({
+            kind: 'local',
+            cwd : CHECKOUT
+        });
+        await FleetLifecycleService.stop('seat');
+
+        // AC-1: stale preset folder is rewritten to the provisioned checkout before spawn; matching preset stays byte-identical
+        fs.writeFileSync(presetPath, `${JSON.stringify({
+            byAccount: {
+                [accountId]: {
+                    presets: [{
+                        id        : '78c5d999-a73b-4239-994f-70d2332da522',
+                        name      : 'neo',
+                        createdAt : 1789984863649,
+                        lastUsedAt: 1789984863649,
+                        target    : {
+                            kind: 'local',
+                            cwd : staleCheckout
+                        }
+                    }],
+                    builtIns       : {},
+                    seededFromDraft: true
+                }
+            }
+        }, null, '\t')}\n`);
+
+        FleetLifecycleService.start('seat', {cwd: CHECKOUT});
+        expect(presetAtSpawn?.byAccount?.[accountId]?.presets?.[0]?.target).toEqual({
+            kind: 'local',
+            cwd : CHECKOUT
+        });
+        const convergedBytes = fs.readFileSync(presetPath, 'utf8');
+        const convergedStat  = fs.statSync(presetPath);
+        await FleetLifecycleService.stop('seat');
+
+        FleetLifecycleService.start('seat', {cwd: CHECKOUT});
+        const repeatStat = fs.statSync(presetPath);
+        expect(fs.readFileSync(presetPath, 'utf8')).toBe(convergedBytes);
+        expect(repeatStat.ino).toBe(convergedStat.ino);
+        expect(repeatStat.mtimeMs).toBe(convergedStat.mtimeMs);
+        await FleetLifecycleService.stop('seat')
     });
 
     test('PRODUCTION COMPOSER: Stop cancels a pending managed Start before or after reservation; a later Start is fresh', async () => {
@@ -4973,7 +5044,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
             pat                    = {credential: 'seat-pat'},
             plane                  = {credential: 'plane-bearer'};
 
-        FleetLifecycleService.start('seat', {resolvedMcpCredential: 'plane_fixture_only', launchAdmission: {...ADMISSION, owners: {pat, plane}}});
+        FleetLifecycleService.start('seat', {cwd: CHECKOUT, resolvedMcpCredential: 'plane_fixture_only', launchAdmission: {...ADMISSION, owners: {pat, plane}}});
 
         const [activation] = calls.activate;
 
@@ -4995,7 +5066,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
     test('a credential Start named no owner for is held by nobody: never taken from what the seat was given', () => {
         const {calls} = installDesktopSeat();
 
-        FleetLifecycleService.start('seat', {launchAdmission: ADMISSION});
+        FleetLifecycleService.start('seat', {cwd: CHECKOUT, launchAdmission: ADMISSION});
 
         const [activation] = calls.activate;
 
@@ -5038,7 +5109,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
 
         FleetLifecycleService.processInspectFn = () => null;
 
-        expect(() => FleetLifecycleService.start('seat', {launchAdmission: ADMISSION})).toThrow('could not be leased');
+        expect(() => FleetLifecycleService.start('seat', {cwd: CHECKOUT, launchAdmission: ADMISSION})).toThrow('could not be leased');
         expect(events[0]).toBe('revoke lease-failed');
         expect(calls.revoke[0]).toEqual({id: 'seat', reason: 'lease-failed', generation: 'generation-1'});
         expect(calls.activate).toEqual([])
@@ -5047,7 +5118,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
     test('Stop revokes before it signals; the exit that follows only confirms it', async () => {
         const {events} = installDesktopSeat();
 
-        FleetLifecycleService.start('seat', {launchAdmission: ADMISSION});
+        FleetLifecycleService.start('seat', {cwd: CHECKOUT, launchAdmission: ADMISSION});
 
         const child = FleetLifecycleService.processes.get('seat').child;
 
@@ -5066,7 +5137,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
         for (const event of ['exit', 'error']) {
             const {calls} = installDesktopSeat();
 
-            FleetLifecycleService.start('seat', {launchAdmission: ADMISSION});
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT, launchAdmission: ADMISSION});
             FleetLifecycleService.processes.get('seat').child.emit(event, ...(event === 'exit' ? [0, null] : [new Error('spawn EACCES')]));
 
             expect(calls.revoke, event).toEqual([{id: 'seat', reason: 'process-exited', generation: 'generation-1'}])
@@ -5077,7 +5148,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
         installDesktopSeat();
         FleetLifecycleService.launchAdmission = null;   // the real issuer, holding nothing for this seat
         McpLaunchAdmissionService.generations.clear();
-        FleetLifecycleService.start('seat');
+        FleetLifecycleService.start('seat', {cwd: CHECKOUT});
 
         expect(FleetLifecycleService.status('seat').launchAdmission).toMatchObject({state: 'stale', reason: 'issuer-replaced'});
 
