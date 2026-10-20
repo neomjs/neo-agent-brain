@@ -171,7 +171,12 @@ class McpLaunchAdmissionService extends Base {
     /** @member {String|null} issuerOrigin The origin actually bound by this issuer. @private */
     issuerOrigin = null
 
-    /** @member {String} continuityPhase Boot recovery excludes new Starts until its evidence is settled. @private */
+    /**
+     * @member {String} continuityPhase Boot recovery excludes new Starts until its evidence is settled
+     * (`'pending-recovery'` before {@link recover} begins, `'recovering'` while it runs, `'ready'` once settled,
+     * `'draining'` / `'handed-off'` during clean succession, or `'unavailable'` on failure/unclean close).
+     * @private
+     */
     continuityPhase = 'ready'
 
     /**
@@ -193,16 +198,27 @@ class McpLaunchAdmissionService extends Base {
      * Previous records are evidence only; the lifecycle must separately validate clean succession.
      * @param {Object} options Explicit custody directory and injectable filesystem/durable primitives.
      * @param {Function} [options.readSeatStarts] Existing lifecycle's closed Start/retention projection.
+     * @param {Boolean} [options.awaitRecovery=false] Fence Starts in `'pending-recovery'` until {@link recover} runs.
      * @returns {Object|null} Previous snapshot with its clean-handoff disposition.
      */
-    openJournal({readSeatStarts = () => [], ...options}) {
+    openJournal({readSeatStarts = () => [], awaitRecovery = false, ...options}) {
         if (this.journal || this.generations.size) throw new Error('Launch admission custody must be attached before Start.');
         if (typeof readSeatStarts !== 'function') throw new TypeError('Seat Start projection must be a function.');
         this.readSeatStarts = readSeatStarts;
         this.journal = openLaunchAdmissionJournal({
             ...options, validateSnapshot: isAdmissionSnapshot, emptySnapshot: {version: RUNTIME_REFERENCE_SNAPSHOT_VERSION, generations: [], seats: []}
         });
+        if (awaitRecovery) this.continuityPhase = 'pending-recovery';
         return this.journal.previous
+    }
+
+    /**
+     * @summary Marks launch continuity unavailable when the running runtime generation fails payload verification
+     * before {@link recover} can run, keeping this service the single writer of `continuityPhase`.
+     */
+    failRuntimeVerification() {
+        this.continuityPhase = 'unavailable';
+        this.grants.clear();
     }
 
     /**
@@ -217,12 +233,16 @@ class McpLaunchAdmissionService extends Base {
      * @returns {Promise<Object[]>} Per-seat admission disposition, without capabilities or owner values.
      */
     async recover({registry, restoreSeat, runtimeReferenceGuard}) {
-        if (!this.journal || this.generations.size || this.listening || this.continuityPhase !== 'ready' ||
+        if (!this.journal || this.generations.size || this.listening ||
+            (this.continuityPhase !== 'ready' && this.continuityPhase !== 'pending-recovery') ||
             typeof restoreSeat !== 'function') throw new Error('Launch recovery must precede admission and Start.');
         const previous = this.journal.previous;
         this.continuityRecord = {recoveredAt: new Date().toISOString(), previousReason: previous?.reason ?? null,
             handoffProved: previous?.handoffProved ?? null, origin: previous?.origin ?? null, seats: []};
-        if (!previous) return [];
+        if (!previous) {
+            this.continuityPhase = 'ready';
+            return [];
+        }
         const retainedRuntimes = [...previous.snapshot.generations.map(row => row.runtime),
             ...previous.snapshot.seats.map(row => row.start.runtime)].filter(Boolean);
         /** @summary Revalidates the same parent exclusion before publishing recovered authority. */

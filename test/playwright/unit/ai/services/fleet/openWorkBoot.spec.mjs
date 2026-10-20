@@ -90,10 +90,13 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         expect(source.slice(source.indexOf('    } catch (error) {', source.indexOf('// Each seat')))).toContain('await closeObservedWorkAndPlane()')
     });
 
-    test('boot logs elapsed milliseconds for runtime bind, viewer claim, plane init, recovery, and transport (#1142)', () => {
-        expect(FLEET_BOOT_PHASES).toEqual(['runtime bind', 'viewer claim', 'plane init', 'recovery', 'transport']);
+    test('boot logs elapsed milliseconds for runtime bind, viewer claim, plane init, transport, runtime verify, and recovery (#1142, #1198)', () => {
+        expect(FLEET_BOOT_PHASES).toEqual(['runtime bind', 'viewer claim', 'plane init', 'transport', 'runtime verify', 'recovery']);
         expect(formatFleetBootPhaseLine('runtime bind', 5720.4, 'gen=abcd1234')).toBe(
             '[fleet] boot phase runtime bind: 5720 ms (gen=abcd1234)'
+        );
+        expect(formatFleetBootPhaseLine('runtime verify', 2010.2, 'generation aaaaaaaaaaaa')).toBe(
+            '[fleet] boot phase runtime verify: 2010 ms (generation aaaaaaaaaaaa)'
         );
         expect(formatFleetBootPhaseLine('recovery', 0.2)).toBe('[fleet] boot phase recovery: 0 ms');
 
@@ -205,7 +208,16 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         let releaseVerify, releaseRecover;
         const events    = [],
               logs      = [],
-              admission = {continuityPhase: 'ready', proofTimeoutMs: 5000, closeUnclean: async () => {}, continuityRecord: {handoffProved: true}},
+              admission = {
+                  continuityPhase : 'ready',
+                  proofTimeoutMs  : 5000,
+                  closeUnclean    : async () => {},
+                  continuityRecord: {handoffProved: true},
+                  failRuntimeVerification() {
+                      this.continuityPhase = 'unavailable';
+                      events.push('fail-runtime-verify');
+                  }
+              },
               runtime   = {
                   generation: {id: 'a'.repeat(64)},
                   verify    : () => new Promise(resolve => {
@@ -218,7 +230,10 @@ test.describe('Fleet open-work boot custody (#761)', () => {
                   })
               },
               lifecycle = {
-                  openRuntimeCustody   : () => events.push('open-custody'),
+                  openRuntimeCustody   : options => {
+                      admission.continuityPhase = options?.awaitRecovery ? 'pending-recovery' : 'ready';
+                      events.push(['open-custody', options]);
+                  },
                   getRegistry          : () => ({admissionDirectory: () => '/tmp/custody'}),
                   getLaunchAdmission   : () => admission,
                   recoverRuntimeCustody: () => new Promise(resolve => {
@@ -266,11 +281,12 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         await Promise.resolve();
 
         expect(events).toEqual([
-            'open-custody',
-            ['listen', false, 'recovering'],
-            ['verify-start', 'recovering']
+            ['open-custody', {directory: '/tmp/custody', awaitRecovery: true}],
+            ['listen', false, 'pending-recovery'],
+            ['verify-start', 'pending-recovery']
         ]);
         expect(logs.some(line => line.includes('[fleet] boot phase transport:'))).toBe(true);
+        expect(logs.some(line => line.includes('[fleet] boot phase runtime verify:'))).toBe(false);
         expect(logs.some(line => line.includes('[fleet] boot phase recovery:'))).toBe(false);
 
         releaseVerify();
@@ -278,18 +294,32 @@ test.describe('Fleet open-work boot custody (#761)', () => {
         await Promise.resolve();
 
         expect(events).toEqual([
-            'open-custody',
-            ['listen', false, 'recovering'],
-            ['verify-start', 'recovering'],
+            ['open-custody', {directory: '/tmp/custody', awaitRecovery: true}],
+            ['listen', false, 'pending-recovery'],
+            ['verify-start', 'pending-recovery'],
             'verify-done',
-            ['recover-start', true, 'recovering']
+            ['recover-start', true, 'pending-recovery']
         ]);
+        expect(logs.some(line => line.includes('[fleet] boot phase runtime verify:'))).toBe(true);
+        expect(logs.some(line => line.includes('[fleet] boot phase recovery:'))).toBe(false);
 
         releaseRecover();
         await running;
 
         expect(admission.continuityPhase).toBe('ready');
         expect(logs.some(line => line.includes('[fleet] boot phase recovery:'))).toBe(true);
+
+        events.length = 0;
+        logs.length   = 0;
+        runtime.verified = null;
+        runtime.verify   = async () => {
+            throw Object.assign(new Error('digest mismatch'), {code: 'runtime-integrity-failed'});
+        };
+        await run(...Object.values(seams));
+        expect(admission.continuityPhase).toBe('unavailable');
+        expect(events).toContain('fail-runtime-verify');
+        expect(logs.some(line => line.includes('[fleet] boot phase runtime verify:') && line.includes('failed: runtime-integrity-failed'))).toBe(true);
+        expect(logs.some(line => line.includes('[fleet] boot phase recovery: 0 ms (skipped: runtime verification failed)'))).toBe(true);
     });
 });
 

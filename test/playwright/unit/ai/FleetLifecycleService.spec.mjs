@@ -2866,14 +2866,14 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         FleetLifecycleService.registry.renewBridgeToken          = () => ({token: 'renewed-fixture-token'});
 
         return {
-            seats, spawn, runtime, answers, sealedGenerations,
+            seats, spawn, runtime, answers, sealedGenerations, directory,
             sealed: () => JSON.parse(fs.readFileSync(path.join(directory, 'issuer.json'), 'utf8')).snapshot,
             /** The next Fleet boot, recovering from what the handoff sealed; `{}` recovers with the default verifier. */
             async reboot(options = {verifyRuntime: runtime}) {
                 service.issuerOrigin = null; service.continuityPhase = 'ready'; service.handoffPromise = null;
                 service.journal = null; service.generations.clear(); service.grants.clear();
                 FleetLifecycleService.processes.clear(); FleetLifecycleService.leasesAdopted = false;
-                FleetLifecycleService.openRuntimeCustody({directory});
+                FleetLifecycleService.openRuntimeCustody({directory, awaitRecovery: true});
                 return FleetLifecycleService.recoverRuntimeCustody(options)
             },
             /** What a launch with this seat's Start-time grant receives now: the verified answer, else the unattributed refusal. */
@@ -2969,12 +2969,43 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             await FleetLifecycleService.installedRuntime.verify();
             expect(fullReads).toEqual([fixture.sealedGenerations.seat.directory]);
 
-            const recovered = await fixture.reboot({verifyRuntime});
+            McpLaunchAdmissionService.journal?.close();
+            McpLaunchAdmissionService.journal = null;
+            McpLaunchAdmissionService.generations.clear();
+            McpLaunchAdmissionService.grants.clear();
+            FleetLifecycleService.processes.clear();
+            FleetLifecycleService.leasesAdopted = false;
+            FleetLifecycleService.openRuntimeCustody({directory: fixture.directory, awaitRecovery: true});
+            expect(McpLaunchAdmissionService.continuityPhase).toBe('pending-recovery');
+            expect(() => FleetLifecycleService.start('seat', {
+                cwd              : CHECKOUT,
+                runtimeGeneration: FleetLifecycleService.installedRuntime.generation
+            })).toThrow('Fleet Start refused: launch continuity is not ready.');
+
+            const recovered = await FleetLifecycleService.recoverRuntimeCustody({verifyRuntime});
+            expect(McpLaunchAdmissionService.continuityPhase).toBe('ready');
             expect(recovered.map(row => [row.agentId, row.state])).toEqual([['seat', 'active'], ['peer', 'active']]);
             expect(fullReads, 'running generation is not inventoried a second time during recovery').toEqual([
                 fixture.sealedGenerations.seat.directory,
                 fixture.sealedGenerations.peer.directory
-            ])
+            ]);
+
+            const brokenRuntime = await bindCurrentRuntime({
+                args         : runtimeGenerationArguments(fixture.sealedGenerations.seat),
+                runtimeRoot  : fixture.sealedGenerations.seat.runtimeRoot,
+                executable   : fixture.sealedGenerations.seat.executable,
+                verifyRuntime: async () => {
+                    throw Object.assign(new Error('digest mismatch'), {code: 'runtime-integrity-failed'});
+                }
+            });
+            FleetLifecycleService.installedRuntime = brokenRuntime;
+            await expect(brokenRuntime.verify()).rejects.toMatchObject({code: 'runtime-integrity-failed'});
+            McpLaunchAdmissionService.failRuntimeVerification();
+            expect(McpLaunchAdmissionService.continuityPhase).toBe('unavailable');
+            expect(() => FleetLifecycleService.start('seat', {
+                cwd              : CHECKOUT,
+                runtimeGeneration: brokenRuntime.generation
+            })).toThrow('Fleet Start refused: running runtime generation failed verification (runtime-integrity-failed).')
         } finally {
             await fixture.teardown()
         }

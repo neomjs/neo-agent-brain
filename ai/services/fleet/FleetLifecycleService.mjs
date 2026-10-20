@@ -2373,9 +2373,6 @@ class FleetLifecycleService extends Base {
     async recoverRuntimeCustodyUnderGuard({tenantService, verifyRuntime = readRuntimeGeneration, readGrants = recoverLaunchProfileGrants}, runtimeReferenceGuard) {
         const admission = this.getLaunchAdmission();
         if (!admission.journal) throw new Error('Runtime custody must be attached before recovery.');
-        if (admission.continuityPhase === 'recovering' && !admission.generations.size && !admission.listening) {
-            admission.continuityPhase = 'ready';
-        }
         const previous = admission.journal.previous, registry = this.getRegistry(), verified = new Map(),
               current  = this.installedRuntime?.verified ??
                   (this.installedRuntime?.generation?.compatibility?.launchProtocol === LAUNCH_ADMISSION_PROTOCOL &&
