@@ -9,6 +9,10 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 import {createCoreCorpusProfilePlan}    from '../../../../../../../ai/services/knowledge-base/helpers/coreCorpusProfilePlan.mjs';
 import {runExtractionProfile}           from '../../../../../../../ai/services/knowledge-base/helpers/extractionProfileRunner.mjs';
 import {createRepositoryRevisionReader} from '../../../../../../../ai/services/knowledge-base/helpers/repositoryRevisionReader.mjs';
+import {
+    hydrateAdrAdmissionRecords,
+    resetSharedAdrCatalog
+} from '../../../../../../../ai/services/ingestion/adrAdmissionCatalog.mjs';
 
 /**
  * @summary Provides the production revision-reader shape over fixed byte contents.
@@ -58,6 +62,50 @@ test('a real test', () => { expect(1).toBe(1) });
 `;
 
 test.describe('shared core semantic Sources (#282)', () => {
+    test.beforeEach(() => {
+        resetSharedAdrCatalog();
+        hydrateAdrAdmissionRecords([
+            {
+                canonicalKey      : 'adr:github.com:220867748:neomjs%2Fneo:0001',
+                adrNumber         : '0001',
+                title             : 'Decision',
+                status            : 'Accepted',
+                currentSlug       : 'example',
+                historicalAliases : [],
+                assignmentEvidence: {forge: 'github.com', repositoryId: '220867748', namespace: 'neomjs/neo', number: '0001', assignmentKind: 'created'},
+                sourceTuple       : {forge: 'github.com', repositoryId: '220867748', namespace: 'neomjs/neo', path: 'learn/agentos/decisions/0001-example.md'},
+                aliasBindings     : [
+                    {kind: 'slug', value: 'example', forge: 'github.com', repositoryId: '220867748', namespace: 'neomjs/neo', targetKey: 'adr:github.com:220867748:neomjs%2Fneo:0001', current: true},
+                    {kind: 'legacy-number', value: '0001', forge: 'github.com', repositoryId: '220867748', namespace: 'neomjs/neo', targetKey: 'adr:github.com:220867748:neomjs%2Fneo:0001', current: true}
+                ],
+                reservations     : [],
+                provenance       : {custodyTransitions: [], repositoryRenames: [], sourceLineage: []},
+                documentAvailable: true,
+                kbAvailable      : true,
+                stale            : false
+            },
+            {
+                canonicalKey      : 'adr:github.com:1344062228:neomjs%2Fneo-agent-brain:0001',
+                adrNumber         : '0001',
+                title             : 'Brain decision',
+                status            : 'Accepted',
+                currentSlug       : 'brain',
+                historicalAliases : [],
+                assignmentEvidence: {forge: 'github.com', repositoryId: '1344062228', namespace: 'neomjs/neo-agent-brain', number: '0001', assignmentKind: 'created'},
+                sourceTuple       : {forge: 'github.com', repositoryId: '1344062228', namespace: 'neomjs/neo-agent-brain', path: 'learn/agentos/decisions/0001-brain.md'},
+                aliasBindings     : [
+                    {kind: 'slug', value: 'brain', forge: 'github.com', repositoryId: '1344062228', namespace: 'neomjs/neo-agent-brain', targetKey: 'adr:github.com:1344062228:neomjs%2Fneo-agent-brain:0001', current: true},
+                    {kind: 'legacy-number', value: '0001', forge: 'github.com', repositoryId: '1344062228', namespace: 'neomjs/neo-agent-brain', targetKey: 'adr:github.com:1344062228:neomjs%2Fneo-agent-brain:0001', current: true}
+                ],
+                reservations     : [],
+                provenance       : {custodyTransitions: [], repositoryRenames: [], sourceLineage: []},
+                documentAvailable: true,
+                kbAvailable      : true,
+                stale            : false
+            }
+        ]);
+    });
+
     test('Engine profile uses its assigned learning tree and retains ADR, concept and test semantics', async () => {
         const {result, chunks} = await extract('neo', {
             'learn/agentos/decisions/0001-example.md': '# Decision\n\nAn accepted rule.',

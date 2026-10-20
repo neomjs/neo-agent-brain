@@ -6,13 +6,9 @@ import {
     ADR_SLUG_REGEX,
     buildCanonicalAdrKey,
     createCodedError,
-    extractCitationSurfaceContext,
     parseCanonicalAdrKey,
-    parseHumanOrNumericAdrReference,
     validateAdrIdentityFields
 } from './adrIdentityCodec.mjs';
-
-export {extractCitationSurfaceContext, parseHumanOrNumericAdrReference};
 
 /**
  * @module ai/services/shared/adrDocumentParser
@@ -459,6 +455,96 @@ export function parseAdrSupersedes(content) {
 }
 
 /**
+ * @summary Extracts evidenced forge and repository context from a citation surface descriptor.
+ * @param {Object} [context={}]
+ * @returns {{forge: String|null, repositoryId: String|null, namespace: String|null}}
+ */
+export function extractCitationSurfaceContext(context = {}) {
+    const surface = String(context.surface || 'repository_artifact').toLowerCase();
+
+    if (surface === 'organization_discussion' || surface === 'discussion') {
+        const forge = context.webOrigin?.forge || context.sourceOrigin?.forge || context.forge || null;
+        return {forge, repositoryId: null, namespace: null};
+    }
+    if (surface === 'memory_or_a2a' || surface === 'memory' || surface === 'a2a') {
+        return {forge: context.originEnvelope?.forge || null, repositoryId: null, namespace: null};
+    }
+    if (surface === 'historical_content' || surface === 'moved_file' || surface === 'copied_content') {
+        const origin = context.evidencedCitationOrigin || null;
+        return origin ? {
+            forge       : origin.forge || null,
+            repositoryId: origin.repositoryId || null,
+            namespace   : origin.namespace || null
+        } : {forge: null, repositoryId: null, namespace: null};
+    }
+
+    const origin = context.sourceOrigin || context;
+    return {
+        forge       : origin.forge || null,
+        repositoryId: origin.repositoryId || null,
+        namespace   : origin.namespace || null
+    };
+}
+
+/**
+ * @summary Parses a non-canonical human slug or legacy numeric ADR citation token into its
+ * optional qualifier (`explicitForge`, `explicitNamespace`) and target (`targetKind`, `targetValue`).
+ * @param {String} raw Trimmed citation string.
+ * @returns {{ok: Boolean, reasonCode?: String, explicitForge?: String|null, explicitNamespace?: String|null, targetKind?: 'slug'|'legacy-number', targetValue?: String}}
+ */
+export function parseHumanOrNumericAdrReference(raw) {
+    let
+        explicitForge     = null,
+        explicitNamespace = null,
+        targetKind        = null,
+        targetValue       = null;
+
+    if (raw.includes('#')) {
+        const
+            hashIndex = raw.indexOf('#'),
+            qualifier = raw.slice(0, hashIndex),
+            fragment  = raw.slice(hashIndex + 1),
+            segments  = qualifier.split('/');
+
+        if (segments.length === 2 && segments[0] && segments[1]) {
+            explicitNamespace = `${segments[0]}/${segments[1]}`;
+        } else if (segments.length === 3 && segments[0] && segments[1] && segments[2]) {
+            explicitForge     = segments[0];
+            explicitNamespace = `${segments[1]}/${segments[2]}`;
+        } else {
+            return {ok: false, reasonCode: 'INVALID_REPOSITORY_LOCATOR'};
+        }
+
+        if (fragment.startsWith('adr:')) {
+            targetKind  = 'slug';
+            targetValue = fragment.slice(4);
+        } else if (/^adr-\d{4}$/.test(fragment)) {
+            targetKind  = 'legacy-number';
+            targetValue = fragment.slice(4);
+        } else {
+            return {ok: false, reasonCode: 'INVALID_ADR_FRAGMENT'};
+        }
+    } else if (raw.startsWith('adr:')) {
+        targetKind  = 'slug';
+        targetValue = raw.slice(4);
+    } else if (/^adr-\d{4}$/.test(raw)) {
+        targetKind  = 'legacy-number';
+        targetValue = raw.slice(4);
+    } else {
+        return {ok: false, reasonCode: 'UNRECOGNIZED_REFERENCE_FORM'};
+    }
+
+    if (targetKind === 'slug' && !ADR_SLUG_REGEX.test(targetValue)) {
+        return {ok: false, reasonCode: 'ADR_INVALID_ALIAS_TOKEN'};
+    }
+    if (targetKind === 'legacy-number' && !ADR_NUMBER_REGEX.test(targetValue)) {
+        return {ok: false, reasonCode: 'ADR_INVALID_IDENTITY_FIELD'};
+    }
+
+    return {ok: true, explicitForge, explicitNamespace, targetKind, targetValue};
+}
+
+/**
  * @summary Resolves the candidate canonical identity, custody-transition verification, and prior admitted
  * record for a scanned ADR file before graph admission.
  * @param {Object} params
@@ -473,11 +559,16 @@ export function resolveAdrCandidateIdentity({
     onRegisterRepo     = null
 }) {
     if (!sourceRepo) {
-        const legacyKey = `adr-${adrNumber}`;
+        const
+            legacyKey      = `adr-${adrNumber}`,
+            matchingByNum  = Array.from(admissionCatalog.values()).filter(r => r.adrNumber === adrNumber),
+            existingRecord = admissionCatalog.get(legacyKey) ||
+                             (matchingByNum.length === 1 ? matchingByNum[0] : null);
         return {
-            canonicalKey             : legacyKey,
-            assignedIdentity         : null,
-            existingRecord           : admissionCatalog.get(legacyKey) || null,
+            canonicalKey             : existingRecord?.canonicalKey || legacyKey,
+            assignedIdentity         : existingRecord?.assignmentEvidence || null,
+            existingRecord,
+            manifestEntry            : false,
             custodyTransitionVerified: false,
             isCustodyMove            : false
         };
@@ -519,6 +610,7 @@ export function resolveAdrCandidateIdentity({
             canonicalKey,
             assignedIdentity,
             existingRecord           : admissionCatalog.get(canonicalKey) || null,
+            manifestEntry            : true,
             custodyTransitionVerified: Boolean(manifestEntry.custodyTransitionVerified || assignedIdentity.repositoryId !== repositoryId),
             isCustodyMove            : assignedIdentity.repositoryId !== repositoryId || assignedIdentity.namespace !== namespace
         };
@@ -552,6 +644,7 @@ export function resolveAdrCandidateIdentity({
                 forge: parsedKey.forge, repositoryId: parsedKey.repositoryId, namespace: parsedKey.namespace, assignmentKind: 'created'
             },
             existingRecord,
+            manifestEntry            : false,
             custodyTransitionVerified: true,
             custodyTransition        : transition,
             isCustodyMove            : true
@@ -567,6 +660,7 @@ export function resolveAdrCandidateIdentity({
             canonicalKey             : existingInRepo.canonicalKey,
             assignedIdentity         : existingInRepo.assignmentEvidence,
             existingRecord           : existingInRepo,
+            manifestEntry            : false,
             custodyTransitionVerified: false,
             isCustodyMove            : existingInRepo.assignmentEvidence?.repositoryId !== repositoryId
         };
@@ -580,6 +674,7 @@ export function resolveAdrCandidateIdentity({
                 forge: parsedKey.forge, repositoryId: parsedKey.repositoryId, namespace: parsedKey.namespace, assignmentKind: 'claimed'
             },
             existingRecord           : admissionCatalog.get(parsedKey.canonicalKey) || null,
+            manifestEntry            : false,
             custodyTransitionVerified: false,
             isCustodyMove            : parsedKey.repositoryId !== repositoryId || parsedKey.namespace !== namespace
         };
@@ -590,6 +685,7 @@ export function resolveAdrCandidateIdentity({
         canonicalKey,
         assignedIdentity         : {forge, repositoryId, namespace, assignmentKind: 'created'},
         existingRecord           : admissionCatalog.get(canonicalKey) || null,
+        manifestEntry            : false,
         custodyTransitionVerified: false,
         isCustodyMove            : false
     };

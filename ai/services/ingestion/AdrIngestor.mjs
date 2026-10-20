@@ -14,31 +14,31 @@ import {
     FORGE_AUTHORITY_REGEX,
     FULL_NAMESPACE_REGEX,
     KNOWN_CUT_REPOSITORIES,
-    SHARED_ADR_CATALOG_STATE,
-    bindSharedAdrRecordAliases,
     buildCanonicalAdrKey,
     createCodedError,
     decodeAdrKeyField,
     encodeAdrKeyField,
-    ensureSharedReservationBucket,
     parseCanonicalAdrKey,
-    registerSharedForgeRepository,
-    resetSharedAdrCatalog,
-    resolveSharedAdrReference,
     validateAdrIdentityFields
 } from '../shared/adrIdentityCodec.mjs';
+import {
+    SHARED_ADR_CATALOG_STATE,
+    ensureSharedReservationBucket,
+    registerSharedForgeRepository,
+    rehydrateAdrCatalogFromEvidence,
+    resetSharedAdrCatalog,
+    resolveSharedAdrReference
+} from './adrAdmissionCatalog.mjs';
 import {
     buildAdmittedAdrRecord,
     computeAdrPayloadHash,
     evaluateAdrCandidateConflicts,
     extractAdrTitleAndStatus,
-    extractCitationSurfaceContext,
     measureAdrAuthorActions,
     observeAdrCandidateAllocationFloor,
     parseAdrFilename,
     parseAdrOpeningAliases,
     parseAdrSupersedes,
-    parseHumanOrNumericAdrReference,
     resolveAdrCandidateIdentity,
     stripMarkdownFences
 } from '../shared/adrDocumentParser.mjs';
@@ -150,87 +150,7 @@ class AdrIngestor extends Base {
      * repository rename provenance survive process restarts or in-memory catalog resets.
      */
     rehydrateCatalogFromGraph() {
-        const records = [];
-
-        if (GraphService.db?.nodes?.items) {
-            for (const node of GraphService.db.nodes.items) {
-                const
-                    label = node.isRecord ? node.get('label') : node.label,
-                    props = (node.isRecord ? node.get('properties') : node.properties) || {};
-                if (label === 'ADR' && props.adrAuthority?.admitted === true && props.adrAdmissionRecord) {
-                    records.push(props.adrAdmissionRecord);
-                }
-            }
-        }
-
-        const sqlite = GraphService.db?.storage?.db;
-        if (sqlite) {
-            try {
-                const rows = sqlite.prepare(`
-                    SELECT id, data FROM Nodes WHERE json_extract(data, '$.label') = 'ADR'
-                `).all();
-                for (const row of rows) {
-                    if (GraphService.db?.nodes?.has(row.id)) continue;
-                    try {
-                        const parsed = JSON.parse(row.data);
-                        if (parsed?.properties?.adrAuthority?.admitted === true && parsed.properties.adrAdmissionRecord) {
-                            records.push(parsed.properties.adrAdmissionRecord);
-                        }
-                    } catch {}
-                }
-            } catch {}
-        }
-
-        for (const rawRecord of records) {
-            if (!rawRecord?.canonicalKey || this.admissionCatalog.has(rawRecord.canonicalKey)) continue;
-
-            const record = {
-                ...rawRecord,
-                historicalAliases: [...(rawRecord.historicalAliases || [])],
-                aliasBindings    : (rawRecord.aliasBindings || []).map(b => ({...b})),
-                reservations     : (rawRecord.reservations || []).map(r => ({...r})),
-                provenance       : {
-                    ...(rawRecord.provenance || {}),
-                    custodyTransitions: [...(rawRecord.provenance?.custodyTransitions || [])],
-                    repositoryRenames : [...(rawRecord.provenance?.repositoryRenames || [])],
-                    sourceLineage     : [...(rawRecord.provenance?.sourceLineage || [])]
-                }
-            };
-
-            for (const tuple of [record.sourceTuple, record.assignmentEvidence]) {
-                if (tuple?.repositoryId && tuple?.namespace) {
-                    const forge = tuple.forge || 'github.com';
-                    this.registerForgeRepository({forge, repositoryId: tuple.repositoryId, namespace: tuple.namespace});
-                    this.#ensureReservationBucket(forge, tuple.repositoryId).numbers.add(record.adrNumber);
-                }
-            }
-
-            for (const rename of record.provenance.repositoryRenames) {
-                if (rename?.repositoryId && rename?.currentNamespace && rename?.previousNamespace) {
-                    this.registerForgeRepository({
-                        forge       : rename.forge || 'github.com',
-                        repositoryId: rename.repositoryId,
-                        namespace   : rename.currentNamespace,
-                        aliases     : [rename.previousNamespace]
-                    });
-                }
-            }
-
-            for (const binding of record.aliasBindings) {
-                const bucket = binding.repositoryId
-                    ? this.#ensureReservationBucket(binding.forge || 'github.com', binding.repositoryId)
-                    : null;
-                if (bucket && binding.kind === 'legacy-number') bucket.numbers.add(binding.value);
-                if (bucket && binding.namespace) {
-                    bucket.aliases.set(`${binding.kind}:${binding.namespace.toLowerCase()}:${binding.value}`, {
-                        ...binding,
-                        targetKey: record.canonicalKey
-                    });
-                }
-            }
-
-            this.admissionCatalog.set(record.canonicalKey, record);
-        }
+        return rehydrateAdrCatalogFromEvidence({graphDb: GraphService.db});
     }
 
     /**
