@@ -18,10 +18,11 @@ const identities = {
  * @returns {Object}
  */
 function node({number=7, head='a1', rollup='SUCCESS', verdict='REVIEW_REQUIRED', reviewers=['neo-gpt'], partial=false, requests=true, reviews=[],
-               body='Authored by Ada (Claude Opus 5, Claude Code).', login='neo-opus-ada', title}={}) {
+               body='Authored by Ada (Claude Opus 5, Claude Code).', login='neo-opus-ada', title, mergeState}={}) {
     return {
         number,
         ...(title === undefined ? {} : {title}),
+        ...(mergeState === undefined ? {} : {mergeStateStatus: mergeState}),
         headRefOid    : head,
         reviewDecision: verdict,
         mergeable     : 'MERGEABLE',
@@ -33,7 +34,7 @@ function node({number=7, head='a1', rollup='SUCCESS', verdict='REVIEW_REQUIRED',
         latestReviews : {pageInfo: {hasNextPage: false}, nodes: reviews},
         // each reviewer's standing approval or change request among the latest reviews
         latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: reviews.filter(review => ['APPROVED', 'CHANGES_REQUESTED'].includes(review.state))},
-        commits       : {nodes: [{commit: {oid: head, statusCheckRollup: {state: rollup}}}]}
+        commits                 : {nodes: [{commit: {oid: head, statusCheckRollup: {state: rollup}}}]}
     }
 }
 
@@ -67,6 +68,16 @@ test.describe('openWorkReducer — a row names its pull request by title', () =>
         expect(normalizePullRequest(node({title: ' \n '}), identities).title).toBeNull();
 
         expect(run([[node({title: 'first words'})], [node({title: 'second words'})]]).transitions[1]).toEqual([])
+    });
+
+    test('a row carries GitHub\'s merge state, a missing one is null, and a change of it alone is no transition (#1221)', () => {
+        expect(normalizePullRequest(node({mergeState: 'CLEAN'}), identities).mergeState).toBe('CLEAN');
+        expect(normalizePullRequest(node(), identities).mergeState).toBeNull();
+
+        const {transitions, states} = run([[node({mergeState: 'BLOCKED'})], [node({mergeState: 'CLEAN'})]]);
+
+        expect(transitions[1]).toEqual([]);
+        expect(states[1].rows['acme/app#7'].mergeState).toBe('CLEAN')
     })
 });
 

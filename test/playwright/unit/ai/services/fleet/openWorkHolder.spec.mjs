@@ -108,6 +108,33 @@ test.describe('openWorkHolder — the shared holder and next-action kind, first 
             .toEqual({role: 'operator', kind: 'merge', ids: []})
     });
 
+    test('a head that reports no CI is the operator\'s merge chip only when GitHub calls it CLEAN, approved on the head, with no review requested (#1221)', () => {
+        const
+            approved = {ci: null, verdict: 'APPROVED', ...judged('APPROVED')},
+            merge    = {role: 'operator', kind: 'merge', ids: []},
+            none     = {role: 'none', kind: null, ids: []};
+
+        expect(holderOf(row({...approved, mergeState: 'CLEAN'}))).toEqual(merge);
+
+        for (const mergeState of ['BLOCKED', 'UNSTABLE', 'BEHIND', 'UNKNOWN', null, undefined]) {
+            expect(holderOf(row({...approved, mergeState}))).toEqual(none)
+        }
+
+        // CLEAN where the repository requires no review is not readiness without an approval on the head
+        expect(holderOf(row({ci: null, mergeState: 'CLEAN'}))).toEqual(none);
+        expect(holderOf(row({ci: null, mergeState: 'CLEAN', ...judged('APPROVED', false)}))).toEqual(none);
+        expect(holderOf(row({...approved, mergeState: 'CLEAN', requested: ['@neo-gpt']}))).toEqual(none);
+        expect(holderOf(row({...approved, mergeState: 'CLEAN', draft: true}))).toEqual(none);
+        expect(holderOf(row({...approved, mergeState: 'CLEAN', mergeable: 'UNKNOWN'}))).toEqual(none);
+        expect(holderOf(row({...approved, mergeState: 'CLEAN', partial: true}))).toEqual({role: 'unknown', kind: null, ids: []});
+
+        // a change request on the head stays the author's, a pending head waits for its CI, and the green path ignores the merge state
+        expect(holderOf(row({ci: null, mergeState: 'CLEAN', ...judged('CHANGES_REQUESTED')})))
+            .toEqual({role: 'author', kind: 'address-changes', ids: ['@neo-opus-ada']});
+        expect(holderOf(row({...approved, ci: 'pending', mergeState: 'CLEAN'}))).toEqual(none);
+        expect(holderOf(row({...approved, ci: 'green', mergeState: 'BLOCKED'}))).toEqual(merge)
+    });
+
     test('an opinion survives the reviewer\'s later comment: the opinion list decides, not the latest review', () => {
         const commented = {reviews: [review('COMMENTED')]};
 

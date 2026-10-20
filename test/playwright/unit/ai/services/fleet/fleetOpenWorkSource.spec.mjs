@@ -109,6 +109,29 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         expect(awaiting({latest: commented, opinion: {...approval, state: 'CHANGES_REQUESTED'}})).toEqual([])
     });
 
+    test('the producer\'s rows: an approved head that reports no CI reaches awaitingMerge only when GitHub calls it CLEAN (#1221)', () => {
+        const
+            identities = {byLogin: login => ({'neo-opus-ada': '@neo-opus-ada', 'neo-gpt': '@neo-gpt'})[login] ?? null, byName: () => null},
+            approval   = {author: {login: 'neo-gpt'}, state: 'APPROVED', commit: {oid: 'h9'}},
+            // a repository that runs no CI: the head has no rollup, so GitHub's merge state decides
+            node       = mergeStateStatus => ({
+                number                  : 9, headRefOid: 'h9', reviewDecision: 'APPROVED', mergeable: 'MERGEABLE', isDraft: false,
+                ...mergeStateStatus === undefined ? {} : {mergeStateStatus},
+                body                    : 'Authored by Ada (Claude Opus 5.5, Claude Code).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/site'},
+                reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []},
+                latestReviews           : {pageInfo: {hasNextPage: false}, nodes: [approval]},
+                latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: [approval]},
+                commits                 : {nodes: [{commit: {oid: 'h9', statusCheckRollup: null}}]}
+            }),
+            awaiting   = mergeStateStatus => source(state({}, [{...normalizePullRequest(node(mergeStateStatus), identities), observedAt: OBSERVED}])).readOpenWork()
+                .awaitingMerge.map(({number, ci, holder}) => [number, ci, holder.kind]);
+
+        expect(awaiting('CLEAN')).toEqual([[9, null, 'merge']]);
+        // anything the repository still requires, or no merge state at all, keeps it out
+        expect(awaiting('BLOCKED')).toEqual([]);
+        expect(awaiting(undefined)).toEqual([])
+    });
+
     test('one seat reads its own lists, empty under the same envelope when it holds nothing', () => {
         expect(source(state()).readOpenWork({seat: '@neo-opus-vega'})).toMatchObject({state: 'ok', seats: {'@neo-opus-vega': {authored: [], reviewing: []}}})
     });

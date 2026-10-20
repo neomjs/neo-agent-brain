@@ -95,7 +95,7 @@ function connectionOf(connection, boundary = 'hasNextPage') {
  * @param {{byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
  * @param {Object} [source] Acquisition identity; absent for legacy inputs.
  * @param {String} [source.apiBase] Provider API identity from the existing reader.
- * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, draft, owner, requested,
+ * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, mergeState, draft, owner, requested,
  *     reviews, opinions, reviewRecords, requestsComplete, opinionsComplete, partial}`. `title` is the forge's
  *     prose with whitespace collapsed, or `null`; it names the PR and is never a transition. Optional
  *     original review records keep their own history coverage and never change current-work completeness.
@@ -131,6 +131,7 @@ export function normalizePullRequest(node, identities, {apiBase = null} = {}) {
         ci               : CI_STATES[commit?.statusCheckRollup?.state] ?? null,
         verdict          : node.reviewDecision ?? null,
         mergeable        : node.mergeable ?? null,
+        mergeState       : node.mergeStateStatus ?? null,
         draft            : Boolean(node.isDraft),
         authorAssociation: node.authorAssociation ?? null,
         bot              : node.author?.__typename === 'Bot',

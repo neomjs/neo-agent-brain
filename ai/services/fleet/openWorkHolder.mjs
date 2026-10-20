@@ -16,6 +16,9 @@
  * all) decides only on positive evidence: a red head, or a change request on the head, is the
  * author's. Every other rule reads an absence a missing page could hold, so the holder is `unknown`,
  * never `none`.
+ *
+ * A head that reports no CI (`ci: null`) never turns green, so its merge chip reads GitHub's `CLEAN`
+ * instead, still beside the approval on the head: a repository that requires no review is CLEAN without one.
  */
 
 /**
@@ -24,7 +27,7 @@
  * @returns {{role: 'rotation'|'author'|'reviewer'|'operator'|'none'|'unknown',
  *     kind: 'approve-runs'|'triage-outside'|'repair-ci'|'address-changes'|'rebase'|'review'|'route-review'|'merge'|null, ids: String[]}}
  */
-export function holderOf({ci, mergeable, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions}) {
+export function holderOf({ci, mergeable, mergeState = null, draft, owner, authorAssociation = null, bot = false, authorType = null, runApproval = null, partial = false, requested = [], reviews = [], opinions}) {
     const
         incomplete = partial || !Array.isArray(opinions),
         onHead     = state => (opinions ?? []).some(opinion => opinion.onHead && opinion.state === state),
@@ -59,6 +62,10 @@ export function holderOf({ci, mergeable, draft, owner, authorAssociation = null,
     }
 
     if (ci === 'green' && onHead('APPROVED') && mergeable === 'MERGEABLE' && !draft) {
+        return {role: 'operator', kind: 'merge', ids: []}
+    }
+
+    if (ci === null && mergeState === 'CLEAN' && onHead('APPROVED') && !requested.length && mergeable === 'MERGEABLE' && !draft) {
         return {role: 'operator', kind: 'merge', ids: []}
     }
 

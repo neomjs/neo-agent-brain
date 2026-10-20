@@ -40,6 +40,7 @@ export const OPEN_WORK_SNAPSHOT = `
           headRefOid
           reviewDecision
           mergeable
+          mergeStateStatus
           body
           authorAssociation
           author {
