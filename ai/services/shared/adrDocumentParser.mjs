@@ -480,7 +480,7 @@ export function extractCitationSurfaceContext(context = {}) {
 
     const origin = context.sourceOrigin || context;
     return {
-        forge       : origin.forge || null,
+        forge       : origin.forge || 'github.com',
         repositoryId: origin.repositoryId || null,
         namespace   : origin.namespace || null
     };
@@ -552,6 +552,8 @@ export function parseHumanOrNumericAdrReference(raw) {
  */
 export function resolveAdrCandidateIdentity({
     adrNumber,
+    slug               = null,
+    sourcePath         = null,
     sourceRepo,
     custodyTransitions = [],
     legacyManifest     = null,
@@ -560,10 +562,16 @@ export function resolveAdrCandidateIdentity({
 }) {
     if (!sourceRepo) {
         const
-            legacyKey      = `adr-${adrNumber}`,
-            matchingByNum  = Array.from(admissionCatalog.values()).filter(r => r.adrNumber === adrNumber),
+            legacyKey   = `adr-${adrNumber}`,
+            byNumber    = Array.from(admissionCatalog.values()).filter(r => r.adrNumber === adrNumber),
+            matchedList = byNumber.length > 1
+                ? byNumber.filter(r =>
+                    (slug && (r.currentSlug === slug || (r.historicalAliases || []).includes(slug))) ||
+                    (sourcePath && r.sourceTuple?.path === sourcePath)
+                )
+                : byNumber,
             existingRecord = admissionCatalog.get(legacyKey) ||
-                             (matchingByNum.length === 1 ? matchingByNum[0] : null);
+                             (matchedList.length === 1 ? matchedList[0] : (byNumber.length === 1 ? byNumber[0] : null));
         return {
             canonicalKey             : existingRecord?.canonicalKey || legacyKey,
             assignedIdentity         : existingRecord?.assignmentEvidence || null,
@@ -587,6 +595,7 @@ export function resolveAdrCandidateIdentity({
             m.adrNumber === adrNumber && (
                 (m.sourceRepositoryId && m.sourceRepositoryId === repositoryId) ||
                 (m.currentCustody?.repositoryId === repositoryId) ||
+                (m.assignedRepositoryId && m.assignedRepositoryId === repositoryId) ||
                 (m.assignedNamespace && m.assignedNamespace.toLowerCase() === namespace.toLowerCase())
             )
         )

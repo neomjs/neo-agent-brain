@@ -11,6 +11,9 @@ import {
     extractCitationSurfaceContext,
     parseHumanOrNumericAdrReference
 } from '../shared/adrDocumentParser.mjs';
+import {
+    REVIEWED_ADR_ADMISSION_RECORDS
+} from './adrRetainedAdmissionRecords.mjs';
 
 /**
  * @module ai/services/ingestion/adrAdmissionCatalog
@@ -28,6 +31,17 @@ export const SHARED_ADR_CATALOG_STATE = Object.freeze({
     repositoryReservations: new Map(),
     forgeDirectory        : new Map()
 });
+
+let reviewedBaselineActive = false;
+
+/**
+ * @summary Returns true when the shared catalog is currently hydrated from the reviewed 42-record
+ * ADR baseline manifest.
+ * @returns {Boolean}
+ */
+export function isReviewedAdrBaselineActive() {
+    return reviewedBaselineActive;
+}
 
 /**
  * @summary Ensures and returns the reservation bucket for `(forge, repositoryId)` in the shared catalog state.
@@ -77,6 +91,7 @@ export function registerSharedForgeRepository({forge = 'github.com', repositoryI
  * @summary Resets the shared admitted ADR catalog and seeds the default cut repositories.
  */
 export function resetSharedAdrCatalog() {
+    reviewedBaselineActive = false;
     SHARED_ADR_CATALOG_STATE.admissionCatalog.clear();
     SHARED_ADR_CATALOG_STATE.repositoryReservations.clear();
     SHARED_ADR_CATALOG_STATE.forgeDirectory.clear();
@@ -88,9 +103,14 @@ export function resetSharedAdrCatalog() {
 /**
  * @summary Hydrates admitted `adrAdmissionRecord` payloads into `SHARED_ADR_CATALOG_STATE`.
  * @param {Object[]} [records=[]]
+ * @param {Object} [options={}]
+ * @param {Boolean} [options.fromReviewedBaseline=false]
  * @returns {Number} Number of newly hydrated records.
  */
-export function hydrateAdrAdmissionRecords(records = []) {
+export function hydrateAdrAdmissionRecords(records = [], {fromReviewedBaseline = false} = {}) {
+    if (!fromReviewedBaseline && Array.isArray(records) && records.length > 0) {
+        reviewedBaselineActive = false;
+    }
     let hydratedCount = 0;
 
     for (const rawRecord of records) {
@@ -150,19 +170,24 @@ export function hydrateAdrAdmissionRecords(records = []) {
 
 /**
  * @summary Rehydrates `SHARED_ADR_CATALOG_STATE` from retained admission evidence:
- * explicit `retainedAdmissionRecords`, an open `graphDb` (`GraphService.db`), or the
- * persisted Memory Core SQLite `Nodes` table at `sqlitePath` (for cross-process KB readers
- * running without `AdrIngestor`).
+ * explicit `retainedAdmissionRecords`, an open `graphDb` (`GraphService.db`), the
+ * persisted Memory Core SQLite `Nodes` table at `sqlitePath`, or the reviewed ADR
+ * baseline manifest (`REVIEWED_ADR_ADMISSION_RECORDS`) when no explicit SQLite/retained override
+ * is supplied and the SQLite store is absent or has not yet persisted `ADR` graph rows.
  * @param {Object} [options={}]
  * @param {Object|null} [options.graphDb=null]
  * @param {String|null} [options.sqlitePath=null]
+ * @param {Boolean} [options.explicitSqlitePath=false]
  * @param {Object[]|null} [options.retainedAdmissionRecords=null]
+ * @param {Boolean} [options.includeReviewedBaseline=true]
  * @returns {{available: Boolean, recordCount: Number, hydratedCount: Number, source: String}}
  */
 export function rehydrateAdrCatalogFromEvidence({
     graphDb                  = null,
     sqlitePath               = null,
-    retainedAdmissionRecords = null
+    explicitSqlitePath       = false,
+    retainedAdmissionRecords = null,
+    includeReviewedBaseline  = true
 } = {}) {
     const
         records  = [],
@@ -247,10 +272,22 @@ export function rehydrateAdrCatalogFromEvidence({
         }
     }
 
+    let hydratedCount = hydrateAdrAdmissionRecords(records);
+
+    if (!explicitSqlitePath &&
+        !graphDb &&
+        !Array.isArray(retainedAdmissionRecords) &&
+        includeReviewedBaseline !== false &&
+        SHARED_ADR_CATALOG_STATE.admissionCatalog.size === 0) {
+        evidenceReadable       = true;
+        evidenceSource         = 'reviewed-manifest';
+        reviewedBaselineActive = true;
+        hydratedCount          = hydrateAdrAdmissionRecords(REVIEWED_ADR_ADMISSION_RECORDS, {fromReviewedBaseline: true});
+    }
+
     const
-        hydratedCount = hydrateAdrAdmissionRecords(records),
-        recordCount   = SHARED_ADR_CATALOG_STATE.admissionCatalog.size,
-        available     = recordCount > 0 || (evidenceReadable && Array.isArray(retainedAdmissionRecords));
+        recordCount = SHARED_ADR_CATALOG_STATE.admissionCatalog.size,
+        available   = recordCount > 0 || (evidenceReadable && Array.isArray(retainedAdmissionRecords));
 
     return {
         available,

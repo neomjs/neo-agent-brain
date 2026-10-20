@@ -16,11 +16,16 @@ import {
     ensureSharedReservationBucket,
     hydrateAdrAdmissionRecords,
     isAdrReaderAuthorized,
+    isReviewedAdrBaselineActive,
     registerSharedForgeRepository,
     rehydrateAdrCatalogFromEvidence,
     resetSharedAdrCatalog,
     resolveSharedAdrReference
 } from '../../ingestion/adrAdmissionCatalog.mjs';
+import {
+    REVIEWED_ADR_CUSTODY_TRANSITIONS,
+    REVIEWED_ADR_LEGACY_MANIFEST
+} from '../../ingestion/adrRetainedAdmissionRecords.mjs';
 import {
     buildAdmittedAdrRecord,
     computeAdrPayloadHash,
@@ -99,10 +104,18 @@ class AdrSource extends Base {
      * @returns {{available: Boolean, recordCount: Number, hydratedCount: Number, source: String}}
      */
     rehydrateCatalogFromEvidence(options = {}) {
+        const hasExplicitSqliteOption = Boolean(
+            options &&
+            Object.prototype.hasOwnProperty.call(options, 'sqlitePath') &&
+            options.sqlitePath !== undefined &&
+            options.sqlitePath !== null
+        );
         return rehydrateAdrCatalogFromEvidence({
             graphDb                 : options.graphDb || null,
             sqlitePath              : options.sqlitePath || aiConfig.memoryCoreDbPath,
-            retainedAdmissionRecords: options.retainedAdmissionRecords || null
+            explicitSqlitePath      : hasExplicitSqliteOption,
+            retainedAdmissionRecords: options.retainedAdmissionRecords || null,
+            includeReviewedBaseline : options.includeReviewedBaseline !== false
         });
     }
 
@@ -432,6 +445,8 @@ class AdrSource extends Base {
                 supersedes                 = parseAdrSupersedes(rawContent),
                 identityInfo               = resolveAdrCandidateIdentity({
                     adrNumber,
+                    slug,
+                    sourcePath,
                     sourceRepo        : specRepo,
                     custodyTransitions: item.custodyTransitions || custodyTransitions,
                     legacyManifest    : item.legacyManifest || legacyManifest,
@@ -825,9 +840,9 @@ class AdrSource extends Base {
 
         const result = this.#processCandidateEntries({
             rawEntries,
-            custodyTransitions   : options.custodyTransitions || [],
+            custodyTransitions   : options.custodyTransitions || (isReviewedAdrBaselineActive() ? REVIEWED_ADR_CUSTODY_TRANSITIONS : []),
             sourceLineageEvidence: options.sourceLineageEvidence || [],
-            legacyManifest       : options.legacyManifest || null,
+            legacyManifest       : options.legacyManifest || (isReviewedAdrBaselineActive() ? REVIEWED_ADR_LEGACY_MANIFEST : null),
             expectedDecisions    : options.expectedDecisions || [],
             retryAttempt         : options.retryAttempt || 1,
             evidenceState,
@@ -892,9 +907,9 @@ class AdrSource extends Base {
 
         const processed = this.#processCandidateEntries({
             rawEntries,
-            custodyTransitions   : context?.custodyTransitions || [],
+            custodyTransitions   : context?.custodyTransitions || (isReviewedAdrBaselineActive() ? REVIEWED_ADR_CUSTODY_TRANSITIONS : []),
             sourceLineageEvidence: context?.sourceLineageEvidence || [],
-            legacyManifest       : context?.legacyManifest || null,
+            legacyManifest       : context?.legacyManifest || (isReviewedAdrBaselineActive() ? REVIEWED_ADR_LEGACY_MANIFEST : null),
             expectedDecisions    : context?.expectedDecisions || [],
             retryAttempt         : context?.retryAttempt || 1,
             evidenceState,

@@ -354,10 +354,97 @@ This should be skipped.`);
             }));
         `;
 
-        // 2a. Child process without AdrIngestor and without readable SQLite evidence refuses admission
+        // 2a. Child process without AdrIngestor and with no context.sqlitePath / graphDb / retainedAdmissionRecords
+        // resolves ADR references and runs ExtractorCatalogue('AdrSource').extract(...) against the reviewed 42-record baseline,
+        // while still refusing unproved files (0099)
+        const defaultBaselineScript = `
+            import fs from 'fs';
+            import Neo from 'neo.mjs/src/Neo.mjs';
+            import * as core from 'neo.mjs/src/core/_export.mjs';
+            import AdrSource from './ai/services/knowledge-base/source/AdrSource.mjs';
+            import {ExtractorCatalogue} from './ai/services/knowledge-base/source/ExtractorCatalogue.mjs';
+
+            const catalogSizeBefore = AdrSource.getAdmissionCatalog().size;
+            const refRes = AdrSource.resolveAdrReference('neomjs/neo-agent-brain#adr:adrs-as-graph-queryable-entities');
+            const catalogSizeAfter = AdrSource.getAdmissionCatalog().size;
+
+            const descriptor = ExtractorCatalogue.get('AdrSource');
+            const raw0006 = fs.readFileSync('./learn/agentos/decisions/0006-adrs-as-graph-queryable-entities.md', 'utf8');
+            const chunks = [];
+            const extractRes = await descriptor.extract({
+                context: {
+                    repositoryReader: {
+                        readText: async p => p.endsWith('0006-adrs-as-graph-queryable-entities.md')
+                            ? raw0006
+                            : (p.endsWith('0002-moved-record.md') ? ${JSON.stringify(redirect)} : '# ADR 0099: Unadmitted Candidate\\n\\nBody.')
+                    },
+                    territory: {
+                        assignments: [
+                            {
+                                entry: {sourcePath: 'learn/agentos/decisions/0006-adrs-as-graph-queryable-entities.md'},
+                                relativePath: '0006-adrs-as-graph-queryable-entities.md'
+                            },
+                            {
+                                entry: {sourcePath: 'learn/agentos/decisions/0002-moved-record.md'},
+                                relativePath: '0002-moved-record.md'
+                            },
+                            {
+                                entry: {sourcePath: 'learn/agentos/decisions/0099-unadmitted-candidate.md'},
+                                relativePath: '0099-unadmitted-candidate.md'
+                            }
+                        ]
+                    }
+                },
+                writeStream: {write: line => chunks.push(JSON.parse(line))},
+                createHashFn: c => 'hash:' + c.name
+            });
+
+            process.stdout.write(JSON.stringify({
+                adrIngestorLoaded: Boolean(Neo.ai?.daemons?.services?.AdrIngestor),
+                catalogSizeBefore,
+                catalogSizeAfter,
+                resolved: refRes.resolved,
+                resolvedKey: refRes.canonicalKey,
+                count: extractRes.count,
+                redirectsCount: extractRes.redirects.length,
+                refusedCodes: extractRes.refusedSourcePaths.map(r => r.code),
+                chunkKeys: chunks.map(c => c.canonicalKey)
+            }));
+        `;
+        const defaultBaselineStdout = execFileSync(
+            process.execPath,
+            ['--input-type=module', '-e', defaultBaselineScript],
+            {
+                cwd     : repoRoot,
+                encoding: 'utf8',
+                env     : {
+                    ...process.env,
+                    NEO_MEMORY_DB_PATH        : missingSqlite,
+                    NEO_TELEMETRY_DB_PATH_TEST: missingSqlite
+                }
+            }
+        );
+        const defaultBaselineChild = JSON.parse(defaultBaselineStdout.trim().split('\n').pop());
+        expect(defaultBaselineChild).toEqual({
+            adrIngestorLoaded: false,
+            catalogSizeBefore: 0,
+            catalogSizeAfter : 42,
+            resolved         : true,
+            resolvedKey      : 'adr:github.com:1344062228:neomjs%2Fneo-agent-brain:0006',
+            count            : 1,
+            redirectsCount   : 1,
+            refusedCodes     : ['ADR_ADMISSION_EVIDENCE_UNAVAILABLE'],
+            chunkKeys        : ['adr:github.com:1344062228:neomjs%2Fneo-agent-brain:0006']
+        });
+
+        // 2b. Child process without AdrIngestor and with explicit unreadable sqlitePath refuses admission
+        const unavailableScript = childScript.replace(
+            'repository: {forge: \'github.com\', repositoryId: \'220867748\', namespace: \'neomjs/neo\'},',
+            `repository: {forge: 'github.com', repositoryId: '220867748', namespace: 'neomjs/neo'}, sqlitePath: ${JSON.stringify(missingSqlite)},`
+        );
         const unavailableStdout = execFileSync(
             process.execPath,
-            ['--input-type=module', '-e', childScript],
+            ['--input-type=module', '-e', unavailableScript],
             {
                 cwd     : repoRoot,
                 encoding: 'utf8',
@@ -378,7 +465,7 @@ This should be skipped.`);
             chunkKeys         : []
         });
 
-        // 2b. Child process without AdrIngestor rehydrates retained admission evidence from SQLite (aiConfig.memoryCoreDbPath)
+        // 2c. Child process without AdrIngestor rehydrates retained admission evidence from SQLite (aiConfig.memoryCoreDbPath)
         const admittedStdout = execFileSync(
             process.execPath,
             ['--input-type=module', '-e', childScript],
