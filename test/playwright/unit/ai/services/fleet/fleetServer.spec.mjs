@@ -1076,7 +1076,8 @@ test.describe('Fleet S1 wire policy', () => {
             fleetMemoryCandidates : 'awaiting-s5',
             fleetMailboxMirror    : 'awaiting-s5',
             connectTenant         : 'awaiting-c1',
-            setPlaneCredential    : 'awaiting-c1'
+            setPlaneCredential    : 'awaiting-c1',
+            replaceSeatCredential : 'awaiting-c1'
         };
 
         for (const [method, degraded] of Object.entries(expectedSlices)) {

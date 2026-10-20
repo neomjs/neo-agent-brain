@@ -9,12 +9,21 @@
 
 /** @type {ReadonlyArray<String>} */
 export const FLEET_WIRE_METHODS = Object.freeze([
-    'defineAgent', 'configureAgent', 'setRepo', 'setRepos', 'prepareRepos', 'removeRepoCheckout', 'setAvatar', 'setPlaneCredential', 'adoptAgent', 'releaseAgent', 'listAgents', 'getAgent',
+    'defineAgent', 'configureAgent', 'setRepo', 'setRepos', 'prepareRepos', 'removeRepoCheckout', 'setAvatar', 'setPlaneCredential', 'replaceSeatCredential', 'adoptAgent', 'releaseAgent', 'listAgents', 'getAgent',
     'startAgent', 'stopAgent', 'skipAgentDependencies', 'restartAgent', 'removeAgent', 'fleetStatus', 'fleetRuntimeStatus',
     'getBootIdentity', 'fleetActivity', 'fleetHistory', 'fleetMemories', 'fleetSessionMemories', 'fleetRecentTurns', 'fleetMemoryCandidates', 'fleetRoster', 'fleetMailboxMirror', 'connectTenant', 'listTenants',
     'composeOperatorMessage', 'fleetOwnMessage', 'fleetOwnQuestions', 'markOwnMessageRead', 'transitionOwnTask',
     'markFleetCaughtUp', 'resolveViewerIdentity', 'fleetWakeRoutes', 'fleetTasks',
     'fleetDeploymentState', 'fleetGoldenPath', 'fleetGraphScene', 'fleetOpenWork', 'fleetSeatGitIdentity', 'fleetSeatModelCatalog'
+]);
+
+/**
+ * Closed binding-scope vocabulary for `replaceSeatCredential`.
+ * @type {ReadonlyArray<String>}
+ */
+export const REPLACE_SEAT_CREDENTIAL_SCOPES = Object.freeze([
+    'forge',
+    'forge-and-bound-plane'
 ]);
 
 /**

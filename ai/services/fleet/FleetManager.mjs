@@ -13,11 +13,60 @@ import {readFleetPresenceSnapshot}                                              
 import {readFleetThrottleStateSnapshot}                                              from './fleetThrottleStateAdapter.mjs';
 import {readFleetWakeStateSnapshot}                                                  from './fleetWakeStateAdapter.mjs';
 import {redactReadFailure}                                                           from './redactReadFailure.mjs';
-import {convergeSeatGitIdentity, resolveSeatGitIdentity}                             from './seatGitIdentity.mjs';
-import {readSeatModelCatalog}                                                        from './seatModelCatalog.mjs';
-import {startAgentProvisioned}                                                       from './startAgentProvisioned.mjs';
-import {readInstalledRuntimeGeneration}                                              from './runtimeGeneration.mjs';
-import path                                                                          from 'node:path';
+import { resolveSeatPlaneTarget }                                                    from './resolveSeatPlaneTarget.mjs';
+import {
+    convergeSeatGitIdentity,
+    credentialRefusalOf,
+    proveSeatForgeAccount,
+    resolveSeatGitIdentity
+}                                                                                    from './seatGitIdentity.mjs';
+import {readSeatModelCatalog}           from './seatModelCatalog.mjs';
+import {startAgentProvisioned}          from './startAgentProvisioned.mjs';
+import {readInstalledRuntimeGeneration} from './runtimeGeneration.mjs';
+import {REPLACE_SEAT_CREDENTIAL_SCOPES} from '../../../src/fleet/contract/wire.mjs';
+import crypto                           from 'node:crypto';
+import path                             from 'node:path';
+
+export {REPLACE_SEAT_CREDENTIAL_SCOPES};
+
+/**
+ * @summary Build a non-secret replacement receipt distinguishing persisted authority, carrier preparation,
+ * and running-session state.
+ * @param {Object} options
+ * @returns {Object}
+ * @private
+ */
+function buildCredentialReplacementReceipt({
+    scope,
+    forge,
+    plane,
+    boundPlane = null,
+    coherent = true,
+    incomplete = false,
+    session = 'stopped'
+} = {}) {
+    const
+        normalizedScope = REPLACE_SEAT_CREDENTIAL_SCOPES.includes(scope) ? scope : null,
+        planeState      = plane ?? (normalizedScope === 'forge-and-bound-plane' ? 'unchanged' : 'not-selected');
+
+    return {
+        scope             : normalizedScope,
+        persistedAuthority: {
+            forge,
+            plane: planeState
+        },
+        forge,
+        plane             : planeState,
+        boundPlane        : boundPlane ? {endpoint: boundPlane.endpoint, id: boundPlane.id, dataRoot: boundPlane.dataRoot} : null,
+        coherent,
+        incomplete,
+        carrier           : 'deferred-until-start',
+        carrierPreparation: 'deferred-until-start',
+        session,
+        runningSession    : session,
+        nextStep          : incomplete ? 'replace-seat-credential' : (forge === 'replaced' ? 'start-agent' : 'fix-and-retry')
+    }
+}
 
 /**
  * @summary The one rule for a repository a seat clones: a slug that passes the checkout path's own rule
@@ -252,6 +301,12 @@ class FleetManager extends Base {
      */
     gitIdentityFn = null
     /**
+     * Forge account proof seam for {@link replaceSeatCredential}. Defaults (via {@link getForgeProofFn}) to
+     * `proveSeatForgeAccount`; inject a recording stub for tests. Plain field.
+     * @member {Function|null} forgeProofFn=null
+     */
+    forgeProofFn = null
+    /**
      * Catalog read seam for {@link fleetSeatModelCatalog}. Defaults (via {@link getModelCatalogFn}) to
      * `readSeatModelCatalog`, the read Start runs; inject a recording stub for tests. Plain field.
      * @member {Function|null} modelCatalogFn=null
@@ -301,6 +356,14 @@ class FleetManager extends Base {
      */
     getGitIdentityFn() {
         return this.gitIdentityFn || resolveSeatGitIdentity;
+    }
+
+    /**
+     * @returns {Function} the forge account proof (injected stub or `proveSeatForgeAccount`).
+     * @protected
+     */
+    getForgeProofFn() {
+        return this.forgeProofFn || proveSeatForgeAccount;
     }
 
     /**
@@ -1106,6 +1169,489 @@ class FleetManager extends Base {
             agentId  : agent.id,
             identity : agent.githubUsername,
             credential
+        })
+    }
+
+    /**
+     * @summary Replace a stopped seat's rejected or rotated token coherently across its selected credential
+     * bindings (`scope: 'forge'` or `'forge-and-bound-plane'`).
+     *
+     * Proves every selected use before the first store write (`proveSeatForgeAccount` and, when
+     * `'forge-and-bound-plane'` is selected, `probeSeatPlaneCredential` against the existing bound
+     * `{id, dataRoot}` without implicit rebinding). Writes per-seat deltas over freshly read strict maps,
+     * records durable incomplete-publication state across the multi-store boundary, verifies readback on
+     * all selected stores before returning `status: 'replaced'`, and returns a non-secret receipt that
+     * separates persisted authority, carrier preparation (`'deferred-until-start'`), and running-session
+     * state (`'stopped'`).
+     * @param {Object} payload `{id, credential, scope}`
+     * @returns {Promise<Object>}
+     */
+    async replaceSeatCredential(payload = {}) {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+            Object.keys(payload).some(key => !['id', 'credential', 'scope'].includes(key))) {
+            return {
+                status : 'rejected',
+                cause  : 'indeterminate',
+                reason : 'replaceSeatCredential accepts only {id, credential, scope}',
+                receipt: buildCredentialReplacementReceipt({scope: payload?.scope, forge: 'unchanged'})
+            }
+        }
+
+        const {scope} = payload;
+        if (!REPLACE_SEAT_CREDENTIAL_SCOPES.includes(scope)) {
+            return {
+                status : 'rejected',
+                cause  : 'indeterminate',
+                reason : "scope must be 'forge' or 'forge-and-bound-plane'",
+                receipt: buildCredentialReplacementReceipt({scope: null, forge: 'unchanged', plane: 'not-selected'})
+            }
+        }
+
+        const
+            id      = typeof payload.id === 'string' ? payload.id.trim() : '',
+            trimmed = typeof payload.credential === 'string' ? payload.credential.trim() : '';
+
+        if (!id) {
+            return {
+                status : 'rejected',
+                scope,
+                cause  : 'indeterminate',
+                reason : 'a seat id is required',
+                receipt: buildCredentialReplacementReceipt({scope, forge: 'unchanged'})
+            }
+        }
+
+        if (!trimmed) {
+            return {
+                status : 'rejected',
+                id,
+                scope,
+                cause  : 'indeterminate',
+                reason : 'credential is required',
+                receipt: buildCredentialReplacementReceipt({scope, forge: 'unchanged'})
+            }
+        }
+
+        return this.withSeatHome(id, async () => {
+            const
+                lifecycle = this.getLifecycleService(),
+                registry  = lifecycle.getRegistry(),
+                agent     = registry.getDefinition?.(id) ?? registry.getAgent?.(id);
+
+            if (!agent) {
+                return {
+                    status : 'rejected',
+                    id,
+                    scope,
+                    cause  : 'indeterminate',
+                    reason : `no agent '${id}' is registered`,
+                    receipt: buildCredentialReplacementReceipt({scope, forge: 'unchanged'})
+                }
+            }
+
+            const
+                status       = typeof lifecycle.status === 'function' ? lifecycle.status(id) : null,
+                pendingCount = lifecycle.pendingStarts?.get?.(id)?.size ?? 0;
+
+            if (lifecycle.isRunning?.(id) || pendingCount > 0 || status?.running === true ||
+                status?.state === 'running' || status?.state === 'stopping') {
+                return {
+                    status : 'rejected',
+                    id,
+                    scope,
+                    cause  : 'seat-running',
+                    reason : `agent '${id}' is running; stop it before replacing its credential`,
+                    receipt: buildCredentialReplacementReceipt({scope, forge: 'unchanged', session: 'running'})
+                }
+            }
+
+            if (status?.cleanupUnresolved === true || status?.ownershipUnresolved === true) {
+                return {
+                    status : 'rejected',
+                    id,
+                    scope,
+                    cause  : 'profile-in-use',
+                    reason : `agent '${id}' has unresolved helper processes holding its profile; resolve or stop them before replacing its credential`,
+                    receipt: buildCredentialReplacementReceipt({scope, forge: 'unchanged'})
+                }
+            }
+
+            if (['claude-desktop', 'antigravity'].includes(agent.harnessType) &&
+                typeof lifecycle.desktopProfileInUse === 'function' &&
+                (lifecycle.processListFn != null || lifecycle !== FleetLifecycleService)) {
+                const inUse = lifecycle.desktopProfileInUse(agent);
+                if (inUse !== false) {
+                    return {
+                        status: 'rejected',
+                        id,
+                        scope,
+                        cause : 'profile-in-use',
+                        reason: inUse
+                            ? `agent '${id}' has its desktop profile open in another process; quit that application before replacing its credential`
+                            : `the process table could not be read to confirm agent '${id}'s desktop profile is closed`,
+                        receipt: buildCredentialReplacementReceipt({scope, forge: 'unchanged'})
+                    }
+                }
+            }
+
+            const
+                otherSeats    = registry.listAgents?.() ?? [],
+                runningShared = otherSeats.find(other =>
+                    other?.id && other.id !== id &&
+                    other.seatHome && agent.seatHome &&
+                    other.seatHome === agent.seatHome &&
+                    lifecycle.isRunning?.(other.id)
+                );
+
+            if (runningShared) {
+                return {
+                    status : 'rejected',
+                    id,
+                    scope,
+                    cause  : 'profile-in-use',
+                    reason : `agent '${id}' shares its seat home with running agent '${runningShared.id}'; stop it before replacing its credential`,
+                    receipt: buildCredentialReplacementReceipt({scope, forge: 'unchanged'})
+                }
+            }
+
+            const priorReplacement = typeof registry.getCredentialReplacementState === 'function'
+                ? registry.getCredentialReplacementState(id)
+                : null;
+
+            if (priorReplacement?.state === 'corrupt') {
+                return {
+                    status    : 'rejected',
+                    id,
+                    scope,
+                    surface   : 'forge',
+                    cause     : 'indeterminate',
+                    incomplete: true,
+                    reason    : priorReplacement.reason,
+                    receipt   : buildCredentialReplacementReceipt({scope, forge: 'unchanged', coherent: false, incomplete: true})
+                }
+            }
+
+            if (priorReplacement && priorReplacement.scope === 'forge-and-bound-plane' && scope === 'forge') {
+                return {
+                    status    : 'rejected',
+                    id,
+                    scope,
+                    surface   : 'plane',
+                    cause     : 'indeterminate',
+                    incomplete: true,
+                    reason    : `agent '${id}' has an incomplete 'forge-and-bound-plane' replacement; re-run with scope 'forge-and-bound-plane' to reconcile both stores`,
+                    receipt   : buildCredentialReplacementReceipt({scope, forge: 'unchanged', plane: 'unchanged', boundPlane: priorReplacement.boundPlane ? {endpoint: priorReplacement.planeBase, ...priorReplacement.boundPlane} : null, coherent: false, incomplete: true})
+                }
+            }
+
+            if (typeof registry.canPersistCredential === 'function') {
+                const forgeCheck = registry.canPersistCredential(id);
+                if (!forgeCheck.ok) {
+                    return {
+                        status : 'rejected',
+                        id,
+                        scope,
+                        surface: 'forge',
+                        cause  : 'indeterminate',
+                        reason : forgeCheck.reason,
+                        receipt: buildCredentialReplacementReceipt({scope, forge: 'unchanged'})
+                    }
+                }
+            }
+
+            let tenantService = null, boundPlane = null;
+
+            if (scope === 'forge-and-bound-plane') {
+                const
+                    placement     = resolveSeatPlaneTarget({target: agent.mcpTarget, harnessType: agent.harnessType, planeBase: this.planeBase}),
+                    planeEndpoint = placement?.kind === 'plane' ? placement.endpoint : this.planeBase;
+
+                if (!planeEndpoint) {
+                    return {
+                        status : 'rejected',
+                        id,
+                        scope,
+                        surface: 'plane',
+                        cause  : 'indeterminate',
+                        reason : 'this Fleet serves no bound plane for this seat',
+                        receipt: buildCredentialReplacementReceipt({scope, forge: 'unchanged', plane: 'unchanged'})
+                    }
+                }
+
+                tenantService = await this.getTenantService();
+                const planeCheck = tenantService.canPersistBoundSeatPlaneCredential({
+                    planeBase: planeEndpoint,
+                    agentId  : id
+                });
+
+                if (!planeCheck.ok) {
+                    return {
+                        status : 'rejected',
+                        id,
+                        scope,
+                        surface: 'plane',
+                        cause  : planeCheck.cause || 'indeterminate',
+                        reason : planeCheck.reason,
+                        receipt: buildCredentialReplacementReceipt({scope, forge: 'unchanged', plane: 'unchanged'})
+                    }
+                }
+
+                boundPlane = {
+                    endpoint: planeCheck.endpoint,
+                    id      : planeCheck.plane.id,
+                    dataRoot: planeCheck.plane.dataRoot
+                }
+            }
+
+            const forgeProof = await this.getForgeProofFn()({agent, credential: trimmed});
+            if (!forgeProof?.ok) {
+                const
+                    refusal   = credentialRefusalOf(forgeProof, 'forge'),
+                    forgeName = agent.forge === 'gitlab' ? 'GitLab' : 'GitHub',
+                    reason    = refusal.cause === 'wrong-identity'
+                        ? `the ${forgeName} PAT belongs to another forge account, not to '${agent.githubUsername}'`
+                        : (refusal.cause === 'transport-unavailable'
+                            ? `the ${forgeName} forge could not be reached to prove '${agent.githubUsername}'`
+                            : `the ${forgeName} forge rejected the PAT for '${agent.githubUsername}'`);
+
+                return {
+                    status           : 'rejected',
+                    id,
+                    scope,
+                    surface          : 'forge',
+                    cause            : refusal.cause,
+                    reason,
+                    credentialRefusal: refusal,
+                    receipt          : buildCredentialReplacementReceipt({
+                        scope,
+                        forge: 'unchanged',
+                        plane: scope === 'forge-and-bound-plane' ? 'unchanged' : 'not-selected',
+                        boundPlane
+                    })
+                }
+            }
+
+            if (scope === 'forge-and-bound-plane') {
+                const
+                    expectedIdentity = `@${String(agent.githubUsername).trim().replace(/^@/, '')}`,
+                    planeProof       = await tenantService.probeSeatPlaneCredential({
+                        planeBase    : boundPlane.endpoint,
+                        credential   : trimmed,
+                        expectedIdentity,
+                        expectedPlane: {id: boundPlane.id, dataRoot: boundPlane.dataRoot}
+                    });
+
+                if (!planeProof?.ok) {
+                    const refusal = credentialRefusalOf(planeProof, 'plane');
+                    return {
+                        status           : 'rejected',
+                        id,
+                        scope,
+                        surface          : 'plane',
+                        cause            : refusal.cause,
+                        reason           : planeProof?.reason || refusal.reason,
+                        credentialRefusal: refusal,
+                        receipt          : buildCredentialReplacementReceipt({
+                            scope,
+                            forge: 'unchanged',
+                            plane: 'unchanged',
+                            boundPlane
+                        })
+                    }
+                }
+            }
+
+            const targetSha256 = crypto.createHash('sha256').update(trimmed).digest('hex');
+
+            try {
+                registry.beginCredentialReplacement?.({
+                    id,
+                    scope,
+                    planeBase: boundPlane?.endpoint ?? null,
+                    boundPlane,
+                    targetSha256
+                })
+            } catch {
+                return {
+                    status : 'rejected',
+                    id,
+                    scope,
+                    surface: 'forge',
+                    cause  : 'indeterminate',
+                    reason : 'the credential replacement journal could not be written',
+                    receipt: buildCredentialReplacementReceipt({
+                        scope,
+                        forge: 'unchanged',
+                        plane: scope === 'forge-and-bound-plane' ? 'unchanged' : 'not-selected',
+                        boundPlane
+                    })
+                }
+            }
+
+            try {
+                if (typeof registry.replaceCredential === 'function') {
+                    registry.replaceCredential(id, trimmed)
+                } else {
+                    registry.storeCredential(id, trimmed)
+                }
+            } catch {
+                const currentForge = registry.resolveCredential?.(id);
+                if (currentForge !== trimmed && !priorReplacement) {
+                    try { registry.completeCredentialReplacement?.(id) } catch {}
+                    return {
+                        status : 'rejected',
+                        id,
+                        scope,
+                        surface: 'forge',
+                        cause  : 'indeterminate',
+                        reason : 'forge credential could not be persisted',
+                        receipt: buildCredentialReplacementReceipt({
+                            scope,
+                            forge: 'unchanged',
+                            plane: scope === 'forge-and-bound-plane' ? 'unchanged' : 'not-selected',
+                            boundPlane
+                        })
+                    }
+                }
+                try {
+                    registry.markCredentialReplacementIncomplete?.(id, {
+                        surface: 'forge',
+                        forge  : currentForge === trimmed ? 'replaced' : 'unchanged',
+                        plane  : scope === 'forge-and-bound-plane' ? 'unchanged' : 'not-selected',
+                        reason : 'forge credential could not be persisted'
+                    })
+                } catch {}
+                return {
+                    status    : 'rejected',
+                    id,
+                    scope,
+                    surface   : 'forge',
+                    cause     : 'indeterminate',
+                    incomplete: true,
+                    reason    : 'forge credential could not be persisted',
+                    receipt   : buildCredentialReplacementReceipt({
+                        scope,
+                        forge     : currentForge === trimmed ? 'replaced' : 'unchanged',
+                        plane     : scope === 'forge-and-bound-plane' ? 'unchanged' : 'not-selected',
+                        boundPlane,
+                        coherent  : false,
+                        incomplete: true
+                    })
+                }
+            }
+
+            if (scope === 'forge-and-bound-plane') {
+                let planePersisted;
+                try {
+                    planePersisted = await tenantService.persistBoundSeatPlaneCredential({
+                        planeBase    : boundPlane.endpoint,
+                        agentId      : id,
+                        credential   : trimmed,
+                        expectedPlane: {id: boundPlane.id, dataRoot: boundPlane.dataRoot}
+                    })
+                } catch {
+                    planePersisted = {status: 'rejected', cause: 'indeterminate', reason: 'seat plane credential could not be persisted'}
+                }
+
+                if (planePersisted?.status !== 'stored') {
+                    const
+                        reason = planePersisted?.reason || 'seat plane credential could not be persisted',
+                        cause  = planePersisted?.cause  || 'indeterminate';
+
+                    try {
+                        registry.markCredentialReplacementIncomplete?.(id, {
+                            surface: 'plane',
+                            forge  : 'replaced',
+                            plane  : 'unchanged',
+                            reason
+                        })
+                    } catch {}
+
+                    return {
+                        status           : 'rejected',
+                        id,
+                        scope,
+                        surface          : 'plane',
+                        cause,
+                        incomplete       : true,
+                        reason,
+                        credentialRefusal: Object.freeze({surface: 'plane', cause, verdict: 'refused', status: null, reason}),
+                        receipt          : buildCredentialReplacementReceipt({
+                            scope,
+                            forge     : 'replaced',
+                            plane     : 'unchanged',
+                            boundPlane,
+                            coherent  : false,
+                            incomplete: true
+                        })
+                    }
+                }
+            }
+
+            const
+                verifiedForge = registry.resolveCredential?.(id),
+                verifiedPlane = scope === 'forge-and-bound-plane'
+                    ? tenantService.resolveSeatPlaneCredential({planeBase: boundPlane.endpoint, agentId: id})
+                    : null;
+
+            if (verifiedForge !== trimmed || (
+                scope === 'forge-and-bound-plane' && (
+                    verifiedPlane?.credential !== trimmed ||
+                    verifiedPlane?.plane?.id !== boundPlane.id ||
+                    verifiedPlane?.plane?.dataRoot !== boundPlane.dataRoot
+                )
+            )) {
+                const
+                    failedSurface = verifiedForge !== trimmed ? 'forge' : 'plane',
+                    reason        = `${failedSurface} credential readback verification failed`;
+
+                try {
+                    registry.markCredentialReplacementIncomplete?.(id, {
+                        surface: failedSurface,
+                        forge  : verifiedForge === trimmed ? 'replaced' : 'unchanged',
+                        plane  : scope === 'forge-and-bound-plane'
+                            ? (verifiedPlane?.credential === trimmed ? 'replaced' : 'unchanged')
+                            : 'not-selected',
+                        reason
+                    })
+                } catch {}
+
+                return {
+                    status    : 'rejected',
+                    id,
+                    scope,
+                    surface   : failedSurface,
+                    cause     : 'indeterminate',
+                    incomplete: true,
+                    reason,
+                    receipt   : buildCredentialReplacementReceipt({
+                        scope,
+                        forge: verifiedForge === trimmed ? 'replaced' : 'unchanged',
+                        plane: scope === 'forge-and-bound-plane'
+                            ? (verifiedPlane?.credential === trimmed ? 'replaced' : 'unchanged')
+                            : 'not-selected',
+                        boundPlane,
+                        coherent  : false,
+                        incomplete: true
+                    })
+                }
+            }
+
+            registry.completeCredentialReplacement?.(id);
+
+            return {
+                status : 'replaced',
+                id,
+                scope,
+                receipt: buildCredentialReplacementReceipt({
+                    scope,
+                    forge     : 'replaced',
+                    plane     : scope === 'forge-and-bound-plane' ? 'replaced' : 'not-selected',
+                    boundPlane,
+                    coherent  : true,
+                    incomplete: false
+                })
+            }
         })
     }
 

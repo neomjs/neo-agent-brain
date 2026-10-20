@@ -175,7 +175,7 @@ function mailboxObserverListArgs(params, observer) {
  * spells out. Nothing else of the error crosses.
  * @type {String[]}
  */
-const START_REFUSAL_FIELDS = Object.freeze(['code', 'step', 'source', 'destination']);
+const START_REFUSAL_FIELDS = Object.freeze(['code', 'step', 'source', 'destination', 'cause', 'surface', 'credentialRefusal']);
 
 /**
  * The workspace preparation error's codes, the only part of it the wire carries. Its producer stays
@@ -956,6 +956,18 @@ class FleetControlBridge extends Base {
      */
     setPlaneCredential(payload) {
         return this.getManager().setPlaneCredential(payload);
+    }
+
+    /**
+     * @summary Replace a stopped seat's rejected or rotated token coherently across its selected bindings
+     * (`scope: 'forge'` or `'forge-and-bound-plane'`). A credential-bearing verb, like {@link #setPlaneCredential}:
+     * the trusted launcher supplies the credential, every selected use is proved before the first store write,
+     * and the returned receipt carries zero secret material.
+     * @param {Object} payload `{id, credential, scope}`.
+     * @returns {Promise<Object>}
+     */
+    replaceSeatCredential(payload) {
+        return this.getManager().replaceSeatCredential(payload);
     }
 
     /**

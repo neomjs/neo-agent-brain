@@ -12,6 +12,10 @@ import {resolveFleetCredentialKey} from './FleetRegistryService.mjs';
 import {assertSeatSegment}         from './deriveAgentRepoPath.mjs';
 import {httpProofVerdict}          from './mcpLaunchAdmission.mjs';
 import {
+    attachCredentialRefusal,
+    classifyHttpCredentialRefusal
+} from './seatGitIdentity.mjs';
+import {
     normalizeAgentIdentity,
     normalizeSecureMcpEndpoint,
     parseMcpEnvelope,
@@ -284,7 +288,10 @@ class FleetTenantService extends Base {
             typeof credential !== 'string' ||
             !credential.trim() ||
             !canonicalIdentity) {
-            return {ok: false, verdict: 'refused'}
+            return attachCredentialRefusal(
+                {ok: false, verdict: 'refused'},
+                {surface: 'plane', cause: 'indeterminate', verdict: 'refused', status: null, reason: 'the seat holds no proven plane credential'}
+            )
         }
 
         try {
@@ -297,12 +304,35 @@ class FleetTenantService extends Base {
             });
 
             if (readiness?.ok && readiness.resources?.['memory-core']?.identity !== canonicalIdentity) {
-                return {...readiness, ok: false, verdict: 'refused'}
+                return attachCredentialRefusal(
+                    {...readiness, ok: false, verdict: 'refused'},
+                    {surface: 'plane', cause: 'wrong-identity', verdict: 'refused', status: readiness.status ?? 200, reason: 'the credential resolves to another identity'}
+                )
+            }
+
+            if (!readiness?.ok) {
+                const classified = classifyHttpCredentialRefusal({
+                    status : readiness?.status ?? null,
+                    verdict: readiness?.verdict ?? null
+                });
+                const cause = readiness?.cause || (readiness?.resources?.['memory-core']?.anotherIdentity ? 'wrong-identity' : classified.cause);
+                attachCredentialRefusal(readiness, {
+                    surface: 'plane',
+                    cause,
+                    verdict: readiness?.verdict ?? classified.verdict,
+                    status : classified.status,
+                    reason : cause === 'wrong-identity'
+                        ? 'the credential resolves to another identity'
+                        : (classified.verdict === 'unanswered' ? 'plane endpoint unreachable' : rejectionReasonFor(readiness?.status, 'plane'))
+                })
             }
 
             return readiness
         } catch {
-            return {ok: false, verdict: 'unanswered'}
+            return attachCredentialRefusal(
+                {ok: false, verdict: 'unanswered'},
+                {surface: 'plane', cause: 'transport-unavailable', verdict: 'unanswered', status: null, reason: 'plane endpoint unreachable'}
+            )
         }
     }
 
@@ -332,27 +362,48 @@ class FleetTenantService extends Base {
             expected = normalizeAgentIdentity(identity);
 
         if (!endpoint) {
-            return {status: 'rejected', reason: 'planeBase must be a valid http(s) URL'}
+            return attachCredentialRefusal(
+                {status: 'rejected', reason: 'planeBase must be a valid http(s) URL'},
+                {surface: 'plane', cause: 'indeterminate', verdict: 'refused', reason: 'planeBase must be a valid http(s) URL'}
+            )
         }
 
         try {
             assertSeatSegment(agentId, 'agentId', 'FleetTenantService.storeSeatPlaneCredential')
         } catch {
-            return {status: 'rejected', reason: 'a seat id and its identity are required'}
+            return attachCredentialRefusal(
+                {status: 'rejected', reason: 'a seat id and its identity are required'},
+                {surface: 'plane', cause: 'indeterminate', verdict: 'refused', reason: 'a seat id and its identity are required'}
+            )
         }
 
         if (!expected) {
-            return {status: 'rejected', reason: 'a seat id and its identity are required'}
+            return attachCredentialRefusal(
+                {status: 'rejected', reason: 'a seat id and its identity are required'},
+                {surface: 'plane', cause: 'indeterminate', verdict: 'refused', reason: 'a seat id and its identity are required'}
+            )
         }
 
         if (typeof credential !== 'string' || credential.trim() === '') {
-            return {status: 'rejected', reason: 'credential (the seat\'s own plane credential) is required'}
+            const reason = 'credential (the seat\'s own plane credential) is required';
+            return attachCredentialRefusal(
+                {status: 'rejected', reason},
+                {surface: 'plane', cause: 'indeterminate', verdict: 'refused', reason}
+            )
         }
 
         const proof = await this.proveSeatOnPlane({endpoint, credential, identity: expected});
 
         if (!proof.ok) {
-            return {status: 'rejected', reason: proof.reason}
+            return attachCredentialRefusal(
+                {status: 'rejected', reason: proof.reason},
+                proof.credentialRefusal || {
+                    surface: 'plane',
+                    cause  : proof.cause || (proof.verdict === 'unanswered' ? 'transport-unavailable' : 'indeterminate'),
+                    verdict: proof.verdict ?? 'refused',
+                    reason : proof.reason
+                }
+            )
         }
 
         try {
@@ -374,7 +425,10 @@ class FleetTenantService extends Base {
                     typeof selected.credential !== 'string' || !selected.credential.trim() ||
                     typeof selected.plane?.id !== 'string' || !selected.plane.id.trim() ||
                     typeof selected.plane.dataRoot !== 'string' || !selected.plane.dataRoot.trim()) {
-                    return {status: 'rejected', reason: 'seat plane credential could not be persisted'}
+                    return attachCredentialRefusal(
+                        {status: 'rejected', reason: 'seat plane credential could not be persisted'},
+                        {surface: 'plane', cause: 'indeterminate', verdict: 'refused', reason: 'seat plane credential could not be persisted'}
+                    )
                 }
 
                 return {status: 'stored', endpoint, agentId}
@@ -383,10 +437,118 @@ class FleetTenantService extends Base {
             record[endpoint] = {...existing, [agentId]: {credential, plane: proof.plane}};
             this.publishAtomically(path.join(this.getDataDir(), SEAT_PLANE_CREDENTIALS), this.encrypt(JSON.stringify(record)))
         } catch {
-            return {status: 'rejected', reason: 'seat plane credential could not be persisted'}
+            return attachCredentialRefusal(
+                {status: 'rejected', reason: 'seat plane credential could not be persisted'},
+                {surface: 'plane', cause: 'indeterminate', verdict: 'refused', reason: 'seat plane credential could not be persisted'}
+            )
         }
 
         return {status: 'stored', endpoint, agentId}
+    }
+
+    /**
+     * @summary Validate before any store mutation that `seat-plane-credentials.enc` can be decrypted and
+     * already holds a complete bound plane entry (`{id, dataRoot}`) for `(planeBase, agentId)`.
+     * Never returns secret material.
+     * @param {Object} params
+     * @param {String} params.planeBase
+     * @param {String} params.agentId
+     * @returns {{ok: Boolean, endpoint?: String, plane?: {id: String, dataRoot: String}, reason?: String, cause?: String}}
+     */
+    canPersistBoundSeatPlaneCredential({planeBase, agentId} = {}) {
+        const endpoint = this.normalizeEndpoint(planeBase);
+        if (!endpoint) {
+            return {ok: false, cause: 'indeterminate', reason: 'planeBase must be a valid http(s) URL'}
+        }
+        try {
+            assertSeatSegment(agentId, 'agentId', 'FleetTenantService.canPersistBoundSeatPlaneCredential')
+        } catch {
+            return {ok: false, cause: 'indeterminate', reason: 'a valid seat id is required'}
+        }
+        let record;
+        try {
+            record = this.readSeatPlaneCredentialsForMutation()
+        } catch {
+            return {ok: false, cause: 'indeterminate', reason: 'seat plane credential store cannot be read'}
+        }
+        const existing = record[endpoint];
+        if (existing !== undefined && (!existing || typeof existing !== 'object' || Array.isArray(existing))) {
+            return {ok: false, cause: 'indeterminate', reason: 'seat plane credential store is malformed'}
+        }
+        const selected = existing?.[agentId];
+        if (!selected || typeof selected !== 'object' || Array.isArray(selected) ||
+            typeof selected.credential !== 'string' || !selected.credential.trim() ||
+            typeof selected.plane?.id !== 'string' || !selected.plane.id.trim() ||
+            typeof selected.plane.dataRoot !== 'string' || !selected.plane.dataRoot.trim()) {
+            return {
+                ok    : false,
+                cause : 'indeterminate',
+                reason: `agent '${agentId}' holds no bound plane credential at '${endpoint}'`
+            }
+        }
+        return {
+            ok   : true,
+            endpoint,
+            plane: {id: selected.plane.id, dataRoot: selected.plane.dataRoot}
+        }
+    }
+
+    /**
+     * @summary Replace a seat's credential for an already-bound plane via a fresh strict read-decrypt-modify-encrypt-write
+     * delta and immediate strict readback verification. Never rebinds `plane.id` or `plane.dataRoot`, and preserves
+     * concurrent entries for all other seats and endpoints. Brain-internal only.
+     * @param {Object} params
+     * @param {String} params.planeBase
+     * @param {String} params.agentId
+     * @param {String} params.credential
+     * @param {Object} params.expectedPlane `{id, dataRoot}`
+     * @returns {{status: 'stored', endpoint: String, agentId: String, plane: {id: String, dataRoot: String}}|{status: 'rejected', reason: String, cause: String}}
+     */
+    persistBoundSeatPlaneCredential({planeBase, agentId, credential, expectedPlane} = {}) {
+        const
+            endpoint = this.normalizeEndpoint(planeBase),
+            trimmed  = typeof credential === 'string' ? credential.trim() : '';
+
+        if (!endpoint || !trimmed || !expectedPlane?.id || !expectedPlane?.dataRoot) {
+            return {status: 'rejected', cause: 'indeterminate', reason: 'seat plane credential could not be persisted'}
+        }
+
+        try {
+            assertSeatSegment(agentId, 'agentId', 'FleetTenantService.persistBoundSeatPlaneCredential');
+
+            const
+                record   = this.readSeatPlaneCredentialsForMutation(),
+                existing = record[endpoint];
+
+            if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+                return {status: 'rejected', cause: 'indeterminate', reason: 'seat plane credential could not be persisted'}
+            }
+
+            const selected = existing[agentId];
+            if (!selected || typeof selected !== 'object' || Array.isArray(selected) ||
+                selected.plane?.id !== expectedPlane.id ||
+                selected.plane?.dataRoot !== expectedPlane.dataRoot) {
+                return {status: 'rejected', cause: 'plane-mismatch', reason: 'the bound plane record changed during credential replacement'}
+            }
+
+            const boundPlane = {id: expectedPlane.id, dataRoot: expectedPlane.dataRoot};
+            record[endpoint] = {...existing, [agentId]: {credential: trimmed, plane: boundPlane}};
+            this.publishAtomically(path.join(this.getDataDir(), SEAT_PLANE_CREDENTIALS), this.encrypt(JSON.stringify(record)));
+
+            const
+                verifiedRecord = this.readSeatPlaneCredentialsForMutation(),
+                verifiedRow    = verifiedRecord[endpoint]?.[agentId];
+
+            if (verifiedRow?.credential !== trimmed ||
+                verifiedRow?.plane?.id !== boundPlane.id ||
+                verifiedRow?.plane?.dataRoot !== boundPlane.dataRoot) {
+                return {status: 'rejected', cause: 'indeterminate', reason: 'seat plane credential readback verification failed'}
+            }
+
+            return {status: 'stored', endpoint, agentId, plane: boundPlane}
+        } catch {
+            return {status: 'rejected', cause: 'indeterminate', reason: 'seat plane credential could not be persisted'}
+        }
     }
 
     /**
@@ -470,7 +632,11 @@ class FleetTenantService extends Base {
             identity = normalizeAgentIdentity(expectedIdentity);
 
         if (!endpoint || !identity || typeof credential !== 'string' || !credential.trim() || !expectedPlane?.id) {
-            return {ok: false, verdict: 'refused', reason: 'the seat holds no proven plane credential'}
+            const reason = 'the seat holds no proven plane credential';
+            return attachCredentialRefusal(
+                {ok: false, verdict: 'refused', reason},
+                {surface: 'plane', cause: 'indeterminate', verdict: 'refused', status: null, reason}
+            )
         }
 
         const proof = await this.proveSeatOnPlane({endpoint, credential, identity, signal});
@@ -478,7 +644,11 @@ class FleetTenantService extends Base {
         if (!proof.ok) return proof;
 
         if (proof.plane.id !== expectedPlane.id || proof.plane.dataRoot !== expectedPlane.dataRoot) {
-            return {ok: false, verdict: 'refused', reason: 'the plane at this endpoint is not the one the credential was stored for'}
+            const reason = 'the plane at this endpoint is not the one the credential was stored for';
+            return attachCredentialRefusal(
+                {ok: false, verdict: 'refused', reason},
+                {surface: 'plane', cause: 'plane-mismatch', verdict: 'refused', status: 200, reason}
+            )
         }
 
         return {ok: true, verdict: 'proved'}
@@ -502,7 +672,11 @@ class FleetTenantService extends Base {
         try {
             probe = await this.getProbeFn()({endpoint, credential, expectedIdentity: identity, servedPlane: true, signal})
         } catch {
-            return {ok: false, verdict: 'unanswered', reason: 'plane endpoint unreachable'}
+            const reason = 'plane endpoint unreachable';
+            return attachCredentialRefusal(
+                {ok: false, verdict: 'unanswered', reason},
+                {surface: 'plane', cause: 'transport-unavailable', verdict: 'unanswered', status: null, reason}
+            )
         }
 
         const
@@ -510,21 +684,45 @@ class FleetTenantService extends Base {
             kb = probe?.resources?.['knowledge-base'];
 
         if (mc?.anotherIdentity || (probe?.ok && mc?.identity !== identity)) {
-            return {ok: false, verdict: 'refused', reason: 'the credential resolves to another identity'}
+            const reason = 'the credential resolves to another identity';
+            return attachCredentialRefusal(
+                {ok: false, verdict: 'refused', reason},
+                {surface: 'plane', cause: 'wrong-identity', verdict: 'refused', status: probe?.status ?? 200, reason}
+            )
         }
 
         if (!probe?.ok) {
-            const reason = probe?.verdict === 'unanswered' && !Number.isInteger(probe.status)
-                ? 'plane endpoint unreachable' : rejectionReasonFor(probe?.status, 'plane');
-            return {ok: false, verdict: probe?.verdict ?? 'refused', reason}
+            const
+                classified = classifyHttpCredentialRefusal({
+                    status : probe?.status ?? null,
+                    verdict: probe?.verdict ?? null
+                }),
+                cause      = probe?.cause || classified.cause,
+                verdict    = probe?.verdict ?? classified.verdict,
+                reason     = verdict === 'unanswered' && !Number.isInteger(probe?.status)
+                    ? 'plane endpoint unreachable'
+                    : rejectionReasonFor(probe?.status, 'plane');
+
+            return attachCredentialRefusal(
+                {ok: false, verdict, reason},
+                {surface: 'plane', cause, verdict, status: classified.status, reason}
+            )
         }
 
         if (!mc.plane?.id || !kb?.plane?.id) {
-            return {ok: false, verdict: 'refused', reason: 'the plane did not identify itself'}
+            const reason = 'the plane did not identify itself';
+            return attachCredentialRefusal(
+                {ok: false, verdict: 'refused', reason},
+                {surface: 'plane', cause: 'plane-mismatch', verdict: 'refused', status: 200, reason}
+            )
         }
 
         if (mc.plane.id !== kb.plane.id || mc.plane.dataRoot !== kb.plane.dataRoot) {
-            return {ok: false, verdict: 'refused', reason: 'the Memory Core and Knowledge Base at this endpoint belong to different planes'}
+            const reason = 'the Memory Core and Knowledge Base at this endpoint belong to different planes';
+            return attachCredentialRefusal(
+                {ok: false, verdict: 'refused', reason},
+                {surface: 'plane', cause: 'plane-mismatch', verdict: 'refused', status: 200, reason}
+            )
         }
 
         return {ok: true, verdict: 'proved', plane: {id: mc.plane.id, dataRoot: mc.plane.dataRoot}}
@@ -981,7 +1179,8 @@ async function initializeMcpResource({url, credential, expectedIdentity=null, se
         // reverse-proxy payload, or arbitrary canned result cannot masquerade as MCP readiness.
         // The remote text never crosses into a public reason.
         const
-            envelope     = parseMcpEnvelope(await response.text()),
+            rawText      = await response.text(),
+            envelope     = parseMcpEnvelope(rawText),
             parsedResult = InitializeResultSchema.safeParse(envelope?.result),
             result       = parsedResult.success ? parsedResult.data : null;
 
@@ -994,6 +1193,19 @@ async function initializeMcpResource({url, credential, expectedIdentity=null, se
             SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion);
 
         let observation = {ok: !!initialized, status: response.status, verdict: httpProofVerdict(!!initialized, response.status)};
+        if (!observation.ok) {
+            let errorBody = envelope?.error ?? null;
+            if (!errorBody) {
+                try { errorBody = JSON.parse(rawText) } catch {}
+            }
+            const classified = classifyHttpCredentialRefusal({
+                status : response.status,
+                headers: response.headers ?? null,
+                body   : errorBody,
+                verdict: observation.verdict
+            });
+            Object.defineProperty(observation, 'cause', {value: classified.cause, enumerable: false, configurable: true})
+        }
 
         if (observation.ok) {
             const notification = await notifyMcpInitialized({
@@ -1081,12 +1293,16 @@ export async function probeTenantEndpoint({endpoint, credential, expectedIdentit
     const failed       = entries.find(([, observation]) => observation.verdict === 'refused')?.[1]
         ?? entries.find(([, observation]) => !observation.ok)?.[1];
 
-    return {
+    const result = {
         ok       : !failed,
         status   : failed ? failed.status : 200,
         verdict  : failed?.verdict ?? 'proved',
         resources: observations
     };
+    if (failed?.cause) {
+        Object.defineProperty(result, 'cause', {value: failed.cause, enumerable: false, configurable: true})
+    }
+    return result;
 }
 
 /**

@@ -280,6 +280,35 @@ present; a failed proof or write stops before checkout. Existing bindings are ne
 replaced. The identity and plane tuple are re-proven before each credential use, including wake
 arming, so a plane recreated behind the same URL does not inherit the old binding.
 
+When a seat's token expires, is revoked, or lacks required scopes, `replaceSeatCredential`
+(`{id, credential, scope}`) replaces the stopped seat's credential coherently across the explicitly
+selected durable bindings (`scope: 'forge'` for `credentials.enc` alone, or
+`scope: 'forge-and-bound-plane'` for both `credentials.enc` and the seat's already-bound plane row
+in `seat-plane-credentials.enc` without implicitly rebinding `plane.id` or `plane.dataRoot`):
+
+- **Stopped-seat and profile-custody gate:** Replacement runs inside the seat's home queue and
+  refuses while the seat is running, has a pending Start, or shares an open desktop/seat-home
+  profile (`cause: 'seat-running'` or `'profile-in-use'`).
+- **Pre-write proof and typed non-secret refusal causes:** Every selected use is proved before the
+  first store write (`proveSeatForgeAccount` and, for `'forge-and-bound-plane'`,
+  `probeSeatPlaneCredential` against the existing bound `plane.id` and `plane.dataRoot`). Start and
+  replacement proof refusals emit typed non-secret `cause` and `surface` fields (`credentialRefusal`
+  with `'authentication-rejected'` for generic 401/403, `'expired'`, `'revoked'`, or
+  `'insufficient-capability'` only when provider response evidence explicitly establishes them,
+  `'wrong-identity'`, `'plane-mismatch'`, `'transport-unavailable'`, and `'indeterminate'`).
+- **Per-seat delta writes, durable incomplete-publication journal, and readback verification:**
+  Both `credentials.enc` and `seat-plane-credentials.enc` are updated via per-seat delta writes over
+  freshly read strict maps (never whole-file snapshot rollback that could clobber concurrent writes
+  for other seats), bracketed by `seat-credential-replacements.json` and post-write readback
+  verification of every selected store. If a crash or second-store write failure interrupts a
+  `'forge-and-bound-plane'` replacement, the seat records `incomplete: true` and `Start` refuses
+  (`FLEET_SEAT_CREDENTIAL_REPLACEMENT_INCOMPLETE`) until `replaceSeatCredential` reconciles both
+  stores.
+- **Explicit recovery receipt:** The returned `receipt` separates `persistedAuthority`
+  (`forge: 'replaced'`, `plane: 'replaced' | 'not-selected'`), `carrier: 'deferred-until-start'`
+  (workspace/carrier preparation happens on the next `startAgent`), and `session: 'stopped'`, with
+  zero secret material echoed.
+
 A tenant row keeps its connected tenant. Only a Fleet that serves no plane (own mode) still runs
 per-seat Memory Core and Knowledge Base servers, until own mode serves an endpoint of its own.
 

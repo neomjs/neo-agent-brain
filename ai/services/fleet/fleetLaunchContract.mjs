@@ -7,7 +7,7 @@ import {FLEET_WIRE_METHODS}                           from '../../../src/fleet/c
  * @type {ReadonlyArray<String>}
  */
 export const FLEET_CREDENTIAL_METHODS = Object.freeze(
-    FLEET_WIRE_METHODS.filter(method => ['defineAgent', 'connectTenant', 'setPlaneCredential'].includes(method))
+    FLEET_WIRE_METHODS.filter(method => ['defineAgent', 'connectTenant', 'setPlaneCredential', 'replaceSeatCredential'].includes(method))
 );
 
 /**

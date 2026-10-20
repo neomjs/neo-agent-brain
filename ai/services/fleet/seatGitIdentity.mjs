@@ -14,6 +14,159 @@ const execFileAsync = promisify(execFile);
 export const GIT_IDENTITY_ENV = Object.freeze(['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL']);
 
 /**
+ * Closed vocabulary of non-secret refusal causes emitted by forge and plane credential proofs.
+ * A generic 401/403 is reported as `'authentication-rejected'`, never `'expired'` or `'revoked'`,
+ * unless provider response evidence explicitly establishes the narrower cause.
+ * @type {ReadonlyArray<String>}
+ */
+export const CREDENTIAL_REFUSAL_CAUSES = Object.freeze([
+    'authentication-rejected',
+    'expired',
+    'revoked',
+    'insufficient-capability',
+    'wrong-identity',
+    'plane-mismatch',
+    'transport-unavailable',
+    'indeterminate'
+]);
+
+/**
+ * @summary Extract non-secret provider classification text from response headers/body without ever echoing it.
+ * @param {Object|null} headers
+ * @param {*}           body
+ * @returns {String}
+ * @private
+ */
+function providerFailureSignal(headers, body) {
+    const parts = [];
+    if (body && typeof body === 'object') {
+        for (const key of ['message', 'error', 'error_description', 'reason']) {
+            if (typeof body[key] === 'string') parts.push(body[key])
+        }
+    }
+    try {
+        const wwwAuth = typeof headers?.get === 'function'
+            ? headers.get('www-authenticate')
+            : (headers?.['www-authenticate'] ?? headers?.['WWW-Authenticate']);
+        if (typeof wwwAuth === 'string') parts.push(wwwAuth)
+    } catch {}
+    return parts.join(' ')
+}
+
+/**
+ * @summary Classify an HTTP or transport failure into the closed {@link CREDENTIAL_REFUSAL_CAUSES} taxonomy.
+ * @param {Object}      [options={}]
+ * @param {Number|null} [options.status=null]
+ * @param {Object|null} [options.headers=null]
+ * @param {*}           [options.body=null]
+ * @param {String|null} [options.verdict=null]
+ * @returns {{cause: String, verdict: 'refused'|'unanswered', status: Number|null}}
+ */
+export function classifyHttpCredentialRefusal({status = null, headers = null, body = null, verdict = null} = {}) {
+    const numericStatus   = Number.isInteger(status) ? status : null;
+    const computedVerdict = verdict || httpProofVerdict(false, numericStatus);
+
+    if (computedVerdict === 'unanswered' || numericStatus === null || numericStatus === 429 || numericStatus >= 500) {
+        return {cause: 'transport-unavailable', verdict: 'unanswered', status: numericStatus}
+    }
+
+    if (numericStatus === 401 || numericStatus === 403) {
+        const signal = providerFailureSignal(headers, body);
+        if (/\bexpired\b/i.test(signal)) {
+            return {cause: 'expired', verdict: 'refused', status: numericStatus}
+        }
+        if (/\brevoked\b/i.test(signal)) {
+            return {cause: 'revoked', verdict: 'refused', status: numericStatus}
+        }
+        if (/\b(insufficient[_\s-]?(scope|capability|permission)|resource not accessible by personal access token|requires?\b[^.;]*\bscope)\b/i.test(signal)) {
+            return {cause: 'insufficient-capability', verdict: 'refused', status: numericStatus}
+        }
+        return {cause: 'authentication-rejected', verdict: 'refused', status: numericStatus}
+    }
+
+    return {cause: 'indeterminate', verdict: 'refused', status: numericStatus}
+}
+
+/**
+ * @summary Attach non-secret typed refusal metadata onto a proof/identity outcome without altering own enumerable keys.
+ * @param {Object} target
+ * @param {Object} refusal `{surface, cause, verdict, status?, reason?}`
+ * @returns {Object} `target`
+ */
+export function attachCredentialRefusal(target, refusal) {
+    if (!target || typeof target !== 'object' || !refusal) return target;
+    const cause      = CREDENTIAL_REFUSAL_CAUSES.includes(refusal.cause) ? refusal.cause : 'indeterminate';
+    const verdict    = refusal.verdict === 'unanswered' || cause === 'transport-unavailable' ? 'unanswered' : 'refused';
+    const normalized = Object.freeze({
+        surface: refusal.surface === 'plane' ? 'plane' : 'forge',
+        cause,
+        verdict,
+        status : Number.isInteger(refusal.status) ? refusal.status : null,
+        reason : typeof refusal.reason === 'string' && refusal.reason ? refusal.reason : 'unknown'
+    });
+    Object.defineProperties(target, {
+        cause            : {value: normalized.cause,   enumerable: false, configurable: true},
+        surface          : {value: normalized.surface, enumerable: false, configurable: true},
+        credentialRefusal: {value: normalized,         enumerable: false, configurable: true}
+    });
+    return target
+}
+
+/**
+ * @summary Normalize or derive the structured non-secret `{surface, cause, verdict, status, reason}` descriptor
+ * from a forge or plane proof outcome.
+ * @param {Object|null} result
+ * @param {'forge'|'plane'} [defaultSurface='forge']
+ * @returns {{surface: 'forge'|'plane', cause: String, verdict: 'refused'|'unanswered', status: Number|null, reason: String}}
+ */
+export function credentialRefusalOf(result, defaultSurface = 'forge') {
+    if (result?.credentialRefusal && typeof result.credentialRefusal === 'object') {
+        return result.credentialRefusal
+    }
+    const surface = result?.surface === 'plane' || defaultSurface === 'plane' ? 'plane' : 'forge';
+    const status  = Number.isInteger(result?.status) ? result.status : null;
+    let   verdict = result?.verdict === 'unanswered' ? 'unanswered' : 'refused';
+    let   cause   = CREDENTIAL_REFUSAL_CAUSES.includes(result?.cause) ? result.cause : null;
+
+    if (!cause) {
+        if (verdict === 'unanswered') {
+            cause = 'transport-unavailable'
+        } else if (
+            result?.reason === 'mismatch' ||
+            result?.state === 'mismatch' ||
+            result?.reason === 'the credential resolves to another identity'
+        ) {
+            cause = 'wrong-identity'
+        } else if (result?.state === 'missing') {
+            cause = result.reason === 'its forge account offers no email this PAT can read'
+                ? 'insufficient-capability'
+                : 'indeterminate'
+        } else if (result?.reason === 'plane rejected the credential' || status === 401 || status === 403) {
+            cause = 'authentication-rejected'
+        } else if (result?.reason === 'plane endpoint unreachable' || status === 429 || (status !== null && status >= 500)) {
+            cause   = 'transport-unavailable';
+            verdict = 'unanswered'
+        } else if (
+            result?.reason === 'the plane at this endpoint is not the one the credential was stored for' ||
+            result?.reason === 'the plane did not identify itself' ||
+            result?.reason === 'the Memory Core and Knowledge Base at this endpoint belong to different planes'
+        ) {
+            cause = 'plane-mismatch'
+        } else {
+            cause = 'indeterminate'
+        }
+    }
+
+    return Object.freeze({
+        surface,
+        cause,
+        verdict: cause === 'transport-unavailable' ? 'unanswered' : verdict,
+        status,
+        reason : typeof result?.reason === 'string' && result.reason ? result.reason : (result?.state || 'unknown')
+    })
+}
+
+/**
  * The config keys beside `user.name` and `user.email` under which the Fleet records what it wrote. A checkout whose
  * values still equal the record holds the Fleet's own write; a value that differs was set or edited by someone else.
  * @type {{name: String, email: String}}
@@ -116,7 +269,15 @@ async function readJson(fetchFn, url, headers, timeoutMs, signal) {
     const response = await fetchFn(url, {headers, signal: signal ? AbortSignal.any([signal, timeout]) : timeout});
 
     if (!response.ok) {
-        throw Object.assign(new Error(`HTTP ${response.status}`), {status: response.status})
+        let body = null;
+        try {
+            if (typeof response.json === 'function') body = await response.json()
+        } catch {}
+        throw Object.assign(new Error(`HTTP ${response.status}`), {
+            status : response.status,
+            headers: response.headers ?? null,
+            body
+        })
     }
 
     return response.json()
@@ -205,10 +366,25 @@ async function readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses
             ? await readGitlabAccount({forgeHost: agent.forgeHost, credential, fetchFn, timeoutMs, signal})
             : await readGithubAccount({credential, fetchFn, timeoutMs, addresses, signal})
     } catch (error) {
-        return {
-            state: 'unknown', reason: `its forge account could not be read (${error.message})`,
-            ...(!addresses ? {verdict: httpProofVerdict(false, error.status)} : {})
-        }
+        const
+            reason     = `its forge account could not be read (${error.message})`,
+            classified = classifyHttpCredentialRefusal({
+                status : error?.status ?? null,
+                headers: error?.headers ?? null,
+                body   : error?.body ?? null
+            }),
+            result     = {
+                state: 'unknown', reason,
+                ...(!addresses ? {verdict: classified.verdict} : {})
+            };
+
+        return attachCredentialRefusal(result, {
+            surface: 'forge',
+            cause  : classified.cause,
+            verdict: classified.verdict,
+            status : classified.status,
+            reason
+        })
     }
 
     const
@@ -216,11 +392,19 @@ async function readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses
         readLogin = typeof account.login === 'string' ? account.login : '';
 
     if (!seatLogin || readLogin.toLowerCase() !== seatLogin.toLowerCase()) {
-        return {
-            state : 'mismatch',
-            found : readLogin || null,
-            reason: `its PAT belongs to the forge account '${readLogin || '(unnamed)'}', not to the seat's '${seatLogin || '(none)'}'`
-        }
+        const reason = `its PAT belongs to the forge account '${readLogin || '(unnamed)'}', not to the seat's '${seatLogin || '(none)'}'`;
+
+        return attachCredentialRefusal({
+            state: 'mismatch',
+            found: readLogin || null,
+            reason
+        }, {
+            surface: 'forge',
+            cause  : 'wrong-identity',
+            verdict: 'refused',
+            status : 200,
+            reason
+        })
     }
 
     return {state: 'own', account}
@@ -242,7 +426,19 @@ async function readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses
 export async function proveSeatForgeAccount({agent, credential, fetchFn = globalThis.fetch, timeoutMs = 10000, signal}) {
     const read = await readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses: false, signal});
 
-    return read.state === 'own' ? {ok: true, verdict: 'proved'} : {ok: false, verdict: read.verdict ?? 'refused', reason: read.state}
+    if (read.state === 'own') {
+        return {ok: true, verdict: 'proved'}
+    }
+
+    return attachCredentialRefusal(
+        {ok: false, verdict: read.verdict ?? 'refused', reason: read.state},
+        read.credentialRefusal || {
+            surface: 'forge',
+            cause  : read.state === 'mismatch' ? 'wrong-identity' : (read.verdict === 'unanswered' ? 'transport-unavailable' : 'indeterminate'),
+            verdict: read.verdict ?? 'refused',
+            reason : read.reason || read.state
+        }
+    )
 }
 
 /**
@@ -283,11 +479,19 @@ export async function resolveSeatGitIdentity({agent, credential, fetchFn = globa
         chosen    = account.candidates.find(candidate => isCommitEmail(candidate.email));
 
     if (!name) {
-        return {state: 'missing', reason: 'its forge account names neither a name nor a login'}
+        const reason = 'its forge account names neither a name nor a login';
+        return attachCredentialRefusal(
+            {state: 'missing', reason},
+            {surface: 'forge', cause: 'indeterminate', verdict: 'refused', status: 200, reason}
+        )
     }
 
     if (!chosen) {
-        return {state: 'missing', name, reason: 'its forge account offers no email this PAT can read'}
+        const reason = 'its forge account offers no email this PAT can read';
+        return attachCredentialRefusal(
+            {state: 'missing', name, reason},
+            {surface: 'forge', cause: 'insufficient-capability', verdict: 'refused', status: 200, reason}
+        )
     }
 
     return {state: 'derived', source: chosen.source, name, email: chosen.email}

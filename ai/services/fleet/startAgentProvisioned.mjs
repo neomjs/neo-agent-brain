@@ -10,6 +10,7 @@ import {resolveSeatPlaneTarget}               from './resolveSeatPlaneTarget.mjs
 import {importSeatMemory, MEMORY_IMPORT_NONE} from './seatMemoryImport.mjs';
 import {
     convergeSeatGitIdentity,
+    credentialRefusalOf,
     proveSeatForgeAccount,
     resolveSeatGitIdentity
 }                                                        from './seatGitIdentity.mjs';
@@ -403,12 +404,35 @@ async function provisionAgent({
     const residentInputs         = installedRuntime && admission ? lifecycleService.captureResidentMcpInputs(agent, {remote}) : null;
     const resolvedResidentMcpEnv = residentInputs?.environment ?? lifecycleService.resolveResidentMcpEnvironment(agent, {remote});
     const patOwner               = desktopRows ? createSeatPatOwner({registry, agent, proveForgeAccount}) : null;
-    const resolvedCredential     = registry.resolveCredential(agentId);
+
+    const replacementState = typeof registry.getCredentialReplacementState === 'function'
+        ? registry.getCredentialReplacementState(agentId)
+        : null;
+    if (replacementState) {
+        const
+            surface = replacementState.surface === 'plane' ? 'plane' : 'forge',
+            reason  = replacementState.state === 'corrupt'
+                ? `agent '${agentId}' cannot start because its credential replacement journal cannot be read; repair or re-run replaceSeatCredential before starting it.`
+                : `agent '${agentId}' has an incomplete credential replacement across its forge and plane stores; re-run replaceSeatCredential to reconcile it before starting.`;
+        throw Object.assign(new Error(`startAgentProvisioned: ${reason}`), {
+            code             : 'FLEET_SEAT_CREDENTIAL_REPLACEMENT_INCOMPLETE',
+            cause            : 'indeterminate',
+            surface,
+            credentialRefusal: Object.freeze({surface, cause: 'indeterminate', verdict: 'refused', status: null, reason})
+        })
+    }
+
+    const resolvedCredential = registry.resolveCredential(agentId);
 
     // the creation test, applied to what is stored: a blank value written before the requirement
     // is no PAT either
     if (typeof resolvedCredential !== 'string' || resolvedCredential.trim() === '') {
-        throw new Error(`startAgentProvisioned: agent '${agentId}' has no GitHub PAT stored; store one before starting it.`)
+        const reason = `agent '${agentId}' has no GitHub PAT stored; store one before starting it.`;
+        throw Object.assign(new Error(`startAgentProvisioned: ${reason}`), {
+            cause            : 'indeterminate',
+            surface          : 'forge',
+            credentialRefusal: Object.freeze({surface: 'forge', cause: 'indeterminate', verdict: 'refused', status: null, reason})
+        })
     }
 
     // What the seat's harness offers is read at every start, declared or not, before the harness is configured or
@@ -456,12 +480,19 @@ async function provisionAgent({
 
     if (gitIdentity.state === 'missing' || gitIdentity.state === 'unknown' || gitIdentity.state === 'mismatch') {
         lifecycleService.setGitIdentity?.(agentId, gitIdentity);
+        const refusal = credentialRefusalOf(gitIdentity, 'forge');
 
         throw Object.assign(new Error({
             missing : `startAgentProvisioned: agent '${agentId}' has no Git identity to commit under: ${gitIdentity.reason}. Nothing was changed. Declare the name and email its commits carry (gitName and gitEmail), then start it again.`,
             unknown : `startAgentProvisioned: agent '${agentId}' cannot start until its Git identity is known: ${gitIdentity.reason}. Nothing was changed. Check its PAT and its forge, or declare the name and email its commits carry (gitName and gitEmail), then start it again.`,
             mismatch: `startAgentProvisioned: agent '${agentId}' would commit as another account: ${gitIdentity.reason}. Nothing was changed. Store the seat's own PAT, or declare the name and email its commits carry (gitName and gitEmail), then start it again.`
-        }[gitIdentity.state]), {code: `FLEET_SEAT_GIT_IDENTITY_${gitIdentity.state.toUpperCase()}`, gitIdentity})
+        }[gitIdentity.state]), {
+            code             : `FLEET_SEAT_GIT_IDENTITY_${gitIdentity.state.toUpperCase()}`,
+            gitIdentity,
+            cause            : refusal.cause,
+            surface          : 'forge',
+            credentialRefusal: refusal
+        })
     }
 
     // read after the identity check, so its refusals stay true that nothing was changed
@@ -523,7 +554,11 @@ async function provisionAgent({
         startSignal.throwIfAborted();
 
         if (!tenantProvesSeat(readiness, expectedIdentity)) {
-            throw new Error(`startAgentProvisioned: remote MCP credential readiness failed for agent '${agentId}'.`)
+            const refusal = credentialRefusalOf(readiness, 'plane');
+            throw Object.assign(
+                new Error(`startAgentProvisioned: remote MCP credential readiness failed for agent '${agentId}'.`),
+                {cause: refusal.cause, surface: 'plane', credentialRefusal: refusal}
+            )
         }
 
         const provenPlane = servedPlaneBinding(readiness);
@@ -557,10 +592,21 @@ async function provisionAgent({
 
             if (!stored) {
                 if (binding?.status !== 'stored') {
-                    throw new Error(`startAgentProvisioned: agent '${agentId}' could not bind its existing PAT to the Fleet plane at ${placement.endpoint}: ${binding?.reason ?? 'the credential was not accepted'}.`)
+                    const refusal = credentialRefusalOf(binding, 'plane');
+                    throw Object.assign(
+                        new Error(`startAgentProvisioned: agent '${agentId}' could not bind its existing PAT to the Fleet plane at ${placement.endpoint}: ${binding?.reason ?? 'the credential was not accepted'}.`),
+                        {cause: refusal.cause, surface: 'plane', credentialRefusal: refusal}
+                    )
                 }
 
-                throw new Error(`startAgentProvisioned: agent '${agentId}' plane binding was not readable after storage.`)
+                throw Object.assign(
+                    new Error(`startAgentProvisioned: agent '${agentId}' plane binding was not readable after storage.`),
+                    {
+                        cause            : 'indeterminate',
+                        surface          : 'plane',
+                        credentialRefusal: Object.freeze({surface: 'plane', cause: 'indeterminate', verdict: 'refused', status: null, reason: 'plane binding was not readable after storage'})
+                    }
+                )
             }
         }
 
@@ -575,7 +621,11 @@ async function provisionAgent({
         startSignal.throwIfAborted();
 
         if (!readiness?.ok) {
-            throw new Error(`startAgentProvisioned: agent '${agentId}' cannot use its plane at ${placement.endpoint}: ${readiness?.reason ?? 'the readiness probe failed'}.`)
+            const refusal = credentialRefusalOf(readiness, 'plane');
+            throw Object.assign(
+                new Error(`startAgentProvisioned: agent '${agentId}' cannot use its plane at ${placement.endpoint}: ${readiness?.reason ?? 'the readiness probe failed'}.`),
+                {cause: refusal.cause, surface: 'plane', credentialRefusal: refusal}
+            )
         }
 
         // proved against the plane this Start met, so a binding moved to another plane does not carry over

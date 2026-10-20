@@ -20,16 +20,23 @@ import FleetControlBridge                                                      f
 import FleetLifecycleService                                                   from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
 import FleetManager                                                            from '../../../../../../ai/services/fleet/FleetManager.mjs';
 import FleetRegistryService                                                    from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import FleetTenantService                                                      from '../../../../../../ai/services/fleet/FleetTenantService.mjs';
 import {armFleetSeatWake}                                                      from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
 import {createFleetCockpitStatus}                                              from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
 import {PACKAGE_SLOTS_RECORD, PACKAGE_RECEIPT_PATH, runtimeGenerationIdentity} from '../../../../../../ai/services/fleet/runtimeGeneration.mjs';
-import {createFleetWireRequest}                                                from '../../../../../../src/fleet/contract/wire.mjs';
-import {dispatchFleetRequest}                                                  from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
-import {DEPENDENCY_RECEIPT, installSeatDependencies}                           from '../../../../../../ai/services/fleet/installAgentRepoDependencies.mjs';
-import {execFileSync}                                                          from 'node:child_process';
-import fs                                                                      from 'fs';
-import os                                                                      from 'os';
-import path                                                                    from 'path';
+import {
+    CREDENTIAL_REFUSAL_CAUSES,
+    proveSeatForgeAccount,
+    resolveSeatGitIdentity
+}                                                                              from '../../../../../../ai/services/fleet/seatGitIdentity.mjs';
+import {startAgentProvisioned}                                  from '../../../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {createFleetWireRequest, REPLACE_SEAT_CREDENTIAL_SCOPES} from '../../../../../../src/fleet/contract/wire.mjs';
+import {dispatchFleetRequest}                                   from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
+import {DEPENDENCY_RECEIPT, installSeatDependencies}            from '../../../../../../ai/services/fleet/installAgentRepoDependencies.mjs';
+import {execFileSync}                                           from 'node:child_process';
+import fs                                                       from 'fs';
+import os                                                       from 'os';
+import path                                                     from 'path';
 
 test.describe('FleetManager guarded checkout removal (#951)', () => {
     let root, repoPath, agent, retired;
@@ -1786,5 +1793,607 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatGitIdentity (the 
         FleetManager.lifecycleService = {getRegistry: () => registry({agents: {alice: {...SEAT, gitName: 'Alice', gitEmail: 'alice@example.test'}}, credentials: {}})};
 
         expect(await FleetManager.fleetSeatGitIdentity({id: 'alice'})).toEqual({state: 'declared', source: 'declared', name: 'Alice', email: 'alice@example.test'});
+    });
+});
+
+test.describe.serial('Neo.ai.services.fleet.FleetManager — replaceSeatCredential (#815)', () => {
+    const
+        PLANE    = 'http://127.0.0.1:3102',
+        SERVED   = Object.freeze({id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'}),
+        OLD_PAT  = 'ghp_OLD_SECRET_CREDENTIAL_TOKEN_815',
+        NEW_PAT  = 'ghp_NEW_SECRET_CREDENTIAL_TOKEN_815',
+        PEER_PAT = 'ghp_PEER_CONCURRENT_TOKEN_815',
+        asPlane  = (mcPlane = SERVED, kbPlane = mcPlane, overrides = {}) => async ({expectedIdentity, servedPlane}) => ({
+            ok       : true,
+            status   : 200,
+            verdict  : 'proved',
+            resources: {
+                'memory-core'   : {ok: true, status: 200, verdict: 'proved', identity: expectedIdentity, ...(servedPlane ? {plane: mcPlane} : {}), ...overrides.mc},
+                'knowledge-base': {ok: true, status: 200, verdict: 'proved', ...(servedPlane ? {plane: kbPlane} : {}), ...overrides.kb}
+            }
+        });
+
+    let tmpDir, managedRoot, running, cleanupUnresolved, startedWith;
+
+    function createLifecycle() {
+        return lifecycleWithStarts({
+            getRegistry                    : () => FleetRegistryService,
+            getInstanceRoot                : () => managedRoot,
+            resolveResidentMcpEnvironment  : () => ({}),
+            assertRemoteMcpCapability      : async () => ({ok: true, binaryPath: '/usr/bin/codex'}),
+            inspectPreparedRemoteMcpAdapter: async () => {},
+            isRunning                      : id => running.has(id),
+            status                         : id => ({
+                id,
+                state            : running.has(id) ? 'running' : cleanupUnresolved.has(id) ? 'failed' : 'stopped',
+                running          : running.has(id),
+                cleanupUnresolved: cleanupUnresolved.has(id),
+                pid              : running.has(id) ? 4242 : null
+            }),
+            setGitIdentity        : () => {},
+            setSeatCatalog        : () => {},
+            setSeatModel          : () => {},
+            setPendingDependencies: () => {},
+            setDependencies       : () => {},
+            setRepoOutcomes       : () => true,
+            start                 : async (id, options) => {
+                startedWith.push({id, options});
+                running.add(id);
+                return {id, state: 'running', pid: 4242}
+            }
+        })
+    }
+
+    test.beforeEach(async () => {
+        tmpDir            = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-replace-cred-815-'));
+        managedRoot       = path.join(tmpDir, 'managed');
+        running           = new Set();
+        cleanupUnresolved = new Set();
+        startedWith       = [];
+
+        fs.mkdirSync(managedRoot, {recursive: true});
+
+        FleetRegistryService.dataDir    = tmpDir;
+        FleetRegistryService.agentsRoot = managedRoot;
+        FleetTenantService.dataDir      = tmpDir;
+        FleetTenantService.probeFn      = asPlane();
+
+        FleetRegistryService.defineAgent({
+            id            : 'alice',
+            githubUsername: 'alice',
+            harnessType   : 'codex',
+            credential    : OLD_PAT,
+            gitName       : 'Alice',
+            gitEmail      : 'alice@example.test',
+            launchOwner   : 'fleet',
+            metadata      : {repo: {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'}}
+        });
+
+        await FleetTenantService.storeSeatPlaneCredential({
+            planeBase : PLANE,
+            agentId   : 'alice',
+            identity  : '@alice',
+            credential: OLD_PAT
+        });
+
+        FleetManager.lifecycleService = createLifecycle();
+        FleetManager.tenantService    = FleetTenantService;
+        FleetManager.managedRoot      = managedRoot;
+        FleetManager.planeBase        = PLANE;
+        FleetManager.forgeProofFn     = async ({agent, credential}) => credential === NEW_PAT
+            ? {ok: true, verdict: 'proved', login: agent.githubUsername}
+            : {
+                ok               : false,
+                verdict          : 'refused',
+                reason           : 'HTTP 401',
+                cause            : 'revoked',
+                credentialRefusal: {cause: 'revoked', surface: 'forge', verdict: 'refused', status: 401, reason: 'HTTP 401'}
+            };
+
+        FleetControlBridge.registry      = FleetRegistryService;
+        FleetControlBridge.manager       = FleetManager;
+        FleetControlBridge.tenantService = FleetTenantService;
+    });
+
+    test.afterEach(() => {
+        FleetControlBridge.registry        = null;
+        FleetControlBridge.manager         = null;
+        FleetControlBridge.tenantService   = null;
+        FleetManager.lifecycleService      = null;
+        FleetManager.tenantService         = null;
+        FleetManager.managedRoot           = null;
+        FleetManager.planeBase             = null;
+        FleetManager.forgeProofFn          = null;
+        FleetManager.gitIdentityFn         = null;
+        FleetManager.seatHomeHolds.clear();
+        FleetTenantService.dataDir         = null;
+        FleetTenantService.probeFn         = null;
+        FleetRegistryService.dataDir    = null;
+        FleetRegistryService.agentsRoot = null;
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+    });
+
+    test('exports closed scopes and refusal causes, and refuses missing, unknown, or blank inputs before any probe', async () => {
+        expect(REPLACE_SEAT_CREDENTIAL_SCOPES).toEqual(['forge', 'forge-and-bound-plane']);
+        expect(CREDENTIAL_REFUSAL_CAUSES).toEqual([
+            'authentication-rejected',
+            'expired',
+            'revoked',
+            'insufficient-capability',
+            'wrong-identity',
+            'plane-mismatch',
+            'transport-unavailable',
+            'indeterminate'
+        ]);
+
+        let forgeCalls = 0, planeCalls = 0;
+        FleetManager.forgeProofFn  = async () => { forgeCalls++; return {ok: true, verdict: 'proved'} };
+        FleetTenantService.probeFn = async args => { planeCalls++; return asPlane()(args) };
+
+        for (const payload of [
+            null,
+            {},
+            {id: 'alice', credential: NEW_PAT},
+            {id: 'alice', credential: NEW_PAT, scope: 'all'},
+            {id: 'alice', credential: '   ', scope: 'forge'},
+            {id: 'ghost', credential: NEW_PAT, scope: 'forge'}
+        ]) {
+            const result = await FleetManager.replaceSeatCredential(payload);
+            expect(result.status).toBe('rejected');
+            expect(JSON.stringify(result)).not.toContain(NEW_PAT);
+        }
+
+        expect(forgeCalls).toBe(0);
+        expect(planeCalls).toBe(0);
+        expect(FleetRegistryService.resolveCredential('alice')).toBe(OLD_PAT);
+    });
+
+    test('refuses replacement while the seat is running or its shared desktop profile is still in use (AC-3)', async () => {
+        let forgeCalls = 0;
+        FleetManager.forgeProofFn = async () => { forgeCalls++; return {ok: true, verdict: 'proved'} };
+
+        running.add('alice');
+        expect(await FleetManager.replaceSeatCredential({
+            id        : 'alice',
+            credential: NEW_PAT,
+            scope     : 'forge-and-bound-plane'
+        })).toMatchObject({
+            status : 'rejected',
+            id     : 'alice',
+            scope  : 'forge-and-bound-plane',
+            cause  : 'seat-running',
+            reason : "agent 'alice' is running; stop it before replacing its credential",
+            receipt: {
+                scope             : 'forge-and-bound-plane',
+                forge             : 'unchanged',
+                plane             : 'unchanged',
+                persistedAuthority: {forge: 'unchanged', plane: 'unchanged'},
+                carrier           : 'deferred-until-start',
+                session           : 'running'
+            }
+        });
+
+        running.delete('alice');
+        cleanupUnresolved.add('alice');
+        expect(await FleetManager.replaceSeatCredential({
+            id        : 'alice',
+            credential: NEW_PAT,
+            scope     : 'forge-and-bound-plane'
+        })).toMatchObject({
+            status : 'rejected',
+            id     : 'alice',
+            scope  : 'forge-and-bound-plane',
+            cause  : 'profile-in-use',
+            reason : "agent 'alice' has unresolved helper processes holding its profile; resolve or stop them before replacing its credential",
+            receipt: {
+                scope             : 'forge-and-bound-plane',
+                forge             : 'unchanged',
+                plane             : 'unchanged',
+                persistedAuthority: {forge: 'unchanged', plane: 'unchanged'},
+                carrier           : 'deferred-until-start',
+                session           : 'stopped'
+            }
+        });
+
+        expect(forgeCalls).toBe(0);
+        expect(FleetRegistryService.resolveCredential('alice')).toBe(OLD_PAT);
+    });
+
+    test('replaces forge-only or forge-and-bound-plane coherently, returns a non-secret receipt, and recovers startAgentProvisioned (AC-1, AC-2, AC-5)', async () => {
+        // 1. Forge-only replacement updates credentials.enc and leaves seat-plane-credentials.enc at OLD_PAT
+        const forgeOnly = await dispatchFleetRequest(
+            createFleetWireRequest('replaceSeatCredential', {
+                id        : 'alice',
+                credential: NEW_PAT,
+                scope     : 'forge'
+            }),
+            FleetControlBridge
+        );
+
+        expect(forgeOnly).toMatchObject({
+            ok    : true,
+            result: {
+                status : 'replaced',
+                id     : 'alice',
+                scope  : 'forge',
+                receipt: {
+                    scope             : 'forge',
+                    forge             : 'replaced',
+                    plane             : 'not-selected',
+                    persistedAuthority: {forge: 'replaced', plane: 'not-selected'},
+                    carrier           : 'deferred-until-start',
+                    carrierPreparation: 'deferred-until-start',
+                    session           : 'stopped',
+                    runningSession    : 'stopped',
+                    coherent          : true,
+                    incomplete        : false,
+                    nextStep          : 'start-agent'
+                }
+            }
+        });
+        expect(JSON.stringify(forgeOnly)).not.toContain(OLD_PAT);
+        expect(JSON.stringify(forgeOnly)).not.toContain(NEW_PAT);
+        expect(FleetRegistryService.resolveCredential('alice')).toBe(NEW_PAT);
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'alice'}).credential).toBe(OLD_PAT);
+
+        // 2. When the plane rejects OLD_PAT (e.g. token expired), startAgentProvisioned surfaces the typed plane refusal through FleetControlBridge
+        FleetTenantService.probeFn = async ({credential, expectedIdentity, servedPlane}) => {
+            if (credential === OLD_PAT) {
+                return {
+                    ok       : false,
+                    status   : 401,
+                    verdict  : 'refused',
+                    cause    : 'expired',
+                    resources: {
+                        'memory-core': {ok: false, status: 401, verdict: 'refused', cause: 'expired', reason: 'token expired'}
+                    }
+                }
+            }
+            return asPlane()({expectedIdentity, servedPlane})
+        };
+
+        FleetManager.provisionAndStartFn = options => startAgentProvisioned({
+            ...options,
+            readModelCatalog   : async () => null,
+            ensureRepo         : async () => ({repoPath: path.join(managedRoot, 'alice', 'neomjs', 'neo')}),
+            convergeGitIdentity: async () => ({state: 'converged'}),
+            prepareWorkspace   : async ({targetRepoRoot, agentosRuntimeRoot}) => ({
+                targetRepoRoot,
+                agentosRuntimeRoot,
+                instanceHome: path.join(managedRoot, 'alice', 'harness', 'codex'),
+                mcpMatrix   : {},
+                mcpPlan     : []
+            }),
+            installDependencies: async () => [{repoSlug: 'neomjs/neo', state: 'installed'}]
+        });
+        FleetManager.wakeArmFn = async () => ({state: 'ready'});
+
+        const refusedStart = await FleetControlBridge.startAgent('alice');
+        expect(refusedStart).toEqual({
+            status           : 'rejected',
+            reason           : "agent 'alice' cannot use its plane at http://127.0.0.1:3102: plane rejected the credential.",
+            cause            : 'expired',
+            surface          : 'plane',
+            credentialRefusal: {
+                cause  : 'expired',
+                surface: 'plane',
+                verdict: 'refused',
+                status : 401,
+                reason : 'plane rejected the credential'
+            }
+        });
+        expect(JSON.stringify(refusedStart)).not.toContain(OLD_PAT);
+        expect(JSON.stringify(refusedStart)).not.toContain(NEW_PAT);
+
+        // 3. Replace both forge and bound plane with NEW_PAT; startAgentProvisioned now succeeds
+        const bothReplaced = await FleetControlBridge.replaceSeatCredential({
+            id        : 'alice',
+            credential: NEW_PAT,
+            scope     : 'forge-and-bound-plane'
+        });
+
+        expect(bothReplaced).toEqual({
+            status : 'replaced',
+            id     : 'alice',
+            scope  : 'forge-and-bound-plane',
+            receipt: {
+                scope             : 'forge-and-bound-plane',
+                forge             : 'replaced',
+                plane             : 'replaced',
+                persistedAuthority: {forge: 'replaced', plane: 'replaced'},
+                boundPlane        : {endpoint: PLANE, id: SERVED.id, dataRoot: SERVED.dataRoot},
+                carrier           : 'deferred-until-start',
+                carrierPreparation: 'deferred-until-start',
+                session           : 'stopped',
+                runningSession    : 'stopped',
+                coherent          : true,
+                incomplete        : false,
+                nextStep          : 'start-agent'
+            }
+        });
+        expect(FleetRegistryService.resolveCredential('alice')).toBe(NEW_PAT);
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'alice'})).toEqual({
+            credential: NEW_PAT,
+            plane     : SERVED
+        });
+        expect(FleetRegistryService.getCredentialReplacementState('alice')).toBeNull();
+
+        const recoveredStart = await FleetControlBridge.startAgent('alice');
+        expect(recoveredStart).toMatchObject({id: 'alice', state: 'running', pid: 4242});
+        expect(startedWith).toHaveLength(1);
+    });
+
+    test('proves all selected uses before writing anything and classifies typed non-secret refusal causes (AC-1, AC-4)', async () => {
+        // Producer-level classification on proveSeatForgeAccount and resolveSeatGitIdentity
+        const expiredForge = await proveSeatForgeAccount({
+            agent     : {id: 'alice', githubUsername: 'alice'},
+            credential: OLD_PAT,
+            fetchFn   : async () => ({
+                ok     : false,
+                status : 401,
+                headers: {get: () => null},
+                json   : async () => ({message: `Bad credentials: token expired ${OLD_PAT}`})
+            })
+        });
+        expect(expiredForge).toMatchObject({ok: false, verdict: 'refused'});
+        expect(expiredForge.cause).toBe('expired');
+        expect(expiredForge.credentialRefusal).toMatchObject({
+            cause  : 'expired',
+            surface: 'forge',
+            verdict: 'refused',
+            status : 401
+        });
+        expect(JSON.stringify(expiredForge)).not.toContain(OLD_PAT);
+        expect(JSON.stringify(expiredForge.credentialRefusal)).not.toContain(OLD_PAT);
+
+        const wrongIdentityGit = await resolveSeatGitIdentity({
+            agent     : {id: 'alice', githubUsername: 'alice'},
+            credential: OLD_PAT,
+            fetchFn   : async () => ({
+                ok     : true,
+                status : 200,
+                headers: {get: () => null},
+                json   : async () => ({login: 'mallory', name: 'Mallory', email: 'mallory@example.test'})
+            })
+        });
+        expect(wrongIdentityGit).toMatchObject({state: 'mismatch', found: 'mallory'});
+        expect(wrongIdentityGit.cause).toBe('wrong-identity');
+        expect(wrongIdentityGit.credentialRefusal).toMatchObject({
+            cause  : 'wrong-identity',
+            surface: 'forge',
+            verdict: 'refused'
+        });
+
+        // Pre-write proof failures on replaceSeatCredential leave both stores untouched
+        const cases = [
+            {
+                name : 'wrong-identity on forge',
+                forge: async () => ({
+                    ok               : false,
+                    verdict          : 'refused',
+                    reason           : 'mismatch',
+                    found            : 'mallory',
+                    cause            : 'wrong-identity',
+                    credentialRefusal: {cause: 'wrong-identity', surface: 'forge', verdict: 'refused', reason: "its PAT belongs to the forge account 'mallory', not to the seat's 'alice'"}
+                }),
+                plane : asPlane(),
+                expect: {status: 'rejected', cause: 'wrong-identity', surface: 'forge'}
+            },
+            {
+                name : 'insufficient-capability on forge',
+                forge: async () => ({
+                    ok               : false,
+                    verdict          : 'refused',
+                    reason           : 'HTTP 403',
+                    cause            : 'insufficient-capability',
+                    credentialRefusal: {cause: 'insufficient-capability', surface: 'forge', verdict: 'refused', status: 403, reason: 'HTTP 403'}
+                }),
+                plane : asPlane(),
+                expect: {status: 'rejected', cause: 'insufficient-capability', surface: 'forge'}
+            },
+            {
+                name : 'wrong-identity on plane after forge proof succeeded',
+                forge: async () => ({ok: true, verdict: 'proved', login: 'alice'}),
+                plane: async () => ({
+                    ok       : true,
+                    status   : 200,
+                    resources: {
+                        'memory-core'   : {ok: true, status: 200, identity: '@mallory', plane: SERVED},
+                        'knowledge-base': {ok: true, status: 200, plane: SERVED}
+                    }
+                }),
+                expect: {status: 'rejected', cause: 'wrong-identity', surface: 'plane'}
+            },
+            {
+                name  : 'plane-mismatch (different plane.id or plane.dataRoot) refuses without rebinding',
+                forge : async () => ({ok: true, verdict: 'proved', login: 'alice'}),
+                plane : asPlane({id: 'different-plane-id', dataRoot: '/elsewhere/.neo-ai-data'}),
+                expect: {status: 'rejected', cause: 'plane-mismatch', surface: 'plane'}
+            },
+            {
+                name  : 'transport-unavailable on plane refuses without writing forge',
+                forge : async () => ({ok: true, verdict: 'proved', login: 'alice'}),
+                plane : async () => { throw new Error(`ECONNREFUSED ${NEW_PAT}`) },
+                expect: {status: 'rejected', cause: 'transport-unavailable', surface: 'plane'}
+            }
+        ];
+
+        for (const testCase of cases) {
+            FleetManager.forgeProofFn  = testCase.forge;
+            FleetTenantService.probeFn = testCase.plane;
+
+            const result = await FleetManager.replaceSeatCredential({
+                id        : 'alice',
+                credential: NEW_PAT,
+                scope     : 'forge-and-bound-plane'
+            });
+
+            expect(result, testCase.name).toMatchObject(testCase.expect);
+            expect(JSON.stringify(result), testCase.name).not.toContain(NEW_PAT);
+            expect(JSON.stringify(result), testCase.name).not.toContain(OLD_PAT);
+            expect(FleetRegistryService.resolveCredential('alice'), testCase.name).toBe(OLD_PAT);
+            expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'alice'}), testCase.name).toEqual({
+                credential: OLD_PAT,
+                plane     : SERVED
+            });
+            expect(FleetRegistryService.getCredentialReplacementState('alice'), testCase.name).toBeNull();
+        }
+    });
+
+    test('preserves concurrent writes for other seats and fences incomplete second-store publication until re-run converges (AC-2)', async () => {
+        FleetRegistryService.defineAgent({
+            id            : 'bob',
+            githubUsername: 'bob',
+            harnessType   : 'codex',
+            credential    : 'ghp_bob_initial',
+            launchOwner   : 'fleet',
+            metadata      : {repo: {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'}}
+        });
+        await FleetTenantService.storeSeatPlaneCredential({
+            planeBase : PLANE,
+            agentId   : 'bob',
+            identity  : '@bob',
+            credential: 'ghp_bob_initial'
+        });
+
+        // 1. Concurrent update to 'bob' while 'alice' is mid-proof is preserved by per-seat delta writes
+        let concurrentUpdated = false;
+        FleetManager.forgeProofFn = async ({agent}) => {
+            if (!concurrentUpdated) {
+                concurrentUpdated = true;
+                FleetRegistryService.replaceCredential('bob', PEER_PAT);
+                FleetTenantService.persistBoundSeatPlaneCredential({
+                    planeBase    : PLANE,
+                    agentId      : 'bob',
+                    credential   : PEER_PAT,
+                    expectedPlane: SERVED
+                });
+            }
+            return {ok: true, verdict: 'proved', login: agent.githubUsername}
+        };
+        FleetTenantService.probeFn = asPlane();
+
+        const replaced = await FleetManager.replaceSeatCredential({
+            id        : 'alice',
+            credential: NEW_PAT,
+            scope     : 'forge-and-bound-plane'
+        });
+        expect(replaced.status).toBe('replaced');
+        expect(FleetRegistryService.resolveCredential('alice')).toBe(NEW_PAT);
+        expect(FleetRegistryService.resolveCredential('bob')).toBe(PEER_PAT);
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'bob'}).credential).toBe(PEER_PAT);
+
+        // 2. Simulate second-store failure after forge write succeeds: records incomplete state, refuses Start, and converges on retry
+        const
+            NEXT_PAT        = 'ghp_NEXT_RECOVERY_TOKEN_815',
+            originalPersist = FleetTenantService.persistBoundSeatPlaneCredential;
+
+        FleetManager.forgeProofFn                          = async ({agent}) => ({ok: true, verdict: 'proved', login: agent.githubUsername});
+        FleetTenantService.persistBoundSeatPlaneCredential = () => ({
+            status: 'rejected',
+            cause : 'indeterminate',
+            reason: 'simulated second-store write failure'
+        });
+
+        try {
+            const partial = await FleetManager.replaceSeatCredential({
+                id        : 'alice',
+                credential: NEXT_PAT,
+                scope     : 'forge-and-bound-plane'
+            });
+
+            expect(partial).toMatchObject({
+                status    : 'rejected',
+                id        : 'alice',
+                scope     : 'forge-and-bound-plane',
+                surface   : 'plane',
+                cause     : 'indeterminate',
+                incomplete: true,
+                reason    : 'simulated second-store write failure',
+                receipt   : {
+                    scope             : 'forge-and-bound-plane',
+                    forge             : 'replaced',
+                    plane             : 'unchanged',
+                    persistedAuthority: {forge: 'replaced', plane: 'unchanged'},
+                    coherent          : false,
+                    incomplete        : true,
+                    nextStep          : 'replace-seat-credential'
+                }
+            });
+            expect(JSON.stringify(partial)).not.toContain(NEXT_PAT);
+            expect(FleetRegistryService.getCredentialReplacementState('alice')).toMatchObject({
+                id     : 'alice',
+                scope  : 'forge-and-bound-plane',
+                state  : 'incomplete',
+                surface: 'plane',
+                forge  : 'replaced',
+                plane  : 'unchanged'
+            });
+
+            // Start is refused while the replacement is incomplete
+            FleetManager.provisionAndStartFn = options => startAgentProvisioned({
+                ...options,
+                readModelCatalog   : async () => null,
+                ensureRepo         : async () => ({repoPath: path.join(managedRoot, 'alice', 'neomjs', 'neo')}),
+                convergeGitIdentity: async () => ({state: 'converged'}),
+                prepareWorkspace   : async ({targetRepoRoot, agentosRuntimeRoot}) => ({
+                targetRepoRoot,
+                agentosRuntimeRoot,
+                instanceHome       : path.join(managedRoot, 'alice', 'harness', 'codex'),
+                mcpMatrix          : {},
+                mcpPlan            : []
+            }),
+                installDependencies: async () => [{repoSlug: 'neomjs/neo', state: 'installed'}]
+            });
+
+            const blockedStart = await FleetControlBridge.startAgent('alice');
+            expect(blockedStart).toEqual({
+                status           : 'rejected',
+                code             : 'FLEET_SEAT_CREDENTIAL_REPLACEMENT_INCOMPLETE',
+                cause            : 'indeterminate',
+                surface          : 'plane',
+                reason           : "agent 'alice' has an incomplete credential replacement across its forge and plane stores; re-run replaceSeatCredential to reconcile it before starting.",
+                credentialRefusal: {
+                    surface: 'plane',
+                    cause  : 'indeterminate',
+                    verdict: 'refused',
+                    status : null,
+                    reason : "agent 'alice' has an incomplete credential replacement across its forge and plane stores; re-run replaceSeatCredential to reconcile it before starting."
+                }
+            });
+        } finally {
+            FleetTenantService.persistBoundSeatPlaneCredential = originalPersist;
+        }
+
+        // Re-running replaceSeatCredential converges both stores and clears the incomplete journal record
+        const converged = await FleetManager.replaceSeatCredential({
+            id        : 'alice',
+            credential: NEXT_PAT,
+            scope     : 'forge-and-bound-plane'
+        });
+
+        expect(converged).toMatchObject({
+            status : 'replaced',
+            id     : 'alice',
+            scope  : 'forge-and-bound-plane',
+            receipt: {
+                scope             : 'forge-and-bound-plane',
+                forge             : 'replaced',
+                plane             : 'replaced',
+                persistedAuthority: {forge: 'replaced', plane: 'replaced'},
+                carrier           : 'deferred-until-start',
+                session           : 'stopped',
+                coherent          : true,
+                incomplete        : false,
+                nextStep          : 'start-agent'
+            }
+        });
+        expect(FleetRegistryService.getCredentialReplacementState('alice')).toBeNull();
+        expect(FleetRegistryService.resolveCredential('alice')).toBe(NEXT_PAT);
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'alice'}).credential).toBe(NEXT_PAT);
+
+        FleetManager.wakeArmFn = async () => ({state: 'ready'});
+        const startedAfterConvergence = await FleetControlBridge.startAgent('alice');
+        expect(startedAfterConvergence).toMatchObject({id: 'alice', state: 'running', pid: 4242});
     });
 });

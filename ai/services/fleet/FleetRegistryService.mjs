@@ -1350,6 +1350,170 @@ class FleetRegistryService extends Base {
     }
 
     /**
+     * @summary Verify that `credentials.enc` can be strictly read and decrypted before starting a
+     * credential replacement transaction. Never mutates or returns secret material.
+     * @param {String} id
+     * @returns {{ok: Boolean, reason?: String}}
+     */
+    canPersistCredential(id) {
+        this.ensureLoaded();
+        if (!this.agents.has(id)) {
+            return {ok: false, reason: `no agent '${id}' is registered`}
+        }
+        try {
+            this.readCredentialsForMutation();
+            return {ok: true}
+        } catch {
+            return {ok: false, reason: 'the forge credential store cannot be read'}
+        }
+    }
+
+    /**
+     * @summary Replace a single registered seat's forge PAT via a fresh strict read-decrypt-modify-encrypt-write
+     * delta and immediate strict readback verification. Preserves concurrent entries for all other seats.
+     * Brain-internal only; never exposed on `FleetControlBridge` or the wire.
+     * @param {String} id
+     * @param {String} pat
+     * @returns {{replaced: true}}
+     */
+    replaceCredential(id, pat) {
+        this.ensureLoaded();
+        if (!this.agents.has(id)) {
+            throw new Error(`FleetRegistryService.replaceCredential: unknown agent '${id}'.`)
+        }
+        if (typeof pat !== 'string' || !pat.trim()) {
+            throw new Error("FleetRegistryService.replaceCredential: 'credential' is required.")
+        }
+        const trimmed = pat.trim();
+        this.storeCredential(id, trimmed);
+        const verified = this.readCredentialsForMutation();
+        if (verified[id] !== trimmed) {
+            throw new Error(`FleetRegistryService.replaceCredential: readback verification failed for '${id}'.`)
+        }
+        return {replaced: true}
+    }
+
+    /**
+     * @summary Read the durable incomplete-publication journal for multi-surface credential replacements.
+     * Returns `null` when the seat has no pending or incomplete replacement, or the non-secret journal
+     * record (`{id, scope, planeBase, boundPlane, state, surface?, reason?, updatedAt}`) when one is active.
+     * If the journal file itself is unreadable or corrupt, returns `{id, state: 'corrupt', reason}` so
+     * `startAgentProvisioned` fails closed rather than ignoring a broken journal.
+     * @param {String} id
+     * @returns {Object|null}
+     */
+    getCredentialReplacementState(id) {
+        if (typeof id !== 'string' || !id) return null;
+        try {
+            const map = this.readReplacementJournalForMutation();
+            return Object.hasOwn(map, id) ? structuredClone(map[id]) : null
+        } catch {
+            return {
+                id,
+                state  : 'corrupt',
+                surface: 'forge',
+                reason : 'the credential replacement journal cannot be read'
+            }
+        }
+    }
+
+    /**
+     * @summary Record durable intent before the first store write of a credential replacement so a
+     * process crash or second-store failure between stores cannot leave silent split credentials.
+     * Never writes secret material to disk.
+     * @param {Object} params
+     * @param {String} params.id
+     * @param {'forge'|'forge-and-bound-plane'} params.scope
+     * @param {String|null} [params.planeBase=null]
+     * @param {Object|null} [params.boundPlane=null]
+     * @param {String} params.targetSha256
+     * @returns {Object} The non-secret journal entry.
+     */
+    beginCredentialReplacement({id, scope, planeBase = null, boundPlane = null, targetSha256}) {
+        const
+            map   = this.readReplacementJournalForMutation(),
+            entry = {
+                id,
+                scope,
+                planeBase   : planeBase ?? null,
+                boundPlane  : boundPlane ? {id: boundPlane.id, dataRoot: boundPlane.dataRoot} : null,
+                targetSha256: targetSha256 ?? null,
+                state       : 'in-progress',
+                surface     : scope === 'forge-and-bound-plane' ? 'plane' : 'forge',
+                updatedAt   : new Date().toISOString()
+            };
+        map[id] = entry;
+        this.writeReplacementJournal(map);
+        return structuredClone(entry)
+    }
+
+    /**
+     * @summary Mark an active credential replacement as `incomplete` when a post-first-write persistence
+     * or readback step fails. Keeps the seat blocked from starting until `replaceSeatCredential` converges.
+     * @param {String} id
+     * @param {Object} [details={}]
+     * @returns {Object}
+     */
+    markCredentialReplacementIncomplete(id, details = {}) {
+        const
+            map      = this.readReplacementJournalForMutation(),
+            existing = Object.hasOwn(map, id) ? map[id] : {id},
+            entry    = {
+                ...existing,
+                state    : 'incomplete',
+                surface  : details.surface || existing.surface || 'plane',
+                forge    : details.forge   || 'replaced',
+                plane    : details.plane   || 'unchanged',
+                reason   : typeof details.reason === 'string' ? details.reason : 'bound-plane credential could not be persisted after forge replacement',
+                updatedAt: new Date().toISOString()
+            };
+        map[id] = entry;
+        this.writeReplacementJournal(map);
+        return structuredClone(entry)
+    }
+
+    /**
+     * @summary Clear a seat's replacement journal record once all selected stores have been written and
+     * verified by readback.
+     * @param {String} id
+     */
+    completeCredentialReplacement(id) {
+        const map = this.readReplacementJournalForMutation();
+        if (Object.hasOwn(map, id)) {
+            delete map[id];
+            this.writeReplacementJournal(map)
+        }
+    }
+
+    /**
+     * @returns {Object} Null-prototype map of active replacement journal entries.
+     * @private
+     */
+    readReplacementJournalForMutation() {
+        let raw;
+        try {
+            raw = fs.readFileSync(this.replacementJournalPath(), 'utf8')
+        } catch (error) {
+            if (error?.code === 'ENOENT') return Object.create(null);
+            throw error
+        }
+        const record = JSON.parse(raw);
+        if (!record || typeof record !== 'object' || Array.isArray(record)) {
+            throw new TypeError('FleetRegistryService: seat-credential-replacements.json must contain a record.')
+        }
+        return Object.assign(Object.create(null), record)
+    }
+
+    /**
+     * @param {Object} map
+     * @private
+     */
+    writeReplacementJournal(map) {
+        this.ensureDataDir();
+        writeFileAtomicSync(this.replacementJournalPath(), JSON.stringify(map, null, 2))
+    }
+
+    /**
      * Remove a single credential from the store (no-op if absent). The lenient read is enough here:
      * over a store that cannot be read the id is absent, so nothing is written.
      * @param {String} id
@@ -1504,6 +1668,9 @@ class FleetRegistryService extends Base {
 
     /** @returns {String} @private */
     credentialsPath() { return path.join(this.getDataDir(), 'credentials.enc'); }
+
+    /** @returns {String} @private */
+    replacementJournalPath() { return path.join(this.getDataDir(), 'seat-credential-replacements.json'); }
 
     /** @returns {String} The Ed25519 signing-key file (PKCS8 PEM) — a generated `0600` dev key when
      * `NEO_FLEET_SIGNING_KEY` is unset. Distinct from {@link keyPath} (the AES master key). @private */
