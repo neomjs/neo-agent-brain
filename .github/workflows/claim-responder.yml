@@ -1,8 +1,8 @@
 # Answers a claim on a curated issue (`good first issue`, `help wanted`) within a minute, because no maintainer is
 # online around the clock. The reply says either "first in line, start now" or who holds the issue, plus claimable
 # alternatives. It never assigns: a maintainer confirms the assignment, and that step is also what screens out
-# accounts that spray claims. The rules live in neomjs/neo's buildScripts/util/claimResponse.mjs and its spec; this file only
-# fetches and posts.
+# accounts that spray claims. The rules live in neomjs/neo's buildScripts/util/claimResponse.mjs and its spec; this
+# file only fetches and posts.
 #
 # The comment is untrusted input. github-script reads it from the event payload, it is never interpolated into a shell
 # step, and the job checks out nothing but that module from neomjs/neo@dev.
@@ -20,6 +20,7 @@ permissions:
 concurrency:
   group: claim-responder-${{ github.event.issue.number }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   respond:
@@ -47,7 +48,14 @@ jobs:
           script: |
             const {curatedLabel, decideReply} = await import(`${process.env.GITHUB_WORKSPACE}/buildScripts/util/claimResponse.mjs`);
             const {owner, repo}                = context.repo;
-            const {comment, issue}             = context.payload;
+            const {comment, issue: eventIssue} = context.payload;
+            const {data: issue}                = await github.rest.issues.get({owner, repo, issue_number: eventIssue.number});
+            const label                        = curatedLabel(issue);
+
+            if (issue.state !== 'open' || !label) {
+              core.info('No reply: issue is closed or no longer curated.');
+              return
+            }
 
             const comments = await github.paginate(github.rest.issues.listComments, {owner, repo, issue_number: issue.number, per_page: 100});
 
@@ -67,7 +75,7 @@ jobs:
               .map(pullRequest => ({number: pullRequest.number, author: pullRequest.author?.login, repository: pullRequest.repository?.nameWithOwner}));
 
             const search = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${owner}/${repo} is:issue is:open label:"${curatedLabel(issue)}" no:assignee -linked:pr`,
+              q: `repo:${owner}/${repo} is:issue is:open label:"${label}" no:assignee -linked:pr`,
               per_page: 50
             });
 
