@@ -18,7 +18,6 @@ import {
     isAdrReaderAuthorized,
     registerSharedForgeRepository,
     rehydrateAdrCatalogFromEvidence,
-    rehydrateAdrCatalogFromEvidenceAsync,
     resetSharedAdrCatalog,
     resolveSharedAdrReference
 } from '../../ingestion/adrAdmissionCatalog.mjs';
@@ -61,10 +60,9 @@ class AdrSource extends Base {
         singleton: true
     }
 
-    kbIndexedDecisions            = new Map()
-    liveAdmissionProjectionConfig = null
-    redirectRegistry              = new Map()
-    reconciledStates              = new Map()
+    kbIndexedDecisions = new Map()
+    redirectRegistry   = new Map()
+    reconciledStates   = new Map()
 
     /**
      * @summary Returns the shared admitted ADR catalog shared with `AdrIngestor`.
@@ -75,32 +73,11 @@ class AdrSource extends Base {
     }
 
     /**
-     * @summary Configures the live cross-process admission projection channel (`admissionProjectionUrl`,
-     * `admissionProjectionReader`, `sqlitePath`, `timeoutMs`, `headers`) used by KB extraction and
-     * reference resolution when running in a separate process from `AdrIngestor`.
-     * @param {Object|null} [config=null]
-     * @returns {Object|null}
-     */
-    setLiveAdmissionProjectionConfig(config = null) {
-        this.liveAdmissionProjectionConfig = config && typeof config === 'object' ? {...config} : null;
-        return this.liveAdmissionProjectionConfig;
-    }
-
-    /**
-     * @summary Returns the currently configured live cross-process admission projection channel config.
-     * @returns {Object|null}
-     */
-    getLiveAdmissionProjectionConfig() {
-        return this.liveAdmissionProjectionConfig;
-    }
-
-    /**
      * @summary Resets the shared admitted ADR catalog and KB-local chunk/redirect tracking.
      */
     resetCatalog() {
         resetSharedAdrCatalog();
         this.kbIndexedDecisions.clear();
-        this.liveAdmissionProjectionConfig = null;
         this.redirectRegistry.clear();
         this.reconciledStates.clear();
     }
@@ -118,18 +95,6 @@ class AdrSource extends Base {
         return hydrateAdrAdmissionRecords(records, {replaceExisting: true});
     }
 
-    #mergeProjectionOptions(options = {}) {
-        const merged = {...(this.liveAdmissionProjectionConfig || {})};
-        if (options && typeof options === 'object') {
-            for (const [key, value] of Object.entries(options)) {
-                if (value !== undefined && value !== null) {
-                    merged[key] = value;
-                }
-            }
-        }
-        return merged;
-    }
-
     /**
      * @summary Rehydrates the admitted catalog from explicit `retainedAdmissionRecords`, an open `graphDb`,
      * or the persisted Memory Core SQLite `Nodes` table at `aiConfig.memoryCoreDbPath` so KB extraction
@@ -138,50 +103,14 @@ class AdrSource extends Base {
      * @returns {{available: Boolean, recordCount: Number, hydratedCount: Number, source: String, custodyTransitions: Object[]}}
      */
     rehydrateCatalogFromEvidence(options = {}) {
-        const
-            merged         = this.#mergeProjectionOptions(options),
-            explicitSqlite = typeof merged.sqlitePath === 'string' && Boolean(merged.sqlitePath.trim());
+        const explicitSqlite = typeof options.sqlitePath === 'string' && Boolean(options.sqlitePath.trim());
 
         return rehydrateAdrCatalogFromEvidence({
-            graphDb                 : merged.graphDb || null,
-            sqlitePath              : explicitSqlite ? merged.sqlitePath : aiConfig.memoryCoreDbPath,
+            graphDb                 : options.graphDb || null,
+            sqlitePath              : explicitSqlite ? options.sqlitePath : aiConfig.memoryCoreDbPath,
             sqlitePathExplicit      : explicitSqlite,
-            retainedAdmissionRecords: merged.retainedAdmissionRecords || null
+            retainedAdmissionRecords: options.retainedAdmissionRecords || null
         });
-    }
-
-    /**
-     * @summary Asynchronously rehydrates the admitted catalog from a live cross-process admission
-     * projection channel (`admissionProjectionUrl`, `admissionProjectionReader`) or falls back to
-     * `rehydrateCatalogFromEvidence`.
-     * @param {Object} [options={}]
-     * @returns {Promise<{available: Boolean, recordCount: Number, hydratedCount: Number, source: String, custodyTransitions: Object[], code?: String}>}
-     */
-    async rehydrateCatalogFromEvidenceAsync(options = {}) {
-        const
-            merged         = this.#mergeProjectionOptions(options),
-            explicitSqlite = typeof merged.sqlitePath === 'string' && Boolean(merged.sqlitePath.trim());
-
-        return rehydrateAdrCatalogFromEvidenceAsync({
-            graphDb                  : merged.graphDb || null,
-            sqlitePath               : explicitSqlite ? merged.sqlitePath : aiConfig.memoryCoreDbPath,
-            sqlitePathExplicit       : explicitSqlite,
-            retainedAdmissionRecords : merged.retainedAdmissionRecords || null,
-            admissionProjectionUrl   : merged.admissionProjectionUrl || null,
-            admissionProjectionReader: merged.admissionProjectionReader || null,
-            timeoutMs                : merged.timeoutMs,
-            headers                  : merged.headers
-        });
-    }
-
-    /**
-     * @summary Explicitly hydrates the KB process's admitted ADR catalog from Memory Core's live
-     * admission projection (`admissionProjectionUrl`, `admissionProjectionReader`, or `sqlitePath`).
-     * @param {Object} [options={}]
-     * @returns {Promise<{available: Boolean, recordCount: Number, hydratedCount: Number, source: String, custodyTransitions: Object[], code?: String}>}
-     */
-    async hydrateFromLiveAdmissionProjection(options = {}) {
-        return this.rehydrateCatalogFromEvidenceAsync(options);
     }
 
     /**
@@ -448,35 +377,6 @@ class AdrSource extends Base {
      */
     resolveAdrReference(reference, context = {}) {
         const evidenceState = this.rehydrateCatalogFromEvidence(context);
-
-        if (evidenceState.source === 'projection-unavailable') {
-            return {
-                status            : 'unavailable',
-                resolved          : false,
-                canonicalKey      : null,
-                identityResolved  : false,
-                documentAvailable : false,
-                kbAvailable       : false,
-                admissionAvailable: false,
-                candidates        : [],
-                reasonCode        : 'ADR_ADMISSION_EVIDENCE_UNAVAILABLE',
-                kbChunk           : null
-            };
-        }
-
-        return this.#resolveFromHydratedCatalog(reference, context);
-    }
-
-    /**
-     * @summary Asynchronously resolves a human or canonical ADR reference after hydrating from
-     * a live cross-process admission projection channel (`admissionProjectionUrl`,
-     * `admissionProjectionReader`, or `sqlitePath`).
-     * @param {String} reference
-     * @param {Object} [context={}]
-     * @returns {Promise<Object>}
-     */
-    async resolveAdrReferenceAsync(reference, context = {}) {
-        const evidenceState = await this.rehydrateCatalogFromEvidenceAsync(context);
 
         if (evidenceState.source === 'projection-unavailable') {
             return {
@@ -863,31 +763,23 @@ class AdrSource extends Base {
      * @returns {Promise<Object>}
      */
     async reconcileDecisionStates({
-        repositories              = [],
-        custodyTransitions        = [],
-        sourceLineageEvidence     = [],
-        legacyManifest            = null,
-        expectedDecisions         = [],
-        retainedAdmissionRecords  = null,
-        graphDb                   = null,
-        sqlitePath                = null,
-        admissionProjectionUrl    = null,
-        admissionProjectionReader = null,
-        timeoutMs,
-        headers,
-        retryAttempt              = 1,
-        writeStream               = null,
+        repositories             = [],
+        custodyTransitions       = [],
+        sourceLineageEvidence    = [],
+        legacyManifest           = null,
+        expectedDecisions        = [],
+        retainedAdmissionRecords = null,
+        graphDb                  = null,
+        sqlitePath               = null,
+        retryAttempt             = 1,
+        writeStream              = null,
         createHashFn
     } = {}) {
         const
-            evidenceState   = await this.rehydrateCatalogFromEvidenceAsync({
+            evidenceState   = this.rehydrateCatalogFromEvidence({
                 retainedAdmissionRecords,
                 graphDb,
-                sqlitePath,
-                admissionProjectionUrl,
-                admissionProjectionReader,
-                timeoutMs,
-                headers
+                sqlitePath
             }),
             rawEntries      = [],
             writtenChunks   = [],
@@ -944,7 +836,7 @@ class AdrSource extends Base {
      */
     async extract(writeStream, createHashFn, options = {}) {
         const
-            evidenceState = await this.rehydrateCatalogFromEvidenceAsync(options),
+            evidenceState = this.rehydrateCatalogFromEvidence(options),
             rootDir       = options.rootDir || aiConfig.neoRootDir,
             specRepo      = this.resolveRepositoryIdentity(options),
             rawEntries    = [];
@@ -1018,7 +910,7 @@ class AdrSource extends Base {
         }
 
         const
-            evidenceState = await this.rehydrateCatalogFromEvidenceAsync({...(options || {}), ...(context || {})}),
+            evidenceState = this.rehydrateCatalogFromEvidence({...(options || {}), ...(context || {})}),
             assignments   = [...(context?.territory?.assignments || [])]
                 .sort((left, right) => left.entry.sourcePath === right.entry.sourcePath
                     ? 0
