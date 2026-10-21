@@ -55,16 +55,19 @@ let runCli;
 let verifyMigrationPreconditions;
 
 /**
- * @summary Creates an in-memory ChromaClient test double supporting `getOrCreateCollection`,
- * `get`, `upsert`, and `delete` across named collections (`neo-native-graph`, `neo-knowledge-base`).
+ * @summary Creates an in-memory ChromaClient test double supporting `getCollection` (without
+ * `getOrCreateCollection`), dimension enforcement (> 1), `get`, `upsert`, and `delete`.
+ * @param {Object} [options={}]
  * @returns {Object}
  */
-function createMockChromaClient() {
+function createMockChromaClient(options = {}) {
     const collections = new Map();
 
-    const getOrCreate = name => {
+    const seedCollection = name => {
         if (!collections.has(name)) {
-            const store = new Map();
+            const store         = new Map();
+            let   collectionDim = null;
+
             collections.set(name, {
                 name,
                 store,
@@ -79,7 +82,7 @@ function createMockChromaClient() {
                         if (store.has(id)) {
                             const row = store.get(id);
                             outIds.push(id);
-                            outEmbeddings.push(row.embedding ?? [0.1, 0.2]);
+                            outEmbeddings.push(row.embedding ?? null);
                             outDocuments.push(row.document ?? id);
                             outMetadatas.push(row.metadata ? {...row.metadata} : {});
                         }
@@ -94,9 +97,26 @@ function createMockChromaClient() {
                 },
                 async upsert({ids = [], embeddings = [], documents = [], metadatas = []} = {}) {
                     for (let i = 0; i < ids.length; i++) {
+                        const vec = embeddings[i];
+                        if (!Array.isArray(vec) || vec.length <= 1 || !vec.every(v => typeof v === 'number' && Number.isFinite(v))) {
+                            throw new Error(`Invalid Chroma vector embedding for '${ids[i]}': expected numeric vector of length > 1.`);
+                        }
+                        if (collectionDim === null) {
+                            for (const existing of store.values()) {
+                                if (Array.isArray(existing?.embedding) && existing.embedding.length > 1) {
+                                    collectionDim = existing.embedding.length;
+                                    break;
+                                }
+                            }
+                        }
+                        if (collectionDim === null) {
+                            collectionDim = vec.length;
+                        } else if (vec.length !== collectionDim) {
+                            throw new Error(`Collection expecting embedding with dimension of ${collectionDim}, got ${vec.length}`);
+                        }
                         store.set(ids[i], {
                             id       : ids[i],
-                            embedding: embeddings[i] ?? [0.1, 0.2],
+                            embedding: vec,
                             document : documents[i] ?? ids[i],
                             metadata : metadatas[i] ? {...metadatas[i]} : {}
                         });
@@ -113,12 +133,16 @@ function createMockChromaClient() {
     };
 
     return {
+        options,
         collections,
-        async getOrCreateCollection({name}) {
-            return getOrCreate(name);
-        },
+        seedCollection,
         async getCollection({name}) {
-            return getOrCreate(name);
+            if (!collections.has(name)) {
+                const err = new Error(`Collection '${name}' does not exist.`);
+                err.name  = 'ChromaNotFoundError';
+                throw err;
+            }
+            return collections.get(name);
         }
     };
 }
@@ -210,10 +234,11 @@ function createSeededDisposableStores() {
         });
 
         kbStore.set(entry.legacyId, {
-            id    : entry.legacyId,
-            type  : 'adr',
-            title : entry.title,
-            source: `learn/agentos/decisions/${entry.fileName}`
+            id       : entry.legacyId,
+            embedding: [0.1, 0.2, 0.3],
+            type     : 'adr',
+            title    : entry.title,
+            source   : `learn/agentos/decisions/${entry.fileName}`
         });
     }
 
@@ -226,9 +251,10 @@ function createSeededDisposableStores() {
 
     // Also seed an unrelated KB document
     kbStore.set('guide:unrelated-doc', {
-        id   : 'guide:unrelated-doc',
-        type : 'guide',
-        title: 'Unrelated Guide'
+        id       : 'guide:unrelated-doc',
+        embedding: [0.2, 0.3, 0.4],
+        type     : 'guide',
+        title    : 'Unrelated Guide'
     });
 
     // Seed incident edges including a duplicate-collapse pair onto an issue target
@@ -775,15 +801,39 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             dbPath                     = path.join(tmpDir, 'disposable-graph.sqlite'),
             standaloneBackupPath       = path.join(tmpDir, 'standalone-backup.json'),
             applyBackupPath            = path.join(tmpDir, 'apply-backup.json'),
+            createdClientOptions       = [],
             mockChromaClient           = createMockChromaClient(),
-            chromaVectorStore          = await createChromaVectorStoreAdapter({
+            embeddedAnomalyRecords     = [],
+            mockEmbedText              = async (text, entry) => {
+                embeddedAnomalyRecords.push({adrNumber: entry?.adrNumber, length: text.length});
+                return [0.4, 0.5, 0.6];
+            },
+            chromaVectorStore          = createChromaVectorStoreAdapter({
                 client        : mockChromaClient,
-                collectionName: 'neo-native-graph'
+                collectionName: 'neo-native-graph',
+                embedText     : mockEmbedText
             }),
-            chromaKbStore              = await createChromaKbStoreAdapter({
+            chromaKbStore              = createChromaKbStoreAdapter({
                 client        : mockChromaClient,
-                collectionName: 'neo-knowledge-base'
+                collectionName: 'neo-knowledge-base',
+                embedText     : mockEmbedText
             });
+
+        // Verify composeDefaultMigrationStores constructs separate clients with explicit database parameters
+        composeDefaultMigrationStores({
+            clientFactory: options => {
+                createdClientOptions.push(options);
+                return createMockChromaClient(options);
+            }
+        });
+        expect(createdClientOptions).toHaveLength(2);
+        expect(createdClientOptions[0].database).toBeTruthy();
+        expect(createdClientOptions[1].database).toBeTruthy();
+
+        // Missing collection fails closed via getCollection without auto-creating an empty collection
+        await expect(chromaVectorStore.exportSnapshot()).rejects.toThrow(/does not exist/);
+        await expect(chromaKbStore.exportSnapshot()).rejects.toThrow(/does not exist/);
+        expect(mockChromaClient.collections.size).toBe(0);
 
         try {
             // Seed file-backed SQLite DB and mock Chroma collections from the disposable stores
@@ -803,8 +853,8 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             fileDb.close();
 
             const
-                graphCollection = await mockChromaClient.getOrCreateCollection({name: 'neo-native-graph'}),
-                kbCollection    = await mockChromaClient.getOrCreateCollection({name: 'neo-knowledge-base'});
+                graphCollection = mockChromaClient.seedCollection('neo-native-graph'),
+                kbCollection    = mockChromaClient.seedCollection('neo-knowledge-base');
 
             for (const [key, val] of vectorStore.entries()) {
                 graphCollection.store.set(key, val);
@@ -812,6 +862,29 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             for (const [key, val] of kbStore.entries()) {
                 kbCollection.store.set(key, val);
             }
+
+            // Placeholder [0] or wrong-dimension embeddings are rejected before mutating Chroma
+            const badVectorAdapter = createChromaVectorStoreAdapter({
+                client        : mockChromaClient,
+                collectionName: 'neo-native-graph',
+                embedText     : async () => [0]
+            });
+            await expect(badVectorAdapter.applyAdrMigration()).rejects.toMatchObject({
+                code: 'ADR_MIGRATION_VECTOR_EMBEDDING_REQUIRED'
+            });
+            await expect(
+                chromaVectorStore.restoreSnapshot([['adr-0001', {id: 'adr-0001', embedding: [0]}]])
+            ).rejects.toMatchObject({
+                code: 'ADR_MIGRATION_VECTOR_EMBEDDING_REQUIRED'
+            });
+            const wrongDimAdapter = createChromaVectorStoreAdapter({
+                client        : mockChromaClient,
+                collectionName: 'neo-native-graph',
+                embedText     : async () => [0.1, 0.2, 0.3, 0.4, 0.5]
+            });
+            await expect(wrongDimAdapter.applyAdrMigration()).rejects.toMatchObject({
+                code: 'ADR_MIGRATION_VECTOR_DIMENSION_MISMATCH'
+            });
 
             // 1. Standalone --backup creates a verified snapshot without mutating stores
             const standaloneBackupRes = await runCli(
@@ -843,10 +916,13 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             expect(cliApplyRes.phase).toBe('completed');
             expect(cliApplyRes.upsertedVectorsCount).toBe(41);
             expect(cliApplyRes.migratedKbEntriesCount).toBe(41);
+            expect(embeddedAnomalyRecords).toHaveLength(12);
 
             const adr0001Key = REVIEWED_41_ADR_MIGRATION_MANIFEST[0].canonicalKey;
+            const adr0004Key = REVIEWED_41_ADR_MIGRATION_MANIFEST.find(e => e.adrNumber === '0004').canonicalKey;
             expect(graphCollection.store.has('adr-0001')).toBe(false);
             expect(graphCollection.store.has(adr0001Key)).toBe(true);
+            expect(graphCollection.store.get(adr0004Key).embedding).toEqual([0.4, 0.5, 0.6]);
             expect(kbCollection.store.has('adr-0001')).toBe(false);
             expect(kbCollection.store.has(adr0001Key)).toBe(true);
             expect(graphCollection.store.has('summary_7c49107b-04f0-4e9c-ad86-65513999d61b')).toBe(true);
@@ -854,11 +930,13 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
 
             const reloadedVectorStore = createChromaVectorStoreAdapter({
                 client        : mockChromaClient,
-                collectionName: 'neo-native-graph'
+                collectionName: 'neo-native-graph',
+                embedText     : mockEmbedText
             });
             const reloadedKbStore = createChromaKbStoreAdapter({
                 client        : mockChromaClient,
-                collectionName: 'neo-knowledge-base'
+                collectionName: 'neo-knowledge-base',
+                embedText     : mockEmbedText
             });
             const exportedAfterApply = await reloadedVectorStore.exportSnapshot();
             expect(exportedAfterApply.some(([id]) => id === adr0001Key)).toBe(true);
@@ -1135,5 +1213,30 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             readerContext: createDefaultReaderContext()
         });
         expect(authorizedPrecheck.ok).toBe(true);
+
+        // Missing checkout in createDefaultSourceProbe fails closed (never falls back to manifest hashes/revisions)
+        const missingRepoProbe = createDefaultSourceProbe({
+            repoRoots: {'neomjs/neo': path.join(os.tmpdir(), 'nonexistent-neo-checkout-1014')}
+        });
+        expect(missingRepoProbe.revisions['neomjs/neo']).toBeUndefined();
+        expect(missingRepoProbe.contentHashes['adr-0004']).toBeUndefined();
+        expect(() =>
+            verifyMigrationPreconditions({
+                sourceProbe  : missingRepoProbe,
+                readerContext: createDefaultReaderContext()
+            })
+        ).toThrow(expect.objectContaining({code: 'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED'}));
+
+        // Missing private checkout in createDefaultReaderContext withholds private stage access and fails closed
+        const missingStageReaderContext = createDefaultReaderContext({
+            repoRoots: {'neomjs/neo-stage': path.join(os.tmpdir(), 'nonexistent-stage-checkout-1014')}
+        });
+        expect(missingStageReaderContext.authorizedNamespaces).not.toContain('neomjs/neo-stage');
+        expect(() =>
+            verifyMigrationPreconditions({
+                sourceProbe  : liveProbe,
+                readerContext: missingStageReaderContext
+            })
+        ).toThrow(expect.objectContaining({code: 'ADR_MIGRATION_READER_PRECONDITION_FAILED'}));
     });
 });

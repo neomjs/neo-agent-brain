@@ -1,18 +1,20 @@
-import crypto             from 'crypto';
-import {execFileSync}     from 'node:child_process';
-import fs                 from 'fs';
-import path               from 'path';
-import {createRequire}    from 'node:module';
-import {fileURLToPath}    from 'node:url';
-import {ChromaClient}     from 'chromadb';
-import Neo                from 'neo.mjs/src/Neo.mjs';
-import * as core          from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager    from 'neo.mjs/src/manager/Instance.mjs';
-import kbConfig           from '../../mcp/server/knowledge-base/config.mjs';
-import memoryCoreConfig   from '../../mcp/server/memory-core/config.mjs';
-import AdrSource          from '../../services/knowledge-base/source/AdrSource.mjs';
-import {qualifyOriginId}  from '../../services/graph/corpusProjectionContract.mjs';
-import {parseAdrRedirect} from '../../services/shared/adrRedirect.mjs';
+import crypto                                from 'crypto';
+import {execFileSync}                        from 'node:child_process';
+import fs                                    from 'fs';
+import path                                  from 'path';
+import {createRequire}                       from 'node:module';
+import {fileURLToPath}                       from 'node:url';
+import {ChromaClient}                        from 'chromadb';
+import Neo                                   from 'neo.mjs/src/Neo.mjs';
+import * as core                             from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                       from 'neo.mjs/src/manager/Instance.mjs';
+import kbConfig                              from '../../mcp/server/knowledge-base/config.mjs';
+import memoryCoreConfig                      from '../../mcp/server/memory-core/config.mjs';
+import AdrSource                             from '../../services/knowledge-base/source/AdrSource.mjs';
+import {qualifyOriginId}                     from '../../services/graph/corpusProjectionContract.mjs';
+import TextEmbeddingService                  from '../../services/memory-core/TextEmbeddingService.mjs';
+import {parseAdrRedirect}                    from '../../services/shared/adrRedirect.mjs';
+import {registerNeoChromaEmbeddingFunctions} from '../../services/shared/vector/chromaClientPrimitives.mjs';
 import {
     ADR_NUMBER_REGEX,
     buildCanonicalAdrKey,
@@ -65,12 +67,11 @@ export const MIGRATION_PHASES = Object.freeze([
     'completed'
 ]);
 
-const LEGACY_ID_REGEX     = /^adr-(\d{4})$/;
-const __filename          = fileURLToPath(import.meta.url);
-const __dirname           = path.dirname(__filename);
-const BRAIN_ROOT_DIR      = path.resolve(__dirname, '../../..');
-const WORKSPACE_ROOT_DIR  = path.resolve(BRAIN_ROOT_DIR, '..');
-const GIT_BLOB_HASH_CACHE = new Map();
+const LEGACY_ID_REGEX    = /^adr-(\d{4})$/;
+const __filename         = fileURLToPath(import.meta.url);
+const __dirname          = path.dirname(__filename);
+const BRAIN_ROOT_DIR     = path.resolve(__dirname, '../../..');
+const WORKSPACE_ROOT_DIR = path.resolve(BRAIN_ROOT_DIR, '..');
 
 /**
  * @summary Computes the 12-hex-character SHA-256 content hash used by the ADR migration manifest.
@@ -82,56 +83,62 @@ export function computeMigrationContentHash(content) {
 }
 
 /**
- * @summary Reads a file from a repository at a given git revision (falling back to working tree when
- * `cutRevision` is `'WORKTREE'` or when `.git` is absent in a synthetic test directory) and returns
- * its 12-character SHA-256 content hash.
- * @param {String} repoDir
- * @param {String} cutRevision
- * @param {String} relPath
+ * @summary Resolves the local worktree directory for a repository namespace.
+ * @param {String} ns
+ * @param {Object|null} [repoRoots=null]
  * @returns {String|null}
  * @private
  */
-function readRepoBlobContentHash(repoDir, cutRevision, relPath) {
-    const cacheKey = `${repoDir}@${cutRevision}:${relPath}`;
-    if (GIT_BLOB_HASH_CACHE.has(cacheKey)) {
-        return GIT_BLOB_HASH_CACHE.get(cacheKey);
+function resolveRepositoryWorktreeDir(ns, repoRoots = null) {
+    if (repoRoots && typeof repoRoots[ns] === 'string') {
+        return repoRoots[ns];
     }
-
-    const hasGit = fs.existsSync(path.join(repoDir, '.git'));
-    if (hasGit && cutRevision && cutRevision !== 'WORKTREE') {
-        try {
-            const raw = execFileSync('git', ['cat-file', '-p', `${cutRevision}:${relPath}`], {
-                cwd     : repoDir,
-                encoding: 'utf8',
-                stdio   : ['ignore', 'pipe', 'ignore']
-            });
-            const hash = computeMigrationContentHash(raw);
-            GIT_BLOB_HASH_CACHE.set(cacheKey, hash);
-            return hash;
-        } catch {
-            // Fall through to worktree read if revision is not a git ref
-        }
+    if (ns === 'neomjs/neo-agent-brain') {
+        return BRAIN_ROOT_DIR;
     }
-
-    const absFile = path.join(repoDir, relPath);
-    if (fs.existsSync(absFile)) {
-        const raw  = fs.readFileSync(absFile, 'utf8');
-        const hash = computeMigrationContentHash(raw);
-        return hash;
-    }
-
-    return null;
+    const shortName = String(ns).split('/')[1];
+    return shortName ? path.join(WORKSPACE_ROOT_DIR, shortName) : null;
 }
 
 /**
- * @summary Builds the default `sourceProbe` from configured repository checkouts and cut descriptors.
+ * @summary Reads a file directly from a live repository worktree on disk (returning `null` when absent).
+ * @param {String|null} repoDir
+ * @param {String|null} relPath
+ * @returns {String|null}
+ * @private
+ */
+function readLiveWorktreeMarkdown(repoDir, relPath) {
+    if (!repoDir || !relPath) return null;
+    const absFile = path.join(repoDir, relPath);
+    if (!fs.existsSync(absFile)) {
+        return null;
+    }
+    return fs.readFileSync(absFile, 'utf8');
+}
+
+/**
+ * @summary Reads a file directly from a live repository worktree on disk and returns its 12-character
+ * SHA-256 content hash, or `null` when the checkout or file is absent.
+ * @param {String|null} repoDir
+ * @param {String|null} relPath
+ * @returns {String|null}
+ * @private
+ */
+function readLiveWorktreeContentHash(repoDir, relPath) {
+    const raw = readLiveWorktreeMarkdown(repoDir, relPath);
+    return raw === null ? null : computeMigrationContentHash(raw);
+}
+
+/**
+ * @summary Builds the default `sourceProbe` from live repository worktrees and git state without
+ * falling back to manifest values when a checkout or file is missing or modified.
  * @param {Object} [options={}]
  * @returns {Object}
  */
 export function createDefaultSourceProbe({
-    manifest               = REVIEWED_41_ADR_MIGRATION_MANIFEST,
-    cutRepositories        = MIGRATION_CUT_REPOSITORIES,
-    repoRoots              = null,
+    manifest                  = REVIEWED_41_ADR_MIGRATION_MANIFEST,
+    cutRepositories           = MIGRATION_CUT_REPOSITORIES,
+    repoRoots                 = null,
     requirePrivateStageAccess = true
 } = {}) {
     const
@@ -140,21 +147,12 @@ export function createDefaultSourceProbe({
         redirectContentHashes = {},
         probeHashes           = {};
 
-    const resolveRepoDir = ns => {
-        if (repoRoots && typeof repoRoots[ns] === 'string') {
-            return repoRoots[ns];
-        }
-        if (ns === 'neomjs/neo-agent-brain') {
-            return BRAIN_ROOT_DIR;
-        }
-        const shortName = String(ns).split('/')[1];
-        return shortName ? path.join(WORKSPACE_ROOT_DIR, shortName) : null;
-    };
-
     for (const [ns, repoMeta] of Object.entries(cutRepositories || {})) {
         if (!repoMeta || typeof repoMeta !== 'object') continue;
-        const repoDir     = resolveRepoDir(ns);
-        let   verifiedRev = repoMeta.cutRevision;
+        const
+            repoDir       = resolveRepositoryWorktreeDir(ns, repoRoots),
+            territoryRoot = repoMeta.territoryRoot || 'learn';
+        let observedRev = null;
 
         if (repoDir && fs.existsSync(path.join(repoDir, '.git')) && repoMeta.cutRevision) {
             try {
@@ -163,21 +161,42 @@ export function createDefaultSourceProbe({
                     ['rev-parse', '--verify', `${repoMeta.cutRevision}^{commit}`],
                     {cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}
                 ).trim();
+
                 if (resolvedCommit.startsWith(repoMeta.cutRevision)) {
-                    verifiedRev = repoMeta.cutRevision;
+                    const
+                        diffFromCut = execFileSync(
+                            'git',
+                            ['diff', '--name-only', repoMeta.cutRevision, 'HEAD', '--', territoryRoot],
+                            {cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}
+                        ).trim(),
+                        worktreeStatus = execFileSync(
+                            'git',
+                            ['status', '--porcelain', '--untracked-files=no', '--', territoryRoot],
+                            {cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}
+                        ).trim();
+
+                    if (worktreeStatus) {
+                        observedRev = 'DIRTY_WORKTREE';
+                    } else if (diffFromCut) {
+                        observedRev = execFileSync(
+                            'git',
+                            ['rev-parse', '--short=9', 'HEAD'],
+                            {cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}
+                        ).trim() || 'DRIFTED_HEAD';
+                    } else {
+                        observedRev = repoMeta.cutRevision;
+                    }
                 }
             } catch {
-                verifiedRev = null;
+                observedRev = null;
             }
         }
-        if (verifiedRev) {
-            revisions[ns] = verifiedRev;
+        if (observedRev) {
+            revisions[ns] = observedRev;
         }
 
         if (repoMeta.probeRecord?.sourcePath) {
-            const probeHash = (repoDir && fs.existsSync(repoDir))
-                ? readRepoBlobContentHash(repoDir, repoMeta.cutRevision, repoMeta.probeRecord.sourcePath)
-                : repoMeta.probeRecord.contentHash;
+            const probeHash = readLiveWorktreeContentHash(repoDir, repoMeta.probeRecord.sourcePath);
             if (probeHash) {
                 probeHashes[ns] = probeHash;
             }
@@ -187,13 +206,9 @@ export function createDefaultSourceProbe({
     for (const entry of manifest || []) {
         if (!entry?.sourceTuple) continue;
         const
-            ns      = entry.sourceTuple.namespace,
-            repoDir = resolveRepoDir(ns),
-            rev     = cutRepositories?.[ns]?.cutRevision || entry.sourceTuple.revision;
-
-        const actualHash = (repoDir && fs.existsSync(repoDir))
-            ? readRepoBlobContentHash(repoDir, rev, entry.sourcePath)
-            : entry.sourceTuple.contentHash;
+            ns         = entry.sourceTuple.namespace,
+            repoDir    = resolveRepositoryWorktreeDir(ns, repoRoots),
+            actualHash = readLiveWorktreeContentHash(repoDir, entry.sourcePath);
 
         if (actualHash) {
             contentHashes[entry.legacyId]     = actualHash;
@@ -202,13 +217,9 @@ export function createDefaultSourceProbe({
 
         if (entry.custodyTransition?.redirectPath) {
             const
-                originNs  = entry.custodyTransition.fromNamespace,
-                originDir = resolveRepoDir(originNs),
-                originRev = cutRepositories?.[originNs]?.cutRevision;
-
-            const actualRedirectHash = (originDir && fs.existsSync(originDir))
-                ? readRepoBlobContentHash(originDir, originRev, entry.custodyTransition.redirectPath)
-                : entry.custodyTransition.redirectContentHash;
+                originNs           = entry.custodyTransition.fromNamespace,
+                originDir          = resolveRepositoryWorktreeDir(originNs, repoRoots),
+                actualRedirectHash = readLiveWorktreeContentHash(originDir, entry.custodyTransition.redirectPath);
 
             if (actualRedirectHash) {
                 redirectContentHashes[entry.legacyId]     = actualRedirectHash;
@@ -227,37 +238,174 @@ export function createDefaultSourceProbe({
 }
 
 /**
- * @summary Builds the default authorized `readerContext` for migration precondition verification.
+ * @summary Builds the default `readerContext` from verified repository checkouts, granting private-repository
+ * read access only when `allowPrivate !== false` and the private checkout and probe file are verified on disk.
  * @param {Object} [options={}]
  * @returns {Object}
  */
 export function createDefaultReaderContext({
     cutRepositories = MIGRATION_CUT_REPOSITORIES,
+    repoRoots       = null,
     agentIdentity   = '@neo-migration-verifier',
     allowPrivate    = true
 } = {}) {
     const
-        namespaces = Object.keys(cutRepositories || {}),
-        repoIds    = Object.values(cutRepositories || {})
-            .map(r => r?.repositoryId)
-            .filter(Boolean);
+        authorizedNamespaces   = [],
+        authorizedRepositories = [],
+        publicNamespaces       = [],
+        publicRepositories     = [];
+
+    for (const [ns, repoMeta] of Object.entries(cutRepositories || {})) {
+        if (!repoMeta || typeof repoMeta !== 'object') continue;
+        const repoId = repoMeta.repositoryId;
+
+        if (repoMeta.visibility === 'private') {
+            if (!allowPrivate) continue;
+            const
+                repoDir   = resolveRepositoryWorktreeDir(ns, repoRoots),
+                probePath = repoMeta.probeRecord?.sourcePath,
+                probeHash = readLiveWorktreeContentHash(repoDir, probePath);
+
+            if (probeHash && probeHash === repoMeta.probeRecord?.contentHash) {
+                authorizedNamespaces.push(ns);
+                authorizedRepositories.push(ns);
+                if (repoId) authorizedRepositories.push(repoId);
+            }
+        } else {
+            publicNamespaces.push(ns);
+            publicRepositories.push(ns);
+            if (repoId) publicRepositories.push(repoId);
+
+            authorizedNamespaces.push(ns);
+            authorizedRepositories.push(ns);
+            if (repoId) authorizedRepositories.push(repoId);
+        }
+    }
 
     return {
         agentIdentity,
         allowPrivate,
-        authorizedNamespaces  : namespaces,
-        authorizedRepositories: [...namespaces, ...repoIds]
+        authorizedNamespaces,
+        authorizedRepositories,
+        publicReaderContext: {
+            agentIdentity,
+            allowPrivate          : false,
+            authorizedNamespaces  : publicNamespaces,
+            authorizedRepositories: publicRepositories
+        }
     };
 }
 
 /**
- * @summary Creates the default Chroma client using the Knowledge Base / Tier-1 Chroma configuration.
+ * @summary Checks whether a candidate vector is a finite numeric embedding array with length > 1.
+ * @param {*} vec
+ * @returns {Boolean}
+ * @private
+ */
+function isValidEmbeddingVector(vec) {
+    return Array.isArray(vec) &&
+        vec.length > 1 &&
+        vec.every(v => typeof v === 'number' && Number.isFinite(v));
+}
+
+/**
+ * @summary Validates that every vector in a batch is a non-placeholder numeric embedding of uniform dimension.
+ * @param {Array} embeddings
+ * @param {String[]} ids
+ * @param {String} storeLabel
+ * @param {Number|null} [expectedDimension=null]
+ * @private
+ */
+function assertValidUniformEmbeddings(embeddings, ids, storeLabel, expectedDimension = null) {
+    let targetDim = Number.isInteger(expectedDimension) && expectedDimension > 1 ? expectedDimension : null;
+    for (let i = 0; i < embeddings.length; i++) {
+        const
+            vec = embeddings[i],
+            id  = ids[i] || `index-${i}`;
+
+        if (!isValidEmbeddingVector(vec)) {
+            throw createCodedError(
+                'ADR_MIGRATION_VECTOR_EMBEDDING_REQUIRED',
+                `${storeLabel} requires a non-placeholder numeric embedding vector (length > 1) for '${id}'.`
+            );
+        }
+
+        if (targetDim === null) {
+            targetDim = vec.length;
+        } else if (vec.length !== targetDim) {
+            throw createCodedError(
+                'ADR_MIGRATION_VECTOR_DIMENSION_MISMATCH',
+                `${storeLabel} embedding dimension mismatch for '${id}': expected ${targetDim}, received ${vec.length}.`
+            );
+        }
+    }
+}
+
+/**
+ * @summary Builds the ADR markdown payload used when computing a fresh embedding for a migrated ADR record.
+ * @param {Object} entry
+ * @param {Object|null} [repoRoots=null]
+ * @param {String|null} [fallbackDocument=null]
+ * @returns {String}
+ * @private
+ */
+function buildAdrEmbeddingDocumentText(entry, repoRoots = null, fallbackDocument = null) {
+    const
+        ns       = entry?.sourceTuple?.namespace,
+        repoDir  = resolveRepositoryWorktreeDir(ns, repoRoots),
+        markdown = readLiveWorktreeMarkdown(repoDir, entry?.sourcePath);
+
+    if (markdown) {
+        return `${entry.title}\n\n${markdown}`;
+    }
+    if (typeof fallbackDocument === 'string' && fallbackDocument.trim().length > 0) {
+        return fallbackDocument;
+    }
+    return `${entry?.title || entry?.canonicalKey} (${entry?.canonicalKey || entry?.legacyId})`;
+}
+
+/**
+ * @summary Creates the default Chroma client for the Memory Core native graph vector store (`neo-native-graph`).
+ * @param {Object} [options={}]
  * @returns {ChromaClient}
  * @private
  */
-function createDefaultChromaClient() {
-    const {host, port} = kbConfig.engines.chroma;
-    return new ChromaClient({host, port});
+function createDefaultMemoryCoreChromaClient({clientFactory = null} = {}) {
+    registerNeoChromaEmbeddingFunctions({
+        dummyEmbeddingFunction: memoryCoreConfig.dummyEmbeddingFunction
+    });
+    const
+        chroma   = memoryCoreConfig.engines.chroma,
+        database = chroma.useTestDatabase ? chroma.databaseTest : chroma.database,
+        options  = {
+            host: chroma.host,
+            port: chroma.port,
+            ssl : false,
+            database
+        };
+    return typeof clientFactory === 'function' ? clientFactory(options) : new ChromaClient(options);
+}
+
+/**
+ * @summary Creates the default Chroma client for the Knowledge Base vector store (`neo-knowledge-base`).
+ * @param {Object} [options={}]
+ * @returns {ChromaClient}
+ * @private
+ */
+function createDefaultKbChromaClient({clientFactory = null} = {}) {
+    registerNeoChromaEmbeddingFunctions({
+        dummyEmbeddingFunction: memoryCoreConfig.dummyEmbeddingFunction
+    });
+    const
+        chroma   = kbConfig.engines.chroma,
+        database = kbConfig.chromaDatabase,
+        options  = {
+            host: chroma.host,
+            port: chroma.port,
+            ssl : false,
+            database
+        };
+    return typeof clientFactory === 'function' ? clientFactory(options) : new ChromaClient(options);
 }
 
 /**
@@ -268,22 +416,32 @@ function createDefaultChromaClient() {
  */
 export function createChromaVectorStoreAdapter({
     client         = null,
-    collectionName = null
+    clientFactory  = null,
+    collectionName = null,
+    repoRoots      = null,
+    embedText      = null
 } = {}) {
     const
-        resolvedClient         = client || createDefaultChromaClient(),
-        resolvedCollectionName = collectionName || memoryCoreConfig.collections.graph;
+        resolvedClient         = client || createDefaultMemoryCoreChromaClient({clientFactory}),
+        resolvedCollectionName = collectionName || memoryCoreConfig.collections.graph,
+        resolveEmbedding       = typeof embedText === 'function'
+            ? embedText
+            : async (text) => TextEmbeddingService.embedText(text, memoryCoreConfig.embeddingProvider, {
+                operationLabel: 'adr migration graph vector embedding',
+                operationStage: 'adr-migration-embedding',
+                service       : 'memory-core'
+            });
 
     const getCollection = async () => {
-        if (typeof resolvedClient.getOrCreateCollection === 'function') {
-            return resolvedClient.getOrCreateCollection({
-                name             : resolvedCollectionName,
-                embeddingFunction: null
-            });
+        if (!resolvedClient || typeof resolvedClient.getCollection !== 'function') {
+            throw createCodedError(
+                'ADR_MIGRATION_VECTOR_COLLECTION_MISSING',
+                `Chroma client does not support getCollection() for '${resolvedCollectionName}'.`
+            );
         }
         return resolvedClient.getCollection({
             name             : resolvedCollectionName,
-            embeddingFunction: null
+            embeddingFunction: memoryCoreConfig.dummyEmbeddingFunction
         });
     };
 
@@ -335,10 +493,15 @@ export function createChromaVectorStoreAdapter({
                 existingById = new Map(),
                 ids          = res?.ids || [];
 
+            let collectionDimension = null;
             for (let i = 0; i < ids.length; i++) {
+                const vec = res.embeddings?.[i] ?? null;
+                if (collectionDimension === null && isValidEmbeddingVector(vec)) {
+                    collectionDimension = vec.length;
+                }
                 existingById.set(ids[i], {
                     id       : ids[i],
-                    embedding: res.embeddings?.[i] ?? null,
+                    embedding: vec,
                     document : res.documents?.[i] ?? null,
                     metadata : res.metadatas?.[i] ? {...res.metadatas[i]} : {}
                 });
@@ -352,10 +515,26 @@ export function createChromaVectorStoreAdapter({
                 legacyToDelete   = [];
 
             for (const entry of manifest) {
-                const existing = existingById.get(entry.legacyId) || existingById.get(entry.canonicalKey);
+                const
+                    existingCanonical      = existingById.get(entry.canonicalKey),
+                    existingLegacy         = existingById.get(entry.legacyId),
+                    existing               = existingLegacy || existingCanonical,
+                    isSummaryVectorAnomaly = String(entry.observedState?.observedSemanticVectorId || '').startsWith('summary_'),
+                    docText                = existing?.document || `${entry.title} (${entry.canonicalKey})`;
+
+                let embedding = null;
+                if (isValidEmbeddingVector(existingCanonical?.embedding)) {
+                    embedding = existingCanonical.embedding;
+                } else if (!isSummaryVectorAnomaly && isValidEmbeddingVector(existingLegacy?.embedding)) {
+                    embedding = existingLegacy.embedding;
+                } else {
+                    const textToEmbed = buildAdrEmbeddingDocumentText(entry, repoRoots, existing?.document);
+                    embedding = await resolveEmbedding(textToEmbed, entry);
+                }
+
                 upsertIds.push(entry.canonicalKey);
-                upsertEmbeddings.push(existing?.embedding || [0]);
-                upsertDocuments.push(existing?.document || `${entry.title} (${entry.canonicalKey})`);
+                upsertEmbeddings.push(embedding);
+                upsertDocuments.push(docText);
                 upsertMetadatas.push({
                     ...(existing?.metadata || {}),
                     id          : entry.canonicalKey,
@@ -372,6 +551,13 @@ export function createChromaVectorStoreAdapter({
                     legacyToDelete.push(entry.legacyId);
                 }
             }
+
+            assertValidUniformEmbeddings(
+                upsertEmbeddings,
+                upsertIds,
+                'Memory Core vector store',
+                collectionDimension
+            );
 
             if (upsertIds.length > 0) {
                 await collection.upsert({
@@ -401,19 +587,31 @@ export function createChromaVectorStoreAdapter({
         },
 
         async restoreSnapshot(entries = [], {canonicalKeys = []} = {}) {
-            const collection = await getCollection();
+            const
+                collection        = await getCollection(),
+                restoreIds        = Array.isArray(entries) ? entries.map(([id]) => id) : [],
+                restoreEmbeddings = Array.isArray(entries) ? entries.map(([, v]) => v?.embedding) : [];
+
+            if (restoreIds.length > 0) {
+                assertValidUniformEmbeddings(
+                    restoreEmbeddings,
+                    restoreIds,
+                    'Memory Core vector store restore'
+                );
+            }
+
             if (Array.isArray(canonicalKeys) && canonicalKeys.length > 0) {
                 await collection.delete({ids: canonicalKeys});
             }
-            if (Array.isArray(entries) && entries.length > 0) {
+            if (restoreIds.length > 0) {
                 await collection.upsert({
-                    ids       : entries.map(([id]) => id),
-                    embeddings: entries.map(([, v]) => v?.embedding || [0]),
+                    ids       : restoreIds,
+                    embeddings: restoreEmbeddings,
                     documents : entries.map(([id, v]) => v?.document || String(id)),
                     metadatas : entries.map(([id, v]) => v?.metadata || {id})
                 });
             }
-            return {restoredCount: entries.length};
+            return {restoredCount: restoreIds.length};
         }
     };
 }
@@ -426,22 +624,32 @@ export function createChromaVectorStoreAdapter({
  */
 export function createChromaKbStoreAdapter({
     client         = null,
-    collectionName = null
+    clientFactory  = null,
+    collectionName = null,
+    repoRoots      = null,
+    embedText      = null
 } = {}) {
     const
-        resolvedClient         = client || createDefaultChromaClient(),
-        resolvedCollectionName = collectionName || kbConfig.collectionName;
+        resolvedClient         = client || createDefaultKbChromaClient({clientFactory}),
+        resolvedCollectionName = collectionName || kbConfig.collectionName,
+        resolveEmbedding       = typeof embedText === 'function'
+            ? embedText
+            : async (text) => TextEmbeddingService.embedText(text, memoryCoreConfig.embeddingProvider, {
+                operationLabel: 'adr migration kb vector embedding',
+                operationStage: 'adr-migration-embedding',
+                service       : 'knowledge-base'
+            });
 
     const getCollection = async () => {
-        if (typeof resolvedClient.getOrCreateCollection === 'function') {
-            return resolvedClient.getOrCreateCollection({
-                name             : resolvedCollectionName,
-                embeddingFunction: null
-            });
+        if (!resolvedClient || typeof resolvedClient.getCollection !== 'function') {
+            throw createCodedError(
+                'ADR_MIGRATION_KB_COLLECTION_MISSING',
+                `Chroma client does not support getCollection() for '${resolvedCollectionName}'.`
+            );
         }
         return resolvedClient.getCollection({
             name             : resolvedCollectionName,
-            embeddingFunction: null
+            embeddingFunction: kbConfig.dummyEmbeddingFunction
         });
     };
 
@@ -488,10 +696,15 @@ export function createChromaKbStoreAdapter({
                 existingById = new Map(),
                 ids          = res?.ids || [];
 
+            let collectionDimension = null;
             for (let i = 0; i < ids.length; i++) {
+                const vec = res.embeddings?.[i] ?? null;
+                if (collectionDimension === null && isValidEmbeddingVector(vec)) {
+                    collectionDimension = vec.length;
+                }
                 existingById.set(ids[i], {
                     id       : ids[i],
-                    embedding: res.embeddings?.[i] ?? null,
+                    embedding: vec,
                     document : res.documents?.[i] ?? null,
                     metadata : res.metadatas?.[i] ? {...res.metadatas[i]} : {}
                 });
@@ -508,11 +721,18 @@ export function createChromaKbStoreAdapter({
                 const
                     entry           = manifest[idx],
                     admissionRecord = admissionRecords[idx] || buildAdrMigrationRecordFromManifestEntry(entry),
-                    existing        = existingById.get(entry.legacyId) || existingById.get(entry.canonicalKey);
+                    existing        = existingById.get(entry.legacyId) || existingById.get(entry.canonicalKey),
+                    docText         = existing?.document || `${entry.title} (${entry.canonicalKey})`;
+
+                let embedding = isValidEmbeddingVector(existing?.embedding) ? existing.embedding : null;
+                if (!embedding) {
+                    const textToEmbed = buildAdrEmbeddingDocumentText(entry, repoRoots, existing?.document);
+                    embedding = await resolveEmbedding(textToEmbed, entry);
+                }
 
                 upsertIds.push(entry.canonicalKey);
-                upsertEmbeddings.push(existing?.embedding || [0]);
-                upsertDocuments.push(existing?.document || `${entry.title} (${entry.canonicalKey})`);
+                upsertEmbeddings.push(embedding);
+                upsertDocuments.push(docText);
                 upsertMetadatas.push({
                     ...(existing?.metadata || {}),
                     id               : entry.canonicalKey,
@@ -534,6 +754,13 @@ export function createChromaKbStoreAdapter({
                 }
             }
 
+            assertValidUniformEmbeddings(
+                upsertEmbeddings,
+                upsertIds,
+                'Knowledge Base vector store',
+                collectionDimension
+            );
+
             if (upsertIds.length > 0) {
                 await collection.upsert({
                     ids       : upsertIds,
@@ -554,19 +781,31 @@ export function createChromaKbStoreAdapter({
         },
 
         async restoreSnapshot(entries = [], {canonicalKeys = []} = {}) {
-            const collection = await getCollection();
+            const
+                collection        = await getCollection(),
+                restoreIds        = Array.isArray(entries) ? entries.map(([id]) => id) : [],
+                restoreEmbeddings = Array.isArray(entries) ? entries.map(([, v]) => v?.embedding) : [];
+
+            if (restoreIds.length > 0) {
+                assertValidUniformEmbeddings(
+                    restoreEmbeddings,
+                    restoreIds,
+                    'Knowledge Base vector store restore'
+                );
+            }
+
             if (Array.isArray(canonicalKeys) && canonicalKeys.length > 0) {
                 await collection.delete({ids: canonicalKeys});
             }
-            if (Array.isArray(entries) && entries.length > 0) {
+            if (restoreIds.length > 0) {
                 await collection.upsert({
-                    ids       : entries.map(([id]) => id),
-                    embeddings: entries.map(([, v]) => v?.embedding || [0]),
+                    ids       : restoreIds,
+                    embeddings: restoreEmbeddings,
                     documents : entries.map(([id, v]) => v?.document || String(id)),
                     metadatas : entries.map(([id, v]) => v?.metadata || {id})
                 });
             }
-            return {restoredCount: entries.length};
+            return {restoredCount: restoreIds.length};
         }
     };
 }
@@ -578,26 +817,34 @@ export function createChromaKbStoreAdapter({
  */
 export function composeDefaultMigrationStores({
     chromaClient         = null,
+    vectorChromaClient   = null,
+    kbChromaClient       = null,
+    clientFactory        = null,
     vectorStore          = null,
     kbStore              = null,
     vectorCollectionName = null,
     kbCollectionName     = null,
+    embedText            = null,
     manifest             = REVIEWED_41_ADR_MIGRATION_MANIFEST,
     cutRepositories      = MIGRATION_CUT_REPOSITORIES,
     repoRoots            = null,
     sourceProbe          = undefined,
     readerContext        = undefined
 } = {}) {
-    const sharedClient = chromaClient || ((!vectorStore || !kbStore) ? createDefaultChromaClient() : null);
-
     return {
         vectorStore  : vectorStore || createChromaVectorStoreAdapter({
-            client        : sharedClient,
-            collectionName: vectorCollectionName
+            client        : vectorChromaClient || chromaClient,
+            clientFactory,
+            collectionName: vectorCollectionName,
+            repoRoots,
+            embedText
         }),
         kbStore      : kbStore || createChromaKbStoreAdapter({
-            client        : sharedClient,
-            collectionName: kbCollectionName
+            client        : kbChromaClient || chromaClient,
+            clientFactory,
+            collectionName: kbCollectionName,
+            repoRoots,
+            embedText
         }),
         sourceProbe  : sourceProbe !== undefined ? sourceProbe : createDefaultSourceProbe({
             manifest,
@@ -605,7 +852,8 @@ export function composeDefaultMigrationStores({
             repoRoots
         }),
         readerContext: readerContext !== undefined ? readerContext : createDefaultReaderContext({
-            cutRepositories
+            cutRepositories,
+            repoRoots
         })
     };
 }
@@ -710,7 +958,7 @@ export function buildAdrMigrationRecordFromManifestEntry(entry) {
             targetKey   : entry.canonicalKey
         })),
         historicalReferences = (entry.historicalReferences || []).map(ref =>
-            normalizeHistoricalOriginReference(ref, entry.assignmentEvidence?.namespace || 'neomjs/neo')
+            normalizeHistoricalOriginReference(ref, entry.assignmentEvidence?.namespace)
         );
 
     return {
@@ -1006,9 +1254,14 @@ export function verifyMigrationPreconditions({
             );
         }
 
-        if (entry.custodyTransition?.redirectContentHash &&
-            effectiveSourceProbe.redirectContentHashes &&
-            typeof effectiveSourceProbe.redirectContentHashes === 'object') {
+        if (entry.custodyTransition?.redirectContentHash) {
+            if (!effectiveSourceProbe.redirectContentHashes ||
+                typeof effectiveSourceProbe.redirectContentHashes !== 'object') {
+                throw createCodedError(
+                    'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
+                    `sourceProbe.redirectContentHashes is missing for moved ADR '${entry.legacyId}'.`
+                );
+            }
             const actualRedirectHash = effectiveSourceProbe.redirectContentHashes[entry.legacyId] ??
                 effectiveSourceProbe.redirectContentHashes[entry.canonicalKey];
 
@@ -1039,14 +1292,19 @@ export function verifyMigrationPreconditions({
             );
         }
 
-        if (effectiveSourceProbe.probeHashes && typeof effectiveSourceProbe.probeHashes === 'object') {
-            const actualProbeHash = effectiveSourceProbe.probeHashes[ns];
-            if (!actualProbeHash || actualProbeHash !== probeSpec.contentHash) {
-                throw createCodedError(
-                    'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
-                    `Private repository '${ns}' probe contentHash '${actualProbeHash ?? 'MISSING'}' drifted from '${probeSpec.contentHash}'.`
-                );
-            }
+        if (!effectiveSourceProbe.probeHashes || typeof effectiveSourceProbe.probeHashes !== 'object') {
+            throw createCodedError(
+                'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
+                `sourceProbe.probeHashes is missing for private repository '${ns}'.`
+            );
+        }
+
+        const actualProbeHash = effectiveSourceProbe.probeHashes[ns];
+        if (!actualProbeHash || actualProbeHash !== probeSpec.contentHash) {
+            throw createCodedError(
+                'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
+                `Private repository '${ns}' probe contentHash '${actualProbeHash ?? 'MISSING'}' drifted from '${probeSpec.contentHash}'.`
+            );
         }
 
         const stageProbeRecord = {
@@ -1075,7 +1333,16 @@ export function verifyMigrationPreconditions({
         }
 
         if (effectiveSourceProbe.requirePrivateStageAccess !== false) {
-            if (!isAdrReaderAuthorized(stageProbeRecord, effectiveReaderContext || {})) {
+            const publicContext = effectiveReaderContext?.publicReaderContext || {
+                agentIdentity         : effectiveReaderContext?.agentIdentity || '@neo-public-reader',
+                allowPrivate          : false,
+                authorizedNamespaces  : (effectiveReaderContext?.authorizedNamespaces || []).filter(item => item !== ns),
+                authorizedRepositories: (effectiveReaderContext?.authorizedRepositories || []).filter(
+                    item => item !== ns && item !== repoMeta.repositoryId
+                )
+            };
+            if (!isAdrReaderAuthorized(stageProbeRecord, effectiveReaderContext || {}) ||
+                isAdrReaderAuthorized(stageProbeRecord, publicContext)) {
                 throw createCodedError(
                     'ADR_MIGRATION_READER_PRECONDITION_FAILED',
                     `Reader context is not authorized for private repository '${ns}' required by cut probe.`
