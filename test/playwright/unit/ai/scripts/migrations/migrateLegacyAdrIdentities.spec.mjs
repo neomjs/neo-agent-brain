@@ -14,6 +14,7 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
+import {execFileSync} from 'node:child_process';
 import Database       from 'better-sqlite3';
 import fs             from 'fs-extra';
 import os             from 'os';
@@ -39,6 +40,7 @@ let AdrSource;
 let GRAPH_NODE_WRITER_INVENTORY;
 let MIGRATION_PHASES;
 let composeDefaultMigrationStores;
+let computeMigrationContentHash;
 let createAdrMigrationBackup;
 let createChromaKbStoreAdapter;
 let createChromaVectorStoreAdapter;
@@ -53,6 +55,199 @@ let reconcileRebuildAndCustodyControls;
 let restoreAdrMigrationBackup;
 let runCli;
 let verifyMigrationPreconditions;
+let gitWorktreeCutFixture = null;
+
+/**
+ * @summary Builds a compliant `sourceProbe` object from the manifest and cut repository descriptors
+ * so unit tests remain self-contained on CI runners where sibling repositories (`../neo`,
+ * `../neo-agent-institution`, `../neo-stage`) are not checked out beside `neo-agent-brain`.
+ * @param {Array} [manifest=REVIEWED_41_ADR_MIGRATION_MANIFEST]
+ * @param {Object} [cutRepositories=MIGRATION_CUT_REPOSITORIES]
+ * @returns {Object}
+ */
+function createCompliantSourceProbe(
+    manifest        = REVIEWED_41_ADR_MIGRATION_MANIFEST,
+    cutRepositories = MIGRATION_CUT_REPOSITORIES
+) {
+    const
+        revisions             = {},
+        contentHashes         = {},
+        redirectContentHashes = {},
+        probeHashes           = {};
+
+    for (const [ns, repoMeta] of Object.entries(cutRepositories || {})) {
+        if (repoMeta?.cutRevision) {
+            revisions[ns] = repoMeta.cutRevision;
+        }
+        if (repoMeta?.probeRecord?.contentHash) {
+            probeHashes[ns] = repoMeta.probeRecord.contentHash;
+        }
+    }
+
+    for (const entry of manifest || []) {
+        if (entry?.sourceTuple?.contentHash) {
+            contentHashes[entry.legacyId]     = entry.sourceTuple.contentHash;
+            contentHashes[entry.canonicalKey] = entry.sourceTuple.contentHash;
+        }
+        if (entry?.custodyTransition?.redirectContentHash) {
+            redirectContentHashes[entry.legacyId]     = entry.custodyTransition.redirectContentHash;
+            redirectContentHashes[entry.canonicalKey] = entry.custodyTransition.redirectContentHash;
+        }
+    }
+
+    return {
+        revisions,
+        contentHashes,
+        redirectContentHashes,
+        probeHashes,
+        requirePrivateStageAccess: true
+    };
+}
+
+/**
+ * @summary Builds a compliant `readerContext` object (with `publicReaderContext`) for unit tests.
+ * @param {Object} [cutRepositories=MIGRATION_CUT_REPOSITORIES]
+ * @returns {Object}
+ */
+function createCompliantReaderContext(cutRepositories = MIGRATION_CUT_REPOSITORIES) {
+    const
+        authorizedNamespaces   = [],
+        authorizedRepositories = [],
+        publicNamespaces       = [],
+        publicRepositories     = [];
+
+    for (const [ns, repoMeta] of Object.entries(cutRepositories || {})) {
+        authorizedNamespaces.push(ns);
+        authorizedRepositories.push(ns);
+        if (repoMeta?.repositoryId) {
+            authorizedRepositories.push(repoMeta.repositoryId);
+        }
+        if (repoMeta?.visibility !== 'private') {
+            publicNamespaces.push(ns);
+            publicRepositories.push(ns);
+            if (repoMeta?.repositoryId) {
+                publicRepositories.push(repoMeta.repositoryId);
+            }
+        }
+    }
+
+    return {
+        agentIdentity: '@neo-migration-verifier',
+        allowPrivate : true,
+        authorizedNamespaces,
+        authorizedRepositories,
+        publicReaderContext: {
+            agentIdentity         : '@neo-migration-verifier',
+            allowPrivate          : false,
+            authorizedNamespaces  : publicNamespaces,
+            authorizedRepositories: publicRepositories
+        }
+    };
+}
+
+/**
+ * @summary Materializes 4 disposable git repositories in `os.tmpdir()` (`neomjs/neo`,
+ * `neomjs/neo-agent-brain`, `neomjs/neo-agent-institution`, `neomjs/neo-stage`) with real commits
+ * and worktree files so `createDefaultSourceProbe` and `createDefaultReaderContext` can be tested
+ * against real git worktrees on CI without requiring host sibling checkouts.
+ * @returns {Promise<{rootDir: String, repoRoots: Object, cutRepositories: Object, manifest: Array}>}
+ */
+async function createGitWorktreeCutFixture() {
+    const
+        rootDir   = await fs.mkdtemp(path.join(os.tmpdir(), 'adr-git-cut-1014-')),
+        repoRoots = {};
+
+    for (const ns of Object.keys(MIGRATION_CUT_REPOSITORIES)) {
+        const
+            shortName = ns.split('/')[1],
+            repoDir   = path.join(rootDir, shortName);
+        await fs.ensureDir(repoDir);
+        repoRoots[ns] = repoDir;
+    }
+
+    const manifest = [];
+    for (const entry of REVIEWED_41_ADR_MIGRATION_MANIFEST) {
+        const
+            ns      = entry.sourceTuple.namespace,
+            repoDir = repoRoots[ns],
+            absPath = path.join(repoDir, entry.sourcePath),
+            body    = `# ADR ${entry.adrNumber}: ${entry.title}\n\nCanonical: ${entry.canonicalKey}\n`,
+            hash    = computeMigrationContentHash(body);
+
+        await fs.ensureDir(path.dirname(absPath));
+        await fs.writeFile(absPath, body, 'utf8');
+
+        let updatedTransition = entry.custodyTransition ? {...entry.custodyTransition} : null;
+        if (updatedTransition?.redirectPath) {
+            const
+                originDir  = repoRoots[updatedTransition.fromNamespace],
+                stubPath   = path.join(originDir, updatedTransition.redirectPath),
+                stubBody   = `---\ntype: redirect\ntarget: ${entry.canonicalKey}\n---\n`,
+                stubHash   = computeMigrationContentHash(stubBody);
+
+            await fs.ensureDir(path.dirname(stubPath));
+            await fs.writeFile(stubPath, stubBody, 'utf8');
+            updatedTransition.redirectContentHash = stubHash;
+        }
+
+        manifest.push({
+            ...entry,
+            sourceTuple      : {
+                ...entry.sourceTuple,
+                contentHash: hash
+            },
+            custodyTransition: updatedTransition
+        });
+    }
+
+    const
+        stageMeta     = MIGRATION_CUT_REPOSITORIES['neomjs/neo-stage'],
+        stageProbeAbs = path.join(repoRoots['neomjs/neo-stage'], stageMeta.probeRecord.sourcePath),
+        stageBody     = `# ADR 0001: The Engine Contract\n\nPrivate stage probe.\n`,
+        stageHash     = computeMigrationContentHash(stageBody);
+
+    await fs.ensureDir(path.dirname(stageProbeAbs));
+    await fs.writeFile(stageProbeAbs, stageBody, 'utf8');
+
+    const cutRepositories = {};
+    for (const [ns, repoMeta] of Object.entries(MIGRATION_CUT_REPOSITORIES)) {
+        const repoDir = repoRoots[ns];
+        execFileSync('git', ['init'], {cwd: repoDir, stdio: 'ignore'});
+        execFileSync('git', ['config', 'user.email', 'test@neomjs.com'], {cwd: repoDir, stdio: 'ignore'});
+        execFileSync('git', ['config', 'user.name', 'Neo Test'], {cwd: repoDir, stdio: 'ignore'});
+        execFileSync('git', ['add', '.'], {cwd: repoDir, stdio: 'ignore'});
+        execFileSync('git', ['commit', '-m', 'Initial cut fixture'], {cwd: repoDir, stdio: 'ignore'});
+
+        const headRev = execFileSync('git', ['rev-parse', '--short=8', 'HEAD'], {
+            cwd     : repoDir,
+            encoding: 'utf8'
+        }).trim();
+
+        cutRepositories[ns] = {
+            ...repoMeta,
+            cutRevision: headRev,
+            ...(repoMeta.probeRecord
+                ? {
+                    probeRecord: {
+                        ...repoMeta.probeRecord,
+                        contentHash: stageHash
+                    }
+                }
+                : {})
+        };
+    }
+
+    for (const entry of manifest) {
+        entry.sourceTuple.revision = cutRepositories[entry.sourceTuple.namespace].cutRevision;
+    }
+
+    return {
+        rootDir,
+        repoRoots,
+        cutRepositories,
+        manifest
+    };
+}
 
 /**
  * @summary Creates an in-memory ChromaClient test double supporting `getCollection` (without
@@ -339,6 +534,7 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
         ({
             MIGRATION_PHASES,
             composeDefaultMigrationStores,
+            computeMigrationContentHash,
             createAdrMigrationBackup,
             createChromaKbStoreAdapter,
             createChromaVectorStoreAdapter,
@@ -354,6 +550,13 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             runCli,
             verifyMigrationPreconditions
         } = await import('../../../../../../ai/scripts/migrations/migrateLegacyAdrIdentities.mjs'));
+        gitWorktreeCutFixture = await createGitWorktreeCutFixture();
+    });
+
+    test.afterAll(async () => {
+        if (gitWorktreeCutFixture?.rootDir) {
+            await fs.remove(gitWorktreeCutFixture.rootDir);
+        }
     });
 
     test.beforeEach(() => {
@@ -425,8 +628,16 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             'ISSUE:neomjs/neo-agent-institution#351'
         ]);
 
-        // Verify default source probe against stamped cut revisions and contentHashes
-        const liveProbe = createDefaultSourceProbe();
+        // Verify createDefaultSourceProbe and createDefaultReaderContext against real git worktrees
+        const liveProbe = createDefaultSourceProbe({
+            manifest       : gitWorktreeCutFixture.manifest,
+            cutRepositories: gitWorktreeCutFixture.cutRepositories,
+            repoRoots      : gitWorktreeCutFixture.repoRoots
+        });
+        const liveReaderContext = createDefaultReaderContext({
+            cutRepositories: gitWorktreeCutFixture.cutRepositories,
+            repoRoots      : gitWorktreeCutFixture.repoRoots
+        });
         expect(Object.keys(liveProbe.revisions)).toEqual(
             expect.arrayContaining([
                 'neomjs/neo',
@@ -438,8 +649,10 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
         expect(Object.keys(liveProbe.contentHashes)).toHaveLength(82);
         expect(
             verifyMigrationPreconditions({
-                sourceProbe  : liveProbe,
-                readerContext: createDefaultReaderContext()
+                manifest       : gitWorktreeCutFixture.manifest,
+                cutRepositories: gitWorktreeCutFixture.cutRepositories,
+                sourceProbe    : liveProbe,
+                readerContext  : liveReaderContext
             }).ok
         ).toBe(true);
 
@@ -453,14 +666,23 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
     });
 
     test('AC2: defaults to dry-run and refuses inconsistent proof, duplicate claims, lost provenance, missing stores, or changed preconditions before any write', async () => {
-        const {db, vectorStore, kbStore} = createSeededDisposableStores();
+        const
+            {db, vectorStore, kbStore} = createSeededDisposableStores(),
+            sourceProbe                = createCompliantSourceProbe(),
+            readerContext              = createCompliantReaderContext();
 
         try {
             const parsedDefault = parseArgs([]);
             expect(parsedDefault.dryRun).toBe(true);
             expect(parsedDefault.apply).toBe(false);
 
-            const dryRunRes = await migrateLegacyAdrIdentities({db, vectorStore, kbStore});
+            const dryRunRes = await migrateLegacyAdrIdentities({
+                db,
+                vectorStore,
+                kbStore,
+                sourceProbe,
+                readerContext
+            });
             expect(dryRunRes.mode).toBe('dry-run');
             expect(dryRunRes.applied).toBe(false);
             expect(dryRunRes.plannedCount).toBe(41);
@@ -477,10 +699,10 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
 
             // 0a. Missing vectorStore or kbStore on --apply fails closed before any write
             await expect(
-                migrateLegacyAdrIdentities({db, kbStore, apply: true})
+                migrateLegacyAdrIdentities({db, kbStore, apply: true, sourceProbe, readerContext})
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_VECTOR_STORE_REQUIRED'});
             await expect(
-                migrateLegacyAdrIdentities({db, vectorStore, apply: true})
+                migrateLegacyAdrIdentities({db, vectorStore, apply: true, sourceProbe, readerContext})
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_KB_STORE_REQUIRED'});
 
             // 1. Incomplete inventory refusal
@@ -490,7 +712,9 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                     vectorStore,
                     kbStore,
                     apply   : true,
-                    manifest: REVIEWED_41_ADR_MIGRATION_MANIFEST.slice(0, 40)
+                    manifest: REVIEWED_41_ADR_MIGRATION_MANIFEST.slice(0, 40),
+                    sourceProbe,
+                    readerContext
                 })
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_INCOMPLETE_INVENTORY'});
 
@@ -501,7 +725,15 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                     : entry
             );
             await expect(
-                migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true, manifest: badIdentityManifest})
+                migrateLegacyAdrIdentities({
+                    db,
+                    vectorStore,
+                    kbStore,
+                    apply   : true,
+                    manifest: badIdentityManifest,
+                    sourceProbe,
+                    readerContext
+                })
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_INCONSISTENT_IDENTITY_PROOF'});
 
             // 3. Duplicate canonical claim refusal
@@ -516,7 +748,15 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                     : entry
             );
             await expect(
-                migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true, manifest: duplicateClaimManifest})
+                migrateLegacyAdrIdentities({
+                    db,
+                    vectorStore,
+                    kbStore,
+                    apply   : true,
+                    manifest: duplicateClaimManifest,
+                    sourceProbe,
+                    readerContext
+                })
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_DUPLICATE_CANONICAL_CLAIM'});
 
             // 4. Lost provenance refusal
@@ -526,7 +766,15 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                     : entry
             );
             await expect(
-                migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true, manifest: lostProvenanceManifest})
+                migrateLegacyAdrIdentities({
+                    db,
+                    vectorStore,
+                    kbStore,
+                    apply   : true,
+                    manifest: lostProvenanceManifest,
+                    sourceProbe,
+                    readerContext
+                })
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_LOST_PROVENANCE'});
 
             // 5. Incomplete shared vector owner inventory refusal
@@ -536,11 +784,18 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                     : entry
             );
             await expect(
-                migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true, manifest: missingOwnersManifest})
+                migrateLegacyAdrIdentities({
+                    db,
+                    vectorStore,
+                    kbStore,
+                    apply   : true,
+                    manifest: missingOwnersManifest,
+                    sourceProbe,
+                    readerContext
+                })
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_INCOMPLETE_VECTOR_OWNER_INVENTORY'});
 
             // 6. Changed or omitted source precondition refusal (fail-closed on missing hash/revision)
-            const fullProbe = createDefaultSourceProbe();
             await expect(
                 migrateLegacyAdrIdentities({
                     db,
@@ -548,15 +803,16 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                     kbStore,
                     apply      : true,
                     sourceProbe: {
-                        ...fullProbe,
-                        revisions: {...fullProbe.revisions, 'neomjs/neo': 'deadbeef'}
-                    }
+                        ...sourceProbe,
+                        revisions: {...sourceProbe.revisions, 'neomjs/neo': 'deadbeef'}
+                    },
+                    readerContext
                 })
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED'});
 
             const probeMissingOneHash = {
-                ...fullProbe,
-                contentHashes: {...fullProbe.contentHashes}
+                ...sourceProbe,
+                contentHashes: {...sourceProbe.contentHashes}
             };
             delete probeMissingOneHash.contentHashes[REVIEWED_41_ADR_MIGRATION_MANIFEST[0].legacyId];
             delete probeMissingOneHash.contentHashes[REVIEWED_41_ADR_MIGRATION_MANIFEST[0].canonicalKey];
@@ -566,7 +822,8 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                     vectorStore,
                     kbStore,
                     apply      : true,
-                    sourceProbe: probeMissingOneHash
+                    sourceProbe: probeMissingOneHash,
+                    readerContext
                 })
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED'});
 
@@ -576,7 +833,7 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                 JSON.stringify({id: 'adr-0099', label: 'ADR'})
             );
             await expect(
-                migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true})
+                migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true, sourceProbe, readerContext})
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_DATA_PRECONDITION_CHANGED'});
         } finally {
             db.close();
@@ -584,14 +841,19 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
     });
 
     test('AC3: disposable-state migration relabels 11 anomaly nodes, detaches shared summary vector without harming non-ADR owners, preserves edge provenance, and normalizes origins', async () => {
-        const {db, vectorStore, kbStore} = createSeededDisposableStores();
+        const
+            {db, vectorStore, kbStore} = createSeededDisposableStores(),
+            sourceProbe                = createCompliantSourceProbe(),
+            readerContext              = createCompliantReaderContext();
 
         try {
             const result = await migrateLegacyAdrIdentities({
                 db,
                 vectorStore,
                 kbStore,
-                apply: true
+                apply: true,
+                sourceProbe,
+                readerContext
             });
 
             expect(result.applied).toBe(true);
@@ -708,6 +970,10 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             tmpDir                     = await fs.mkdtemp(path.join(os.tmpdir(), 'adr-migration-1014-')),
             backupPath                 = path.join(tmpDir, 'pre-migration-backup.json');
 
+        const
+            sourceProbe   = createCompliantSourceProbe(),
+            readerContext = createCompliantReaderContext();
+
         try {
             // Interrupt after each store boundary and verify deterministic resumption
             for (const phaseToInterrupt of [
@@ -725,6 +991,8 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                         kbStore,
                         apply         : true,
                         backupPath,
+                        sourceProbe,
+                        readerContext,
                         failAfterPhase: phaseToInterrupt
                     })
                 ).rejects.toMatchObject({code: 'ADR_MIGRATION_INTERRUPTED_FOR_TEST'});
@@ -742,7 +1010,9 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                 vectorStore,
                 kbStore,
                 apply: true,
-                backupPath
+                backupPath,
+                sourceProbe,
+                readerContext
             });
             expect(completedRes.applied).toBe(true);
             expect(completedRes.resumed).toBe(true);
@@ -755,7 +1025,9 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                 vectorStore,
                 kbStore,
                 apply: true,
-                backupPath
+                backupPath,
+                sourceProbe,
+                readerContext
             });
             expect(rerunRes.noOpRerun).toBe(true);
             expect(rerunRes.applied).toBe(false);
@@ -892,8 +1164,8 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                 {
                     vectorStore  : chromaVectorStore,
                     kbStore      : chromaKbStore,
-                    sourceProbe  : createDefaultSourceProbe(),
-                    readerContext: createDefaultReaderContext()
+                    sourceProbe  : createCompliantSourceProbe(),
+                    readerContext: createCompliantReaderContext()
                 }
             );
             expect(standaloneBackupRes.mode).toBe('backup');
@@ -908,8 +1180,8 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                 {
                     vectorStore  : chromaVectorStore,
                     kbStore      : chromaKbStore,
-                    sourceProbe  : createDefaultSourceProbe(),
-                    readerContext: createDefaultReaderContext()
+                    sourceProbe  : createCompliantSourceProbe(),
+                    readerContext: createCompliantReaderContext()
                 }
             );
             expect(cliApplyRes.applied).toBe(true);
@@ -1183,59 +1455,86 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
     });
 
     test('AC8: revalidates reader authorization for private neomjs/neo-stage from manifest-derived probeRecord before cut', () => {
-        const liveProbe = createDefaultSourceProbe();
+        const
+            liveProbe = createDefaultSourceProbe({
+                manifest       : gitWorktreeCutFixture.manifest,
+                cutRepositories: gitWorktreeCutFixture.cutRepositories,
+                repoRoots      : gitWorktreeCutFixture.repoRoots
+            }),
+            liveReader = createDefaultReaderContext({
+                cutRepositories: gitWorktreeCutFixture.cutRepositories,
+                repoRoots      : gitWorktreeCutFixture.repoRoots
+            });
 
         expect(() =>
             verifyMigrationPreconditions({
-                sourceProbe  : liveProbe,
-                readerContext: {authorizedNamespaces: ['neomjs/neo', 'neomjs/neo-agent-brain']}
+                manifest       : gitWorktreeCutFixture.manifest,
+                cutRepositories: gitWorktreeCutFixture.cutRepositories,
+                sourceProbe    : liveProbe,
+                readerContext  : {authorizedNamespaces: ['neomjs/neo', 'neomjs/neo-agent-brain']}
             })
         ).toThrow(expect.objectContaining({code: 'ADR_MIGRATION_READER_PRECONDITION_FAILED'}));
 
         // Missing probeRecord on private cut repository fails closed with ADR_MIGRATION_STAGE_POLICY_MISSING
         const cutReposWithoutStageProbe = {
-            ...MIGRATION_CUT_REPOSITORIES,
+            ...gitWorktreeCutFixture.cutRepositories,
             'neomjs/neo-stage': {
-                ...MIGRATION_CUT_REPOSITORIES['neomjs/neo-stage'],
+                ...gitWorktreeCutFixture.cutRepositories['neomjs/neo-stage'],
                 probeRecord: null
             }
         };
         expect(() =>
             verifyMigrationPreconditions({
+                manifest       : gitWorktreeCutFixture.manifest,
                 cutRepositories: cutReposWithoutStageProbe,
                 sourceProbe    : liveProbe,
-                readerContext  : createDefaultReaderContext()
+                readerContext  : liveReader
             })
         ).toThrow(expect.objectContaining({code: 'ADR_MIGRATION_STAGE_POLICY_MISSING'}));
 
         const authorizedPrecheck = verifyMigrationPreconditions({
-            sourceProbe  : liveProbe,
-            readerContext: createDefaultReaderContext()
+            manifest       : gitWorktreeCutFixture.manifest,
+            cutRepositories: gitWorktreeCutFixture.cutRepositories,
+            sourceProbe    : liveProbe,
+            readerContext  : liveReader
         });
         expect(authorizedPrecheck.ok).toBe(true);
 
         // Missing checkout in createDefaultSourceProbe fails closed (never falls back to manifest hashes/revisions)
         const missingRepoProbe = createDefaultSourceProbe({
-            repoRoots: {'neomjs/neo': path.join(os.tmpdir(), 'nonexistent-neo-checkout-1014')}
+            manifest       : gitWorktreeCutFixture.manifest,
+            cutRepositories: gitWorktreeCutFixture.cutRepositories,
+            repoRoots      : {
+                ...gitWorktreeCutFixture.repoRoots,
+                'neomjs/neo': path.join(os.tmpdir(), 'nonexistent-neo-checkout-1014')
+            }
         });
         expect(missingRepoProbe.revisions['neomjs/neo']).toBeUndefined();
         expect(missingRepoProbe.contentHashes['adr-0004']).toBeUndefined();
         expect(() =>
             verifyMigrationPreconditions({
-                sourceProbe  : missingRepoProbe,
-                readerContext: createDefaultReaderContext()
+                manifest       : gitWorktreeCutFixture.manifest,
+                cutRepositories: gitWorktreeCutFixture.cutRepositories,
+                sourceProbe    : missingRepoProbe,
+                readerContext  : liveReader
             })
         ).toThrow(expect.objectContaining({code: 'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED'}));
 
         // Missing private checkout in createDefaultReaderContext withholds private stage access and fails closed
         const missingStageReaderContext = createDefaultReaderContext({
-            repoRoots: {'neomjs/neo-stage': path.join(os.tmpdir(), 'nonexistent-stage-checkout-1014')}
+            cutRepositories: gitWorktreeCutFixture.cutRepositories,
+            repoRoots      : {
+                ...gitWorktreeCutFixture.repoRoots,
+                'neomjs/neo-stage': path.join(os.tmpdir(), 'nonexistent-stage-checkout-1014')
+            }
         });
         expect(missingStageReaderContext.authorizedNamespaces).not.toContain('neomjs/neo-stage');
         expect(() =>
             verifyMigrationPreconditions({
-                sourceProbe  : liveProbe,
-                readerContext: missingStageReaderContext
+                manifest       : gitWorktreeCutFixture.manifest,
+                cutRepositories: gitWorktreeCutFixture.cutRepositories,
+                sourceProbe    : liveProbe,
+                readerContext  : missingStageReaderContext
             })
         ).toThrow(expect.objectContaining({code: 'ADR_MIGRATION_READER_PRECONDITION_FAILED'}));
     });
