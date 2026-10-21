@@ -38,14 +38,90 @@ import {
 let AdrSource;
 let GRAPH_NODE_WRITER_INVENTORY;
 let MIGRATION_PHASES;
+let composeDefaultMigrationStores;
 let createAdrMigrationBackup;
+let createChromaKbStoreAdapter;
+let createChromaVectorStoreAdapter;
+let createDefaultReaderContext;
+let createDefaultSourceProbe;
 let ensureMigrationTables;
 let getUsageText;
 let migrateLegacyAdrIdentities;
+let normalizeHistoricalOriginReference;
 let parseArgs;
 let reconcileRebuildAndCustodyControls;
 let restoreAdrMigrationBackup;
+let runCli;
 let verifyMigrationPreconditions;
+
+/**
+ * @summary Creates an in-memory ChromaClient test double supporting `getOrCreateCollection`,
+ * `get`, `upsert`, and `delete` across named collections (`neo-native-graph`, `neo-knowledge-base`).
+ * @returns {Object}
+ */
+function createMockChromaClient() {
+    const collections = new Map();
+
+    const getOrCreate = name => {
+        if (!collections.has(name)) {
+            const store = new Map();
+            collections.set(name, {
+                name,
+                store,
+                async get({ids = []} = {}) {
+                    const
+                        outIds        = [],
+                        outEmbeddings = [],
+                        outDocuments  = [],
+                        outMetadatas  = [];
+
+                    for (const id of ids) {
+                        if (store.has(id)) {
+                            const row = store.get(id);
+                            outIds.push(id);
+                            outEmbeddings.push(row.embedding ?? [0.1, 0.2]);
+                            outDocuments.push(row.document ?? id);
+                            outMetadatas.push(row.metadata ? {...row.metadata} : {});
+                        }
+                    }
+
+                    return {
+                        ids       : outIds,
+                        embeddings: outEmbeddings,
+                        documents : outDocuments,
+                        metadatas : outMetadatas
+                    };
+                },
+                async upsert({ids = [], embeddings = [], documents = [], metadatas = []} = {}) {
+                    for (let i = 0; i < ids.length; i++) {
+                        store.set(ids[i], {
+                            id       : ids[i],
+                            embedding: embeddings[i] ?? [0.1, 0.2],
+                            document : documents[i] ?? ids[i],
+                            metadata : metadatas[i] ? {...metadatas[i]} : {}
+                        });
+                    }
+                },
+                async delete({ids = []} = {}) {
+                    for (const id of ids) {
+                        store.delete(id);
+                    }
+                }
+            });
+        }
+        return collections.get(name);
+    };
+
+    return {
+        collections,
+        async getOrCreateCollection({name}) {
+            return getOrCreate(name);
+        },
+        async getCollection({name}) {
+            return getOrCreate(name);
+        }
+    };
+}
 
 /**
  * @summary Seeds a disposable SQLite database, vectorStore Map, and kbStore Map with the
@@ -121,7 +197,7 @@ function createSeededDisposableStores() {
                 title               : entry.title,
                 filePath            : `learn/agentos/decisions/${entry.fileName}`,
                 historicalReferences: entry.adrNumber === '0011'
-                    ? ['#11377', 'PULL_REQUEST:#19722']
+                    ? ['#11377', 'PULL_REQUEST:#19722', '#999999']
                     : [...entry.historicalReferences]
             }
         };
@@ -140,6 +216,13 @@ function createSeededDisposableStores() {
             source: `learn/agentos/decisions/${entry.fileName}`
         });
     }
+
+    // Seed shared vector record in vectorStore for 0038 + session:neo_recovery
+    vectorStore.set('summary_7c49107b-04f0-4e9c-ad86-65513999d61b', {
+        id       : 'summary_7c49107b-04f0-4e9c-ad86-65513999d61b',
+        embedding: [0.5, 0.6, 0.7],
+        ownerId  : 'session:neo_recovery'
+    });
 
     // Also seed an unrelated KB document
     kbStore.set('guide:unrelated-doc', {
@@ -229,13 +312,20 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
         ({GRAPH_NODE_WRITER_INVENTORY} = await import('../../../../../../ai/services/memory-core/GraphService.mjs'));
         ({
             MIGRATION_PHASES,
+            composeDefaultMigrationStores,
             createAdrMigrationBackup,
+            createChromaKbStoreAdapter,
+            createChromaVectorStoreAdapter,
+            createDefaultReaderContext,
+            createDefaultSourceProbe,
             ensureMigrationTables,
             getUsageText,
             migrateLegacyAdrIdentities,
+            normalizeHistoricalOriginReference,
             parseArgs,
             reconcileRebuildAndCustodyControls,
             restoreAdrMigrationBackup,
+            runCli,
             verifyMigrationPreconditions
         } = await import('../../../../../../ai/scripts/migrations/migrateLegacyAdrIdentities.mjs'));
     });
@@ -250,6 +340,10 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
         expect(OBSERVED_11_CENSUS_ANOMALY_NUMBERS).toHaveLength(11);
         expect(OBSERVED_LIVE_ANOMALY_NUMBERS).toHaveLength(12);
         expect(MOVED_FM_ADR_NUMBERS).toEqual(['0020', '0032', '0034', '0037', '0038']);
+        expect(Object.keys(MIGRATION_CUT_REPOSITORIES)).toHaveLength(4);
+        for (const repo of Object.values(MIGRATION_CUT_REPOSITORIES)) {
+            expect(repo.cutRevision).toMatch(/^[0-9a-f]{7,40}$/);
+        }
 
         const byNamespace = {
             'neomjs/neo-agent-brain'      : 0,
@@ -266,6 +360,7 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             expect(entry.canonicalKey).toMatch(/^adr:github\.com:\d+:neomjs%2F[a-z-]+:\d{4}$/);
             expect(entry.assignmentEvidence.verified).toBe(true);
             expect(entry.sourceTuple.contentHash).toMatch(/^[0-9a-f]{12}$/);
+            expect(entry.sourceTuple.revision).toMatch(/^[0-9a-f]{7,40}$/);
             expect(Array.isArray(entry.aliases)).toBe(true);
             expect(Array.isArray(entry.historicalAliases)).toBe(true);
             expect(Array.isArray(entry.observedState.reusedVectorOwners)).toBe(true);
@@ -296,6 +391,32 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             ])
         );
 
+        const adr0041 = REVIEWED_41_ADR_MIGRATION_MANIFEST.find(e => e.adrNumber === '0041');
+        expect(adr0041.historicalReferences).toEqual([
+            'PULL_REQUEST:neomjs/neo-agent-brain#680',
+            'ISSUE:neomjs/neo-agent-brain#678',
+            'DISCUSSION:neomjs/neo#18965',
+            'ISSUE:neomjs/neo-agent-institution#351'
+        ]);
+
+        // Verify default source probe against stamped cut revisions and contentHashes
+        const liveProbe = createDefaultSourceProbe();
+        expect(Object.keys(liveProbe.revisions)).toEqual(
+            expect.arrayContaining([
+                'neomjs/neo',
+                'neomjs/neo-agent-brain',
+                'neomjs/neo-agent-institution',
+                'neomjs/neo-stage'
+            ])
+        );
+        expect(Object.keys(liveProbe.contentHashes)).toHaveLength(82);
+        expect(
+            verifyMigrationPreconditions({
+                sourceProbe  : liveProbe,
+                readerContext: createDefaultReaderContext()
+            }).ok
+        ).toBe(true);
+
         expect(GRAPH_NODE_WRITER_INVENTORY.find(w => w.id === 'migrateLegacyAdrIdentities')).toEqual(
             expect.objectContaining({
                 id                   : 'migrateLegacyAdrIdentities',
@@ -305,7 +426,7 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
         );
     });
 
-    test('AC2: defaults to dry-run and refuses inconsistent proof, duplicate claims, lost provenance, or changed preconditions before any write', async () => {
+    test('AC2: defaults to dry-run and refuses inconsistent proof, duplicate claims, lost provenance, missing stores, or changed preconditions before any write', async () => {
         const {db, vectorStore, kbStore} = createSeededDisposableStores();
 
         try {
@@ -328,10 +449,20 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             expect(vectorStore.has('adr-0001')).toBe(true);
             expect(kbStore.has('adr-0001')).toBe(true);
 
+            // 0a. Missing vectorStore or kbStore on --apply fails closed before any write
+            await expect(
+                migrateLegacyAdrIdentities({db, kbStore, apply: true})
+            ).rejects.toMatchObject({code: 'ADR_MIGRATION_VECTOR_STORE_REQUIRED'});
+            await expect(
+                migrateLegacyAdrIdentities({db, vectorStore, apply: true})
+            ).rejects.toMatchObject({code: 'ADR_MIGRATION_KB_STORE_REQUIRED'});
+
             // 1. Incomplete inventory refusal
             await expect(
                 migrateLegacyAdrIdentities({
                     db,
+                    vectorStore,
+                    kbStore,
                     apply   : true,
                     manifest: REVIEWED_41_ADR_MIGRATION_MANIFEST.slice(0, 40)
                 })
@@ -344,7 +475,7 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                     : entry
             );
             await expect(
-                migrateLegacyAdrIdentities({db, apply: true, manifest: badIdentityManifest})
+                migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true, manifest: badIdentityManifest})
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_INCONSISTENT_IDENTITY_PROOF'});
 
             // 3. Duplicate canonical claim refusal
@@ -359,7 +490,7 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                     : entry
             );
             await expect(
-                migrateLegacyAdrIdentities({db, apply: true, manifest: duplicateClaimManifest})
+                migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true, manifest: duplicateClaimManifest})
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_DUPLICATE_CANONICAL_CLAIM'});
 
             // 4. Lost provenance refusal
@@ -369,7 +500,7 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                     : entry
             );
             await expect(
-                migrateLegacyAdrIdentities({db, apply: true, manifest: lostProvenanceManifest})
+                migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true, manifest: lostProvenanceManifest})
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_LOST_PROVENANCE'});
 
             // 5. Incomplete shared vector owner inventory refusal
@@ -379,15 +510,37 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                     : entry
             );
             await expect(
-                migrateLegacyAdrIdentities({db, apply: true, manifest: missingOwnersManifest})
+                migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true, manifest: missingOwnersManifest})
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_INCOMPLETE_VECTOR_OWNER_INVENTORY'});
 
-            // 6. Changed source precondition refusal
+            // 6. Changed or omitted source precondition refusal (fail-closed on missing hash/revision)
+            const fullProbe = createDefaultSourceProbe();
             await expect(
                 migrateLegacyAdrIdentities({
                     db,
+                    vectorStore,
+                    kbStore,
                     apply      : true,
-                    sourceProbe: {revisions: {'neomjs/neo': 'deadbeef'}}
+                    sourceProbe: {
+                        ...fullProbe,
+                        revisions: {...fullProbe.revisions, 'neomjs/neo': 'deadbeef'}
+                    }
+                })
+            ).rejects.toMatchObject({code: 'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED'});
+
+            const probeMissingOneHash = {
+                ...fullProbe,
+                contentHashes: {...fullProbe.contentHashes}
+            };
+            delete probeMissingOneHash.contentHashes[REVIEWED_41_ADR_MIGRATION_MANIFEST[0].legacyId];
+            delete probeMissingOneHash.contentHashes[REVIEWED_41_ADR_MIGRATION_MANIFEST[0].canonicalKey];
+            await expect(
+                migrateLegacyAdrIdentities({
+                    db,
+                    vectorStore,
+                    kbStore,
+                    apply      : true,
+                    sourceProbe: probeMissingOneHash
                 })
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED'});
 
@@ -397,7 +550,7 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                 JSON.stringify({id: 'adr-0099', label: 'ADR'})
             );
             await expect(
-                migrateLegacyAdrIdentities({db, apply: true})
+                migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true})
             ).rejects.toMatchObject({code: 'ADR_MIGRATION_DATA_PRECONDITION_CHANGED'});
         } finally {
             db.close();
@@ -461,15 +614,38 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
             expect(sessionRecoveryNode.semanticVectorId).toBe('summary_7c49107b-04f0-4e9c-ad86-65513999d61b');
             expect(vectorStore.has('summary_7c49107b-04f0-4e9c-ad86-65513999d61b')).toBe(true);
 
-            // Historical references on 0011 are normalized to canonical repository-qualified IDs
+            // Historical references on 0011 are normalized only when typed or when declaredReferences prove type/repo; unproven bare #N stays untouched
             const adr0011Entry = REVIEWED_41_ADR_MIGRATION_MANIFEST.find(e => e.adrNumber === '0011');
             const adr0011Node  = JSON.parse(
                 db.prepare('SELECT data FROM Nodes WHERE id = ?').get(adr0011Entry.canonicalKey).data
             );
             expect(adr0011Node.properties.historicalReferences).toEqual([
-                'ISSUE:neomjs/neo#11377',
-                'PULL_REQUEST:neomjs/neo#19722'
+                '#11377',
+                'PULL_REQUEST:neomjs/neo-agent-brain#19722',
+                '#999999'
             ]);
+
+            // Record 0041 carries its multi-repo historicalReferences intact
+            const adr0041Entry = REVIEWED_41_ADR_MIGRATION_MANIFEST.find(e => e.adrNumber === '0041');
+            const adr0041Node  = JSON.parse(
+                db.prepare('SELECT data FROM Nodes WHERE id = ?').get(adr0041Entry.canonicalKey).data
+            );
+            expect(adr0041Node.properties.historicalReferences).toEqual([
+                'PULL_REQUEST:neomjs/neo-agent-brain#680',
+                'ISSUE:neomjs/neo-agent-brain#678',
+                'DISCUSSION:neomjs/neo#18965',
+                'ISSUE:neomjs/neo-agent-institution#351'
+            ]);
+
+            expect(
+                normalizeHistoricalOriginReference('#680', 'neomjs/neo', adr0041Entry.historicalReferences)
+            ).toBe('PULL_REQUEST:neomjs/neo-agent-brain#680');
+            expect(
+                normalizeHistoricalOriginReference('#18965', 'neomjs/neo-agent-brain', adr0041Entry.historicalReferences)
+            ).toBe('DISCUSSION:neomjs/neo#18965');
+            expect(
+                normalizeHistoricalOriginReference('#424242', 'neomjs/neo-agent-brain', adr0041Entry.historicalReferences)
+            ).toBe('#424242');
 
             // Incident edges are rewritten to canonical keys and duplicate edges merge provenance without loss
             const adr0006Entry = REVIEWED_41_ADR_MIGRATION_MANIFEST.find(e => e.adrNumber === '0006');
@@ -584,7 +760,7 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
         }
     });
 
-    test('AC5 & AC6: runbook binds manifest/reader versions, and migrated records use shared admission catalog with historical 0001..0041 alias scope and FM reservations', async () => {
+    test('AC5 & AC6: runbook binds manifest/reader versions, CLI Chroma adapters support standalone backup/apply/restore, and migrated records use shared admission catalog with historical 0001..0041 alias scope and FM reservations', async () => {
         expect(ADR_MIGRATION_RUNBOOK.manifestVersion).toBe(MIGRATION_MANIFEST_VERSION);
         expect(ADR_MIGRATION_RUNBOOK.manifestRecordCount).toBe(41);
         expect(ADR_MIGRATION_RUNBOOK.requiredReaderCapabilities.adrSource).toBe(
@@ -593,9 +769,100 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
         expect(ADR_MIGRATION_RUNBOOK.postMergeLiveApplyBoundary).toContain('post-merge acceptance');
         expect(getUsageText()).toContain('--runbook');
 
-        const {db, vectorStore, kbStore} = createSeededDisposableStores();
+        const
+            {db, vectorStore, kbStore} = createSeededDisposableStores(),
+            tmpDir                     = await fs.mkdtemp(path.join(os.tmpdir(), 'adr-cli-chroma-1014-')),
+            dbPath                     = path.join(tmpDir, 'disposable-graph.sqlite'),
+            standaloneBackupPath       = path.join(tmpDir, 'standalone-backup.json'),
+            applyBackupPath            = path.join(tmpDir, 'apply-backup.json'),
+            mockChromaClient           = createMockChromaClient(),
+            chromaVectorStore          = await createChromaVectorStoreAdapter({
+                client        : mockChromaClient,
+                collectionName: 'neo-native-graph'
+            }),
+            chromaKbStore              = await createChromaKbStoreAdapter({
+                client        : mockChromaClient,
+                collectionName: 'neo-knowledge-base'
+            });
+
         try {
-            await migrateLegacyAdrIdentities({db, vectorStore, kbStore, apply: true});
+            // Seed file-backed SQLite DB and mock Chroma collections from the disposable stores
+            const fileDb = new Database(dbPath);
+            fileDb.exec(`
+                CREATE TABLE Nodes (id TEXT PRIMARY KEY, data TEXT);
+                CREATE TABLE Edges (id TEXT PRIMARY KEY, source TEXT, target TEXT, type TEXT, data TEXT);
+            `);
+            const insertFileNode = fileDb.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)');
+            for (const row of db.prepare('SELECT id, data FROM Nodes').all()) {
+                insertFileNode.run(row.id, row.data);
+            }
+            const insertFileEdge = fileDb.prepare('INSERT INTO Edges (id, source, target, type, data) VALUES (?, ?, ?, ?, ?)');
+            for (const row of db.prepare('SELECT id, source, target, type, data FROM Edges').all()) {
+                insertFileEdge.run(row.id, row.source, row.target, row.type, row.data);
+            }
+            fileDb.close();
+
+            const
+                graphCollection = await mockChromaClient.getOrCreateCollection({name: 'neo-native-graph'}),
+                kbCollection    = await mockChromaClient.getOrCreateCollection({name: 'neo-knowledge-base'});
+
+            for (const [key, val] of vectorStore.entries()) {
+                graphCollection.store.set(key, val);
+            }
+            for (const [key, val] of kbStore.entries()) {
+                kbCollection.store.set(key, val);
+            }
+
+            // 1. Standalone --backup creates a verified snapshot without mutating stores
+            const standaloneBackupRes = await runCli(
+                ['--db', dbPath, '--backup', standaloneBackupPath],
+                {
+                    vectorStore  : chromaVectorStore,
+                    kbStore      : chromaKbStore,
+                    sourceProbe  : createDefaultSourceProbe(),
+                    readerContext: createDefaultReaderContext()
+                }
+            );
+            expect(standaloneBackupRes.mode).toBe('backup');
+            expect(standaloneBackupRes.applied).toBe(false);
+            expect(await fs.pathExists(standaloneBackupPath)).toBe(true);
+            expect(graphCollection.store.has('adr-0001')).toBe(true);
+            expect(kbCollection.store.has('adr-0001')).toBe(true);
+
+            // 2. CLI --apply with Chroma adapters re-keys graph, Chroma vector store, and Chroma KB store
+            const cliApplyRes = await runCli(
+                ['--db', dbPath, '--apply', '--backup', applyBackupPath],
+                {
+                    vectorStore  : chromaVectorStore,
+                    kbStore      : chromaKbStore,
+                    sourceProbe  : createDefaultSourceProbe(),
+                    readerContext: createDefaultReaderContext()
+                }
+            );
+            expect(cliApplyRes.applied).toBe(true);
+            expect(cliApplyRes.phase).toBe('completed');
+            expect(cliApplyRes.upsertedVectorsCount).toBe(41);
+            expect(cliApplyRes.migratedKbEntriesCount).toBe(41);
+
+            const adr0001Key = REVIEWED_41_ADR_MIGRATION_MANIFEST[0].canonicalKey;
+            expect(graphCollection.store.has('adr-0001')).toBe(false);
+            expect(graphCollection.store.has(adr0001Key)).toBe(true);
+            expect(kbCollection.store.has('adr-0001')).toBe(false);
+            expect(kbCollection.store.has(adr0001Key)).toBe(true);
+            expect(graphCollection.store.has('summary_7c49107b-04f0-4e9c-ad86-65513999d61b')).toBe(true);
+            expect(kbCollection.store.has('guide:unrelated-doc')).toBe(true);
+
+            const reloadedVectorStore = createChromaVectorStoreAdapter({
+                client        : mockChromaClient,
+                collectionName: 'neo-native-graph'
+            });
+            const reloadedKbStore = createChromaKbStoreAdapter({
+                client        : mockChromaClient,
+                collectionName: 'neo-knowledge-base'
+            });
+            const exportedAfterApply = await reloadedVectorStore.exportSnapshot();
+            expect(exportedAfterApply.some(([id]) => id === adr0001Key)).toBe(true);
+            expect(exportedAfterApply.some(([id]) => id === 'adr-0001')).toBe(false);
 
             // All 41 records are hydrated into SHARED_ADR_CATALOG_STATE
             expect(SHARED_ADR_CATALOG_STATE.admissionCatalog.size).toBe(41);
@@ -625,8 +892,23 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
                 namespace: 'neomjs/neo-agent-brain'
             });
             expect(unresolved0042.resolved).toBe(false);
+
+            // 3. CLI --restore restores SQLite, Chroma vector store, and Chroma KB store cleanly
+            const cliRestoreRes = await runCli(
+                ['--db', dbPath, '--restore', applyBackupPath],
+                {
+                    vectorStore: reloadedVectorStore,
+                    kbStore    : reloadedKbStore
+                }
+            );
+            expect(cliRestoreRes.restored).toBe(true);
+            expect(graphCollection.store.has('adr-0001')).toBe(true);
+            expect(graphCollection.store.has(adr0001Key)).toBe(false);
+            expect(kbCollection.store.has('adr-0001')).toBe(true);
+            expect(kbCollection.store.has(adr0001Key)).toBe(false);
         } finally {
             db.close();
+            await fs.remove(tmpDir);
         }
     });
 
@@ -822,17 +1104,35 @@ test.describe('migrateLegacyAdrIdentities (#1014)', () => {
         );
     });
 
-    test('AC8: revalidates reader authorization for private neomjs/neo-stage before cut', () => {
+    test('AC8: revalidates reader authorization for private neomjs/neo-stage from manifest-derived probeRecord before cut', () => {
+        const liveProbe = createDefaultSourceProbe();
+
         expect(() =>
             verifyMigrationPreconditions({
-                sourceProbe  : {requirePrivateStageAccess: true},
+                sourceProbe  : liveProbe,
                 readerContext: {authorizedNamespaces: ['neomjs/neo', 'neomjs/neo-agent-brain']}
             })
         ).toThrow(expect.objectContaining({code: 'ADR_MIGRATION_READER_PRECONDITION_FAILED'}));
 
+        // Missing probeRecord on private cut repository fails closed with ADR_MIGRATION_STAGE_POLICY_MISSING
+        const cutReposWithoutStageProbe = {
+            ...MIGRATION_CUT_REPOSITORIES,
+            'neomjs/neo-stage': {
+                ...MIGRATION_CUT_REPOSITORIES['neomjs/neo-stage'],
+                probeRecord: null
+            }
+        };
+        expect(() =>
+            verifyMigrationPreconditions({
+                cutRepositories: cutReposWithoutStageProbe,
+                sourceProbe    : liveProbe,
+                readerContext  : createDefaultReaderContext()
+            })
+        ).toThrow(expect.objectContaining({code: 'ADR_MIGRATION_STAGE_POLICY_MISSING'}));
+
         const authorizedPrecheck = verifyMigrationPreconditions({
-            sourceProbe  : {requirePrivateStageAccess: true},
-            readerContext: {authorizedNamespaces: ['neomjs/neo-stage']}
+            sourceProbe  : liveProbe,
+            readerContext: createDefaultReaderContext()
         });
         expect(authorizedPrecheck.ok).toBe(true);
     });

@@ -17,7 +17,7 @@ export const MIGRATION_CUT_REPOSITORIES = Object.freeze({
         forge        : 'github.com',
         repositoryId : '220867748',
         namespace    : 'neomjs/neo',
-        cutRevision  : '731b70d1',
+        cutRevision  : '33074574',
         territoryRoot: 'learn/agentos/decisions',
         visibility   : 'public'
     }),
@@ -25,7 +25,7 @@ export const MIGRATION_CUT_REPOSITORIES = Object.freeze({
         forge        : 'github.com',
         repositoryId : '1344062228',
         namespace    : 'neomjs/neo-agent-brain',
-        cutRevision  : 'd628999a',
+        cutRevision  : '3443a409',
         territoryRoot: 'learn/agentos/decisions',
         visibility   : 'public'
     }),
@@ -33,7 +33,7 @@ export const MIGRATION_CUT_REPOSITORIES = Object.freeze({
         forge        : 'github.com',
         repositoryId : '1347756127',
         namespace    : 'neomjs/neo-agent-institution',
-        cutRevision  : 'e5aa4238',
+        cutRevision  : '477718f9',
         territoryRoot: 'learn/agentos/decisions',
         visibility   : 'public'
     }),
@@ -43,7 +43,34 @@ export const MIGRATION_CUT_REPOSITORIES = Object.freeze({
         namespace    : 'neomjs/neo-stage',
         cutRevision  : 'eab1dcca',
         territoryRoot: 'learn/decisions',
-        visibility   : 'private'
+        visibility   : 'private',
+        probeRecord  : Object.freeze({
+            adrNumber   : '0001',
+            currentSlug : 'the-engine-contract',
+            fileName    : '0001-the-engine-contract.md',
+            sourcePath  : 'learn/decisions/0001-the-engine-contract.md',
+            contentHash : '90cf29759158',
+            canonicalKey: buildCanonicalAdrKey({
+                forge       : 'github.com',
+                repositoryId: '1413810081',
+                namespace   : 'neomjs/neo-stage',
+                number      : '0001'
+            }),
+            authorizedReaderContext  : Object.freeze({
+                agentIdentity          : '@neo-migration-verifier',
+                authorizedNamespaces   : Object.freeze(['neomjs/neo-stage']),
+                authorizedRepositoryIds: Object.freeze(['1413810081']),
+                authorizedRepositories : Object.freeze(['neomjs/neo-stage']),
+                allowPrivate           : true
+            }),
+            unauthorizedReaderContext: Object.freeze({
+                agentIdentity          : '@neo-public-reader',
+                authorizedNamespaces   : Object.freeze([]),
+                authorizedRepositoryIds: Object.freeze([]),
+                authorizedRepositories : Object.freeze([]),
+                allowPrivate           : false
+            })
+        })
     })
 });
 
@@ -644,7 +671,12 @@ const RAW_41_RECORDS = [
         edgeCount   : 5,
         vectorId    : 'adr-0041',
         vectorOwners: [],
-        histRefs    : []
+        histRefs    : [
+            'PULL_REQUEST:neomjs/neo-agent-brain#680',
+            'ISSUE:neomjs/neo-agent-brain#678',
+            'DISCUSSION:neomjs/neo#18965',
+            'ISSUE:neomjs/neo-agent-institution#351'
+        ]
     }
 ];
 

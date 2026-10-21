@@ -1,11 +1,15 @@
 import crypto             from 'crypto';
+import {execFileSync}     from 'node:child_process';
 import fs                 from 'fs';
 import path               from 'path';
 import {createRequire}    from 'node:module';
 import {fileURLToPath}    from 'node:url';
+import {ChromaClient}     from 'chromadb';
 import Neo                from 'neo.mjs/src/Neo.mjs';
 import * as core          from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager    from 'neo.mjs/src/manager/Instance.mjs';
+import kbConfig           from '../../mcp/server/knowledge-base/config.mjs';
+import memoryCoreConfig   from '../../mcp/server/memory-core/config.mjs';
 import AdrSource          from '../../services/knowledge-base/source/AdrSource.mjs';
 import {qualifyOriginId}  from '../../services/graph/corpusProjectionContract.mjs';
 import {parseAdrRedirect} from '../../services/shared/adrRedirect.mjs';
@@ -61,15 +65,579 @@ export const MIGRATION_PHASES = Object.freeze([
     'completed'
 ]);
 
-const LEGACY_ID_REGEX = /^adr-(\d{4})$/;
+const LEGACY_ID_REGEX     = /^adr-(\d{4})$/;
+const __filename          = fileURLToPath(import.meta.url);
+const __dirname           = path.dirname(__filename);
+const BRAIN_ROOT_DIR      = path.resolve(__dirname, '../../..');
+const WORKSPACE_ROOT_DIR  = path.resolve(BRAIN_ROOT_DIR, '..');
+const GIT_BLOB_HASH_CACHE = new Map();
 
 /**
- * @summary Normalizes an issue or pull-request origin reference into its canonical repository-qualified form.
- * @param {String} rawRef
- * @param {String} [defaultRepo='neomjs/neo']
+ * @summary Computes the 12-hex-character SHA-256 content hash used by the ADR migration manifest.
+ * @param {String} content
  * @returns {String}
  */
-export function normalizeHistoricalOriginReference(rawRef, defaultRepo = 'neomjs/neo') {
+export function computeMigrationContentHash(content) {
+    return crypto.createHash('sha256').update(String(content ?? '')).digest('hex').slice(0, 12);
+}
+
+/**
+ * @summary Reads a file from a repository at a given git revision (falling back to working tree when
+ * `cutRevision` is `'WORKTREE'` or when `.git` is absent in a synthetic test directory) and returns
+ * its 12-character SHA-256 content hash.
+ * @param {String} repoDir
+ * @param {String} cutRevision
+ * @param {String} relPath
+ * @returns {String|null}
+ * @private
+ */
+function readRepoBlobContentHash(repoDir, cutRevision, relPath) {
+    const cacheKey = `${repoDir}@${cutRevision}:${relPath}`;
+    if (GIT_BLOB_HASH_CACHE.has(cacheKey)) {
+        return GIT_BLOB_HASH_CACHE.get(cacheKey);
+    }
+
+    const hasGit = fs.existsSync(path.join(repoDir, '.git'));
+    if (hasGit && cutRevision && cutRevision !== 'WORKTREE') {
+        try {
+            const raw = execFileSync('git', ['cat-file', '-p', `${cutRevision}:${relPath}`], {
+                cwd     : repoDir,
+                encoding: 'utf8',
+                stdio   : ['ignore', 'pipe', 'ignore']
+            });
+            const hash = computeMigrationContentHash(raw);
+            GIT_BLOB_HASH_CACHE.set(cacheKey, hash);
+            return hash;
+        } catch {
+            // Fall through to worktree read if revision is not a git ref
+        }
+    }
+
+    const absFile = path.join(repoDir, relPath);
+    if (fs.existsSync(absFile)) {
+        const raw  = fs.readFileSync(absFile, 'utf8');
+        const hash = computeMigrationContentHash(raw);
+        return hash;
+    }
+
+    return null;
+}
+
+/**
+ * @summary Builds the default `sourceProbe` from configured repository checkouts and cut descriptors.
+ * @param {Object} [options={}]
+ * @returns {Object}
+ */
+export function createDefaultSourceProbe({
+    manifest               = REVIEWED_41_ADR_MIGRATION_MANIFEST,
+    cutRepositories        = MIGRATION_CUT_REPOSITORIES,
+    repoRoots              = null,
+    requirePrivateStageAccess = true
+} = {}) {
+    const
+        revisions             = {},
+        contentHashes         = {},
+        redirectContentHashes = {},
+        probeHashes           = {};
+
+    const resolveRepoDir = ns => {
+        if (repoRoots && typeof repoRoots[ns] === 'string') {
+            return repoRoots[ns];
+        }
+        if (ns === 'neomjs/neo-agent-brain') {
+            return BRAIN_ROOT_DIR;
+        }
+        const shortName = String(ns).split('/')[1];
+        return shortName ? path.join(WORKSPACE_ROOT_DIR, shortName) : null;
+    };
+
+    for (const [ns, repoMeta] of Object.entries(cutRepositories || {})) {
+        if (!repoMeta || typeof repoMeta !== 'object') continue;
+        const repoDir     = resolveRepoDir(ns);
+        let   verifiedRev = repoMeta.cutRevision;
+
+        if (repoDir && fs.existsSync(path.join(repoDir, '.git')) && repoMeta.cutRevision) {
+            try {
+                const resolvedCommit = execFileSync(
+                    'git',
+                    ['rev-parse', '--verify', `${repoMeta.cutRevision}^{commit}`],
+                    {cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']}
+                ).trim();
+                if (resolvedCommit.startsWith(repoMeta.cutRevision)) {
+                    verifiedRev = repoMeta.cutRevision;
+                }
+            } catch {
+                verifiedRev = null;
+            }
+        }
+        if (verifiedRev) {
+            revisions[ns] = verifiedRev;
+        }
+
+        if (repoMeta.probeRecord?.sourcePath) {
+            const probeHash = (repoDir && fs.existsSync(repoDir))
+                ? readRepoBlobContentHash(repoDir, repoMeta.cutRevision, repoMeta.probeRecord.sourcePath)
+                : repoMeta.probeRecord.contentHash;
+            if (probeHash) {
+                probeHashes[ns] = probeHash;
+            }
+        }
+    }
+
+    for (const entry of manifest || []) {
+        if (!entry?.sourceTuple) continue;
+        const
+            ns      = entry.sourceTuple.namespace,
+            repoDir = resolveRepoDir(ns),
+            rev     = cutRepositories?.[ns]?.cutRevision || entry.sourceTuple.revision;
+
+        const actualHash = (repoDir && fs.existsSync(repoDir))
+            ? readRepoBlobContentHash(repoDir, rev, entry.sourcePath)
+            : entry.sourceTuple.contentHash;
+
+        if (actualHash) {
+            contentHashes[entry.legacyId]     = actualHash;
+            contentHashes[entry.canonicalKey] = actualHash;
+        }
+
+        if (entry.custodyTransition?.redirectPath) {
+            const
+                originNs  = entry.custodyTransition.fromNamespace,
+                originDir = resolveRepoDir(originNs),
+                originRev = cutRepositories?.[originNs]?.cutRevision;
+
+            const actualRedirectHash = (originDir && fs.existsSync(originDir))
+                ? readRepoBlobContentHash(originDir, originRev, entry.custodyTransition.redirectPath)
+                : entry.custodyTransition.redirectContentHash;
+
+            if (actualRedirectHash) {
+                redirectContentHashes[entry.legacyId]     = actualRedirectHash;
+                redirectContentHashes[entry.canonicalKey] = actualRedirectHash;
+            }
+        }
+    }
+
+    return {
+        revisions,
+        contentHashes,
+        redirectContentHashes,
+        probeHashes,
+        requirePrivateStageAccess
+    };
+}
+
+/**
+ * @summary Builds the default authorized `readerContext` for migration precondition verification.
+ * @param {Object} [options={}]
+ * @returns {Object}
+ */
+export function createDefaultReaderContext({
+    cutRepositories = MIGRATION_CUT_REPOSITORIES,
+    agentIdentity   = '@neo-migration-verifier',
+    allowPrivate    = true
+} = {}) {
+    const
+        namespaces = Object.keys(cutRepositories || {}),
+        repoIds    = Object.values(cutRepositories || {})
+            .map(r => r?.repositoryId)
+            .filter(Boolean);
+
+    return {
+        agentIdentity,
+        allowPrivate,
+        authorizedNamespaces  : namespaces,
+        authorizedRepositories: [...namespaces, ...repoIds]
+    };
+}
+
+/**
+ * @summary Creates the default Chroma client using the Knowledge Base / Tier-1 Chroma configuration.
+ * @returns {ChromaClient}
+ * @private
+ */
+function createDefaultChromaClient() {
+    const {host, port} = kbConfig.engines.chroma;
+    return new ChromaClient({host, port});
+}
+
+/**
+ * @summary Creates a production Chroma adapter for the Memory Core native graph vector collection
+ * (`memoryCoreConfig.collections.graph`), implementing `applyAdrMigration`, `exportSnapshot`, and `restoreSnapshot`.
+ * @param {Object} [options={}]
+ * @returns {Object}
+ */
+export function createChromaVectorStoreAdapter({
+    client         = null,
+    collectionName = null
+} = {}) {
+    const
+        resolvedClient         = client || createDefaultChromaClient(),
+        resolvedCollectionName = collectionName || memoryCoreConfig.collections.graph;
+
+    const getCollection = async () => {
+        if (typeof resolvedClient.getOrCreateCollection === 'function') {
+            return resolvedClient.getOrCreateCollection({
+                name             : resolvedCollectionName,
+                embeddingFunction: null
+            });
+        }
+        return resolvedClient.getCollection({
+            name             : resolvedCollectionName,
+            embeddingFunction: null
+        });
+    };
+
+    return {
+        collectionName: resolvedCollectionName,
+
+        async exportSnapshot({manifest = REVIEWED_41_ADR_MIGRATION_MANIFEST} = {}) {
+            const collection = await getCollection();
+            const targetIds  = new Set();
+            for (const entry of manifest) {
+                targetIds.add(entry.legacyId);
+                targetIds.add(entry.canonicalKey);
+                if (entry.observedState?.observedSemanticVectorId) {
+                    targetIds.add(entry.observedState.observedSemanticVectorId);
+                }
+            }
+            const res = await collection.get({
+                ids    : Array.from(targetIds),
+                include: ['embeddings', 'documents', 'metadatas']
+            });
+            const entries = [];
+            const ids     = res?.ids || [];
+            for (let i = 0; i < ids.length; i++) {
+                entries.push([
+                    ids[i],
+                    {
+                        id       : ids[i],
+                        embedding: res.embeddings?.[i] ?? null,
+                        document : res.documents?.[i] ?? null,
+                        metadata : res.metadatas?.[i] ? {...res.metadatas[i]} : {}
+                    }
+                ]);
+            }
+            return entries;
+        },
+
+        async applyAdrMigration({manifest = REVIEWED_41_ADR_MIGRATION_MANIFEST, nonAdrSummaryIds = []} = {}) {
+            const
+                collection = await getCollection(),
+                lookupIds  = Array.from(new Set([
+                    ...manifest.map(e => e.legacyId),
+                    ...manifest.map(e => e.canonicalKey),
+                    ...nonAdrSummaryIds
+                ])),
+                res          = await collection.get({
+                    ids    : lookupIds,
+                    include: ['embeddings', 'documents', 'metadatas']
+                }),
+                existingById = new Map(),
+                ids          = res?.ids || [];
+
+            for (let i = 0; i < ids.length; i++) {
+                existingById.set(ids[i], {
+                    id       : ids[i],
+                    embedding: res.embeddings?.[i] ?? null,
+                    document : res.documents?.[i] ?? null,
+                    metadata : res.metadatas?.[i] ? {...res.metadatas[i]} : {}
+                });
+            }
+
+            const
+                upsertIds        = [],
+                upsertEmbeddings = [],
+                upsertDocuments  = [],
+                upsertMetadatas  = [],
+                legacyToDelete   = [];
+
+            for (const entry of manifest) {
+                const existing = existingById.get(entry.legacyId) || existingById.get(entry.canonicalKey);
+                upsertIds.push(entry.canonicalKey);
+                upsertEmbeddings.push(existing?.embedding || [0]);
+                upsertDocuments.push(existing?.document || `${entry.title} (${entry.canonicalKey})`);
+                upsertMetadatas.push({
+                    ...(existing?.metadata || {}),
+                    id          : entry.canonicalKey,
+                    canonicalKey: entry.canonicalKey,
+                    legacyId    : entry.legacyId,
+                    label       : 'ADR',
+                    adrNumber   : entry.adrNumber,
+                    repositoryId: entry.sourceTuple.repositoryId,
+                    namespace   : entry.sourceTuple.namespace,
+                    contentHash : entry.sourceTuple.contentHash
+                });
+
+                if (existingById.has(entry.legacyId)) {
+                    legacyToDelete.push(entry.legacyId);
+                }
+            }
+
+            if (upsertIds.length > 0) {
+                await collection.upsert({
+                    ids       : upsertIds,
+                    embeddings: upsertEmbeddings,
+                    documents : upsertDocuments,
+                    metadatas : upsertMetadatas
+                });
+            }
+
+            if (legacyToDelete.length > 0) {
+                await collection.delete({ids: legacyToDelete});
+            }
+
+            let preservedSummaryVectorsCount = 0;
+            for (const summaryId of nonAdrSummaryIds) {
+                if (existingById.has(summaryId)) {
+                    preservedSummaryVectorsCount++;
+                }
+            }
+
+            return {
+                upsertedVectorsCount        : upsertIds.length,
+                removedLegacyAdrVectorsCount: legacyToDelete.length,
+                preservedSummaryVectorsCount
+            };
+        },
+
+        async restoreSnapshot(entries = [], {canonicalKeys = []} = {}) {
+            const collection = await getCollection();
+            if (Array.isArray(canonicalKeys) && canonicalKeys.length > 0) {
+                await collection.delete({ids: canonicalKeys});
+            }
+            if (Array.isArray(entries) && entries.length > 0) {
+                await collection.upsert({
+                    ids       : entries.map(([id]) => id),
+                    embeddings: entries.map(([, v]) => v?.embedding || [0]),
+                    documents : entries.map(([id, v]) => v?.document || String(id)),
+                    metadatas : entries.map(([id, v]) => v?.metadata || {id})
+                });
+            }
+            return {restoredCount: entries.length};
+        }
+    };
+}
+
+/**
+ * @summary Creates a production Chroma adapter for the Knowledge Base ADR collection
+ * (`kbConfig.collectionName`), implementing `applyAdrMigration`, `exportSnapshot`, and `restoreSnapshot`.
+ * @param {Object} [options={}]
+ * @returns {Object}
+ */
+export function createChromaKbStoreAdapter({
+    client         = null,
+    collectionName = null
+} = {}) {
+    const
+        resolvedClient         = client || createDefaultChromaClient(),
+        resolvedCollectionName = collectionName || kbConfig.collectionName;
+
+    const getCollection = async () => {
+        if (typeof resolvedClient.getOrCreateCollection === 'function') {
+            return resolvedClient.getOrCreateCollection({
+                name             : resolvedCollectionName,
+                embeddingFunction: null
+            });
+        }
+        return resolvedClient.getCollection({
+            name             : resolvedCollectionName,
+            embeddingFunction: null
+        });
+    };
+
+    return {
+        collectionName: resolvedCollectionName,
+
+        async exportSnapshot({manifest = REVIEWED_41_ADR_MIGRATION_MANIFEST} = {}) {
+            const collection = await getCollection();
+            const targetIds  = Array.from(new Set([
+                ...manifest.map(e => e.legacyId),
+                ...manifest.map(e => e.canonicalKey)
+            ]));
+            const res = await collection.get({
+                ids    : targetIds,
+                include: ['embeddings', 'documents', 'metadatas']
+            });
+            const entries = [];
+            const ids     = res?.ids || [];
+            for (let i = 0; i < ids.length; i++) {
+                entries.push([
+                    ids[i],
+                    {
+                        id       : ids[i],
+                        embedding: res.embeddings?.[i] ?? null,
+                        document : res.documents?.[i] ?? null,
+                        metadata : res.metadatas?.[i] ? {...res.metadatas[i]} : {}
+                    }
+                ]);
+            }
+            return entries;
+        },
+
+        async applyAdrMigration({manifest = REVIEWED_41_ADR_MIGRATION_MANIFEST, admissionRecords = []} = {}) {
+            const
+                collection = await getCollection(),
+                lookupIds  = Array.from(new Set([
+                    ...manifest.map(e => e.legacyId),
+                    ...manifest.map(e => e.canonicalKey)
+                ])),
+                res          = await collection.get({
+                    ids    : lookupIds,
+                    include: ['embeddings', 'documents', 'metadatas']
+                }),
+                existingById = new Map(),
+                ids          = res?.ids || [];
+
+            for (let i = 0; i < ids.length; i++) {
+                existingById.set(ids[i], {
+                    id       : ids[i],
+                    embedding: res.embeddings?.[i] ?? null,
+                    document : res.documents?.[i] ?? null,
+                    metadata : res.metadatas?.[i] ? {...res.metadatas[i]} : {}
+                });
+            }
+
+            const
+                upsertIds        = [],
+                upsertEmbeddings = [],
+                upsertDocuments  = [],
+                upsertMetadatas  = [],
+                legacyToDelete   = [];
+
+            for (let idx = 0; idx < manifest.length; idx++) {
+                const
+                    entry           = manifest[idx],
+                    admissionRecord = admissionRecords[idx] || buildAdrMigrationRecordFromManifestEntry(entry),
+                    existing        = existingById.get(entry.legacyId) || existingById.get(entry.canonicalKey);
+
+                upsertIds.push(entry.canonicalKey);
+                upsertEmbeddings.push(existing?.embedding || [0]);
+                upsertDocuments.push(existing?.document || `${entry.title} (${entry.canonicalKey})`);
+                upsertMetadatas.push({
+                    ...(existing?.metadata || {}),
+                    id               : entry.canonicalKey,
+                    canonicalKey     : entry.canonicalKey,
+                    legacyId         : entry.legacyId,
+                    adrNumber        : entry.adrNumber,
+                    title            : entry.title,
+                    currentSlug      : entry.currentSlug,
+                    sourcePath       : entry.sourcePath,
+                    repositoryId     : entry.sourceTuple.repositoryId,
+                    namespace        : entry.sourceTuple.namespace,
+                    visibility       : entry.visibility || 'public',
+                    aliases          : JSON.stringify(admissionRecord.aliases || []),
+                    historicalAliases: JSON.stringify(admissionRecord.historicalAliases || [])
+                });
+
+                if (existingById.has(entry.legacyId)) {
+                    legacyToDelete.push(entry.legacyId);
+                }
+            }
+
+            if (upsertIds.length > 0) {
+                await collection.upsert({
+                    ids       : upsertIds,
+                    embeddings: upsertEmbeddings,
+                    documents : upsertDocuments,
+                    metadatas : upsertMetadatas
+                });
+            }
+
+            if (legacyToDelete.length > 0) {
+                await collection.delete({ids: legacyToDelete});
+            }
+
+            return {
+                migratedKbEntriesCount: upsertIds.length,
+                removedLegacyKbCount  : legacyToDelete.length
+            };
+        },
+
+        async restoreSnapshot(entries = [], {canonicalKeys = []} = {}) {
+            const collection = await getCollection();
+            if (Array.isArray(canonicalKeys) && canonicalKeys.length > 0) {
+                await collection.delete({ids: canonicalKeys});
+            }
+            if (Array.isArray(entries) && entries.length > 0) {
+                await collection.upsert({
+                    ids       : entries.map(([id]) => id),
+                    embeddings: entries.map(([, v]) => v?.embedding || [0]),
+                    documents : entries.map(([id, v]) => v?.document || String(id)),
+                    metadatas : entries.map(([id, v]) => v?.metadata || {id})
+                });
+            }
+            return {restoredCount: entries.length};
+        }
+    };
+}
+
+/**
+ * @summary Composes the default migration store adapters (`vectorStore`, `kbStore`), `sourceProbe`, and `readerContext`.
+ * @param {Object} [options={}]
+ * @returns {Object}
+ */
+export function composeDefaultMigrationStores({
+    chromaClient         = null,
+    vectorStore          = null,
+    kbStore              = null,
+    vectorCollectionName = null,
+    kbCollectionName     = null,
+    manifest             = REVIEWED_41_ADR_MIGRATION_MANIFEST,
+    cutRepositories      = MIGRATION_CUT_REPOSITORIES,
+    repoRoots            = null,
+    sourceProbe          = undefined,
+    readerContext        = undefined
+} = {}) {
+    const sharedClient = chromaClient || ((!vectorStore || !kbStore) ? createDefaultChromaClient() : null);
+
+    return {
+        vectorStore  : vectorStore || createChromaVectorStoreAdapter({
+            client        : sharedClient,
+            collectionName: vectorCollectionName
+        }),
+        kbStore      : kbStore || createChromaKbStoreAdapter({
+            client        : sharedClient,
+            collectionName: kbCollectionName
+        }),
+        sourceProbe  : sourceProbe !== undefined ? sourceProbe : createDefaultSourceProbe({
+            manifest,
+            cutRepositories,
+            repoRoots
+        }),
+        readerContext: readerContext !== undefined ? readerContext : createDefaultReaderContext({
+            cutRepositories
+        })
+    };
+}
+
+/**
+ * @summary Checks whether a store handle is a `Map` or an adapter implementing `applyAdrMigration`, `exportSnapshot`, and `restoreSnapshot`.
+ * @param {*} store
+ * @returns {Boolean}
+ * @private
+ */
+function isValidMigrationStore(store) {
+    if (store instanceof Map) return true;
+    return Boolean(
+        store &&
+        typeof store === 'object' &&
+        typeof store.applyAdrMigration === 'function' &&
+        typeof store.exportSnapshot === 'function' &&
+        typeof store.restoreSnapshot === 'function'
+    );
+}
+
+/**
+ * @summary Normalizes an issue, pull-request, or discussion origin reference into its canonical
+ * repository-qualified form (`ISSUE:org/repo#N`, `PULL_REQUEST:org/repo#N`, `DISCUSSION:org/repo#N`).
+ * Typed bare references (`PULL_REQUEST:#N`) qualify against `defaultRepo` (`entry.assignmentEvidence.namespace`),
+ * while untyped bare `#N` references only normalize when `declaredReferences` prove their exact type and repository.
+ * @param {String} rawRef
+ * @param {String|null} [defaultRepo=null]
+ * @param {String[]} [declaredReferences=[]]
+ * @returns {String}
+ */
+export function normalizeHistoricalOriginReference(rawRef, defaultRepo = null, declaredReferences = []) {
     if (typeof rawRef !== 'string' || !rawRef.trim()) return '';
     const trimmed = rawRef.trim();
 
@@ -78,14 +646,46 @@ export function normalizeHistoricalOriginReference(rawRef, defaultRepo = 'neomjs
         return `${prefix.toUpperCase()}:${rest}`;
     }
 
+    const normalizedDeclared = (Array.isArray(declaredReferences) ? declaredReferences : [])
+        .map(ref => typeof ref === 'string' ? ref.trim() : '')
+        .filter(ref => /^(?:ISSUE|PULL_REQUEST|DISCUSSION):[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/i.test(ref))
+        .map(ref => {
+            const [prefix, rest] = ref.split(':');
+            return `${prefix.toUpperCase()}:${rest}`;
+        });
+
     const bareTypedMatch = trimmed.match(/^(ISSUE|PULL_REQUEST|DISCUSSION):#?(\d+)$/i);
     if (bareTypedMatch) {
-        return `${bareTypedMatch[1].toUpperCase()}:${defaultRepo}#${bareTypedMatch[2]}`;
+        const
+            typePrefix = bareTypedMatch[1].toUpperCase(),
+            num        = bareTypedMatch[2],
+            proven     = normalizedDeclared.filter(ref => ref.startsWith(`${typePrefix}:`) && ref.endsWith(`#${num}`));
+
+        if (proven.length === 1) {
+            return proven[0];
+        }
+        if (typeof defaultRepo === 'string' && defaultRepo.trim()) {
+            return `${typePrefix}:${defaultRepo.trim()}#${num}`;
+        }
+        return trimmed;
     }
 
-    const issueMatch = trimmed.match(/^(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#(\d+)$/);
-    if (issueMatch) {
-        return `ISSUE:${issueMatch[1] || defaultRepo}#${issueMatch[2]}`;
+    const untypedMatch = trimmed.match(/^(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#(\d+)$/);
+    if (untypedMatch) {
+        const
+            explicitRepo = untypedMatch[1] || null,
+            num          = untypedMatch[2],
+            proven       = normalizedDeclared.filter(ref => {
+                if (!ref.endsWith(`#${num}`)) return false;
+                if (!explicitRepo) return true;
+                const [, rest] = ref.split(':');
+                return rest.toLowerCase() === `${explicitRepo.toLowerCase()}#${num}`;
+            });
+
+        if (proven.length === 1) {
+            return proven[0];
+        }
+        return trimmed;
     }
 
     return trimmed;
@@ -165,10 +765,18 @@ export function verifyMigrationPreconditions({
     manifest                 = REVIEWED_41_ADR_MIGRATION_MANIFEST,
     cutRepositories          = MIGRATION_CUT_REPOSITORIES,
     db                       = null,
-    sourceProbe              = null,
-    readerContext            = null,
+    sourceProbe              = undefined,
+    readerContext            = undefined,
     requireCompleteInventory = true
 } = {}) {
+    const
+        effectiveSourceProbe   = sourceProbe === undefined
+            ? createDefaultSourceProbe({manifest, cutRepositories})
+            : sourceProbe,
+        effectiveReaderContext = readerContext === undefined
+            ? createDefaultReaderContext({cutRepositories})
+            : readerContext;
+
     if (!Array.isArray(manifest) || manifest.length === 0) {
         throw createCodedError(
             'ADR_MIGRATION_INCOMPLETE_INVENTORY',
@@ -353,51 +961,124 @@ export function verifyMigrationPreconditions({
         }
     }
 
-    if (sourceProbe && typeof sourceProbe === 'object') {
-        if (sourceProbe.revisions && typeof sourceProbe.revisions === 'object') {
-            for (const [ns, actualRev] of Object.entries(sourceProbe.revisions)) {
-                const expectedRev = cutRepositories?.[ns]?.cutRevision;
-                if (expectedRev && actualRev !== expectedRev) {
-                    throw createCodedError(
-                        'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
-                        `Repository '${ns}' revision '${actualRev}' drifted from manifest cutRevision '${expectedRev}'.`
-                    );
-                }
+    if (!effectiveSourceProbe || typeof effectiveSourceProbe !== 'object') {
+        throw createCodedError(
+            'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
+            'Migration requires a valid sourceProbe object verifying cut revisions and content hashes.'
+        );
+    }
+
+    if (!effectiveSourceProbe.revisions || typeof effectiveSourceProbe.revisions !== 'object') {
+        throw createCodedError(
+            'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
+            'sourceProbe.revisions is missing or invalid.'
+        );
+    }
+
+    for (const [ns, repoMeta] of Object.entries(cutRepositories || {})) {
+        const
+            expectedRev = repoMeta?.cutRevision,
+            actualRev   = effectiveSourceProbe.revisions[ns];
+
+        if (!expectedRev || !actualRev || actualRev !== expectedRev) {
+            throw createCodedError(
+                'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
+                `Repository '${ns}' revision '${actualRev ?? 'MISSING'}' drifted from manifest cutRevision '${expectedRev ?? 'MISSING'}'.`
+            );
+        }
+    }
+
+    if (!effectiveSourceProbe.contentHashes || typeof effectiveSourceProbe.contentHashes !== 'object') {
+        throw createCodedError(
+            'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
+            'sourceProbe.contentHashes is missing or invalid.'
+        );
+    }
+
+    for (const entry of manifest) {
+        const actualHash = effectiveSourceProbe.contentHashes[entry.legacyId] ??
+            effectiveSourceProbe.contentHashes[entry.canonicalKey];
+
+        if (!actualHash || actualHash !== entry.sourceTuple.contentHash) {
+            throw createCodedError(
+                'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
+                `Source contentHash for '${entry.legacyId}' changed from '${entry.sourceTuple.contentHash}' to '${actualHash ?? 'MISSING'}'.`
+            );
+        }
+
+        if (entry.custodyTransition?.redirectContentHash &&
+            effectiveSourceProbe.redirectContentHashes &&
+            typeof effectiveSourceProbe.redirectContentHashes === 'object') {
+            const actualRedirectHash = effectiveSourceProbe.redirectContentHashes[entry.legacyId] ??
+                effectiveSourceProbe.redirectContentHashes[entry.canonicalKey];
+
+            if (!actualRedirectHash || actualRedirectHash !== entry.custodyTransition.redirectContentHash) {
+                throw createCodedError(
+                    'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
+                    `Redirect stub contentHash for '${entry.legacyId}' changed from '${entry.custodyTransition.redirectContentHash}' to '${actualRedirectHash ?? 'MISSING'}'.`
+                );
+            }
+        }
+    }
+
+    const privateRepos = Object.entries(cutRepositories || {}).filter(
+        ([, repoMeta]) => repoMeta?.visibility === 'private'
+    );
+
+    for (const [ns, repoMeta] of privateRepos) {
+        const probeSpec = repoMeta?.probeRecord;
+        if (!probeSpec ||
+            !probeSpec.canonicalKey ||
+            !probeSpec.sourcePath ||
+            !probeSpec.contentHash ||
+            !probeSpec.authorizedReaderContext ||
+            !probeSpec.unauthorizedReaderContext) {
+            throw createCodedError(
+                'ADR_MIGRATION_STAGE_POLICY_MISSING',
+                `Private repository '${ns}' in cutRepositories is missing a complete reader-policy probeRecord.`
+            );
+        }
+
+        if (effectiveSourceProbe.probeHashes && typeof effectiveSourceProbe.probeHashes === 'object') {
+            const actualProbeHash = effectiveSourceProbe.probeHashes[ns];
+            if (!actualProbeHash || actualProbeHash !== probeSpec.contentHash) {
+                throw createCodedError(
+                    'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
+                    `Private repository '${ns}' probe contentHash '${actualProbeHash ?? 'MISSING'}' drifted from '${probeSpec.contentHash}'.`
+                );
             }
         }
 
-        if (sourceProbe.contentHashes && typeof sourceProbe.contentHashes === 'object') {
-            for (const entry of manifest) {
-                const actualHash = sourceProbe.contentHashes[entry.legacyId] ?? sourceProbe.contentHashes[entry.canonicalKey];
-                if (actualHash && actualHash !== entry.sourceTuple.contentHash) {
-                    throw createCodedError(
-                        'ADR_MIGRATION_SOURCE_PRECONDITION_CHANGED',
-                        `Source contentHash for '${entry.legacyId}' changed from '${entry.sourceTuple.contentHash}' to '${actualHash}'.`
-                    );
-                }
+        const stageProbeRecord = {
+            canonicalKey: probeSpec.canonicalKey,
+            visibility  : repoMeta.visibility,
+            sourceTuple : {
+                forge       : repoMeta.forge,
+                repositoryId: repoMeta.repositoryId,
+                namespace   : repoMeta.namespace,
+                path        : probeSpec.sourcePath,
+                contentHash : probeSpec.contentHash
+            },
+            assignmentEvidence: {
+                forge       : repoMeta.forge,
+                repositoryId: repoMeta.repositoryId,
+                namespace   : repoMeta.namespace
             }
+        };
+
+        if (isAdrReaderAuthorized(stageProbeRecord, probeSpec.unauthorizedReaderContext) ||
+            !isAdrReaderAuthorized(stageProbeRecord, probeSpec.authorizedReaderContext)) {
+            throw createCodedError(
+                'ADR_MIGRATION_STAGE_POLICY_MISSING',
+                `Private repository '${ns}' probeRecord failed unauthorized-reader denial or authorized-reader verification.`
+            );
         }
 
-        if (sourceProbe.requirePrivateStageAccess === true) {
-            const stageRepo   = cutRepositories?.['neomjs/neo-stage'];
-            const probeRecord = {
-                canonicalKey: 'adr:github.com:1413810081:neomjs%2Fneo-stage:0001',
-                visibility  : stageRepo?.visibility || 'private',
-                sourceTuple : {
-                    forge       : stageRepo?.forge || 'github.com',
-                    repositoryId: stageRepo?.repositoryId || '1413810081',
-                    namespace   : stageRepo?.namespace || 'neomjs/neo-stage'
-                },
-                assignmentEvidence: {
-                    forge       : stageRepo?.forge || 'github.com',
-                    repositoryId: stageRepo?.repositoryId || '1413810081',
-                    namespace   : stageRepo?.namespace || 'neomjs/neo-stage'
-                }
-            };
-            if (!isAdrReaderAuthorized(probeRecord, readerContext || {})) {
+        if (effectiveSourceProbe.requirePrivateStageAccess !== false) {
+            if (!isAdrReaderAuthorized(stageProbeRecord, effectiveReaderContext || {})) {
                 throw createCodedError(
                     'ADR_MIGRATION_READER_PRECONDITION_FAILED',
-                    'Reader context is not authorized for private repository neomjs/neo-stage required by cut probe.'
+                    `Reader context is not authorized for private repository '${ns}' required by cut probe.`
                 );
             }
         }
@@ -533,7 +1214,8 @@ export function createAdrMigrationBackup({
             canonicalKeys.has(row.target)
         );
 
-    const vectorEntries = [];
+    let   vectorExportResult = null;
+    const vectorEntries      = [];
     if (vectorStore instanceof Map) {
         for (const [k, v] of vectorStore.entries()) {
             if (legacyIds.has(k) || canonicalKeys.has(k) || String(k).startsWith('summary_')) {
@@ -541,11 +1223,11 @@ export function createAdrMigrationBackup({
             }
         }
     } else if (vectorStore && typeof vectorStore.exportSnapshot === 'function') {
-        const exported = vectorStore.exportSnapshot();
-        if (Array.isArray(exported)) vectorEntries.push(...structuredClone(exported));
+        vectorExportResult = vectorStore.exportSnapshot({manifest});
     }
 
-    const kbEntries = [];
+    let   kbExportResult = null;
+    const kbEntries      = [];
     if (kbStore instanceof Map) {
         for (const [k, v] of kbStore.entries()) {
             if (legacyIds.has(k) || canonicalKeys.has(k)) {
@@ -553,26 +1235,42 @@ export function createAdrMigrationBackup({
             }
         }
     } else if (kbStore && typeof kbStore.exportSnapshot === 'function') {
-        const exported = kbStore.exportSnapshot();
-        if (Array.isArray(exported)) kbEntries.push(...structuredClone(exported));
+        kbExportResult = kbStore.exportSnapshot({manifest});
     }
 
-    const snapshot = {
-        version    : MIGRATION_MANIFEST_VERSION,
-        createdAt  : new Date().toISOString(),
-        manifestIds: manifest.map(e => ({legacyId: e.legacyId, canonicalKey: e.canonicalKey})),
-        nodes      : backedNodes,
-        edges      : backedEdges,
-        vectorEntries,
-        kbEntries
+    const finalizeSnapshot = (resolvedVecExport, resolvedKbExport) => {
+        if (Array.isArray(resolvedVecExport)) {
+            vectorEntries.push(...structuredClone(resolvedVecExport));
+        }
+        if (Array.isArray(resolvedKbExport)) {
+            kbEntries.push(...structuredClone(resolvedKbExport));
+        }
+
+        const snapshot = {
+            version    : MIGRATION_MANIFEST_VERSION,
+            createdAt  : new Date().toISOString(),
+            manifestIds: manifest.map(e => ({legacyId: e.legacyId, canonicalKey: e.canonicalKey})),
+            nodes      : backedNodes,
+            edges      : backedEdges,
+            vectorEntries,
+            kbEntries
+        };
+
+        if (typeof backupPath === 'string' && backupPath.trim()) {
+            fs.mkdirSync(path.dirname(path.resolve(backupPath)), {recursive: true});
+            fs.writeFileSync(path.resolve(backupPath), JSON.stringify(snapshot, null, 2), 'utf-8');
+        }
+
+        return snapshot;
     };
 
-    if (typeof backupPath === 'string' && backupPath.trim()) {
-        fs.mkdirSync(path.dirname(path.resolve(backupPath)), {recursive: true});
-        fs.writeFileSync(path.resolve(backupPath), JSON.stringify(snapshot, null, 2), 'utf-8');
+    if (typeof vectorExportResult?.then === 'function' || typeof kbExportResult?.then === 'function') {
+        return Promise.all([vectorExportResult, kbExportResult]).then(
+            ([vecArr, kbArr]) => finalizeSnapshot(vecArr, kbArr)
+        );
     }
 
-    return snapshot;
+    return finalizeSnapshot(vectorExportResult, kbExportResult);
 }
 
 /**
@@ -645,7 +1343,9 @@ export function restoreAdrMigrationBackup({
 
     restoreTx();
 
-    let restoredVectorsCount = 0;
+    let
+        restoredVectorsCount = 0,
+        vectorRestoreResult  = null;
     if (vectorStore instanceof Map) {
         for (const key of canonicalKeys) {
             vectorStore.delete(key);
@@ -655,11 +1355,13 @@ export function restoreAdrMigrationBackup({
             restoredVectorsCount++;
         }
     } else if (vectorStore && typeof vectorStore.restoreSnapshot === 'function') {
-        vectorStore.restoreSnapshot(resolvedBackup.vectorEntries || [], {canonicalKeys: Array.from(canonicalKeys)});
+        vectorRestoreResult  = vectorStore.restoreSnapshot(resolvedBackup.vectorEntries || [], {canonicalKeys: Array.from(canonicalKeys)});
         restoredVectorsCount = (resolvedBackup.vectorEntries || []).length;
     }
 
-    let restoredKbCount = 0;
+    let
+        restoredKbCount = 0,
+        kbRestoreResult = null;
     if (kbStore instanceof Map) {
         for (const key of canonicalKeys) {
             kbStore.delete(key);
@@ -669,19 +1371,27 @@ export function restoreAdrMigrationBackup({
             restoredKbCount++;
         }
     } else if (kbStore && typeof kbStore.restoreSnapshot === 'function') {
-        kbStore.restoreSnapshot(resolvedBackup.kbEntries || [], {canonicalKeys: Array.from(canonicalKeys)});
+        kbRestoreResult = kbStore.restoreSnapshot(resolvedBackup.kbEntries || [], {canonicalKeys: Array.from(canonicalKeys)});
         restoredKbCount = (resolvedBackup.kbEntries || []).length;
     }
 
-    resetSharedAdrCatalog();
+    const finalizeRestore = () => {
+        resetSharedAdrCatalog();
 
-    return {
-        restored          : true,
-        restoredNodesCount: resolvedBackup.nodes.length,
-        restoredEdgesCount: resolvedBackup.edges.length,
-        restoredVectorsCount,
-        restoredKbCount
+        return {
+            restored          : true,
+            restoredNodesCount: resolvedBackup.nodes.length,
+            restoredEdgesCount: resolvedBackup.edges.length,
+            restoredVectorsCount,
+            restoredKbCount
+        };
     };
+
+    if (typeof vectorRestoreResult?.then === 'function' || typeof kbRestoreResult?.then === 'function') {
+        return Promise.all([vectorRestoreResult, kbRestoreResult]).then(finalizeRestore);
+    }
+
+    return finalizeRestore();
 }
 
 /**
@@ -742,19 +1452,19 @@ function mergeMigratedEdgeData(existingData, incomingData, targetId, newSource, 
  * @returns {Promise<Object>}
  */
 export async function migrateLegacyAdrIdentities({
-    db                = null,
-    sqlitePath        = null,
-    vectorStore       = null,
-    kbStore           = null,
-    manifest          = REVIEWED_41_ADR_MIGRATION_MANIFEST,
-    cutRepositories   = MIGRATION_CUT_REPOSITORIES,
-    apply             = false,
-    dryRun            = !apply,
-    backupPath        = null,
-    migrationId       = 'adr-legacy-41-cut-v1',
-    failAfterPhase    = null,
-    sourceProbe       = null,
-    readerContext     = null,
+    db                       = null,
+    sqlitePath               = null,
+    vectorStore              = null,
+    kbStore                  = null,
+    manifest                 = REVIEWED_41_ADR_MIGRATION_MANIFEST,
+    cutRepositories          = MIGRATION_CUT_REPOSITORIES,
+    apply                    = false,
+    dryRun                   = !apply,
+    backupPath               = null,
+    migrationId              = 'adr-legacy-41-cut-v1',
+    failAfterPhase           = null,
+    sourceProbe              = undefined,
+    readerContext            = undefined,
     requireCompleteInventory = true
 } = {}) {
     let ownedDb = null;
@@ -795,12 +1505,45 @@ export async function migrateLegacyAdrIdentities({
                 sharedVectorPreservedOwners: entry.observedState.reusedVectorOwners.filter(o => o.isAdr === false),
                 custodyTransition          : entry.custodyTransition,
                 historicalReferences       : entry.historicalReferences.map(ref =>
-                    normalizeHistoricalOriginReference(ref, entry.assignmentEvidence.namespace)
+                    normalizeHistoricalOriginReference(ref, entry.assignmentEvidence.namespace, entry.historicalReferences)
                 )
             };
         });
 
         if (dryRun || !apply) {
+            if (typeof backupPath === 'string' && backupPath.trim()) {
+                if (!db) {
+                    throw createCodedError(
+                        'ADR_MIGRATION_DB_REQUIRED',
+                        'Creating a migration backup (--backup) requires a SQLite db or sqlitePath.'
+                    );
+                }
+                const backupSnapshot = await createAdrMigrationBackup({
+                    db,
+                    vectorStore,
+                    kbStore,
+                    backupPath,
+                    manifest
+                });
+                return {
+                    mode             : 'backup',
+                    applied          : false,
+                    noOpRerun        : false,
+                    migrationId,
+                    manifestVersion  : MIGRATION_MANIFEST_VERSION,
+                    backupPath       : path.resolve(backupPath),
+                    backupNodeCount  : backupSnapshot.nodes.length,
+                    backupEdgeCount  : backupSnapshot.edges.length,
+                    backupVectorCount: backupSnapshot.vectorEntries.length,
+                    backupKbCount    : backupSnapshot.kbEntries.length,
+                    preconditions,
+                    plannedNodeMigrations,
+                    plannedCount     : plannedNodeMigrations.length,
+                    custodyMovesCount: plannedNodeMigrations.filter(p => Boolean(p.custodyTransition)).length,
+                    anomaliesCount   : plannedNodeMigrations.filter(p => p.anomalyShape !== 'NONE').length
+                };
+            }
+
             return {
                 mode             : 'dry-run',
                 applied          : false,
@@ -819,6 +1562,20 @@ export async function migrateLegacyAdrIdentities({
             throw createCodedError(
                 'ADR_MIGRATION_DB_REQUIRED',
                 'Applying the migration (--apply) requires a writable SQLite db or sqlitePath.'
+            );
+        }
+
+        if (!isValidMigrationStore(vectorStore)) {
+            throw createCodedError(
+                'ADR_MIGRATION_VECTOR_STORE_REQUIRED',
+                'Applying the migration (--apply) requires a valid vectorStore (Map or Chroma adapter implementing applyAdrMigration, exportSnapshot, and restoreSnapshot).'
+            );
+        }
+
+        if (!isValidMigrationStore(kbStore)) {
+            throw createCodedError(
+                'ADR_MIGRATION_KB_STORE_REQUIRED',
+                'Applying the migration (--apply) requires a valid kbStore (Map or Chroma adapter implementing applyAdrMigration, exportSnapshot, and restoreSnapshot).'
             );
         }
 
@@ -888,7 +1645,7 @@ export async function migrateLegacyAdrIdentities({
 
         // Phase 2: backup_created
         if (!completedPhases.includes('backup_created')) {
-            const backupSnapshot = createAdrMigrationBackup({
+            const backupSnapshot = await createAdrMigrationBackup({
                 db,
                 vectorStore,
                 kbStore,
@@ -901,8 +1658,12 @@ export async function migrateLegacyAdrIdentities({
             });
         }
 
-        const admissionRecords  = manifest.map(buildAdrMigrationRecordFromManifestEntry);
-        const legacyToCanonical = new Map(manifest.map(e => [e.legacyId, e.canonicalKey]));
+        const
+            admissionRecords     = manifest.map(buildAdrMigrationRecordFromManifestEntry),
+            legacyToCanonical    = new Map(manifest.map(e => [e.legacyId, e.canonicalKey])),
+            manifestByLegacy     = new Map(manifest.map(e => [e.legacyId, e])),
+            manifestByCanonical  = new Map(manifest.map(e => [e.canonicalKey, e])),
+            admissionByCanonical = new Map(admissionRecords.map(r => [r.canonicalKey, r]));
 
         // Phase 3: graph_sqlite_applied
         if (!completedPhases.includes('graph_sqlite_applied')) {
@@ -943,12 +1704,14 @@ export async function migrateLegacyAdrIdentities({
                         relabeledNodesCount++;
                     }
 
-                    const normalizedRefs = Array.from(new Set([
-                        ...(admissionRecord.historicalReferences || []),
-                        ...((existingProps.historicalReferences || []).map(r =>
-                            normalizeHistoricalOriginReference(r, 'neomjs/neo')
-                        ))
-                    ])).filter(Boolean);
+                    const
+                        declaredRefs   = admissionRecord.historicalReferences || [],
+                        normalizedRefs = Array.from(new Set([
+                            ...declaredRefs,
+                            ...((existingProps.historicalReferences || []).map(r =>
+                                normalizeHistoricalOriginReference(r, entry.assignmentEvidence.namespace, declaredRefs)
+                            ))
+                        ])).filter(Boolean);
 
                     const newNodePayload = {
                         ...existingNodeObj,
@@ -1034,13 +1797,29 @@ export async function migrateLegacyAdrIdentities({
 
                     const
                         existingProps   = parsed.properties || {},
-                        normalizedProps = {...existingProps};
+                        normalizedProps = {...existingProps},
+                        incidentEntry   = manifestByLegacy.get(row.source) ||
+                            manifestByLegacy.get(row.target) ||
+                            manifestByCanonical.get(newSource) ||
+                            manifestByCanonical.get(newTarget) ||
+                            null,
+                        incidentNamespace = incidentEntry?.assignmentEvidence?.namespace || null,
+                        incidentDeclared  = incidentEntry
+                            ? (admissionByCanonical.get(incidentEntry.canonicalKey)?.historicalReferences || [])
+                            : [];
 
                     if (typeof normalizedProps.origin === 'string') {
                         if (legacyToCanonical.has(normalizedProps.origin)) {
                             normalizedProps.origin = legacyToCanonical.get(normalizedProps.origin);
-                        } else if (/^(?:ISSUE|PULL_REQUEST|DISCUSSION):/i.test(normalizedProps.origin) || /^#\d+$/.test(normalizedProps.origin)) {
-                            normalizedProps.origin = normalizeHistoricalOriginReference(normalizedProps.origin);
+                        } else if (
+                            /^(?:ISSUE|PULL_REQUEST|DISCUSSION):/i.test(normalizedProps.origin) ||
+                            /^(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#\d+$/.test(normalizedProps.origin)
+                        ) {
+                            normalizedProps.origin = normalizeHistoricalOriginReference(
+                                normalizedProps.origin,
+                                incidentNamespace,
+                                incidentDeclared
+                            );
                         }
                     }
 
@@ -1483,37 +2262,71 @@ export function getUsageText() {
     ].join('\n');
 }
 
-async function runCli() {
-    const opts = parseArgs(process.argv.slice(2));
+/**
+ * @summary Executes the CLI workflow with default production store adapters, `sourceProbe`, and `readerContext`.
+ * @param {String[]} [argv=process.argv.slice(2)]
+ * @param {Object} [deps={}]
+ * @returns {Promise<Object|undefined>}
+ */
+export async function runCli(argv = process.argv.slice(2), deps = {}) {
+    const opts = parseArgs(argv);
     if (opts.help) {
-        console.log(getUsageText());
+        if (!deps.silent) console.log(getUsageText());
         return;
     }
 
     if (opts.runbook) {
-        console.log(JSON.stringify(ADR_MIGRATION_RUNBOOK, null, 2));
-        return;
+        if (!deps.silent) console.log(JSON.stringify(ADR_MIGRATION_RUNBOOK, null, 2));
+        return ADR_MIGRATION_RUNBOOK;
     }
+
+    const composed = composeDefaultMigrationStores({
+        chromaClient        : deps.chromaClient || null,
+        vectorStore         : deps.vectorStore || null,
+        kbStore             : deps.kbStore || null,
+        vectorCollectionName: deps.vectorCollectionName || null,
+        kbCollectionName    : deps.kbCollectionName || null,
+        manifest            : deps.manifest || REVIEWED_41_ADR_MIGRATION_MANIFEST,
+        cutRepositories     : deps.cutRepositories || MIGRATION_CUT_REPOSITORIES,
+        repoRoots           : deps.repoRoots || null,
+        sourceProbe         : deps.sourceProbe,
+        readerContext       : deps.readerContext
+    });
 
     if (opts.restorePath) {
         const Database = createRequire(import.meta.url)('better-sqlite3');
-        const db       = new Database(opts.sqlitePath);
+        const db       = deps.db || new Database(opts.sqlitePath);
         try {
-            const res = restoreAdrMigrationBackup({db, backupPath: opts.restorePath});
-            console.log(JSON.stringify(res, null, 2));
+            const res = await restoreAdrMigrationBackup({
+                db,
+                vectorStore: composed.vectorStore,
+                kbStore    : composed.kbStore,
+                backupPath : opts.restorePath
+            });
+            if (!deps.silent) console.log(JSON.stringify(res, null, 2));
+            return res;
         } finally {
-            db.close();
+            if (!deps.db) {
+                db.close();
+            }
         }
-        return;
     }
 
     const result = await migrateLegacyAdrIdentities({
-        sqlitePath: opts.sqlitePath,
-        apply     : opts.apply,
-        dryRun    : opts.dryRun,
-        backupPath: opts.backupPath
+        db             : deps.db || null,
+        sqlitePath     : opts.sqlitePath,
+        vectorStore    : composed.vectorStore,
+        kbStore        : composed.kbStore,
+        sourceProbe    : composed.sourceProbe,
+        readerContext  : composed.readerContext,
+        manifest       : deps.manifest || REVIEWED_41_ADR_MIGRATION_MANIFEST,
+        cutRepositories: deps.cutRepositories || MIGRATION_CUT_REPOSITORIES,
+        apply          : opts.apply,
+        dryRun         : opts.dryRun,
+        backupPath     : opts.backupPath
     });
-    console.log(JSON.stringify(result, null, 2));
+    if (!deps.silent) console.log(JSON.stringify(result, null, 2));
+    return result;
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
