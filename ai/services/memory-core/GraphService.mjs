@@ -176,7 +176,8 @@ export const GRAPH_NODE_WRITER_INVENTORY = Object.freeze([
     Object.freeze({id: 'businessMetricsProbeCore',           path: 'ai/scripts/maintenance/businessMetricsProbeCore.mjs',                    role: 'METRIC node writer', canMutateAdrAuthority: false}),
     Object.freeze({id: 'seedAgentIdentities',                path: 'ai/scripts/setup/seedAgentIdentities.mjs',                               role: 'Explicit AgentIdentity registry seed writer', canMutateAdrAuthority: false}),
     Object.freeze({id: 'reconcileRawMemoryGraphIdentities',  path: 'ai/scripts/migrations/reconcileRawMemoryGraphIdentities.mjs',            role: 'One-shot raw memory identity migration writer', canMutateAdrAuthority: false}),
-    Object.freeze({id: 'normalizeGraphIdentities',           path: 'ai/scripts/migrations/normalizeGraphIdentities.mjs',                     role: 'One-shot graph identity normalization migration writer', canMutateAdrAuthority: false})
+    Object.freeze({id: 'normalizeGraphIdentities',           path: 'ai/scripts/migrations/normalizeGraphIdentities.mjs',                     role: 'One-shot graph identity normalization migration writer', canMutateAdrAuthority: false}),
+    Object.freeze({id: 'migrateLegacyAdrIdentities',         path: 'ai/scripts/migrations/migrateLegacyAdrIdentities.mjs',                   role: 'Reviewed manifest-driven legacy ADR identity and cross-store reconciliation migration writer', canMutateAdrAuthority: true})
 ]);
 
 /**
