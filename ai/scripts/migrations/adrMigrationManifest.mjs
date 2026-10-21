@@ -16,41 +16,71 @@ const NS_MAP = {B: 'neomjs/neo-agent-brain', N: 'neomjs/neo', I: 'neomjs/neo-age
  */
 export const MIGRATION_CUT_REPOSITORIES = Object.freeze({
     'neomjs/neo': Object.freeze({
-        forge      : 'github.com', repositoryId: '220867748', namespace: 'neomjs/neo',
-        cutRevision: '33074574', territoryRoot: 'learn/agentos/decisions', visibility: 'public'
+        forge        : 'github.com',
+        repositoryId : '220867748',
+        namespace    : 'neomjs/neo',
+        cutRevision  : '33074574',
+        territoryRoot: 'learn/agentos/decisions',
+        visibility   : 'public'
     }),
     'neomjs/neo-agent-brain': Object.freeze({
-        forge      : 'github.com', repositoryId: '1344062228', namespace: 'neomjs/neo-agent-brain',
-        cutRevision: '3443a409', territoryRoot: 'learn/agentos/decisions', visibility: 'public'
+        forge        : 'github.com',
+        repositoryId : '1344062228',
+        namespace    : 'neomjs/neo-agent-brain',
+        cutRevision  : '3443a409',
+        territoryRoot: 'learn/agentos/decisions',
+        visibility   : 'public'
     }),
     'neomjs/neo-agent-institution': Object.freeze({
-        forge      : 'github.com', repositoryId: '1347756127', namespace: 'neomjs/neo-agent-institution',
-        cutRevision: '477718f9', territoryRoot: 'learn/agentos/decisions', visibility: 'public'
+        forge        : 'github.com',
+        repositoryId : '1347756127',
+        namespace    : 'neomjs/neo-agent-institution',
+        cutRevision  : '477718f9',
+        territoryRoot: 'learn/agentos/decisions',
+        visibility   : 'public'
     }),
     'neomjs/neo-stage': Object.freeze({
-        forge      : 'github.com', repositoryId: '1413810081', namespace: 'neomjs/neo-stage',
-        cutRevision: 'ca26ffd9', territoryRoot: 'learn/agentos/decisions', visibility: 'private',
-        probeRecord: Object.freeze({
-            adrNumber   : '0001', currentSlug: 'the-engine-contract', fileName: '0001-the-engine-contract.md',
-            sourcePath  : 'learn/agentos/decisions/0001-the-engine-contract.md', contentHash: '4a580037288a',
+        forge        : 'github.com',
+        repositoryId : '1413810081',
+        namespace    : 'neomjs/neo-stage',
+        cutRevision  : 'ca26ffd9',
+        territoryRoot: 'learn/agentos/decisions',
+        visibility   : 'private',
+        probeRecord  : Object.freeze({
+            adrNumber   : '0001',
+            currentSlug : 'the-engine-contract',
+            fileName    : '0001-the-engine-contract.md',
+            sourcePath  : 'learn/agentos/decisions/0001-the-engine-contract.md',
+            contentHash : '4a580037288a',
             canonicalKey: buildCanonicalAdrKey({
-                forge: 'github.com', repositoryId: '1413810081', namespace: 'neomjs/neo-stage', number: '0001'
+                forge       : 'github.com',
+                repositoryId: '1413810081',
+                namespace   : 'neomjs/neo-stage',
+                number      : '0001'
             }),
             authorizedReaderContext: Object.freeze({
-                agentIdentity          : '@neo-migration-verifier', authorizedNamespaces: Object.freeze(['neomjs/neo-stage']),
-                authorizedRepositoryIds: Object.freeze(['1413810081']), authorizedRepositories: Object.freeze(['neomjs/neo-stage']), allowPrivate: true
+                agentIdentity          : '@neo-migration-verifier',
+                authorizedNamespaces   : Object.freeze(['neomjs/neo-stage']),
+                authorizedRepositoryIds: Object.freeze(['1413810081']),
+                authorizedRepositories : Object.freeze(['neomjs/neo-stage']),
+                allowPrivate           : true
             }),
             unauthorizedReaderContext: Object.freeze({
-                agentIdentity          : '@neo-public-reader', authorizedNamespaces: Object.freeze([]),
-                authorizedRepositoryIds: Object.freeze([]), authorizedRepositories: Object.freeze([]), allowPrivate: false
+                agentIdentity          : '@neo-public-reader',
+                authorizedNamespaces   : Object.freeze([]),
+                authorizedRepositoryIds: Object.freeze([]),
+                authorizedRepositories : Object.freeze([]),
+                allowPrivate           : false
             })
         })
     })
 });
 
-export const OBSERVED_11_CENSUS_ANOMALY_NUMBERS = Object.freeze(['0004', '0020', '0024', '0026', '0027', '0028', '0029', '0031', '0032', '0034', '0038']);
-export const OBSERVED_LIVE_ANOMALY_NUMBERS      = Object.freeze([...OBSERVED_11_CENSUS_ANOMALY_NUMBERS, '0019']);
-export const MOVED_FM_ADR_NUMBERS               = Object.freeze(['0020', '0032', '0034', '0037', '0038']);
+export const OBSERVED_11_CENSUS_ANOMALY_NUMBERS = Object.freeze([
+    '0004', '0020', '0024', '0026', '0027', '0028', '0029', '0031', '0032', '0034', '0038'
+]);
+export const OBSERVED_LIVE_ANOMALY_NUMBERS = Object.freeze([...OBSERVED_11_CENSUS_ANOMALY_NUMBERS, '0019']);
+export const MOVED_FM_ADR_NUMBERS          = Object.freeze(['0020', '0032', '0034', '0037', '0038']);
 
 // Compact 41-row table: [num, slug, title, nsCode, hash, label, edges, vecId, owners, refs, redirHash, disposition]
 const RAW_41_ROWS = [
@@ -108,19 +138,24 @@ function buildReviewedManifestEntry([
     edgeCount = 0, vecId = null, ownerSpecs = [], histRefs = [], redirectContentHash = null, semanticDisposition = 'retain'
 ]) {
     const
-        namespace          = NS_MAP[nsCode],
-        repoMeta           = MIGRATION_CUT_REPOSITORIES[namespace],
-        isCustodyMove      = Boolean(redirectContentHash),
-        originMeta         = isCustodyMove ? MIGRATION_CUT_REPOSITORIES['neomjs/neo'] : null,
-        legacyId           = `adr-${adrNumber}`,
-        vectorId           = vecId || legacyId,
-        fileName           = `${adrNumber}-${currentSlug}.md`,
-        sourcePath         = `${repoMeta.territoryRoot}/${fileName}`,
-        isAnomaly          = nodeLabel !== 'ADR' || vectorId.startsWith('summary_'),
-        canonicalKey       = buildCanonicalAdrKey({forge: repoMeta.forge, repositoryId: repoMeta.repositoryId, namespace: repoMeta.namespace, number: adrNumber}),
-        originCanonicalKey = originMeta ? buildCanonicalAdrKey({forge: originMeta.forge, repositoryId: originMeta.repositoryId, namespace: originMeta.namespace, number: adrNumber}) : null,
+        namespace     = NS_MAP[nsCode],
+        repoMeta      = MIGRATION_CUT_REPOSITORIES[namespace],
+        isCustodyMove = Boolean(redirectContentHash),
+        originMeta    = isCustodyMove ? MIGRATION_CUT_REPOSITORIES['neomjs/neo'] : null,
+        legacyId      = `adr-${adrNumber}`,
+        vectorId      = vecId || legacyId,
+        fileName      = `${adrNumber}-${currentSlug}.md`,
+        sourcePath    = `${repoMeta.territoryRoot}/${fileName}`,
+        isAnomaly     = nodeLabel !== 'ADR' || vectorId.startsWith('summary_'),
+        canonicalKey  = buildCanonicalAdrKey({
+            forge: repoMeta.forge, repositoryId: repoMeta.repositoryId, namespace: repoMeta.namespace, number: adrNumber
+        }),
+        originCanonicalKey = originMeta ? buildCanonicalAdrKey({
+            forge: originMeta.forge, repositoryId: originMeta.repositoryId, namespace: originMeta.namespace, number: adrNumber
+        }) : null,
         mkBinding          = (meta, kind, value, current) => Object.freeze({
-            kind, value, forge: meta.forge, repositoryId: meta.repositoryId, namespace: meta.namespace, targetKey: canonicalKey, current,
+            kind, value, forge: meta.forge, repositoryId: meta.repositoryId,
+            namespace: meta.namespace, targetKey: canonicalKey, current,
             ...(current ? {} : {historical: true})
         }),
         aliasBindings = [
@@ -129,35 +164,65 @@ function buildReviewedManifestEntry([
             ...(originMeta ? [mkBinding(originMeta, 'slug', currentSlug, false), mkBinding(originMeta, 'legacy-number', adrNumber, false)] : [])
         ],
         reservations = [
-            Object.freeze({forge: repoMeta.forge, repositoryId: repoMeta.repositoryId, namespace: repoMeta.namespace, adrNumber, reason: 'assigned-custody'}),
-            ...(originMeta ? [Object.freeze({forge: originMeta.forge, repositoryId: originMeta.repositoryId, namespace: originMeta.namespace, adrNumber, reason: 'historical-custody-redirect-reservation'})] : [])
+            Object.freeze({
+                forge    : repoMeta.forge, repositoryId: repoMeta.repositoryId,
+                namespace: repoMeta.namespace, adrNumber, reason: 'assigned-custody'
+            }),
+            ...(originMeta ? [Object.freeze({
+                forge    : originMeta.forge, repositoryId: originMeta.repositoryId,
+                namespace: originMeta.namespace, adrNumber, reason: 'historical-custody-redirect-reservation'
+            })] : [])
         ];
 
     return Object.freeze({
         adrNumber, legacyId, canonicalKey, originCanonicalKey, title, status: 'Accepted', currentSlug, fileName, sourcePath,
         assignmentEvidence: Object.freeze({
-            forge      : repoMeta.forge, repositoryId: repoMeta.repositoryId, namespace: repoMeta.namespace,
-            cutRevision: repoMeta.cutRevision, provenance: isCustodyMove ? 'reviewed-manifest-custody-move' : 'reviewed-manifest-assignment', verified: true
+            forge       : repoMeta.forge,
+            repositoryId: repoMeta.repositoryId,
+            namespace   : repoMeta.namespace,
+            cutRevision : repoMeta.cutRevision,
+            provenance  : isCustodyMove ? 'reviewed-manifest-custody-move' : 'reviewed-manifest-assignment',
+            verified    : true
         }),
         sourceTuple: Object.freeze({
-            forge   : repoMeta.forge, repositoryId: repoMeta.repositoryId, namespace: repoMeta.namespace,
-            revision: repoMeta.cutRevision, path: sourcePath, contentHash, payloadHash: `sha256:${contentHash}`
+            forge       : repoMeta.forge,
+            repositoryId: repoMeta.repositoryId,
+            namespace   : repoMeta.namespace,
+            revision    : repoMeta.cutRevision,
+            path        : sourcePath,
+            contentHash,
+            payloadHash : `sha256:${contentHash}`
         }),
         custodyTransition: isCustodyMove ? Object.freeze({
-            adrNumber, canonicalKey, fromForge: originMeta.forge, fromRepositoryId: originMeta.repositoryId, fromNamespace: originMeta.namespace,
-            toForge     : repoMeta.forge, toRepositoryId: repoMeta.repositoryId, toNamespace: repoMeta.namespace,
-            redirectPath: `${originMeta.territoryRoot}/${fileName}`, redirectContentHash,
-            proof       : `reviewed-manifest-redirect-${adrNumber}-${redirectContentHash}`, verified: true
+            adrNumber, canonicalKey,
+            fromForge       : originMeta.forge,
+            fromRepositoryId: originMeta.repositoryId,
+            fromNamespace   : originMeta.namespace,
+            toForge         : repoMeta.forge,
+            toRepositoryId  : repoMeta.repositoryId,
+            toNamespace     : repoMeta.namespace,
+            redirectPath    : `${originMeta.territoryRoot}/${fileName}`,
+            redirectContentHash,
+            proof           : `reviewed-manifest-redirect-${adrNumber}-${redirectContentHash}`,
+            verified        : true
         }) : null,
         historicalReservationInOrigin: isCustodyMove,
         aliases                      : Object.freeze([currentSlug]),
-        historicalAliases            : Object.freeze(isCustodyMove ? [`${originMeta.namespace}#adr:${currentSlug}`, `${originMeta.namespace}#${adrNumber}`, legacyId] : [legacyId]),
-        aliasBindings                : Object.freeze(aliasBindings),
-        reservations                 : Object.freeze(reservations),
-        historicalReferences         : Object.freeze([...histRefs]),
-        observedState                : Object.freeze({
+        historicalAliases            : Object.freeze(
+            isCustodyMove ? [`${originMeta.namespace}#adr:${currentSlug}`, `${originMeta.namespace}#${adrNumber}`, legacyId] : [legacyId]
+        ),
+        aliasBindings       : Object.freeze(aliasBindings),
+        reservations        : Object.freeze(reservations),
+        historicalReferences: Object.freeze([...histRefs]),
+        observedState       : Object.freeze({
             nodeLabel,
-            anomalyShape            : !isAnomaly ? 'NONE' : adrNumber === '0038' ? 'SHARED_SUMMARY_VECTOR_WITH_NON_ADR_OWNER' : nodeLabel === 'CLASS' ? 'CLASS_SUMMARY_VECTOR_OVERWRITE' : 'CONCEPT_SUMMARY_VECTOR_OVERWRITE',
+            anomalyShape: !isAnomaly
+                ? 'NONE'
+                : adrNumber === '0038'
+                    ? 'SHARED_SUMMARY_VECTOR_WITH_NON_ADR_OWNER'
+                    : nodeLabel === 'CLASS'
+                        ? 'CLASS_SUMMARY_VECTOR_OVERWRITE'
+                        : 'CONCEPT_SUMMARY_VECTOR_OVERWRITE',
             observedSemanticVectorId: vectorId,
             reusedVectorOwners      : Object.freeze(ownerSpecs.map(spec => {
                 const [id, label] = spec.split('|');
