@@ -10,7 +10,7 @@
   <a href="https://github.com/neomjs/neo-agent-brain/actions/workflows/brain-integration.yml"><img src="https://github.com/neomjs/neo-agent-brain/actions/workflows/brain-integration.yml/badge.svg?branch=dev" alt="Brain Integration"></a>
   <a href="./package.json"><img src="https://img.shields.io/badge/Node.js-24%2B-339933.svg?logo=nodedotjs&logoColor=white" alt="Node.js 24+"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://github.com/neomjs/neo-agent-brain/issues"><img src="https://img.shields.io/badge/PRs-welcome-green.svg?logo=github&logoColor=white" alt="PRs Welcome"></a>
+  <a href="./CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-green.svg?logo=github&logoColor=white" alt="PRs Welcome"></a>
 </p>
 
 # neo-agent-brain
@@ -287,9 +287,10 @@ door, not a second guide registry.
 
 ## Contributing
 
-Work targets the `dev` branch. `main` is release-only. Every pull request must reference an existing
-[Brain issue](https://github.com/neomjs/neo-agent-brain/issues), and identity changes require a
-cross-family review before merge.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for local setup, test tiers, issue claiming, and
+autonomous-agent onboarding. Work targets the `dev` branch. `main` is release-only. Every pull
+request must reference an existing [Brain issue](https://github.com/neomjs/neo-agent-brain/issues),
+and identity changes require a cross-family review before merge.
 
 ## License
 
