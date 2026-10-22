@@ -120,7 +120,7 @@
         "autoprefixer": "^10.6.1",
         "catharsis": "0.11.0",
         "chalk": "^6.0.1",
-        "postcss": "^8.5.30",
+        "postcss": "^8.5.31",
         "sass": "^1.105.2"
     },
     "overrides": {
