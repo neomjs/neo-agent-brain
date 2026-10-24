@@ -327,6 +327,58 @@ test.describe('attributePreIdentityMemories — evidence-bound attribution of pr
         expect(ownerOf(db, 'memory:m-uid-alias')).toEqual({agentIdentity: undefined, propertyUserId: 'neo-test-mira-legacy', userId: 'neo-test-mira-legacy'})
     });
 
+    test('before-cutoff fails closed on an unlisted metadata.agent and on a row at the exact cutoff instant', () => {
+        const
+            cutoffIso   = '2026-04-10T00:00:00.000Z',
+            cutoffMs    = Date.parse(cutoffIso),
+            beforeEpoch = Date.parse('2026-04-09T23:59:59.999Z'),
+            planned     = planAttribution({
+                agents        : ['Antigravity (Gemini 3.1 Pro)'],
+                before        : cutoffIso,
+                conflictAgents: ['claude-code'],
+                identity      : IDENTITY,
+                rows          : [
+                    shared('m-before-clean', 's-clean', 'solo founding turn without agent label', {timestamp: beforeEpoch}),
+                    shared('m-before-unlisted', 's-unlisted', 'early turn with unlisted foreign agent', {agent: 'Antigravity (Claude Opus 4.6)', timestamp: beforeEpoch}),
+                    shared('m-at-cutoff-iso', 's-boundary-1', 'turn at exact ISO cutoff', {timestamp: cutoffIso}),
+                    shared('m-at-cutoff-ms', 's-boundary-2', 'turn at exact numeric cutoff', {timestamp: cutoffMs})
+                ]
+            });
+
+        expect(rulesOf(planned)).toEqual({'m-before-clean': 'before-cutoff'});
+        expect(planned.leftShared).toEqual([
+            {reason: 'no-evidence', rows: 1, session: 's-boundary-1'},
+            {reason: 'no-evidence', rows: 1, session: 's-boundary-2'},
+            {reason: 'no-evidence', rows: 1, session: 's-unlisted'}
+        ])
+    });
+
+    test('user-id rows trust server-stamped metadata.userId over prompt wake summaries while foreign userIds mark session conflicts', () => {
+        const planned = planAttribution({
+            aliases       : [ALIAS],
+            conflictAgents: ['claude-code'],
+            identity      : IDENTITY,
+            rows          : [
+                row('m-uid-wake-summary', {
+                    prompt   : `[WAKE][priority:high] 1 events for ${PEER}: 1 message summarized by ${IDENTITY}`,
+                    sessionId: 's-uid-wake',
+                    userId   : 'neo-test-mira'
+                }),
+                shared('m-uid-wake-sibling', 's-uid-wake', 'shared sibling in same session'),
+                row('m-uid-foreign', {prompt: 'peer turn', sessionId: 's-uid-mixed', userId: 'neo-test-orin'}),
+                row('m-uid-own-mixed', {prompt: 'own turn in mixed session', sessionId: 's-uid-mixed', userId: 'neo-test-mira'})
+            ]
+        });
+
+        expect(rulesOf(planned)).toEqual({
+            'm-uid-wake-sibling': 'session',
+            'm-uid-wake-summary': 'user-id'
+        });
+        expect(planned.leftShared).toEqual([
+            {conflicts: ['userId neo-test-orin'], reason: 'conflict', rows: 1, session: 's-uid-mixed'}
+        ])
+    });
+
     test('apply re-keys both stores with each row\'s journal; a re-run changes nothing; reverse restores shared', async () => {
         const
             rows       = [shared('m-start', 's-cli', MARKER), shared('m-turn', 's-cli', 'a turn'), shared('m-other', 's-x', 'unattributable')],

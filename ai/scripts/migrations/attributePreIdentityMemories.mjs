@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * @module ai/scripts/migrations/attributePreIdentityMemories
- * @summary Attributes a returning agent's pre-identity raw memories to it, on recorded evidence only.
+ * @summary Attributes a returning agent's pre-identity raw memories to it, on recorded evidence and operator-supplied era/agent bounds.
  * Dry-run by default; `--apply --offline` re-keys the matched rows in Chroma and the graph, and
  * `--reverse --offline` restores exactly what an apply re-keyed.
  *
@@ -16,9 +16,8 @@
  *   ({@link envelopeOf}). A marker quoted anywhere else is content, never evidence.
  * - `wake-addressee`: its prompt opens with a wake header addressed to the identity or an alias.
  * - `agent-field`: its `metadata.agent` matches an `--agent` label; `--conflict-agent` marks a foreign label.
- * - `before-cutoff`: its `metadata.timestamp` is strictly earlier than `--before` (an independent solo-era rule on
- *   conflict-free `shared` rows, not a date bound on `--agent`; pass `--before` only for the single-agent founding
- *   cutoff, and run `--agent` / `--conflict-agent` without `--before` for multi-peer `shared` rows).
+ * - `before-cutoff`: its `metadata.agent` is empty and its `metadata.timestamp` is strictly earlier than `--before`
+ *   (adds rows to the other rules' union rather than bounding `--agent`; a row with an unlisted `metadata.agent` fails closed).
  * - `session`: it shares a session with a row attributed by a direct rule, or with a row already attributed
  *   to the identity or an alias.
  *
@@ -44,7 +43,9 @@
  *   node ai/scripts/migrations/attributePreIdentityMemories.mjs --identity <id> [...] --apply --offline
  *   node ai/scripts/migrations/attributePreIdentityMemories.mjs --identity <id> --reverse --offline
  *
- * Writes are offline: stop every Memory Core process that can write or cache the graph, run, then restart them.
+ * Writes are offline: stop every Memory Core process that can write or cache the graph, run any pending identity
+ * rename (`renameAgentIdentities.mjs`) first so `attributionPriorUserId` records the post-rename `userId`, then run
+ * this migration and restart Memory Core.
  */
 
 import path                           from 'node:path';
@@ -74,7 +75,7 @@ Options:
   --harness <marker>       A harness session marker, as it opens the prompt (repeatable)
   --agent <label>          An unambiguous metadata.agent value on shared rows (repeatable)
   --conflict-agent <label> A foreign metadata.agent value that marks a session conflict (repeatable)
-  --before <iso-or-ms>     Independent solo-era rule: attribute conflict-free shared rows strictly before this timestamp (not a date bound on --agent)
+  --before <iso-or-ms>     Solo-era rule: adds shared rows with no foreign agent strictly before this timestamp (--agent X --before T attributes the union, not an intersection)
   --apply                  Re-key the matched rows (requires --offline)
   --reverse                Restore every row an apply attributed to the identity (requires --offline)
   --offline                Acknowledge that every Memory Core graph writer is stopped
@@ -213,10 +214,10 @@ export function envelopeOf(prompt) {
  * @param {String[]} [rules.agents=[]] Positive metadata.agent labels
  * @param {String[]} [rules.conflictAgents=[]] Conflicting metadata.agent labels
  * @param {String|Number|null} [rules.before=null] Cutoff label for before-cutoff evidence
- * @param {Number|null} [rules.beforeMs=null] Cutoff epoch milliseconds
+ * @param {Number|null} [rules.cutoffMs=null] Parsed cutoff epoch milliseconds
  * @returns {{evidence: String, rule: String}|{conflict: String}|null}
  */
-export function rowEvidence(metadata, {agents = [], before = null, beforeMs = null, conflictAgents = [], identities, markers = []}) {
+export function rowEvidence(metadata, {agents = [], before = null, conflictAgents = [], cutoffMs = null, identities, markers = []}) {
     const
         envelope  = envelopeOf(metadata?.prompt),
         wake      = WAKE_HEADER.exec(envelope),
@@ -245,9 +246,7 @@ export function rowEvidence(metadata, {agents = [], before = null, beforeMs = nu
         return {evidence: agent, rule: 'agent-field'}
     }
 
-    const cutoffMs = beforeMs ?? (before == null ? null : timestampMs(before));
-
-    if (cutoffMs !== null && Number.isFinite(cutoffMs)) {
+    if (!agent && cutoffMs !== null && Number.isFinite(cutoffMs)) {
         const rowMs = timestampMs(metadata?.timestamp);
 
         if (Number.isFinite(rowMs) && rowMs < cutoffMs) {
@@ -312,7 +311,7 @@ export function planAttribution({rows, identity, agents = [], aliases = [], befo
             session.evidence.push(id);
             session.candidates.push({evidence, id, metadata})
         } else if (metadata.userId === SHARED_USER_ID) {
-            const evidence = rowEvidence(metadata, {agents, before, beforeMs: cutoffMs, conflictAgents, identities, markers: harness});
+            const evidence = rowEvidence(metadata, {agents, before, conflictAgents, cutoffMs, identities, markers: harness});
 
             evidence?.conflict && session.conflicts.add(evidence.conflict);
             evidence?.rule && session.evidence.push(id);
@@ -483,7 +482,7 @@ function legacyPriorOf(db, {id, metadata}, owner, userIds = new Set()) {
     const
         current      = readGraphOwner(db, id, true),
         unattributed = current && current.agentIdentity === null && current.userId === current.propertyUserId
-            && (current.userId === SHARED_USER_ID || current.userId === metadata.userId || userIds.has(current.userId));
+            && (current.userId === SHARED_USER_ID || userIds.has(current.userId));
 
     return !current ? 'missing'
         : sameOwner(current, SHARED_OWNER) ? {journaled: false, prior: SHARED_OWNER}
