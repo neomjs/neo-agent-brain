@@ -16,7 +16,9 @@
  *   ({@link envelopeOf}). A marker quoted anywhere else is content, never evidence.
  * - `wake-addressee`: its prompt opens with a wake header addressed to the identity or an alias.
  * - `agent-field`: its `metadata.agent` matches an `--agent` label; `--conflict-agent` marks a foreign label.
- * - `before-cutoff`: its `metadata.timestamp` is strictly earlier than `--before`.
+ * - `before-cutoff`: its `metadata.timestamp` is strictly earlier than `--before` (an independent solo-era rule on
+ *   conflict-free `shared` rows, not a date bound on `--agent`; pass `--before` only for the single-agent founding
+ *   cutoff, and run `--agent` / `--conflict-agent` without `--before` for multi-peer `shared` rows).
  * - `session`: it shares a session with a row attributed by a direct rule, or with a row already attributed
  *   to the identity or an alias.
  *
@@ -70,9 +72,9 @@ Options:
   --identity <id>          The agent whose pre-identity rows are attributed (required)
   --alias <id>             Another name the agent's rows and wakes were written under (repeatable)
   --harness <marker>       A harness session marker, as it opens the prompt (repeatable)
-  --agent <label>          An unambiguous metadata.agent value for the identity (repeatable)
+  --agent <label>          An unambiguous metadata.agent value on shared rows (repeatable)
   --conflict-agent <label> A foreign metadata.agent value that marks a session conflict (repeatable)
-  --before <iso-or-ms>     Attribute conflict-free shared rows strictly before this timestamp
+  --before <iso-or-ms>     Independent solo-era rule: attribute conflict-free shared rows strictly before this timestamp (not a date bound on --agent)
   --apply                  Re-key the matched rows (requires --offline)
   --reverse                Restore every row an apply attributed to the identity (requires --offline)
   --offline                Acknowledge that every Memory Core graph writer is stopped
