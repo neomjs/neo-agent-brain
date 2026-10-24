@@ -451,6 +451,60 @@ test.describe('ai/daemons/wake/receiver — manifest reload', () => {
         expect(await new WakeReceiverState({stateDir: path.join(dir, 'state')}).list()).toEqual([]);
     });
 
+    test('a stuck step in startWakeReceiver synchronously stamps receiver.liveness and kills the process with SIGKILL (#1255)', async () => {
+        const
+            stuckStateDir = path.join(dir, 'state-sigkill'),
+            recordsDir    = path.join(stuckStateDir, 'records'),
+            originalKill  = process.kill,
+            kills         = [];
+
+        let writeCalls     = 0,
+            snapshotAtKill = null,
+            stuckReceiver  = null;
+
+        const hungSweepFs = {
+            ...fs,
+            writeFile: (...args) => {
+                writeCalls++;
+                return writeCalls === 1 ? fs.writeFile(...args) : new Promise(() => {})
+            }
+        };
+
+        process.kill = (pid, signal) => {
+            kills.push({pid, signal});
+            snapshotAtKill = fs.readFile(path.join(recordsDir, 'receiver.liveness'), 'utf8').then(JSON.parse);
+            return true
+        };
+
+        try {
+            stuckReceiver = await startWakeReceiver({
+                manifestPath,
+                stateDir           : stuckStateDir,
+                host               : '127.0.0.1',
+                port               : await freePort(),
+                logger             : {error() {}, warn() {}, log() {}},
+                reconcileIntervalMs: 60_000,
+                livenessOptions    : {fsModule: hungSweepFs},
+                stepBoundsMs       : {accept: 50, reload: 50, drain: 50, dispatch: 50},
+                watchdogIntervalMs : 10
+            });
+
+            void stuckReceiver.reload();
+
+            expect(await waitFor(() => kills.length === 1), 'default onStuck invokes process.kill once').toBe(true);
+            expect(kills).toEqual([{pid: process.pid, signal: 'SIGKILL'}]);
+
+            const livenessAtKill = await snapshotAtKill;
+            expect(livenessAtKill.stuckExits).toEqual([expect.objectContaining({step: 'reload'})]);
+        } finally {
+            process.kill = originalKill;
+            stuckReceiver?.stopManifestWatcher();
+            if (stuckReceiver?.server) {
+                await new Promise(resolve => stuckReceiver.server.close(resolve));
+            }
+        }
+    });
+
     test('a route published while the process is running serves without a restart', async () => {
         expect(await probe(mine)).toBe(401);
         expect(await probe(peer)).toBe(404);

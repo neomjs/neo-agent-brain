@@ -528,8 +528,10 @@ export function createWakeReceiver({
  * @param {Object} [options.logger=console]
  * @param {Number} [options.reconcileIntervalMs]
  * @param {Number} [options.drainIntervalMs=DRAIN_RETRY_INTERVAL_MS]
- * @param {Function} [options.onStuck] A stuck step exits non-zero, so the LaunchAgent restarts a fresh process.
+ * @param {Function} [options.onStuck] A stuck step kills the process (`SIGKILL`), bypassing `uv__threadpool_cleanup` so the LaunchAgent restarts a fresh process.
  * @param {Object} [options.livenessOptions] Passed to `createReceiverLiveness` (`fsModule`, `readTimeoutMs`); a test seam.
+ * @param {Object} [options.stepBoundsMs=STEP_BOUNDS_MS] Passed to `createWakeReceiver`; a test seam.
+ * @param {Number} [options.watchdogIntervalMs=STEP_WATCHDOG_INTERVAL_MS] Passed to `createWakeReceiver`; a test seam.
  * @returns {Promise<{server:http.Server,state:WakeReceiverState,drain:Function}>}
  */
 export async function startWakeReceiver({
@@ -540,8 +542,10 @@ export async function startWakeReceiver({
     logger = console,
     reconcileIntervalMs = MANIFEST_RECONCILE_INTERVAL_MS,
     drainIntervalMs     = DRAIN_RETRY_INTERVAL_MS,
-    onStuck             = () => process.exit(1),
-    livenessOptions     = {}
+    onStuck             = () => process.kill(process.pid, 'SIGKILL'),
+    livenessOptions     = {},
+    stepBoundsMs        = STEP_BOUNDS_MS,
+    watchdogIntervalMs  = STEP_WATCHDOG_INTERVAL_MS
 } = {}) {
     if (net.isIP(host) === 0) {
         throw new Error('Wake receiver requires an explicit IP-literal --host');
@@ -573,6 +577,8 @@ export async function startWakeReceiver({
         manifest,
         state,
         logger,
+        stepBoundsMs,
+        watchdogIntervalMs,
         onAccepted: () => liveness.accepted(),
         // the stuck exit is recorded before the exit, so the restart can read why it happened
         onStuck   : stuck => {
