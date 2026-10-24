@@ -15,8 +15,11 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 import {
     activeWakeSubscriptionStatusSql,
     isActiveWakeSubscriptionStatus,
+    isReusableWakeSubscriptionStatus,
     resolvedWakeSubscriptionStatusSql,
-    WAKE_SUBSCRIPTION_DEFAULT_STATUS
+    reusableWakeSubscriptionStatusSql,
+    WAKE_SUBSCRIPTION_DEFAULT_STATUS,
+    WITHDRAWN_WAKE_SUBSCRIPTION_STATUS
 } from '../../../../../../ai/services/memory-core/wakeSubscriptionStatusPolicy.mjs';
 
 /**
@@ -108,5 +111,36 @@ test.describe('Neo.ai.services.memory-core.wakeSubscriptionStatusPolicy (#16331)
 
         expect(strict).toBe(0);
         expect(shipped).toBe(1);
+    });
+
+    test('reusable status policy admits active, absent, and degraded while rejecting retired and unknown states (#1257)', () => {
+        function sqlReusableAdmits(status) {
+            const db = new Database(':memory:');
+            db.exec('CREATE TABLE Nodes (id TEXT, data TEXT)');
+
+            const properties = {agentIdentity: '@spec', harnessTarget: 'a2a-webhook'};
+            if (status !== 'ABSENT') properties.status = status;
+
+            db.prepare('INSERT INTO Nodes VALUES (?, ?)')
+                .run('WAKE_SUB:spec', JSON.stringify({id: 'WAKE_SUB:spec', label: 'WAKE_SUBSCRIPTION', properties}));
+
+            const count = db.prepare(`SELECT COUNT(*) c FROM Nodes WHERE ${reusableWakeSubscriptionStatusSql()}`).get().c;
+            db.close();
+            return count === 1;
+        }
+
+        expect(WITHDRAWN_WAKE_SUBSCRIPTION_STATUS).toBe('degraded');
+
+        for (const reusable of ['active', 'degraded', undefined, null]) {
+            expect(isReusableWakeSubscriptionStatus(reusable)).toBe(true);
+        }
+        expect(sqlReusableAdmits('active')).toBe(true);
+        expect(sqlReusableAdmits('degraded')).toBe(true);
+        expect(sqlReusableAdmits('ABSENT')).toBe(true);
+
+        for (const terminalOrUnknown of ['retired', '', false, 0, 'unrecognised-future-state']) {
+            expect(isReusableWakeSubscriptionStatus(terminalOrUnknown)).toBe(false);
+            expect(sqlReusableAdmits(terminalOrUnknown)).toBe(false);
+        }
     });
 });

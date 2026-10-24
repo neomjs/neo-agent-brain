@@ -35,15 +35,11 @@ import {PULL_HARNESS_TARGET} from '../../daemons/wake/buildReceiverManifest.mjs'
 import {
     activeWakeSubscriptionStatusSql,
     isActiveWakeSubscriptionStatus,
+    isReusableWakeSubscriptionStatus,
     resolvedWakeSubscriptionStatusSql,
-    WAKE_SUBSCRIPTION_DEFAULT_STATUS
+    reusableWakeSubscriptionStatusSql,
+    WITHDRAWN_WAKE_SUBSCRIPTION_STATUS
 } from './wakeSubscriptionStatusPolicy.mjs';
-
-/**
- * The status the sender writes when it withdraws a route (`WebhookDeliveryService#_markDegraded`).
- * @type {String}
- */
-const WITHDRAWN_STATUS = 'degraded'
 
 /**
  * A message pull route: a `SENT_TO_ME` subscription on the pull transport, the route
@@ -83,11 +79,11 @@ const ACTIVE_OBSERVATIONS_SQL = `
 const ROUTES_SQL = `
     SELECT id,
            json_extract(data, '$.properties.agentIdentity') AS agentIdentity,
-           ${resolvedWakeSubscriptionStatusSql()} = '${WITHDRAWN_STATUS}' AS withdrawn,
+           ${resolvedWakeSubscriptionStatusSql()} = '${WITHDRAWN_WAKE_SUBSCRIPTION_STATUS}' AS withdrawn,
            json_extract(data, '$.properties.lastRefusal') AS refusal
     FROM Nodes
     WHERE json_extract(data, '$.label') = 'WAKE_SUBSCRIPTION'
-      AND ${resolvedWakeSubscriptionStatusSql()} IN ('${WAKE_SUBSCRIPTION_DEFAULT_STATUS}', '${WITHDRAWN_STATUS}')
+      AND ${reusableWakeSubscriptionStatusSql()}
 `
 
 /**
@@ -222,8 +218,8 @@ export async function readWakeRoutesByIdentity({graphService = null} = {}) {
     for (const node of items) {
         const status = node.properties?.status
 
-        if (node.label === 'WAKE_SUBSCRIPTION' && (isActiveWakeSubscriptionStatus(status) || status === WITHDRAWN_STATUS)) {
-            add(node.properties?.agentIdentity, node.id, status === WITHDRAWN_STATUS, node.properties?.lastRefusal)
+        if (node.label === 'WAKE_SUBSCRIPTION' && isReusableWakeSubscriptionStatus(status)) {
+            add(node.properties?.agentIdentity, node.id, status === WITHDRAWN_WAKE_SUBSCRIPTION_STATUS, node.properties?.lastRefusal)
         }
     }
 

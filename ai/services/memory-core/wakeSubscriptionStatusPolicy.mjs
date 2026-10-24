@@ -69,6 +69,14 @@
 export const WAKE_SUBSCRIPTION_DEFAULT_STATUS = 'active';
 
 /**
+ * The status the sender writes when it withdraws a route after delivery failures
+ * (`WebhookDeliveryService#_markDegraded`). A withdrawn route remains reusable in place via
+ * `resume()`, `subscribe()`, or `bootstrap()` and is not retired.
+ * @type {String}
+ */
+export const WITHDRAWN_WAKE_SUBSCRIPTION_STATUS = 'degraded';
+
+/**
  * @summary Decides whether a subscription's `status` admits it to wake delivery.
  *
  * Absent / `null` / `undefined` resolve to {@link WAKE_SUBSCRIPTION_DEFAULT_STATUS}. Any other
@@ -82,6 +90,22 @@ export const WAKE_SUBSCRIPTION_DEFAULT_STATUS = 'active';
  */
 export function isActiveWakeSubscriptionStatus(status) {
     return (status ?? WAKE_SUBSCRIPTION_DEFAULT_STATUS) === WAKE_SUBSCRIPTION_DEFAULT_STATUS
+}
+
+/**
+ * @summary Decides whether a subscription's `status` admits it to route-key lookup, reuse, and
+ * duplicate reconciliation (`'active'`, absent, or `'degraded'`).
+ *
+ * When a route is marked `'degraded'` after delivery timeouts, `subscribe()` and `bootstrap()`
+ * must reuse and reactivate the existing subscription in place (preserving its `WAKE_SUB:<uuid>`
+ * and server-issued `signingKey`) and `_reconcileDuplicateSubscriptions` must retire older
+ * duplicates within the same canonical route group instead of minting parallel rows.
+ *
+ * @param {String|null|undefined} status The persisted `$.properties.status`, or nothing.
+ * @returns {Boolean} `true` when the row is active or withdrawn (`'degraded'`).
+ */
+export function isReusableWakeSubscriptionStatus(status) {
+    return isActiveWakeSubscriptionStatus(status) || status === WITHDRAWN_WAKE_SUBSCRIPTION_STATUS
 }
 
 /**
@@ -113,4 +137,16 @@ export function resolvedWakeSubscriptionStatusSql(column = 'data') {
  */
 export function activeWakeSubscriptionStatusSql(column = 'data') {
     return `${resolvedWakeSubscriptionStatusSql(column)} = '${WAKE_SUBSCRIPTION_DEFAULT_STATUS}'`
+}
+
+/**
+ * @summary The SQL predicate expressing the same rule as {@link isReusableWakeSubscriptionStatus},
+ * admitting both active (including absent-status) and withdrawn (`'degraded'`) wake routes while
+ * excluding `'retired'` and unknown states.
+ *
+ * @param {String} [column='data'] The column holding the node JSON.
+ * @returns {String} A SQL boolean expression, safe to inline into a `WHERE` clause.
+ */
+export function reusableWakeSubscriptionStatusSql(column = 'data') {
+    return `${resolvedWakeSubscriptionStatusSql(column)} IN ('${WAKE_SUBSCRIPTION_DEFAULT_STATUS}', '${WITHDRAWN_WAKE_SUBSCRIPTION_STATUS}')`
 }

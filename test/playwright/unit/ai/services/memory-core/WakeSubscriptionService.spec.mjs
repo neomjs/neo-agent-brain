@@ -856,11 +856,158 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             expect(JSON.parse(retiredRow.data).properties.status).toBe('retired');
             expect(JSON.parse(activeRow.data).properties.status).toBe('active');
         });
+
+        test('bootstrap reuses and reactivates an existing degraded route in place while preserving signingKey (#1257)', async () => {
+            GraphService.upsertNode({
+                id        : '@alice',
+                type      : 'AGENT',
+                name      : 'Alice',
+                properties: {
+                    subscriptionTemplate: {
+                        trigger              : 'SENT_TO_ME',
+                        harnessTarget        : 'bridge-daemon',
+                        harnessTargetMetadata: {appName: 'Antigravity'}
+                    }
+                }
+            });
+
+            const existingSigningKey = 'c'.repeat(64);
+            const degraded           = insertDurableSubscription({
+                subscriptionId       : 'WAKE_SUB:degraded-existing',
+                owner                : '@alice',
+                harnessTarget        : 'a2a-webhook',
+                harnessTargetMetadata: {appName: 'Antigravity', url: BOOT_URL, signingKey: existingSigningKey},
+                status               : 'degraded',
+                createdAt            : '2026-05-10T17:09:00.000Z'
+            });
+
+            WebhookDeliveryService.degradedSubscriptions.add(degraded.subscriptionId);
+            WebhookDeliveryService.consecutiveFailures.set(degraded.subscriptionId, 3);
+
+            await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+                const res = await WakeSubscriptionService.manage({
+                    action          : 'bootstrap',
+                    overrideMetadata: {url: BOOT_URL, focusSeedKey: 'space'}
+                });
+
+                expect(res.subscriptionId).toBe(degraded.subscriptionId);
+                expect(res.status).toBe('existing');
+            });
+
+            const sqlite = GraphService.db.storage.db;
+            const row    = sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(degraded.subscriptionId);
+            const node   = JSON.parse(row.data);
+
+            expect(node.properties.status).toBe('active');
+            expect(node.properties.harnessTargetMetadata.signingKey).toBe(existingSigningKey);
+            expect(node.properties.harnessTargetMetadata.focusSeedKey).toBe('space');
+            expect(WebhookDeliveryService.degradedSubscriptions.has(degraded.subscriptionId)).toBe(false);
+            expect(WebhookDeliveryService.consecutiveFailures.has(degraded.subscriptionId)).toBe(false);
+        });
+
+        test('reconciler retires degraded duplicates alongside active routes within the same canonical route key (#1257)', async () => {
+            GraphService.upsertNode({
+                id        : '@alice',
+                type      : 'AGENT',
+                name      : 'Alice',
+                properties: {
+                    subscriptionTemplate: {
+                        trigger              : 'SENT_TO_ME',
+                        harnessTarget        : 'bridge-daemon',
+                        harnessTargetMetadata: {appName: 'Antigravity'}
+                    }
+                }
+            });
+
+            const olderDegraded = insertDurableSubscription({
+                subscriptionId       : 'WAKE_SUB:older-degraded',
+                owner                : '@alice',
+                harnessTarget        : 'a2a-webhook',
+                harnessTargetMetadata: {appName: 'Antigravity', url: BOOT_URL, signingKey: '1'.repeat(64)},
+                status               : 'degraded',
+                createdAt            : '2026-05-08T10:00:00.000Z',
+                updatedAt            : '2026-05-08T10:00:00.000Z'
+            });
+            const newerDegraded = insertDurableSubscription({
+                subscriptionId       : 'WAKE_SUB:newer-degraded',
+                owner                : '@alice',
+                harnessTarget        : 'a2a-webhook',
+                harnessTargetMetadata: {appName: 'Antigravity', url: BOOT_URL, signingKey: '2'.repeat(64)},
+                status               : 'degraded',
+                createdAt            : '2026-05-09T10:00:00.000Z',
+                updatedAt            : '2026-05-09T10:00:00.000Z'
+            });
+            const activeKeep = insertDurableSubscription({
+                subscriptionId       : 'WAKE_SUB:active-keep',
+                owner                : '@alice',
+                harnessTarget        : 'a2a-webhook',
+                harnessTargetMetadata: {appName: 'Antigravity', url: BOOT_URL, signingKey: '3'.repeat(64)},
+                status               : 'active',
+                createdAt            : '2026-05-07T10:00:00.000Z',
+                updatedAt            : '2026-05-07T10:00:00.000Z'
+            });
+
+            WebhookDeliveryService.degradedSubscriptions.add(olderDegraded.subscriptionId);
+            WebhookDeliveryService.degradedSubscriptions.add(newerDegraded.subscriptionId);
+
+            await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+                const res = await WakeSubscriptionService.manage({action: 'bootstrap', overrideMetadata: {url: BOOT_URL}});
+
+                // Active subscription is preferred over degraded duplicates on the same route key.
+                expect(res.subscriptionId).toBe(activeKeep.subscriptionId);
+                expect(res.status).toBe('existing');
+            });
+
+            const sqlite = GraphService.db.storage.db;
+            const states = [olderDegraded, newerDegraded, activeKeep].map(s => {
+                const row = sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(s.subscriptionId);
+                return JSON.parse(row.data).properties.status;
+            });
+
+            expect(states).toEqual(['retired', 'retired', 'active']);
+            expect(WebhookDeliveryService.degradedSubscriptions.has(olderDegraded.subscriptionId)).toBe(false);
+            expect(WebhookDeliveryService.degradedSubscriptions.has(newerDegraded.subscriptionId)).toBe(false);
+        });
     });
 
     // -----------------------------------------------------------------------------
     // subscribe
     // -----------------------------------------------------------------------------
+
+    test('subscribe reuses and reactivates a degraded route in place without rotating its signingKey (#1257)', async () => {
+        const existingSigningKey = 'd'.repeat(64);
+        const degraded           = insertDurableSubscription({
+            subscriptionId       : 'WAKE_SUB:subscribe-degraded',
+            owner                : '@alice',
+            trigger              : 'SENT_TO_ME',
+            harnessTarget        : 'a2a-webhook',
+            harnessTargetMetadata: {url: BOOT_URL, appName: 'Antigravity', signingKey: existingSigningKey},
+            status               : 'degraded'
+        });
+
+        WebhookDeliveryService.degradedSubscriptions.add(degraded.subscriptionId);
+        WebhookDeliveryService.consecutiveFailures.set(degraded.subscriptionId, 3);
+        WakeSubscriptionService.subscriptionCache.clear();
+
+        await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+            const res = await WakeSubscriptionService.subscribe({
+                trigger              : 'SENT_TO_ME',
+                harnessTarget        : 'a2a-webhook',
+                harnessTargetMetadata: {url: BOOT_URL, appName: 'Antigravity', signingKey: 'f'.repeat(64)}
+            });
+
+            expect(res.subscriptionId).toBe(degraded.subscriptionId);
+            expect(res.status).toBe('existing');
+        });
+
+        const sqlite = GraphService.db.storage.db;
+        const node   = JSON.parse(sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(degraded.subscriptionId).data);
+
+        expect(node.properties.status).toBe('active');
+        expect(node.properties.harnessTargetMetadata.signingKey).toBe(existingSigningKey);
+        expect(WebhookDeliveryService.degradedSubscriptions.has(degraded.subscriptionId)).toBe(false);
+        expect(WebhookDeliveryService.consecutiveFailures.has(degraded.subscriptionId)).toBe(false);
+    });
 
     test('subscribe creates a WAKE_SUBSCRIPTION node + SUBSCRIBES_TO edge for the caller', async () => {
         await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
