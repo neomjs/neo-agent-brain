@@ -141,11 +141,27 @@ test.describe('attributePreIdentityMemories — evidence-bound attribution of pr
     test('a dry run is the default; the identity is required, and writes need --offline', () => {
         expect(parseArgs([])).toMatchObject({apply: false, identity: null, reverse: false});
         expect(() => assertPosture(parseArgs([]))).toThrow('--identity expects a direct agent identity');
-        expect(parseArgs(['--identity', 'neo-test-mira', '--alias', 'neo-test-mira-legacy', '--harness', MARKER, '--harness', 'Other CLI']))
-            .toMatchObject({aliases: [ALIAS], harness: [MARKER, 'Other CLI'], identity: IDENTITY});
+        expect(parseArgs([
+            '--identity', 'neo-test-mira',
+            '--alias', 'neo-test-mira-legacy',
+            '--harness', MARKER,
+            '--harness', 'Other CLI',
+            '--agent', 'Antigravity (Gemini 3.1 Pro)',
+            '--conflict-agent', 'claude-code',
+            '--before', '2026-04-10T00:00:00.000Z'
+        ])).toMatchObject({
+            agents        : ['Antigravity (Gemini 3.1 Pro)'],
+            aliases       : [ALIAS],
+            before        : '2026-04-10T00:00:00.000Z',
+            beforeMs      : Date.parse('2026-04-10T00:00:00.000Z'),
+            conflictAgents: ['claude-code'],
+            harness       : [MARKER, 'Other CLI'],
+            identity      : IDENTITY
+        });
         expect(() => assertPosture(parseArgs(['--identity', IDENTITY, '--apply']))).toThrow('--offline');
         expect(() => assertPosture(parseArgs(['--identity', IDENTITY, '--apply', '--reverse', '--offline']))).toThrow('exclude each other');
         expect(() => parseArgs(['--identity'])).toThrow('--identity expects a value');
+        expect(() => parseArgs(['--before', 'not-a-date'])).toThrow('--before expects an ISO-8601 timestamp or epoch milliseconds');
         expect(() => parseArgs(['--bogus'])).toThrow('unknown argument: --bogus')
     });
 
@@ -228,6 +244,139 @@ test.describe('attributePreIdentityMemories — evidence-bound attribution of pr
             {conflicts: [`wake for ${PEER}`], reason: 'conflict', rows: 2, session: 's-pw'}
         ]);
         expect(reportPlan(result).leftShared).toEqual({conflict: {rows: 4, sessions: 2}, 'no-evidence': {rows: 1, sessions: 1}})
+    });
+
+    test('user-id, agent-field and before-cutoff rules attribute pre-identity rows, propagate across sessions, and respect conflicts and prior userId on reverse', async () => {
+        const
+            cutoffIso   = '2026-04-10T00:00:00.000Z',
+            beforeEpoch = Date.parse('2026-03-01T12:00:00.000Z'),
+            afterEpoch  = Date.parse('2026-04-15T12:00:00.000Z'),
+            rows        = [
+                // Rule 1: user-id (canonical and alias) without agentIdentity, plus a shared sibling in the same session
+                row('m-uid-own', {prompt: 'pre-identity turn with canonical userId', sessionId: 's-uid', timestamp: afterEpoch, userId: 'neo-test-mira'}),
+                shared('m-uid-sibling', 's-uid', 'shared sibling in user-id session', {timestamp: afterEpoch}),
+                row('m-uid-alias', {prompt: 'pre-identity turn with alias userId', sessionId: 's-uid-alias', timestamp: afterEpoch, userId: 'neo-test-mira-legacy'}),
+                // Session conflict from a foreign userId on an unattributed row
+                shared('m-foreign-uid-start', 's-foreign-uid', MARKER, {timestamp: afterEpoch}),
+                row('m-foreign-uid-peer', {prompt: 'peer userId turn', sessionId: 's-foreign-uid', timestamp: afterEpoch, userId: 'neo-test-orin'}),
+                // Rule 2: --agent and --conflict-agent
+                shared('m-agent', 's-agent', 'antigravity turn', {agent: 'Antigravity (Gemini 3.1 Pro)', timestamp: afterEpoch}),
+                shared('m-agent-sibling', 's-agent', 'follow-up turn', {agent: 'Antigravity', timestamp: afterEpoch}),
+                shared('m-agent-conflict-1', 's-agent-mixed', 'gemini turn', {agent: 'Antigravity (Gemini 3.1 Pro)', timestamp: afterEpoch}),
+                shared('m-agent-conflict-2', 's-agent-mixed', 'claude turn', {agent: 'claude-code', timestamp: afterEpoch}),
+                shared('m-agent-ambiguous', 's-agent-ambiguous', 'bare antigravity turn', {agent: 'Antigravity', timestamp: afterEpoch}),
+                // Rule 3: --before cutoff (numeric epoch ms and ISO string) and conflict precedence
+                shared('m-before-num', 's-before-1', 'founding turn numeric timestamp', {timestamp: beforeEpoch}),
+                shared('m-before-iso', 's-before-2', 'founding turn ISO timestamp', {timestamp: '2025-10-02T09:24:58.842Z'}),
+                shared('m-before-conflict', 's-before-conflict', 'early turn with conflict agent', {agent: 'claude-code', timestamp: beforeEpoch})
+            ],
+            planned = planAttribution({
+                agents        : ['Antigravity (Gemini 3.1 Pro)'],
+                aliases       : [ALIAS],
+                before        : cutoffIso,
+                conflictAgents: ['claude-code'],
+                harness       : [MARKER],
+                identity      : IDENTITY,
+                rows
+            });
+
+        expect(rulesOf(planned)).toEqual({
+            'm-agent'        : 'agent-field',
+            'm-agent-sibling': 'session',
+            'm-before-iso'   : 'before-cutoff',
+            'm-before-num'   : 'before-cutoff',
+            'm-uid-alias'    : 'user-id',
+            'm-uid-own'      : 'user-id',
+            'm-uid-sibling'  : 'session'
+        });
+        expect(planned.leftShared).toEqual([
+            {reason: 'no-evidence', rows: 1, session: 's-agent-ambiguous'},
+            {conflicts: ['agent claude-code'], reason: 'conflict', rows: 2, session: 's-agent-mixed'},
+            {conflicts: ['agent claude-code'], reason: 'conflict', rows: 1, session: 's-before-conflict'},
+            {conflicts: ['userId neo-test-orin'], reason: 'conflict', rows: 1, session: 's-foreign-uid'}
+        ]);
+
+        const
+            collection = createCollection(rows),
+            db         = createGraph(['m-uid-own', 'm-uid-alias', 'm-agent', 'm-before-num']);
+
+        addLegacyNode(db, 'm-uid-alias', {userId: 'neo-test-mira-legacy'});
+
+        await expect(applyAttribution({collection, db, plan: planned}))
+            .resolves.toEqual({chromaUpdated: 7, graphMissing: 3, graphUpdated: 4, legacyRefused: 0, legacyUpdated: 1});
+        expect(collection.store.get('m-uid-own')).toMatchObject({
+            agentIdentity         : IDENTITY,
+            attributionEvidence   : 'neo-test-mira',
+            attributionPriorUserId: 'neo-test-mira',
+            attributionRule       : 'user-id',
+            userId                : 'neo-test-mira'
+        });
+        expect(collection.store.get('m-uid-alias')).toMatchObject({
+            agentIdentity         : IDENTITY,
+            attributionEvidence   : 'neo-test-mira-legacy',
+            attributionPriorUserId: 'neo-test-mira-legacy',
+            attributionRule       : 'user-id',
+            userId                : 'neo-test-mira'
+        });
+        expect(ownerOf(db, 'memory:m-uid-alias')).toEqual({agentIdentity: IDENTITY, propertyUserId: 'neo-test-mira', userId: 'neo-test-mira'});
+
+        await expect(reverseAttribution({collection, db, identity: IDENTITY, rows: collection.rows()}))
+            .resolves.toEqual({chromaRestored: 7, graphRestored: 4, legacyRefused: 0, legacyRestored: 1});
+        expect(collection.store.get('m-uid-own')).toEqual(rows[0].metadata);
+        expect(collection.store.get('m-uid-alias')).toEqual(rows[2].metadata);
+        expect(ownerOf(db, 'memory:m-uid-alias')).toEqual({agentIdentity: undefined, propertyUserId: 'neo-test-mira-legacy', userId: 'neo-test-mira-legacy'})
+    });
+
+    test('before-cutoff fails closed on an unlisted metadata.agent and on a row at the exact cutoff instant', () => {
+        const
+            cutoffIso   = '2026-04-10T00:00:00.000Z',
+            cutoffMs    = Date.parse(cutoffIso),
+            beforeEpoch = Date.parse('2026-04-09T23:59:59.999Z'),
+            planned     = planAttribution({
+                agents        : ['Antigravity (Gemini 3.1 Pro)'],
+                before        : cutoffIso,
+                conflictAgents: ['claude-code'],
+                identity      : IDENTITY,
+                rows          : [
+                    shared('m-before-clean', 's-clean', 'solo founding turn without agent label', {timestamp: beforeEpoch}),
+                    shared('m-before-unlisted', 's-unlisted', 'early turn with unlisted foreign agent', {agent: 'Antigravity (Claude Opus 4.6)', timestamp: beforeEpoch}),
+                    shared('m-at-cutoff-iso', 's-boundary-1', 'turn at exact ISO cutoff', {timestamp: cutoffIso}),
+                    shared('m-at-cutoff-ms', 's-boundary-2', 'turn at exact numeric cutoff', {timestamp: cutoffMs})
+                ]
+            });
+
+        expect(rulesOf(planned)).toEqual({'m-before-clean': 'before-cutoff'});
+        expect(planned.leftShared).toEqual([
+            {reason: 'no-evidence', rows: 1, session: 's-boundary-1'},
+            {reason: 'no-evidence', rows: 1, session: 's-boundary-2'},
+            {reason: 'no-evidence', rows: 1, session: 's-unlisted'}
+        ])
+    });
+
+    test('user-id rows trust server-stamped metadata.userId over prompt wake summaries while foreign userIds mark session conflicts', () => {
+        const planned = planAttribution({
+            aliases       : [ALIAS],
+            conflictAgents: ['claude-code'],
+            identity      : IDENTITY,
+            rows          : [
+                row('m-uid-wake-summary', {
+                    prompt   : `[WAKE][priority:high] 1 events for ${PEER}: 1 message summarized by ${IDENTITY}`,
+                    sessionId: 's-uid-wake',
+                    userId   : 'neo-test-mira'
+                }),
+                shared('m-uid-wake-sibling', 's-uid-wake', 'shared sibling in same session'),
+                row('m-uid-foreign', {prompt: 'peer turn', sessionId: 's-uid-mixed', userId: 'neo-test-orin'}),
+                row('m-uid-own-mixed', {prompt: 'own turn in mixed session', sessionId: 's-uid-mixed', userId: 'neo-test-mira'})
+            ]
+        });
+
+        expect(rulesOf(planned)).toEqual({
+            'm-uid-wake-sibling': 'session',
+            'm-uid-wake-summary': 'user-id'
+        });
+        expect(planned.leftShared).toEqual([
+            {conflicts: ['userId neo-test-orin'], reason: 'conflict', rows: 1, session: 's-uid-mixed'}
+        ])
     });
 
     test('apply re-keys both stores with each row\'s journal; a re-run changes nothing; reverse restores shared', async () => {

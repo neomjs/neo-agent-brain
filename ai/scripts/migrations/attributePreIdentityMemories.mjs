@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * @module ai/scripts/migrations/attributePreIdentityMemories
- * @summary Attributes a returning agent's pre-identity raw memories to it, on recorded evidence only.
+ * @summary Attributes a returning agent's pre-identity raw memories to it, on recorded evidence and operator-supplied era/agent bounds.
  * Dry-run by default; `--apply --offline` re-keys the matched rows in Chroma and the graph, and
  * `--reverse --offline` restores exactly what an apply re-keyed.
  *
@@ -9,18 +9,24 @@
  * (`backfillChromaSharedUserId.mjs` gave them the shared tag). The team still reads them, but nothing ties
  * them to their author, so identity-scoped recall and summaries miss them.
  *
- * The operator names the identity, its aliases and its harness markers. A row is attributed by one rule:
+ * The operator names the identity, its aliases, its harness markers, any unambiguous `metadata.agent` labels and any
+ * single-agent founding cutoff. A row without `agentIdentity` is attributed by one rule:
+ * - `user-id`: its `metadata.userId` already names the identity or an alias.
  * - `harness-marker`: its prompt opens with a harness marker at the trusted envelope prefix
  *   ({@link envelopeOf}). A marker quoted anywhere else is content, never evidence.
  * - `wake-addressee`: its prompt opens with a wake header addressed to the identity or an alias.
- * - `session`: it shares a session with a row attributed by either rule, or with a row already attributed
+ * - `agent-field`: its `metadata.agent` matches an `--agent` label; `--conflict-agent` marks a foreign label.
+ * - `before-cutoff`: its `metadata.agent` is empty and its `metadata.timestamp` is strictly earlier than `--before`
+ *   (adds rows to the other rules' union rather than bounding `--agent`; a row with an unlisted `metadata.agent` fails closed).
+ * - `session`: it shares a session with a row attributed by a direct rule, or with a row already attributed
  *   to the identity or an alias.
  *
- * A session holding a row of another identity, or a wake addressed to one, stays shared as a whole, and so
- * does every row without evidence. A row without a session, or with an empty one, carries only its own evidence.
+ * A session holding a row of another identity, another `userId`, a wake addressed to another identity, or a
+ * `--conflict-agent` label stays shared as a whole, and so does every row without evidence. A row without a session, or
+ * with an empty one, carries only its own evidence.
  *
- * Each re-keyed Chroma row records its rule, its evidence and the graph state it replaced (`attributionRule`,
- * `attributionEvidence`, `attributionPrior`, and `attributionLegacyPrior` for a legacy projection). That record is the
+ * Each re-keyed Chroma row records its rule, its evidence and the state it replaced (`attributionRule`,
+ * `attributionEvidence`, `attributionPrior`, `attributionPriorUserId`, and `attributionLegacyPrior` for a legacy projection). That record is the
  * journal. An apply writes Chroma first and then re-keys every journaled graph node in one SQLite transaction, so a
  * re-run completes an interrupted apply. `--reverse` restores the graph from the journal before it clears the journal
  * in Chroma. One transaction across both stores is impossible; this is the bounded form of atomic that
@@ -33,11 +39,13 @@
  * whole row attributed, journal included, so a retry can finish it.
  *
  * Usage:
- *   node ai/scripts/migrations/attributePreIdentityMemories.mjs --identity <id> [--alias <id>]... [--harness <marker>]...
+ *   node ai/scripts/migrations/attributePreIdentityMemories.mjs --identity <id> [--alias <id>]... [--harness <marker>]... [--agent <label>]... [--conflict-agent <label>]... [--before <iso-or-ms>]
  *   node ai/scripts/migrations/attributePreIdentityMemories.mjs --identity <id> [...] --apply --offline
  *   node ai/scripts/migrations/attributePreIdentityMemories.mjs --identity <id> --reverse --offline
  *
- * Writes are offline: stop every Memory Core process that can write or cache the graph, run, then restart them.
+ * Writes are offline: stop every Memory Core process that can write or cache the graph, run any pending identity
+ * rename (`renameAgentIdentities.mjs`) first so `attributionPriorUserId` records the post-rename `userId`, then run
+ * this migration and restart Memory Core.
  */
 
 import path                           from 'node:path';
@@ -62,24 +70,46 @@ const
     USAGE          = `Usage: node ai/scripts/migrations/attributePreIdentityMemories.mjs --identity <id> [options]
 
 Options:
-  --identity <id>     The agent whose pre-identity rows are attributed (required)
-  --alias <id>        Another name the agent's rows and wakes were written under (repeatable)
-  --harness <marker>  A harness session marker, as it opens the prompt (repeatable)
-  --apply             Re-key the matched rows (requires --offline)
-  --reverse           Restore every row an apply attributed to the identity (requires --offline)
-  --offline           Acknowledge that every Memory Core graph writer is stopped
-  --db <path>         Override the SQLite graph path
-  --sample <n>        Rows to show in the dry-run sample (default 10)
-  --help              Show this help`;
+  --identity <id>          The agent whose pre-identity rows are attributed (required)
+  --alias <id>             Another name the agent's rows and wakes were written under (repeatable)
+  --harness <marker>       A harness session marker, as it opens the prompt (repeatable)
+  --agent <label>          An unambiguous metadata.agent value on shared rows (repeatable)
+  --conflict-agent <label> A foreign metadata.agent value that marks a session conflict (repeatable)
+  --before <iso-or-ms>     Solo-era rule: adds shared rows with no foreign agent strictly before this timestamp (--agent X --before T attributes the union, not an intersection)
+  --apply                  Re-key the matched rows (requires --offline)
+  --reverse                Restore every row an apply attributed to the identity (requires --offline)
+  --offline                Acknowledge that every Memory Core graph writer is stopped
+  --db <path>              Override the SQLite graph path
+  --sample <n>             Rows to show in the dry-run sample (default 10)
+  --help                   Show this help`;
 
 /**
- * @summary Parses the CLI flags. Aliases and harness markers repeat.
+ * @summary Normalizes an epoch millisecond number, numeric string or ISO-8601 timestamp string to epoch milliseconds.
+ * @param {*} value
+ * @returns {Number}
+ */
+function timestampMs(value) {
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : NaN
+    }
+
+    if (typeof value === 'string' && value.trim() !== '') {
+        const numeric = Number(value);
+
+        return Number.isFinite(numeric) ? numeric : Date.parse(value)
+    }
+
+    return NaN
+}
+
+/**
+ * @summary Parses the CLI flags. Aliases, harness markers and agent labels repeat.
  * @param {String[]} argv The arguments after the script path.
- * @returns {{aliases: String[], apply: Boolean, db: String|null, harness: String[], help: Boolean, identity: String|null, offline: Boolean, reverse: Boolean, sample: Number}}
+ * @returns {{agents: String[], aliases: String[], apply: Boolean, before: String|null, beforeMs: Number|null, conflictAgents: String[], db: String|null, harness: String[], help: Boolean, identity: String|null, offline: Boolean, reverse: Boolean, sample: Number}}
  */
 export function parseArgs(argv) {
     const
-        options = {aliases: [], apply: false, db: null, harness: [], help: false, identity: null, offline: false, reverse: false, sample: 10},
+        options = {agents: [], aliases: [], apply: false, before: null, beforeMs: null, conflictAgents: [], db: null, harness: [], help: false, identity: null, offline: false, reverse: false, sample: 10},
         valueOf = index => {
             const value = argv[index];
 
@@ -105,6 +135,21 @@ export function parseArgs(argv) {
             options.aliases.push(normalizeAgentIdentityNodeId(valueOf(++index)))
         } else if (arg === '--harness') {
             options.harness.push(valueOf(++index))
+        } else if (arg === '--agent') {
+            options.agents.push(valueOf(++index).trim())
+        } else if (arg === '--conflict-agent') {
+            options.conflictAgents.push(valueOf(++index).trim())
+        } else if (arg === '--before') {
+            const
+                before   = valueOf(++index).trim(),
+                beforeMs = timestampMs(before);
+
+            if (!Number.isFinite(beforeMs)) {
+                throw new Error('--before expects an ISO-8601 timestamp or epoch milliseconds')
+            }
+
+            options.before   = before;
+            options.beforeMs = beforeMs
         } else if (arg === '--db') {
             options.db = path.resolve(valueOf(++index))
         } else if (arg === '--sample') {
@@ -161,28 +206,52 @@ export function envelopeOf(prompt) {
 }
 
 /**
- * @summary What one unattributed row's own envelope says about its author.
+ * @summary What one unattributed row's own envelope and metadata say about its author.
  * @param {Object} metadata The row's Chroma metadata
  * @param {Object} rules
  * @param {Set<String>} rules.identities The identity and its aliases, as node ids
- * @param {String[]} rules.markers The harness markers
+ * @param {String[]} [rules.markers=[]] The harness markers
+ * @param {String[]} [rules.agents=[]] Positive metadata.agent labels
+ * @param {String[]} [rules.conflictAgents=[]] Conflicting metadata.agent labels
+ * @param {String|Number|null} [rules.before=null] Cutoff label for before-cutoff evidence
+ * @param {Number|null} [rules.cutoffMs=null] Parsed cutoff epoch milliseconds
  * @returns {{evidence: String, rule: String}|{conflict: String}|null}
  */
-export function rowEvidence(metadata, {identities, markers}) {
+export function rowEvidence(metadata, {agents = [], before = null, conflictAgents = [], cutoffMs = null, identities, markers = []}) {
     const
-        envelope = envelopeOf(metadata?.prompt),
-        marker   = markers.find(value => envelope.startsWith(value));
+        envelope  = envelopeOf(metadata?.prompt),
+        wake      = WAKE_HEADER.exec(envelope),
+        addressee = wake ? normalizeAgentIdentityNodeId(wake[1]) : null,
+        agent     = typeof metadata?.agent === 'string' ? metadata.agent.trim() : '';
+
+    if (addressee && !identities.has(addressee)) {
+        return {conflict: `wake for ${addressee}`}
+    }
+
+    if (agent && conflictAgents.includes(agent)) {
+        return {conflict: `agent ${agent}`}
+    }
+
+    const marker = markers.find(value => envelope.startsWith(value));
 
     if (marker) {
         return {evidence: marker, rule: 'harness-marker'}
     }
 
-    const wake = WAKE_HEADER.exec(envelope);
+    if (addressee) {
+        return {evidence: addressee, rule: 'wake-addressee'}
+    }
 
-    if (wake) {
-        const addressee = normalizeAgentIdentityNodeId(wake[1]);
+    if (agent && agents.includes(agent)) {
+        return {evidence: agent, rule: 'agent-field'}
+    }
 
-        return identities.has(addressee) ? {evidence: addressee, rule: 'wake-addressee'} : {conflict: `wake for ${addressee}`}
+    if (!agent && cutoffMs !== null && Number.isFinite(cutoffMs)) {
+        const rowMs = timestampMs(metadata?.timestamp);
+
+        if (Number.isFinite(rowMs) && rowMs < cutoffMs) {
+            return {evidence: String(before ?? cutoffMs), rule: 'before-cutoff'}
+        }
     }
 
     return null
@@ -196,17 +265,27 @@ export function rowEvidence(metadata, {identities, markers}) {
  * @param {String} options.identity
  * @param {String[]} [options.aliases=[]]
  * @param {String[]} [options.harness=[]] The harness markers
- * @returns {{attribute: Object[], identity: String, journal: Object[], leftShared: Object[], userId: String}}
+ * @param {String[]} [options.agents=[]] Positive metadata.agent labels
+ * @param {String[]} [options.conflictAgents=[]] Conflicting metadata.agent labels
+ * @param {String|Number|null} [options.before=null] Cutoff timestamp for single-agent founding era
+ * @param {Number|null} [options.beforeMs=null] Parsed cutoff epoch ms
+ * @returns {{attribute: Object[], identity: String, journal: Object[], leftShared: Object[], userId: String, userIds: Set<String>}}
  */
-export function planAttribution({rows, identity, aliases = [], harness = []}) {
+export function planAttribution({rows, identity, agents = [], aliases = [], before = null, beforeMs = null, conflictAgents = [], harness = []}) {
     const
         target     = normalizeAgentIdentityNodeId(identity),
         identities = new Set([target, ...aliases.map(normalizeAgentIdentityNodeId)]),
+        userIds    = new Set([...identities].map(id => id.slice(1))),
+        cutoffMs   = beforeMs ?? (before == null ? null : timestampMs(before)),
         sessions   = new Map(),
         attribute  = [],
         journal    = [],
         leftShared = [],
         byId       = (left, right) => left.id.localeCompare(right.id);
+
+    if (before != null && !Number.isFinite(cutoffMs)) {
+        throw new Error('--before expects an ISO-8601 timestamp or epoch milliseconds')
+    }
 
     for (const {id, metadata = {}} of rows) {
         const
@@ -226,12 +305,19 @@ export function planAttribution({rows, identity, aliases = [], harness = []}) {
                 session.evidence.push(id);
                 owner === target && metadata.attributionRule && journal.push({id, metadata})
             }
+        } else if (userIds.has(metadata.userId)) {
+            const evidence = {evidence: metadata.userId, rule: 'user-id'};
+
+            session.evidence.push(id);
+            session.candidates.push({evidence, id, metadata})
         } else if (metadata.userId === SHARED_USER_ID) {
-            const evidence = rowEvidence(metadata, {identities, markers: harness});
+            const evidence = rowEvidence(metadata, {agents, before, conflictAgents, cutoffMs, identities, markers: harness});
 
             evidence?.conflict && session.conflicts.add(evidence.conflict);
             evidence?.rule && session.evidence.push(id);
             session.candidates.push({evidence: evidence?.rule ? evidence : null, id, metadata})
+        } else if (typeof metadata.userId === 'string' && metadata.userId.trim() !== '') {
+            session.conflicts.add(`userId ${metadata.userId.trim()}`)
         }
     }
 
@@ -254,7 +340,7 @@ export function planAttribution({rows, identity, aliases = [], harness = []}) {
         }
     }
 
-    return {attribute: attribute.sort(byId), identity: target, journal: journal.sort(byId), leftShared, userId: target.slice(1)}
+    return {attribute: attribute.sort(byId), identity: target, journal: journal.sort(byId), leftShared, userId: target.slice(1), userIds}
 }
 
 /**
@@ -269,7 +355,7 @@ export function reportPlan(plan, {sample = 10} = {}) {
     const
         byRule  = {},
         shared  = {conflict: {rows: 0, sessions: 0}, 'no-evidence': {rows: 0, sessions: 0}},
-        ordered = [...plan.attribute].sort((left, right) => (left.metadata.timestamp ?? 0) - (right.metadata.timestamp ?? 0)),
+        ordered = [...plan.attribute].sort((left, right) => (timestampMs(left.metadata.timestamp) || 0) - (timestampMs(right.metadata.timestamp) || 0)),
         step    = Math.max(1, Math.floor(ordered.length / Math.max(1, sample)));
 
     plan.attribute.forEach(({rule}) => { byRule[rule] = (byRule[rule] ?? 0) + 1 });
@@ -282,14 +368,18 @@ export function reportPlan(plan, {sample = 10} = {}) {
         alreadyAttributed: plan.journal.length,
         leftShared       : shared,
         conflicts        : plan.leftShared.filter(({reason}) => reason === 'conflict').slice(0, sample),
-        sample           : ordered.filter((row, index) => index % step === 0).slice(0, sample).map(({evidence, id, metadata, rule}) => ({
-            at       : Number.isFinite(metadata.timestamp) ? new Date(metadata.timestamp).toISOString() : null,
-            evidence,
-            id,
-            prompt   : String(metadata.prompt ?? '').replace(/\s+/g, ' ').slice(0, 120),
-            rule,
-            sessionId: metadata.sessionId ?? null
-        }))
+        sample           : ordered.filter((row, index) => index % step === 0).slice(0, sample).map(({evidence, id, metadata, rule}) => {
+            const ms = timestampMs(metadata.timestamp);
+
+            return {
+                at       : Number.isFinite(ms) ? new Date(ms).toISOString() : null,
+                evidence,
+                id,
+                prompt   : String(metadata.prompt ?? '').replace(/\s+/g, ' ').slice(0, 120),
+                rule,
+                sessionId: metadata.sessionId ?? null
+            }
+        })
     }
 }
 
@@ -373,25 +463,30 @@ function moveLegacyProjection(db, id, from, to) {
 }
 
 /**
- * @summary The prior owner an apply moves a row's legacy projection from: journaled by an earlier run, or the shared
- * mirror the projection still holds, which this run journals. Only an owner the journal records is ever restored.
+ * @summary The prior owner an apply moves a row's legacy projection from: journaled by an earlier run, or the shared /
+ * pre-identity mirror the projection still holds, which this run journals. Only an owner the journal records is ever restored.
  * @param {Object} db better-sqlite3 connection
  * @param {{id: String, metadata: Object}} row
  * @param {Object} owner The identity's owner
+ * @param {Set<String>} [userIds] The identity's and aliases' userIds
  * @returns {{journaled: Boolean, prior: Object}|String} the prior; else `missing`, `held` (the identity's before any
  * run, so nothing to move) or `refused` (another owner)
  */
-function legacyPriorOf(db, {id, metadata}, owner) {
+function legacyPriorOf(db, {id, metadata}, owner, userIds = new Set()) {
     const journaled = JSON.parse(metadata.attributionLegacyPrior ?? 'null');
 
     if (journaled) {
         return {journaled: true, prior: journaled}
     }
 
-    const current = readGraphOwner(db, id, true);
+    const
+        current      = readGraphOwner(db, id, true),
+        unattributed = current && current.agentIdentity === null && current.userId === current.propertyUserId
+            && (current.userId === SHARED_USER_ID || userIds.has(current.userId));
 
     return !current ? 'missing'
         : sameOwner(current, SHARED_OWNER) ? {journaled: false, prior: SHARED_OWNER}
+        : unattributed ? {journaled: false, prior: current}
         : sameOwner(current, owner) ? 'held' : 'refused'
 }
 
@@ -422,13 +517,14 @@ async function updateChroma(collection, rows, batchSize) {
  */
 export async function applyAttribution({batchSize = BATCH_SIZE, collection, db, plan}) {
     const
-        owner  = {agentIdentity: plan.identity, propertyUserId: plan.userId, userId: plan.userId},
-        counts = {missing: 0, unchanged: 0, updated: 0},
-        legacy = {missing: 0, refused: 0, unchanged: 0, updated: 0},
-        moves  = new Map(),
+        owner   = {agentIdentity: plan.identity, propertyUserId: plan.userId, userId: plan.userId},
+        userIds = plan.userIds || new Set([plan.userId]),
+        counts  = {missing: 0, unchanged: 0, updated: 0},
+        legacy  = {missing: 0, refused: 0, unchanged: 0, updated: 0},
+        moves   = new Map(),
         // the journal entry for a legacy prior this run records; `null` when there is none to record
         legacyJournal = row => {
-            const found = legacyPriorOf(db, row, owner);
+            const found = legacyPriorOf(db, row, owner, userIds);
 
             if (typeof found === 'string') {
                 found === 'refused' && legacy.refused++;
@@ -447,8 +543,9 @@ export async function applyAttribution({batchSize = BATCH_SIZE, collection, db, 
                     agentIdentity      : plan.identity,
                     attributionEvidence: evidence,
                     attributionPrior   : JSON.stringify(readGraphOwner(db, id)),
-                    attributionRule    : rule,
-                    userId             : plan.userId,
+                    ...(metadata.userId && metadata.userId !== SHARED_USER_ID ? {attributionPriorUserId: metadata.userId} : {}),
+                    attributionRule: rule,
+                    userId         : plan.userId,
                     ...legacyJournal({id, metadata})
                 }
             })),
@@ -477,7 +574,7 @@ export async function applyAttribution({batchSize = BATCH_SIZE, collection, db, 
 
 /**
  * @summary Restores every row an apply attributed to the identity: the graph from each row's journal first, then
- * the shared Chroma state. A reverse that stops between the two completes on its next run. A row whose journaled
+ * the prior Chroma state. A reverse that stops between the two completes on its next run. A row whose journaled
  * legacy projection is refused stays attributed, journal included, until a retry can restore it.
  * @param {Object} options
  * @param {Object} options.collection Chroma collection
@@ -520,7 +617,16 @@ export async function reverseAttribution({batchSize = BATCH_SIZE, collection, db
 
     const restored = journal.filter(({id}) => !kept.has(id)).map(({id, metadata}) => ({
         id,
-        metadata: {...metadata, agentIdentity: null, attributionEvidence: null, attributionLegacyPrior: null, attributionPrior: null, attributionRule: null, userId: SHARED_USER_ID}
+        metadata: {
+            ...metadata,
+            agentIdentity         : null,
+            attributionEvidence   : null,
+            attributionLegacyPrior: null,
+            attributionPrior      : null,
+            attributionPriorUserId: null,
+            attributionRule       : null,
+            userId                : metadata.attributionPriorUserId || SHARED_USER_ID
+        }
     }));
 
     await updateChroma(collection, restored, batchSize);
@@ -591,7 +697,16 @@ async function main() {
             })
         }),
         rows       = await scanRows(collection),
-        plan       = options.reverse ? null : planAttribution({aliases: options.aliases, harness: options.harness, identity: options.identity, rows});
+        plan       = options.reverse ? null : planAttribution({
+            agents        : options.agents,
+            aliases       : options.aliases,
+            before        : options.before,
+            beforeMs      : options.beforeMs,
+            conflictAgents: options.conflictAgents,
+            harness       : options.harness,
+            identity      : options.identity,
+            rows
+        });
 
     // a dry run plans from Chroma alone; only a write opens the graph
     if (!options.apply && !options.reverse) {
