@@ -65,7 +65,8 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             setRepos             : payload  => { calls.push(['setRepos', payload]);  return {id: payload.id, metadata: {repos: payload.repos}}; },
             setAvatar            : payload  => { calls.push(['setAvatar', payload]); return {id: payload.id, metadata: {avatarUrl: payload.avatarUrl}}; },
             adoptAgent           : payload  => { calls.push(['adoptAgent', payload]);   return {id: payload.id, launchOwner: 'fleet'}; },
-            releaseAgent         : payload  => { calls.push(['releaseAgent', payload]); return {id: payload.id, launchOwner: 'external'}; }
+            releaseAgent         : payload  => { calls.push(['releaseAgent', payload]); return {id: payload.id, launchOwner: 'external'}; },
+            getLifecycleService  : ()       => ({startGateRefusal: () => null})
         };
 
         tenantServiceStub = {
@@ -1091,6 +1092,32 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         ]);
     });
 
+    test('fleetRoster closes every Start while the Fleet refuses all of them: the gate\'s words, a seat\'s own refusal first (#1260 AC-1)', async () => {
+        let gate = 'the Fleet is verifying its runtime: Start opens when it finishes';
+
+        registryStub.listAgents = () => [
+            {id: 'idle',     githubUsername: 'idle-gh',     harnessType: 'codex'},
+            {id: 'released', githubUsername: 'released-gh', harnessType: 'codex', launchOwner: 'external', launchOwnerSince: '2026-09-19T17:05:00.000Z'}
+        ];
+        managerStub.fleetRepoStatus     = () => [];
+        managerStub.fleetRuntimeStatus  = () => [];
+        managerStub.getLifecycleService = () => ({startGateRefusal: () => gate});
+        FleetControlBridge.identityResolver = () => ({family: null, engineTag: null});
+
+        const refusals = async () => (await FleetControlBridge.fleetRoster()).rows.map(({id, launchRefusal}) => [id, launchRefusal]);
+
+        expect(await refusals()).toEqual([
+            ['idle',     'the Fleet is verifying its runtime: Start opens when it finishes'],
+            ['released', 'released to its own harness: adopt it to start it here']
+        ]);
+
+        gate = null;
+        expect(await refusals(), 'the open gate leaves only the seat\'s own refusal').toEqual([
+            ['idle',     null],
+            ['released', 'released to its own harness: adopt it to start it here']
+        ]);
+    });
+
     test('fleetRoster stamps launch-derived truth per row — templated families carry their auth mode, native-neo stays honestly unlaunchable', async () => {
         registryStub.listAgents = () => [
             {id: 'desk',   githubUsername: 'desk-gh',   harnessType: 'claude-desktop'},
@@ -1139,8 +1166,9 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
 // here rather than through the producer verb alone.
 test.describe('Neo.ai.services.fleet.FleetControlBridge — fleetRoster joins the S2 telltale axes onto the cockpit DTO', () => {
     const rosterManager = ({wake, throttle} = {}) => ({
-        fleetRepoStatus   : () => [],
-        fleetRuntimeStatus: () => [],
+        fleetRepoStatus    : () => [],
+        fleetRuntimeStatus : () => [],
+        getLifecycleService: () => ({startGateRefusal: () => null}),
         ...(wake     && {fleetWakeStatus    : async () => wake}),
         ...(throttle && {fleetThrottleStatus: async () => throttle})
     });

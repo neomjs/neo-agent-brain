@@ -771,6 +771,25 @@ class FleetLifecycleService extends Base {
     }
 
     /**
+     * @summary Why this Fleet refuses every Start right now, in the words the cockpit shows on a closed Start, or
+     * `null` when it may start seats. These are {@link start}'s fleet-wide gates in its order: the packaged runtime's
+     * verification, launch continuity, runtime custody. A booting packaged Fleet answers its wire before verification
+     * and recovery settle, so the roster says why Start stays closed until they do.
+     * @returns {String|null}
+     */
+    startGateRefusal() {
+        const admission = this.getLaunchAdmission(), runtime = this.installedRuntime;
+
+        if (runtime?.failureReason) return `the Fleet refuses Starts: ${runtime.failureReason}`;
+        if ((runtime?.verify && !runtime.verified) || ['pending-recovery', 'recovering'].includes(admission.continuityPhase)) {
+            return 'the Fleet is verifying its runtime: Start opens when it finishes'
+        }
+        if (admission.continuityPhase !== 'ready') return `the Fleet refuses Starts: launch continuity is ${admission.continuityPhase}`;
+        if (admission.journalFailed) return 'the Fleet refuses Starts: its runtime custody is frozen';
+        return null
+    }
+
+    /**
      * @summary Start an agent's harness process. Idempotent while running (returns current status).
      * @param {String}  id          Registry agent id.
      * @param {Object} [opts={}]    Spawn options.

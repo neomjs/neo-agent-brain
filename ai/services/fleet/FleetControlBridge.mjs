@@ -1577,7 +1577,8 @@ class FleetControlBridge extends Base {
      * launch-templated subset; `authMode` = `'marker' | 'in-app' | 'env-key' | null` — both DERIVED at read
      * time from the launch seam, never a second hand-maintained list, so a family becomes
      * cockpit-launchable exactly when its template lands; `launchRefusal` = why the start verb refuses the
-     * seat, or `null`, from the same {@link launchRefusalOf} the verb reads), stamps each seat's participation
+     * seat, or `null`: the seat's own refusal from the same {@link launchRefusalOf} the verb reads, else the
+     * lifecycle's `startGateRefusal` while the Fleet refuses every Start), stamps each seat's participation
      * from its identity node as the presence report carries it (`participationRead` says whether that report
      * answered), and hands the enriched agents to the Body-side pure map (`createFleetCockpitStatus` — which never
      * imports `ai/graph` or the Brain launch seam; the hemisphere boundary holds, the Body only hoists what arrives
@@ -1610,7 +1611,9 @@ class FleetControlBridge extends Base {
 
         // A seat's participation is its identity node's, which the presence report carries; a report that never
         // answered leaves it unread rather than falling back to any local file
-        const presenceById = new Map((presence?.states ?? []).map(entry => [entry.agentId, entry]));
+        const
+            presenceById = new Map((presence?.states ?? []).map(entry => [entry.agentId, entry])),
+            startGate    = manager.getLifecycleService().startGateRefusal();
 
         const agents = (registry.listAgents() ?? []).map(agent => {
             const entry = presenceById.get(agent.id);
@@ -1623,7 +1626,7 @@ class FleetControlBridge extends Base {
                 participationSince : entry?.participation?.since ?? null,
                 participationRead  : entry?.participationRead ?? {state: 'unread', reason: 'presence producer not wired'},
                 launchable         : LAUNCHABLE_HARNESS_TYPES.includes(agent.harnessType),
-                launchRefusal      : launchRefusalOf(agent, entry?.participation),
+                launchRefusal      : launchRefusalOf(agent, entry?.participation) ?? startGate,
                 authMode           : getHarnessAuthMode(agent.harnessType)
             }
         });

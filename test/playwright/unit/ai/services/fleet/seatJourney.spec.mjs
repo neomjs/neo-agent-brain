@@ -110,7 +110,8 @@ test.describe('ai/services/fleet/seatJourney — judgements', () => {
                 setRepo           : async () => ({}),
                 startAgent        : async () => {throw new Error('connection reset')},
                 stopAgent         : async id => stops.push(id),
-                fleetRuntimeStatus: async () => []
+                fleetRuntimeStatus: async () => [],
+                fleetRoster       : async () => ({rows: [{id: 'wire-seat', launchRefusal: null}]})
             },
             seat   = {definition: {id: 'wire-seat', harnessType: 'claude-desktop', mcpServers: {}}, repo: {repoSlug: 'x/y'}},
             result = await runSeatJourney({fleet, restartFleet: async () => fleet, seats: [seat], timeoutMs: 1_000});
@@ -141,7 +142,8 @@ test.describe('ai/services/fleet/seatJourney — judgements', () => {
                 setRepo           : async () => ({}),
                 startAgent        : async () => {phase = 'running'; return {pid: deadPid, instanceHome: home}},
                 stopAgent         : async id => {stops.push(id); phase = 'stopped'},
-                fleetRuntimeStatus: async () => [{agentId: seat.definition.id, state: phase}]
+                fleetRuntimeStatus: async () => [{agentId: seat.definition.id, state: phase}],
+                fleetRoster       : async () => ({rows: [{id: seat.definition.id, launchRefusal: null}]})
             };
 
         try {
@@ -161,6 +163,70 @@ test.describe('ai/services/fleet/seatJourney — judgements', () => {
         } finally {
             fs.rmSync(home, {recursive: true, force: true})
         }
+    });
+
+    /**
+     * A Fleet that refuses every Start until its gate opens, as a booting packaged Fleet does while it verifies its
+     * runtime, and whose roster names the refusal meanwhile.
+     */
+    function gatedFleet({seatId, home, pid, opensAt, gateWords = 'the Fleet is verifying its runtime: Start opens when it finishes'}) {
+        const fleet = {phase: 'stopped', refusedStarts: 0, starts: 0, stops: []}, open = () => Date.now() >= opensAt;
+
+        return Object.assign(fleet, {
+            defineAgent       : async () => ({}),
+            setRepo           : async () => ({}),
+            startAgent        : async () => {
+                if (!open()) {
+                    fleet.refusedStarts++;
+                    throw new Error('Fleet launch continuity is not ready.')
+                }
+                fleet.starts++;
+                fleet.phase = 'running';
+                return {pid, instanceHome: home}
+            },
+            stopAgent         : async id => {fleet.stops.push(id); fleet.phase = 'stopped'},
+            fleetRuntimeStatus: async () => [{agentId: seatId, state: fleet.phase}],
+            fleetRoster       : async () => ({rows: [{id: seatId, launchRefusal: open() ? null : gateWords}]})
+        })
+    }
+
+    test('a Start waits while the roster names the Fleet\'s gate, and goes out once it opens (#1260 AC-2)', async () => {
+        const
+            home    = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-journey-gate-')),
+            deadPid = spawnSync(process.execPath, ['-e', '']).pid,
+            seat    = {definition: {id: 'gated-seat', harnessType: 'claude-desktop', mcpServers: {'memory-core': false, 'knowledge-base': false, 'neural-link': false, 'github-workflow': false}}, repo: {repoSlug: 'x/y'}},
+            fleet   = gatedFleet({seatId: seat.definition.id, home, pid: deadPid, opensAt: Date.now() + 800});
+
+        fs.writeFileSync(path.join(home, 'seat-stand-in.json'), JSON.stringify({version: 1, records: [
+            {family: 'claude-desktop', pid: deadPid, configs: [], rows: []}
+        ]}));
+
+        try {
+            const result = await runSeatJourney({fleet, restartFleet: async () => {throw new Error('no restart in this control')}, seats: [seat], timeoutMs: 5_000});
+
+            expect(result.rows.map(row => [row.step, row.ok, row.reason])).toEqual([
+                ['define', true, null], ['start', true, null], ['stop', true, null], ['start-again', true, null], ['operator-content', true, null]
+            ]);
+            expect(fleet.refusedStarts, 'no Start went out while the gate was shut').toBe(0);
+            expect(fleet.starts).toBe(2)
+        } finally {
+            fs.rmSync(home, {recursive: true, force: true})
+        }
+    });
+
+    test('a refusal that stays fails the Start in the roster\'s words, and no Start goes out (#1260 AC-2)', async () => {
+        const
+            seat   = {definition: {id: 'benched-seat', harnessType: 'claude-desktop', mcpServers: {}}, repo: {repoSlug: 'x/y'}},
+            fleet  = gatedFleet({seatId: seat.definition.id, home: os.tmpdir(), pid: 1, opensAt: Infinity, gateWords: 'benched by the operator on 2026-10-01: the flatrate ended'}),
+            result = await runSeatJourney({fleet, restartFleet: async () => fleet, seats: [seat], timeoutMs: 600});
+
+        expect(result.ok).toBe(false);
+        expect(result.rows.map(row => [row.step, row.ok, row.reason])).toEqual([
+            ['define', true, null],
+            ['start', false, 'the roster offers no Start: benched by the operator on 2026-10-01: the flatrate ended']
+        ]);
+        expect(fleet.refusedStarts + fleet.starts, 'the journey never pressed a closed Start').toBe(0);
+        expect(fleet.stops, 'the closing Stop still runs').toEqual([seat.definition.id])
     });
 
     test('writeStandInLauncher writes an executable that runs the stand-in on the given runtime', () => {

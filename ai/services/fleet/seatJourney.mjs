@@ -266,13 +266,35 @@ function readRecord(instanceHome, pid) {
 }
 
 /**
- * @summary The roster row the cockpit reads for one seat.
+ * @summary The live process row the roster joins for one seat: its state, pid and failure reason.
  * @param {Object} fleet
  * @param {String} id
  * @returns {Promise<Object|null>}
  */
 async function rosterRow(fleet, id) {
     return (await fleet.fleetRuntimeStatus()).find(row => row.agentId === id) ?? null
+}
+
+/**
+ * @summary Waits, the cockpit's way, until the roster offers the seat a Start: its row names no `launchRefusal`.
+ * A booting packaged Fleet refuses every Start until its runtime is verified and recovery settles, and its
+ * roster says so before the click.
+ * @param {Object} fleet
+ * @param {String} id
+ * @param {Number} timeoutMs
+ * @returns {Promise<String|null>} The refusal still standing at the deadline, or `null` once Start is offered.
+ */
+async function awaitStartOffer(fleet, id, timeoutMs) {
+    let refusal = null;
+
+    const offered = await waitFor(async () => {
+        const row = (await fleet.fleetRoster()).rows.find(entry => entry.id === id);
+
+        refusal = row ? row.launchRefusal : 'the roster lists no row for the seat';
+        return !refusal
+    }, timeoutMs);
+
+    return offered ? null : refusal
 }
 
 /**
@@ -314,13 +336,21 @@ export async function runSeatJourney({fleet, restartFleet, seats, bridgePort = n
         };
 
     /**
-     * @summary One Start, judged: the wire's answer, the roster's `running`, then the stand-in's record.
+     * @summary One Start, judged: the roster's offer, the wire's answer, the roster's `running`, then the stand-in's
+     * record.
      * @param {Object} seat
      * @param {String} step
      * @returns {Promise<Object|null>} The record, when the Start went end to end.
      */
     async function start(seat, step) {
-        const {id} = seat.definition, status = await fleet.startAgent(id);
+        const {id} = seat.definition, refusal = await awaitStartOffer(fleet, id, timeoutMs);
+
+        if (refusal) {
+            add(seat, step, false, `the roster offers no Start: ${refusal}`);
+            return null
+        }
+
+        const status = await fleet.startAgent(id);
 
         if (status?.status === 'rejected' || !status?.pid) {
             add(seat, step, false, `Start refused: ${status?.reason ?? JSON.stringify(status)}`);
