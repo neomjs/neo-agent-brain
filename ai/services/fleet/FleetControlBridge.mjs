@@ -17,7 +17,7 @@ import {
 import {normalizeMailboxObserver} from '../memory-core/helpers/mailboxObservation.mjs';
 
 import {createFleetCockpitStatus, createNotWiredCapability} from './fleetCockpitStatus.mjs';
-import {createPublishExecutor}                              from './publishExecutor.mjs';
+import {createPublishExecutor, createPublishSwitchStore}    from './publishExecutor.mjs';
 import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
 
 /**
@@ -522,6 +522,13 @@ class FleetControlBridge extends Base {
      * @member {Object|null} publishExecutor=null
      */
     publishExecutor = null
+    /**
+     * Per-`(peer, channel)` outbound publish switch store seam — an injected collaborator exposing
+     * `readPeerSwitches`, `setSwitch`, and `getSwitchState`, or resolved on demand over the
+     * registry's `<userData>/brain/fleet` custody root.
+     * @member {Object|null} publishSwitchStore=null
+     */
+    publishSwitchStore = null
 
     /**
      * Identity-display resolver seam — maps a fleet agent onto its identity-root display facts
@@ -573,6 +580,27 @@ class FleetControlBridge extends Base {
     }
 
     /**
+     * @returns {Object|null} the outbound publish switch store (injected or bound to custodyDir).
+     * @protected
+     */
+    getPublishSwitchStore() {
+        if (this.publishSwitchStore) {
+            return this.publishSwitchStore;
+        }
+        const custodyDir = typeof this.getRegistry()?.getDataDir === 'function'
+            ? this.getRegistry().getDataDir()
+            : null;
+        if (typeof custodyDir === 'string' && custodyDir.trim()) {
+            if (!this._defaultPublishSwitchStore || this._defaultPublishSwitchStoreCustodyDir !== custodyDir) {
+                this._defaultPublishSwitchStoreCustodyDir = custodyDir;
+                this._defaultPublishSwitchStore           = createPublishSwitchStore({custodyDir});
+            }
+            return this._defaultPublishSwitchStore;
+        }
+        return null;
+    }
+
+    /**
      * @returns {Object|null} the outbound social publish executor (injected or bound to composeWriter + custodyDir).
      * @protected
      */
@@ -587,16 +615,20 @@ class FleetControlBridge extends Base {
             const custodyDir = typeof this.getRegistry()?.getDataDir === 'function'
                 ? this.getRegistry().getDataDir()
                 : null;
+            const switchStore = this.getPublishSwitchStore();
             if (
                 !this._defaultPublishExecutor ||
                 this._defaultPublishExecutorMailbox !== this.composeWriter ||
-                this._defaultPublishExecutorCustodyDir !== custodyDir
+                this._defaultPublishExecutorCustodyDir !== custodyDir ||
+                this._defaultPublishExecutorSwitchStore !== switchStore
             ) {
-                this._defaultPublishExecutorMailbox    = this.composeWriter;
-                this._defaultPublishExecutorCustodyDir = custodyDir;
-                this._defaultPublishExecutor           = createPublishExecutor({
+                this._defaultPublishExecutorMailbox     = this.composeWriter;
+                this._defaultPublishExecutorCustodyDir  = custodyDir;
+                this._defaultPublishExecutorSwitchStore = switchStore;
+                this._defaultPublishExecutor            = createPublishExecutor({
                     mailbox: this.composeWriter,
-                    custodyDir
+                    custodyDir,
+                    switchStore
                 });
             }
             return this._defaultPublishExecutor;
@@ -1590,6 +1622,157 @@ class FleetControlBridge extends Base {
                   }
                   : {};
         return executor.reply(safeParams);
+    }
+
+    /**
+     * @summary WRITE: record operator approval of a `requestPublish` revision digest via
+     * `MailboxService#approvePublishRevision` under the transport-stamped operator identity.
+     * @param {Object} params
+     * @param {String} [params.taskId]
+     * @param {String} [params.messageId]
+     * @param {String} params.revisionDigest
+     * @param {Number} [params.revisionNumber]
+     * @returns {Promise<Object>|Object}
+     */
+    async approvePublishRevision(params = {}) {
+        if (typeof this.composeWriter?.approvePublishRevision !== 'function') {
+            return {status: 'not-wired', reason: 'fleet: operator publish approval writer not wired'};
+        }
+
+        const targetId       = params?.taskId ?? params?.messageId,
+              revisionDigest = params?.revisionDigest,
+              revisionNumber = params?.revisionNumber;
+
+        if (typeof targetId !== 'string' || !targetId.trim()) {
+            return {status: 'rejected', reason: 'approvePublishRevision: taskId / messageId must be a non-empty string'};
+        }
+
+        if (typeof revisionDigest !== 'string' || !revisionDigest.trim()) {
+            return {status: 'rejected', reason: 'approvePublishRevision: revisionDigest must be a non-empty string'};
+        }
+
+        const id = targetId.trim();
+
+        try {
+            return await this.composeWriter.approvePublishRevision({
+                taskId        : id,
+                messageId     : id,
+                revisionDigest: revisionDigest.trim(),
+                ...(revisionNumber !== undefined ? {revisionNumber} : {})
+            });
+        } catch (error) {
+            const code = error?.code || 'refused';
+            return {
+                ok     : false,
+                refused: code,
+                code,
+                reason : error?.message || 'approval refused'
+            };
+        }
+    }
+
+    /**
+     * @summary WRITE: create a new immutable revision $N + 1$ on a queued `requestPublish` Task via
+     * `MailboxService#editPublishRequest` under the transport-stamped operator identity.
+     * @param {Object} params
+     * @param {String} [params.taskId]
+     * @param {String} [params.messageId]
+     * @param {Object} params.patch
+     * @returns {Promise<Object>|Object}
+     */
+    async editPublishRequest(params = {}) {
+        if (typeof this.composeWriter?.editPublishRequest !== 'function') {
+            return {status: 'not-wired', reason: 'fleet: operator publish edit writer not wired'};
+        }
+
+        const targetId = params?.taskId ?? params?.messageId,
+              patch    = params?.patch;
+
+        if (typeof targetId !== 'string' || !targetId.trim()) {
+            return {status: 'rejected', reason: 'editPublishRequest: taskId / messageId must be a non-empty string'};
+        }
+
+        if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+            return {status: 'rejected', reason: 'editPublishRequest: patch must be a plain object'};
+        }
+
+        const id        = targetId.trim(),
+              safePatch = {};
+
+        for (const [key, value] of Object.entries(patch)) {
+            if (['from', 'editedBy', 'createdBy', 'approvedBy', 'actor', 'who', 'sender', 'viewer', 'viewerIdentity'].includes(key)) {
+                continue;
+            }
+            safePatch[key] = value;
+        }
+
+        try {
+            return await this.composeWriter.editPublishRequest({
+                taskId   : id,
+                messageId: id,
+                patch    : safePatch
+            });
+        } catch (error) {
+            const code = error?.code || 'refused';
+            return {
+                ok     : false,
+                refused: code,
+                code,
+                reason : error?.message || 'edit refused'
+            };
+        }
+    }
+
+    /**
+     * @summary READ-OBSERVE: read the per-`(peer, channel)` outbound publish switches (`x` and
+     * `linkedin`), audit trail, and any pending promotion proposal for one peer seat.
+     * @param {Object} params
+     * @param {String} params.peer
+     * @returns {Promise<Object>|Object}
+     */
+    readPublishSwitches(params = {}) {
+        const store = this.getPublishSwitchStore();
+        if (typeof store?.readPeerSwitches !== 'function') {
+            return {status: 'not-wired', state: 'unavailable', reason: 'fleet: publish switch store not wired'};
+        }
+
+        const peer = params?.peer;
+        if (typeof peer !== 'string' || !peer.trim()) {
+            return {status: 'rejected', state: 'unavailable', reason: 'readPublishSwitches: peer must be a non-empty string'};
+        }
+
+        return store.readPeerSwitches({peer: peer.trim()});
+    }
+
+    /**
+     * @summary WRITE: update a `(peer, channel)` outbound publish switch with `expectedFrom`
+     * optimistic concurrency, mandatory non-empty `reason` on promotion, and append-only audit
+     * attribution under the server-stamped viewer identity.
+     * @param {Object} params
+     * @param {String} params.peer
+     * @param {String} params.channel
+     * @param {String} params.to
+     * @param {String} params.expectedFrom
+     * @param {String} [params.reason]
+     * @returns {Promise<Object>|Object}
+     */
+    setPublishSwitch(params = {}) {
+        const store = this.getPublishSwitchStore();
+        if (typeof store?.setSwitch !== 'function') {
+            return {status: 'not-wired', reason: 'fleet: publish switch store not wired'};
+        }
+
+        const {peer, channel, to, expectedFrom, reason} = params ?? {},
+              who                                       = this.viewerIdentitySource?.resolveViewerIdentity?.() || '@tobiu';
+
+        return store.setSwitch({
+            peer,
+            channel,
+            to,
+            expectedFrom,
+            reason,
+            who
+        });
     }
 
     /**

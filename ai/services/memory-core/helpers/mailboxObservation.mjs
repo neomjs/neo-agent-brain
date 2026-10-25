@@ -130,7 +130,7 @@ function buildObservationQuery({
     taskOrder
 }) {
     const params = {},
-        viewer = scope === 'all' && policy === 'team'
+        viewer   = scope === 'all' && policy === 'team'
             ? null
             : jsonMembership(params, 'viewerVariants', viewerVariants),
         inbox = scope === 'all' && policy !== 'team'
@@ -205,7 +205,7 @@ function buildObservationQuery({
     }
 
     const candidateBranches = [];
-    const candidateRoute = (edgeType, variants) => {
+    const candidateRoute    = (edgeType, variants) => {
         if (!variants) return;
         candidateBranches.push(`SELECT source AS messageId FROM Edges WHERE type = '${edgeType}' AND target ${variants}`)
     };
@@ -311,15 +311,15 @@ function projectMessage(row, edges, viewerVariants, includeBody = false) {
     for (const edge of edges) {
         if (edge.type !== 'REFERENCES_TICKET') continue;
 
-        const data = parseRecord(edge.data, 'REFERENCES_TICKET edge'),
+        const data      = parseRecord(edge.data, 'REFERENCES_TICKET edge'),
             externalRef = data.properties?.externalRef,
-            ticket = typeof externalRef === 'string' && externalRef ? externalRef : edge.target;
+            ticket      = typeof externalRef === 'string' && externalRef ? externalRef : edge.target;
 
         typeof ticket === 'string' && ticket && relatedTickets.add(ticket)
     }
 
     const receipt = viewerDelivery ? parseRecord(viewerDelivery.data, 'DELIVERED_TO edge').properties ?? {} : null,
-        readAt = receipt
+        readAt    = receipt
             ? receipt.readAt ?? null
             : to === 'AGENT:*' && deliveryEdges.length > 0
                 ? null
@@ -334,21 +334,38 @@ function projectMessage(row, edges, viewerVariants, includeBody = false) {
             : null,
         subject = retracted ? MAILBOX_RETRACTED_PLACEHOLDER : properties.subject ?? null,
         result = {
-            messageId: row.messageId,
+            messageId     : row.messageId,
             subject,
-            from: sentByEdge?.target ?? null,
+            from          : sentByEdge?.target ?? null,
             to,
-            priority: properties.priority ?? null,
+            priority      : properties.priority ?? null,
             task,
-            sentAt: properties.sentAt ?? null,
-            createdAt: properties.createdAt ?? properties.sentAt ?? null,
+            sentAt        : properties.sentAt ?? null,
+            createdAt     : properties.createdAt ?? properties.sentAt ?? null,
             readAt,
             archivedAt,
-            partOfThread: edges.find(edge => edge.type === 'PART_OF_THREAD')?.target ?? null,
+            partOfThread  : edges.find(edge => edge.type === 'PART_OF_THREAD')?.target ?? null,
             relatedTickets: [...relatedTickets].sort(),
             retracted,
             wakeSuppressed: Boolean(properties.wakeSuppressed)
         };
+
+    if (!retracted) {
+        if (!includeBody && (properties.publication !== undefined || properties.requestPublish !== undefined || properties.revision !== undefined)) {
+            result.publication = {
+                state                : properties.publication?.state ?? 'queued',
+                currentRevisionNumber: properties.publication?.currentRevisionNumber ?? properties.publication?.revisionNumber ?? properties.revision?.revisionNumber ?? 1,
+                currentRevisionDigest: properties.publication?.currentRevisionDigest ?? properties.publication?.revisionDigest ?? properties.revision?.revisionDigest ?? null
+            }
+        } else if (includeBody) {
+            if (properties.requestPublish !== undefined)         result.requestPublish         = properties.requestPublish;
+            if (properties.revision !== undefined)               result.revision               = properties.revision;
+            if (properties.revisions !== undefined)              result.revisions              = properties.revisions;
+            if (properties.publication !== undefined)            result.publication            = properties.publication;
+            if (properties.revisionDigest !== undefined)         result.revisionDigest         = properties.revisionDigest;
+            if (properties.attestedRevisionDigest !== undefined) result.attestedRevisionDigest = properties.attestedRevisionDigest
+        }
+    }
 
     if (includeBody) {
         result.body = retracted ? MAILBOX_RETRACTED_PLACEHOLDER : properties.bodyText ?? null
@@ -427,7 +444,7 @@ export function readMailboxObservation({
         throw new TypeError('mailbox observation messageId must be a non-empty string')
     }
 
-    const query = buildObservationQuery({viewerVariants, grantedInboxVariants, scope, policy, fromVariants, threadId, taggedConceptGroups, taskStates, taskOrder}),
+    const query                = buildObservationQuery({viewerVariants, grantedInboxVariants, scope, policy, fromVariants, threadId, taggedConceptGroups, taskStates, taskOrder}),
         {cte, params, orderBy} = query;
 
     return sqlite.transaction(() => {
@@ -443,7 +460,7 @@ export function readMailboxObservation({
         }
 
         const totalCount = sqlite.prepare(`${cte} SELECT COUNT(*) AS count FROM filtered`).get(params).count,
-            pageRows = sqlite.prepare(`${cte} SELECT messageId, data FROM filtered ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`)
+            pageRows     = sqlite.prepare(`${cte} SELECT messageId, data FROM filtered ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`)
                 .all({...params, limit, offset}),
             messages = pageRows.map(row => {
                 const edges = sourceObservationEdges(sqlite, row.messageId);

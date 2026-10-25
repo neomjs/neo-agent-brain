@@ -32,11 +32,14 @@ import {
 } from '../memory-core/helpers/publishDigest.mjs';
 import {
     PUBLISH_CHANNELS,
+    SWITCH_STATES,
+    SWITCH_STATE_RANK,
     REFUSAL_CODES,
     LINKEDIN_TOKEN_MAX_AGE_MS,
     X_REFRESH_MARGIN_MS,
     scrubSecrets,
-    createFleetCustodyStore
+    createFleetCustodyStore,
+    createPublishSwitchStore
 } from './fleetCustodyStore.mjs';
 import {
     RECONCILE_RECENT_POSTS_LIMIT,
@@ -47,12 +50,15 @@ export {
     computePublishRevisionDigest,
     matchesRequestedPublishText,
     PUBLISH_CHANNELS,
+    SWITCH_STATES,
+    SWITCH_STATE_RANK,
     REFUSAL_CODES,
     LINKEDIN_TOKEN_MAX_AGE_MS,
     X_REFRESH_MARGIN_MS,
     RECONCILE_RECENT_POSTS_LIMIT,
     scrubSecrets,
     createFleetCustodyStore,
+    createPublishSwitchStore,
     createSocialPlatformClient
 };
 
@@ -76,24 +82,6 @@ export const PUBLICATION_STATES = Object.freeze({
     published : 'published',
     refused   : 'refused',
     unresolved: 'unresolved'
-});
-
-/**
- * Four legal switch states per `(peer, channel)` pair, ordered from strictest (`0`) to most permissive (`3`).
- * @type {Readonly<{approveEach: 'approve each', approveBatch: 'approve the batch', autoApproveAttested: 'auto-approve after a cross-family review attestation', autoApprove: 'auto-approve'}>}
- */
-export const SWITCH_STATES = Object.freeze({
-    approveEach        : 'approve each',
-    approveBatch       : 'approve the batch',
-    autoApproveAttested: 'auto-approve after a cross-family review attestation',
-    autoApprove        : 'auto-approve'
-});
-
-const SWITCH_STATE_RANK = Object.freeze({
-    [SWITCH_STATES.approveEach]        : 0,
-    [SWITCH_STATES.approveBatch]       : 1,
-    [SWITCH_STATES.autoApproveAttested]: 2,
-    [SWITCH_STATES.autoApprove]        : 3
 });
 
 /**
@@ -659,6 +647,15 @@ export function createPublishExecutor(config = {}) {
               fetch      : config.fetch,
               now
           }),
+          defaultSwitchStore = config.switchStore ?? (
+              (config.custodyDir || config.switches)
+                  ? createPublishSwitchStore({
+                      custodyDir: config.custodyDir ?? null,
+                      switches  : config.switches ?? null,
+                      now
+                  })
+                  : null
+          ),
           defaultPlatform = config.platform ?? createSocialPlatformClient({
               fetch: config.fetch,
               custody,
@@ -924,7 +921,7 @@ export function createPublishExecutor(config = {}) {
         async publish(requestId, revisionDigest, callOptions = {}) {
             const mailbox               = callOptions.mailbox ?? config.mailbox,
                   custodySeam           = callOptions.custody ?? custody,
-                  switchStore           = callOptions.switchStore ?? config.switchStore,
+                  switchStore           = callOptions.switchStore ?? defaultSwitchStore,
                   platform              = callOptions.platform ?? defaultPlatform,
                   mediaReader           = callOptions.mediaReader ?? config.mediaReader,
                   resolveIdentityFamily = callOptions.resolveIdentityFamily ?? config.resolveIdentityFamily ?? (async () => null),

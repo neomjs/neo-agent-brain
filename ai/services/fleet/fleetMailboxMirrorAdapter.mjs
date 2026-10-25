@@ -245,6 +245,10 @@ export function createFleetMailboxMirrorSnapshot({
  * @returns {Object}
  */
 export function createFleetMailboxMirrorRow(message, observedAt) {
+    const hasPublishProjection = !message.retracted && Boolean(
+        message.publication || message.requestPublish || message.revision
+    )
+
     return Object.freeze({
         messageId     : typeof message.messageId === 'string' ? message.messageId : null,
         subject       : normalizeSubject(message.subject),
@@ -253,6 +257,13 @@ export function createFleetMailboxMirrorRow(message, observedAt) {
         priority      : message.priority || null,
         status        : getMessageStatus(message),
         taskState     : message.task?.state || null,
+        ...(hasPublishProjection ? {
+            publication: Object.freeze({
+                state         : message.publication?.state ?? 'queued',
+                revisionNumber: message.publication?.currentRevisionNumber ?? message.publication?.revisionNumber ?? message.revision?.revisionNumber ?? 1,
+                revisionDigest: message.publication?.currentRevisionDigest ?? message.publication?.revisionDigest ?? message.revision?.revisionDigest ?? null
+            })
+        } : {}),
         partOfThread  : typeof message.partOfThread === 'string' ? message.partOfThread : null,
         relatedTickets: normalizeRelatedTickets(message.relatedTickets),
         wakeSuppressed: Boolean(message.wakeSuppressed),

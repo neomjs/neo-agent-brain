@@ -24,7 +24,8 @@ import FleetControlBridge          from '../../../../../../ai/services/fleet/Fle
 import {wireOperatorComposeWriter} from '../../../../../../ai/services/fleet/wireOperatorComposeWriter.mjs';
 import {
     X_REFRESH_MARGIN_MS,
-    createFleetCustodyStore as createFleetCustodyStoreDirect
+    createFleetCustodyStore as createFleetCustodyStoreDirect,
+    createPublishSwitchStore as createPublishSwitchStoreDirect
 } from '../../../../../../ai/services/fleet/fleetCustodyStore.mjs';
 import {
     createSocialPlatformClient as createSocialPlatformClientDirect
@@ -37,9 +38,11 @@ import {
     REFUSAL_CODES,
     REPLY_CLASSIFICATION_PRIMARY_SOURCE,
     SWITCH_STATES,
+    SWITCH_STATE_RANK,
     computePublishRevisionDigest,
     createFleetCustodyStore,
     createPublishExecutor,
+    createPublishSwitchStore,
     createSocialPlatformClient,
     matchesRequestedPublishText,
     publish,
@@ -2034,6 +2037,344 @@ test.describe('publishExecutor (#979)', () => {
                 'Content-Type' : 'application/json'
             });
         } finally {
+            await fs.rm(tempRoot, {recursive: true, force: true});
+        }
+    });
+
+    test('#1271 Part 2: createPublishSwitchStore persists per-(peer, channel) switches atomically with 0o600 permissions, enforces expectedFrom optimistic concurrency, requires non-empty reason on promotion, and feeds createPublishExecutor', async () => {
+        expect(createPublishSwitchStoreDirect).toBe(createPublishSwitchStore);
+        expect(SWITCH_STATE_RANK[SWITCH_STATES.approveEach]).toBe(0);
+        expect(SWITCH_STATE_RANK[SWITCH_STATES.autoApprove]).toBe(3);
+
+        const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-switches-1271-'));
+        const xCredDir = path.join(tempRoot, 'social-credentials', 'x');
+        await fs.mkdir(xCredDir, {recursive: true});
+        await fs.writeFile(
+            path.join(xCredDir, '_neomjs.json'),
+            JSON.stringify({accessToken: SECRET, expiresAt: NOW_MS + 3600_000}),
+            {encoding: 'utf8', mode: 0o600}
+        );
+
+        try {
+            const store = createPublishSwitchStore({
+                custodyDir: tempRoot,
+                now       : () => NOW_MS
+            });
+
+            // 1. Default state is 'approve each' for both x and linkedin
+            const initial = await store.readPeerSwitches({peer: 'neo-fable-clio'});
+            expect(initial).toEqual({
+                state   : 'ok',
+                peer    : '@neo-fable-clio',
+                channels: {
+                    x: {
+                        peer     : '@neo-fable-clio',
+                        channel  : 'x',
+                        state    : SWITCH_STATES.approveEach,
+                        updatedAt: null,
+                        updatedBy: null,
+                        audit    : [],
+                        proposal : null
+                    },
+                    linkedin: {
+                        peer     : '@neo-fable-clio',
+                        channel  : 'linkedin',
+                        state    : SWITCH_STATES.approveEach,
+                        updatedAt: null,
+                        updatedBy: null,
+                        audit    : [],
+                        proposal : null
+                    }
+                }
+            });
+            expect(await store.read({peer: PEER_ID, channel: 'x'})).toBe(SWITCH_STATES.approveEach);
+
+            // 2. Promotion without a reason is refused with 'refused: reason'
+            const missingReason = await store.setSwitch({
+                peer        : PEER_ID,
+                channel     : 'x',
+                to          : SWITCH_STATES.autoApprove,
+                expectedFrom: SWITCH_STATES.approveEach,
+                reason      : '   ',
+                who         : '@tobiu'
+            });
+            expect(missingReason).toMatchObject({
+                ok     : false,
+                refused: REFUSAL_CODES.reason,
+                code   : REFUSAL_CODES.reason
+            });
+
+            // 3. Promotion with a valid reason succeeds, appends audit, and persists 0o600 publish-switches.json
+            const promoted = await store.setSwitch({
+                peer        : PEER_ID,
+                channel     : 'x',
+                to          : SWITCH_STATES.autoApprove,
+                expectedFrom: SWITCH_STATES.approveEach,
+                reason      : '15 consecutive clean posts on X with zero edits',
+                who         : 'tobiu',
+                proposal    : {proposedTo: SWITCH_STATES.autoApprove, evidence: '15/15 clean'}
+            });
+            expect(promoted.ok).toBe(true);
+            expect(promoted.switch).toEqual({
+                peer     : '@neo-fable-clio',
+                channel  : 'x',
+                state    : SWITCH_STATES.autoApprove,
+                updatedAt: new Date(NOW_MS).toISOString(),
+                updatedBy: '@tobiu',
+                audit    : [{
+                    who   : '@tobiu',
+                    when  : new Date(NOW_MS).toISOString(),
+                    from  : SWITCH_STATES.approveEach,
+                    to    : SWITCH_STATES.autoApprove,
+                    reason: '15 consecutive clean posts on X with zero edits'
+                }],
+                proposal: {proposedTo: SWITCH_STATES.autoApprove, evidence: '15/15 clean'}
+            });
+
+            const switchesFile = path.join(tempRoot, 'publish-switches.json');
+            const stat         = await fs.stat(switchesFile);
+            expect(stat.mode & 0o777).toBe(0o600);
+
+            // 4. Stale expectedFrom is refused with 'refused: switch-moved' and reports currentState
+            const staleMove = await store.setSwitch({
+                peer        : PEER_ID,
+                channel     : 'x',
+                to          : SWITCH_STATES.approveBatch,
+                expectedFrom: SWITCH_STATES.approveEach,
+                reason      : 'stale move'
+            });
+            expect(staleMove).toMatchObject({
+                ok          : false,
+                refused     : REFUSAL_CODES.switchMoved,
+                code        : REFUSAL_CODES.switchMoved,
+                currentState: SWITCH_STATES.autoApprove
+            });
+
+            // 5. createPublishExecutor({custodyDir}) reads publish-switches.json automatically at publish time
+            const unapprovedReq = seedApprovedRequest({approved: false});
+            const digest        = unapprovedReq.currentRevision.revisionDigest;
+            const mailbox       = createInMemoryMailbox({[REQ_ID]: unapprovedReq});
+            const executor      = createPublishExecutor({
+                mailbox,
+                custodyDir: tempRoot,
+                now       : () => NOW_MS,
+                platform  : {
+                    async publishPost(call) {
+                        return {
+                            providerId: 'tweet-switch-auto-1271',
+                            readback  : {providerId: 'tweet-switch-auto-1271', text: call.text}
+                        };
+                    }
+                }
+            });
+
+            const publishedAuto = await executor.publish(REQ_ID, digest);
+            expect(publishedAuto).toMatchObject({
+                ok        : true,
+                state     : PUBLICATION_STATES.published,
+                providerId: 'tweet-switch-auto-1271'
+            });
+
+            // 6. Downgrade does not require a reason
+            const downgraded = await store.setSwitch({
+                peer        : PEER_ID,
+                channel     : 'x',
+                to          : SWITCH_STATES.approveEach,
+                expectedFrom: SWITCH_STATES.autoApprove,
+                reason      : '',
+                who         : '@tobiu',
+                nowMs       : NOW_MS + 5_000
+            });
+            expect(downgraded.ok).toBe(true);
+            expect(downgraded.switch.state).toBe(SWITCH_STATES.approveEach);
+            expect(downgraded.switch.audit).toHaveLength(2);
+        } finally {
+            await fs.rm(tempRoot, {recursive: true, force: true});
+        }
+    });
+
+    test('#1271 Part 3: FleetControlBridge exposes approvePublishRevision, editPublishRequest, readPublishSwitches, and setPublishSwitch with wire parameter whitelisting and domain refusal mapping', async () => {
+        const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-bridge-1271-'));
+
+        try {
+            // 1. Unwired state checks
+            FleetControlBridge.composeWriter        = null;
+            FleetControlBridge.publishSwitchStore   = null;
+            FleetControlBridge.registry             = {getDataDir: () => null};
+            FleetControlBridge.viewerIdentitySource = null;
+
+            expect(await FleetControlBridge.approvePublishRevision({taskId: REQ_ID, revisionDigest: 'abc'})).toEqual({
+                status: 'not-wired',
+                reason: 'fleet: operator publish approval writer not wired'
+            });
+            expect(await FleetControlBridge.editPublishRequest({taskId: REQ_ID, patch: {text: 'next'}})).toEqual({
+                status: 'not-wired',
+                reason: 'fleet: operator publish edit writer not wired'
+            });
+            expect(FleetControlBridge.readPublishSwitches({peer: PEER_ID})).toEqual({
+                status: 'not-wired',
+                state : 'unavailable',
+                reason: 'fleet: publish switch store not wired'
+            });
+            expect(FleetControlBridge.setPublishSwitch({
+                peer        : PEER_ID,
+                channel     : 'x',
+                to          : SWITCH_STATES.approveBatch,
+                expectedFrom: SWITCH_STATES.approveEach,
+                reason      : 'promote'
+            })).toEqual({
+                status: 'not-wired',
+                reason: 'fleet: publish switch store not wired'
+            });
+
+            // 2. Wire composeWriter + custodyDir-backed switch store
+            let capturedEditArgs    = null;
+            let capturedApproveArgs = null;
+            let currentRevNumber    = 1;
+            let currentPayload      = buildPayload();
+            let currentDigest       = computePublishRevisionDigest(currentPayload);
+
+            FleetControlBridge.composeWriter = wireOperatorComposeWriter({
+                addMessage: async () => ({}),
+                async editPublishRequest(args) {
+                    capturedEditArgs = args;
+                    if (args.patch?.text === 'THROW_STATE') {
+                        const err = new Error('requestPublish refused: state — Request is not queued');
+                        err.code  = 'refused: state';
+                        throw err;
+                    }
+                    currentPayload   = {...currentPayload, ...args.patch};
+                    currentRevNumber += 1;
+                    currentDigest    = computePublishRevisionDigest(currentPayload);
+                    return {
+                        messageId     : args.taskId,
+                        taskId        : args.taskId,
+                        revisionNumber: currentRevNumber,
+                        revisionDigest: currentDigest,
+                        revision      : {
+                            revisionNumber: currentRevNumber,
+                            revisionDigest: currentDigest,
+                            payload       : currentPayload,
+                            approval      : null,
+                            attestation   : null
+                        }
+                    };
+                },
+                async approvePublishRevision(args) {
+                    capturedApproveArgs = args;
+                    if (args.revisionDigest !== currentDigest) {
+                        const err = new Error('requestPublish refused: digest-mismatch — digest does not match current revision');
+                        err.code  = 'refused: digest-mismatch';
+                        throw err;
+                    }
+                    return {
+                        messageId: args.taskId,
+                        taskId   : args.taskId,
+                        approval : {
+                            approvedBy    : '@tobiu',
+                            approvedAt    : new Date(NOW_MS).toISOString(),
+                            revisionNumber: currentRevNumber,
+                            revisionDigest: currentDigest
+                        }
+                    };
+                }
+            });
+            FleetControlBridge.registry             = {getDataDir: () => tempRoot};
+            FleetControlBridge.viewerIdentitySource = {resolveViewerIdentity: () => '@tobiu'};
+
+            // Parameter validation guards
+            expect(await FleetControlBridge.approvePublishRevision({taskId: '', revisionDigest: currentDigest})).toMatchObject({status: 'rejected'});
+            expect(await FleetControlBridge.approvePublishRevision({taskId: REQ_ID, revisionDigest: ''})).toMatchObject({status: 'rejected'});
+            expect(await FleetControlBridge.editPublishRequest({taskId: '', patch: {text: 'hi'}})).toMatchObject({status: 'rejected'});
+            expect(await FleetControlBridge.editPublishRequest({taskId: REQ_ID, patch: null})).toMatchObject({status: 'rejected'});
+            expect(FleetControlBridge.readPublishSwitches({peer: ''})).toMatchObject({status: 'rejected', state: 'unavailable'});
+
+            // Edit strips caller-supplied identity fields (`editedBy`, `from`, `createdBy`)
+            const originalDigest = currentDigest;
+            const editRes        = await FleetControlBridge.editPublishRequest({
+                taskId  : REQ_ID,
+                from    : '@spoofed',
+                editedBy: '@spoofed',
+                patch   : {
+                    text     : 'Edited post copy for revision 2',
+                    from     : '@spoofed',
+                    editedBy : '@spoofed',
+                    createdBy: '@spoofed'
+                }
+            });
+            expect(capturedEditArgs).toEqual({
+                taskId   : REQ_ID,
+                messageId: REQ_ID,
+                patch    : {text: 'Edited post copy for revision 2'}
+            });
+            expect(editRes.revisionNumber).toBe(2);
+            expect(editRes.revisionDigest).not.toBe(originalDigest);
+
+            // Approve against stale revision 1 digest maps domain throw into {ok: false, refused: 'refused: digest-mismatch'}
+            const staleApprove = await FleetControlBridge.approvePublishRevision({
+                taskId        : REQ_ID,
+                revisionDigest: originalDigest
+            });
+            expect(staleApprove).toMatchObject({
+                ok     : false,
+                refused: 'refused: digest-mismatch',
+                code   : 'refused: digest-mismatch'
+            });
+
+            // Approve against revision 2 digest succeeds
+            const okApprove = await FleetControlBridge.approvePublishRevision({
+                taskId        : REQ_ID,
+                revisionDigest: editRes.revisionDigest,
+                revisionNumber: 2
+            });
+            expect(capturedApproveArgs).toEqual({
+                taskId        : REQ_ID,
+                messageId     : REQ_ID,
+                revisionDigest: editRes.revisionDigest,
+                revisionNumber: 2
+            });
+            expect(okApprove.approval).toMatchObject({
+                approvedBy    : '@tobiu',
+                revisionNumber: 2,
+                revisionDigest: editRes.revisionDigest
+            });
+
+            // Edit domain throw maps into {ok: false, refused: 'refused: state'}
+            const refusedEdit = await FleetControlBridge.editPublishRequest({
+                taskId: REQ_ID,
+                patch : {text: 'THROW_STATE'}
+            });
+            expect(refusedEdit).toMatchObject({
+                ok     : false,
+                refused: 'refused: state',
+                code   : 'refused: state'
+            });
+
+            // Switch store read/set via FleetControlBridge uses viewerIdentitySource and ignores caller-supplied `who`
+            const setRes = await FleetControlBridge.setPublishSwitch({
+                peer        : PEER_ID,
+                channel     : 'linkedin',
+                to          : SWITCH_STATES.approveBatch,
+                expectedFrom: SWITCH_STATES.approveEach,
+                reason      : 'Batch release approved for v13.2',
+                who         : '@attacker-spoof'
+            });
+            expect(setRes.ok).toBe(true);
+            expect(setRes.switch.updatedBy).toBe('@tobiu');
+            expect(setRes.switch.audit[0].who).toBe('@tobiu');
+
+            const readRes = await FleetControlBridge.readPublishSwitches({peer: PEER_ID});
+            expect(readRes.state).toBe('ok');
+            expect(readRes.channels.linkedin.state).toBe(SWITCH_STATES.approveBatch);
+            expect(readRes.channels.x.state).toBe(SWITCH_STATES.approveEach);
+        } finally {
+            FleetControlBridge.composeWriter          = null;
+            FleetControlBridge.publishExecutor        = null;
+            FleetControlBridge.publishSwitchStore     = null;
+            FleetControlBridge._defaultPublishSwitchStore = null;
+            FleetControlBridge._defaultPublishExecutor    = null;
+            FleetControlBridge.registry               = null;
+            FleetControlBridge.viewerIdentitySource   = null;
             await fs.rm(tempRoot, {recursive: true, force: true});
         }
     });

@@ -386,6 +386,75 @@ test.describe('fleetMailboxMirrorAdapter — viewer-admitted per-agent mailbox m
             expect(viaReason.admission.reason, `${name} must not cross via reason`).not.toContain(secret)
         })
     })
+
+    test('#1271 Part 4: projects body-free publication state on publish-gate messages without leaking post text', () => {
+        const snapshot = createFleetMailboxMirrorSnapshot({
+            capturedAt: CAPTURED_AT,
+            viewer    : '@tobiu',
+            subject   : '@tobiu',
+            messages  : [
+                {
+                    messageId  : 'MESSAGE:pub-1',
+                    subject    : '[publish-gate] draft X post',
+                    sentAt     : CAPTURED_AT,
+                    publication: {
+                        state                : 'Draft',
+                        currentRevisionNumber: 2,
+                        currentRevisionDigest: 'sha256:rev2digest'
+                    },
+                    requestPublish: {
+                        channel        : 'x',
+                        postKind       : 'post',
+                        text           : 'SECRET DRAFT POST TEXT',
+                        textAsRequested: 'SECRET DRAFT POST TEXT',
+                        textAsPublished: 'SECRET PUBLISHED TEXT'
+                    },
+                    revision: {
+                        revisionNumber: 2,
+                        revisionDigest: 'sha256:rev2digest',
+                        payload       : {text: 'SECRET DRAFT POST TEXT'}
+                    }
+                },
+                {
+                    messageId: 'MESSAGE:plain-1',
+                    subject  : 'plain inbox row',
+                    sentAt   : CAPTURED_AT
+                },
+                {
+                    messageId  : 'MESSAGE:retracted-pub',
+                    subject    : '[retracted by sender]',
+                    sentAt     : CAPTURED_AT,
+                    retracted  : true,
+                    publication: {
+                        state                : 'Draft',
+                        currentRevisionNumber: 1,
+                        currentRevisionDigest: 'sha256:rev1'
+                    }
+                }
+            ]
+        })
+
+        const pubRow       = snapshot.rows.find(r => r.messageId === 'MESSAGE:pub-1')
+        const plainRow     = snapshot.rows.find(r => r.messageId === 'MESSAGE:plain-1')
+        const retractedRow = snapshot.rows.find(r => r.messageId === 'MESSAGE:retracted-pub')
+
+        expect(pubRow.publication).toEqual({
+            state         : 'Draft',
+            revisionNumber: 2,
+            revisionDigest: 'sha256:rev2digest'
+        })
+        expect(Object.isFrozen(pubRow.publication)).toBe(true)
+        expect(Object.hasOwn(plainRow, 'publication')).toBe(false)
+        expect(Object.hasOwn(retractedRow, 'publication')).toBe(false)
+
+        const serialized = JSON.stringify(snapshot)
+        expect(serialized).not.toContain('SECRET DRAFT POST TEXT')
+        expect(serialized).not.toContain('SECRET PUBLISHED TEXT')
+        expect(Object.hasOwn(pubRow, 'requestPublish')).toBe(false)
+        expect(Object.hasOwn(pubRow, 'revision')).toBe(false)
+        expect(Object.hasOwn(pubRow, 'textAsRequested')).toBe(false)
+        expect(Object.hasOwn(pubRow, 'textAsPublished')).toBe(false)
+    })
 })
 
 /**

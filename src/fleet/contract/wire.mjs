@@ -14,6 +14,7 @@ export const FLEET_WIRE_METHODS = Object.freeze([
     'getBootIdentity', 'fleetActivity', 'fleetHistory', 'fleetMemories', 'fleetSessionMemories', 'fleetRecentTurns', 'fleetMemoryCandidates', 'fleetRoster', 'fleetMailboxMirror', 'connectTenant', 'listTenants',
     'composeOperatorMessage', 'fleetOwnMessage', 'fleetOwnQuestions', 'markOwnMessageRead', 'transitionOwnTask',
     'publish', 'readMetrics', 'reply',
+    'approvePublishRevision', 'editPublishRequest', 'readPublishSwitches', 'setPublishSwitch',
     'markFleetCaughtUp', 'resolveViewerIdentity', 'fleetWakeRoutes', 'fleetTasks',
     'fleetDeploymentState', 'fleetGoldenPath', 'fleetGraphScene', 'fleetOpenWork', 'fleetSeatGitIdentity', 'fleetSeatModelCatalog'
 ]);

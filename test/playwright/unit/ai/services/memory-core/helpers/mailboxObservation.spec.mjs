@@ -50,6 +50,12 @@ function addMessage(db, {
     wakeSuppressed = false,
     relatedTickets = [],
     task,
+    publication,
+    requestPublish,
+    revision,
+    revisions,
+    revisionDigest,
+    attestedRevisionDigest,
     deliveries = [],
     extraEdges = []
 }) {
@@ -57,6 +63,12 @@ function addMessage(db, {
 
     relatedTickets.length && (properties.relatedTickets = relatedTickets);
     task !== undefined && (properties.task = task);
+    publication !== undefined && (properties.publication = publication);
+    requestPublish !== undefined && (properties.requestPublish = requestPublish);
+    revision !== undefined && (properties.revision = revision);
+    revisions !== undefined && (properties.revisions = revisions);
+    revisionDigest !== undefined && (properties.revisionDigest = revisionDigest);
+    attestedRevisionDigest !== undefined && (properties.attestedRevisionDigest = attestedRevisionDigest);
 
     const node = {id, label: 'MESSAGE', properties};
 
@@ -116,23 +128,23 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
     });
 
     test('team all admits MESSAGE nodes once, including archives and retractions, with a bounded body-free projection', () => {
-        const direct = addMessage(db, {id: 'MESSAGE:team-direct', from: '@alice', to: '@bob', archivedAt: '2026-10-08T00:00:00.000Z'}),
+        const direct  = addMessage(db, {id: 'MESSAGE:team-direct', from: '@alice', to: '@bob', archivedAt: '2026-10-08T00:00:00.000Z'}),
             broadcast = addMessage(db, {
-                id: 'MESSAGE:team-broadcast', to: 'AGENT:*', from: '@alice',
+                id          : 'MESSAGE:team-broadcast', to: 'AGENT:*', from: '@alice',
                 toProperties: {broadcastCohort: 'known', intendedRecipientCount: 2},
-                deliveries: [
+                deliveries  : [
                     {target: VIEWER, archivedAt: '2026-10-08T01:00:00.000Z', readAt: '2026-10-08T02:00:00.000Z'},
                     {target: '@peer', archivedAt: null, readAt: null}
                 ]
             }),
             retracted = addMessage(db, {
-                id: 'MESSAGE:team-retracted', from: '@alice', to: '@bob', subject: 'old subject', body: 'old body',
-                retracted: true, task: {state: 'Submitted', input: 'private task input'}, relatedTickets: ['#2', '#2'],
+                id        : 'MESSAGE:team-retracted', from: '@alice', to: '@bob', subject: 'old subject', body: 'old body',
+                retracted : true, task: {state: 'Submitted', input: 'private task input'}, relatedTickets: ['#2', '#2'],
                 extraEdges: [{type: 'REFERENCES_TICKET', target: '#1', properties: {externalRef: '#1'}}]
             });
 
         const before = {nodes: storedRows(db, 'Nodes'), edges: storedRows(db, 'Edges')},
-            result = observe(db, {scope: 'all', policy: 'team'});
+            result   = observe(db, {scope: 'all', policy: 'team'});
 
         expect(result).toMatchObject({totalCount: 3, truncated: false, nextOffset: null, limit: 50, offset: 0});
         expect(result.messages.map(row => row.messageId).sort()).toEqual([direct, broadcast, retracted].sort());
@@ -162,7 +174,7 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
             db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(id, JSON.stringify({id, label: 'AgentIdentity', properties: {}}))
         }
         const messageId = addMessage(db, {
-                id: 'MESSAGE:indexed',
+                id        : 'MESSAGE:indexed',
                 extraEdges: [{type: 'UNRELATED', target: '@unrelated'}]
             }),
             executed = [],
@@ -177,15 +189,15 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
         expect(observe(sqlite, {scope: 'all', policy: 'team'}).messages[0].messageId).toBe(messageId);
 
         const teamCountSql = executed.find(sql => sql.includes('WITH eligible AS') && sql.includes('COUNT(*)')),
-            teamDetails = db.prepare(`EXPLAIN QUERY PLAN ${teamCountSql}`).all().map(row => row.detail).join('\n');
+            teamDetails    = db.prepare(`EXPLAIN QUERY PLAN ${teamCountSql}`).all().map(row => row.detail).join('\n');
 
         expect(teamDetails).toContain('idx_nodes_label');
 
         observe(sqlite, {scope: 'own', policy: 'private'});
 
         const ownCountSql = executed.find(sql => sql.includes('WITH candidate_ids AS') && sql.includes('COUNT(*)')),
-            ownDetails = db.prepare(`EXPLAIN QUERY PLAN ${ownCountSql}`).all({viewerVariants: JSON.stringify(VIEWER_VARIANTS)}).map(row => row.detail).join('\n'),
-            edgeSql  = executed.find(sql => sql.includes('FROM Edges') && sql.includes('REFERENCES_TICKET'));
+            ownDetails    = db.prepare(`EXPLAIN QUERY PLAN ${ownCountSql}`).all({viewerVariants: JSON.stringify(VIEWER_VARIANTS)}).map(row => row.detail).join('\n'),
+            edgeSql       = executed.find(sql => sql.includes('FROM Edges') && sql.includes('REFERENCES_TICKET'));
 
         expect(ownCountSql).toContain("SELECT source AS messageId FROM Edges WHERE type = 'SENT_TO'");
         expect(ownDetails).toContain('idx_edges_target');
@@ -196,18 +208,18 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
     });
 
     test('private and legacy all clamp to the viewer sender/inbox, server-granted inboxes and canonical legacy broadcasts', () => {
-        const sent = addMessage(db, {id: 'MESSAGE:sent', from: VIEWER, to: '@peer'}),
-            received = addMessage(db, {id: 'MESSAGE:received', from: '@peer', to: VIEWER}),
-            granted = addMessage(db, {id: 'MESSAGE:granted', from: '@peer', to: '@granted'}),
+        const sent    = addMessage(db, {id: 'MESSAGE:sent', from: VIEWER, to: '@peer'}),
+            received  = addMessage(db, {id: 'MESSAGE:received', from: '@peer', to: VIEWER}),
+            granted   = addMessage(db, {id: 'MESSAGE:granted', from: '@peer', to: '@granted'}),
             unrelated = addMessage(db, {id: 'MESSAGE:unrelated', from: '@peer', to: '@other'}),
-            legacy = addMessage(db, {
-                id: 'MESSAGE:legacy-broadcast', from: '@peer', to: 'AGENT:*',
+            legacy    = addMessage(db, {
+                id          : 'MESSAGE:legacy-broadcast', from: '@peer', to: 'AGENT:*',
                 toProperties: {broadcastCohort: 'legacy-unknown'}
             }),
             modernWithoutViewer = addMessage(db, {
-                id: 'MESSAGE:modern-no-viewer', from: '@peer', to: 'AGENT:*',
+                id          : 'MESSAGE:modern-no-viewer', from: '@peer', to: 'AGENT:*',
                 toProperties: {broadcastCohort: 'known', intendedRecipientCount: 2},
-                extraEdges: [{type: 'DELIVERED_TO', target: '@other'}]
+                extraEdges  : [{type: 'DELIVERED_TO', target: '@other'}]
             });
 
         for (const policy of ['private', 'legacy']) {
@@ -221,21 +233,21 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
 
     test('own remains the recipient inbox despite team policy and granted targets; involves-me requires an actual endpoint', () => {
         const received = addMessage(db, {id: 'MESSAGE:own-received', from: '@peer', to: VIEWER}),
-            sent = addMessage(db, {id: 'MESSAGE:own-sent', from: VIEWER, to: '@peer'}),
-            granted = addMessage(db, {id: 'MESSAGE:own-grant', from: '@peer', to: '@granted'}),
-            legacy = addMessage(db, {
-                id: 'MESSAGE:own-legacy-broadcast', from: '@peer', to: 'AGENT:*',
+            sent       = addMessage(db, {id: 'MESSAGE:own-sent', from: VIEWER, to: '@peer'}),
+            granted    = addMessage(db, {id: 'MESSAGE:own-grant', from: '@peer', to: '@granted'}),
+            legacy     = addMessage(db, {
+                id          : 'MESSAGE:own-legacy-broadcast', from: '@peer', to: 'AGENT:*',
                 toProperties: {broadcastCohort: 'legacy-unknown'}
             }),
             involvedBroadcast = addMessage(db, {
-                id: 'MESSAGE:involved-broadcast', from: '@peer', to: 'AGENT:*',
+                id          : 'MESSAGE:involved-broadcast', from: '@peer', to: 'AGENT:*',
                 toProperties: {broadcastCohort: 'known', intendedRecipientCount: 1},
-                deliveries: [{target: VIEWER}]
+                deliveries  : [{target: VIEWER}]
             }),
             uninvolvedBroadcast = addMessage(db, {
-                id: 'MESSAGE:uninvolved-broadcast', from: '@peer', to: 'AGENT:*',
+                id          : 'MESSAGE:uninvolved-broadcast', from: '@peer', to: 'AGENT:*',
                 toProperties: {broadcastCohort: 'known', intendedRecipientCount: 1},
-                deliveries: [{target: '@other'}]
+                deliveries  : [{target: '@other'}]
             }),
             unrelated = addMessage(db, {id: 'MESSAGE:unrelated-peer', from: '@peer', to: '@other'});
 
@@ -254,12 +266,12 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
     });
 
     test('archive and Task filters apply before count/page; priority-age continuation advances by served rows', () => {
-        const high = addMessage(db, {id: 'MESSAGE:high', priority: 'high', sentAt: '2026-10-01T00:00:00.000Z', task: {state: 'InputRequired', input: 'not exposed'}}),
-            normal = addMessage(db, {id: 'MESSAGE:normal', priority: 'normal', sentAt: '2026-10-03T00:00:00.000Z', task: {state: 'Working'}}),
-            low = addMessage(db, {id: 'MESSAGE:low', priority: 'low', sentAt: '2026-10-02T00:00:00.000Z', task: {state: 'InputRequired'}}),
+        const high    = addMessage(db, {id: 'MESSAGE:high', priority: 'high', sentAt: '2026-10-01T00:00:00.000Z', task: {state: 'InputRequired', input: 'not exposed'}}),
+            normal    = addMessage(db, {id: 'MESSAGE:normal', priority: 'normal', sentAt: '2026-10-03T00:00:00.000Z', task: {state: 'Working'}}),
+            low       = addMessage(db, {id: 'MESSAGE:low', priority: 'low', sentAt: '2026-10-02T00:00:00.000Z', task: {state: 'InputRequired'}}),
             completed = addMessage(db, {id: 'MESSAGE:completed', priority: 'high', sentAt: '2026-09-30T00:00:00.000Z', task: {state: 'Completed'}}),
-            archived = addMessage(db, {id: 'MESSAGE:archived-task', priority: 'normal', sentAt: '2026-10-04T00:00:00.000Z', archivedAt: '2026-10-05T00:00:00.000Z', task: {state: 'InputRequired'}}),
-            filters = {taskStates: ['InputRequired', 'Working'], taskOrder: 'priority-age', limit: 2};
+            archived  = addMessage(db, {id: 'MESSAGE:archived-task', priority: 'normal', sentAt: '2026-10-04T00:00:00.000Z', archivedAt: '2026-10-05T00:00:00.000Z', task: {state: 'InputRequired'}}),
+            filters   = {taskStates: ['InputRequired', 'Working'], taskOrder: 'priority-age', limit: 2};
 
         const first = observe(db, filters), second = observe(db, {...filters, offset: 2}), third = observe(db, {...filters, offset: 4});
 
@@ -276,7 +288,7 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
 
     test('from, thread and tag filters share the same eligibility set for count and detail', () => {
         const matching = addMessage(db, {
-                id: 'MESSAGE:filters', from: '@alice', to: VIEWER,
+                id        : 'MESSAGE:filters', from: '@alice', to: VIEWER,
                 extraEdges: [
                     {type: 'PART_OF_THREAD', target: 'THREAD:1'},
                     {type: 'TAGGED_CONCEPT', target: 'concept:one'},
@@ -304,5 +316,68 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
         const broken = {prepare() { throw new Error('synthetic sqlite failure') }, transaction(fn) { return fn }};
 
         expect(() => readMailboxObservation({sqlite: broken, viewerVariants: VIEWER_VARIANTS, scope: 'own', policy: 'team'})).toThrow('synthetic sqlite failure')
+    });
+
+    test('#1271 Part 4: list observation projects body-free publication state while detail observation projects full publish-gate envelope', () => {
+        const pubId = addMessage(db, {
+            id         : 'MESSAGE:pub-obs',
+            from       : '@agent-author',
+            to         : VIEWER,
+            subject    : '[publish] release announcement',
+            body       : 'rationale body',
+            task       : {state: 'InputRequired'},
+            publication: {
+                state                : 'Draft',
+                currentRevisionNumber: 2,
+                currentRevisionDigest: 'sha256:rev2'
+            },
+            requestPublish        : {
+                channel        : 'x',
+                postKind       : 'post',
+                text           : 'SECRET DRAFT POST TEXT',
+                textAsRequested: 'ORIGINAL REQUESTED TEXT'
+            },
+            revision              : {
+                revisionNumber: 2,
+                revisionDigest: 'sha256:rev2',
+                payload       : {channel: 'x', postKind: 'post', text: 'SECRET DRAFT POST TEXT'}
+            },
+            revisions             : [
+                {revisionNumber: 1, revisionDigest: 'sha256:rev1'},
+                {revisionNumber: 2, revisionDigest: 'sha256:rev2'}
+            ],
+            revisionDigest        : 'sha256:rev2',
+            attestedRevisionDigest: null
+        });
+
+        const listResult = observe(db, {scope: 'own', policy: 'team'});
+        const listRow    = listResult.messages.find(r => r.messageId === pubId);
+
+        expect(listRow.publication).toEqual({
+            state                : 'Draft',
+            currentRevisionNumber: 2,
+            currentRevisionDigest: 'sha256:rev2'
+        });
+        expect(listRow).not.toHaveProperty('requestPublish');
+        expect(listRow).not.toHaveProperty('revision');
+        expect(listRow).not.toHaveProperty('revisions');
+        expect(JSON.stringify(listResult)).not.toContain('SECRET DRAFT POST TEXT');
+        expect(JSON.stringify(listResult)).not.toContain('ORIGINAL REQUESTED TEXT');
+
+        const detailResult = observe(db, {scope: 'own', policy: 'team', messageId: pubId});
+        expect(detailResult.publication).toEqual({
+            state                : 'Draft',
+            currentRevisionNumber: 2,
+            currentRevisionDigest: 'sha256:rev2'
+        });
+        expect(detailResult.requestPublish).toMatchObject({
+            channel        : 'x',
+            postKind       : 'post',
+            text           : 'SECRET DRAFT POST TEXT',
+            textAsRequested: 'ORIGINAL REQUESTED TEXT'
+        });
+        expect(detailResult.revision.revisionDigest).toBe('sha256:rev2');
+        expect(detailResult.revisions).toHaveLength(2);
+        expect(detailResult.revisionDigest).toBe('sha256:rev2');
     });
 });
