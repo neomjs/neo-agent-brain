@@ -221,3 +221,169 @@ test.describe('MailboxService.listMessages — a page must declare its own compl
         })
     }
 });
+
+test.describe('MailboxService.listMessages — projection (full | compact | counts)', () => {
+    const
+        PROJ_SENDER_A  = '@list-proj-sender-a',
+        PROJ_SENDER_B  = '@list-proj-sender-b',
+        PROJ_RECIPIENT = '@list-proj-recipient',
+        TOTAL_UNREAD   = 130,
+        DIRECT_COUNT   = 2;
+
+    let MailboxService, GraphService, LifecycleService, callTool, seededDirectIds;
+
+    const asProjRecipient = callback => RequestContextService.run({agentIdentityNodeId: PROJ_RECIPIENT}, callback);
+
+    const seenAtOf = messageId => {
+        const deliveryEdge = GraphService.db.edges.getByIndex('source', messageId)
+            .find(edge => edge.type === 'DELIVERED_TO' && edge.target === PROJ_RECIPIENT);
+        if (deliveryEdge) return deliveryEdge.properties?.seenAt ?? null;
+        return GraphService.db.nodes.get(messageId)?.properties?.seenAt ?? null;
+    };
+
+    test.beforeAll(async () => {
+        GraphService     = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        MailboxService   = (await import('../../../../../../ai/services/memory-core/MailboxService.mjs')).default;
+        LifecycleService = (await import('../../../../../../ai/services/memory-core/lifecycle/SystemLifecycleService.mjs')).default;
+        ({callTool}      = await import('../../../../../../ai/mcp/server/memory-core/toolService.mjs'));
+
+        if (!LifecycleService._initPromise) {
+            await LifecycleService.initAsync();
+        } else {
+            await LifecycleService.ready();
+        }
+
+        GraphService.upsertNode({id: PROJ_SENDER_A,  type: 'AgentIdentity', name: 'Proj Sender A',  properties: {accountType: 'agent'}});
+        GraphService.upsertNode({id: PROJ_SENDER_B,  type: 'AgentIdentity', name: 'Proj Sender B',  properties: {accountType: 'agent'}});
+        GraphService.upsertNode({id: PROJ_RECIPIENT, type: 'AgentIdentity', name: 'Proj Recipient', properties: {accountType: 'agent'}});
+
+        seededDirectIds = [];
+        const tags = ['[lane-claim]', '[pr-opened · Brain #1269 @ efb698d0]', '[merged]'];
+
+        for (let i = 0; i < TOTAL_UNREAD - DIRECT_COUNT; i++) {
+            const sender = i % 2 === 0 ? PROJ_SENDER_A : PROJ_SENDER_B;
+            const tag    = tags[i % tags.length];
+            await RequestContextService.run({agentIdentityNodeId: sender}, () => MailboxService.addMessage({
+                to            : 'AGENT:*',
+                subject       : `${tag} broadcast row ${String(i).padStart(3, '0')} — ${'x'.repeat(180)}`,
+                body          : 'broadcast body',
+                wakeSuppressed: true,
+                taggedConcepts: ['lane-claim', 'memory-core'],
+                relatedTickets: ['neomjs/neo-agent-brain#1254']
+            }));
+        }
+
+        for (let d = 0; d < DIRECT_COUNT; d++) {
+            const sent = await RequestContextService.run({agentIdentityNodeId: PROJ_SENDER_A}, () => MailboxService.addMessage({
+                to      : PROJ_RECIPIENT,
+                subject : `[review-requested] direct row ${d}`,
+                body    : 'direct message body',
+                priority: 'high',
+                task    : {state: 'InputRequired', description: 'review required'}
+            }));
+            seededDirectIds.push(sent.messageId);
+        }
+    });
+
+    test('AC-3: projection "full" and omitted projection are byte-identical', async () => {
+        const omitted  = await asProjRecipient(() => MailboxService.listMessages({box: 'inbox', status: 'unread', limit: 10}));
+        const explicit = await asProjRecipient(() => MailboxService.listMessages({box: 'inbox', status: 'unread', limit: 10, projection: 'full'}));
+
+        expect(JSON.stringify(explicit)).toBe(JSON.stringify(omitted));
+    });
+
+    test('unknown projection is rejected with the valid enum named', async () => {
+        await expect(asProjRecipient(() => MailboxService.listMessages({box: 'inbox', projection: 'summary'})))
+            .rejects.toThrow(/projection must be one of full, compact, counts/);
+    });
+
+    test('AC-1 & AC-4: projection "counts" on 130 unread returns < 1,500 chars/bytes, matches a full walk, ignores limit/offset, and stamps no seenAt', async () => {
+        const counts = await asProjRecipient(() => callTool('list_messages', {
+            box       : 'inbox',
+            status    : 'unread',
+            projection: 'counts',
+            limit     : 5,
+            offset    : 10
+        }));
+
+        const serialized = JSON.stringify(counts);
+        expect(serialized.length, 'character budget under 1,500').toBeLessThan(1500);
+        expect(Buffer.byteLength(serialized, 'utf8'), 'UTF-8 byte budget under 1,500').toBeLessThan(1500);
+
+        expect(counts.projection).toBe('counts');
+        expect(counts.paginationIgnored).toBe(true);
+        expect(counts.messages).toBeUndefined();
+        expect(counts.totalCount).toBe(TOTAL_UNREAD);
+        expect(counts.unreadCount).toBe(TOTAL_UNREAD);
+        expect(counts.byToClass).toEqual({
+            direct   : DIRECT_COUNT,
+            broadcast: TOTAL_UNREAD - DIRECT_COUNT
+        });
+        expect(counts.bySender).toEqual({
+            [PROJ_SENDER_A]: 64 + DIRECT_COUNT,
+            [PROJ_SENDER_B]: 64
+        });
+        expect(counts.bySubjectTag).toEqual({
+            '[lane-claim]'      : 43,
+            '[pr-opened]'       : 43,
+            '[merged]'          : 42,
+            '[review-requested]': DIRECT_COUNT
+        });
+        expect([...counts.unreadDirectMessageIds].sort()).toEqual([...seededDirectIds].sort());
+
+        // Compare against a full walk to verify counts totals equal a full walk.
+        const fullWalk = await asProjRecipient(() => MailboxService.listMessages({
+            box   : 'inbox',
+            status: 'unread',
+            limit : TOTAL_UNREAD + 10
+        }));
+        expect(counts.totalCount).toBe(fullWalk.messages.length);
+        expect(counts.unreadCount).toBe(fullWalk.messages.filter(m => !m.readAt).length);
+
+        // AC-4: counts does not stamp seenAt; mark_read({all: true}) drains nothing new.
+        for (const id of seededDirectIds) {
+            expect(seenAtOf(id), 'counts must not stamp seenAt on direct messages').toBeNull();
+        }
+
+        const drainAfterCounts = await asProjRecipient(() => MailboxService.markRead({all: true}));
+        expect(drainAfterCounts.readCount).toBe(0);
+        expect(drainAfterCounts.withheldUnseenCount).toBeGreaterThanOrEqual(DIRECT_COUNT);
+    });
+
+    test('AC-2 & AC-4: projection "compact" returns only the 9 fields, cuts subjects at 160 chars with ellipsis, and stamps seenAt', async () => {
+        const compactPage = await asProjRecipient(() => callTool('list_messages', {
+            box       : 'inbox',
+            status    : 'unread',
+            projection: 'compact',
+            limit     : 10
+        }));
+
+        expect(compactPage.messages).toHaveLength(10);
+        const expectedKeys = [
+            'from', 'messageId', 'priority', 'readAt',
+            'sentAt', 'subject', 'taskState', 'to', 'wakeSuppressed'
+        ];
+
+        for (const row of compactPage.messages) {
+            expect(Object.keys(row).sort()).toEqual(expectedKeys);
+            expect(row.subject.length).toBeLessThanOrEqual(160);
+        }
+
+        const directRow = compactPage.messages.find(row => seededDirectIds.includes(row.messageId));
+        expect(directRow).toBeDefined();
+        expect(directRow.taskState).toBe('InputRequired');
+        expect(directRow.wakeSuppressed).toBe(false);
+
+        const broadcastRow = compactPage.messages.find(row => row.to === 'AGENT:*');
+        expect(broadcastRow).toBeDefined();
+        expect(broadcastRow.subject).toHaveLength(160);
+        expect(broadcastRow.subject.endsWith('…')).toBe(true);
+        expect(broadcastRow.wakeSuppressed).toBe(true);
+        expect(broadcastRow.taskState).toBeNull();
+
+        // Compact surfaced these 10 rows, so seenAt is stamped on them and mark_read({all: true}) drains them.
+        for (const id of seededDirectIds) {
+            expect(seenAtOf(id), 'compact stamps seenAt on surfaced rows').toBeTruthy();
+        }
+    });
+});

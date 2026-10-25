@@ -2701,6 +2701,14 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: projection
+          in: query
+          required: false
+          description: "Response shape (`'full'`, `'compact'`, or `'counts'`). `'full'` (default) returns the complete row summary and stamps `seenAt`. `'compact'` returns the 9 triage fields (`messageId, from, to, sentAt, readAt, wakeSuppressed, priority, taskState, subject` truncated to 160 chars) and stamps `seenAt`. `'counts'` ignores `limit`/`offset` (`paginationIgnored: true`), stamps nothing, and returns `totalCount`, `unreadCount`, `byToClass`, `bySender`, `bySubjectTag`, and `unreadDirectMessageIds`."
+          schema:
+            type: string
+            enum: [full, compact, counts]
+            default: "full"
         - name: observer
           in: query
           required: false
@@ -2751,6 +2759,30 @@ paths:
                   offset:
                     type: integer
                     description: "Offset actually applied."
+                  projection:
+                    type: string
+                    enum: [counts]
+                    description: "Present on `'counts'` projection responses."
+                  paginationIgnored:
+                    type: boolean
+                    description: "True on `'counts'` projection responses, which aggregate the full matched view regardless of `limit`/`offset`."
+                  unreadCount:
+                    type: integer
+                    description: "Matched messages with `readAt == null` (`'counts'` projection)."
+                  byToClass:
+                    type: object
+                    description: "Counts split into `direct` vs `broadcast` (`'counts'` projection)."
+                  bySender:
+                    type: object
+                    description: "Counts keyed by sender identity (`'counts'` projection)."
+                  bySubjectTag:
+                    type: object
+                    description: "Counts keyed by first bracketed subject tag (e.g. `[lane-claim]`, `[pr-opened]`, `[merged]`) or `'untagged'` (`'counts'` projection)."
+                  unreadDirectMessageIds:
+                    type: array
+                    description: "Message IDs of unread direct messages so callers can fetch them via `get_message` without paging (`'counts'` projection)."
+                    items:
+                      type: string
                   observation:
                     type: object
                     description: "Server-derived context for an explicit observer read; `admissionKey` is a comparison fingerprint, never a credential or authorization token. Absent from ordinary list reads."
