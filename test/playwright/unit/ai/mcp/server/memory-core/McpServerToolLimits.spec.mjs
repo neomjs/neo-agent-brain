@@ -226,13 +226,14 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
         expect(tool.outputSchema.properties.warnings.items.properties.code.type).toBe('string');
     });
 
-    test('get_sandman_handoff exposes the read-only handoff freshness contract (#15599)', async () => {
+    test('get_sandman_handoff exposes the read-only handoff freshness and sections contract (#15599, #1251)', async () => {
         const { tools } = await toolService.listTools();
         const tool      = tools.find(item => item.name === 'get_sandman_handoff');
 
         expect(tool).toBeTruthy();
         expect(tool.annotations.readOnlyHint).toBe(true);
         expect(tool.inputSchema.properties.staleAfterMs.type).toBe('number');
+        expect(tool.inputSchema.properties.sections).toBeTruthy();
     });
 
     test('healthcheck DECLARES memoryWalDrain, and every key its real producer returns is in the schema (#16060)', async () => {

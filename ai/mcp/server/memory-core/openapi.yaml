@@ -469,14 +469,17 @@ paths:
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Read the Sandman handoff (Dream Pipeline morning surface) with freshness metadata.
+      x-neo-tool-summary: Read the Sandman handoff (Golden Path by default; gap/consolidation sections on request) with freshness metadata.
       description: |
         Reads `sandman_handoff.md` at the resolved `handoffFilePath` config leaf
-        (`NEO_HANDOFF_FILE_PATH` override honored inside the leaf) and returns
-        `{content, path, mtimeMs, ageMs, staleAfterMs, stale}`. The `stale` flag fires past
-        the freshness window (default 36h — nightly cadence + slack; overridable per call).
-        A missing or unreadable handoff returns an explicit `content: null` payload with a
-        stable `reason` code (`handoff-not-found`, `handoff-read-failed`,
+        (`NEO_HANDOFF_FILE_PATH` override honored inside the leaf). By default
+        (`sections: ['goldenPath']`), returns only the `## Computed Golden Path` section inside
+        `sections.goldenPath` (`{content, bytes}`) with `content: null`, `availableSections`
+        listing all slugs present in the file, and `missingSections` listing any requested slugs
+        not present. Pass `sections: 'all'` or `['*']` to receive the full file in `content`.
+        The `stale` flag fires past the freshness window (default 36h — nightly cadence + slack;
+        overridable per call). A missing or unreadable handoff returns an explicit `content: null`
+        payload with a stable `reason` code (`handoff-not-found`, `handoff-read-failed`,
         `handoff-too-large`) — never a silent empty string. Read-only: no identity mutation,
         team-visible operational content. Remote/container agents use this to read the
         morning surface without a repo checkout.
@@ -491,6 +494,30 @@ paths:
                 staleAfterMs:
                   type: number
                   description: Optional freshness window override in milliseconds.
+                sections:
+                  description: Handoff sections to return. Defaults to `['goldenPath']` (`## Computed Golden Path` only). Pass `'all'` or `['*']` for the full `sandman_handoff.md` content, or an array of section slugs (`gaps`, `consolidation`, `goldenPath`, `focus`).
+                  default:
+                    - goldenPath
+                  oneOf:
+                    - type: array
+                      default:
+                        - goldenPath
+                      items:
+                        type: string
+                        enum:
+                          - gaps
+                          - consolidation
+                          - goldenPath
+                          - focus
+                          - all
+                          - '*'
+                    - type: string
+                      enum:
+                        - all
+                        - '*'
+                    - type: array
+                      items:
+                        type: string
       responses:
         '200':
           description: Handoff payload with freshness metadata, or an explicit null-reason envelope.

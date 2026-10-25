@@ -98,11 +98,13 @@ const inspectDeployment = async args => {
  * @summary Serves the Dream Pipeline handoff from Memory Core's resolved prod/test path.
  * @param {Object} [args]
  * @param {Number} [args.staleAfterMs] Optional override of the store's freshness window.
- * @returns {Promise<Object>} Handoff content and its read/freshness state.
+ * @param {String|String[]} [args.sections] Optional handoff section filter (`['goldenPath']` default, `'all'` / `['*']` for full file).
+ * @returns {Promise<Object>} Handoff content/sections and its read/freshness state.
  */
 const readSandmanHandoffTool = args => readSandmanHandoff({
     filePath    : mcConfig.handoffFilePath,
-    staleAfterMs: args?.staleAfterMs
+    staleAfterMs: args?.staleAfterMs,
+    sections    : args?.sections
 });
 
 /**
