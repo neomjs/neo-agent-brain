@@ -1541,19 +1541,20 @@ class WakeSubscriptionService extends Base {
     }
 
     /**
-     * @summary Restores a degraded route to active — the operator-reachable resumption path.
+     * @summary Restores a degraded route to active — the explicit `resume()` path alongside
+     * owner re-arm via `subscribe()` / `bootstrap()`.
      *
-     * Degradation is deliberately terminal: a route whose endpoint refuses connections is marked
-     * `status: 'degraded'` and then never attempted again, which is what bounds the attempt count.
-     * Coming back is therefore an explicit operator act, never something the delivery path does on
-     * its own — a service that silently re-activates routes would restore the unbounded retry the
-     * bound exists to prevent.
+     * Degradation is deliberately terminal per arm: a route whose endpoint refuses connections is
+     * marked `status: 'degraded'` and never attempted again by the delivery path, bounding the
+     * attempt count per re-arm. Coming back is therefore an explicit act — either calling `resume()`
+     * or the owner re-subscribing the same route key via `subscribe()` / `bootstrap()` — never
+     * something the delivery path does on its own, which would restore unbounded retry.
      *
      * Resuming requires clearing BOTH truths the delivery skip reads: the durable
      * `properties.status` on the node, and the in-flight process markers. Splitting them across two
      * calls is a footgun — clearing only the in-memory half resumes nothing, because the next flush
-     * re-reads a `status` that still says `degraded`. This action performs both as one step so an
-     * operator never has to know that.
+     * re-reads a `status` that still says `degraded`. Both `resume()` and route re-arm perform
+     * both halves as one step so callers never have to know that.
      *
      * @param {Object} opts
      * @param {String} opts.subscriptionId
