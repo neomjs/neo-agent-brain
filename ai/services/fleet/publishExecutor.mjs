@@ -230,33 +230,48 @@ export function createFleetCustodyStore({
     custodyDir  = null,
     credentials = null,
     fsModule    = fsPromises,
+    fetchImpl   = globalThis.fetch,
+    fetch       = undefined,
+    xTokenUrl   = 'https://api.x.com/2/oauth2/token',
     now         = () => Date.now()
 } = {}) {
+    const customFetch = fetch !== undefined,
+          fetchFn     = fetch ?? fetchImpl;
+
+    function resolveCustodyPaths(channel, account) {
+        if (!custodyDir) {
+            return {perAccount: null, bundlePath: null};
+        }
+        const safeAccount = String(account).replace(/[^a-zA-Z0-9._-]/g, '_');
+        return {
+            perAccount: path.join(custodyDir, 'social-credentials', channel, `${safeAccount}.json`),
+            bundlePath: path.join(custodyDir, 'social-credentials.json')
+        };
+    }
+
     async function loadRawRecord(channel, account) {
         if (credentials && typeof credentials === 'object') {
             const compositeKey = `${channel}:${account}`;
             if (Object.hasOwn(credentials, compositeKey)) {
-                return credentials[compositeKey];
+                return {record: credentials[compositeKey], sourceKind: 'memory-composite', key: compositeKey};
             }
             if (credentials[channel] && typeof credentials[channel] === 'object' && Object.hasOwn(credentials[channel], account)) {
-                return credentials[channel][account];
+                return {record: credentials[channel][account], sourceKind: 'memory-nested', key: account};
             }
             if (Object.hasOwn(credentials, account)) {
-                return credentials[account];
+                return {record: credentials[account], sourceKind: 'memory-account', key: account};
             }
         }
 
         if (!custodyDir) {
-            return null;
+            return {record: null, sourceKind: 'none'};
         }
 
-        const safeAccount = String(account).replace(/[^a-zA-Z0-9._@-]/g, '_'),
-              perAccount  = path.join(custodyDir, 'social-credentials', channel, `${safeAccount}.json`),
-              bundlePath  = path.join(custodyDir, 'social-credentials.json');
+        const {perAccount, bundlePath} = resolveCustodyPaths(channel, account);
 
         try {
             const raw = await fsModule.readFile(perAccount, 'utf8');
-            return JSON.parse(raw);
+            return {record: JSON.parse(raw), sourceKind: 'per-account', filePath: perAccount};
         } catch {
             // Fall through to aggregate custody file if present.
         }
@@ -264,10 +279,187 @@ export function createFleetCustodyStore({
         try {
             const raw    = await fsModule.readFile(bundlePath, 'utf8'),
                   parsed = JSON.parse(raw);
-            return parsed?.[`${channel}:${account}`] ?? parsed?.[channel]?.[account] ?? null;
+            if (parsed && typeof parsed === 'object') {
+                const compositeKey = `${channel}:${account}`;
+                if (Object.hasOwn(parsed, compositeKey)) {
+                    return {record: parsed[compositeKey], sourceKind: 'bundle-composite', filePath: bundlePath, bundleData: parsed, key: compositeKey};
+                }
+                if (parsed[channel] && typeof parsed[channel] === 'object' && Object.hasOwn(parsed[channel], account)) {
+                    return {record: parsed[channel][account], sourceKind: 'bundle-nested', filePath: bundlePath, bundleData: parsed, key: account};
+                }
+            }
+            return {record: null, sourceKind: 'none'};
         } catch {
-            return null;
+            return {record: null, sourceKind: 'none'};
         }
+    }
+
+    async function writeAtomic0600(filePath, payload, nowMs) {
+        const dir     = path.dirname(filePath),
+              tmpPath = `${filePath}.${process.pid}.${nowMs}.tmp`,
+              body    = JSON.stringify(payload, null, 2);
+
+        await fsModule.mkdir(dir, {recursive: true});
+        await fsModule.writeFile(tmpPath, body, {encoding: 'utf8', mode: 0o600});
+        if (typeof fsModule.chmod === 'function') {
+            await fsModule.chmod(tmpPath, 0o600);
+        }
+        await fsModule.rename(tmpPath, filePath);
+        if (typeof fsModule.chmod === 'function') {
+            await fsModule.chmod(filePath, 0o600);
+        }
+    }
+
+    async function persistRotatedRecord(channel, account, loaded, rotatedRecord, nowMs) {
+        if (credentials && typeof credentials === 'object') {
+            if (loaded.sourceKind === 'memory-composite') {
+                credentials[loaded.key] = rotatedRecord;
+            } else if (loaded.sourceKind === 'memory-nested' && credentials[channel]) {
+                credentials[channel][account] = rotatedRecord;
+            } else if (loaded.sourceKind === 'memory-account') {
+                credentials[account] = rotatedRecord;
+            }
+        }
+
+        if (!custodyDir) {
+            return;
+        }
+
+        const {perAccount, bundlePath} = resolveCustodyPaths(channel, account);
+
+        if (loaded.sourceKind === 'bundle-composite' && loaded.bundleData) {
+            const nextBundle = {...loaded.bundleData, [loaded.key]: rotatedRecord};
+            await writeAtomic0600(bundlePath, nextBundle, nowMs);
+            return;
+        }
+
+        if (loaded.sourceKind === 'bundle-nested' && loaded.bundleData) {
+            const nextBundle = {
+                ...loaded.bundleData,
+                [channel]: {
+                    ...(loaded.bundleData[channel] ?? {}),
+                    [account]: rotatedRecord
+                }
+            };
+            await writeAtomic0600(bundlePath, nextBundle, nowMs);
+            return;
+        }
+
+        await writeAtomic0600(loaded.filePath || perAccount, rotatedRecord, nowMs);
+    }
+
+    async function rotateExpiredXCredential(channel, account, loaded, nowMs, currentToken) {
+        const record       = loaded.record,
+              refreshToken = typeof record.refreshToken === 'string'
+                  ? record.refreshToken.trim()
+                  : (typeof record.refresh_token === 'string' ? record.refresh_token.trim() : ''),
+              clientId     = typeof record.clientId === 'string'
+                  ? record.clientId.trim()
+                  : (typeof record.client_id === 'string' ? record.client_id.trim() : ''),
+              clientSecret = typeof record.clientSecret === 'string'
+                  ? record.clientSecret.trim()
+                  : (typeof record.client_secret === 'string' ? record.client_secret.trim() : ''),
+              tokenEndpoint = record.tokenUrl || xTokenUrl,
+              secrets       = [currentToken, refreshToken, clientSecret].filter(Boolean);
+
+        if (!refreshToken || typeof fetchFn !== 'function' || (!clientId && !customFetch && !record.tokenUrl)) {
+            return {
+                ok    : false,
+                code  : REFUSAL_CODES.credential,
+                reason: `${REFUSAL_CODES.credential} — Fleet custody token for ${channel}:${account} is expired`
+            };
+        }
+
+        const params = new URLSearchParams({
+            grant_type   : 'refresh_token',
+            refresh_token: refreshToken
+        });
+        if (clientId) {
+            params.set('client_id', clientId);
+        }
+
+        const headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Accept        : 'application/json'
+        };
+        if (clientId && clientSecret) {
+            const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+            headers.Authorization = `Basic ${basic}`;
+            secrets.push(basic);
+        }
+
+        let response, payload;
+        try {
+            response = await fetchFn(tokenEndpoint, {
+                method: 'POST',
+                headers,
+                body  : params.toString()
+            });
+            payload = typeof response?.json === 'function' ? await response.json() : null;
+        } catch (error) {
+            return {
+                ok    : false,
+                code  : REFUSAL_CODES.credential,
+                reason: scrubSecrets(`${REFUSAL_CODES.credential} — X OAuth 2.0 refresh failed for ${channel}:${account}: ${error?.message || String(error)}`, secrets)
+            };
+        }
+
+        const nextAccessToken = typeof payload?.access_token === 'string'
+            ? payload.access_token.trim()
+            : (typeof payload?.accessToken === 'string' ? payload.accessToken.trim() : '');
+        const nextRefreshToken = typeof payload?.refresh_token === 'string' && payload.refresh_token.trim()
+            ? payload.refresh_token.trim()
+            : (typeof payload?.refreshToken === 'string' && payload.refreshToken.trim() ? payload.refreshToken.trim() : refreshToken);
+
+        if (nextAccessToken) secrets.push(nextAccessToken);
+        if (nextRefreshToken) secrets.push(nextRefreshToken);
+
+        if (!response?.ok || !nextAccessToken) {
+            const statusText = response?.status ? `HTTP ${response.status}` : 'invalid response',
+                  errorDesc  = payload?.error_description || payload?.error || statusText;
+            return {
+                ok    : false,
+                code  : REFUSAL_CODES.credential,
+                reason: scrubSecrets(`${REFUSAL_CODES.credential} — X OAuth 2.0 refresh failed for ${channel}:${account} (${errorDesc})`, secrets)
+            };
+        }
+
+        const expiresInSec  = Number(payload?.expires_in ?? payload?.expiresIn),
+              nextExpiresAt = Number.isFinite(expiresInSec) && expiresInSec > 0
+                  ? new Date(nowMs + expiresInSec * 1000).toISOString()
+                  : new Date(nowMs + 2 * 60 * 60 * 1000).toISOString(),
+              updatedAt     = new Date(nowMs).toISOString(),
+              rotatedRecord = {
+                  ...record,
+                  accessToken : nextAccessToken,
+                  refreshToken: nextRefreshToken,
+                  expiresAt   : nextExpiresAt,
+                  updatedAt
+              };
+
+        try {
+            await persistRotatedRecord(channel, account, loaded, rotatedRecord, nowMs);
+        } catch (error) {
+            return {
+                ok    : false,
+                code  : REFUSAL_CODES.credential,
+                reason: scrubSecrets(`${REFUSAL_CODES.credential} — failed to persist rotated X credential for ${channel}:${account}: ${error?.message || String(error)}`, secrets)
+            };
+        }
+
+        return {
+            ok     : true,
+            rotated: true,
+            token  : nextAccessToken,
+            record : {
+                channel,
+                account,
+                scopes   : Array.isArray(rotatedRecord.scopes) ? [...rotatedRecord.scopes] : [],
+                expiresAt: rotatedRecord.expiresAt,
+                issuedAt : rotatedRecord.issuedAt ?? null,
+                updatedAt
+            }
+        };
     }
 
     return {
@@ -288,7 +480,8 @@ export function createFleetCustodyStore({
                 };
             }
 
-            const record = await loadRawRecord(channel, account);
+            const loaded = await loadRawRecord(channel, account),
+                  record = loaded?.record ?? null;
 
             if (!record || typeof record !== 'object') {
                 return {
@@ -324,6 +517,9 @@ export function createFleetCustodyStore({
                     : Date.parse(String(record.expiresAt));
 
                 if (!Number.isFinite(expiresMs) || expiresMs <= nowMs) {
+                    if (channel === PUBLISH_CHANNELS.x) {
+                        return rotateExpiredXCredential(channel, account, loaded, nowMs, token);
+                    }
                     return {
                         ok    : false,
                         code  : REFUSAL_CODES.credential,
@@ -357,6 +553,578 @@ export function createFleetCustodyStore({
                     issuedAt : record.issuedAt ?? null
                 }
             };
+        }
+    };
+}
+
+/**
+ * @summary Creates the HTTP platform client for X API v2 and LinkedIn Community Management API.
+ * Uploads verified `media[].bytes` buffers directly without re-reading URIs from disk.
+ * @param {Object}   [options={}]
+ * @param {Function} [options.fetch=globalThis.fetch]
+ * @param {Object}   [options.custody=null]
+ * @param {String}   [options.xBaseUrl='https://api.x.com/2']
+ * @param {String}   [options.xUploadUrl='https://api.x.com/2/media/upload']
+ * @param {String}   [options.linkedinBaseUrl='https://api.linkedin.com/rest']
+ * @param {String}   [options.linkedinVersion='202604']
+ * @param {Function} [options.now=Date.now]
+ * @returns {{publishPost: Function, listRecentPosts: Function, readMetrics: Function, verifyOwnedPost: Function}}
+ */
+export function createSocialPlatformClient({
+    fetch           = globalThis.fetch,
+    custody         = null,
+    xBaseUrl        = 'https://api.x.com/2',
+    xUploadUrl      = 'https://api.x.com/2/media/upload',
+    linkedinBaseUrl = 'https://api.linkedin.com/rest',
+    linkedinVersion = '202604',
+    now             = () => Date.now()
+} = {}) {
+    const cleanXBase        = xBaseUrl.replace(/\/+$/, ''),
+          cleanLinkedinBase = linkedinBaseUrl.replace(/\/+$/, '');
+
+    function assertFetchAvailable(secrets = []) {
+        if (typeof fetch !== 'function') {
+            const err = new Error(scrubSecrets('platform HTTP fetch implementation is not available', secrets));
+            err.refused = true;
+            err.code    = 'refused: platform';
+            throw err;
+        }
+    }
+
+    function linkedinHeaders(token, extra = {}) {
+        return {
+            Authorization              : `Bearer ${token}`,
+            'LinkedIn-Version'         : linkedinVersion,
+            'X-Restli-Protocol-Version': '2.0.0',
+            ...extra
+        };
+    }
+
+    function normalizeLinkedinAuthorUrn(account) {
+        const trimmed = String(account ?? '').trim();
+        return trimmed.startsWith('urn:li:') ? trimmed : `urn:li:organization:${trimmed}`;
+    }
+
+    async function parseJsonSafe(response) {
+        if (typeof response?.json === 'function') {
+            try {
+                return await response.json();
+            } catch {
+                return null;
+            }
+        }
+        if (typeof response?.text === 'function') {
+            try {
+                const text = await response.text();
+                return text ? JSON.parse(text) : null;
+            } catch {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    async function uploadXMediaItems(mediaItems, token) {
+        const mediaIds = [];
+        for (const item of (mediaItems ?? [])) {
+            if (!Buffer.isBuffer(item?.bytes) && !(item?.bytes instanceof Uint8Array)) {
+                const err = new Error('verified media bytes buffer is required for X media upload');
+                err.refused = true;
+                err.code    = REFUSAL_CODES.digest;
+                throw err;
+            }
+            const bytesBuffer = Buffer.isBuffer(item.bytes) ? item.bytes : Buffer.from(item.bytes),
+                  uploadRes   = await fetch(xUploadUrl, {
+                      method : 'POST',
+                      headers: {
+                          Authorization : `Bearer ${token}`,
+                          'Content-Type': 'application/json'
+                      },
+                      body: JSON.stringify({
+                          media         : bytesBuffer.toString('base64'),
+                          media_type    : item.mimeType || 'application/octet-stream',
+                          media_category: 'tweet_image'
+                      })
+                  }),
+                  uploadJson  = await parseJsonSafe(uploadRes);
+
+            if (!uploadRes?.ok) {
+                const err = new Error(scrubSecrets(`X media upload failed (HTTP ${uploadRes?.status ?? 'unknown'})`, [token]));
+                err.refused = true;
+                err.code    = 'refused: platform';
+                throw err;
+            }
+
+            const mediaId = uploadJson?.data?.id ?? uploadJson?.media_id_string ?? uploadJson?.media_id ?? null;
+            if (!mediaId) {
+                const err = new Error('X media upload response did not include a media id');
+                err.refused = true;
+                err.code    = 'refused: platform';
+                throw err;
+            }
+            mediaIds.push(String(mediaId));
+        }
+        return mediaIds;
+    }
+
+    async function uploadLinkedinMediaItems(mediaItems, authorUrn, token) {
+        const imageUrns = [];
+        for (const item of (mediaItems ?? [])) {
+            if (!Buffer.isBuffer(item?.bytes) && !(item?.bytes instanceof Uint8Array)) {
+                const err = new Error('verified media bytes buffer is required for LinkedIn image upload');
+                err.refused = true;
+                err.code    = REFUSAL_CODES.digest;
+                throw err;
+            }
+            const bytesBuffer = Buffer.isBuffer(item.bytes) ? item.bytes : Buffer.from(item.bytes),
+                  initRes     = await fetch(`${cleanLinkedinBase}/images?action=initializeUpload`, {
+                      method : 'POST',
+                      headers: linkedinHeaders(token, {'Content-Type': 'application/json'}),
+                      body   : JSON.stringify({
+                          initializeUploadRequest: {owner: authorUrn}
+                      })
+                  }),
+                  initJson    = await parseJsonSafe(initRes);
+
+            if (!initRes?.ok) {
+                const err = new Error(scrubSecrets(`LinkedIn image initializeUpload failed (HTTP ${initRes?.status ?? 'unknown'})`, [token]));
+                err.refused = true;
+                err.code    = 'refused: platform';
+                throw err;
+            }
+
+            const uploadUrl = initJson?.value?.uploadUrl ?? null,
+                  imageUrn  = initJson?.value?.image ?? null;
+
+            if (!uploadUrl || !imageUrn) {
+                const err = new Error('LinkedIn initializeUpload response omitted uploadUrl or image URN');
+                err.refused = true;
+                err.code    = 'refused: platform';
+                throw err;
+            }
+
+            const putRes = await fetch(uploadUrl, {
+                method : 'PUT',
+                headers: {
+                    Authorization : `Bearer ${token}`,
+                    'Content-Type': item.mimeType || 'application/octet-stream'
+                },
+                body: bytesBuffer
+            });
+
+            if (!putRes?.ok) {
+                const err = new Error(scrubSecrets(`LinkedIn image binary PUT failed (HTTP ${putRes?.status ?? 'unknown'})`, [token]));
+                err.refused = true;
+                err.code    = 'refused: platform';
+                throw err;
+            }
+
+            imageUrns.push(String(imageUrn));
+        }
+        return imageUrns;
+    }
+
+    async function resolveXUserId(account, token) {
+        const clean = String(account ?? '').trim().replace(/^@/, '');
+        if (/^\d+$/.test(clean)) {
+            return clean;
+        }
+        const userRes = await fetch(`${cleanXBase}/users/by/username/${encodeURIComponent(clean)}`, {
+                  method : 'GET',
+                  headers: {Authorization: `Bearer ${token}`}
+              }),
+              userJson = await parseJsonSafe(userRes),
+              userId   = userJson?.data?.id ?? null;
+
+        if (!userRes?.ok || !userId) {
+            throw new Error(scrubSecrets(`Unable to resolve X user id for @${clean} (HTTP ${userRes?.status ?? 'unknown'})`, [token]));
+        }
+        return String(userId);
+    }
+
+    return {
+        /**
+         * @summary Dispatches a post to X v2 or LinkedIn Community Management API using verified
+         * in-memory `media[].bytes` and fetches the platform read-back record.
+         */
+        async publishPost({
+            channel,
+            account,
+            token,
+            text,
+            inReplyTo = null,
+            media     = [],
+            attemptId,
+            revisionDigest
+        }) {
+            const secrets = [token].filter(Boolean);
+            assertFetchAvailable(secrets);
+
+            if (channel === PUBLISH_CHANNELS.x) {
+                const mediaIds = await uploadXMediaItems(media, token),
+                      postBody = {text};
+
+                if (inReplyTo) {
+                    postBody.reply = {in_reply_to_tweet_id: String(inReplyTo)};
+                }
+                if (mediaIds.length > 0) {
+                    postBody.media = {media_ids: mediaIds};
+                }
+
+                const postRes = await fetch(`${cleanXBase}/tweets`, {
+                    method : 'POST',
+                    headers: {
+                        Authorization : `Bearer ${token}`,
+                        'Content-Type': 'application/json',
+                        ...(attemptId      ? {'X-Attempt-Id': String(attemptId)}           : {}),
+                        ...(revisionDigest ? {'X-Revision-Digest': String(revisionDigest)} : {})
+                    },
+                    body: JSON.stringify(postBody)
+                });
+                const postJson = await parseJsonSafe(postRes);
+
+                if (!postRes?.ok) {
+                    const detail = postJson?.detail || postJson?.title || `HTTP ${postRes?.status ?? 'unknown'}`,
+                          err    = new Error(scrubSecrets(`X post creation failed: ${detail}`, secrets));
+                    if (postRes?.status && postRes.status >= 400 && postRes.status < 500 && postRes.status !== 429) {
+                        err.refused = true;
+                        err.code    = 'refused: platform';
+                    }
+                    throw err;
+                }
+
+                const providerId = postJson?.data?.id ?? postJson?.id ?? null;
+                if (!providerId) {
+                    throw new Error('X post creation returned no tweet id');
+                }
+
+                let readbackData = null;
+                try {
+                    const readRes = await fetch(`${cleanXBase}/tweets/${encodeURIComponent(String(providerId))}?tweet.fields=created_at,author_id,text,public_metrics`, {
+                        method : 'GET',
+                        headers: {Authorization: `Bearer ${token}`}
+                    });
+                    if (readRes?.ok) {
+                        const readJson = await parseJsonSafe(readRes);
+                        readbackData = readJson?.data ?? readJson ?? null;
+                    }
+                } catch {
+                    // Fall back to post creation response payload when immediate read-back is unavailable.
+                }
+
+                const readbackAt = new Date(now()).toISOString(),
+                      createdAt  = readbackData?.created_at ?? postJson?.data?.created_at ?? readbackAt,
+                      readText   = typeof readbackData?.text === 'string'
+                          ? readbackData.text
+                          : (typeof postJson?.data?.text === 'string' ? postJson.data.text : text);
+
+                return {
+                    providerId: String(providerId),
+                    createdAt,
+                    readbackAt,
+                    readback  : {
+                        providerId: String(providerId),
+                        text      : readText,
+                        createdAt,
+                        readbackAt
+                    }
+                };
+            }
+
+            if (channel === PUBLISH_CHANNELS.linkedin) {
+                const authorUrn = normalizeLinkedinAuthorUrn(account),
+                      imageUrns = await uploadLinkedinMediaItems(media, authorUrn, token),
+                      postBody  = {
+                          author      : authorUrn,
+                          commentary  : text,
+                          visibility  : 'PUBLIC',
+                          distribution: {
+                              feedDistribution              : 'MAIN_FEED',
+                              targetEntities                : [],
+                              thirdPartyDistributionChannels: []
+                          },
+                          lifecycleState           : 'PUBLISHED',
+                          isReshareDisabledByAuthor: false
+                      };
+
+                if (imageUrns.length === 1) {
+                    postBody.content = {media: {id: imageUrns[0]}};
+                } else if (imageUrns.length > 1) {
+                    postBody.content = {multiImage: {images: imageUrns.map(id => ({id}))}};
+                }
+
+                const postRes = await fetch(`${cleanLinkedinBase}/posts`, {
+                    method : 'POST',
+                    headers: linkedinHeaders(token, {'Content-Type': 'application/json'}),
+                    body   : JSON.stringify(postBody)
+                });
+                const postJson = await parseJsonSafe(postRes);
+
+                if (!postRes?.ok) {
+                    const detail = postJson?.message || `HTTP ${postRes?.status ?? 'unknown'}`,
+                          err    = new Error(scrubSecrets(`LinkedIn post creation failed: ${detail}`, secrets));
+                    if (postRes?.status && postRes.status >= 400 && postRes.status < 500 && postRes.status !== 429) {
+                        err.refused = true;
+                        err.code    = 'refused: platform';
+                    }
+                    throw err;
+                }
+
+                const headerId   = typeof postRes?.headers?.get === 'function' ? postRes.headers.get('x-restli-id') : null,
+                      providerId = headerId ?? postJson?.id ?? postJson?.urn ?? null;
+
+                if (!providerId) {
+                    throw new Error('LinkedIn post creation returned no post URN/id');
+                }
+
+                let readbackData = null;
+                try {
+                    const readRes = await fetch(`${cleanLinkedinBase}/posts/${encodeURIComponent(String(providerId))}`, {
+                        method : 'GET',
+                        headers: linkedinHeaders(token)
+                    });
+                    if (readRes?.ok) {
+                        readbackData = await parseJsonSafe(readRes);
+                    }
+                } catch {
+                    // Fall back to post creation response when immediate read-back is unavailable.
+                }
+
+                const readbackAt = new Date(now()).toISOString(),
+                      rawCreated = readbackData?.publishedAt ?? readbackData?.createdAt ?? postJson?.publishedAt ?? null,
+                      createdAt  = typeof rawCreated === 'number'
+                          ? new Date(rawCreated).toISOString()
+                          : (typeof rawCreated === 'string' ? rawCreated : readbackAt),
+                      readText   = typeof readbackData?.commentary === 'string'
+                          ? readbackData.commentary
+                          : (typeof postJson?.commentary === 'string' ? postJson.commentary : text);
+
+                return {
+                    providerId: String(providerId),
+                    createdAt,
+                    readbackAt,
+                    readback  : {
+                        providerId: String(providerId),
+                        text      : readText,
+                        createdAt,
+                        readbackAt
+                    }
+                };
+            }
+
+            const err = new Error(`Unsupported platform channel '${String(channel)}'`);
+            err.refused = true;
+            err.code    = REFUSAL_CODES.channel;
+            throw err;
+        },
+
+        /**
+         * @summary Lists recent posts on `{channel, account}` with `createdAt` timestamps for
+         * post-crash reconciliation bounded by `reservedAt`.
+         */
+        async listRecentPosts({channel, account, token, limit = RECONCILE_RECENT_POSTS_LIMIT}) {
+            const secrets = [token].filter(Boolean);
+            assertFetchAvailable(secrets);
+
+            if (channel === PUBLISH_CHANNELS.x) {
+                const userId     = await resolveXUserId(account, token),
+                      clampLimit = Math.min(Math.max(Number(limit) || RECONCILE_RECENT_POSTS_LIMIT, 5), 100),
+                      res        = await fetch(`${cleanXBase}/users/${encodeURIComponent(userId)}/tweets?max_results=${clampLimit}&tweet.fields=created_at,text,conversation_id`, {
+                          method : 'GET',
+                          headers: {Authorization: `Bearer ${token}`}
+                      }),
+                      json       = await parseJsonSafe(res);
+
+                if (!res?.ok) {
+                    throw new Error(scrubSecrets(`X listRecentPosts failed (HTTP ${res?.status ?? 'unknown'})`, secrets));
+                }
+
+                const items = Array.isArray(json?.data) ? json.data : [];
+                return items.map(item => ({
+                    id        : String(item.id),
+                    providerId: String(item.id),
+                    text      : item.text ?? '',
+                    createdAt : item.created_at ?? item.createdAt ?? null
+                }));
+            }
+
+            if (channel === PUBLISH_CHANNELS.linkedin) {
+                const authorUrn = normalizeLinkedinAuthorUrn(account),
+                      res       = await fetch(`${cleanLinkedinBase}/posts?author=${encodeURIComponent(authorUrn)}&q=author&count=${Number(limit) || RECONCILE_RECENT_POSTS_LIMIT}`, {
+                          method : 'GET',
+                          headers: linkedinHeaders(token)
+                      }),
+                      json      = await parseJsonSafe(res);
+
+                if (!res?.ok) {
+                    throw new Error(scrubSecrets(`LinkedIn listRecentPosts failed (HTTP ${res?.status ?? 'unknown'})`, secrets));
+                }
+
+                const elements = Array.isArray(json?.elements) ? json.elements : (Array.isArray(json?.data) ? json.data : []);
+                return elements.map(item => {
+                    const rawCreated = item.publishedAt ?? item.createdAt ?? null,
+                          createdAt  = typeof rawCreated === 'number'
+                              ? new Date(rawCreated).toISOString()
+                              : (typeof rawCreated === 'string' ? rawCreated : null),
+                          id         = String(item.id ?? item.urn ?? '');
+                    return {
+                        id,
+                        providerId: id,
+                        text      : item.commentary ?? item.text ?? '',
+                        createdAt
+                    };
+                });
+            }
+
+            throw new Error(`Unsupported platform channel '${String(channel)}'`);
+        },
+
+        /**
+         * @summary Reads owned-object metrics (`public_metrics` + `non_public_metrics` on X, or
+         * organizational share statistics on LinkedIn).
+         */
+        async readMetrics({providerId, channel, account, token}) {
+            const secrets = [token].filter(Boolean);
+            assertFetchAvailable(secrets);
+
+            if (channel === PUBLISH_CHANNELS.x) {
+                const res = await fetch(`${cleanXBase}/tweets/${encodeURIComponent(String(providerId))}?tweet.fields=public_metrics,non_public_metrics,created_at`, {
+                          method : 'GET',
+                          headers: {Authorization: `Bearer ${token}`}
+                      }),
+                      json = await parseJsonSafe(res);
+
+                if (!res?.ok) {
+                    throw new Error(scrubSecrets(`X readMetrics failed (HTTP ${res?.status ?? 'unknown'})`, secrets));
+                }
+
+                const data = json?.data ?? json ?? {};
+                return {
+                    source            : 'x-v2-owned-object-metrics',
+                    window            : '30d',
+                    claimClass        : 'owned-object-telemetry',
+                    public_metrics    : data.public_metrics ?? {},
+                    non_public_metrics: data.non_public_metrics ?? {}
+                };
+            }
+
+            if (channel === PUBLISH_CHANNELS.linkedin) {
+                const authorUrn = normalizeLinkedinAuthorUrn(account),
+                      res       = await fetch(`${cleanLinkedinBase}/organizationalEntityShareStatistics?q=organizationalEntity&organizationalEntity=${encodeURIComponent(authorUrn)}&shares=List(${encodeURIComponent(String(providerId))})`, {
+                          method : 'GET',
+                          headers: linkedinHeaders(token)
+                      }),
+                      json      = await parseJsonSafe(res);
+
+                if (!res?.ok) {
+                    throw new Error(scrubSecrets(`LinkedIn readMetrics failed (HTTP ${res?.status ?? 'unknown'})`, secrets));
+                }
+
+                const rawStats   = json?.elements?.[0]?.totalShareStatistics ?? json?.totalShareStatistics ?? json?.statistics ?? {},
+                      aliasKeys  = new Set(['impressionCount', 'uniqueImpressionsCount', 'clickCount', 'likeCount', 'commentCount', 'shareCount']),
+                      statistics = {};
+
+                for (const [k, v] of Object.entries(rawStats)) {
+                    if (!aliasKeys.has(k)) {
+                        statistics[k] = v;
+                    }
+                }
+                if (rawStats.impressionCount !== undefined && statistics.impressions === undefined) {
+                    statistics.impressions = rawStats.impressionCount;
+                }
+                if (rawStats.uniqueImpressionsCount !== undefined && statistics.uniqueImpressions === undefined) {
+                    statistics.uniqueImpressions = rawStats.uniqueImpressionsCount;
+                }
+                if (rawStats.clickCount !== undefined && statistics.clicks === undefined) {
+                    statistics.clicks = rawStats.clickCount;
+                }
+                if (rawStats.likeCount !== undefined && statistics.likes === undefined) {
+                    statistics.likes = rawStats.likeCount;
+                }
+                if (rawStats.commentCount !== undefined && statistics.comments === undefined) {
+                    statistics.comments = rawStats.commentCount;
+                }
+                if (rawStats.shareCount !== undefined && statistics.shares === undefined) {
+                    statistics.shares = rawStats.shareCount;
+                }
+
+                return {
+                    source    : 'linkedin-community-management-api',
+                    window    : 'lifetime',
+                    claimClass: 'owned-object-telemetry',
+                    statistics
+                };
+            }
+
+            throw new Error(`Unsupported platform channel '${String(channel)}'`);
+        },
+
+        /**
+         * @summary Verifies that `providerId` is an owned post of `{channel, account}` before
+         * permitting a same-account `link-reply`. Fails closed (`false`) on any mismatch or error.
+         */
+        async verifyOwnedPost({channel, account, providerId, token: suppliedToken = null}) {
+            if (!channel || !account || !providerId || typeof fetch !== 'function') {
+                return false;
+            }
+
+            let token = suppliedToken;
+            if (!token && typeof custody?.readCredential === 'function') {
+                const cred = await custody.readCredential({channel, account, nowMs: now()});
+                if (cred?.ok && cred.token) {
+                    token = cred.token;
+                }
+            }
+            if (!token) {
+                return false;
+            }
+
+            try {
+                if (channel === PUBLISH_CHANNELS.x) {
+                    const res = await fetch(`${cleanXBase}/tweets/${encodeURIComponent(String(providerId))}?expansions=author_id&user.fields=username`, {
+                              method : 'GET',
+                              headers: {Authorization: `Bearer ${token}`}
+                          }),
+                          json = await parseJsonSafe(res);
+
+                    if (!res?.ok) {
+                        return false;
+                    }
+
+                    const expectedAccount = String(account).trim().replace(/^@/, '').toLowerCase(),
+                          authorId        = json?.data?.author_id ?? null,
+                          users           = Array.isArray(json?.includes?.users) ? json.includes.users : [],
+                          authorUser      = users.find(u => String(u.id) === String(authorId)) ?? users[0] ?? null,
+                          username        = authorUser?.username ? String(authorUser.username).trim().replace(/^@/, '').toLowerCase() : null;
+
+                    if (username && username === expectedAccount) {
+                        return true;
+                    }
+                    if (authorId && String(authorId).toLowerCase() === expectedAccount) {
+                        return true;
+                    }
+                    return false;
+                }
+
+                if (channel === PUBLISH_CHANNELS.linkedin) {
+                    const expectedUrn = normalizeLinkedinAuthorUrn(account),
+                          res         = await fetch(`${cleanLinkedinBase}/posts/${encodeURIComponent(String(providerId))}`, {
+                              method : 'GET',
+                              headers: linkedinHeaders(token)
+                          }),
+                          json        = await parseJsonSafe(res);
+
+                    if (!res?.ok || !json) {
+                        return false;
+                    }
+
+                    return String(json.author ?? '') === expectedUrn;
+                }
+            } catch {
+                return false;
+            }
+
+            return false;
         }
     };
 }
@@ -799,6 +1567,12 @@ export function createPublishExecutor(config = {}) {
           custody       = config.custody ?? createFleetCustodyStore({
               custodyDir : config.custodyDir ?? null,
               credentials: config.credentials ?? null,
+              fetch      : config.fetch,
+              now
+          }),
+          defaultPlatform = config.platform ?? createSocialPlatformClient({
+              fetch: config.fetch,
+              custody,
               now
           }),
           logger                = config.logger ?? null,
@@ -1062,7 +1836,7 @@ export function createPublishExecutor(config = {}) {
             const mailbox               = callOptions.mailbox ?? config.mailbox,
                   custodySeam           = callOptions.custody ?? custody,
                   switchStore           = callOptions.switchStore ?? config.switchStore,
-                  platform              = callOptions.platform ?? config.platform,
+                  platform              = callOptions.platform ?? defaultPlatform,
                   mediaReader           = callOptions.mediaReader ?? config.mediaReader,
                   resolveIdentityFamily = callOptions.resolveIdentityFamily ?? config.resolveIdentityFamily ?? (async () => null),
                   nowMs                 = (callOptions.now ?? now)();
@@ -1570,7 +2344,7 @@ export function createPublishExecutor(config = {}) {
         async readMetrics(providerId, options = {}) {
             const mailbox     = options.mailbox ?? config.mailbox,
                   custodySeam = options.custody ?? custody,
-                  platform    = options.platform ?? config.platform,
+                  platform    = options.platform ?? defaultPlatform,
                   nowMs       = (options.now ?? now)();
 
             if (!providerId || typeof providerId !== 'string') {

@@ -32,14 +32,34 @@ import FleetControlBridge from './FleetControlBridge.mjs';
  * @param {Object}   [options.bridge=FleetControlBridge] The control bridge to wire (a stub in specs).
  * @returns {Object|null} the installed writer, or `null` when no writer is available (left unwired).
  */
-export function wireOperatorComposeWriter({addMessage, getMessage, markRead, transitionTask, observeMessages, bridge = FleetControlBridge} = {}) {
+export function wireOperatorComposeWriter({
+    addMessage,
+    getMessage,
+    markRead,
+    transitionTask,
+    observeMessages,
+    transitionPublishState,
+    approvePublishRevision,
+    attestPublishRevision,
+    editPublishRequest,
+    bridge = FleetControlBridge
+} = {}) {
     if (typeof addMessage !== 'function') {
         return null
     }
 
     const writer = {addMessage};
 
-    Object.entries({getMessage, markRead, transitionTask, observeMessages}).forEach(([name, primitive]) => {
+    Object.entries({
+        getMessage,
+        markRead,
+        transitionTask,
+        observeMessages,
+        transitionPublishState,
+        approvePublishRevision,
+        attestPublishRevision,
+        editPublishRequest
+    }).forEach(([name, primitive]) => {
         if (typeof primitive === 'function') writer[name] = primitive
     });
 

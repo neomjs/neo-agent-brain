@@ -17,6 +17,7 @@ import {
 import {normalizeMailboxObserver} from '../memory-core/helpers/mailboxObservation.mjs';
 
 import {createFleetCockpitStatus, createNotWiredCapability} from './fleetCockpitStatus.mjs';
+import {createPublishExecutor}                              from './publishExecutor.mjs';
 import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
 
 /**
@@ -514,6 +515,13 @@ class FleetControlBridge extends Base {
      * @member {Object|null} composeWriter=null
      */
     composeWriter = null
+    /**
+     * Outbound social publish executor seam — an injected collaborator exposing `publish`,
+     * `readMetrics`, and `reply`, or resolved on demand over {@link #composeWriter} and the
+     * registry's `<userData>/brain/fleet` custody root.
+     * @member {Object|null} publishExecutor=null
+     */
+    publishExecutor = null
 
     /**
      * Identity-display resolver seam — maps a fleet agent onto its identity-root display facts
@@ -562,6 +570,29 @@ class FleetControlBridge extends Base {
      */
     getTenantService() {
         return this.tenantService || FleetTenantService;
+    }
+
+    /**
+     * @returns {Object|null} the outbound social publish executor (injected or bound to composeWriter + custodyDir).
+     * @protected
+     */
+    getPublishExecutor() {
+        if (this.publishExecutor) {
+            return this.publishExecutor;
+        }
+        if (
+            typeof this.composeWriter?.getMessage === 'function' &&
+            typeof this.composeWriter?.transitionPublishState === 'function'
+        ) {
+            const custodyDir = typeof this.getRegistry()?.getDataDir === 'function'
+                ? this.getRegistry().getDataDir()
+                : null;
+            return createPublishExecutor({
+                mailbox: this.composeWriter,
+                custodyDir
+            });
+        }
+        return null;
     }
 
     // ---- capability allowlist (the ONLY pane-reachable operations) ----------
@@ -1480,6 +1511,60 @@ class FleetControlBridge extends Base {
             typeof newState === 'string' && newState ? null : 'newState must be a non-empty string');
 
         return typeof answer?.then === 'function' ? answer.catch(error => taskRefusalOf(error) ?? Promise.reject(error)) : answer
+    }
+
+    /**
+     * @summary WRITE: execute an approved `requestPublish` revision at most once under Fleet
+     * credential custody (`<userData>/brain/fleet`) and `MailboxService` single-writer reservation.
+     * @param {String|Object} requestOrId
+     * @param {String}        [revisionDigest]
+     * @param {Object}        [options={}]
+     * @returns {Promise<Object>|Object}
+     */
+    publish(requestOrId, revisionDigest, options = {}) {
+        const executor = this.getPublishExecutor();
+        if (typeof executor?.publish !== 'function') {
+            return {status: 'not-wired', reason: 'fleet: publish executor not wired'};
+        }
+
+        if (requestOrId && typeof requestOrId === 'object' && !Array.isArray(requestOrId)) {
+            const {requestId, messageId, revisionDigest: paramDigest, ...rest} = requestOrId;
+            return executor.publish(requestId ?? messageId, paramDigest ?? revisionDigest, rest);
+        }
+
+        return executor.publish(requestOrId, revisionDigest, options);
+    }
+
+    /**
+     * @summary READ-OBSERVE: read owned-object metrics (`public_metrics` + `non_public_metrics` on X
+     * or organization share statistics on LinkedIn) under Fleet custody.
+     * @param {String|Object} providerOrParams
+     * @param {Object}        [options={}]
+     * @returns {Promise<Object>|Object}
+     */
+    readMetrics(providerOrParams, options = {}) {
+        const executor = this.getPublishExecutor();
+        if (typeof executor?.readMetrics !== 'function') {
+            return {status: 'not-wired', reason: 'fleet: publish executor not wired'};
+        }
+
+        if (providerOrParams && typeof providerOrParams === 'object' && !Array.isArray(providerOrParams)) {
+            const {providerId, ...rest} = providerOrParams;
+            return executor.readMetrics(providerId, rest);
+        }
+
+        return executor.readMetrics(providerOrParams, options);
+    }
+
+    /**
+     * @summary WRITE: outbound third-party reply verb; disabled until X reply automation
+     * classification is verified against the primary rules.
+     * @param {Object} [params={}]
+     * @returns {Promise<Object>}
+     */
+    reply(params = {}) {
+        const executor = this.getPublishExecutor() ?? createPublishExecutor();
+        return executor.reply(params);
     }
 
     /**
