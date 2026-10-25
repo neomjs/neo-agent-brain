@@ -20,7 +20,7 @@
  *
  * Every publication-state read and write binds directly to `MailboxService`'s single-writer verbs
  * (`getMessage`, `transitionPublishState`, `approvePublishRevision`, `attestPublishRevision`) and
- * shares `computePublishRevisionDigest` with `MailboxService`.
+ * shares `computePublishRevisionDigest` via `ai/services/memory-core/helpers/publishDigest.mjs`.
  */
 
 import crypto     from 'node:crypto';
@@ -29,7 +29,7 @@ import path       from 'node:path';
 import {
     computePublishRevisionDigest,
     matchesRequestedPublishText
-} from '../memory-core/MailboxService.mjs';
+} from '../memory-core/helpers/publishDigest.mjs';
 
 export {computePublishRevisionDigest, matchesRequestedPublishText};
 
@@ -635,7 +635,7 @@ async function evaluateSwitchAndApproval({
             };
         }
 
-        // RA-3: Accept attestation ONLY through the review message's structured `revisionDigest`
+        // Accept attestation ONLY through the review message's structured `revisionDigest`
         // (as bound by `MailboxService#attestPublishRevision`), never via substring matching on body text.
         const msgDigest = reviewMsg.revisionDigest ?? reviewMsg.attestedRevisionDigest ?? null;
 
@@ -722,8 +722,8 @@ async function verifyMediaAttachments(media = [], mediaReader = null) {
         }
 
         verifiedMedia.push({
-            bytes   : buffer,
-            sha256  : expectedSha256,
+            bytes : buffer,
+            sha256: expectedSha256,
             mimeType
         });
     }
@@ -794,9 +794,9 @@ export function normalizeOwnedMetrics(rawMetrics = {}, channel = PUBLISH_CHANNEL
  * @returns {{publish: Function, readMetrics: Function, reply: Function, approveRevision: Function, attestRevision: Function}}
  */
 export function createPublishExecutor(config = {}) {
-    const now                   = config.now ?? (() => Date.now()),
-          mintAttemptId         = config.mintAttemptId ?? (() => `attempt-${crypto.randomUUID()}`),
-          custody               = config.custody ?? createFleetCustodyStore({
+    const now           = config.now ?? (() => Date.now()),
+          mintAttemptId = config.mintAttemptId ?? (() => `attempt-${crypto.randomUUID()}`),
+          custody       = config.custody ?? createFleetCustodyStore({
               custodyDir : config.custodyDir ?? null,
               credentials: config.credentials ?? null,
               now
@@ -939,7 +939,7 @@ export function createPublishExecutor(config = {}) {
             return markUnresolved(`${REFUSAL_CODES.unresolved} — recent-posts reconciliation returned no list`);
         }
 
-        // RA-6: Adopt only a post created at or after the reservation's `reservedAt`, and treat
+        // Adopt only a post created at or after the reservation's `reservedAt`, and treat
         // zero or several candidates as `unresolved`.
         const candidates = posts.filter(post => {
             const createdRaw = post?.createdAt ?? post?.created_at ?? post?.publishedAt ?? null,
@@ -1097,8 +1097,8 @@ export function createPublishExecutor(config = {}) {
             if (currentState === PUBLICATION_STATES.published) {
                 if (publication.providerId && currentRevision?.payload?.channel && currentRevision?.payload?.account) {
                     publishedByProviderId.set(String(publication.providerId), {
-                        channel  : currentRevision.payload.channel,
-                        account  : currentRevision.payload.account,
+                        channel: currentRevision.payload.channel,
+                        account: currentRevision.payload.account,
                         requestId
                     });
                 }
@@ -1171,7 +1171,7 @@ export function createPublishExecutor(config = {}) {
             const payload        = currentRevision.payload ?? {},
                   computedDigest = computePublishRevisionDigest(payload);
 
-            // Gate 5a (RA-5): If the caller's revisionDigest argument does not match the current
+            // Gate 5a: If the caller's revisionDigest argument does not match the current
             // revision's digest (e.g. a duplicate click from a pre-Edit card), refuse the call
             // WITHOUT writing `refused` to the valid stored request.
             if (!revisionDigest || revisionDigest !== currentRevision.revisionDigest) {
@@ -1334,7 +1334,7 @@ export function createPublishExecutor(config = {}) {
                 };
             }
 
-            // Gate 5e (RA-4): Verify immutable media byte digests before upload and pass verified bytes.
+            // Gate 5e: Verify immutable media byte digests before upload and pass verified bytes.
             const mediaCheck = await verifyMediaAttachments(payload.media, mediaReader);
             if (!mediaCheck.ok) {
                 await transitionMailboxPublishState(mailbox, {
@@ -1387,7 +1387,7 @@ export function createPublishExecutor(config = {}) {
                   attemptId  = mintAttemptId(),
                   reservedAt = new Date(nowMs).toISOString();
 
-            // Gate 5g (RA-1): Record `publishing` in MailboxService BEFORE dispatching the platform call.
+            // Gate 5g: Record `publishing` in MailboxService BEFORE dispatching the platform call.
             // Fails closed when the write verb is absent, returns false/undefined, or loses a race.
             const reserved = await transitionMailboxPublishState(mailbox, {
                 requestId,
@@ -1527,8 +1527,8 @@ export function createPublishExecutor(config = {}) {
             }
 
             publishedByProviderId.set(String(providerId), {
-                channel  : payload.channel,
-                account  : payload.account,
+                channel: payload.channel,
+                account: payload.account,
                 requestId
             });
 
