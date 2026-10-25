@@ -353,9 +353,9 @@ function projectMessage(row, edges, viewerVariants, includeBody = false) {
     if (!retracted) {
         if (!includeBody && (properties.publication !== undefined || properties.requestPublish !== undefined || properties.revision !== undefined)) {
             result.publication = {
-                state                : properties.publication?.state ?? 'queued',
-                currentRevisionNumber: properties.publication?.currentRevisionNumber ?? properties.publication?.revisionNumber ?? properties.revision?.revisionNumber ?? 1,
-                currentRevisionDigest: properties.publication?.currentRevisionDigest ?? properties.publication?.revisionDigest ?? properties.revision?.revisionDigest ?? null
+                state         : properties.publication?.state ?? null,
+                revisionNumber: properties.publication?.currentRevisionNumber ?? properties.publication?.revisionNumber ?? properties.revision?.revisionNumber ?? 1,
+                revisionDigest: properties.publication?.currentRevisionDigest ?? properties.publication?.revisionDigest ?? properties.revision?.revisionDigest ?? null
             }
         } else if (includeBody) {
             if (properties.requestPublish !== undefined)         result.requestPublish         = properties.requestPublish;

@@ -1674,6 +1674,10 @@ class FleetControlBridge extends Base {
     /**
      * @summary WRITE: create a new immutable revision $N + 1$ on a queued `requestPublish` Task via
      * `MailboxService#editPublishRequest` under the transport-stamped operator identity.
+     *
+     * `MailboxService#editPublishRequest` is the authoritative validator (`ALLOWED_REQUEST_PUBLISH_PATCH_KEYS`)
+     * and stamps `createdBy` from the authenticated request context; stripping caller-supplied identity
+     * keys from `patch` here is defense-in-depth at the bridge boundary.
      * @param {Object} params
      * @param {String} [params.taskId]
      * @param {String} [params.messageId]
@@ -1762,8 +1766,12 @@ class FleetControlBridge extends Base {
             return {status: 'not-wired', reason: 'fleet: publish switch store not wired'};
         }
 
-        const {peer, channel, to, expectedFrom, reason} = params ?? {},
-              who                                       = this.viewerIdentitySource?.resolveViewerIdentity?.() || '@tobiu';
+        const viewer = this.resolveViewerIdentity();
+        if (!viewer?.ok) {
+            return viewer;
+        }
+
+        const {peer, channel, to, expectedFrom, reason} = params ?? {};
 
         return store.setSwitch({
             peer,
@@ -1771,7 +1779,7 @@ class FleetControlBridge extends Base {
             to,
             expectedFrom,
             reason,
-            who
+            who: viewer.agentIdentityNodeId
         });
     }
 

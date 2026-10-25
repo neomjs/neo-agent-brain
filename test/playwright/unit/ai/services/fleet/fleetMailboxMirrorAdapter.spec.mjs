@@ -398,7 +398,7 @@ test.describe('fleetMailboxMirrorAdapter — viewer-admitted per-agent mailbox m
                     subject    : '[publish-gate] draft X post',
                     sentAt     : CAPTURED_AT,
                     publication: {
-                        state                : 'Draft',
+                        state                : 'queued',
                         currentRevisionNumber: 2,
                         currentRevisionDigest: 'sha256:rev2digest'
                     },
@@ -426,7 +426,7 @@ test.describe('fleetMailboxMirrorAdapter — viewer-admitted per-agent mailbox m
                     sentAt     : CAPTURED_AT,
                     retracted  : true,
                     publication: {
-                        state                : 'Draft',
+                        state                : 'queued',
                         currentRevisionNumber: 1,
                         currentRevisionDigest: 'sha256:rev1'
                     }
@@ -439,7 +439,7 @@ test.describe('fleetMailboxMirrorAdapter — viewer-admitted per-agent mailbox m
         const retractedRow = snapshot.rows.find(r => r.messageId === 'MESSAGE:retracted-pub')
 
         expect(pubRow.publication).toEqual({
-            state         : 'Draft',
+            state         : 'queued',
             revisionNumber: 2,
             revisionDigest: 'sha256:rev2digest'
         })

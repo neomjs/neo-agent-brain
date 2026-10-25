@@ -259,7 +259,7 @@ export function createFleetMailboxMirrorRow(message, observedAt) {
         taskState     : message.task?.state || null,
         ...(hasPublishProjection ? {
             publication: Object.freeze({
-                state         : message.publication?.state ?? 'queued',
+                state         : message.publication?.state ?? null,
                 revisionNumber: message.publication?.currentRevisionNumber ?? message.publication?.revisionNumber ?? message.revision?.revisionNumber ?? 1,
                 revisionDigest: message.publication?.currentRevisionDigest ?? message.publication?.revisionDigest ?? message.revision?.revisionDigest ?? null
             })

@@ -327,7 +327,7 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
             body       : 'rationale body',
             task       : {state: 'InputRequired'},
             publication: {
-                state                : 'Draft',
+                state                : 'queued',
                 currentRevisionNumber: 2,
                 currentRevisionDigest: 'sha256:rev2'
             },
@@ -354,9 +354,9 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
         const listRow    = listResult.messages.find(r => r.messageId === pubId);
 
         expect(listRow.publication).toEqual({
-            state                : 'Draft',
-            currentRevisionNumber: 2,
-            currentRevisionDigest: 'sha256:rev2'
+            state         : 'queued',
+            revisionNumber: 2,
+            revisionDigest: 'sha256:rev2'
         });
         expect(listRow).not.toHaveProperty('requestPublish');
         expect(listRow).not.toHaveProperty('revision');
@@ -366,7 +366,7 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
 
         const detailResult = observe(db, {scope: 'own', policy: 'team', messageId: pubId});
         expect(detailResult.publication).toEqual({
-            state                : 'Draft',
+            state                : 'queued',
             currentRevisionNumber: 2,
             currentRevisionDigest: 'sha256:rev2'
         });

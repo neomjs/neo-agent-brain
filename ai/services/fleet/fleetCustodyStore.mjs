@@ -57,7 +57,8 @@ export const REFUSAL_CODES = Object.freeze({
     unresolved                   : 'refused: unresolved',
     publishingInFlight           : 'refused: publishing-in-flight',
     channel                      : 'refused: channel',
-    notFound                     : 'refused: not-found'
+    notFound                     : 'refused: not-found',
+    who                          : 'refused: who'
 });
 
 /**
@@ -123,6 +124,34 @@ export function scrubSecrets(value, secrets = []) {
     return value;
 }
 
+let atomicWriteCounter = 0;
+
+/**
+ * @summary Writes `payload` as formatted JSON to `filePath` via a PID/timestamp/sequence-scoped
+ * temporary sibling and atomic rename with `0o600` owner-only permissions.
+ * @param {Object} fsModule
+ * @param {String} filePath
+ * @param {*}      payload
+ * @param {Number} nowMs
+ * @returns {Promise<void>}
+ */
+async function writeAtomic0600(fsModule, filePath, payload, nowMs) {
+    const dir     = path.dirname(filePath),
+          seq     = ++atomicWriteCounter,
+          tmpPath = `${filePath}.${process.pid}.${nowMs}.${seq}.tmp`,
+          body    = JSON.stringify(payload, null, 2);
+
+    await fsModule.mkdir(dir, {recursive: true});
+    await fsModule.writeFile(tmpPath, body, {encoding: 'utf8', mode: 0o600});
+    if (typeof fsModule.chmod === 'function') {
+        await fsModule.chmod(tmpPath, 0o600);
+    }
+    await fsModule.rename(tmpPath, filePath);
+    if (typeof fsModule.chmod === 'function') {
+        await fsModule.chmod(filePath, 0o600);
+    }
+}
+
 /**
  * @summary Creates a Fleet custody credential reader over `<userData>/brain/fleet` (or an injected
  * credentials map/directory). Tokens are read by `{channel, account}`, checked for presence,
@@ -152,8 +181,7 @@ export function createFleetCustodyStore({
     const customFetch       = fetch !== undefined,
           fetchFn           = fetch ?? fetchImpl,
           inFlightRefreshes = new Map();
-    let   writeChain    = Promise.resolve(),
-          atomicCounter = 0;
+    let   writeChain = Promise.resolve();
 
     function enqueueWrite(task) {
         const next = writeChain.then(task, task);
@@ -217,23 +245,6 @@ export function createFleetCustodyStore({
         }
     }
 
-    async function writeAtomic0600(filePath, payload, nowMs) {
-        const dir     = path.dirname(filePath),
-              seq     = ++atomicCounter,
-              tmpPath = `${filePath}.${process.pid}.${nowMs}.${seq}.tmp`,
-              body    = JSON.stringify(payload, null, 2);
-
-        await fsModule.mkdir(dir, {recursive: true});
-        await fsModule.writeFile(tmpPath, body, {encoding: 'utf8', mode: 0o600});
-        if (typeof fsModule.chmod === 'function') {
-            await fsModule.chmod(tmpPath, 0o600);
-        }
-        await fsModule.rename(tmpPath, filePath);
-        if (typeof fsModule.chmod === 'function') {
-            await fsModule.chmod(filePath, 0o600);
-        }
-    }
-
     async function persistRotatedRecord(channel, account, loaded, rotatedRecord, nowMs) {
         if (credentials && typeof credentials === 'object') {
             if (loaded.sourceKind === 'memory-composite') {
@@ -267,13 +278,13 @@ export function createFleetCustodyStore({
                 }
 
                 if (!latestBundle) {
-                    await writeAtomic0600(perAccount, rotatedRecord, nowMs);
+                    await writeAtomic0600(fsModule, perAccount, rotatedRecord, nowMs);
                     return;
                 }
 
                 if (loaded.sourceKind === 'bundle-composite') {
                     const nextBundle = {...latestBundle, [loaded.key]: rotatedRecord};
-                    await writeAtomic0600(bundlePath, nextBundle, nowMs);
+                    await writeAtomic0600(fsModule, bundlePath, nextBundle, nowMs);
                     return;
                 }
 
@@ -285,11 +296,11 @@ export function createFleetCustodyStore({
                         [account]: rotatedRecord
                     }
                 };
-                await writeAtomic0600(bundlePath, nextBundle, nowMs);
+                await writeAtomic0600(fsModule, bundlePath, nextBundle, nowMs);
                 return;
             }
 
-            await writeAtomic0600(loaded.filePath || perAccount, rotatedRecord, nowMs);
+            await writeAtomic0600(fsModule, loaded.filePath || perAccount, rotatedRecord, nowMs);
         });
     }
 
@@ -625,8 +636,7 @@ export function createPublishSwitchStore({
     const memorySwitches = (switches && typeof switches === 'object' && !Array.isArray(switches))
         ? switches
         : {};
-    let writeChain    = Promise.resolve(),
-        atomicCounter = 0;
+    let writeChain = Promise.resolve();
 
     function enqueueWrite(task) {
         const next = writeChain.then(task, task);
@@ -636,23 +646,6 @@ export function createPublishSwitchStore({
 
     function resolveSwitchesFilePath() {
         return custodyDir ? path.join(custodyDir, 'publish-switches.json') : null;
-    }
-
-    async function writeAtomic0600(filePath, payload, nowMs) {
-        const dir     = path.dirname(filePath),
-              seq     = ++atomicCounter,
-              tmpPath = `${filePath}.${process.pid}.${nowMs}.${seq}.tmp`,
-              body    = JSON.stringify(payload, null, 2);
-
-        await fsModule.mkdir(dir, {recursive: true});
-        await fsModule.writeFile(tmpPath, body, {encoding: 'utf8', mode: 0o600});
-        if (typeof fsModule.chmod === 'function') {
-            await fsModule.chmod(tmpPath, 0o600);
-        }
-        await fsModule.rename(tmpPath, filePath);
-        if (typeof fsModule.chmod === 'function') {
-            await fsModule.chmod(filePath, 0o600);
-        }
     }
 
     async function loadStoreMap() {
@@ -752,7 +745,7 @@ export function createPublishSwitchStore({
         to,
         expectedFrom,
         reason   = '',
-        who      = '@tobiu',
+        who,
         proposal = undefined,
         nowMs    = now()
     } = {}) {
@@ -763,6 +756,16 @@ export function createPublishSwitchStore({
                 refused: REFUSAL_CODES.peer,
                 code   : REFUSAL_CODES.peer,
                 reason : `${REFUSAL_CODES.peer} — peer must be a non-empty string`
+            };
+        }
+
+        const canonicalWho = canonicalizePeerId(who);
+        if (!canonicalWho) {
+            return {
+                ok     : false,
+                refused: REFUSAL_CODES.who,
+                code   : REFUSAL_CODES.who,
+                reason : `${REFUSAL_CODES.who} — who must be a valid operator or peer identity`
             };
         }
 
@@ -818,9 +821,8 @@ export function createPublishSwitchStore({
                 };
             }
 
-            const canonicalWho = canonicalizePeerId(who) ?? '@tobiu',
-                  isoNow       = new Date(nowMs).toISOString(),
-                  nextAudit    = [
+            const isoNow    = new Date(nowMs).toISOString(),
+                  nextAudit = [
                       ...current.audit,
                       {
                           who   : canonicalWho,
@@ -839,22 +841,39 @@ export function createPublishSwitchStore({
                       audit    : nextAudit,
                       proposal : proposal !== undefined ? proposal : current.proposal
                   },
-                  compKey  = `${canonicalPeer}:${channel}`,
-                  bareKey  = `${canonicalPeer.slice(1)}:${channel}`,
-                  filePath = resolveSwitchesFilePath();
+                  barePeer     = canonicalPeer.slice(1),
+                  compKey      = `${canonicalPeer}:${channel}`,
+                  bareKey      = `${barePeer}:${channel}`,
+                  filePath     = resolveSwitchesFilePath(),
+                  nextStoreMap = {...storeMap};
 
-            const nextStoreMap = {...storeMap};
             delete nextStoreMap[bareKey];
-            if (nextStoreMap[canonicalPeer] && typeof nextStoreMap[canonicalPeer] === 'object') {
-                nextStoreMap[canonicalPeer] = {...nextStoreMap[canonicalPeer], [channel]: nextRecord};
+            for (const peerKey of [canonicalPeer, barePeer]) {
+                if (nextStoreMap[peerKey] && typeof nextStoreMap[peerKey] === 'object' && !Array.isArray(nextStoreMap[peerKey])) {
+                    const remaining = {...nextStoreMap[peerKey]};
+                    delete remaining[channel];
+                    if (Object.keys(remaining).length > 0) {
+                        nextStoreMap[peerKey] = remaining;
+                    } else {
+                        delete nextStoreMap[peerKey];
+                    }
+                }
             }
             nextStoreMap[compKey] = nextRecord;
 
             memorySwitches[compKey] = nextRecord;
             delete memorySwitches[bareKey];
+            for (const peerKey of [canonicalPeer, barePeer]) {
+                if (memorySwitches[peerKey] && typeof memorySwitches[peerKey] === 'object' && !Array.isArray(memorySwitches[peerKey])) {
+                    delete memorySwitches[peerKey][channel];
+                    if (Object.keys(memorySwitches[peerKey]).length === 0) {
+                        delete memorySwitches[peerKey];
+                    }
+                }
+            }
 
             if (filePath) {
-                await writeAtomic0600(filePath, nextStoreMap, nowMs);
+                await writeAtomic0600(fsModule, filePath, nextStoreMap, nowMs);
             }
 
             return {

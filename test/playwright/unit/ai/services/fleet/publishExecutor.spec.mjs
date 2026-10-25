@@ -2089,7 +2089,20 @@ test.describe('publishExecutor (#979)', () => {
             });
             expect(await store.read({peer: PEER_ID, channel: 'x'})).toBe(SWITCH_STATES.approveEach);
 
-            // 2. Promotion without a reason is refused with 'refused: reason'
+            // 2. Missing who is refused with 'refused: who'; promotion without a reason is refused with 'refused: reason'
+            const missingWho = await store.setSwitch({
+                peer        : PEER_ID,
+                channel     : 'x',
+                to          : SWITCH_STATES.autoApprove,
+                expectedFrom: SWITCH_STATES.approveEach,
+                reason      : 'valid reason'
+            });
+            expect(missingWho).toMatchObject({
+                ok     : false,
+                refused: REFUSAL_CODES.who,
+                code   : REFUSAL_CODES.who
+            });
+
             const missingReason = await store.setSwitch({
                 peer        : PEER_ID,
                 channel     : 'x',
@@ -2104,7 +2117,18 @@ test.describe('publishExecutor (#979)', () => {
                 code   : REFUSAL_CODES.reason
             });
 
-            // 3. Promotion with a valid reason succeeds, appends audit, and persists 0o600 publish-switches.json
+            // 3. Promotion with a valid reason succeeds, appends audit, migrates legacy nested/bare keys, and persists 0o600 publish-switches.json
+            const switchesFile = path.join(tempRoot, 'publish-switches.json');
+            await fs.writeFile(
+                switchesFile,
+                JSON.stringify({
+                    '@neo-fable-clio': {
+                        x: {state: SWITCH_STATES.approveEach}
+                    }
+                }),
+                {encoding: 'utf8', mode: 0o600}
+            );
+
             const promoted = await store.setSwitch({
                 peer        : PEER_ID,
                 channel     : 'x',
@@ -2131,9 +2155,10 @@ test.describe('publishExecutor (#979)', () => {
                 proposal: {proposedTo: SWITCH_STATES.autoApprove, evidence: '15/15 clean'}
             });
 
-            const switchesFile = path.join(tempRoot, 'publish-switches.json');
             const stat         = await fs.stat(switchesFile);
+            const persistedMap = JSON.parse(await fs.readFile(switchesFile, 'utf8'));
             expect(stat.mode & 0o777).toBe(0o600);
+            expect(Object.keys(persistedMap)).toEqual(['@neo-fable-clio:x']);
 
             // 4. Stale expectedFrom is refused with 'refused: switch-moved' and reports currentState
             const staleMove = await store.setSwitch({
@@ -2141,7 +2166,8 @@ test.describe('publishExecutor (#979)', () => {
                 channel     : 'x',
                 to          : SWITCH_STATES.approveBatch,
                 expectedFrom: SWITCH_STATES.approveEach,
-                reason      : 'stale move'
+                reason      : 'stale move',
+                who         : '@tobiu'
             });
             expect(staleMove).toMatchObject({
                 ok          : false,
@@ -2280,6 +2306,35 @@ test.describe('publishExecutor (#979)', () => {
                 }
             });
             FleetControlBridge.registry             = {getDataDir: () => tempRoot};
+            FleetControlBridge.viewerIdentitySource = null;
+
+            // Unwired or unbound viewerIdentitySource fails closed on setPublishSwitch and never fabricates '@tobiu'
+            expect(FleetControlBridge.setPublishSwitch({
+                peer        : PEER_ID,
+                channel     : 'linkedin',
+                to          : SWITCH_STATES.approveBatch,
+                expectedFrom: SWITCH_STATES.approveEach,
+                reason      : 'unwired viewer attempt',
+                who         : '@attacker-spoof'
+            })).toEqual({
+                ok   : false,
+                error: 'fleet viewer identity source not wired'
+            });
+
+            FleetControlBridge.viewerIdentitySource = {resolveViewerIdentity: () => null};
+            expect(FleetControlBridge.setPublishSwitch({
+                peer        : PEER_ID,
+                channel     : 'linkedin',
+                to          : SWITCH_STATES.approveBatch,
+                expectedFrom: SWITCH_STATES.approveEach,
+                reason      : 'unbound viewer attempt',
+                who         : '@attacker-spoof'
+            })).toEqual({
+                ok   : false,
+                error: 'viewer identity unbound — authenticated ingress required'
+            });
+            await expect(fs.stat(path.join(tempRoot, 'publish-switches.json'))).rejects.toThrow();
+
             FleetControlBridge.viewerIdentitySource = {resolveViewerIdentity: () => '@tobiu'};
 
             // Parameter validation guards
