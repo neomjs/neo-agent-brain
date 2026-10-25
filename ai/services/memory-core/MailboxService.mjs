@@ -3363,19 +3363,15 @@ class MailboxService extends Base {
 
             db.getAdjacentNodes(to, 'both');
             const
-                recipientNode              = db.nodes.get(to),
-                recipientProps             = getRecordProperties(recipientNode),
-                configuredOperatorIdentity = aiConfig?.fleet?.operatorIdentity
-                    ? normalizeMailboxIdentityForComparison(aiConfig.fleet.operatorIdentity)
-                    : null;
+                recipientNode  = db.nodes.get(to),
+                recipientProps = getRecordProperties(recipientNode);
 
             if (
                 !recipientNode ||
                 getRecordField(recipientNode, 'label') !== 'AgentIdentity' ||
                 recipientProps.accountType !== 'human' ||
                 recipientProps.trustTier === 'external' ||
-                recipientProps.operator === false ||
-                (configuredOperatorIdentity && !sameMailboxIdentity(to, configuredOperatorIdentity))
+                recipientProps.operator === false
             ) {
                 throw refuseRequestPublish(
                     'refused: recipient',
