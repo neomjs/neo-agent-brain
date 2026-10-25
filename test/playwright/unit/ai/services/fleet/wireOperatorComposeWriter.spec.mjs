@@ -136,8 +136,8 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
 
     test('the own-inbox primitives are installed only when given, and each missing one leaves only its verb not-wired', async () => {
         const
-            bridge         = stubBridge(),
-            getMessage     = () => ({id: 'MESSAGE:m'}),
+            bridge          = stubBridge(),
+            getMessage      = () => ({id: 'MESSAGE:m'}),
             observeMessages = () => ({messages: []});
 
         wireOperatorComposeWriter({bridge, addMessage: () => ({}), getMessage, observeMessages, markRead: 'not-a-function'});
@@ -362,5 +362,85 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
         ]) {
             expect(source, template).toContain(template)
         }
+    });
+
+    test('requestPublish Tasks route through FleetControlBridge#transitionOwnTask without any bridge change (#978 AC-4)', async () => {
+        const protocol = createFleetWireOffer();
+
+        // 1. When MailboxService refuses Completed on an unpublished requestPublish Task (throwing the canonical
+        //    Unauthorized transition template with code='refused: not-published'), the unchanged bridge maps it cleanly
+        //    to {success: false, code: 'transition-refused'}.
+        wireOperatorComposeWriter({
+            addMessage    : () => ({}),
+            transitionTask: async ({taskId, newState}) => {
+                if (newState === 'Completed') {
+                    const err = new Error('Unauthorized: @tobiu as assignee cannot transition `Working → Completed`');
+                    err.code             = 'refused: not-published';
+                    err.publicationState = 'queued';
+                    throw err;
+                }
+                return {
+                    success     : true,
+                    rowsAffected: 1,
+                    task        : {id: taskId, state: newState, assignee: '@tobiu'}
+                };
+            }
+        });
+
+        const workingEnvelope = await dispatchFleetRequest({
+            method: 'transitionOwnTask',
+            params: {messageId: 'MESSAGE:pub-1', newState: 'Working'},
+            protocol
+        });
+        expect(workingEnvelope).toMatchObject({
+            ok    : true,
+            state : 'ok',
+            result: {
+                success     : true,
+                rowsAffected: 1,
+                task        : {id: 'MESSAGE:pub-1', state: 'Working', assignee: '@tobiu'}
+            }
+        });
+
+        const refusedCompletedEnvelope = await dispatchFleetRequest({
+            method: 'transitionOwnTask',
+            params: {messageId: 'MESSAGE:pub-1', newState: 'Completed'},
+            protocol
+        });
+        expect(refusedCompletedEnvelope).toMatchObject({
+            ok    : true,
+            state : 'ok',
+            result: {
+                success     : false,
+                rowsAffected: 0,
+                code        : 'transition-refused',
+                reason      : 'the assignee cannot move this Task from Working to Completed'
+            }
+        });
+
+        // 2. Once publication state is 'published', transitionOwnTask to 'Completed' succeeds unchanged.
+        wireOperatorComposeWriter({
+            addMessage    : () => ({}),
+            transitionTask: async ({taskId, newState}) => ({
+                success     : true,
+                rowsAffected: 1,
+                task        : {id: taskId, state: newState, assignee: '@tobiu', providerId: 'x:1900123456'}
+            })
+        });
+
+        const completedEnvelope = await dispatchFleetRequest({
+            method: 'transitionOwnTask',
+            params: {messageId: 'MESSAGE:pub-1', newState: 'Completed', expectedCurrentState: 'Working'},
+            protocol
+        });
+        expect(completedEnvelope).toMatchObject({
+            ok    : true,
+            state : 'ok',
+            result: {
+                success     : true,
+                rowsAffected: 1,
+                task        : {id: 'MESSAGE:pub-1', state: 'Completed', assignee: '@tobiu', providerId: 'x:1900123456'}
+            }
+        });
     });
 });

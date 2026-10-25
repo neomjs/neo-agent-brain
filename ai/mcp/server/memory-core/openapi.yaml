@@ -2505,15 +2505,18 @@ paths:
                   type: string
                 taggedConcepts:
                   type: array
+                  description: "Optional concept tags attached via TAGGED_CONCEPT edges. Tagging `'requestPublish'` admits a revisioned publication-gate Task (`requestPublish` category per ADR 0042) targeting the Fleet's registered human operator identity (`accountType: 'human'`)."
                   items:
                     type: string
                 wakeSuppressed:
                   type: boolean
                   description: "Persist + deliver but emit NO wake: the recipient sees it on their next list_messages, not as an interrupt — in autonomous mode, not until they next list or boot. Omit and the server decides: every AGENT:* broadcast is quiet, as are operator-sent messages; direct messages wake. To wake the whole fleet you must elect it with wakeSuppressed: false — reserve that for something every seat must act on now. On a direct message use true for awareness/FYI (PR-opened-you're-not-the-reviewer, lane-progress, acks) and sunset self-DM handovers; never for actionable ones — you're the reviewer, a lane was claimed on you, REQUEST_CHANGES; those subjects are rejected."
+                requestPublish:
+                  $ref: '#/components/schemas/RequestPublishPayload'
                 task:
                   type: object
                   additionalProperties: true
-                  description: "Optional A2A Task envelope (https://a2a-protocol.org/latest/specification/) for structured agent coordination. Omit for free-form markdown messages. The server clones the envelope and overwrites `assignee`; callers cannot select or mutate the owner."
+                  description: "Optional A2A Task envelope (https://a2a-protocol.org/latest/specification/) for structured agent coordination. Omit for free-form markdown messages. The server clones the envelope and overwrites `assignee`; callers cannot select or mutate the owner. When carrying a `requestPublish` payload (`taggedConcepts: ['requestPublish']`), admission computes `revision.revisionDigest` (RFC 8785 SHA-256 over `{account, channel, format, inReplyTo, media, text}`) and initializes `publication.state` to `'queued'` (`queued → publishing → published | refused | unresolved`)."
                   properties:
                     id:
                       type: string
@@ -2536,6 +2539,12 @@ paths:
                       minLength: 1
                       maxLength: 1000
                       description: "Optional sender-authored plain text: what the sender plans if the Task expires unanswered. It carries no execution or authorization semantics; expiry never runs it, and an absent field means no plan was stated. It survives transitions and expiry, and the recipient reads it through `get_message`."
+                    requestPublish:
+                      $ref: '#/components/schemas/RequestPublishPayload'
+                    revision:
+                      $ref: '#/components/schemas/RequestPublishRevision'
+                    publication:
+                      $ref: '#/components/schemas/RequestPublishPublicationState'
       responses:
         '200':
           description: Message accepted durably in the WAL; projectionStatus may remain pending while derived graph projection completes.
@@ -2559,6 +2568,14 @@ paths:
                   projectionStatus:
                     type: string
                     enum: [pending]
+                  revisionDigest:
+                    type: string
+                    pattern: '^[0-9a-f]{64}$'
+                    description: "Present for `requestPublish` Tasks: the 64-character lowercase hex SHA-256 digest of Revision 1."
+                  revision:
+                    $ref: '#/components/schemas/RequestPublishRevision'
+                  publication:
+                    $ref: '#/components/schemas/RequestPublishPublicationState'
                   defectNote:
                     type: object
                     description: Subject eligibility for the broadcast defect read model, separate from graph projection.
@@ -2964,7 +2981,7 @@ paths:
       operationId: transition_task
       x-neo-tool-tier: extended
       x-pass-as-object: true
-      description: Transitions a Task with optimistic state locking; broadcast claims are send-time-recipient-only, and later transitions require the persisted server-owned assignee. A human direct recipient may also move its own InputRequired Task to Working or Completed.
+      description: "Transitions a Task with optimistic state locking; broadcast claims are send-time-recipient-only, and later transitions require the persisted server-owned assignee. A human direct recipient may also move its own InputRequired Task to Working or Completed. For `requestPublish` Tasks (ADR 0042), `Completed` is refused while the publication state (`queued → publishing → published | refused | unresolved`) is not `published` with a non-empty `providerId` and `textAsPublished === textAsRequested`."
       tags: [Mailbox]
       requestBody:
         required: true
@@ -6044,6 +6061,188 @@ components:
         notAuthority:
           type: boolean
           enum: [true]
+
+    RequestPublishMediaDescriptor:
+      type: object
+      additionalProperties: false
+      required: [uri, sha256, mimeType]
+      description: "Media attachment descriptor (`{uri, sha256, mimeType}`) per ADR 0042 §1.1."
+      properties:
+        uri:
+          type: string
+          minLength: 1
+          description: "Repository-relative path or verified artifact URI."
+        sha256:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+          description: "Hex-encoded SHA-256 digest of the raw media bytes."
+        mimeType:
+          type: string
+          minLength: 1
+          description: "Explicit MIME type (for example `'image/png'` or `'video/mp4'`)."
+
+    RequestPublishAttestationInput:
+      type: object
+      additionalProperties: false
+      required: [reviewerMessageId, revisionDigest]
+      description: "Cross-family review attestation reference per ADR 0042 §1.5. The server derives the reviewer's identity and modelFamily from reviewerMessageId."
+      properties:
+        reviewerMessageId:
+          type: string
+          pattern: '^MESSAGE:'
+          description: "The MESSAGE:<uuid> id of the peer review message in the mailbox."
+        revisionDigest:
+          type: string
+          pattern: '^[0-9a-fA-F]{64}$'
+          description: "The exact SHA-256 revisionDigest the peer reviewed and attested."
+
+    RequestPublishPayload:
+      type: object
+      additionalProperties: false
+      required: [channel, account, text, media, hypothesis, format]
+      description: "The `requestPublish` category payload (`taggedConcepts: ['requestPublish']`) per ADR 0042 §1.1. The recipient must be the Fleet's registered human operator identity (`accountType: 'human'`)."
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+          default: 1
+          description: "Fixed at `1` for ADR 0042."
+        channel:
+          type: string
+          enum: [x, linkedin]
+          description: "Closed v1 channel enum (`'x' | 'linkedin'`). Unknown channels are refused (`refused: channel`)."
+        account:
+          type: string
+          minLength: 1
+          description: "Logical account key (for example `'@neomjs'` or `'neomjs-org'`) mapped by the Fleet Manager host to a registered account."
+        text:
+          type: string
+          minLength: 1
+          description: "Non-empty exact body to publish."
+        media:
+          type: array
+          description: "Ordered array of media descriptors (`[]` when no media is attached)."
+          items:
+            $ref: '#/components/schemas/RequestPublishMediaDescriptor'
+        hypothesis:
+          type: string
+          minLength: 1
+          description: "Non-empty falsifiable statement of why this post is worth shipping and what signal it tests."
+        format:
+          type: string
+          enum: [post, link-reply, reply]
+          description: "Closed v1 format enum (`'post' | 'link-reply' | 'reply'`). `'link-reply'` and `'reply'` require a non-empty `inReplyTo`; `'post'` requires `inReplyTo: null`."
+        inReplyTo:
+          type: string
+          nullable: true
+          description: "Upstream post/thread identifier when `format` is `'link-reply'` or `'reply'`, or `null` when `format` is `'post'`."
+        attestation:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/RequestPublishAttestationInput'
+
+    RequestPublishRevision:
+      type: object
+      additionalProperties: false
+      required: [revisionNumber, revisionDigest, createdAt, createdBy, payload, approval, attestation]
+      description: "Immutable revision record under a `requestPublish` Task (`MESSAGE:<uuid>`) per ADR 0042 §1.2. A revision's digest (`revisionDigest`) is the lowercase hex SHA-256 of the RFC 8785 deterministic JSON serialization of `{account, channel, format, inReplyTo, media, text}`. An operator Edit creates Revision N+1 with its own digest, inheriting neither approval nor attestation."
+      properties:
+        revisionNumber:
+          type: integer
+          minimum: 1
+        revisionDigest:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+        payload:
+          $ref: '#/components/schemas/RequestPublishPayload'
+        approval:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [approvedBy, approvedAt, revisionNumber, revisionDigest]
+          properties:
+            approvedBy:
+              type: string
+            approvedAt:
+              type: string
+              format: date-time
+            revisionNumber:
+              type: integer
+              minimum: 1
+            revisionDigest:
+              type: string
+              pattern: '^[0-9a-f]{64}$'
+        attestation:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [reviewerMessageId, reviewerFrom, reviewerFamily, revisionNumber, revisionDigest, attestedAt]
+          properties:
+            reviewerMessageId:
+              type: string
+            reviewerFrom:
+              type: string
+            reviewerFamily:
+              type: string
+            revisionNumber:
+              type: integer
+              minimum: 1
+            revisionDigest:
+              type: string
+              pattern: '^[0-9a-f]{64}$'
+            attestedAt:
+              type: string
+              format: date-time
+
+    RequestPublishPublicationState:
+      type: object
+      additionalProperties: false
+      required: [state, textAsRequested, textAsPublished, currentRevisionNumber, currentRevisionDigest]
+      description: "Five-state publication sub-state (`queued → publishing → published | refused | unresolved`) per ADR 0042 §1.3, distinct from the A2A Task state (`Submitted | Working | InputRequired | Completed | Rejected | Failed | Canceled | Expired`). Stores both `textAsRequested` and `textAsPublished`; `Completed` is refused while the publication state is not `published`."
+      properties:
+        state:
+          type: string
+          enum: [queued, publishing, published, refused, unresolved]
+        textAsRequested:
+          type: string
+        textAsPublished:
+          type: string
+          nullable: true
+        currentRevisionNumber:
+          type: integer
+          minimum: 1
+        currentRevisionDigest:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        reservation:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            revisionNumber:
+              type: integer
+            revisionDigest:
+              type: string
+            reservedAt:
+              type: string
+              format: date-time
+            reservedBy:
+              type: string
+        providerId:
+          type: string
+          nullable: true
+        readbackAt:
+          type: string
+          format: date-time
+          nullable: true
+        refusalReason:
+          type: string
+          nullable: true
 
     ErrorResponse:
       type: object

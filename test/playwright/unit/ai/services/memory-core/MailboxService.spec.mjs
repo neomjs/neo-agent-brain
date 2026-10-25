@@ -7960,4 +7960,654 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
         expect(GraphService.db.nodes.get(noTtl).properties.task.state).toBe('Working');
         expect(GraphService.db.nodes.get(alreadyTerminal).properties.task.state).toBe('Completed');
     });
+
+    test.describe('requestPublish category, revisioned payload, and publication state (#978 / ADR 0042)', () => {
+        const validSha256 = 'a'.repeat(64);
+
+        function buildValidPublishPayload(overrides = {}) {
+            return {
+                schemaVersion: 1,
+                channel      : 'x',
+                account      : '@neomjs',
+                text         : 'Neo.mjs v13.2 ships multi-window SharedWorker state synchronization.',
+                media        : [{
+                    uri     : 'resources/images/v13-2-architecture.png',
+                    sha256  : validSha256,
+                    mimeType: 'image/png'
+                }],
+                hypothesis : 'Concrete architecture diagram + single falsifiable latency claim drives higher technical profile clicks than generic release copy.',
+                format     : 'post',
+                inReplyTo  : null,
+                attestation: null,
+                ...overrides
+            };
+        }
+
+        test.beforeEach(() => {
+            GraphService.upsertNode({
+                id        : '@tobiu',
+                type      : 'AgentIdentity',
+                name      : 'Tobi',
+                properties: {accountType: 'human'}
+            });
+            GraphService.upsertNode({
+                id        : '@neo-gemini-maryam',
+                type      : 'AgentIdentity',
+                name      : 'Maryam',
+                properties: {accountType: 'agent', modelFamily: 'gemini'}
+            });
+            GraphService.upsertNode({
+                id        : '@neo-gemini-pro',
+                type      : 'AgentIdentity',
+                name      : 'Julia',
+                properties: {accountType: 'agent', modelFamily: 'gemini'}
+            });
+            GraphService.upsertNode({
+                id        : '@neo-opus-ada',
+                type      : 'AgentIdentity',
+                name      : 'Ada',
+                properties: {accountType: 'agent', modelFamily: 'claude'}
+            });
+        });
+
+        test('AC-1: a requestPublish Task with every field validates and returns messageId and revisionDigest, while missing/unknown fields, unknown channel/format, or non-operator recipients are refused with named reasons', async () => {
+            const payload = buildValidPublishPayload();
+
+            const created = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, async () => {
+                return await MailboxService.addMessage({
+                    to            : '@tobiu',
+                    subject       : '[requestPublish] v13.2 architecture post',
+                    body          : payload.text,
+                    taggedConcepts: ['requestPublish'],
+                    task          : {
+                        state         : 'Submitted',
+                        requestPublish: payload
+                    }
+                });
+            });
+
+            expect(created.messageId).toMatch(/^MESSAGE:/);
+            expect(created.revisionDigest).toMatch(/^[0-9a-f]{64}$/);
+            expect(created.revision).toMatchObject({
+                revisionNumber: 1,
+                revisionDigest: created.revisionDigest,
+                createdBy     : '@neo-gemini-maryam',
+                approval      : null,
+                attestation   : null
+            });
+            expect(created.publication).toMatchObject({
+                state                : 'queued',
+                textAsRequested      : payload.text,
+                textAsPublished      : null,
+                currentRevisionNumber: 1,
+                currentRevisionDigest: created.revisionDigest,
+                providerId           : null
+            });
+
+            const detail = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                return await MailboxService.getMessage({messageId: created.messageId});
+            });
+            expect(detail.wakeSuppressed).toBe(true);
+            expect(detail.taggedConcepts).toContain('requestPublish');
+            expect(detail.revision.revisionDigest).toBe(created.revisionDigest);
+            expect(detail.publication.state).toBe('queued');
+            expect(detail.publication.textAsRequested).toBe(payload.text);
+            expect(detail.publication.textAsPublished).toBeNull();
+
+            const listed = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                return await MailboxService.listMessages({
+                    box           : 'inbox',
+                    taggedConcepts: ['requestPublish']
+                });
+            });
+            expect(listed.messages.map(m => m.messageId)).toContain(created.messageId);
+
+            // Also admits linkedin + link-reply with non-empty inReplyTo
+            const linkedinReply = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, async () => {
+                return await MailboxService.addMessage({
+                    to            : '@tobiu',
+                    subject       : '[requestPublish] linkedin link-reply',
+                    body          : 'Full benchmark link in reply',
+                    taggedConcepts: ['requestPublish'],
+                    requestPublish: buildValidPublishPayload({
+                        channel  : 'linkedin',
+                        format   : 'link-reply',
+                        inReplyTo: 'urn:li:share:7123456789'
+                    })
+                });
+            });
+            expect(linkedinReply.messageId).toMatch(/^MESSAGE:/);
+            expect(linkedinReply.revisionDigest).toMatch(/^[0-9a-f]{64}$/);
+
+            // Missing required field arms
+            const requiredFieldCases = [
+                {field: 'channel',    expectedCode: 'refused: channel'},
+                {field: 'account',    expectedCode: 'refused: account'},
+                {field: 'text',       expectedCode: 'refused: text'},
+                {field: 'media',      expectedCode: 'refused: media'},
+                {field: 'hypothesis', expectedCode: 'refused: hypothesis'},
+                {field: 'format',     expectedCode: 'refused: format'}
+            ];
+
+            for (const {field, expectedCode} of requiredFieldCases) {
+                const incomplete = buildValidPublishPayload();
+                delete incomplete[field];
+
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                        MailboxService.addMessage({
+                            to            : '@tobiu',
+                            subject       : `missing ${field}`,
+                            body          : 'test',
+                            taggedConcepts: ['requestPublish'],
+                            requestPublish: incomplete
+                        })
+                    )
+                ).rejects.toMatchObject({code: expectedCode});
+            }
+
+            // Missing inReplyTo when format is 'reply' or 'link-reply'
+            for (const replyFormat of ['reply', 'link-reply']) {
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                        MailboxService.addMessage({
+                            to            : '@tobiu',
+                            subject       : `missing inReplyTo for ${replyFormat}`,
+                            body          : 'test',
+                            taggedConcepts: ['requestPublish'],
+                            requestPublish: buildValidPublishPayload({format: replyFormat, inReplyTo: null})
+                        })
+                    )
+                ).rejects.toMatchObject({code: 'refused: inReplyTo'});
+            }
+
+            // Non-null inReplyTo when format is 'post'
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.addMessage({
+                        to            : '@tobiu',
+                        subject       : 'inReplyTo on post',
+                        body          : 'test',
+                        taggedConcepts: ['requestPublish'],
+                        requestPublish: buildValidPublishPayload({format: 'post', inReplyTo: '12345'})
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: inReplyTo'});
+
+            // Unknown field in requestPublish payload
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.addMessage({
+                        to            : '@tobiu',
+                        subject       : 'unknown payload field',
+                        body          : 'test',
+                        taggedConcepts: ['requestPublish'],
+                        requestPublish: buildValidPublishPayload({unexpectedField: 'nope'})
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: unknown-field'});
+
+            // Unknown channel
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.addMessage({
+                        to            : '@tobiu',
+                        subject       : 'unknown channel',
+                        body          : 'test',
+                        taggedConcepts: ['requestPublish'],
+                        requestPublish: buildValidPublishPayload({channel: 'bluesky'})
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: channel'});
+
+            // Unknown format
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.addMessage({
+                        to            : '@tobiu',
+                        subject       : 'unknown format',
+                        body          : 'test',
+                        taggedConcepts: ['requestPublish'],
+                        requestPublish: buildValidPublishPayload({format: 'carousel'})
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: format'});
+
+            // Recipient other than the Fleet's registered human operator identity
+            GraphService.upsertNode({
+                id        : '@external-human',
+                type      : 'AgentIdentity',
+                name      : 'External Human',
+                properties: {accountType: 'human', trustTier: 'external'}
+            });
+
+            for (const badRecipient of ['@bob', 'AGENT:*', '@external-human']) {
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                        MailboxService.addMessage({
+                            to            : badRecipient,
+                            subject       : `bad recipient ${badRecipient}`,
+                            body          : 'test',
+                            taggedConcepts: ['requestPublish'],
+                            requestPublish: buildValidPublishPayload()
+                        })
+                    )
+                ).rejects.toMatchObject({code: 'refused: recipient'});
+            }
+
+            // Non-agent sender is refused with refused: sender
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.addMessage({
+                        to            : '@tobiu',
+                        subject       : 'human sender not allowed for requestPublish',
+                        body          : 'test',
+                        taggedConcepts: ['requestPublish'],
+                        requestPublish: buildValidPublishPayload()
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: sender'});
+        });
+
+        test('AC-2: revisionDigest changes when any of account, channel, format, text, media, or inReplyTo changes; operator Edit creates a new immutable revision inheriting neither approval nor attestation; old digests do not match the new revision', async () => {
+            const base = buildValidPublishPayload({
+                format   : 'reply',
+                inReplyTo: '1890000000000000001'
+            });
+            const baseDigest = MailboxService.computePublishRevisionDigest(base);
+
+            const mutations = [
+                {label: 'account',   patch: {account: '@neomjs-alt'}},
+                {label: 'channel',   patch: {channel: 'linkedin'}},
+                {label: 'format',    patch: {format: 'link-reply'}},
+                {label: 'text',      patch: {text: `${base.text} (updated)`}},
+                {label: 'media',     patch: {media: []}},
+                {label: 'inReplyTo', patch: {inReplyTo: '1890000000000000999'}}
+            ];
+
+            for (const {label, patch} of mutations) {
+                const mutatedDigest = MailboxService.computePublishRevisionDigest({...base, ...patch});
+                expect(mutatedDigest, `digest must change when ${label} changes`).not.toBe(baseDigest);
+            }
+
+            // Create Revision 1
+            const created = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, async () => {
+                return await MailboxService.addMessage({
+                    to            : '@tobiu',
+                    subject       : '[requestPublish] revision lifecycle test',
+                    body          : base.text,
+                    taggedConcepts: ['requestPublish'],
+                    requestPublish: base
+                });
+            });
+            const rev1Digest = created.revisionDigest;
+
+            // Same-family reviewer (@neo-gemini-pro, family=gemini) is refused
+            const sameFamilyReview = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-pro'}, async () => {
+                return await MailboxService.addMessage({
+                    to     : '@tobiu',
+                    subject: `[requestPublish-review] LGTM ${rev1Digest}`,
+                    body   : `Attesting revisionDigest ${rev1Digest}`
+                });
+            });
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.attestPublishRevision({
+                        taskId           : created.messageId,
+                        reviewerMessageId: sameFamilyReview.messageId,
+                        revisionDigest   : rev1Digest
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: same-family'});
+
+            // Cross-family reviewer (@neo-opus-ada, family=claude) attests Revision 1
+            const crossFamilyReview = await RequestContextService.run({agentIdentityNodeId: '@neo-opus-ada'}, async () => {
+                return await MailboxService.addMessage({
+                    to     : '@tobiu',
+                    subject: `[requestPublish-review] APPROVED ${rev1Digest}`,
+                    body   : `Verified claims and tone for revisionDigest: ${rev1Digest}`
+                });
+            });
+            const attestedRev1 = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, async () => {
+                return await MailboxService.attestPublishRevision({
+                    taskId           : created.messageId,
+                    reviewerMessageId: crossFamilyReview.messageId,
+                    revisionDigest   : rev1Digest
+                });
+            });
+            expect(attestedRev1.attestation).toMatchObject({
+                reviewerMessageId: crossFamilyReview.messageId,
+                reviewerFrom     : '@neo-opus-ada',
+                reviewerFamily   : 'claude',
+                revisionNumber   : 1,
+                revisionDigest   : rev1Digest
+            });
+
+            // Human operator (@tobiu) approves Revision 1
+            const approvedRev1 = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                return await MailboxService.approvePublishRevision({
+                    taskId        : created.messageId,
+                    revisionDigest: rev1Digest
+                });
+            });
+            expect(approvedRev1.approval).toMatchObject({
+                approvedBy    : '@tobiu',
+                revisionNumber: 1,
+                revisionDigest: rev1Digest
+            });
+
+            // Operator Edit creates Revision 2 under the same MESSAGE:<uuid> request id
+            const edited = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                return await MailboxService.editPublishRequest({
+                    taskId: created.messageId,
+                    patch : {
+                        text: 'Neo.mjs v13.2 ships deterministic SharedWorker state synchronization — edited by operator.'
+                    }
+                });
+            });
+
+            expect(edited.messageId).toBe(created.messageId);
+            expect(edited.revisionNumber).toBe(2);
+            expect(edited.revisionDigest).not.toBe(rev1Digest);
+            expect(edited.revision.approval).toBeNull();
+            expect(edited.revision.attestation).toBeNull();
+            expect(edited.revisions).toHaveLength(2);
+            // Revision 1 remains immutable in revisions history with its original digest, approval, and attestation
+            expect(edited.revisions[0].revisionNumber).toBe(1);
+            expect(edited.revisions[0].revisionDigest).toBe(rev1Digest);
+            expect(edited.revisions[0].approval.revisionDigest).toBe(rev1Digest);
+            expect(edited.revisions[0].attestation.revisionDigest).toBe(rev1Digest);
+
+            // An approval or attestation against the old digest (rev1Digest) is refused on Revision 2
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.approvePublishRevision({
+                        taskId        : created.messageId,
+                        revisionDigest: rev1Digest
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: digest-mismatch'});
+
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.attestPublishRevision({
+                        taskId           : created.messageId,
+                        reviewerMessageId: crossFamilyReview.messageId,
+                        revisionDigest   : rev1Digest
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: attestation'});
+
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionPublishState({
+                        taskId        : created.messageId,
+                        newState      : 'publishing',
+                        revisionDigest: rev1Digest
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: digest-mismatch'});
+        });
+
+        test('AC-3: publication state (queued → publishing → published | refused | unresolved) admits only legal moves, stores textAsRequested and textAsPublished, and refuses Task Completed while publication state is not published', async () => {
+            const payload = buildValidPublishPayload();
+            const created = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, async () => {
+                return await MailboxService.addMessage({
+                    to            : '@tobiu',
+                    subject       : '[requestPublish] publication state machine test',
+                    body          : payload.text,
+                    taggedConcepts: ['requestPublish'],
+                    requestPublish: payload
+                });
+            });
+            const taskId = created.messageId;
+
+            // Illegal move: queued → published (skipping publishing)
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionPublishState({
+                        taskId,
+                        newState       : 'published',
+                        providerId     : 'x:19001',
+                        textAsPublished: payload.text
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: illegal-publication-transition'});
+
+            // Illegal move: queued → unresolved
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionPublishState({
+                        taskId,
+                        newState: 'unresolved'
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: illegal-publication-transition'});
+
+            // Move A2A Task to Working
+            await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                const res = await MailboxService.transitionTask({taskId, newState: 'Working'});
+                expect(res.success).toBe(true);
+            });
+
+            // Completed is refused while publication state is 'queued'
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionTask({taskId, newState: 'Completed'})
+                )
+            ).rejects.toMatchObject({
+                code            : 'refused: not-published',
+                publicationState: 'queued'
+            });
+
+            // Legal move: queued → publishing
+            const publishingRes = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                return await MailboxService.transitionPublishState({
+                    taskId,
+                    newState      : 'publishing',
+                    revisionDigest: created.revisionDigest
+                });
+            });
+            expect(publishingRes.publication.state).toBe('publishing');
+            expect(publishingRes.publication.reservation).toMatchObject({
+                revisionNumber: 1,
+                revisionDigest: created.revisionDigest,
+                reservedBy    : '@tobiu'
+            });
+
+            // Completed is still refused while publication state is 'publishing'
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionTask({taskId, newState: 'Completed'})
+                )
+            ).rejects.toMatchObject({
+                code            : 'refused: not-published',
+                publicationState: 'publishing'
+            });
+
+            // Transition to published is refused if textAsPublished mismatches textAsRequested
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionPublishState({
+                        taskId,
+                        newState       : 'published',
+                        providerId     : 'x:19001',
+                        textAsPublished: 'Truncated by platform...'
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: text-mismatch'});
+
+            // Legal move: publishing → unresolved (e.g., transport drop before read-back)
+            const unresolvedRes = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                return await MailboxService.transitionPublishState({
+                    taskId,
+                    newState       : 'unresolved',
+                    textAsPublished: null,
+                    refusalReason  : 'unresolved: readback-timeout'
+                });
+            });
+            expect(unresolvedRes.publication.state).toBe('unresolved');
+
+            // Completed is refused while publication state is 'unresolved'
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionTask({taskId, newState: 'Completed'})
+                )
+            ).rejects.toMatchObject({
+                code            : 'refused: not-published',
+                publicationState: 'unresolved'
+            });
+
+            // Illegal move from unresolved: unresolved → publishing or unresolved → queued
+            for (const illegalFromUnresolved of ['queued', 'publishing']) {
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                        MailboxService.transitionPublishState({
+                            taskId,
+                            newState: illegalFromUnresolved
+                        })
+                    )
+                ).rejects.toMatchObject({code: 'refused: illegal-publication-transition'});
+            }
+
+            // Legal reconciliation move: unresolved → published with exact textAsPublished and providerId
+            const publishedRes = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                return await MailboxService.transitionPublishState({
+                    taskId,
+                    newState       : 'published',
+                    providerId     : 'x:1900123456',
+                    textAsPublished: payload.text
+                });
+            });
+            expect(publishedRes.publication).toMatchObject({
+                state          : 'published',
+                textAsRequested: payload.text,
+                textAsPublished: payload.text,
+                providerId     : 'x:1900123456',
+                refusalReason  : null
+            });
+
+            // Terminal publication state 'published' refuses any further publication transitions
+            for (const afterPublished of ['queued', 'publishing', 'refused', 'unresolved']) {
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                        MailboxService.transitionPublishState({
+                            taskId,
+                            newState: afterPublished
+                        })
+                    )
+                ).rejects.toMatchObject({code: 'refused: illegal-publication-transition'});
+            }
+
+            // Now A2A Task transition to Completed succeeds and persists providerId on task
+            const completedTask = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                return await MailboxService.transitionTask({taskId, newState: 'Completed'});
+            });
+            expect(completedTask.success).toBe(true);
+            expect(completedTask.task.state).toBe('Completed');
+            expect(completedTask.task.providerId).toBe('x:1900123456');
+
+            // Verify refused branch: queued → publishing → refused
+            const refusedCandidate = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, async () => {
+                return await MailboxService.addMessage({
+                    to            : '@tobiu',
+                    subject       : '[requestPublish] refused branch test',
+                    body          : payload.text,
+                    taggedConcepts: ['requestPublish'],
+                    requestPublish: payload
+                });
+            });
+            await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                await MailboxService.transitionPublishState({
+                    taskId  : refusedCandidate.messageId,
+                    newState: 'publishing'
+                });
+                const refusedPub = await MailboxService.transitionPublishState({
+                    taskId       : refusedCandidate.messageId,
+                    newState     : 'refused',
+                    refusalReason: 'refused: provider-403'
+                });
+                expect(refusedPub.publication.state).toBe('refused');
+                expect(refusedPub.publication.refusalReason).toBe('refused: provider-403');
+            });
+
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionTask({
+                        taskId  : refusedCandidate.messageId,
+                        newState: 'Completed'
+                    })
+                )
+            ).rejects.toMatchObject({
+                code            : 'refused: not-published',
+                publicationState: 'refused'
+            });
+        });
+
+        test('AC-4 & AC-5: memory-core openapi.yaml describes requestPublish, its payload, revision, and publication state per ADR 0042, and no token, credential, or platform secret appears in the payload schema or runtime payload', async () => {
+            const openApiPath = path.resolve(process.cwd(), 'ai/mcp/server/memory-core/openapi.yaml');
+            const openApiDoc  = yaml.load(await fsPromises.readFile(openApiPath, 'utf8'));
+
+            const addMessageSchema = openApiDoc.paths['/mailbox/messages']?.post?.requestBody?.content?.['application/json']?.schema;
+            const transitionDesc   = openApiDoc.paths['/mailbox/tasks/transition']?.post?.description || '';
+
+            expect(addMessageSchema?.properties?.taggedConcepts?.description).toContain('requestPublish');
+            expect(addMessageSchema?.properties?.task?.description).toContain('revisionDigest');
+            expect(addMessageSchema?.properties?.task?.description).toContain('queued → publishing → published | refused | unresolved');
+            expect(transitionDesc).toContain('requestPublish');
+            expect(transitionDesc).toContain('queued → publishing → published | refused | unresolved');
+
+            const payloadSchema     = openApiDoc.components?.schemas?.RequestPublishPayload;
+            const mediaSchema       = openApiDoc.components?.schemas?.RequestPublishMediaDescriptor;
+            const attestationSchema = openApiDoc.components?.schemas?.RequestPublishAttestationInput;
+            const revisionSchema    = openApiDoc.components?.schemas?.RequestPublishRevision;
+            const publicationSchema = openApiDoc.components?.schemas?.RequestPublishPublicationState;
+
+            expect(payloadSchema).toBeDefined();
+            expect(payloadSchema.additionalProperties).toBe(false);
+            expect(payloadSchema.required).toEqual(['channel', 'account', 'text', 'media', 'hypothesis', 'format']);
+            expect(payloadSchema.properties.channel.enum).toEqual(['x', 'linkedin']);
+            expect(payloadSchema.properties.format.enum).toEqual(['post', 'link-reply', 'reply']);
+
+            expect(revisionSchema).toBeDefined();
+            expect(revisionSchema.additionalProperties).toBe(false);
+            expect(revisionSchema.description).toContain('revisionDigest');
+
+            expect(publicationSchema).toBeDefined();
+            expect(publicationSchema.additionalProperties).toBe(false);
+            expect(publicationSchema.properties.state.enum).toEqual(['queued', 'publishing', 'published', 'refused', 'unresolved']);
+            expect(publicationSchema.required).toEqual(expect.arrayContaining(['state', 'textAsRequested', 'textAsPublished']));
+
+            // AC-5 Negative schema test: no token, credential, or platform secret property appears in any RequestPublish schema
+            const forbiddenSecretPattern = /(token|secret|password|apikey|privatekey|credential|bearer|oauth)/i;
+            for (const [schemaName, schemaObj] of Object.entries({
+                RequestPublishPayload         : payloadSchema,
+                RequestPublishMediaDescriptor : mediaSchema,
+                RequestPublishAttestationInput: attestationSchema,
+                RequestPublishRevision        : revisionSchema,
+                RequestPublishPublicationState: publicationSchema
+            })) {
+                const propertyNames = Object.keys(schemaObj?.properties || {});
+                for (const propName of propertyNames) {
+                    expect(propName, `${schemaName}.${propName} must not be a secret/token/credential field`).not.toMatch(forbiddenSecretPattern);
+                }
+                expect(JSON.stringify(schemaObj), `${schemaName} must not embed token/credential/secret fields`).not.toMatch(forbiddenSecretPattern);
+            }
+
+            // AC-5 Runtime negative test: secret/token/credential keys in requestPublish payload or edit patch are refused
+            for (const secretKey of ['accessToken', 'refreshToken', 'apiKey', 'clientSecret', 'bearer', 'credentials']) {
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                        MailboxService.addMessage({
+                            to            : '@tobiu',
+                            subject       : `secret key ${secretKey}`,
+                            body          : 'test',
+                            taggedConcepts: ['requestPublish'],
+                            requestPublish: buildValidPublishPayload({[secretKey]: 'redact-me'})
+                        })
+                    )
+                ).rejects.toMatchObject({code: 'refused: secret-field'});
+            }
+        });
+    });
 });
