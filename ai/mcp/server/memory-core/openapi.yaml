@@ -6083,6 +6083,7 @@ components:
 
     RequestPublishAttestationInput:
       type: object
+      nullable: true
       additionalProperties: false
       required: [reviewerMessageId, revisionDigest]
       description: "Cross-family review attestation reference per ADR 0042 §1.5. The server derives the reviewer's identity and modelFamily from reviewerMessageId."
@@ -6137,9 +6138,7 @@ components:
           nullable: true
           description: "Upstream post/thread identifier when `format` is `'link-reply'` or `'reply'`, or `null` when `format` is `'post'`."
         attestation:
-          nullable: true
-          allOf:
-            - $ref: '#/components/schemas/RequestPublishAttestationInput'
+          $ref: '#/components/schemas/RequestPublishAttestationInput'
 
     RequestPublishRevision:
       type: object
