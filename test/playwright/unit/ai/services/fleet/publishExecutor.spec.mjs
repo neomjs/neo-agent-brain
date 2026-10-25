@@ -23,6 +23,13 @@ import RequestContextService       from '../../../../../../ai/mcp/server/shared/
 import FleetControlBridge          from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
 import {wireOperatorComposeWriter} from '../../../../../../ai/services/fleet/wireOperatorComposeWriter.mjs';
 import {
+    X_REFRESH_MARGIN_MS,
+    createFleetCustodyStore as createFleetCustodyStoreDirect
+} from '../../../../../../ai/services/fleet/fleetCustodyStore.mjs';
+import {
+    createSocialPlatformClient as createSocialPlatformClientDirect
+} from '../../../../../../ai/services/fleet/socialPlatformClient.mjs';
+import {
     LINKEDIN_TOKEN_MAX_AGE_MS,
     PUBLICATION_STATES,
     PUBLISH_CHANNELS,
@@ -1740,6 +1747,223 @@ test.describe('publishExecutor (#979)', () => {
             FleetControlBridge.composeWriter   = null;
             FleetControlBridge.publishExecutor = null;
             FleetControlBridge.registry        = null;
+            await fs.rm(tempRoot, {recursive: true, force: true});
+        }
+    });
+
+    test('#1267 RA-1 & Observation-4: FleetControlBridge strips seam overrides from wire params and resolves readMetrics durably from MailboxService across executor instances', async () => {
+        const unapprovedReq = seedApprovedRequest({
+            approved: false
+        });
+        const digest  = unapprovedReq.currentRevision.revisionDigest;
+        const mailbox = createInMemoryMailbox({[REQ_ID]: unapprovedReq});
+
+        let   platformCalls  = 0;
+        const customExecutor = createPublishExecutor({
+            mailbox,
+            credentials: {'x:@neomjs': SECRET},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            now        : () => NOW_MS,
+            platform   : {
+                async publishPost() {
+                    platformCalls += 1;
+                    return {providerId: 'should-not-publish'};
+                }
+            }
+        });
+
+        try {
+            FleetControlBridge.publishExecutor = customExecutor;
+
+            // Attempt wire injection of switchStore: auto-approve and non-function platform override
+            const bypassAttempt = await FleetControlBridge.publish({
+                requestId     : REQ_ID,
+                revisionDigest: digest,
+                switchStore   : {[`${PEER_ID}:x`]: SWITCH_STATES.autoApprove},
+                platform      : 'malicious-non-function',
+                custody       : {readCredential: async () => ({ok: true, token: 'injected'})}
+            });
+
+            expect(bypassAttempt).toMatchObject({
+                ok     : false,
+                state  : PUBLICATION_STATES.refused,
+                refused: REFUSAL_CODES.switch
+            });
+            expect(platformCalls).toBe(0);
+
+            // Verify durable readMetrics lookup from MailboxService on a fresh executor instance with no in-memory publishedByProviderId entry
+            const publishedReq = seedApprovedRequest({
+                payload: {
+                    channel: PUBLISH_CHANNELS.linkedin,
+                    account: 'urn:li:organization:998877',
+                    format : PUBLISH_FORMATS.post,
+                    text   : 'Published LinkedIn org post'
+                }
+            });
+            publishedReq.publication.state      = PUBLICATION_STATES.published;
+            publishedReq.publication.providerId = 'urn:li:share:55443322';
+            const durableMailbox  = createInMemoryMailbox({[REQ_ID]: publishedReq});
+            let   metricsCallArgs = null;
+            const freshExecutor   = createPublishExecutor({
+                mailbox    : durableMailbox,
+                credentials: {'linkedin:urn:li:organization:998877': SECRET},
+                now        : () => NOW_MS,
+                platform   : {
+                    async readMetrics(args) {
+                        metricsCallArgs = args;
+                        return {
+                            source    : 'linkedin-community-management-api',
+                            window    : 'lifetime',
+                            claimClass: 'owned-object-telemetry',
+                            statistics: {impressions: 900, likes: 45}
+                        };
+                    }
+                }
+            });
+
+            FleetControlBridge.publishExecutor = freshExecutor;
+            const metricsOut = await FleetControlBridge.readMetrics({
+                providerId: 'urn:li:share:55443322',
+                custody   : {readCredential: async () => ({ok: false, reason: 'injected-custody-must-be-ignored'})},
+                platform  : 'injected-platform-must-be-ignored'
+            });
+
+            expect(metricsOut).toMatchObject({
+                ok        : true,
+                providerId: 'urn:li:share:55443322',
+                channel   : PUBLISH_CHANNELS.linkedin,
+                account   : 'urn:li:organization:998877'
+            });
+            expect(metricsCallArgs).toMatchObject({
+                providerId: 'urn:li:share:55443322',
+                channel   : PUBLISH_CHANNELS.linkedin,
+                account   : 'urn:li:organization:998877'
+            });
+        } finally {
+            FleetControlBridge.publishExecutor = null;
+        }
+    });
+
+    test('#1267 RA-3 & RA-4: fleetCustodyStore single-flight refresh, 60s pre-expiry margin, non-clobbering concurrent bundle writes, and split module exports', async () => {
+        expect(createFleetCustodyStoreDirect).toBe(createFleetCustodyStore);
+        expect(createSocialPlatformClientDirect).toBe(createSocialPlatformClient);
+        expect(X_REFRESH_MARGIN_MS).toBe(60_000);
+
+        const tempRoot   = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-custody-ra3-'));
+        const bundlePath = path.join(tempRoot, 'social-credentials.json');
+
+        // Seed two accounts in the shared bundle:
+        // - @neomjs expires 30s from NOW_MS (inside the 60s pre-expiry margin -> must rotate!)
+        // - @neo-gemini-maryam is already expired -> must also rotate without clobbering @neomjs
+        await fs.writeFile(
+            bundlePath,
+            JSON.stringify({
+                'x:@neomjs': {
+                    accessToken : 'old-access-neomjs',
+                    refreshToken: 'old-refresh-neomjs',
+                    expiresAt   : new Date(NOW_MS + 30_000).toISOString()
+                },
+                'x:@neo-gemini-maryam': {
+                    accessToken : 'old-access-maryam',
+                    refreshToken: 'old-refresh-maryam',
+                    expiresAt   : new Date(NOW_MS - 5_000).toISOString()
+                }
+            }, null, 2),
+            {encoding: 'utf8', mode: 0o600}
+        );
+
+        try {
+            let neomjsRefreshCalls = 0;
+            let maryamRefreshCalls = 0;
+
+            const store = createFleetCustodyStoreDirect({
+                custodyDir: tempRoot,
+                now       : () => NOW_MS,
+                fetch     : async (_url, init) => {
+                    const params = new URLSearchParams(init.body);
+                    const rt     = params.get('refresh_token');
+                    await new Promise(resolve => setTimeout(resolve, 15));
+
+                    if (rt === 'old-refresh-neomjs') {
+                        neomjsRefreshCalls += 1;
+                        return {
+                            ok    : true,
+                            status: 200,
+                            async json() {
+                                return {
+                                    access_token : `new-access-neomjs-${neomjsRefreshCalls}`,
+                                    refresh_token: `new-refresh-neomjs-${neomjsRefreshCalls}`,
+                                    expires_in   : 7200
+                                };
+                            }
+                        };
+                    }
+
+                    if (rt === 'old-refresh-maryam') {
+                        maryamRefreshCalls += 1;
+                        return {
+                            ok    : true,
+                            status: 200,
+                            async json() {
+                                return {
+                                    access_token : `new-access-maryam-${maryamRefreshCalls}`,
+                                    refresh_token: `new-refresh-maryam-${maryamRefreshCalls}`,
+                                    expires_in   : 7200
+                                };
+                            }
+                        };
+                    }
+
+                    return {ok: false, status: 400, async json() { return {error: 'unexpected_token'}; }};
+                }
+            });
+
+            // Fire two concurrent reads for @neomjs (testing single-flight + 60s pre-expiry margin)
+            // and one concurrent read for @neo-gemini-maryam (testing serialized non-clobbering bundle write)
+            const [resNeomjs1, resNeomjs2, resMaryam] = await Promise.all([
+                store.readCredential({channel: PUBLISH_CHANNELS.x, account: '@neomjs', nowMs: NOW_MS}),
+                store.readCredential({channel: PUBLISH_CHANNELS.x, account: '@neomjs', nowMs: NOW_MS}),
+                store.readCredential({channel: PUBLISH_CHANNELS.x, account: '@neo-gemini-maryam', nowMs: NOW_MS})
+            ]);
+
+            expect(neomjsRefreshCalls).toBe(1);
+            expect(maryamRefreshCalls).toBe(1);
+            expect(resNeomjs1).toMatchObject({ok: true, rotated: true, token: 'new-access-neomjs-1'});
+            expect(resNeomjs2).toMatchObject({ok: true, rotated: true, token: 'new-access-neomjs-1'});
+            expect(resMaryam).toMatchObject({ok: true, rotated: true, token: 'new-access-maryam-1'});
+
+            // Verify both rotated accounts survived in social-credentials.json without clobbering one another
+            const persistedBundle = JSON.parse(await fs.readFile(bundlePath, 'utf8'));
+            expect(persistedBundle['x:@neomjs'].accessToken).toBe('new-access-neomjs-1');
+            expect(persistedBundle['x:@neomjs'].refreshToken).toBe('new-refresh-neomjs-1');
+            expect(persistedBundle['x:@neo-gemini-maryam'].accessToken).toBe('new-access-maryam-1');
+            expect(persistedBundle['x:@neo-gemini-maryam'].refreshToken).toBe('new-refresh-maryam-1');
+
+            // Also verify POST /2/tweets sends only standard Authorization + Content-Type headers
+            let   capturedTweetHeaders = null;
+            const client               = createSocialPlatformClientDirect({
+                now  : () => NOW_MS,
+                fetch: async (_url, init) => {
+                    if (init?.method === 'POST') {
+                        capturedTweetHeaders = init.headers;
+                    }
+                    return {ok: true, status: 201, async json() { return {data: {id: 'tweet-hdr-1', text: 'hello'}}; }};
+                }
+            });
+            await client.publishPost({
+                channel       : PUBLISH_CHANNELS.x,
+                account       : '@neomjs',
+                format        : PUBLISH_FORMATS.post,
+                text          : 'hello',
+                token         : 'tok-1',
+                attemptId     : 'attempt-hdr-1',
+                revisionDigest: 'digest-hdr-1'
+            });
+            expect(capturedTweetHeaders).toEqual({
+                'Authorization': 'Bearer tok-1',
+                'Content-Type' : 'application/json'
+            });
+        } finally {
             await fs.rm(tempRoot, {recursive: true, force: true});
         }
     });

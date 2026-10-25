@@ -587,10 +587,19 @@ class FleetControlBridge extends Base {
             const custodyDir = typeof this.getRegistry()?.getDataDir === 'function'
                 ? this.getRegistry().getDataDir()
                 : null;
-            return createPublishExecutor({
-                mailbox: this.composeWriter,
-                custodyDir
-            });
+            if (
+                !this._defaultPublishExecutor ||
+                this._defaultPublishExecutorMailbox !== this.composeWriter ||
+                this._defaultPublishExecutorCustodyDir !== custodyDir
+            ) {
+                this._defaultPublishExecutorMailbox    = this.composeWriter;
+                this._defaultPublishExecutorCustodyDir = custodyDir;
+                this._defaultPublishExecutor           = createPublishExecutor({
+                    mailbox: this.composeWriter,
+                    custodyDir
+                });
+            }
+            return this._defaultPublishExecutor;
         }
         return null;
     }
@@ -1516,44 +1525,52 @@ class FleetControlBridge extends Base {
     /**
      * @summary WRITE: execute an approved `requestPublish` revision at most once under Fleet
      * credential custody (`<userData>/brain/fleet`) and `MailboxService` single-writer reservation.
+     * Accepts only `requestId` (or `messageId`) and `revisionDigest` from the wire; executor seam
+     * overrides (`switchStore`, `custody`, `platform`, `mailbox`, `mediaReader`, `now`) are never
+     * forwarded from wire parameters.
      * @param {String|Object} requestOrId
      * @param {String}        [revisionDigest]
-     * @param {Object}        [options={}]
      * @returns {Promise<Object>|Object}
      */
-    publish(requestOrId, revisionDigest, options = {}) {
+    publish(requestOrId, revisionDigest) {
         const executor = this.getPublishExecutor();
         if (typeof executor?.publish !== 'function') {
             return {status: 'not-wired', reason: 'fleet: publish executor not wired'};
         }
 
         if (requestOrId && typeof requestOrId === 'object' && !Array.isArray(requestOrId)) {
-            const {requestId, messageId, revisionDigest: paramDigest, ...rest} = requestOrId;
-            return executor.publish(requestId ?? messageId, paramDigest ?? revisionDigest, rest);
+            const targetId     = requestOrId.requestId ?? requestOrId.messageId,
+                  targetDigest = requestOrId.revisionDigest ?? revisionDigest;
+            return executor.publish(targetId, targetDigest);
         }
 
-        return executor.publish(requestOrId, revisionDigest, options);
+        return executor.publish(requestOrId, revisionDigest);
     }
 
     /**
      * @summary READ-OBSERVE: read owned-object metrics (`public_metrics` + `non_public_metrics` on X
-     * or organization share statistics on LinkedIn) under Fleet custody.
+     * or organization share statistics on LinkedIn) under Fleet custody. Forwards only `providerId`
+     * and optional string `{channel, account, requestId}` lookup hints; executor seam overrides are
+     * never accepted from wire parameters.
      * @param {String|Object} providerOrParams
-     * @param {Object}        [options={}]
      * @returns {Promise<Object>|Object}
      */
-    readMetrics(providerOrParams, options = {}) {
+    readMetrics(providerOrParams) {
         const executor = this.getPublishExecutor();
         if (typeof executor?.readMetrics !== 'function') {
             return {status: 'not-wired', reason: 'fleet: publish executor not wired'};
         }
 
         if (providerOrParams && typeof providerOrParams === 'object' && !Array.isArray(providerOrParams)) {
-            const {providerId, ...rest} = providerOrParams;
-            return executor.readMetrics(providerId, rest);
+            const {providerId, channel, account, requestId} = providerOrParams,
+                  safeOptions                               = {};
+            if (typeof channel === 'string' && channel)     safeOptions.channel   = channel;
+            if (typeof account === 'string' && account)     safeOptions.account   = account;
+            if (typeof requestId === 'string' && requestId) safeOptions.requestId = requestId;
+            return executor.readMetrics(providerId, safeOptions);
         }
 
-        return executor.readMetrics(providerOrParams, options);
+        return executor.readMetrics(providerOrParams);
     }
 
     /**
@@ -1563,8 +1580,16 @@ class FleetControlBridge extends Base {
      * @returns {Promise<Object>}
      */
     reply(params = {}) {
-        const executor = this.getPublishExecutor() ?? createPublishExecutor();
-        return executor.reply(params);
+        const executor   = this.getPublishExecutor() ?? createPublishExecutor(),
+              safeParams = (params && typeof params === 'object' && !Array.isArray(params))
+                  ? {
+                      ...(typeof params.inReplyTo === 'string' ? {inReplyTo: params.inReplyTo} : {}),
+                      ...(typeof params.text === 'string' ? {text: params.text} : {}),
+                      ...(typeof params.channel === 'string' ? {channel: params.channel} : {}),
+                      ...(typeof params.account === 'string' ? {account: params.account} : {})
+                  }
+                  : {};
+        return executor.reply(safeParams);
     }
 
     /**
