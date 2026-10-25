@@ -1,0 +1,14 @@
+{
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.neomjs/neural-link",
+    "title": "Neo.mjs Neural Link",
+    "description": "Live runtime inspection, component tree, VDOM, state, and hot-patching bridge for Neo.mjs apps.",
+    "version": "1.0.0",
+    "websiteUrl": "https://neomjs.com",
+    "repository": {
+        "id": "1344062228",
+        "source": "github",
+        "subfolder": "ai/mcp/server/neural-link",
+        "url": "https://github.com/neomjs/neo-agent-brain"
+    }
+}

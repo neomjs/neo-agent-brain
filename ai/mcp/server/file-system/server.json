@@ -1,0 +1,14 @@
+{
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.neomjs/file-system",
+    "title": "Neo.mjs File System",
+    "description": "Path-jailed file inspection, syntax checking, and test execution tools for Neo.mjs coding agents.",
+    "version": "1.0.0",
+    "websiteUrl": "https://neomjs.com",
+    "repository": {
+        "id": "1344062228",
+        "source": "github",
+        "subfolder": "ai/mcp/server/file-system",
+        "url": "https://github.com/neomjs/neo-agent-brain"
+    }
+}

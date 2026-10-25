@@ -1,0 +1,14 @@
+{
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.neomjs/knowledge-base",
+    "title": "Neo.mjs Knowledge Base",
+    "description": "Semantic search, class hierarchy, and documentation retrieval over the Neo.mjs codebase and guides.",
+    "version": "1.0.0",
+    "websiteUrl": "https://neomjs.com",
+    "repository": {
+        "id": "1344062228",
+        "source": "github",
+        "subfolder": "ai/mcp/server/knowledge-base",
+        "url": "https://github.com/neomjs/neo-agent-brain"
+    }
+}

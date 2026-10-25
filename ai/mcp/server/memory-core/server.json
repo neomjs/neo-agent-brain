@@ -1,0 +1,14 @@
+{
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "io.github.neomjs/memory-core",
+    "title": "Neo.mjs Memory Core",
+    "description": "Persistent episodic memory, hybrid GraphRAG, session summaries, and A2A messaging for Neo.mjs.",
+    "version": "1.0.0",
+    "websiteUrl": "https://neomjs.com",
+    "repository": {
+        "id": "1344062228",
+        "source": "github",
+        "subfolder": "ai/mcp/server/memory-core",
+        "url": "https://github.com/neomjs/neo-agent-brain"
+    }
+}
