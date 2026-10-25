@@ -122,8 +122,8 @@ export function createEmbodiedEpisodeNode({identityKey, model, family, since, un
 
 /**
  * @summary Validates an era chain for one identity: same anchor throughout, chronologically
- * ordered, non-overlapping, exactly ONE open era (the head) — the shape hydration and render
- * consumers may rely on without re-checking.
+ * ordered with positive-duration closed spans, no overlap and exactly ONE open era (the head).
+ * Hydration and render consumers may rely on this shape without re-checking.
  * @param {Object} identityNode An `IdentityState` node
  * @param {Object[]} episodes The identity's `EmbodiedEpisode` nodes, any order
  * @returns {{valid: Boolean, reason: String|null}}
@@ -153,6 +153,10 @@ export function validateEraChain(identityNode, episodes) {
 
         if (era.until !== null && !Number.isFinite(Date.parse(era.until))) {
             return {valid: false, reason: `era "${era.id || String(era.since)}" has an unparseable until — overlap checks would be vacuous`};
+        }
+
+        if (era.until !== null && Date.parse(era.until) <= Date.parse(era.since)) {
+            return {valid: false, reason: 'a closed era must end after since'};
         }
     }
 

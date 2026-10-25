@@ -134,6 +134,44 @@ test.describe('identitySchema — node-types + the reflexive-landing acceptance 
         expect(Object.keys(snapshotSelf)).not.toContain('eras');
     });
 
+    for (const [label, until] of [
+        ['reversed', '2026-05-31T00:00:00Z'],
+        ['empty', '2026-06-01T00:00:00Z'],
+        ['same instant with another offset', '2026-06-01T02:00:00+02:00']
+    ]) {
+        test('raw ' + label + ' closed intervals refuse before migration', () => {
+            const {identity, episodes} = buildRealResident(),
+                closed                 = {...episodes[0], until},
+                head                   = schema.createEmbodiedEpisodeNode({
+                    identityKey: REAL_ANCHOR, model: 'm2', family: 'gpt', since: '2026-07-01T00:00:00Z'
+                }).node,
+                history = [closed, head],
+                before = structuredClone(history);
+
+            expect(schema.validateEraChain(identity, history)).toMatchObject({
+                valid: false, reason: expect.stringContaining('after since')
+            });
+            expect(schema.migrateEra({
+                identityNode: identity,
+                episodes    : history,
+                newEra      : {model: 'm3', family: 'claude', since: '2026-08-01T00:00:00Z'}
+            })).toMatchObject({valid: false, episodes: null});
+            expect(history).toEqual(before);
+        });
+    }
+
+    test('positive closed intervals allow adjacency and gaps', () => {
+        const {identity, episodes} = buildRealResident(),
+            head                   = schema.createEmbodiedEpisodeNode({
+                identityKey: REAL_ANCHOR, model: 'm2', family: 'gpt', since: '2026-07-01T00:00:00Z'
+            }).node;
+
+        for (const until of ['2026-07-01T00:00:00Z', '2026-06-30T00:00:00Z']) {
+            const closed = {...episodes[0], until};
+            expect(schema.validateEraChain(identity, [head, closed])).toEqual({valid: true, reason: null});
+        }
+    });
+
     test('era-chain integrity: overlaps, multiple heads, foreign anchors, and history rewrites all refuse', () => {
         const {identity, episodes} = buildRealResident();
 
