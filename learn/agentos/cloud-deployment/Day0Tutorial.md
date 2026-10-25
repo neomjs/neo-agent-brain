@@ -714,11 +714,11 @@ Minimum handoff checklist:
 [ ] shared-handoff-data is mounted by orchestrator and mc-server at the configured handoff path.
 [ ] orchestrator-state is mounted at NEO_AI_ORCHESTRATOR_DIR; record both state-file
     hashes with the command above before redeploy.
-[ ] after a successful golden-path cycle, get_sandman_handoff returns non-null content.
+[ ] after a successful golden-path cycle, get_sandman_handoff({"sections":"all"}) returns non-null content.
 [ ] backup bundles write to the redeploy-safe backup mount.
 [ ] after docker compose down && docker compose up --build, MC healthcheck is healthy.
 [ ] the memory written in Milestone 1 can still be queried.
-[ ] get_sandman_handoff still returns the pre-redeploy handoff until the next cycle replaces it.
+[ ] get_sandman_handoff({"sections":"all"}) still returns the pre-redeploy handoff until the next cycle replaces it.
 [ ] the orchestrator state/revision values and hashes still match after the
     recreated orchestrator starts; stale PID/lease artifacts did not block boot.
 [ ] KB Neo-shared content is either still present or re-synced successfully.
@@ -727,13 +727,15 @@ Minimum handoff checklist:
 ```
 
 Use the authenticated Memory Core caller from Milestone 1 for the live handoff
-probe:
+probe (passing `{"sections":"all"}` because a bare `get_sandman_handoff` call defaults to
+`sections: ["goldenPath"]` and returns `sections.goldenPath` with `content: null`):
 
 ```bash
 node /tmp/day0-call-tool.mjs \
   "$NEO_MC_MCP_BASE_URL" \
   "$NEO_OPERATOR_IDENTITY" \
-  get_sandman_handoff
+  get_sandman_handoff \
+  '{"sections":"all"}'
 ```
 
 Run it after the orchestrator reports a successful `golden-path` cycle and

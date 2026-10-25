@@ -85,8 +85,9 @@ export function headingToSectionSlug(rawHeading) {
  * @summary Splits `sandman_handoff.md` content on level-two (`## `) headings into named sections.
  *
  * Every section slice preserves its exact substring from `markdown` (including its `## ` heading
- * line and trailing newlines up to the next `## ` boundary), so concatenating all sections in
- * `availableSections` order reproduces the original document byte-for-byte.
+ * line and trailing newlines up to the next `## ` boundary), so when every level-two heading
+ * produces a distinct non-empty slug, concatenating all sections in `availableSections` order
+ * reproduces the original document byte-for-byte.
  *
  * @param {String} markdown Raw `sandman_handoff.md` text.
  * @returns {{sectionsBySlug: Object<String, {content: String, bytes: Number}>, availableSections: String[]}}

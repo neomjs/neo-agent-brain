@@ -1,15 +1,19 @@
-import {expect, test} from '@playwright/test';
-import Neo from 'neo.mjs/src/Neo.mjs';
-import * as core from 'neo.mjs/src/core/_export.mjs';
+import {expect, test}     from '@playwright/test';
+import fs                 from 'fs-extra';
+import os                 from 'os';
+import path               from 'path';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import * as core          from 'neo.mjs/src/core/_export.mjs';
 import FleetControlBridge from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
 import {
     createFleetGoldenPathSource,
     projectComputedRoute,
     reduceComputedRouteAnswer
 } from '../../../../../../ai/services/fleet/fleetGoldenPathSource.mjs';
-import {wireFleetGoldenPathSource} from '../../../../../../ai/services/fleet/wireFleetGoldenPathSource.mjs';
+import {wireFleetGoldenPathSource}                          from '../../../../../../ai/services/fleet/wireFleetGoldenPathSource.mjs';
 import {FLEET_METHOD_SCOPE_CLASSES, FLEET_S1_METHOD_POLICY} from '../../../../../../ai/services/fleet/fleetServerPolicy.mjs';
-import {FLEET_WIRE_METHODS} from '../../../../../../src/fleet/contract/wire.mjs';
+import {readSandmanHandoff}                                 from '../../../../../../ai/services/memory-core/helpers/sandmanHandoffStore.mjs';
+import {FLEET_WIRE_METHODS}                                 from '../../../../../../src/fleet/contract/wire.mjs';
 
 const
     NOW    = '2026-09-25T15:00:00.000Z',
@@ -214,9 +218,9 @@ test.describe('fleet golden path source — the envelope', () => {
     });
 
     test('the complete handoff section is preserved verbatim through nested headings and stops before the next level-two section', async () => {
-        const input = handoffResult(),
-              start = input.content.indexOf('## Computed Golden Path (Strategic Recommendation)'),
-              end   = input.content.indexOf('## Current Release / Incident Focus'),
+        const input    = handoffResult(),
+              start    = input.content.indexOf('## Computed Golden Path (Strategic Recommendation)'),
+              end      = input.content.indexOf('## Current Release / Incident Focus'),
               expected = input.content.slice(start, end),
               envelope = await createSource({getSandmanHandoff: async () => input}).readGoldenPath();
 
@@ -231,6 +235,28 @@ test.describe('fleet golden path source — the envelope', () => {
         expect(envelope.handoff.markdown).toContain('### Evidence');
         expect(envelope.handoff.markdown).not.toContain('Current Release / Incident Focus');
         expect(envelope.sources.handoff).toEqual({state: 'available', reason: null})
+    });
+
+    test('requests sections: "all" from the real readSandmanHandoff store so the section-only default does not null payload.content', async () => {
+        const dir      = await fs.mkdtemp(path.join(os.tmpdir(), 'fleet-golden-path-handoff-')),
+              filePath = path.join(dir, 'sandman_handoff.md'),
+              input    = handoffResult();
+
+        await fs.writeFile(filePath, input.content, 'utf8');
+
+        try {
+            const envelope = await createSource({
+                getSandmanHandoff: args => readSandmanHandoff({filePath, now: NOW_MS, ...args})
+            }).readGoldenPath();
+
+            expect(envelope.sources.handoff).toEqual({state: 'available', reason: null});
+            expect(envelope.handoff.reason).toBeNull();
+            expect(envelope.handoff.markdown).toContain('## Computed Golden Path (Strategic Recommendation)');
+            expect(envelope.handoff.markdown).toContain('### Evidence');
+            expect(envelope.handoff.markdown).not.toContain('Current Release / Incident Focus')
+        } finally {
+            await fs.remove(dir)
+        }
     });
 
     test('handoff staleness is independent of the computed-route capability and preserves the producer file update time', async () => {
@@ -342,14 +368,14 @@ test.describe('fleet golden path — the bridge and the wire', () => {
 
         await bridge.goldenPathSource.readGoldenPath();
 
-        expect(receivedArgs).toEqual({});
+        expect(receivedArgs).toEqual({sections: 'all'});
 
         const legacyBridge = {goldenPathSource: null};
 
         expect(wireFleetGoldenPathSource({
             getComputedRoute   : async () => answer(),
             getRemPipelineState: async () => remState(),
-            bridge: legacyBridge
+            bridge             : legacyBridge
         })).toBe(legacyBridge.goldenPathSource);
         await expect(legacyBridge.goldenPathSource.readGoldenPath()).resolves.toMatchObject({
             capability: {state: 'wired'},

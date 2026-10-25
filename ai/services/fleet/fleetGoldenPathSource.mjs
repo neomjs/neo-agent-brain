@@ -130,7 +130,7 @@ function extractGoldenPathHandoffSection(markdown) {
  */
 function projectSandmanHandoff(payload) {
     const markdown = extractGoldenPathHandoffSection(payload?.content);
-    let reason = null;
+    let   reason   = null;
 
     if (!markdown) {
         reason = typeof payload?.content === 'string'
@@ -140,7 +140,7 @@ function projectSandmanHandoff(payload) {
 
     const
         finiteOrNull = value => typeof value === 'number' && Number.isFinite(value) ? value : null,
-        stale         = typeof payload?.stale === 'boolean' ? payload.stale : null;
+        stale        = typeof payload?.stale === 'boolean' ? payload.stale : null;
     let state;
 
     if (markdown) {
@@ -218,7 +218,7 @@ export function createFleetGoldenPathSource({getComputedRoute, getRemPipelineSta
         }
 
         try {
-            return projectSandmanHandoff(await getSandmanHandoff({}))
+            return projectSandmanHandoff(await getSandmanHandoff({sections: 'all'}))
         } catch (error) {
             const detail = redactReadFailure(error);
 
@@ -248,9 +248,9 @@ export function createFleetGoldenPathSource({getComputedRoute, getRemPipelineSta
             }
 
             const
-                capturedAt                 = new Date(nowMs).toISOString(),
+                capturedAt                = new Date(nowMs).toISOString(),
                 [routeAxis, rem, handoff] = await Promise.all([readRouteAxis(nowMs), readRemAxis(), readHandoffAxis()]),
-                admission                  = routeAxis.admission;
+                admission                 = routeAxis.admission;
 
             return {
                 capability: {
@@ -274,8 +274,8 @@ export function createFleetGoldenPathSource({getComputedRoute, getRemPipelineSta
                     admission: admission
                         ? {state: admission.admitted ? 'current' : 'withheld', reason: admission.reasonCode ?? null}
                         : {state: 'unavailable', reason: routeAxis.reason},
-                    rem      : {state: rem.state, reason: rem.reason, ...(rem.detail ? {detail: rem.detail} : {})},
-                    handoff  : {state: handoff.state, reason: handoff.reason}
+                    rem    : {state: rem.state, reason: rem.reason, ...(rem.detail ? {detail: rem.detail} : {})},
+                    handoff: {state: handoff.state, reason: handoff.reason}
                 }
             }
         }

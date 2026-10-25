@@ -9,8 +9,10 @@ import {promisify}     from 'node:util';
 
 import {
     headingToSectionSlug,
-    readSandmanHandoff,
     splitSandmanHandoffSections
+} from '../../../../../../../ai/services/memory-core/helpers/sandmanHandoffSections.mjs';
+import {
+    readSandmanHandoff
 } from '../../../../../../../ai/services/memory-core/helpers/sandmanHandoffStore.mjs';
 
 const REALISTIC_HANDOFF_FIXTURE = [

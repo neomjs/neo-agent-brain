@@ -472,17 +472,13 @@ paths:
       x-neo-tool-summary: Read the Sandman handoff (Golden Path by default; gap/consolidation sections on request) with freshness metadata.
       description: |
         Reads `sandman_handoff.md` at the resolved `handoffFilePath` config leaf
-        (`NEO_HANDOFF_FILE_PATH` override honored inside the leaf). By default
-        (`sections: ['goldenPath']`), returns only the `## Computed Golden Path` section inside
-        `sections.goldenPath` (`{content, bytes}`) with `content: null`, `availableSections`
-        listing all slugs present in the file, and `missingSections` listing any requested slugs
-        not present. Pass `sections: 'all'` or `['*']` to receive the full file in `content`.
-        The `stale` flag fires past the freshness window (default 36h — nightly cadence + slack;
-        overridable per call). A missing or unreadable handoff returns an explicit `content: null`
-        payload with a stable `reason` code (`handoff-not-found`, `handoff-read-failed`,
-        `handoff-too-large`) — never a silent empty string. Read-only: no identity mutation,
-        team-visible operational content. Remote/container agents use this to read the
-        morning surface without a repo checkout.
+        (`NEO_HANDOFF_FILE_PATH` override honored inside the leaf). The `stale` flag fires past
+        the freshness window (default 36h — nightly cadence + slack; overridable per call).
+        A missing or unreadable handoff returns an explicit `content: null` payload with a
+        stable `reason` code (`handoff-not-found`, `handoff-read-failed`, `handoff-too-large`) —
+        never a silent empty string. Read-only: no identity mutation, team-visible operational
+        content. Remote/container agents use this to read the morning surface without a repo
+        checkout.
       tags: [Diagnostics]
       requestBody:
         required: false

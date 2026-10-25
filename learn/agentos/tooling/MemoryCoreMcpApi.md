@@ -61,7 +61,7 @@ The server exposes the following tools, which are derived from its OpenAPI speci
 | **Health** | |
 | `healthcheck` | Confirms the server is running and can connect to the ChromaDB instance. |
 | **Diagnostics** | |
-| `get_sandman_handoff` | Reads the Sandman handoff (Dream Pipeline morning surface) with freshness metadata (`stale` flag past the window, overridable per call); a missing file returns an explicit null-reason payload. Serves remote/container agents without a repo checkout. |
+| `get_sandman_handoff` | Reads the Sandman handoff (Dream Pipeline morning surface) with freshness metadata (`stale` flag past the window, overridable per call). Defaults to `sections: ['goldenPath']` (`sections.goldenPath` + `availableSections` / `missingSections`); pass `sections: 'all'` for full `content` or specific section slugs (`gaps`, `consolidation`, `goldenPath`, `focus`). A missing file returns an explicit null-reason payload. Serves remote/container agents without a repo checkout. |
 | **Memories** | |
 | `add_memory` | Writes an authored diary entry for future sessions using the existing prompt, thought and response fields. |
 | `get_session_memories` | Retrieves all memories for a specific session, in chronological order. |

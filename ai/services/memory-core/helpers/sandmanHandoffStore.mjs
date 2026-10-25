@@ -1,22 +1,12 @@
 import fs from 'fs-extra';
 import {
     DEFAULT_HANDOFF_SECTIONS,
-    KNOWN_HANDOFF_SECTION_SLUGS,
-    headingToSectionSlug,
     normalizeRequestedSections,
     splitSandmanHandoffSections
 } from './sandmanHandoffSections.mjs';
 
 const DEFAULT_STALE_AFTER_MS = 36 * 60 * 60 * 1000; // nightly cadence + slack
 const DEFAULT_MAX_BYTES      = 256 * 1024;
-
-export {
-    DEFAULT_HANDOFF_SECTIONS,
-    KNOWN_HANDOFF_SECTION_SLUGS,
-    headingToSectionSlug,
-    normalizeRequestedSections,
-    splitSandmanHandoffSections
-};
 
 /**
  * @summary Reads the Sandman handoff (`sandman_handoff.md`) with freshness metadata and section filtering.
