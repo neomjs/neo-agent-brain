@@ -1939,6 +1939,76 @@ test.describe('publishExecutor (#979)', () => {
             expect(persistedBundle['x:@neo-gemini-maryam'].accessToken).toBe('new-access-maryam-1');
             expect(persistedBundle['x:@neo-gemini-maryam'].refreshToken).toBe('new-refresh-maryam-1');
 
+            // Verify failed/corrupt write-time bundle re-read falls back to per-account file without clobbering social-credentials.json
+            await fs.writeFile(
+                bundlePath,
+                JSON.stringify({
+                    'x:@neomjs': {
+                        accessToken : 'expired-neomjs-2',
+                        refreshToken: 'old-refresh-neomjs',
+                        expiresAt   : new Date(NOW_MS - 10_000).toISOString()
+                    },
+                    'x:@neo-gemini-maryam': {
+                        accessToken : 'surviving-maryam-access',
+                        refreshToken: 'surviving-maryam-refresh',
+                        expiresAt   : new Date(NOW_MS + 3_600_000).toISOString()
+                    }
+                }, null, 2),
+                {encoding: 'utf8', mode: 0o600}
+            );
+
+            let   bundleReads = 0;
+            const midWriteFs  = {
+                ...fs,
+                async readFile(targetPath, encoding) {
+                    if (targetPath === bundlePath) {
+                        bundleReads += 1;
+                        if (bundleReads === 2) {
+                            return '{"x:@neomjs":';
+                        }
+                    }
+                    return fs.readFile(targetPath, encoding);
+                }
+            };
+
+            const fallbackStore = createFleetCustodyStoreDirect({
+                custodyDir: tempRoot,
+                fsModule  : midWriteFs,
+                now       : () => NOW_MS,
+                fetch     : async () => ({
+                    ok    : true,
+                    status: 200,
+                    async json() {
+                        return {
+                            access_token : 'fallback-per-account-neomjs',
+                            refresh_token: 'fallback-refresh-neomjs',
+                            expires_in   : 7200
+                        };
+                    }
+                })
+            });
+
+            const fallbackRes = await fallbackStore.readCredential({
+                channel: PUBLISH_CHANNELS.x,
+                account: '@neomjs',
+                nowMs  : NOW_MS
+            });
+            expect(fallbackRes).toMatchObject({ok: true, rotated: true, token: 'fallback-per-account-neomjs'});
+
+            const untouchedBundle = JSON.parse(await fs.readFile(bundlePath, 'utf8'));
+            expect(untouchedBundle['x:@neo-gemini-maryam'].accessToken).toBe('surviving-maryam-access');
+            expect(untouchedBundle['x:@neomjs'].accessToken).toBe('expired-neomjs-2');
+
+            const perAccountFallback = JSON.parse(await fs.readFile(path.join(tempRoot, 'social-credentials', 'x', '_neomjs.json'), 'utf8'));
+            expect(perAccountFallback.accessToken).toBe('fallback-per-account-neomjs');
+
+            const [reReadNeomjs, reReadMaryam] = await Promise.all([
+                fallbackStore.readCredential({channel: PUBLISH_CHANNELS.x, account: '@neomjs', nowMs: NOW_MS}),
+                fallbackStore.readCredential({channel: PUBLISH_CHANNELS.x, account: '@neo-gemini-maryam', nowMs: NOW_MS})
+            ]);
+            expect(reReadNeomjs).toMatchObject({ok: true, token: 'fallback-per-account-neomjs'});
+            expect(reReadMaryam).toMatchObject({ok: true, token: 'surviving-maryam-access'});
+
             // Also verify POST /2/tweets sends only standard Authorization + Content-Type headers
             let   capturedTweetHeaders = null;
             const client               = createSocialPlatformClientDirect({

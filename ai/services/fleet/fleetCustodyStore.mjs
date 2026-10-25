@@ -226,15 +226,22 @@ export function createFleetCustodyStore({
             const {perAccount, bundlePath} = resolveCustodyPaths(channel, account);
 
             if (loaded.sourceKind === 'bundle-composite' || loaded.sourceKind === 'bundle-nested') {
-                let latestBundle = {};
+                let latestBundle = null;
                 try {
                     const raw    = await fsModule.readFile(bundlePath, 'utf8'),
                           parsed = JSON.parse(raw);
-                    if (parsed && typeof parsed === 'object') {
+                    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
                         latestBundle = parsed;
                     }
-                } catch {
-                    latestBundle = {};
+                } catch (err) {
+                    if (err?.code === 'ENOENT') {
+                        latestBundle = {};
+                    }
+                }
+
+                if (!latestBundle) {
+                    await writeAtomic0600(perAccount, rotatedRecord, nowMs);
+                    return;
                 }
 
                 if (loaded.sourceKind === 'bundle-composite') {
@@ -243,10 +250,11 @@ export function createFleetCustodyStore({
                     return;
                 }
 
-                const nextBundle = {
+                const existingChannel = latestBundle[channel];
+                const nextBundle      = {
                     ...latestBundle,
                     [channel]: {
-                        ...(latestBundle[channel] ?? {}),
+                        ...(existingChannel && typeof existingChannel === 'object' && !Array.isArray(existingChannel) ? existingChannel : {}),
                         [account]: rotatedRecord
                     }
                 };
