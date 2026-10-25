@@ -731,11 +731,17 @@ probe (passing `{"sections":"all"}` because a bare `get_sandman_handoff` call de
 `sections: ["goldenPath"]` and returns `sections.goldenPath` with `content: null`):
 
 ```bash
+cat > /tmp/day0-handoff-args.json <<'JSON'
+{
+  "sections": "all"
+}
+JSON
+
 node /tmp/day0-call-tool.mjs \
   "$NEO_MC_MCP_BASE_URL" \
   "$NEO_OPERATOR_IDENTITY" \
   get_sandman_handoff \
-  '{"sections":"all"}'
+  /tmp/day0-handoff-args.json
 ```
 
 Run it after the orchestrator reports a successful `golden-path` cycle and
