@@ -160,8 +160,9 @@ class SyncService extends Base {
         // 2 + 3. Reconcile closed issue locations (archiving stale closed issues BEFORE the pull), then
         //     pull remote changes. One facet, because the ordering between them is load-bearing:
         //     splitting them would let a run persist a pull whose reconcile never ran.
-        let reconcileStats = null,
-            pullStats      = null;
+        let reconcileStats  = null,
+            pullStats       = null,
+            issueIndexStats = null;
 
         await dependentFacet('issues', ['issues', 'lastSync'], async () => {
             reconcileStats = await IssueSyncer.reconcileClosedIssueLocations(metadata);
@@ -176,6 +177,8 @@ class SyncService extends Base {
             // were silently dropped. Merging makes the carry-over structural: a syncer that populates
             // a new slice cannot lose it to a save that does not know the slice exists.
             Object.assign(metadata, newMetadata);
+
+            issueIndexStats = await IssueSyncer.reconcileIssueIndex();
         });
 
         // 5. Sync release notes, in every mode: a reader of the corpus alone has them too. The release
@@ -285,6 +288,7 @@ class SyncService extends Base {
 
         return {
             reconcileStats,
+            issueIndexStats,
             pullReconcileStats,
             pullStats,
             releaseStats,

@@ -1,20 +1,20 @@
-import aiConfig                                                               from '../../../mcp/server/github-workflow/config.mjs';
-import Base                                                                   from 'neo.mjs/src/core/Base.mjs';
-import crypto                                                                 from 'crypto';
-import {existsSync}                                                           from 'fs';
-import fs                                                                     from 'fs/promises';
-import logger                                                                 from '../../../mcp/server/github-workflow/logger.mjs';
-import matter                                                                 from 'gray-matter';
-import path                                                                   from 'path';
-import semver                                                                 from 'semver';
-import GraphqlService                                                         from '../GraphqlService.mjs';
-import ReleaseNotesSyncer                                                     from './ReleaseNotesSyncer.mjs';
-import {FETCH_ISSUE_TIMELINE_PAGE, FETCH_ISSUES_FOR_SYNC, FETCH_SINGLE_ISSUE} from '../queries/issueQueries.mjs';
-import contentPath                                                            from '../shared/contentPath.mjs';
-import {buildContentInventory}                                                from '../shared/contentInventory.mjs';
-import {createContentIndexEntry, updateContentIndex}                          from '../shared/contentIndex.mjs';
-import {createContentTrustSummary, projectAuthoredNodeTrust}                  from '../shared/conversationTrust.mjs';
-import pruneEmptyDirs                                                         from '../shared/pruneEmptyDirs.mjs';
+import aiConfig                                                                from '../../../mcp/server/github-workflow/config.mjs';
+import Base                                                                    from 'neo.mjs/src/core/Base.mjs';
+import crypto                                                                  from 'crypto';
+import {existsSync}                                                            from 'fs';
+import fs                                                                      from 'fs/promises';
+import logger                                                                  from '../../../mcp/server/github-workflow/logger.mjs';
+import matter                                                                  from 'gray-matter';
+import path                                                                    from 'path';
+import semver                                                                  from 'semver';
+import GraphqlService                                                          from '../GraphqlService.mjs';
+import ReleaseNotesSyncer                                                      from './ReleaseNotesSyncer.mjs';
+import {FETCH_ISSUE_TIMELINE_PAGE, FETCH_ISSUES_FOR_SYNC, FETCH_SINGLE_ISSUE}  from '../queries/issueQueries.mjs';
+import contentPath                                                             from '../shared/contentPath.mjs';
+import {buildContentInventory}                                                 from '../shared/contentInventory.mjs';
+import {createContentIndexEntryFromPath, readContentIndex, updateContentIndex} from '../shared/contentIndex.mjs';
+import {createContentTrustSummary, projectAuthoredNodeTrust}                   from '../shared/conversationTrust.mjs';
+import pruneEmptyDirs                                                          from '../shared/pruneEmptyDirs.mjs';
 
 const lineBreaksRegex = /[\r\n]+/g;
 
@@ -876,16 +876,12 @@ class IssueSyncer extends Base {
                 commentsTotal: this.#countTimelineComments(issue) // Derived from the exhausted timeline.
             };
 
-            const plan = planBuckets.get(issueNumber);
-            indexMutations.upsert.push(createContentIndexEntry({
+            indexMutations.upsert.push(createContentIndexEntryFromPath({
                 issueSyncConfig,
-                repoSlug : aiConfig.repo,
-                type     : 'issues',
-                id       : issueNumber,
-                filePath : this.#resolvePath(this.#relativePath(targetPath)),
-                itemIndex: plan ? plan.itemIndex : issueNumber,
-                version  : issue.state === 'OPEN' ? null : plan?.version || null,
-                bucket   : null
+                repoSlug: aiConfig.repo,
+                type    : 'issues',
+                id      : issueNumber,
+                filePath: this.#resolvePath(this.#relativePath(targetPath))
             }));
         }
 
@@ -1062,16 +1058,12 @@ class IssueSyncer extends Base {
                 };
 
                 if (indexMutations) {
-                    const plan = planBuckets.get(issueNumber);
-                    indexMutations.upsert.push(createContentIndexEntry({
+                    indexMutations.upsert.push(createContentIndexEntryFromPath({
                         issueSyncConfig,
-                        repoSlug : aiConfig.repo,
-                        type     : 'issues',
-                        id       : issueNumber,
-                        filePath : this.#resolvePath(this.#relativePath(targetPath)),
-                        itemIndex: plan ? plan.itemIndex : issueNumber,
-                        version  : issue.state === 'OPEN' ? null : plan?.version || null,
-                        bucket   : null
+                        repoSlug: aiConfig.repo,
+                        type    : 'issues',
+                        id      : issueNumber,
+                        filePath: this.#resolvePath(this.#relativePath(targetPath))
                     }));
                 }
             } catch (e) {
@@ -1084,23 +1076,17 @@ class IssueSyncer extends Base {
     }
 
     /**
-     * Reconciles the locations of closed issues in the active directory.
-     * This handles the case where a new release is created but issues weren't updated,
-     * so they didn't get moved during the pull operation (delta sync limitation).
-     *
-     * CRITICAL: This method ONLY processes issues that are:
-     * 1. Currently in the active issues directory (not already archived)
-     * 2. In a CLOSED state
-     * 3. Should be archived based on milestone or release date
+     * @summary Reconciles closed issues in the active directory into their archive buckets and realigns `_index.json`.
      * @param {object} metadata The current metadata object
-     * @returns {Promise<object>} Stats about reconciled issues
+     * @returns {Promise<{count: number, issues: number[], indexed: number, collisions: number[]}>} Stats about reconciled issues
      */
     async reconcileClosedIssueLocations(metadata) {
         const issueSyncConfig = aiConfig.issueSync;
 
         logger.info('🔄 Reconciling closed issue locations...');
 
-        const stats                = { count: 0, issues: [] };
+        const stats                = { count: 0, issues: [], indexed: 0, collisions: [] };
+        const indexUpserts         = [];
         let   shouldPruneEmptyDirs = false;
 
         // Ensure releases are loaded
@@ -1125,13 +1111,11 @@ class IssueSyncer extends Base {
         const plan = () => planBuckets ??= this.#planBuckets(metadata, [], {inventory});
 
         for (const issueNumber in metadata.issues) {
-            const issueData = metadata.issues[issueNumber];
+            const issueData            = metadata.issues[issueNumber];
+            const id                   = parseInt(issueNumber, 10);
+            const metadataAbsolutePath = this.#resolvePath(issueData.path);
 
-            // CRITICAL: Only process issues in the active directory
-            // Resolve path to absolute for checking location
-            const currentAbsolutePath = this.#resolvePath(issueData.path);
-
-            if (!currentAbsolutePath || !currentAbsolutePath.startsWith(issueSyncConfig.issuesDir)) {
+            if (!metadataAbsolutePath || !metadataAbsolutePath.startsWith(issueSyncConfig.issuesDir)) {
                 continue; // Already archived, skip it
             }
 
@@ -1140,9 +1124,17 @@ class IssueSyncer extends Base {
                 continue;
             }
 
+            let currentAbsolutePath = metadataAbsolutePath;
+            if (!existsSync(currentAbsolutePath)) {
+                const activeCopies = (inventory.get(id) || []).filter(copy => !copy.version && !copy.bucket);
+                if (activeCopies.length === 1) {
+                    currentAbsolutePath = activeCopies[0].absPath;
+                }
+            }
+
             // Calculate where this closed issue SHOULD be
             const correctPath = this.#getIssuePath({
-                number   : parseInt(issueNumber),
+                number   : id,
                 state    : issueData.state,
                 milestone: issueData.milestone ? { title: issueData.milestone } : null,
                 closedAt : issueData.closedAt,
@@ -1163,6 +1155,12 @@ class IssueSyncer extends Base {
                     continue;
                 }
 
+                if (existsSync(correctPath)) {
+                    logger.warn(`⚠️ Issue #${id} already has an artifact at ${correctPath} — leaving both in place rather than renaming over it.`);
+                    stats.collisions.push(id);
+                    continue;
+                }
+
                 logger.debug(`📦 Archiving closed issue #${issueNumber}: ${currentAbsolutePath} → ${correctPath}`);
 
                 // `archive/issues/<version>` — the bucket this move lands in. Its existence is a planner
@@ -1180,11 +1178,19 @@ class IssueSyncer extends Base {
                     await fs.rename(currentAbsolutePath, correctPath);
                     shouldPruneEmptyDirs = true;
 
+                    indexUpserts.push(createContentIndexEntryFromPath({
+                        issueSyncConfig,
+                        repoSlug: aiConfig.repo,
+                        type    : 'issues',
+                        id,
+                        filePath: correctPath
+                    }));
+
                     // Update metadata with relative path
                     metadata.issues[issueNumber].path = this.#relativePath(correctPath);
 
                     stats.count++;
-                    stats.issues.push(parseInt(issueNumber));
+                    stats.issues.push(id);
 
                     logger.debug(`✅ Archived #${issueNumber} to ${path.relative(process.cwd(), correctPath)}`);
                 } catch (e) {
@@ -1197,15 +1203,120 @@ class IssueSyncer extends Base {
             }
         }
 
+        if (indexUpserts.length > 0) {
+            try {
+                await updateContentIndex(issueSyncConfig, {upsert: indexUpserts});
+                stats.indexed = indexUpserts.length;
+            } catch (e) {
+                logger.error(`❌ Archived ${indexUpserts.length} issue(s) but could not update _index.json: ${e.message}`);
+                throw e;
+            }
+        }
+
         await pruneEmptyDirs(issueSyncConfig.issuesDir);
 
         if (stats.count > 0) {
-            logger.info(`📦 Archived ${stats.count} closed issue(s)`);
+            logger.info(`📦 Archived ${stats.count} closed issue(s) (${stats.indexed} index entr${stats.indexed === 1 ? 'y' : 'ies'} realigned)`);
         } else {
             logger.info('✓ No closed issues need archiving');
         }
 
         return stats;
+    }
+
+    /**
+     * @summary Realigns the `issues` slice of `_index.json` with the on-disk issue corpus.
+     * @param {Map<number, Array<object>>} [inventory=null] Pre-built corpus inventory; scanned when omitted.
+     * @returns {Promise<{reindexed: number, unchanged: number, removed: number, skippedAmbiguous: number[]}>}
+     */
+    async reconcileIssueIndex(inventory = null) {
+        const issueSyncConfig = aiConfig.issueSync;
+        const contentRoot     = path.resolve(issueSyncConfig.contentRoot);
+        const corpus          = inventory || await buildContentInventory(issueSyncConfig, {
+            repoSlug  : aiConfig.repo,
+            type      : 'issues',
+            filePrefix: issueSyncConfig.issueFilenamePrefix
+        });
+
+        const existing = new Map(
+            (await readContentIndex(issueSyncConfig))
+                .filter(entry => entry.repoSlug === aiConfig.repo && entry.type === 'issues')
+                .map(entry => [Number(entry.id), entry])
+        );
+
+        const upsert           = [],
+              remove           = [],
+              skippedAmbiguous = [];
+
+        let unchanged = 0;
+
+        for (const [id, copies] of corpus) {
+            const previous = existing.get(id);
+
+            if (copies.length > 1) {
+                skippedAmbiguous.push(id);
+
+                const matchingCopy = previous
+                    ? copies.find(copy => path.relative(contentRoot, copy.absPath) === previous.path)
+                    : null;
+
+                if (!matchingCopy) {
+                    if (previous) remove.push({repoSlug: aiConfig.repo, type: 'issues', id});
+                    continue;
+                }
+
+                const entry = createContentIndexEntryFromPath({
+                    issueSyncConfig,
+                    repoSlug: aiConfig.repo,
+                    type    : 'issues',
+                    id,
+                    filePath: matchingCopy.absPath
+                });
+
+                if (previous.path        === entry.path &&
+                    previous.chunkNumber === entry.chunkNumber &&
+                    (previous.version ?? null) === (entry.version ?? null) &&
+                    (previous.bucket  ?? null) === (entry.bucket  ?? null)
+                ) {
+                    unchanged++;
+                } else {
+                    upsert.push(entry);
+                }
+
+                continue;
+            }
+
+            const entry = createContentIndexEntryFromPath({
+                issueSyncConfig,
+                repoSlug: aiConfig.repo,
+                type    : 'issues',
+                id,
+                filePath: copies[0].absPath
+            });
+
+            if (previous &&
+                previous.path        === entry.path &&
+                previous.chunkNumber === entry.chunkNumber &&
+                (previous.version ?? null) === (entry.version ?? null) &&
+                (previous.bucket  ?? null) === (entry.bucket  ?? null)
+            ) {
+                unchanged++;
+                continue;
+            }
+
+            upsert.push(entry);
+        }
+
+        for (const id of existing.keys()) {
+            if (!corpus.has(id)) remove.push({repoSlug: aiConfig.repo, type: 'issues', id});
+        }
+
+        if (upsert.length > 0 || remove.length > 0) {
+            await updateContentIndex(issueSyncConfig, {upsert, remove});
+            logger.info(`🧭 Realigned the issue index with the corpus: ${upsert.length} written, ${remove.length} removed, ${unchanged} already correct.`);
+        }
+
+        return {reindexed: upsert.length, unchanged, removed: remove.length, skippedAmbiguous};
     }
 
     /**
@@ -1264,14 +1375,12 @@ class IssueSyncer extends Base {
             if (currentRel === targetRel) { unchanged++; continue; }
 
             moves.push({number, from: currentRel, to: targetRel, targetAbs});
-            upserts.push(createContentIndexEntry({
+            upserts.push(createContentIndexEntryFromPath({
                 issueSyncConfig,
-                repoSlug : aiConfig.repo,
-                type     : 'issues',
-                id       : number,
-                filePath : targetAbs,
-                itemIndex: planEntry.itemIndex || 0,
-                version  : planEntry.version || null
+                repoSlug: aiConfig.repo,
+                type    : 'issues',
+                id      : number,
+                filePath: targetAbs
             }));
         }
 

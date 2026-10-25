@@ -37,6 +37,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
 
     let originalReconcileArchived;
     let originalPull;
+    let originalReconcileIssueIndex;
     let originalFetchReleases;
     let originalSyncNotes;
     // Captured because the prerequisite witnesses MUTATE it, and it lives on a singleton — an
@@ -83,6 +84,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
 
         originalReconcileArchived = IssueSyncer.reconcileClosedIssueLocations;
         originalPull = IssueSyncer.pullFromGitHub;
+        originalReconcileIssueIndex = IssueSyncer.reconcileIssueIndex;
         originalFetchReleases = ReleaseNotesSyncer.fetchAndCacheReleases;
         originalSyncNotes = ReleaseNotesSyncer.syncNotes;
         originalSortedReleases = ReleaseNotesSyncer.sortedReleases;
@@ -97,6 +99,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
 
         IssueSyncer.reconcileClosedIssueLocations = async () => ({ count: 0 });
         IssueSyncer.pullFromGitHub = async (md) => ({ newMetadata: md || { issues: {}, releases: {}, discussions: {}, pullRequests: {} }, stats: { pulled: { count: 0, created: 0, updated: 0, moved: 0 }, dropped: { count: 0 } } });
+        IssueSyncer.reconcileIssueIndex = async () => ({ reindexed: 0, unchanged: 0, removed: 0, skippedAmbiguous: [] });
         ReleaseNotesSyncer.fetchAndCacheReleases = async () => {};
         ReleaseNotesSyncer.syncNotes = async () => ({ count: 0 });
         DiscussionSyncer.syncDiscussions = async () => ({ count: 0 });
@@ -132,6 +135,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         restoreAiConfig?.();
         IssueSyncer.reconcileClosedIssueLocations = originalReconcileArchived;
         IssueSyncer.pullFromGitHub = originalPull;
+        IssueSyncer.reconcileIssueIndex = originalReconcileIssueIndex;
         ReleaseNotesSyncer.fetchAndCacheReleases = originalFetchReleases;
         ReleaseNotesSyncer.syncNotes = originalSyncNotes;
         ReleaseNotesSyncer.sortedReleases = originalSortedReleases;
@@ -213,7 +217,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         expect(result.facetOutcomes.every(outcome => outcome.advanced)).toBe(true);
     });
 
-    test('the issues facet reconciles closed issues, then pulls, and pushes nothing to GitHub', async () => {
+    test('the issues facet reconciles closed issues, then pulls, then reconciles the issue index, and pushes nothing to GitHub', async () => {
         const order = [];
 
         ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
@@ -225,10 +229,14 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
                 stats      : {pulled: {count: 0, created: 0, updated: 0, moved: 0}, dropped: {count: 0}}
             }
         };
+        IssueSyncer.reconcileIssueIndex = async () => {
+            order.push('reconcileIndex');
+            return {reindexed: 0, unchanged: 0, removed: 0, skippedAmbiguous: []}
+        };
 
         const result = await SyncService.emitGeneratedContent();
 
-        expect(order).toEqual(['reconcile', 'pull']);
+        expect(order).toEqual(['reconcile', 'pull', 'reconcileIndex']);
         expect(result).not.toHaveProperty('pushStats');
     });
 

@@ -13,17 +13,24 @@ setup({
     }
 });
 
-import {test, expect}              from '@playwright/test';
-import Neo                         from 'neo.mjs/src/Neo.mjs';
-import * as core                   from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager             from 'neo.mjs/src/manager/Instance.mjs';
-import fs                          from 'fs-extra';
-import fsp                         from 'node:fs/promises';
-import matter                      from 'gray-matter';
-import path                        from 'path';
-import {fileURLToPath}             from 'url';
-import {findSharedConfigMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
-import {snapshotAiConfig}          from '../../services/memory-core/util.mjs';
+import {test, expect}  from '@playwright/test';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
+import fs              from 'fs-extra';
+import fsp             from 'node:fs/promises';
+import matter          from 'gray-matter';
+import path            from 'path';
+import {fileURLToPath} from 'url';
+import {
+    readContentIndex,
+    writeContentIndex
+}                                  from '../../../../../../ai/services/github-workflow/shared/contentIndex.mjs';
+import {ExtractorCatalogue}             from '../../../../../../ai/services/knowledge-base/source/ExtractorCatalogue.mjs';
+import {createRepositoryRevisionReader} from '../../../../../../ai/services/knowledge-base/helpers/repositoryRevisionReader.mjs';
+import {runExtractionProfile}           from '../../../../../../ai/services/knowledge-base/helpers/extractionProfileRunner.mjs';
+import {findSharedConfigMutations}      from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {snapshotAiConfig}               from '../../services/memory-core/util.mjs';
 
 /**
  * @summary Regression coverage for IssueSyncer's timeline-based comment accounting.
@@ -1763,6 +1770,150 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
 
         expect(copies).toHaveLength(1);
         expect(await fs.readFile(copies[0], 'utf8')).toContain('Fresh title from the refetch')
+    });
+
+    test('an archive move of an issue facet updates _index.json and drops no element from the KB (#1246)', async () => {
+        const isolatedRoot = path.join(tmpRoot, 'archive-move-kb-1246');
+
+        await fs.emptyDir(isolatedRoot);
+        applyConfigSnapshot({contentRootOverride: isolatedRoot});
+        ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.2.0', publishedAt: '2026-10-11T00:00:00Z'}];
+
+        const activeAbs = path.join(issueSyncConfig.issuesDir, 'chunk-2', 'issue-5577.md'),
+              staleMeta = path.join(issueSyncConfig.issuesDir, 'chunk-1', 'issue-5577.md'),
+              markdown  = [
+                  '---',
+                  'id: 5577',
+                  'title: "worker.mixin.RemoteMethodAccess: accessing new main threads too early"',
+                  'state: CLOSED',
+                  'closedAt: 2026-10-10T12:00:00Z',
+                  '---',
+                  '# worker.mixin.RemoteMethodAccess: accessing new main threads too early',
+                  '',
+                  'Issue body.',
+                  '',
+                  '## Timeline',
+                  '',
+                  '### @tobiu - 2026-10-10T11:00:00Z',
+                  '',
+                  'First comment.'
+              ].join('\n'),
+              metadata  = {
+                  issues: {
+                      5577: {
+                          state   : 'CLOSED',
+                          closedAt: '2026-10-10T12:00:00Z',
+                          path    : staleMeta
+                      }
+                  }
+              };
+
+        await fs.ensureDir(path.dirname(activeAbs));
+        await fs.writeFile(activeAbs, markdown, 'utf8');
+        await IssueSyncer.reconcileIssueIndex();
+
+        const extractCorpus = async () => {
+            const files   = (await fsp.readdir(isolatedRoot, {recursive: true})).map(rel => rel.split(path.sep).join('/')),
+                  blobs   = {},
+                  entries = [];
+
+            for (const rel of files.sort()) {
+                const abs  = path.join(isolatedRoot, rel),
+                      stat = await fsp.stat(abs);
+
+                if (stat.isFile()) {
+                    blobs[rel] = await fsp.readFile(abs, 'utf8');
+                    entries.push({sourcePath: rel, mode: '100644', type: 'blob', oid: 'a'.repeat(40)})
+                }
+            }
+
+            const chunks = [];
+
+            await runExtractionProfile({
+                profile: {
+                    profileSchemaVersion: 1,
+                    routes              : [{
+                        territory  : {roots: ['.'], include: ['_index.json', '*/issues/**/*.md', '*/archive/**/*.md']},
+                        extractorId: 'ConversationCorpusSource'
+                    }],
+                    fallback: {action: 'exclude'}
+                },
+                catalogue       : ExtractorCatalogue,
+                repositoryReader: createRepositoryRevisionReader({
+                    gitMirror: {
+                        async listRevisionEntries() { return entries },
+                        async prefetchRevisionBlobs() { return {status: 'local'} },
+                        async readRevisionBlob({sourcePath}) { return Buffer.from(blobs[sourcePath] ?? '', 'utf8') }
+                    },
+                    mirrorRoot: '/not-read-by-fixture',
+                    tenantId  : 'neo-shared',
+                    repoSlug  : 'github-content-sync',
+                    revision  : 'f'.repeat(40)
+                }),
+                writeStream : {write: value => chunks.push(JSON.parse(String(value).trim()))},
+                createHashFn: () => 'hash'
+            });
+
+            return chunks
+        };
+
+        const beforeChunks = await extractCorpus();
+
+        expect(beforeChunks.map(chunk => chunk.name).sort()).toEqual([
+            'neo/issue-5577#body',
+            'neo/issue-5577#comment-1'
+        ]);
+
+        const archiveStats = await IssueSyncer.reconcileClosedIssueLocations(metadata);
+
+        expect(archiveStats).toMatchObject({count: 1, issues: [5577], indexed: 1, collisions: []});
+
+        const afterChunks = await extractCorpus();
+
+        expect(afterChunks.map(chunk => chunk.name).sort()).toEqual(
+            beforeChunks.map(chunk => chunk.name).sort()
+        );
+        expect(afterChunks.find(chunk => chunk.name === 'neo/issue-5577#body')).toMatchObject({
+            sourcePath: 'neo/archive/issues/v13.2.0/chunk-1/issue-5577.md',
+            customMeta: {origin: 'neo', facet: 'issues', id: 5577, version: 'v13.2.0', element: 'body', ordinal: 0}
+        })
+    });
+
+    test('reconcileIssueIndex realigns stranded pre-archive index rows from disk and preserves valid multi-copy rows (#1246)', async () => {
+        const isolatedRoot = path.join(tmpRoot, 'reconcile-index-1246');
+
+        await fs.emptyDir(isolatedRoot);
+        applyConfigSnapshot({contentRootOverride: isolatedRoot});
+
+        const archivedAbs  = path.join(issueSyncConfig.archiveRoot, 'issues', 'v13.2.0', 'chunk-1', 'issue-16123.md'),
+              dupFirstAbs  = path.join(issueSyncConfig.archiveRoot, 'issues', 'v13.1.0', 'chunk-1', 'issue-17416.md'),
+              dupSecondAbs = path.join(issueSyncConfig.archiveRoot, 'issues', 'v13.2.0', 'chunk-1', 'issue-17416.md');
+
+        await fs.ensureDir(path.dirname(archivedAbs));
+        await fs.ensureDir(path.dirname(dupFirstAbs));
+        await fs.writeFile(archivedAbs, '# Issue 16123\n', 'utf8');
+        await fs.writeFile(dupFirstAbs, '# Issue 17416 v13.1.0\n', 'utf8');
+        await fs.writeFile(dupSecondAbs, '# Issue 17416 v13.2.0\n', 'utf8');
+
+        await writeContentIndex(issueSyncConfig, [
+            {repoSlug: 'neo', type: 'issues', id: 16123, version: null,      chunkNumber: 5, path: 'neo/issues/chunk-5/issue-16123.md'},
+            {repoSlug: 'neo', type: 'issues', id: 17416, version: 'v13.1.0', chunkNumber: 1, path: 'neo/archive/issues/v13.1.0/chunk-1/issue-17416.md'},
+            {repoSlug: 'neo', type: 'issues', id: 99999, version: null,      chunkNumber: 1, path: 'neo/issues/chunk-1/issue-99999.md'}
+        ]);
+
+        const stats = await IssueSyncer.reconcileIssueIndex();
+
+        expect(stats).toEqual({
+            reindexed       : 1,
+            unchanged       : 1,
+            removed         : 1,
+            skippedAmbiguous: [17416]
+        });
+
+        expect(await readContentIndex(issueSyncConfig)).toEqual([
+            {repoSlug: 'neo', type: 'issues', id: 16123, version: 'v13.2.0', chunkNumber: 1, path: 'neo/archive/issues/v13.2.0/chunk-1/issue-16123.md'},
+            {repoSlug: 'neo', type: 'issues', id: 17416, version: 'v13.1.0', chunkNumber: 1, path: 'neo/archive/issues/v13.1.0/chunk-1/issue-17416.md'}
+        ])
     });
 
     test('IssueSyncer spec uses snapshotAiConfig instead of shared-config writes', async () => {
