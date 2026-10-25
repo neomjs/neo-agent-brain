@@ -887,6 +887,7 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
 
         const topology = await GraphService.getContextFrontier({neighborLimit: 2});
         expect(topology.strategicNeighbors.map(neighbor => neighbor.id)).toEqual(['IssueA', 'IssueB']);
+        expect(() => GraphService.getContextFrontier({neighborLimit: 0})).toThrow(/neighborLimit must be a positive integer/);
     });
 
     test('should filter strategicNeighbors by node label when types is passed to getContextFrontier (#1252)', async () => {
@@ -1891,7 +1892,7 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
     test('TestLifecycleHelper.cleanupGraphService(clear) and SystemLifecycleService.initAsync restore canonical boot seeds on warm workers', async () => {
         const
             {TestLifecycleHelper, resetMemoryCoreLifecycle} = await import('./util.mjs'),
-            seedAgentId                                     = createGraphBootSeedManifest().nodes.find(node => node.type === 'AgentIdentity').id;
+            seedAgentId = createGraphBootSeedManifest().nodes.find(node => node.type === 'AgentIdentity').id;
 
         expect(GraphService.db.nodes.get(seedAgentId)).toBeFalsy();
 

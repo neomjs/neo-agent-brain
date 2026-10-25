@@ -1637,18 +1637,13 @@ paths:
       x-annotations:
         readOnlyHint: true
       description: |
-        Executes the Context Priming Engine to fetch the topological frontier and hydrate semantic contexts.
-        Defaults to `projection: 'compact'`, returning the frontier anchor (`{id, type, name}`), `neighborCounts`
-        by node label, `totalNeighbors`, the top `neighborLimit` strategic neighbors by weight without `description`,
-        and `semanticContexts` trimmed to `{nodeId, name, weightedScore, trustTier}` plus the first 300 characters of
-        `content`. Pass `projection: 'full'` for the complete topology and untruncated semantic contexts, or `types`
-        to filter neighbors by node label in either projection.
+        Executes the Context Priming Engine to fetch the topological frontier and hydrate semantic contexts (compact by default; pass `projection: 'full'` for the full topology).
       tags: [System]
       parameters:
         - name: projection
           in: query
           required: false
-          description: "Response shape (`'compact'` or `'full'`). `'compact'` (default) returns counts by type, `totalNeighbors`, the top `neighborLimit` neighbors without `description`, and trimmed `semanticContexts`. `'full'` returns the complete topology and untruncated semantic contexts."
+          description: "Response shape (`'compact'` or `'full'`). `'compact'` (default) returns `totalNeighbors`, `neighborCounts` by node label, `topology` (`frontier: {id, type, name}` and the top `neighborLimit` `strategicNeighbors` without `description`), and the top `neighborLimit` `semanticContexts` trimmed to `{nodeId, name, weightedScore, trustTier}` plus the first 300 characters of `content`. `'full'` returns the complete topology and untruncated semantic contexts."
           schema:
             type: string
             enum: [compact, full]
@@ -1656,7 +1651,7 @@ paths:
         - name: neighborLimit
           in: query
           required: false
-          description: "Maximum strategic neighbors returned in `'compact'` projection. Must be a positive integer."
+          description: "Maximum `strategicNeighbors` and `semanticContexts` returned in `'compact'` projection. Must be a positive integer."
           schema:
             type: integer
             minimum: 1

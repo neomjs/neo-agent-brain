@@ -1879,6 +1879,16 @@ class GraphService extends Base {
      * @returns {Object|null}
      */
     getContextFrontier({depth = 2, neighborLimit, types} = {}) {
+        let numericNeighborLimit;
+
+        if (neighborLimit !== undefined) {
+            numericNeighborLimit = Number(neighborLimit);
+
+            if (!Number.isInteger(numericNeighborLimit) || numericNeighborLimit < 1) {
+                throw new Error(`GraphService.getContextFrontier: neighborLimit must be a positive integer, received ${JSON.stringify(neighborLimit)}`);
+            }
+        }
+
         // Guarantee lazy-loading of frontier topology explicitly
         this.db.getAdjacentNodes('frontier', 'both');
 
@@ -1933,8 +1943,8 @@ class GraphService extends Base {
         // Sort by highest weight
         topology.strategicNeighbors.sort((a, b) => b.weight - a.weight);
 
-        if (Number.isInteger(neighborLimit) && neighborLimit >= 0) {
-            topology.strategicNeighbors = topology.strategicNeighbors.slice(0, neighborLimit);
+        if (numericNeighborLimit !== undefined) {
+            topology.strategicNeighbors = topology.strategicNeighbors.slice(0, numericNeighborLimit);
         }
 
         return topology;
