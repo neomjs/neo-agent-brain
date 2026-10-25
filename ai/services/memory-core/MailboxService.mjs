@@ -4415,14 +4415,24 @@ class MailboxService extends Base {
             orderBy       = taskOrder === 'priority-age' ? 'priorityRank, sentAt, messageId' : 'sentAt DESC, messageId DESC';
 
         if (projection === 'counts') {
-            const matchedRows = sqlite
-                .prepare(`${viewSql} SELECT messageId${taskView ? ', task' : ''} FROM ${view} ORDER BY ${orderBy}`)
-                .all(viewParams);
+            const
+                targetIn       = `(SELECT value FROM json_each(@targetVariants))`,
+                deliveryExists = `SELECT 1 FROM Edges de WHERE de.source = n.id AND de.type = 'DELIVERED_TO' AND de.target IN ${targetIn}`,
+                edgeReadAt     = `(SELECT MAX(json_extract(de.data, '$.properties.readAt')) FROM Edges de WHERE de.source = n.id AND de.type = 'DELIVERED_TO' AND de.target IN ${targetIn})`,
+                matchedRows    = sqlite.prepare(`${viewSql}
+                    SELECT
+                        m.messageId AS messageId,
+                        json_extract(n.data, '$.properties.subject') AS subject,
+                        (SELECT sb.target FROM Edges sb WHERE sb.source = m.messageId AND sb.type = 'SENT_BY' ORDER BY sb.rowid DESC LIMIT 1) AS sentBy,
+                        EXISTS (SELECT 1 FROM Edges st WHERE st.source = m.messageId AND st.type = 'SENT_TO' AND st.target = 'AGENT:*') AS isBroadcast,
+                        CASE WHEN EXISTS (${deliveryExists}) THEN ${edgeReadAt} ELSE json_extract(n.data, '$.properties.readAt') END AS readAt
+                    FROM ${view} m
+                    JOIN Nodes n ON n.id = m.messageId
+                    WHERE json_extract(n.data, '$.label') = 'MESSAGE'
+                    ORDER BY ${orderBy}`).all(viewParams);
 
             return this._buildCountsProjection({
-                db,
                 matchedRows,
-                target,
                 resolvedIdentityAliases
             });
         }
@@ -4513,16 +4523,14 @@ class MailboxService extends Base {
     }
 
     /**
-     * @summary Aggregates matched mailbox rows into the non-stamping counts projection.
+     * @summary Aggregates SQL-selected mailbox rows into the non-stamping counts projection without graph vicinity hydration.
      * @param {Object} options
-     * @param {Neo.ai.graph.Database} options.db
-     * @param {Object[]} options.matchedRows Matched row ids in view order.
-     * @param {String} options.target Normalized recipient identity.
+     * @param {Object[]} options.matchedRows SQL rows with `messageId`, `subject`, `sentBy`, `isBroadcast`, and `readAt` in view order.
      * @param {Object} options.resolvedIdentityAliases Resolved alias map when present.
      * @returns {Object} Counts projection payload.
      * @private
      */
-    _buildCountsProjection({db, matchedRows, target, resolvedIdentityAliases}) {
+    _buildCountsProjection({matchedRows, resolvedIdentityAliases}) {
         const
             byToClass              = {direct: 0, broadcast: 0},
             bySender               = {},
@@ -4533,16 +4541,13 @@ class MailboxService extends Base {
             unreadCount = 0;
 
         for (const row of matchedRows) {
-            const summary = this._projectMailboxRow(db, row.messageId, target);
-            if (!summary) continue;
-
             totalCount++;
             const
-                isBroadcast = summary.to === 'AGENT:*',
-                isUnread    = !summary.readAt,
-                senderKey   = summary.from || 'unknown',
-                tagMatch    = typeof summary.subject === 'string'
-                    ? summary.subject.match(/\[([^\][\s·:]+)(?:[^\]]*)\]/)
+                isBroadcast = Boolean(row.isBroadcast),
+                isUnread    = !row.readAt,
+                senderKey   = row.sentBy || 'unknown',
+                tagMatch    = typeof row.subject === 'string'
+                    ? row.subject.match(/\[([^\][\s·:]+)(?:[^\]]*)\]/)
                     : null,
                 subjectTag  = tagMatch ? `[${tagMatch[1]}]` : 'untagged';
 
@@ -4550,7 +4555,7 @@ class MailboxService extends Base {
                 byToClass.broadcast++;
             } else {
                 byToClass.direct++;
-                if (isUnread) unreadDirectMessageIds.push(summary.messageId);
+                if (isUnread) unreadDirectMessageIds.push(row.messageId);
             }
 
             if (isUnread) unreadCount++;

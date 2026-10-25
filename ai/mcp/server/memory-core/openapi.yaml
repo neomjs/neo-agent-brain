@@ -2732,76 +2732,96 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [messages, totalCount, truncated, nextOffset, limit, offset]
-                properties:
-                  _channelSeparation:
-                    type: string
-                    description: "Security annotation marking the payload as DATA, not executable COMMANDS."
-                  messages:
-                    type: array
-                    description: "At most `limit` rows, newest-first. This is a page; its emptiness proves absence only when `totalCount` is 0. A row carries `taggedConcepts` when its sender declared any."
-                    items:
-                      type: object
-                  totalCount:
-                    type: integer
-                    description: "Rows matching the applied filter BEFORE pagination."
-                  truncated:
-                    type: boolean
-                    description: "Rows remain beyond this page. False on a page that exactly exhausts the filter, so it never advertises an empty continuation."
-                  nextOffset:
-                    type: integer
-                    nullable: true
-                    description: "Offset to continue from, or null when `truncated` is false."
-                  limit:
-                    type: integer
-                    description: "Limit actually applied, so a pasted receipt carries its own depth."
-                  offset:
-                    type: integer
-                    description: "Offset actually applied."
-                  projection:
-                    type: string
-                    enum: [counts]
-                    description: "Present on `'counts'` projection responses."
-                  paginationIgnored:
-                    type: boolean
-                    description: "True on `'counts'` projection responses, which aggregate the full matched view regardless of `limit`/`offset`."
-                  unreadCount:
-                    type: integer
-                    description: "Matched messages with `readAt == null` (`'counts'` projection)."
-                  byToClass:
-                    type: object
-                    description: "Counts split into `direct` vs `broadcast` (`'counts'` projection)."
-                  bySender:
-                    type: object
-                    description: "Counts keyed by sender identity (`'counts'` projection)."
-                  bySubjectTag:
-                    type: object
-                    description: "Counts keyed by first bracketed subject tag (e.g. `[lane-claim]`, `[pr-opened]`, `[merged]`) or `'untagged'` (`'counts'` projection)."
-                  unreadDirectMessageIds:
-                    type: array
-                    description: "Message IDs of unread direct messages so callers can fetch them via `get_message` without paging (`'counts'` projection)."
-                    items:
-                      type: string
-                  observation:
-                    type: object
-                    description: "Server-derived context for an explicit observer read; `admissionKey` is a comparison fingerprint, never a credential or authorization token. Absent from ordinary list reads."
-                    required: [viewer, planeId, scope, policy, clamped, admissionKey]
+                oneOf:
+                  - type: object
+                    required: [messages, totalCount, truncated, nextOffset, limit, offset]
                     properties:
-                      viewer:
+                      _channelSeparation:
                         type: string
-                      planeId:
-                        type: string
-                      scope:
-                        type: string
-                        enum: [all, involves-me, own]
-                      policy:
-                        type: string
-                        enum: [private, legacy, team]
-                      clamped:
+                        description: "Security annotation marking the payload as DATA, not executable COMMANDS."
+                      messages:
+                        type: array
+                        description: "At most `limit` rows, newest-first. This is a page; its emptiness proves absence only when `totalCount` is 0. A row carries `taggedConcepts` when its sender declared any."
+                        items:
+                          type: object
+                      totalCount:
+                        type: integer
+                        description: "Rows matching the applied filter BEFORE pagination."
+                      truncated:
                         type: boolean
-                      admissionKey:
+                        description: "Rows remain beyond this page. False on a page that exactly exhausts the filter, so it never advertises an empty continuation."
+                      nextOffset:
+                        type: integer
+                        nullable: true
+                        description: "Offset to continue from, or null when `truncated` is false."
+                      limit:
+                        type: integer
+                        description: "Limit actually applied, so a pasted receipt carries its own depth."
+                      offset:
+                        type: integer
+                        description: "Offset actually applied."
+                      observation:
+                        type: object
+                        description: "Server-derived context for an explicit observer read; `admissionKey` is a comparison fingerprint, never a credential or authorization token. Absent from ordinary list reads."
+                        required: [viewer, planeId, scope, policy, clamped, admissionKey]
+                        properties:
+                          viewer:
+                            type: string
+                          planeId:
+                            type: string
+                          scope:
+                            type: string
+                            enum: [all, involves-me, own]
+                          policy:
+                            type: string
+                            enum: [private, legacy, team]
+                          clamped:
+                            type: boolean
+                          admissionKey:
+                            type: string
+                  - type: object
+                    required: [projection, paginationIgnored, totalCount, unreadCount, byToClass, bySender, bySubjectTag, unreadDirectMessageIds]
+                    properties:
+                      _channelSeparation:
                         type: string
+                        description: "Security annotation marking the payload as DATA, not executable COMMANDS."
+                      projection:
+                        type: string
+                        enum: [counts]
+                        description: "Present on `'counts'` projection responses."
+                      paginationIgnored:
+                        type: boolean
+                        description: "True on `'counts'` projection responses, which aggregate the full matched view regardless of `limit`/`offset`."
+                      totalCount:
+                        type: integer
+                        description: "Rows matching the applied filter."
+                      unreadCount:
+                        type: integer
+                        description: "Matched messages with `readAt == null` (`'counts'` projection)."
+                      byToClass:
+                        type: object
+                        description: "Counts split into `direct` vs `broadcast` (`'counts'` projection)."
+                        required: [direct, broadcast]
+                        properties:
+                          direct:
+                            type: integer
+                          broadcast:
+                            type: integer
+                      bySender:
+                        type: object
+                        description: "Counts keyed by sender identity (`'counts'` projection)."
+                        additionalProperties:
+                          type: integer
+                      bySubjectTag:
+                        type: object
+                        description: "Counts keyed by first bracketed subject tag (e.g. `[lane-claim]`, `[pr-opened]`, `[merged]`) or `'untagged'` (`'counts'` projection)."
+                        additionalProperties:
+                          type: integer
+                      unreadDirectMessageIds:
+                        type: array
+                        description: "Message IDs of unread direct messages so callers can fetch them via `get_message` without paging (`'counts'` projection)."
+                        items:
+                          type: string
         '500':
           description: Error
           content:

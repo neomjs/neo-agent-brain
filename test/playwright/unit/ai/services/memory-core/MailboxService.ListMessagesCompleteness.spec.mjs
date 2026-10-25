@@ -13,8 +13,9 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
+import {test, expect}           from '@playwright/test';
+import {AjvJsonSchemaValidator} from '@modelcontextprotocol/sdk/validation/ajv-provider.js';
+import Neo                      from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 import                        'neo.mjs/src/manager/Instance.mjs';
 import RequestContextService from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
@@ -230,7 +231,7 @@ test.describe('MailboxService.listMessages — projection (full | compact | coun
         TOTAL_UNREAD   = 130,
         DIRECT_COUNT   = 2;
 
-    let MailboxService, GraphService, LifecycleService, callTool, seededDirectIds;
+    let MailboxService, GraphService, LifecycleService, callTool, listTools, seededDirectIds;
 
     const asProjRecipient = callback => RequestContextService.run({agentIdentityNodeId: PROJ_RECIPIENT}, callback);
 
@@ -242,10 +243,10 @@ test.describe('MailboxService.listMessages — projection (full | compact | coun
     };
 
     test.beforeAll(async () => {
-        GraphService     = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
-        MailboxService   = (await import('../../../../../../ai/services/memory-core/MailboxService.mjs')).default;
-        LifecycleService = (await import('../../../../../../ai/services/memory-core/lifecycle/SystemLifecycleService.mjs')).default;
-        ({callTool}      = await import('../../../../../../ai/mcp/server/memory-core/toolService.mjs'));
+        GraphService           = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        MailboxService         = (await import('../../../../../../ai/services/memory-core/MailboxService.mjs')).default;
+        LifecycleService       = (await import('../../../../../../ai/services/memory-core/lifecycle/SystemLifecycleService.mjs')).default;
+        ({callTool, listTools} = await import('../../../../../../ai/mcp/server/memory-core/toolService.mjs'));
 
         if (!LifecycleService._initPromise) {
             await LifecycleService.initAsync();
@@ -385,5 +386,51 @@ test.describe('MailboxService.listMessages — projection (full | compact | coun
         for (const id of seededDirectIds) {
             expect(seenAtOf(id), 'compact stamps seenAt on surfaced rows').toBeTruthy();
         }
+    });
+
+    test('projection "counts" executes in SQL with zero getAdjacentNodes calls', async () => {
+        const originalGetAdjacentNodes = GraphService.db.getAdjacentNodes;
+        let adjacentCalls              = 0;
+
+        GraphService.db.getAdjacentNodes = function (...args) {
+            adjacentCalls++;
+            return originalGetAdjacentNodes.apply(this, args);
+        };
+
+        try {
+            const counts = await asProjRecipient(() => callTool('list_messages', {
+                box       : 'inbox',
+                status    : 'unread',
+                projection: 'counts'
+            }));
+
+            expect(adjacentCalls, 'counts must not call getAdjacentNodes on matched rows').toBe(0);
+            expect(counts.totalCount).toBe(TOTAL_UNREAD);
+            expect(counts.unreadCount).toBe(TOTAL_UNREAD);
+        } finally {
+            GraphService.db.getAdjacentNodes = originalGetAdjacentNodes;
+        }
+    });
+
+    test('every projection (omitted, full, compact, counts) validates against the listed list_messages outputSchema via AjvJsonSchemaValidator', async () => {
+        const
+            {tools}  = listTools(),
+            tool     = tools.find(item => item.name === 'list_messages'),
+            validate = new AjvJsonSchemaValidator().getValidator(tool.outputSchema);
+
+        expect(tool?.outputSchema).toBeDefined();
+
+        const [omitted, full, compact, counts] = await Promise.all([
+            asProjRecipient(() => callTool('list_messages', {box: 'inbox', status: 'unread', limit: 3})),
+            asProjRecipient(() => callTool('list_messages', {box: 'inbox', status: 'unread', limit: 3, projection: 'full'})),
+            asProjRecipient(() => callTool('list_messages', {box: 'inbox', status: 'unread', limit: 3, projection: 'compact'})),
+            asProjRecipient(() => callTool('list_messages', {box: 'inbox', status: 'unread', projection: 'counts'}))
+        ]);
+
+        expect(validate(omitted), 'omitted projection validates against outputSchema').toMatchObject({valid: true});
+        expect(validate(full),    'full projection validates against outputSchema').toMatchObject({valid: true});
+        expect(validate(compact), 'compact projection validates against outputSchema').toMatchObject({valid: true});
+        expect(validate(counts),  'counts projection validates against outputSchema').toMatchObject({valid: true});
+        expect(validate({foo: 'bar'}).valid, 'payload matching neither branch is rejected').toBe(false);
     });
 });
