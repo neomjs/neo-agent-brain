@@ -875,6 +875,35 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         expect(topology.strategicNeighbors[0].id).toBe('EpicB');
     });
 
+    test('should cap strategicNeighbors when neighborLimit is passed to getContextFrontier (#1252)', async () => {
+        await GraphService.upsertNode({id: 'frontier', type: 'SYSTEM_ANCHOR'});
+        await GraphService.upsertNode({id: 'IssueA', type: 'ISSUE', name: 'Issue A'});
+        await GraphService.upsertNode({id: 'IssueB', type: 'ISSUE', name: 'Issue B'});
+        await GraphService.upsertNode({id: 'IssueC', type: 'ISSUE', name: 'Issue C'});
+
+        await GraphService.linkNodes('frontier', 'IssueA', 'STRATEGIC_PIVOT', 0.99);
+        await GraphService.linkNodes('frontier', 'IssueB', 'STRATEGIC_PIVOT', 0.95);
+        await GraphService.linkNodes('frontier', 'IssueC', 'STRATEGIC_PIVOT', 0.90);
+
+        const topology = await GraphService.getContextFrontier({neighborLimit: 2});
+        expect(topology.strategicNeighbors.map(neighbor => neighbor.id)).toEqual(['IssueA', 'IssueB']);
+    });
+
+    test('should filter strategicNeighbors by node label when types is passed to getContextFrontier (#1252)', async () => {
+        await GraphService.upsertNode({id: 'frontier', type: 'SYSTEM_ANCHOR'});
+        await GraphService.upsertNode({id: 'Summary1', type: 'SESSION_SUMMARY', name: 'Summary 1'});
+        await GraphService.upsertNode({id: 'Issue1', type: 'ISSUE', name: 'Issue 1'});
+        await GraphService.upsertNode({id: 'Memory1', type: 'AGENT_MEMORY', name: 'Memory 1'});
+
+        await GraphService.linkNodes('frontier', 'Summary1', 'STRATEGIC_PIVOT', 1.0);
+        await GraphService.linkNodes('frontier', 'Issue1', 'STRATEGIC_PIVOT', 0.95);
+        await GraphService.linkNodes('frontier', 'Memory1', 'STRATEGIC_PIVOT', 0.90);
+
+        const issueOnly = await GraphService.getContextFrontier({types: ['ISSUE']});
+        expect(issueOnly.strategicNeighbors.map(neighbor => neighbor.id)).toEqual(['Issue1']);
+        expect(issueOnly.strategicNeighbors.every(neighbor => neighbor.type === 'ISSUE')).toBe(true);
+    });
+
     test('should trigger a SQLite lazy-load on cache miss when fetching a Node', async () => {
         await GraphService.upsertNode({id: 'LazyNode', name: 'Wait For It'});
         await GraphService.upsertNode({id: 'ConnectedNode', name: 'Linked'});
@@ -1862,7 +1891,7 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
     test('TestLifecycleHelper.cleanupGraphService(clear) and SystemLifecycleService.initAsync restore canonical boot seeds on warm workers', async () => {
         const
             {TestLifecycleHelper, resetMemoryCoreLifecycle} = await import('./util.mjs'),
-            seedAgentId = createGraphBootSeedManifest().nodes.find(node => node.type === 'AgentIdentity').id;
+            seedAgentId                                     = createGraphBootSeedManifest().nodes.find(node => node.type === 'AgentIdentity').id;
 
         expect(GraphService.db.nodes.get(seedAgentId)).toBeFalsy();
 

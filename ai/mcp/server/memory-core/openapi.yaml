@@ -1629,16 +1629,47 @@ paths:
 
   /context/frontier:
     get:
-      summary: Get Context Frontier
+      summary: Get Context Frontier (compact by default)
       operationId: get_context_frontier
       x-neo-tool-tier: read
       x-pass-as-object: true
+      x-neo-tool-summary: Read the active context frontier (compact counts + top neighbors by default; full topology on request).
       x-annotations:
         readOnlyHint: true
       description: |
-        Executes the Context Priming Engine to fetch the highly scaled topological frontier
-        and maps vectors back to extract specific underlying episodic knowledge logic.
+        Executes the Context Priming Engine to fetch the topological frontier and hydrate semantic contexts.
+        Defaults to `projection: 'compact'`, returning the frontier anchor (`{id, type, name}`), `neighborCounts`
+        by node label, `totalNeighbors`, the top `neighborLimit` strategic neighbors by weight without `description`,
+        and `semanticContexts` trimmed to `{nodeId, name, weightedScore, trustTier}` plus the first 300 characters of
+        `content`. Pass `projection: 'full'` for the complete topology and untruncated semantic contexts, or `types`
+        to filter neighbors by node label in either projection.
       tags: [System]
+      parameters:
+        - name: projection
+          in: query
+          required: false
+          description: "Response shape (`'compact'` or `'full'`). `'compact'` (default) returns counts by type, `totalNeighbors`, the top `neighborLimit` neighbors without `description`, and trimmed `semanticContexts`. `'full'` returns the complete topology and untruncated semantic contexts."
+          schema:
+            type: string
+            enum: [compact, full]
+            default: "compact"
+        - name: neighborLimit
+          in: query
+          required: false
+          description: "Maximum strategic neighbors returned in `'compact'` projection. Must be a positive integer."
+          schema:
+            type: integer
+            minimum: 1
+            default: 12
+        - name: types
+          in: query
+          required: false
+          description: "Optional node label filter (e.g. `['ISSUE', 'AGENT_MEMORY']`) applied in either projection."
+          schema:
+            type: array
+            minItems: 1
+            items:
+              type: string
       responses:
         '200':
           description: OK

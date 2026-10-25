@@ -1871,12 +1871,14 @@ class GraphService extends Base {
     }
 
     /**
-     * Retrieves the structural topology of the active context frontier.
-     * @param {Object} args
+     * @summary Retrieves the structural topology of the active context frontier.
+     * @param {Object} [args={}]
      * @param {Number} [args.depth=2] The traversal depth from the frontier node.
+     * @param {Number} [args.neighborLimit] Optional cap on returned strategic neighbors after weight sorting.
+     * @param {String[]} [args.types] Optional node label filter (e.g. `['ISSUE', 'AGENT_MEMORY']`).
      * @returns {Object|null}
      */
-    getContextFrontier({depth = 2} = {}) {
+    getContextFrontier({depth = 2, neighborLimit, types} = {}) {
         // Guarantee lazy-loading of frontier topology explicitly
         this.db.getAdjacentNodes('frontier', 'both');
 
@@ -1889,6 +1891,7 @@ class GraphService extends Base {
         // RLS: the frontier anchor is shared, but its strategic neighbors may be
         // tenant-private — filter them at the return boundary.
         let rlsUserId = resolveRlsUserId(this.db.storage?.RequestContextService);
+        let typeSet   = Array.isArray(types) && types.length > 0 ? new Set(types) : null;
 
         const topology = {
             frontier          : {
@@ -1912,7 +1915,7 @@ class GraphService extends Base {
                 let node       = this.db.nodes.get(adjacentId);
 
                 // Actively filter out CLOSED structural paths plus RLS-invisible nodes/edges.
-                if (node && isRlsVisible(node, rlsUserId) && isRlsVisible(e, rlsUserId) && node.properties?.state !== 'CLOSED' && !node.properties?.archivedAt) {
+                if (node && (!typeSet || typeSet.has(node.label)) && isRlsVisible(node, rlsUserId) && isRlsVisible(e, rlsUserId) && node.properties?.state !== 'CLOSED' && !node.properties?.archivedAt) {
                     topology.strategicNeighbors.push({
                         id              : node.id,
                         type            : node.label,
@@ -1929,6 +1932,10 @@ class GraphService extends Base {
 
         // Sort by highest weight
         topology.strategicNeighbors.sort((a, b) => b.weight - a.weight);
+
+        if (Number.isInteger(neighborLimit) && neighborLimit >= 0) {
+            topology.strategicNeighbors = topology.strategicNeighbors.slice(0, neighborLimit);
+        }
 
         return topology;
     }
