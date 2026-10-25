@@ -1,3 +1,6 @@
+import Neo                                                from 'neo.mjs/src/Neo.mjs';
+import * as core                                          from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                                    from 'neo.mjs/src/manager/Instance.mjs';
 import {resolveTicketReference}                           from '../graph/ticketReferences.mjs';
 import Base                                               from 'neo.mjs/src/core/Base.mjs';
 import aiConfig                                           from '../../mcp/server/memory-core/config.mjs';
@@ -205,6 +208,34 @@ export function computePublishRevisionDigest({account, channel, format, text, me
     return crypto.createHash('sha256')
         .update(JSON.stringify(canonicalProjection))
         .digest('hex');
+}
+
+/**
+ * @summary Compares platform read-back text (`textAsPublished`) against the requested revision text
+ * (`textAsRequested`), tolerating platform link-shortener URL rewrites (such as X wrapping `https://...`
+ * links in `https://t.co/...`) when the URL count and all non-URL text match identically.
+ * @param {String} textAsPublished
+ * @param {String} textAsRequested
+ * @returns {Boolean}
+ */
+export function matchesRequestedPublishText(textAsPublished, textAsRequested) {
+    if (typeof textAsPublished !== 'string' || typeof textAsRequested !== 'string') {
+        return false;
+    }
+
+    if (textAsPublished === textAsRequested) {
+        return true;
+    }
+
+    const urlPattern    = /https?:\/\/\S+/g,
+          publishedUrls = textAsPublished.match(urlPattern) || [],
+          requestedUrls = textAsRequested.match(urlPattern) || [];
+
+    if (publishedUrls.length === 0 || publishedUrls.length !== requestedUrls.length) {
+        return false;
+    }
+
+    return textAsPublished.replace(urlPattern, '<URL>') === textAsRequested.replace(urlPattern, '<URL>');
 }
 
 /**
@@ -465,11 +496,34 @@ function resolveAndVerifyPublishAttestation({
         reviewerProps = getRecordProperties(reviewerMessageNode),
         reviewerText  = `${reviewerProps.subject || ''}\n${reviewerProps.bodyText || ''}\n${reviewerProps.attestedRevisionDigest || ''}`;
 
+    if (/(\brejected\b|\brequest[_ -]?changes\b|\bchanges[_ -]?requested\b|\bdo not publish\b)/i.test(reviewerText)) {
+        throw refuseRequestPublish(
+            'refused: attestation',
+            `Reviewer message '${reviewerMessageId}' carries a rejection verdict and cannot attest revision digest '${expectedRevisionDigest}'.`
+        );
+    }
+
     if (!reviewerText.toLowerCase().includes(expectedRevisionDigest.toLowerCase())) {
         throw refuseRequestPublish(
             'refused: attestation',
             `Reviewer message '${reviewerMessageId}' does not attest revision digest '${expectedRevisionDigest}'.`
         );
+    }
+
+    reviewerProps.revisionDigest         = expectedRevisionDigest;
+    reviewerProps.attestedRevisionDigest = expectedRevisionDigest;
+    setRecordProperties(reviewerMessageNode, reviewerProps);
+    if (db.storage?.db) {
+        db.storage.db.prepare(`
+            UPDATE Nodes
+            SET data = json_set(
+                data,
+                '$.properties.revisionDigest', ?,
+                '$.properties.attestedRevisionDigest', ?
+            )
+            WHERE id = ?
+        `).run(expectedRevisionDigest, expectedRevisionDigest, reviewerMessageId);
+        db.acknowledgeLocalMutations?.();
     }
 
     return {
@@ -1423,6 +1477,8 @@ function getStorageTaskMutableState(messageId) {
             json_extract(data, '$.properties.revision') AS revision,
             json_extract(data, '$.properties.revisions') AS revisions,
             json_extract(data, '$.properties.publication') AS publication,
+            json_extract(data, '$.properties.revisionDigest') AS revisionDigest,
+            json_extract(data, '$.properties.attestedRevisionDigest') AS attestedRevisionDigest,
             json_extract(data, '$.properties.lastModifiedAt') AS lastModifiedAt
         FROM Nodes
         WHERE id = ?
@@ -1436,6 +1492,8 @@ function getStorageTaskMutableState(messageId) {
     if (row.revision != null)                state.revision                = parseStorageJsonObject(row.revision, 'revision', messageId);
     if (row.revisions != null)               state.revisions               = parseStorageJsonArray(row.revisions, 'revisions', messageId);
     if (row.publication != null)             state.publication             = parseStorageJsonObject(row.publication, 'publication', messageId);
+    if (row.revisionDigest != null)          state.revisionDigest          = row.revisionDigest;
+    if (row.attestedRevisionDigest != null)  state.attestedRevisionDigest  = row.attestedRevisionDigest;
     if (row.lastModifiedAt != null)          state.lastModifiedAt          = row.lastModifiedAt;
 
     return state;
@@ -1468,6 +1526,8 @@ function applyStorageTaskMutableState(messageNode, state) {
     else                                                delete properties.revisions;
     if (Object.hasOwn(state, 'publication'))             properties.publication             = {...state.publication};
     else                                                delete properties.publication;
+    if (Object.hasOwn(state, 'revisionDigest'))          properties.revisionDigest          = state.revisionDigest;
+    if (Object.hasOwn(state, 'attestedRevisionDigest'))  properties.attestedRevisionDigest  = state.attestedRevisionDigest;
     if (Object.hasOwn(state, 'lastModifiedAt'))          properties.lastModifiedAt          = state.lastModifiedAt;
     else                                                delete properties.lastModifiedAt;
 
@@ -4816,6 +4876,8 @@ class MailboxService extends Base {
         if (messageNode.properties.revision !== undefined) result.revision = messageNode.properties.revision;
         if (messageNode.properties.revisions !== undefined) result.revisions = messageNode.properties.revisions;
         if (messageNode.properties.publication !== undefined) result.publication = messageNode.properties.publication;
+        if (messageNode.properties.revisionDigest !== undefined) result.revisionDigest = messageNode.properties.revisionDigest;
+        if (messageNode.properties.attestedRevisionDigest !== undefined) result.attestedRevisionDigest = messageNode.properties.attestedRevisionDigest;
         if (messageNode.properties.wakeSuppressed) result.wakeSuppressed = true;
         const {taggedConcepts} = messageNode.properties;
         if (!messageNode.properties.retracted && Array.isArray(taggedConcepts) && taggedConcepts.length > 0) {
@@ -5891,8 +5953,11 @@ class MailboxService extends Base {
         messageId,
         newState,
         revisionDigest,
+        attemptId,
+        reservedAt,
         textAsPublished,
         providerId,
+        readback,
         readbackAt,
         refusalReason
     } = {}) {
@@ -5963,7 +6028,7 @@ class MailboxService extends Base {
             publishing: new Set(['published', 'refused', 'unresolved']),
             unresolved: new Set(['published', 'refused']),
             published : new Set([]),
-            refused   : new Set([])
+            refused   : currentPublication.reservation ? new Set([]) : new Set(['queued'])
         };
 
         const allowedTargets = LEGAL_PUBLICATION_MOVES[currentState];
@@ -5984,11 +6049,16 @@ class MailboxService extends Base {
             currentRevisionDigest: currentRevision?.revisionDigest ?? currentPublication.currentRevisionDigest ?? null
         };
 
-        if (newState === 'publishing') {
+        if (newState === 'queued') {
+            nextPublication.refusalReason = null;
+        } else if (newState === 'publishing') {
+            const resolvedAttemptId     = attemptId ?? currentPublication.attemptId ?? null;
+            nextPublication.attemptId   = resolvedAttemptId;
             nextPublication.reservation = {
+                ...(resolvedAttemptId ? {attemptId: resolvedAttemptId} : {}),
                 revisionNumber: nextPublication.currentRevisionNumber,
                 revisionDigest: nextPublication.currentRevisionDigest,
-                reservedAt    : timestamp,
+                reservedAt    : reservedAt || timestamp,
                 reservedBy    : me
             };
         } else if (newState === 'published') {
@@ -5998,17 +6068,26 @@ class MailboxService extends Base {
             if (typeof textAsPublished !== 'string' || !textAsPublished.trim()) {
                 throw refuseRequestPublish('refused: missing-textAsPublished', 'Transition to published requires non-empty textAsPublished from read-back.');
             }
-            if (textAsPublished !== textAsRequested) {
+            if (!matchesRequestedPublishText(textAsPublished, textAsRequested)) {
                 throw refuseRequestPublish(
                     'refused: text-mismatch',
                     'textAsPublished does not match textAsRequested; transition publication state to unresolved instead of published.'
                 );
+            }
+            if (attemptId !== undefined) {
+                nextPublication.attemptId = attemptId;
+            }
+            if (readback !== undefined) {
+                nextPublication.readback = readback;
             }
             nextPublication.providerId      = providerId.trim();
             nextPublication.textAsPublished = textAsPublished;
             nextPublication.readbackAt      = readbackAt || timestamp;
             nextPublication.refusalReason   = null;
         } else if (newState === 'unresolved') {
+            if (attemptId !== undefined) {
+                nextPublication.attemptId = attemptId;
+            }
             if (textAsPublished !== undefined) {
                 nextPublication.textAsPublished = textAsPublished;
             }
@@ -6020,6 +6099,9 @@ class MailboxService extends Base {
             }
             nextPublication.refusalReason = refusalReason || 'unresolved: readback-pending';
         } else if (newState === 'refused') {
+            if (attemptId !== undefined) {
+                nextPublication.attemptId = attemptId;
+            }
             if (textAsPublished !== undefined) {
                 nextPublication.textAsPublished = textAsPublished;
             }
@@ -6190,7 +6272,7 @@ class MailboxService extends Base {
             isPublished      = isRequestPublish
                 && publicationState === 'published'
                 && Boolean(storedState.publication?.providerId)
-                && storedState.publication?.textAsPublished === storedState.publication?.textAsRequested;
+                && matchesRequestedPublishText(storedState.publication?.textAsPublished, storedState.publication?.textAsRequested);
 
         let authorized = false;
 

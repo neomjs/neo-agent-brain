@@ -1,8 +1,25 @@
-import crypto         from 'node:crypto';
-import fs             from 'node:fs/promises';
-import os             from 'node:os';
-import path           from 'node:path';
-import {expect, test} from '@playwright/test';
+import {setup} from '../../../../setup.mjs';
+
+setup({
+    neoConfig: {
+        unitTestMode: true
+    },
+    appConfig: {
+        name             : 'PublishExecutorUnitTest',
+        isMounted        : () => true,
+        vnodeInitialising: false
+    }
+});
+
+import crypto                  from 'node:crypto';
+import fs                      from 'node:fs/promises';
+import os                      from 'node:os';
+import path                    from 'node:path';
+import {expect, test}          from '@playwright/test';
+import Neo                     from 'neo.mjs/src/Neo.mjs';
+import * as core               from 'neo.mjs/src/core/_export.mjs';
+import                              'neo.mjs/src/manager/Instance.mjs';
+import RequestContextService   from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 import {
     LINKEDIN_TOKEN_MAX_AGE_MS,
     PUBLICATION_STATES,
@@ -14,6 +31,7 @@ import {
     computePublishRevisionDigest,
     createFleetCustodyStore,
     createPublishExecutor,
+    matchesRequestedPublishText,
     publish,
     readMetrics,
     reply
@@ -38,51 +56,86 @@ function buildPayload(overrides = {}) {
     };
 }
 
+/**
+ * In-memory double implementing `MailboxService`'s single-writer interface (`getMessage` and
+ * `transitionPublishState`) with the same legal state-transition table as `MailboxService`.
+ */
 function createInMemoryMailbox(initialRequests = {}, reviewMessages = {}) {
     const store       = new Map(Object.entries(initialRequests));
+    const reviews     = new Map(Object.entries(reviewMessages));
     const transitions = [];
 
     return {
         store,
+        reviews,
         transitions,
-        async getRequest(requestId) {
-            const record = store.get(requestId);
-            return record ? structuredClone(record) : null;
+        async getMessage({messageId} = {}) {
+            if (store.has(messageId)) {
+                return structuredClone(store.get(messageId));
+            }
+            if (reviews.has(messageId)) {
+                return structuredClone(reviews.get(messageId));
+            }
+            return null;
         },
-        async getReviewMessage(messageId) {
-            return reviewMessages[messageId] ? structuredClone(reviewMessages[messageId]) : null;
-        },
-        async recordPublicationState(update) {
+        async transitionPublishState(update = {}) {
             transitions.push(structuredClone(update));
-            const existing = store.get(update.requestId);
+            const targetId = update.taskId ?? update.messageId;
+            const existing = store.get(targetId);
             if (!existing) {
-                return {ok: false, refused: REFUSAL_CODES.notFound};
+                return {success: false, refused: REFUSAL_CODES.notFound};
             }
 
-            if (update.expectedState && existing.publication.state !== update.expectedState) {
+            const currentState = existing.publication.state;
+            const newState     = update.newState;
+            const legalMoves   = {
+                queued    : new Set(['publishing', 'refused']),
+                publishing: new Set(['published', 'refused', 'unresolved']),
+                unresolved: new Set(['published', 'refused']),
+                published : new Set([]),
+                refused   : existing.publication.reservation ? new Set([]) : new Set(['queued'])
+            };
+
+            if (!legalMoves[currentState]?.has(newState)) {
                 return {
-                    ok     : false,
-                    state  : existing.publication.state,
+                    success: false,
+                    state  : currentState,
                     refused: REFUSAL_CODES.publishingInFlight,
-                    reason : `expected state ${update.expectedState}, found ${existing.publication.state}`
+                    reason : `Illegal publication state transition ${currentState} -> ${newState}`
                 };
             }
 
+            const reservedAt = update.reservedAt ?? existing.publication.reservedAt ?? new Date(NOW_MS).toISOString();
+            const attemptId  = update.attemptId ?? existing.publication.attemptId ?? null;
+
             existing.publication = {
                 ...existing.publication,
-                state          : update.state,
-                attemptId      : update.attemptId ?? existing.publication.attemptId ?? null,
-                revisionNumber : update.revisionNumber ?? existing.publication.revisionNumber ?? 1,
+                state          : newState,
+                attemptId,
+                reservedAt     : newState === PUBLICATION_STATES.publishing ? reservedAt : existing.publication.reservedAt,
+                reservation    : newState === PUBLICATION_STATES.publishing
+                    ? {
+                        attemptId,
+                        revisionNumber: existing.currentRevision.revisionNumber,
+                        revisionDigest: update.revisionDigest ?? existing.publication.revisionDigest,
+                        reservedAt
+                    }
+                    : existing.publication.reservation,
+                revisionNumber : existing.currentRevision.revisionNumber,
                 revisionDigest : update.revisionDigest ?? existing.publication.revisionDigest,
                 providerId     : update.providerId ?? existing.publication.providerId ?? null,
                 readback       : update.readback ?? existing.publication.readback ?? null,
                 readbackAt     : update.readbackAt ?? existing.publication.readbackAt ?? null,
-                textAsRequested: update.textAsRequested ?? existing.publication.textAsRequested,
                 textAsPublished: update.textAsPublished !== undefined ? update.textAsPublished : existing.publication.textAsPublished,
-                refusalReason  : update.refusalReason ?? null
+                refusalReason  : newState === PUBLICATION_STATES.queued ? null : (update.refusalReason ?? null)
             };
-            store.set(update.requestId, existing);
-            return {ok: true, publication: structuredClone(existing.publication)};
+            store.set(targetId, existing);
+            return {
+                success    : true,
+                messageId  : targetId,
+                taskId     : targetId,
+                publication: structuredClone(existing.publication)
+            };
         }
     };
 }
@@ -134,24 +187,34 @@ function seedApprovedRequest({
     revisions.push(currentRevision);
 
     return {
+        messageId       : requestId,
         requestId,
+        from            : requester,
         requester,
+        requestPublish  : payload,
+        revision        : currentRevision,
         revisions,
         currentRevision,
-        publication: {
-            state          : PUBLICATION_STATES.queued,
-            attemptId      : null,
-            revisionNumber : revNum,
+        publication     : {
+            state                : PUBLICATION_STATES.queued,
+            attemptId            : null,
+            reservedAt           : null,
+            reservation          : null,
+            currentRevisionNumber: revNum,
+            currentRevisionDigest: revisionDigest,
+            revisionNumber       : revNum,
             revisionDigest,
-            providerId     : null,
-            readback       : null,
-            readbackAt     : null,
-            textAsRequested: revision1Text,
-            textAsPublished: null,
-            refusalReason  : null
+            providerId           : null,
+            readback             : null,
+            readbackAt           : null,
+            textAsRequested      : revision1Text,
+            textAsPublished      : null,
+            refusalReason        : null
         }
     };
 }
+
+test.describe.configure({mode: 'serial'});
 
 test.describe('publishExecutor (#979)', () => {
     test('AC-1: publish records publishing before the platform call and published with the provider id after it; a second call for the same id and digest is a no-op with the recorded provider id', async () => {
@@ -168,7 +231,7 @@ test.describe('publishExecutor (#979)', () => {
         const platform = {
             async publishPost(call) {
                 platformCalls.push(call);
-                stateAtPlatformDispatch = (await mailbox.getRequest(REQ_ID)).publication.state;
+                stateAtPlatformDispatch = (await mailbox.getMessage({messageId: REQ_ID})).publication.state;
                 return {
                     providerId: 'tweet-189900112233',
                     readback  : {
@@ -192,7 +255,7 @@ test.describe('publishExecutor (#979)', () => {
         const first = await executor.publish(REQ_ID, digest);
 
         expect(stateAtPlatformDispatch).toBe(PUBLICATION_STATES.publishing);
-        expect(mailbox.transitions.map(t => t.state)).toEqual([
+        expect(mailbox.transitions.map(t => t.newState)).toEqual([
             PUBLICATION_STATES.publishing,
             PUBLICATION_STATES.published
         ]);
@@ -236,8 +299,8 @@ test.describe('publishExecutor (#979)', () => {
         expect(platformCalls).toHaveLength(1);
     });
 
-    test('AC-2: a crash between the platform call and the published record leaves publishing; the next run reconciles against recent posts and records published without a second post, or unresolved when it cannot tell', async () => {
-        // Arm A: positive reconciliation match adopts providerId and records `published` without a second post
+    test('AC-2: a crash between the platform call and the published record leaves publishing; the next run reconciles against recent posts created at or after reservedAt and records published without a second post, or unresolved when it cannot tell', async () => {
+        // Arm A: positive reconciliation match at/after reservedAt adopts providerId and records `published` without a second post
         const reqA     = seedApprovedRequest();
         const digestA  = reqA.currentRevision.revisionDigest;
         const mailboxA = createInMemoryMailbox({[REQ_ID]: reqA});
@@ -260,8 +323,9 @@ test.describe('publishExecutor (#979)', () => {
                     recentCallsA++;
                     return [
                         {
-                            id  : 'tweet-reconciled-777',
-                            text: reqA.currentRevision.payload.text
+                            id       : 'tweet-reconciled-777',
+                            text     : reqA.currentRevision.payload.text,
+                            createdAt: new Date(NOW_MS + 1000).toISOString()
                         }
                     ];
                 }
@@ -269,7 +333,7 @@ test.describe('publishExecutor (#979)', () => {
         });
 
         await expect(executorA.publish(REQ_ID, digestA)).rejects.toThrow(/publish dispatch interrupted after recording publishing/);
-        expect((await mailboxA.getRequest(REQ_ID)).publication.state).toBe(PUBLICATION_STATES.publishing);
+        expect((await mailboxA.getMessage({messageId: REQ_ID})).publication.state).toBe(PUBLICATION_STATES.publishing);
         expect(publishCallsA).toBe(1);
 
         const reconciled = await executorA.publish(REQ_ID, digestA);
@@ -283,7 +347,7 @@ test.describe('publishExecutor (#979)', () => {
         });
         expect(publishCallsA).toBe(1);
         expect(recentCallsA).toBe(1);
-        expect((await mailboxA.getRequest(REQ_ID)).publication.state).toBe(PUBLICATION_STATES.published);
+        expect((await mailboxA.getMessage({messageId: REQ_ID})).publication.state).toBe(PUBLICATION_STATES.published);
 
         // Arm B: when recent-posts read cannot locate the post, records `unresolved` without a second post and blocks bypass
         const reqB     = seedApprovedRequest({requestId: 'MESSAGE:97900000-0000-4000-8000-000000000002'});
@@ -309,7 +373,7 @@ test.describe('publishExecutor (#979)', () => {
         });
 
         await expect(executorB.publish(reqB.requestId, digestB)).rejects.toThrow(/publish dispatch interrupted/);
-        expect((await mailboxB.getRequest(reqB.requestId)).publication.state).toBe(PUBLICATION_STATES.publishing);
+        expect((await mailboxB.getMessage({messageId: reqB.requestId})).publication.state).toBe(PUBLICATION_STATES.publishing);
 
         const unresolvedResult = await executorB.publish(reqB.requestId, digestB);
         expect(unresolvedResult).toMatchObject({
@@ -320,7 +384,7 @@ test.describe('publishExecutor (#979)', () => {
             revisionDigest: digestB
         });
         expect(publishCallsB).toBe(1);
-        expect((await mailboxB.getRequest(reqB.requestId)).publication.state).toBe(PUBLICATION_STATES.unresolved);
+        expect((await mailboxB.getMessage({messageId: reqB.requestId})).publication.state).toBe(PUBLICATION_STATES.unresolved);
 
         // Subsequent attempts with the same or a different digest remain refused while `unresolved`
         const bypassAttempt = await executorB.publish(reqB.requestId, 'f'.repeat(64));
@@ -355,16 +419,20 @@ test.describe('publishExecutor (#979)', () => {
         });
         expect(platformCalled).toBe(false);
 
-        // Arm B: stale caller-passed digest that does not match currentRevision after an Edit is refused (`refused: digest`)
+        // Arm B (RA-5): stale caller-passed digest that does not match currentRevision after an Edit
+        // refuses the call (`refused: digest`) WITHOUT writing `refused` to the stored request
         const reqEdited     = seedApprovedRequest({textInitial: 'Initial draft', payload: buildPayload({text: 'Edited text'})});
         const staleDigest   = reqEdited.revisions[0].revisionDigest;
         const mailboxEdited = createInMemoryMailbox({[REQ_ID]: reqEdited});
         const staleRes      = await executor.publish(REQ_ID, staleDigest, {mailbox: mailboxEdited});
         expect(staleRes).toMatchObject({
-            ok     : false,
-            state  : PUBLICATION_STATES.refused,
-            refused: REFUSAL_CODES.digest
+            ok              : false,
+            state           : PUBLICATION_STATES.refused,
+            publicationState: PUBLICATION_STATES.queued,
+            refused         : REFUSAL_CODES.digest
         });
+        expect((await mailboxEdited.getMessage({messageId: REQ_ID})).publication.state).toBe(PUBLICATION_STATES.queued);
+        expect(mailboxEdited.transitions).toHaveLength(0);
         expect(platformCalled).toBe(false);
 
         // Arm C: switch state read at publish time downgraded below the queued request's release state refuses (`refused: switch`)
@@ -376,7 +444,6 @@ test.describe('publishExecutor (#979)', () => {
         const digestDowngraded  = reqDowngraded.currentRevision.revisionDigest;
         const mailboxDowngraded = createInMemoryMailbox({[reqDowngraded.requestId]: reqDowngraded});
 
-        // Switch was downgraded from `auto-approve` to `approve each` before publish() ran
         const downgradedRes = await publish(reqDowngraded.requestId, digestDowngraded, {
             mailbox    : mailboxDowngraded,
             credentials: {'x:@neomjs': {accessToken: SECRET}},
@@ -391,7 +458,7 @@ test.describe('publishExecutor (#979)', () => {
         });
         expect(platformCalled).toBe(false);
 
-        // Arm D: `auto-approve after a cross-family review attestation` verifies reviewer family via Fleet authority
+        // Arm D: `auto-approve after a cross-family review attestation` verifies reviewer family + structured revisionDigest
         const payloadAttested = buildPayload({text: 'Cross-family attested post.'});
         const digestAttested  = computePublishRevisionDigest(payloadAttested);
         const reviewMsgId     = 'MESSAGE:97900000-0000-4000-8000-000000000099';
@@ -399,11 +466,22 @@ test.describe('publishExecutor (#979)', () => {
             requestId  : 'MESSAGE:97900000-0000-4000-8000-000000000004',
             payload    : payloadAttested,
             approved   : false,
-            attestation: {reviewerMessageId: reviewMsgId, revisionDigest: digestAttested}
+            attestation: {
+                reviewerMessageId: reviewMsgId,
+                revisionNumber   : 1,
+                revisionDigest   : digestAttested
+            }
         });
         const mailboxAttested = createInMemoryMailbox(
             {[reqAttested.requestId]: reqAttested},
-            {[reviewMsgId]: {messageId: reviewMsgId, from: '@neo-gpt-sophie', body: `Approved digest ${digestAttested}`}}
+            {
+                [reviewMsgId]: {
+                    messageId     : reviewMsgId,
+                    from          : '@neo-gpt-sophie',
+                    body          : `Approved digest ${digestAttested}`,
+                    revisionDigest: digestAttested
+                }
+            }
         );
 
         const attestedRes = await publish(reqAttested.requestId, digestAttested, {
@@ -489,7 +567,7 @@ test.describe('publishExecutor (#979)', () => {
             });
 
             const pubResult     = await executor.publish(REQ_ID, digest);
-            const metricsResult = await executor.readMetrics('tweet-custody-1', {channel: 'x', account: '@neomjs'});
+            const metricsResult = await executor.readMetrics('tweet-custody-1');
             const replyResult   = await executor.reply({inReplyTo: 'tweet-99'});
 
             // Missing credential yields `refused: credential`
@@ -634,13 +712,23 @@ test.describe('publishExecutor (#979)', () => {
         expect(dispatchedInReplyTo).toBe('tweet-parent-owned-555');
     });
 
-    test('AC-6: readMetrics returns the owned object metrics with source, window and claim class; an unavailable metric is unknown, never zero', async () => {
-        const xMetricsRes = await readMetrics('tweet-189900112233', {
-            channel    : PUBLISH_CHANNELS.x,
-            account    : '@neomjs',
+    test('AC-6: readMetrics returns the owned object metrics with source, window and claim class; an unavailable metric is unknown, never zero; maps X API v2 *_count fields and derives channel/account from the published record', async () => {
+        const req     = seedApprovedRequest();
+        const digest  = req.currentRevision.revisionDigest;
+        const mailbox = createInMemoryMailbox({[REQ_ID]: req});
+
+        const executor = createPublishExecutor({
+            mailbox,
             credentials: {'x:@neomjs': {accessToken: SECRET, expiresAt: NOW_MS + 3600_000}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
             now        : () => NOW_MS,
             platform   : {
+                async publishPost(call) {
+                    return {
+                        providerId: 'tweet-189900112233',
+                        readback  : {providerId: 'tweet-189900112233', text: call.text}
+                    };
+                },
                 async readMetrics({providerId, channel, account}) {
                     expect(providerId).toBe('tweet-189900112233');
                     expect(channel).toBe('x');
@@ -650,10 +738,10 @@ test.describe('publishExecutor (#979)', () => {
                         window        : '30d',
                         claimClass    : 'owned-object-telemetry',
                         public_metrics: {
-                            impressions: 1420,
-                            likes      : 38,
-                            reposts    : 9,
-                            replies    : 0
+                            impression_count: 1420,
+                            like_count      : 38,
+                            retweet_count   : 9,
+                            reply_count     : 0
                         },
                         non_public_metrics: {
                             url_link_clicks    : 64,
@@ -664,6 +752,11 @@ test.describe('publishExecutor (#979)', () => {
                 }
             }
         });
+
+        await executor.publish(REQ_ID, digest);
+
+        // Call `readMetrics(providerId)` without passing `channel` or `account` — derived from the published record
+        const xMetricsRes = await executor.readMetrics('tweet-189900112233');
 
         expect(xMetricsRes).toEqual({
             ok        : true,
@@ -685,5 +778,435 @@ test.describe('publishExecutor (#979)', () => {
                 engagements        : 'unknown'
             }
         });
+    });
+
+    test('RA-1..RA-6 falsifiers: missing write verb, lost compare-and-set, rejected attestation text, missing mediaReader, stale caller digest, and pre-reservedAt reconciliation all fail closed', async () => {
+        // Falsifier 1 (RA-1a): mailbox with `getMessage` but no `transitionPublishState` verb refuses and makes 0 platform calls
+        const req1           = seedApprovedRequest();
+        let   platformCalls1 = 0;
+        const res1           = await publish(REQ_ID, req1.currentRevision.revisionDigest, {
+            mailbox    : {async getMessage() { return req1; }},
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            platform   : {async publishPost() { platformCalls1++; return {providerId: 'never'}; }}
+        });
+        expect(res1.ok).toBe(false);
+        expect(res1.refused).toBe(REFUSAL_CODES.publishingInFlight);
+        expect(platformCalls1).toBe(0);
+
+        // Falsifier 2 (RA-1b): `transitionPublishState` returns `false` (lost compare-and-set) -> refuses and makes 0 platform calls
+        let platformCalls2 = 0;
+        const res2         = await publish(REQ_ID, req1.currentRevision.revisionDigest, {
+            mailbox: {
+                async getMessage() { return req1; },
+                async transitionPublishState() { return false; }
+            },
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            platform   : {async publishPost() { platformCalls2++; return {providerId: 'never'}; }}
+        });
+        expect(res2.ok).toBe(false);
+        expect(res2.refused).toBe(REFUSAL_CODES.publishingInFlight);
+        expect(platformCalls2).toBe(0);
+
+        // Falsifier 3 (RA-3): attested switch with a cross-family message "REJECTED: do not publish <digest>" refuses (`refused: attestation`)
+        const payload3   = buildPayload({text: 'Candidate post under cross-family attestation.'});
+        const digest3    = computePublishRevisionDigest(payload3);
+        const reviewId3  = 'MESSAGE:97900000-0000-4000-8000-000000000333';
+        const req3       = seedApprovedRequest({
+            requestId  : 'MESSAGE:97900000-0000-4000-8000-000000000033',
+            payload    : payload3,
+            approved   : false,
+            attestation: {reviewerMessageId: reviewId3, revisionDigest: digest3}
+        });
+        const mailbox3       = createInMemoryMailbox(
+            {[req3.requestId]: req3},
+            {[reviewId3]: {messageId: reviewId3, from: '@neo-gpt-sophie', body: `REJECTED: do not publish ${digest3}`}}
+        );
+        let   platformCalls3 = 0;
+        const res3           = await publish(req3.requestId, digest3, {
+            mailbox              : mailbox3,
+            credentials          : {'x:@neomjs': {accessToken: SECRET}},
+            switchStore          : {[`${PEER_ID}:x`]: SWITCH_STATES.autoApproveAttested},
+            resolveIdentityFamily: async id => (id === PEER_ID ? 'claude' : 'gpt'),
+            platform             : {async publishPost() { platformCalls3++; return {providerId: 'never'}; }}
+        });
+        expect(res3).toMatchObject({
+            ok     : false,
+            state  : PUBLICATION_STATES.refused,
+            refused: REFUSAL_CODES.attestation
+        });
+        expect(platformCalls3).toBe(0);
+
+        // Falsifier 4 (RA-4): one media descriptor with no `mediaReader` refuses (`refused: digest`);
+        // with `mediaReader`, verified `{bytes: Buffer, sha256, mimeType}` (without `uri`) is passed to `publishPost`
+        const mediaBytes4  = Buffer.from('verified-card-png-bytes', 'utf8');
+        const mediaHash4   = crypto.createHash('sha256').update(mediaBytes4).digest('hex');
+        const req4NoReader = seedApprovedRequest({
+            requestId: 'MESSAGE:97900000-0000-4000-8000-000000000044',
+            payload  : buildPayload({
+                media: [{uri: 'resources/card.png', sha256: mediaHash4, mimeType: 'image/png'}]
+            })
+        });
+        let platformCalls4 = 0;
+        const res4NoReader = await publish(req4NoReader.requestId, req4NoReader.currentRevision.revisionDigest, {
+            mailbox    : createInMemoryMailbox({[req4NoReader.requestId]: req4NoReader}),
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            platform   : {async publishPost() { platformCalls4++; return {providerId: 'never'}; }}
+        });
+        expect(res4NoReader).toMatchObject({
+            ok     : false,
+            state  : PUBLICATION_STATES.refused,
+            refused: REFUSAL_CODES.digest
+        });
+        expect(platformCalls4).toBe(0);
+
+        const req4WithReader = seedApprovedRequest({
+            requestId: 'MESSAGE:97900000-0000-4000-8000-000000000045',
+            payload  : buildPayload({
+                media: [{uri: 'resources/card.png', sha256: mediaHash4, mimeType: 'image/png'}]
+            })
+        });
+        let uploadedMedia4 = null;
+        const res4WithReader = await publish(req4WithReader.requestId, req4WithReader.currentRevision.revisionDigest, {
+            mailbox    : createInMemoryMailbox({[req4WithReader.requestId]: req4WithReader}),
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            mediaReader: async () => mediaBytes4,
+            platform   : {
+                async publishPost(call) {
+                    uploadedMedia4 = call.media;
+                    return {providerId: 'tweet-media-ok'};
+                }
+            }
+        });
+        expect(res4WithReader.ok).toBe(true);
+        expect(uploadedMedia4).toHaveLength(1);
+        expect(Buffer.isBuffer(uploadedMedia4[0].bytes)).toBe(true);
+        expect(uploadedMedia4[0].bytes.equals(mediaBytes4)).toBe(true);
+        expect(uploadedMedia4[0].sha256).toBe(mediaHash4);
+        expect(uploadedMedia4[0].mimeType).toBe('image/png');
+        expect(uploadedMedia4[0].uri).toBeUndefined();
+
+        // Falsifier 5 (RA-5): a call carrying a stale digest refuses the call without writing `refused` to the valid request,
+        // so a subsequent call with the current revision's digest still publishes
+        const req5     = seedApprovedRequest({
+            requestId  : 'MESSAGE:97900000-0000-4000-8000-000000000055',
+            textInitial: 'Draft v1 before edit',
+            payload    : buildPayload({text: 'Approved v2 after edit'})
+        });
+        const mailbox5 = createInMemoryMailbox({[req5.requestId]: req5});
+        const staleCall5 = await publish(req5.requestId, req5.revisions[0].revisionDigest, {
+            mailbox    : mailbox5,
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            platform   : {async publishPost() { return {providerId: 'never'}; }}
+        });
+        expect(staleCall5.ok).toBe(false);
+        expect(staleCall5.refused).toBe(REFUSAL_CODES.digest);
+        expect((await mailbox5.getMessage({messageId: req5.requestId})).publication.state).toBe(PUBLICATION_STATES.queued);
+
+        const validCall5 = await publish(req5.requestId, req5.currentRevision.revisionDigest, {
+            mailbox    : mailbox5,
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            platform   : {async publishPost() { return {providerId: 'tweet-after-stale-call'}; }}
+        });
+        expect(validCall5).toMatchObject({
+            ok        : true,
+            state     : PUBLICATION_STATES.published,
+            providerId: 'tweet-after-stale-call'
+        });
+
+        // Falsifier 6 (RA-6): `publishing` reconciliation ignores an older post with identical text created BEFORE `reservedAt`,
+        // and also treats multiple matching posts created at/after `reservedAt` as `unresolved`
+        const req6Old = seedApprovedRequest({requestId: 'MESSAGE:97900000-0000-4000-8000-000000000066'});
+        req6Old.publication.state      = PUBLICATION_STATES.publishing;
+        req6Old.publication.attemptId  = 'attempt-6-old';
+        req6Old.publication.reservedAt = new Date(NOW_MS).toISOString();
+        const mailbox6Old              = createInMemoryMailbox({[req6Old.requestId]: req6Old});
+
+        const res6Old = await publish(req6Old.requestId, req6Old.currentRevision.revisionDigest, {
+            mailbox    : mailbox6Old,
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            now        : () => NOW_MS,
+            platform   : {
+                async listRecentPosts() {
+                    return [
+                        {
+                            id       : 'tweet-from-yesterday',
+                            text     : req6Old.currentRevision.payload.text,
+                            createdAt: new Date(NOW_MS - 60_000).toISOString()
+                        }
+                    ];
+                }
+            }
+        });
+        expect(res6Old).toMatchObject({
+            ok     : false,
+            state  : PUBLICATION_STATES.unresolved,
+            refused: REFUSAL_CODES.unresolved
+        });
+
+        const req6Multi = seedApprovedRequest({requestId: 'MESSAGE:97900000-0000-4000-8000-000000000067'});
+        req6Multi.publication.state      = PUBLICATION_STATES.publishing;
+        req6Multi.publication.attemptId  = 'attempt-6-multi';
+        req6Multi.publication.reservedAt = new Date(NOW_MS).toISOString();
+        const mailbox6Multi              = createInMemoryMailbox({[req6Multi.requestId]: req6Multi});
+
+        const res6Multi = await publish(req6Multi.requestId, req6Multi.currentRevision.revisionDigest, {
+            mailbox    : mailbox6Multi,
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            now        : () => NOW_MS,
+            platform   : {
+                async listRecentPosts() {
+                    return [
+                        {
+                            id       : 'tweet-candidate-1',
+                            text     : req6Multi.currentRevision.payload.text,
+                            createdAt: new Date(NOW_MS + 1000).toISOString()
+                        },
+                        {
+                            id       : 'tweet-candidate-2',
+                            text     : req6Multi.currentRevision.payload.text,
+                            createdAt: new Date(NOW_MS + 2000).toISOString()
+                        }
+                    ];
+                }
+            }
+        });
+        expect(res6Multi).toMatchObject({
+            ok     : false,
+            state  : PUBLICATION_STATES.unresolved,
+            refused: REFUSAL_CODES.unresolved
+        });
+
+        // Non-blocking checks: channel-only switch key does not govern peers, and approval without revisionNumber is refused
+        const reqUnapproved = seedApprovedRequest({
+            requestId: 'MESSAGE:97900000-0000-4000-8000-000000000068',
+            approved : false
+        });
+        const channelOnlyRes = await publish(reqUnapproved.requestId, reqUnapproved.currentRevision.revisionDigest, {
+            mailbox    : createInMemoryMailbox({[reqUnapproved.requestId]: reqUnapproved}),
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {x: SWITCH_STATES.autoApprove},
+            platform   : {async publishPost() { return {providerId: 'never'}; }}
+        });
+        expect(channelOnlyRes).toMatchObject({
+            ok     : false,
+            state  : PUBLICATION_STATES.refused,
+            refused: REFUSAL_CODES.switch
+        });
+
+        const reqMissingRevNum = seedApprovedRequest({
+            requestId: 'MESSAGE:97900000-0000-4000-8000-000000000069'
+        });
+        delete reqMissingRevNum.currentRevision.approval.revisionNumber;
+        const missingRevNumRes = await publish(reqMissingRevNum.requestId, reqMissingRevNum.currentRevision.revisionDigest, {
+            mailbox    : createInMemoryMailbox({[reqMissingRevNum.requestId]: reqMissingRevNum}),
+            credentials: {'x:@neomjs': {accessToken: SECRET}},
+            switchStore: {[`${PEER_ID}:x`]: SWITCH_STATES.approveEach},
+            platform   : {async publishPost() { return {providerId: 'never'}; }}
+        });
+        expect(missingRevNumRes).toMatchObject({
+            ok     : false,
+            state  : PUBLICATION_STATES.refused,
+            refused: REFUSAL_CODES.digest
+        });
+    });
+
+    test('Real MailboxService contract integration (RA-1, RA-2, RA-3 & #1263 Observations 1–3): createPublishExecutor drives MailboxService verbs end-to-end including t.co link-rewrite read-back and pre-dispatch refused -> queued re-queue', async () => {
+        const mailboxAiConfig        = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
+        const GraphService           = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        const MailboxService         = (await import('../../../../../../ai/services/memory-core/MailboxService.mjs')).default;
+        const LifecycleService       = (await import('../../../../../../ai/services/memory-core/lifecycle/SystemLifecycleService.mjs')).default;
+        const {cleanupChromaManager} = await import('../memory-core/util.mjs');
+
+        if (!LifecycleService._initPromise) {
+            await LifecycleService.initAsync();
+        } else {
+            await LifecycleService.ready();
+        }
+
+        try {
+            GraphService.upsertNode({
+            id        : '@tobiu',
+            type      : 'AgentIdentity',
+            name      : 'Tobi',
+            properties: {accountType: 'human', trustTier: 'operator'}
+        });
+        GraphService.upsertNode({
+            id        : '@neo-gemini-maryam',
+            type      : 'AgentIdentity',
+            name      : 'Maryam',
+            properties: {accountType: 'agent', modelFamily: 'gemini'}
+        });
+        GraphService.upsertNode({
+            id        : '@neo-opus-ada',
+            type      : 'AgentIdentity',
+            name      : 'Ada',
+            properties: {accountType: 'agent', modelFamily: 'claude'}
+        });
+
+        // 1. Originating seat submits a `requestPublish` Task to `@tobiu`
+        const initialPayload = buildPayload({
+            text: 'Neo v13.2 ships the two-hemisphere Agent OS. Full architecture notes: https://neomjs.com/blog/agent-os'
+        });
+        const created = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+            MailboxService.addMessage({
+                to            : '@tobiu',
+                subject       : '[requestPublish] real MailboxService integration test',
+                body          : initialPayload.text,
+                taggedConcepts: ['requestPublish'],
+                requestPublish: initialPayload
+            })
+        );
+        const requestId  = created.messageId;
+        const rev1Digest = created.revisionDigest;
+        expect(rev1Digest).toBe(computePublishRevisionDigest(initialPayload));
+
+        // 2. Cross-family review message containing a rejection verdict ("REJECTED: do not publish <digest>")
+        // is refused by `MailboxService.attestPublishRevision`
+        const rejectedReviewMsg = await RequestContextService.run({agentIdentityNodeId: '@neo-opus-ada'}, () =>
+            MailboxService.addMessage({
+                to     : '@tobiu',
+                subject: `[requestPublish-review] REJECTED ${rev1Digest}`,
+                body   : `REJECTED: do not publish ${rev1Digest}`
+            })
+        );
+        await expect(
+            RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                MailboxService.attestPublishRevision({
+                    taskId           : requestId,
+                    reviewerMessageId: rejectedReviewMsg.messageId,
+                    revisionDigest   : rev1Digest
+                })
+            )
+        ).rejects.toMatchObject({code: 'refused: attestation'});
+
+        // 3. Valid cross-family review message is accepted by `executor.attestRevision` and stamps structured `revisionDigest` on the review message node
+        const validReviewMsg = await RequestContextService.run({agentIdentityNodeId: '@neo-opus-ada'}, () =>
+            MailboxService.addMessage({
+                to     : '@tobiu',
+                subject: `[requestPublish-review] APPROVED ${rev1Digest}`,
+                body   : `Verified claims and receipts for revisionDigest ${rev1Digest}`
+            })
+        );
+
+        let activeCredentials = {};
+        const executor = createPublishExecutor({
+            mailbox    : MailboxService,
+            custody    : {
+                async readCredential({channel, account}) {
+                    const token = activeCredentials[`${channel}:${account}`];
+                    if (!token) {
+                        return {
+                            ok    : false,
+                            code  : REFUSAL_CODES.credential,
+                            reason: `${REFUSAL_CODES.credential} — no token configured`
+                        };
+                    }
+                    return {ok: true, token, record: {channel, account}};
+                }
+            },
+            switchStore          : {'@neo-gemini-maryam:x': SWITCH_STATES.approveEach},
+            resolveIdentityFamily: async id => (id === '@neo-gemini-maryam' ? 'gemini' : 'claude'),
+            now                  : () => NOW_MS,
+            mintAttemptId        : () => 'attempt-real-mailbox-1',
+            platform             : {
+                async publishPost() {
+                    return {
+                        providerId: 'x-real-mailbox-9001',
+                        readback  : {
+                            providerId: 'x-real-mailbox-9001',
+                            // X wraps links in https://t.co/... (#1263 Observation 1)
+                            text      : 'Neo v13.2 ships the two-hemisphere Agent OS. Full architecture notes: https://t.co/AbCdEf1234',
+                            readbackAt: new Date(NOW_MS).toISOString()
+                        }
+                    };
+                }
+            }
+        });
+
+        await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+            executor.attestRevision(requestId, {
+                reviewerMessageId: validReviewMsg.messageId,
+                revisionDigest   : rev1Digest
+            })
+        );
+        const fetchedReviewMsg = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+            MailboxService.getMessage({messageId: validReviewMsg.messageId})
+        );
+        expect(fetchedReviewMsg.revisionDigest).toBe(rev1Digest);
+
+        // 4. Operator approves Revision 1, then attempts publish while credential is missing -> pre-dispatch `refused: credential`
+        await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+            executor.approveRevision(requestId, rev1Digest)
+        );
+        const refusedNoCred = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+            executor.publish(requestId, rev1Digest)
+        );
+        expect(refusedNoCred).toMatchObject({
+            ok     : false,
+            state  : PUBLICATION_STATES.refused,
+            refused: REFUSAL_CODES.credential
+        });
+
+        // 5. Because `refused: credential` occurred pre-dispatch (no `publishing` reservation), operator can re-queue (`refused -> queued`, #1263 Observation 2)
+        const requeued = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+            MailboxService.transitionPublishState({
+                taskId  : requestId,
+                newState: PUBLICATION_STATES.queued
+            })
+        );
+        expect(requeued.publication.state).toBe(PUBLICATION_STATES.queued);
+
+        // 6. Operator supplies the credential and publishes Revision 1 with X `https://t.co/...` link rewrite in read-back (#1263 Observations 1 & 3)
+        activeCredentials = {'x:@neomjs': SECRET};
+        expect(
+            matchesRequestedPublishText(
+                'Neo v13.2 ships the two-hemisphere Agent OS. Full architecture notes: https://t.co/AbCdEf1234',
+                initialPayload.text
+            )
+        ).toBe(true);
+
+        const publishedRes = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+            executor.publish(requestId, rev1Digest)
+        );
+        expect(publishedRes).toMatchObject({
+            ok             : true,
+            state          : PUBLICATION_STATES.published,
+            attemptId      : 'attempt-real-mailbox-1',
+            revisionNumber : 1,
+            revisionDigest : rev1Digest,
+            providerId     : 'x-real-mailbox-9001',
+            textAsRequested: initialPayload.text,
+            textAsPublished: 'Neo v13.2 ships the two-hemisphere Agent OS. Full architecture notes: https://t.co/AbCdEf1234'
+        });
+
+        const storedAfterPublish = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+            MailboxService.getMessage({messageId: requestId})
+        );
+            expect(storedAfterPublish.publication).toMatchObject({
+                state          : PUBLICATION_STATES.published,
+                attemptId      : 'attempt-real-mailbox-1',
+                providerId     : 'x-real-mailbox-9001',
+                textAsRequested: initialPayload.text,
+                textAsPublished: 'Neo v13.2 ships the two-hemisphere Agent OS. Full architecture notes: https://t.co/AbCdEf1234',
+                reservation    : {
+                    attemptId     : 'attempt-real-mailbox-1',
+                    revisionNumber: 1,
+                    revisionDigest: rev1Digest
+                }
+            });
+        } finally {
+            await cleanupChromaManager();
+            if (mailboxAiConfig?.messageWal?.dir) {
+                await fs.rm(mailboxAiConfig.messageWal.dir, {recursive: true, force: true});
+            }
+        }
     });
 });

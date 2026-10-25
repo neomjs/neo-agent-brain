@@ -2,29 +2,36 @@
  * @module ai/services/fleet/publishExecutor
  * @summary Fleet-side outbound social publish executor operating under Fleet credential custody.
  *
- * Exposes three verbs to the Fleet Manager's operator-facing bridge (never to agent seats):
+ * Exposes three primary verbs to the Fleet Manager's operator-facing bridge (never to agent seats):
  * - {@link publish} — executes an approved `requestPublish` revision at most once under custody:
  *   reads the `(peer, channel)` switch at publish time, verifies the revision digest against the
- *   approval/attestation and immutable media byte digests, reserves `publishing` in the mailbox
- *   before any platform HTTP call, posts under the account's own credential from Fleet custody,
- *   and records `published` with the provider id and read-back (storing `textAsPublished` beside
- *   `textAsRequested`). On crash or lost acknowledgement after `publishing` is reserved, the next
- *   run reconciles against the account's recent posts before any retry — adopting the post as
- *   `published` on a positive match or recording `unresolved` when the outcome cannot be proven.
+ *   approval/attestation and immutable media byte digests, reserves `publishing` in `MailboxService`
+ *   (`transitionPublishState`) before any platform HTTP call, uploads the verified media bytes under
+ *   the account's own credential from Fleet custody, and records `published` with the provider id
+ *   and read-back (storing `textAsPublished` beside `textAsRequested`). On crash or lost
+ *   acknowledgement after `publishing` is reserved, the next run reconciles against the account's
+ *   recent posts created at or after `reservedAt` before any retry — adopting a single positive
+ *   match as `published` or recording `unresolved` when zero or multiple candidates match.
  * - {@link readMetrics} — reads owned-object metrics (`public_metrics` + `non_public_metrics` on X
  *   or organization-page statistics on LinkedIn) tagged with `{source, window, claimClass}`,
  *   reporting any unavailable metric as `'unknown'`, never `0`.
  * - {@link reply} — present in the module contract and disabled until X's reply automation
  *   classification is settled against the primary rules or written approval from X.
  *
- * Pure over injected `{mailbox, custody, switchStore, platform, mediaReader, resolveIdentityFamily,
- * logger, now, mintAttemptId}` so every acceptance arm runs deterministically against mocked seams,
- * while providing file-backed custody (`<userData>/brain/fleet`) and in-memory/mailbox adapters.
+ * Every publication-state read and write binds directly to `MailboxService`'s single-writer verbs
+ * (`getMessage`, `transitionPublishState`, `approvePublishRevision`, `attestPublishRevision`) and
+ * shares `computePublishRevisionDigest` with `MailboxService`.
  */
 
 import crypto     from 'node:crypto';
 import fsPromises from 'node:fs/promises';
 import path       from 'node:path';
+import {
+    computePublishRevisionDigest,
+    matchesRequestedPublishText
+} from '../memory-core/MailboxService.mjs';
+
+export {computePublishRevisionDigest, matchesRequestedPublishText};
 
 /**
  * Closed v1 outbound publishing channels.
@@ -126,6 +133,25 @@ export const CHANNEL_METRIC_KEYS = Object.freeze({
     ])
 });
 
+const X_METRIC_FIELD_ALIASES = Object.freeze({
+    impressions: ['impressions', 'impression_count'],
+    likes      : ['likes', 'like_count'],
+    reposts    : ['reposts', 'retweet_count', 'repost_count'],
+    replies    : ['replies', 'reply_count'],
+    quotes     : ['quotes', 'quote_count'],
+    bookmarks  : ['bookmarks', 'bookmark_count']
+});
+
+const X_RAW_COUNT_ALIAS_KEYS = new Set([
+    'impression_count',
+    'like_count',
+    'retweet_count',
+    'repost_count',
+    'reply_count',
+    'quote_count',
+    'bookmark_count'
+]);
+
 /**
  * LinkedIn page-admin token maximum lifetime in milliseconds (60 days).
  * @type {Number}
@@ -139,51 +165,6 @@ export const LINKEDIN_TOKEN_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000;
 export const RECONCILE_RECENT_POSTS_LIMIT = 20;
 
 const SECRET_KEY_PATTERN = /(token|secret|password|credential|authorization|api[_-]?key|private[_-]?key|client[_-]?secret|refresh[_-]?token|access[_-]?token)/i;
-
-/**
- * @summary Produces an RFC 8785 deterministic JSON string with lexicographically sorted object keys.
- * @param {*} value
- * @returns {String}
- */
-export function canonicalizeJson(value) {
-    if (value === null || typeof value !== 'object') {
-        return JSON.stringify(value);
-    }
-
-    if (Array.isArray(value)) {
-        return `[${value.map(item => canonicalizeJson(item)).join(',')}]`;
-    }
-
-    const keys = Object.keys(value).sort();
-    return `{${keys.map(key => `${JSON.stringify(key)}:${canonicalizeJson(value[key])}`).join(',')}}`;
-}
-
-/**
- * @summary Computes the deterministic lowercase hex SHA-256 `revisionDigest` over the canonical
- * `{account, channel, format, inReplyTo, media, text}` tuple.
- * @param {Object} payload
- * @returns {String}
- */
-export function computePublishRevisionDigest(payload = {}) {
-    const media = Array.isArray(payload.media)
-        ? payload.media.map(item => ({
-            mimeType: String(item?.mimeType ?? ''),
-            sha256  : String(item?.sha256 ?? '').toLowerCase(),
-            uri     : String(item?.uri ?? '')
-        }))
-        : [];
-
-    const tuple = {
-        account  : String(payload.account ?? ''),
-        channel  : String(payload.channel ?? ''),
-        format   : String(payload.format ?? ''),
-        inReplyTo: payload.inReplyTo ?? null,
-        media,
-        text     : String(payload.text ?? '')
-    };
-
-    return crypto.createHash('sha256').update(canonicalizeJson(tuple), 'utf8').digest('hex');
-}
 
 /**
  * @summary Scrubs known secret values and Bearer tokens from strings, errors, and objects so no
@@ -209,6 +190,10 @@ export function scrubSecrets(value, secrets = []) {
 
     if (value instanceof Error) {
         return scrubString(value.message || String(value));
+    }
+
+    if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+        return value;
     }
 
     if (Array.isArray(value)) {
@@ -377,8 +362,90 @@ export function createFleetCustodyStore({
 }
 
 /**
- * @summary Normalizes a request record from either an injected mailbox adapter or `MailboxService#getMessage`
- * into `{requestId, requester, channel, account, revisions, currentRevision, publication}`.
+ * @summary Reads a message record from `MailboxService#getMessage({messageId})`, returning `null`
+ * when the verb is absent or the message does not exist.
+ * @param {Object} mailbox
+ * @param {String} messageId
+ * @returns {Promise<Object|null>}
+ */
+async function readMailboxMessage(mailbox, messageId) {
+    if (typeof mailbox?.getMessage !== 'function' || typeof messageId !== 'string' || !messageId) {
+        return null;
+    }
+
+    try {
+        const record = await mailbox.getMessage({messageId});
+        return record && typeof record === 'object' ? record : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * @summary Invokes `MailboxService#transitionPublishState` and verifies that the transition was
+ * durably accepted into the requested target state. Fails closed when the write verb is missing,
+ * returns `false`/`undefined`, or throws.
+ * @param {Object} mailbox
+ * @param {Object} transition
+ * @returns {Promise<{ok: Boolean, publication?: Object, state?: String, refused?: String, reason?: String}>}
+ */
+async function transitionMailboxPublishState(mailbox, transition) {
+    if (typeof mailbox?.transitionPublishState !== 'function') {
+        return {
+            ok     : false,
+            refused: REFUSAL_CODES.publishingInFlight,
+            reason : 'mailbox.transitionPublishState verb is required to mutate publication state'
+        };
+    }
+
+    let result;
+    try {
+        result = await mailbox.transitionPublishState({
+            taskId         : transition.requestId,
+            messageId      : transition.requestId,
+            newState       : transition.state,
+            revisionDigest : transition.revisionDigest,
+            attemptId      : transition.attemptId,
+            reservedAt     : transition.reservedAt,
+            providerId     : transition.providerId,
+            textAsPublished: transition.textAsPublished,
+            readback       : transition.readback,
+            readbackAt     : transition.readbackAt,
+            refusalReason  : transition.refusalReason
+        });
+    } catch (error) {
+        return {
+            ok     : false,
+            state  : error?.publicationState ?? undefined,
+            refused: error?.code ?? REFUSAL_CODES.publishingInFlight,
+            reason : error?.message || String(error)
+        };
+    }
+
+    if (
+        !result ||
+        typeof result !== 'object' ||
+        result.success === false ||
+        result.ok === false ||
+        result.publication?.state !== transition.state
+    ) {
+        return {
+            ok     : false,
+            state  : result?.publication?.state ?? result?.state ?? undefined,
+            refused: result?.refused ?? result?.code ?? REFUSAL_CODES.publishingInFlight,
+            reason : result?.reason ?? `mailbox.transitionPublishState did not confirm state '${transition.state}'`
+        };
+    }
+
+    return {
+        ok         : true,
+        publication: result.publication
+    };
+}
+
+/**
+ * @summary Normalizes a `requestPublish` message returned by `MailboxService#getMessage` into
+ * `{requestId, requester, revisions, currentRevision, publication}`.
  * @param {Object} raw
  * @returns {Object|null}
  */
@@ -387,43 +454,42 @@ function normalizeRequestRecord(raw) {
         return null;
     }
 
-    const requestId = raw.requestId ?? raw.messageId ?? raw.id ?? null,
-          requester = raw.requester ?? raw.from ?? raw.createdBy ?? null,
+    const requestId = raw.messageId ?? raw.requestId ?? raw.id ?? null,
+          requester = raw.from ?? raw.requester ?? raw.createdBy ?? null,
           task      = raw.task ?? raw,
-          revisions = Array.isArray(task.revisions)
-              ? task.revisions
-              : (Array.isArray(raw.revisions) ? raw.revisions : (task.revision ? [task.revision] : []));
+          revisions = Array.isArray(raw.revisions)
+              ? raw.revisions
+              : (Array.isArray(task.revisions)
+                  ? task.revisions
+                  : (raw.revision ? [raw.revision] : (task.revision ? [task.revision] : [])));
 
-    const currentRevision = task.currentRevision
-        ?? raw.currentRevision
-        ?? (revisions.length > 0 ? revisions[revisions.length - 1] : null);
-
-    const payload = currentRevision?.payload ?? task.requestPublish ?? raw.requestPublish ?? raw.payload ?? null;
-    const rawPub  = task.publication ?? task.publicationState ?? raw.publication ?? raw.publicationState ?? {};
-
-    const firstRevision   = revisions[0] ?? currentRevision,
-          textAsRequested = rawPub.textAsRequested ?? firstRevision?.payload?.text ?? payload?.text ?? '';
+    const latestFromList  = revisions.length > 0 ? revisions[revisions.length - 1] : null,
+          rawCurrent      = raw.revision ?? latestFromList ?? raw.currentRevision ?? task.currentRevision ?? task.revision ?? null,
+          payload         = rawCurrent?.payload ?? latestFromList?.payload ?? raw.requestPublish ?? task.requestPublish ?? raw.payload ?? null,
+          rawPub          = raw.publication ?? task.publication ?? task.publicationState ?? raw.publicationState ?? {},
+          textAsRequested = rawPub.textAsRequested ?? payload?.text ?? '';
 
     return {
         requestId,
         requester,
         revisions,
-        currentRevision: currentRevision
+        currentRevision: rawCurrent
             ? {
-                ...currentRevision,
-                revisionNumber: currentRevision.revisionNumber ?? revisions.length ?? 1,
-                revisionDigest: currentRevision.revisionDigest ?? (payload ? computePublishRevisionDigest(payload) : null),
+                ...rawCurrent,
+                revisionNumber: rawCurrent.revisionNumber ?? revisions.length ?? 1,
+                revisionDigest: rawCurrent.revisionDigest ?? (payload ? computePublishRevisionDigest(payload) : null),
                 payload       : payload ?? {},
-                approval      : currentRevision.approval ?? raw.approval ?? null,
-                attestation   : currentRevision.attestation ?? raw.attestation ?? payload?.attestation ?? null,
-                releaseState  : currentRevision.releaseState ?? raw.releaseState ?? null
+                approval      : rawCurrent.approval ?? task.revision?.approval ?? raw.approval ?? null,
+                attestation   : rawCurrent.attestation ?? task.revision?.attestation ?? raw.attestation ?? payload?.attestation ?? null,
+                releaseState  : rawCurrent.releaseState ?? raw.releaseState ?? null
             }
             : null,
         publication: {
             state          : rawPub.state ?? PUBLICATION_STATES.queued,
             attemptId      : rawPub.attemptId ?? rawPub.reservation?.attemptId ?? null,
-            revisionNumber : rawPub.currentRevisionNumber ?? rawPub.revisionNumber ?? currentRevision?.revisionNumber ?? 1,
-            revisionDigest : rawPub.currentRevisionDigest ?? rawPub.revisionDigest ?? rawPub.reservation?.revisionDigest ?? currentRevision?.revisionDigest ?? null,
+            reservedAt     : rawPub.reservation?.reservedAt ?? rawPub.reservedAt ?? null,
+            revisionNumber : rawPub.currentRevisionNumber ?? rawPub.revisionNumber ?? rawCurrent?.revisionNumber ?? 1,
+            revisionDigest : rawPub.currentRevisionDigest ?? rawPub.revisionDigest ?? rawPub.reservation?.revisionDigest ?? rawCurrent?.revisionDigest ?? null,
             reservation    : rawPub.reservation ?? null,
             providerId     : rawPub.providerId ?? null,
             readback       : rawPub.readback ?? null,
@@ -467,25 +533,24 @@ async function evaluateSwitchAndApproval({
           attestation  = currentRevision.attestation ?? currentRevision.payload?.attestation ?? null,
           releaseState = currentRevision.releaseState ?? null;
 
-    // 1. If an explicit approval record is present on the revision or passed for verification,
-    //    its revisionDigest and revisionNumber MUST match the requested revisionDigest.
+    // 1. If an explicit approval record is present on the revision, both its revisionDigest and
+    //    its revisionNumber MUST match the current revision.
     if (approval !== null && approval !== undefined) {
         const approvedDigest = approval.revisionDigest ?? null,
-              approvedNumber = approval.revisionNumber ?? currentRevision.revisionNumber;
+              approvedNumber = approval.revisionNumber ?? null;
 
         if (approvedDigest !== revisionDigest || approvedNumber !== currentRevision.revisionNumber) {
             return {
                 ok    : false,
                 code  : REFUSAL_CODES.digest,
-                reason: `${REFUSAL_CODES.digest} — approval digest '${String(approvedDigest)}' does not match requested revision digest '${revisionDigest}'`
+                reason: `${REFUSAL_CODES.digest} — approval {revisionNumber: ${String(approvedNumber)}, revisionDigest: '${String(approvedDigest)}'} does not match requested revision ${currentRevision.revisionNumber} digest '${revisionDigest}'`
             };
         }
     }
 
-    // 2. If the queued request recorded a required releaseState (e.g. queued when the switch was
-    //    `auto-approve` or `auto-approve after a cross-family review attestation`) and the switch
-    //    read at publish time was downgraded below that releaseState without an explicit operator
-    //    approval for this digest, refuse with `refused: switch`.
+    // 2. If the queued request recorded a required releaseState and the switch read at publish
+    //    time was downgraded below that releaseState without an explicit operator approval for this
+    //    digest, refuse with `refused: switch`.
     if (releaseState && Object.hasOwn(SWITCH_STATE_RANK, releaseState)) {
         if (SWITCH_STATE_RANK[switchState] < SWITCH_STATE_RANK[releaseState] && !approval) {
             return {
@@ -522,9 +587,10 @@ async function evaluateSwitchAndApproval({
         }
 
         const reviewerMessageId = attestation.reviewerMessageId ?? attestation.messageId ?? null,
-              attestedDigest    = attestation.revisionDigest ?? null;
+              attestedDigest    = attestation.revisionDigest ?? null,
+              attestedNumber    = attestation.revisionNumber ?? currentRevision.revisionNumber;
 
-        if (attestedDigest !== revisionDigest) {
+        if (attestedDigest !== revisionDigest || attestedNumber !== currentRevision.revisionNumber) {
             return {
                 ok    : false,
                 code  : REFUSAL_CODES.digest,
@@ -532,7 +598,7 @@ async function evaluateSwitchAndApproval({
             };
         }
 
-        if (!reviewerMessageId || typeof mailbox?.getReviewMessage !== 'function') {
+        if (!reviewerMessageId || typeof mailbox?.getMessage !== 'function') {
             return {
                 ok    : false,
                 code  : REFUSAL_CODES.attestation,
@@ -540,7 +606,7 @@ async function evaluateSwitchAndApproval({
             };
         }
 
-        const reviewMsg = await mailbox.getReviewMessage(reviewerMessageId);
+        const reviewMsg = await readMailboxMessage(mailbox, reviewerMessageId);
         if (!reviewMsg || typeof reviewMsg !== 'object') {
             return {
                 ok    : false,
@@ -569,14 +635,15 @@ async function evaluateSwitchAndApproval({
             };
         }
 
-        const reviewBody = String(reviewMsg.body ?? reviewMsg.text ?? ''),
-              msgDigest  = reviewMsg.revisionDigest ?? null;
+        // RA-3: Accept attestation ONLY through the review message's structured `revisionDigest`
+        // (as bound by `MailboxService#attestPublishRevision`), never via substring matching on body text.
+        const msgDigest = reviewMsg.revisionDigest ?? reviewMsg.attestedRevisionDigest ?? null;
 
-        if (msgDigest !== revisionDigest && !reviewBody.includes(revisionDigest)) {
+        if (msgDigest !== revisionDigest) {
             return {
                 ok    : false,
                 code  : REFUSAL_CODES.attestation,
-                reason: `${REFUSAL_CODES.attestation} — review message '${reviewerMessageId}' does not attest revision digest '${revisionDigest}'`
+                reason: `${REFUSAL_CODES.attestation} — review message '${reviewerMessageId}' does not carry a structured revisionDigest matching '${revisionDigest}'`
             };
         }
 
@@ -588,15 +655,25 @@ async function evaluateSwitchAndApproval({
 }
 
 /**
- * @summary Verifies that every media attachment descriptor `{uri, sha256, mimeType}` resolves to
- * bytes whose recomputed SHA-256 hex digest equals `descriptor.sha256`.
+ * @summary Verifies that every media attachment descriptor `{uri, sha256, mimeType}` resolves via
+ * `mediaReader` to bytes whose recomputed SHA-256 hex digest equals `descriptor.sha256`, returning
+ * the verified byte buffers (`{bytes, sha256, mimeType}`) rather than the URIs so the platform
+ * upload consumes the exact bytes that were hashed.
  * @param {Array<Object>} media
  * @param {Function|null} mediaReader `(uri) => Promise<Buffer|Uint8Array|String>`
- * @returns {Promise<{ok: Boolean, verifiedMedia?: Array<Object>, code?: String, reason?: String}>}
+ * @returns {Promise<{ok: Boolean, verifiedMedia?: Array<{bytes: Buffer, sha256: String, mimeType: String}>, code?: String, reason?: String}>}
  */
 async function verifyMediaAttachments(media = [], mediaReader = null) {
     if (!Array.isArray(media) || media.length === 0) {
         return {ok: true, verifiedMedia: []};
+    }
+
+    if (typeof mediaReader !== 'function') {
+        return {
+            ok    : false,
+            code  : REFUSAL_CODES.digest,
+            reason: `${REFUSAL_CODES.digest} — mediaReader is required to verify media byte digests before upload`
+        };
     }
 
     const verifiedMedia = [];
@@ -614,39 +691,49 @@ async function verifyMediaAttachments(media = [], mediaReader = null) {
             };
         }
 
-        if (typeof mediaReader === 'function') {
-            let bytes;
-            try {
-                bytes = await mediaReader(uri);
-            } catch {
-                return {
-                    ok    : false,
-                    code  : REFUSAL_CODES.digest,
-                    reason: `${REFUSAL_CODES.digest} — media bytes at '${uri}' could not be read for digest verification`
-                };
-            }
-
-            const buffer       = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes ?? ''),
-                  actualSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
-
-            if (actualSha256 !== expectedSha256) {
-                return {
-                    ok    : false,
-                    code  : REFUSAL_CODES.digest,
-                    reason: `${REFUSAL_CODES.digest} — media byte digest '${actualSha256}' for '${uri}' does not match approved sha256 '${expectedSha256}'`
-                };
-            }
+        let bytes;
+        try {
+            bytes = await mediaReader(uri);
+        } catch {
+            return {
+                ok    : false,
+                code  : REFUSAL_CODES.digest,
+                reason: `${REFUSAL_CODES.digest} — media bytes at '${uri}' could not be read for digest verification`
+            };
         }
 
-        verifiedMedia.push({uri, sha256: expectedSha256, mimeType});
+        if (bytes === null || bytes === undefined) {
+            return {
+                ok    : false,
+                code  : REFUSAL_CODES.digest,
+                reason: `${REFUSAL_CODES.digest} — mediaReader returned no bytes for '${uri}'`
+            };
+        }
+
+        const buffer       = Buffer.isBuffer(bytes) ? Buffer.from(bytes) : Buffer.from(bytes),
+              actualSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+
+        if (actualSha256 !== expectedSha256) {
+            return {
+                ok    : false,
+                code  : REFUSAL_CODES.digest,
+                reason: `${REFUSAL_CODES.digest} — media byte digest '${actualSha256}' for '${uri}' does not match approved sha256 '${expectedSha256}'`
+            };
+        }
+
+        verifiedMedia.push({
+            bytes   : buffer,
+            sha256  : expectedSha256,
+            mimeType
+        });
     }
 
     return {ok: true, verifiedMedia};
 }
 
 /**
- * @summary Normalizes platform metric numbers so that any absent, `null`, `undefined`, or non-finite
- * metric is reported as `'unknown'`, never `0`.
+ * @summary Normalizes platform metric numbers (including X API v2 `*_count` field names) so that
+ * any absent, `null`, `undefined`, or non-finite metric is reported as `'unknown'`, never `0`.
  * @param {Object} rawMetrics
  * @param {String} channel
  * @returns {Object}
@@ -663,15 +750,24 @@ export function normalizeOwnedMetrics(rawMetrics = {}, channel = PUBLISH_CHANNEL
           normalized = {};
 
     for (const key of keys) {
-        const value = merged[key];
-        normalized[key] = (typeof value === 'number' && Number.isFinite(value)) ? value : 'unknown';
+        const candidates = (channel === PUBLISH_CHANNELS.x && X_METRIC_FIELD_ALIASES[key])
+            ? X_METRIC_FIELD_ALIASES[key]
+            : [key];
+        let resolvedValue;
+        for (const candidateKey of candidates) {
+            if (merged[candidateKey] !== undefined) {
+                resolvedValue = merged[candidateKey];
+                break;
+            }
+        }
+        normalized[key] = (typeof resolvedValue === 'number' && Number.isFinite(resolvedValue)) ? resolvedValue : 'unknown';
     }
 
     for (const [key, value] of Object.entries(merged)) {
         if (['public_metrics', 'non_public_metrics', 'statistics', 'metrics', 'source', 'window', 'claimClass', 'providerId', 'channel', 'account'].includes(key)) {
             continue;
         }
-        if (SECRET_KEY_PATTERN.test(key)) {
+        if (X_RAW_COUNT_ALIAS_KEYS.has(key) || SECRET_KEY_PATTERN.test(key)) {
             continue;
         }
         if (!Object.hasOwn(normalized, key)) {
@@ -695,17 +791,18 @@ export function normalizeOwnedMetrics(rawMetrics = {}, channel = PUBLISH_CHANNEL
  * @param {Object}   [config.logger]
  * @param {Function} [config.now]
  * @param {Function} [config.mintAttemptId]
- * @returns {{publish: Function, readMetrics: Function, reply: Function}}
+ * @returns {{publish: Function, readMetrics: Function, reply: Function, approveRevision: Function, attestRevision: Function}}
  */
 export function createPublishExecutor(config = {}) {
-    const now           = config.now ?? (() => Date.now()),
-          mintAttemptId = config.mintAttemptId ?? (() => `attempt-${crypto.randomUUID()}`),
-          custody       = config.custody ?? createFleetCustodyStore({
+    const now                   = config.now ?? (() => Date.now()),
+          mintAttemptId         = config.mintAttemptId ?? (() => `attempt-${crypto.randomUUID()}`),
+          custody               = config.custody ?? createFleetCustodyStore({
               custodyDir : config.custodyDir ?? null,
               credentials: config.credentials ?? null,
               now
           }),
-          logger        = config.logger ?? null;
+          logger                = config.logger ?? null,
+          publishedByProviderId = new Map();
 
     function safeLog(level, event, details = {}, secrets = []) {
         if (!logger || typeof logger[level] !== 'function') {
@@ -717,13 +814,14 @@ export function createPublishExecutor(config = {}) {
 
     /**
      * @summary Resolves the publish-time switch state for `(peer, channel)`. Defaults to `'approve each'`.
-     * @param {Object}   SwitchStoreSeam
-     * @param {String}   peer
-     * @param {String}   channel
+     * Never falls back to a channel-only key so one channel entry cannot govern every peer.
+     * @param {Object} SwitchStoreSeam
+     * @param {String} peer
+     * @param {String} channel
      * @returns {Promise<String>}
      */
     async function readSwitchAtPublishTime(SwitchStoreSeam, peer, channel) {
-        if (!SwitchStoreSeam) {
+        if (!SwitchStoreSeam || !peer || !channel) {
             return SWITCH_STATES.approveEach;
         }
         if (typeof SwitchStoreSeam === 'function') {
@@ -742,16 +840,14 @@ export function createPublishExecutor(config = {}) {
         if (SwitchStoreSeam[peer] && typeof SwitchStoreSeam[peer] === 'object' && Object.hasOwn(SwitchStoreSeam[peer], channel)) {
             return SwitchStoreSeam[peer][channel];
         }
-        if (Object.hasOwn(SwitchStoreSeam, channel)) {
-            return SwitchStoreSeam[channel];
-        }
         return SWITCH_STATES.approveEach;
     }
 
     /**
      * @summary Reconciles an interrupted `publishing` attempt against the target account's recent
-     * posts. Adopts the post as `published` on a positive match without issuing a second
-     * write; transitions to `unresolved` when the recent-posts read cannot positively locate it.
+     * posts created at or after the reservation's `reservedAt`. Adopts the post as `published` on a
+     * single positive match without issuing a second write; transitions to `unresolved` when zero
+     * or multiple candidates match.
      */
     async function reconcilePublishingAttempt({
         request,
@@ -764,6 +860,8 @@ export function createPublishExecutor(config = {}) {
         const {requestId, currentRevision, publication} = request,
               reservedDigest                            = publication.revisionDigest ?? currentRevision?.revisionDigest,
               attemptId                                 = publication.attemptId ?? publication.reservation?.attemptId ?? 'attempt-reconcile',
+              reservedAtIso                             = publication.reservedAt ?? publication.reservation?.reservedAt ?? null,
+              reservedAtMs                              = reservedAtIso ? Date.parse(String(reservedAtIso)) : NaN,
               targetRevision                            = request.revisions.find(rev => rev.revisionDigest === reservedDigest) ?? currentRevision,
               payload                                   = targetRevision?.payload ?? {},
               channel                                   = payload.channel,
@@ -786,7 +884,7 @@ export function createPublishExecutor(config = {}) {
 
         const markUnresolved = async reason => {
             const safeReason = scrubSecrets(reason, secrets);
-            await mailbox?.recordPublicationState?.({
+            await transitionMailboxPublishState(mailbox, {
                 requestId,
                 state          : PUBLICATION_STATES.unresolved,
                 attemptId,
@@ -808,6 +906,10 @@ export function createPublishExecutor(config = {}) {
                 reason        : safeReason
             };
         };
+
+        if (!Number.isFinite(reservedAtMs)) {
+            return markUnresolved(`${REFUSAL_CODES.unresolved} — publishing reservation for '${requestId}' carries no valid reservedAt timestamp to bound reconciliation`);
+        }
 
         if (!cred.ok) {
             return markUnresolved(`${REFUSAL_CODES.unresolved} — post-crash reconciliation could not read custody credential (${cred.reason})`);
@@ -837,21 +939,41 @@ export function createPublishExecutor(config = {}) {
             return markUnresolved(`${REFUSAL_CODES.unresolved} — recent-posts reconciliation returned no list`);
         }
 
-        const match = posts.find(post =>
-            (post?.attemptId && post.attemptId === attemptId) ||
-            (post?.revisionDigest && post.revisionDigest === reservedDigest) ||
-            (typeof post?.text === 'string' && post.text === payload.text)
-        );
+        // RA-6: Adopt only a post created at or after the reservation's `reservedAt`, and treat
+        // zero or several candidates as `unresolved`.
+        const candidates = posts.filter(post => {
+            const createdRaw = post?.createdAt ?? post?.created_at ?? post?.publishedAt ?? null,
+                  createdMs  = typeof createdRaw === 'number'
+                      ? createdRaw
+                      : (createdRaw ? Date.parse(String(createdRaw)) : NaN);
 
-        if (!match) {
-            return markUnresolved(`${REFUSAL_CODES.unresolved} — attempt '${attemptId}' not found in recent posts (${posts.length} inspected); negative search does not prove absence`);
+            if (!Number.isFinite(createdMs) || createdMs < reservedAtMs) {
+                return false;
+            }
+
+            if (post?.attemptId && post.attemptId === attemptId) {
+                return true;
+            }
+            if (post?.revisionDigest && post.revisionDigest === reservedDigest) {
+                return true;
+            }
+            return typeof post?.text === 'string' && matchesRequestedPublishText(post.text, payload.text);
+        });
+
+        if (candidates.length === 0) {
+            return markUnresolved(`${REFUSAL_CODES.unresolved} — attempt '${attemptId}' not found in recent posts created at or after ${reservedAtIso} (${posts.length} inspected); negative search does not prove absence`);
         }
 
-        const providerId      = String(match.providerId ?? match.id),
+        if (candidates.length > 1) {
+            return markUnresolved(`${REFUSAL_CODES.unresolved} — ambiguous reconciliation: ${candidates.length} candidate posts created at or after ${reservedAtIso} matched attempt '${attemptId}'`);
+        }
+
+        const [match]         = candidates,
+              providerId      = String(match.providerId ?? match.id),
               readbackAt      = new Date(nowMs).toISOString(),
               textAsPublished = typeof match.text === 'string' ? match.text : payload.text;
 
-        await mailbox?.recordPublicationState?.({
+        const transitioned = await transitionMailboxPublishState(mailbox, {
             requestId,
             state          : PUBLICATION_STATES.published,
             attemptId,
@@ -864,6 +986,11 @@ export function createPublishExecutor(config = {}) {
             textAsPublished
         });
 
+        if (!transitioned.ok) {
+            return markUnresolved(`${REFUSAL_CODES.unresolved} — reconciliation could not record published state: ${transitioned.reason}`);
+        }
+
+        publishedByProviderId.set(providerId, {channel, account, requestId});
         safeLog('info', 'publish.reconcile.adopted', {requestId, attemptId, revisionDigest: reservedDigest, providerId}, secrets);
 
         return {
@@ -883,6 +1010,47 @@ export function createPublishExecutor(config = {}) {
     }
 
     return {
+        /**
+         * @summary Delegates operator approval of a `requestPublish` revision to `MailboxService#approvePublishRevision`.
+         * @param {String} requestId
+         * @param {String} revisionDigest
+         * @param {Object} [options={}]
+         * @returns {Promise<Object>}
+         */
+        async approveRevision(requestId, revisionDigest, options = {}) {
+            const mailbox = options.mailbox ?? config.mailbox;
+            if (typeof mailbox?.approvePublishRevision !== 'function') {
+                throw new Error('mailbox.approvePublishRevision is required');
+            }
+            return mailbox.approvePublishRevision({
+                taskId        : requestId,
+                messageId     : requestId,
+                revisionDigest,
+                revisionNumber: options.revisionNumber
+            });
+        },
+
+        /**
+         * @summary Delegates cross-family review attestation of a `requestPublish` revision to `MailboxService#attestPublishRevision`.
+         * @param {String} requestId
+         * @param {Object} attestation
+         * @param {Object} [options={}]
+         * @returns {Promise<Object>}
+         */
+        async attestRevision(requestId, attestation = {}, options = {}) {
+            const mailbox = options.mailbox ?? config.mailbox;
+            if (typeof mailbox?.attestPublishRevision !== 'function') {
+                throw new Error('mailbox.attestPublishRevision is required');
+            }
+            return mailbox.attestPublishRevision({
+                taskId           : requestId,
+                messageId        : requestId,
+                reviewerMessageId: attestation.reviewerMessageId,
+                revisionDigest   : attestation.revisionDigest,
+                attestation
+            });
+        },
+
         /**
          * @summary Publishes an approved `requestPublish` revision at most once under Fleet custody.
          * @param {String} requestId      Canonical mailbox `MESSAGE:<uuid>` request id.
@@ -908,7 +1076,7 @@ export function createPublishExecutor(config = {}) {
                 };
             }
 
-            const rawRequest = await mailbox?.getRequest?.(requestId);
+            const rawRequest = await readMailboxMessage(mailbox, requestId);
             const request    = normalizeRequestRecord(rawRequest);
 
             if (!request || !request.currentRevision) {
@@ -927,6 +1095,14 @@ export function createPublishExecutor(config = {}) {
             // Per-state dispatch table — explicit handling for every publication state:
             // 1. `published`: idempotent no-op for the same revisionDigest; refuse a different digest.
             if (currentState === PUBLICATION_STATES.published) {
+                if (publication.providerId && currentRevision?.payload?.channel && currentRevision?.payload?.account) {
+                    publishedByProviderId.set(String(publication.providerId), {
+                        channel  : currentRevision.payload.channel,
+                        account  : currentRevision.payload.account,
+                        requestId
+                    });
+                }
+
                 if (publication.revisionDigest === revisionDigest) {
                     return {
                         ok             : true,
@@ -979,7 +1155,7 @@ export function createPublishExecutor(config = {}) {
                 });
             }
 
-            // 4. `refused`: remains refused unless a new revision was created and queued.
+            // 4. `refused`: remains refused unless re-queued or revised.
             if (currentState === PUBLICATION_STATES.refused) {
                 return {
                     ok            : false,
@@ -995,10 +1171,25 @@ export function createPublishExecutor(config = {}) {
             const payload        = currentRevision.payload ?? {},
                   computedDigest = computePublishRevisionDigest(payload);
 
-            // Gate 5a: Revision digest match against currentRevision and canonical payload digest.
-            if (!revisionDigest || revisionDigest !== currentRevision.revisionDigest || revisionDigest !== computedDigest) {
+            // Gate 5a (RA-5): If the caller's revisionDigest argument does not match the current
+            // revision's digest (e.g. a duplicate click from a pre-Edit card), refuse the call
+            // WITHOUT writing `refused` to the valid stored request.
+            if (!revisionDigest || revisionDigest !== currentRevision.revisionDigest) {
                 const reason = `${REFUSAL_CODES.digest} — requested digest '${String(revisionDigest)}' does not match current revision digest '${currentRevision.revisionDigest}'`;
-                await mailbox?.recordPublicationState?.({
+                return {
+                    ok              : false,
+                    state           : PUBLICATION_STATES.refused,
+                    publicationState: currentState,
+                    refused         : REFUSAL_CODES.digest,
+                    requestId,
+                    revisionDigest  : currentRevision.revisionDigest,
+                    reason
+                };
+            }
+
+            if (currentRevision.revisionDigest !== computedDigest) {
+                const reason = `${REFUSAL_CODES.digest} — stored revision digest '${currentRevision.revisionDigest}' does not match canonical payload digest '${computedDigest}'`;
+                await transitionMailboxPublishState(mailbox, {
                     requestId,
                     state          : PUBLICATION_STATES.refused,
                     revisionNumber : currentRevision.revisionNumber,
@@ -1020,7 +1211,7 @@ export function createPublishExecutor(config = {}) {
             // Gate 5b: Closed channel check.
             if (!Object.values(PUBLISH_CHANNELS).includes(payload.channel)) {
                 const reason = `${REFUSAL_CODES.channel} — unsupported publish channel '${String(payload.channel)}'`;
-                await mailbox?.recordPublicationState?.({
+                await transitionMailboxPublishState(mailbox, {
                     requestId,
                     state          : PUBLICATION_STATES.refused,
                     revisionNumber : currentRevision.revisionNumber,
@@ -1041,7 +1232,7 @@ export function createPublishExecutor(config = {}) {
             // Gate 5c: Dispatch-time reply-classification check.
             if (payload.format === PUBLISH_FORMATS.reply || (payload.format === PUBLISH_FORMATS.post && payload.inReplyTo != null)) {
                 const reason = `${REFUSAL_CODES.replyClassificationUnresolved} — third-party API replies are disabled until verified against ${REPLY_CLASSIFICATION_PRIMARY_SOURCE}`;
-                await mailbox?.recordPublicationState?.({
+                await transitionMailboxPublishState(mailbox, {
                     requestId,
                     state          : PUBLICATION_STATES.refused,
                     revisionNumber : currentRevision.revisionNumber,
@@ -1066,7 +1257,7 @@ export function createPublishExecutor(config = {}) {
                 let   sameAccountVerified = false;
 
                 if (typeof targetRef === 'string' && targetRef.startsWith('MESSAGE:')) {
-                    const parentRaw = await mailbox?.getRequest?.(targetRef),
+                    const parentRaw = await readMailboxMessage(mailbox, targetRef),
                           parent    = normalizeRequestRecord(parentRaw);
 
                     if (
@@ -1093,7 +1284,7 @@ export function createPublishExecutor(config = {}) {
 
                 if (!sameAccountVerified) {
                     const reason = `${REFUSAL_CODES.replyClassificationUnresolved} — link-reply target '${String(targetRef)}' is not proven to belong to publishing account '${payload.account}'; third-party replies are disabled pending ${REPLY_CLASSIFICATION_PRIMARY_SOURCE}`;
-                    await mailbox?.recordPublicationState?.({
+                    await transitionMailboxPublishState(mailbox, {
                         requestId,
                         state          : PUBLICATION_STATES.refused,
                         revisionNumber : currentRevision.revisionNumber,
@@ -1125,7 +1316,7 @@ export function createPublishExecutor(config = {}) {
             });
 
             if (!switchCheck.ok) {
-                await mailbox?.recordPublicationState?.({
+                await transitionMailboxPublishState(mailbox, {
                     requestId,
                     state          : PUBLICATION_STATES.refused,
                     revisionNumber : currentRevision.revisionNumber,
@@ -1143,10 +1334,10 @@ export function createPublishExecutor(config = {}) {
                 };
             }
 
-            // Gate 5e: Verify immutable media byte digests before upload.
+            // Gate 5e (RA-4): Verify immutable media byte digests before upload and pass verified bytes.
             const mediaCheck = await verifyMediaAttachments(payload.media, mediaReader);
             if (!mediaCheck.ok) {
-                await mailbox?.recordPublicationState?.({
+                await transitionMailboxPublishState(mailbox, {
                     requestId,
                     state          : PUBLICATION_STATES.refused,
                     revisionNumber : currentRevision.revisionNumber,
@@ -1173,7 +1364,7 @@ export function createPublishExecutor(config = {}) {
 
             if (!cred.ok) {
                 const safeReason = scrubSecrets(cred.reason);
-                await mailbox?.recordPublicationState?.({
+                await transitionMailboxPublishState(mailbox, {
                     requestId,
                     state          : PUBLICATION_STATES.refused,
                     revisionNumber : currentRevision.revisionNumber,
@@ -1196,24 +1387,23 @@ export function createPublishExecutor(config = {}) {
                   attemptId  = mintAttemptId(),
                   reservedAt = new Date(nowMs).toISOString();
 
-            // Gate 5g: Record `publishing` in the mailbox BEFORE dispatching the platform call.
-            const reserved = await mailbox?.recordPublicationState?.({
+            // Gate 5g (RA-1): Record `publishing` in MailboxService BEFORE dispatching the platform call.
+            // Fails closed when the write verb is absent, returns false/undefined, or loses a race.
+            const reserved = await transitionMailboxPublishState(mailbox, {
                 requestId,
-                expectedState         : PUBLICATION_STATES.queued,
-                expectedRevisionDigest: revisionDigest,
-                state                 : PUBLICATION_STATES.publishing,
+                state          : PUBLICATION_STATES.publishing,
                 attemptId,
                 reservedAt,
-                revisionNumber        : currentRevision.revisionNumber,
+                revisionNumber : currentRevision.revisionNumber,
                 revisionDigest,
-                textAsRequested       : publication.textAsRequested,
-                textAsPublished       : null
+                textAsRequested: publication.textAsRequested,
+                textAsPublished: null
             });
 
-            if (reserved && reserved.ok === false) {
+            if (!reserved.ok) {
                 return {
                     ok     : false,
-                    state  : reserved.state ?? PUBLICATION_STATES.publishing,
+                    state  : reserved.state ?? PUBLICATION_STATES.refused,
                     refused: reserved.refused ?? REFUSAL_CODES.publishingInFlight,
                     requestId,
                     reason : scrubSecrets(reserved.reason ?? 'concurrent publish reservation conflict', secrets)
@@ -1229,7 +1419,7 @@ export function createPublishExecutor(config = {}) {
                 account       : payload.account
             }, secrets);
 
-            // Step 6: Dispatch the platform call under the account's custody credential.
+            // Step 6: Dispatch the platform call under the account's custody credential with verified media bytes.
             let platformResponse;
             try {
                 platformResponse = await platform.publishPost({
@@ -1247,8 +1437,8 @@ export function createPublishExecutor(config = {}) {
                 const safeReason = scrubSecrets(error, secrets);
 
                 if (error?.refused === true) {
-                    const refusalText = `${ error.code || 'refused: platform' } — ${safeReason}`;
-                    await mailbox?.recordPublicationState?.({
+                    const refusalText = `${error.code || 'refused: platform'} — ${safeReason}`;
+                    await transitionMailboxPublishState(mailbox, {
                         requestId,
                         state          : PUBLICATION_STATES.refused,
                         attemptId,
@@ -1292,8 +1482,8 @@ export function createPublishExecutor(config = {}) {
                 readbackAt
             };
 
-            // Step 7: Record `published` with the provider id and read-back.
-            await mailbox?.recordPublicationState?.({
+            // Step 7: Record `published` with the provider id and read-back in MailboxService.
+            const publishedTransition = await transitionMailboxPublishState(mailbox, {
                 requestId,
                 state          : PUBLICATION_STATES.published,
                 attemptId,
@@ -1304,6 +1494,42 @@ export function createPublishExecutor(config = {}) {
                 readbackAt,
                 textAsRequested: publication.textAsRequested,
                 textAsPublished
+            });
+
+            if (!publishedTransition.ok) {
+                const unresolvedReason = `${REFUSAL_CODES.unresolved} — read-back could not transition to published (${publishedTransition.reason})`;
+                await transitionMailboxPublishState(mailbox, {
+                    requestId,
+                    state          : PUBLICATION_STATES.unresolved,
+                    attemptId,
+                    revisionNumber : currentRevision.revisionNumber,
+                    revisionDigest,
+                    providerId     : String(providerId),
+                    readbackAt,
+                    textAsRequested: publication.textAsRequested,
+                    textAsPublished,
+                    refusalReason  : unresolvedReason
+                });
+                return scrubSecrets({
+                    ok             : false,
+                    state          : PUBLICATION_STATES.unresolved,
+                    refused        : REFUSAL_CODES.unresolved,
+                    requestId,
+                    attemptId,
+                    revisionNumber : currentRevision.revisionNumber,
+                    revisionDigest,
+                    providerId     : String(providerId),
+                    readbackAt,
+                    textAsRequested: publication.textAsRequested,
+                    textAsPublished,
+                    reason         : unresolvedReason
+                }, secrets);
+            }
+
+            publishedByProviderId.set(String(providerId), {
+                channel  : payload.channel,
+                account  : payload.account,
+                requestId
             });
 
             safeLog('info', 'publish.published', {
@@ -1335,14 +1561,14 @@ export function createPublishExecutor(config = {}) {
         /**
          * @summary Reads owned-object metrics (`public_metrics` + `non_public_metrics` on X or page
          * statistics on LinkedIn) with `{source, window, claimClass}`. Any unavailable metric is
-         * reported as `'unknown'`, never `0`.
+         * reported as `'unknown'`, never `0`. Derives `channel` and `account` from the published
+         * record when omitted by the caller.
          * @param {String} providerId
          * @param {Object} [options={}]
          * @returns {Promise<Object>}
          */
         async readMetrics(providerId, options = {}) {
-            const channel     = options.channel ?? PUBLISH_CHANNELS.x,
-                  account     = options.account ?? null,
+            const mailbox     = options.mailbox ?? config.mailbox,
                   custodySeam = options.custody ?? custody,
                   platform    = options.platform ?? config.platform,
                   nowMs       = (options.now ?? now)();
@@ -1354,6 +1580,22 @@ export function createPublishExecutor(config = {}) {
                     reason : `${REFUSAL_CODES.notFound} — providerId is required to read owned-object metrics`
                 };
             }
+
+            let derivedRecord = publishedByProviderId.get(providerId) ?? null;
+            if ((!derivedRecord?.channel || !derivedRecord?.account) && options.requestId) {
+                const rawReq = await readMailboxMessage(mailbox, options.requestId),
+                      norm   = normalizeRequestRecord(rawReq);
+                if (norm?.currentRevision?.payload) {
+                    derivedRecord = {
+                        channel  : norm.currentRevision.payload.channel,
+                        account  : norm.currentRevision.payload.account,
+                        requestId: options.requestId
+                    };
+                }
+            }
+
+            const channel = options.channel ?? derivedRecord?.channel ?? PUBLISH_CHANNELS.x,
+                  account = options.account ?? derivedRecord?.account ?? null;
 
             const cred = await custodySeam.readCredential({channel, account, nowMs});
             if (!cred.ok) {
