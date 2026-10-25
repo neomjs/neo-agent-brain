@@ -4424,7 +4424,7 @@ class MailboxService extends Base {
                         m.messageId AS messageId,
                         json_extract(n.data, '$.properties.subject') AS subject,
                         (SELECT sb.target FROM Edges sb WHERE sb.source = m.messageId AND sb.type = 'SENT_BY' ORDER BY sb.rowid DESC LIMIT 1) AS sentBy,
-                        EXISTS (SELECT 1 FROM Edges st WHERE st.source = m.messageId AND st.type = 'SENT_TO' AND st.target = 'AGENT:*') AS isBroadcast,
+                        EXISTS (SELECT 1 FROM Edges st WHERE st.source = m.messageId AND st.type = 'SENT_TO' AND +st.target = 'AGENT:*') AS isBroadcast,
                         CASE WHEN EXISTS (${deliveryExists}) THEN ${edgeReadAt} ELSE json_extract(n.data, '$.properties.readAt') END AS readAt
                     FROM ${view} m
                     JOIN Nodes n ON n.id = m.messageId

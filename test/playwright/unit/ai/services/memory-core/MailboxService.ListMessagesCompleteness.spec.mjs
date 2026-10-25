@@ -16,7 +16,7 @@ setup({
 import {test, expect}           from '@playwright/test';
 import {AjvJsonSchemaValidator} from '@modelcontextprotocol/sdk/validation/ajv-provider.js';
 import Neo                      from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import * as core                from 'neo.mjs/src/core/_export.mjs';
 import                        'neo.mjs/src/manager/Instance.mjs';
 import RequestContextService from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 
@@ -388,13 +388,33 @@ test.describe('MailboxService.listMessages — projection (full | compact | coun
         }
     });
 
-    test('projection "counts" executes in SQL with zero getAdjacentNodes calls', async () => {
-        const originalGetAdjacentNodes = GraphService.db.getAdjacentNodes;
-        let adjacentCalls              = 0;
+    test('projection "counts" executes in SQL with zero getAdjacentNodes calls and uses idx_edges_source for isBroadcast', async () => {
+        const
+            sqlite                   = GraphService.db.storage.db,
+            originalGetAdjacentNodes = GraphService.db.getAdjacentNodes,
+            originalPrepare          = sqlite.prepare.bind(sqlite);
+        let
+            adjacentCalls = 0,
+            countsSql     = null,
+            countsParams  = null;
 
         GraphService.db.getAdjacentNodes = function (...args) {
             adjacentCalls++;
             return originalGetAdjacentNodes.apply(this, args);
+        };
+
+        sqlite.prepare = function (sql, ...rest) {
+            const stmt = originalPrepare(sql, ...rest);
+
+            if (typeof sql === 'string' && sql.includes('AS isBroadcast')) {
+                countsSql = sql;
+                const originalAll = stmt.all.bind(stmt);
+                stmt.all = function (params, ...allRest) {
+                    countsParams = params;
+                    return originalAll(params, ...allRest);
+                };
+            }
+            return stmt;
         };
 
         try {
@@ -407,8 +427,16 @@ test.describe('MailboxService.listMessages — projection (full | compact | coun
             expect(adjacentCalls, 'counts must not call getAdjacentNodes on matched rows').toBe(0);
             expect(counts.totalCount).toBe(TOTAL_UNREAD);
             expect(counts.unreadCount).toBe(TOTAL_UNREAD);
+            expect(countsSql, 'counts SQL statement must be captured').toBeTruthy();
+
+            const planDetails = originalPrepare(`EXPLAIN QUERY PLAN ${countsSql}`).all(countsParams).map(row => row.detail);
+            expect(
+                planDetails.some(detail => detail.includes('SEARCH st USING INDEX idx_edges_source')),
+                `EXPLAIN QUERY PLAN must resolve st via idx_edges_source, got: ${planDetails.join(' | ')}`
+            ).toBe(true);
         } finally {
             GraphService.db.getAdjacentNodes = originalGetAdjacentNodes;
+            sqlite.prepare                   = originalPrepare;
         }
     });
 
