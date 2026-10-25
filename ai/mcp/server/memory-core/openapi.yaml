@@ -2505,7 +2505,7 @@ paths:
                   type: string
                 taggedConcepts:
                   type: array
-                  description: "Optional concept tags attached via TAGGED_CONCEPT edges. Tagging `'requestPublish'` admits a revisioned publication-gate Task (`requestPublish` category per ADR 0042) targeting the Fleet's registered human operator identity (`accountType: 'human'`)."
+                  description: "Optional concept tags attached via TAGGED_CONCEPT edges. Tagging `'requestPublish'` admits a revisioned publication-gate Task (`requestPublish` category) targeting the Fleet's human operator identity (`accountType: 'human'`)."
                   items:
                     type: string
                 wakeSuppressed:
@@ -2981,7 +2981,7 @@ paths:
       operationId: transition_task
       x-neo-tool-tier: extended
       x-pass-as-object: true
-      description: "Transitions a Task with optimistic state locking; broadcast claims are send-time-recipient-only, and later transitions require the persisted server-owned assignee. A human direct recipient may also move its own InputRequired Task to Working or Completed. For `requestPublish` Tasks (ADR 0042), `Completed` is refused while the publication state (`queued → publishing → published | refused | unresolved`) is not `published` with a non-empty `providerId` and `textAsPublished === textAsRequested`."
+      description: "Transitions a Task with optimistic state locking; broadcast claims are send-time-recipient-only, and later transitions require the persisted server-owned assignee. A human direct recipient may also move its own InputRequired Task to Working or Completed. For `requestPublish` Tasks, `Completed` is refused while the publication state (`queued → publishing → published | refused | unresolved`) is not `published` with a non-empty `providerId` and `textAsPublished === textAsRequested`."
       tags: [Mailbox]
       requestBody:
         required: true
@@ -6066,7 +6066,7 @@ components:
       type: object
       additionalProperties: false
       required: [uri, sha256, mimeType]
-      description: "Media attachment descriptor (`{uri, sha256, mimeType}`) per ADR 0042 §1.1."
+      description: "Media attachment descriptor (`{uri, sha256, mimeType}`)."
       properties:
         uri:
           type: string
@@ -6086,7 +6086,7 @@ components:
       nullable: true
       additionalProperties: false
       required: [reviewerMessageId, revisionDigest]
-      description: "Cross-family review attestation reference per ADR 0042 §1.5. The server derives the reviewer's identity and modelFamily from reviewerMessageId."
+      description: "Cross-family review attestation reference. The server derives the reviewer's identity and modelFamily from reviewerMessageId."
       properties:
         reviewerMessageId:
           type: string
@@ -6101,13 +6101,13 @@ components:
       type: object
       additionalProperties: false
       required: [channel, account, text, media, hypothesis, format]
-      description: "The `requestPublish` category payload (`taggedConcepts: ['requestPublish']`) per ADR 0042 §1.1. The recipient must be the Fleet's registered human operator identity (`accountType: 'human'`)."
+      description: "The `requestPublish` category payload (`taggedConcepts: ['requestPublish']`). The recipient must be the Fleet's human operator identity (`accountType: 'human'`)."
       properties:
         schemaVersion:
           type: integer
           enum: [1]
           default: 1
-          description: "Fixed at `1` for ADR 0042."
+          description: "Fixed at `1`."
         channel:
           type: string
           enum: [x, linkedin]
@@ -6144,7 +6144,7 @@ components:
       type: object
       additionalProperties: false
       required: [revisionNumber, revisionDigest, createdAt, createdBy, payload, approval, attestation]
-      description: "Immutable revision record under a `requestPublish` Task (`MESSAGE:<uuid>`) per ADR 0042 §1.2. A revision's digest (`revisionDigest`) is the lowercase hex SHA-256 of the RFC 8785 deterministic JSON serialization of `{account, channel, format, inReplyTo, media, text}`. An operator Edit creates Revision N+1 with its own digest, inheriting neither approval nor attestation."
+      description: "Immutable revision record under a `requestPublish` Task (`MESSAGE:<uuid>`). A revision's digest (`revisionDigest`) is the lowercase hex SHA-256 of the RFC 8785 deterministic JSON serialization of `{account, channel, format, inReplyTo, media, text}`. An operator Edit creates Revision N+1 with its own digest, inheriting neither approval nor attestation."
       properties:
         revisionNumber:
           type: integer
@@ -6202,7 +6202,7 @@ components:
       type: object
       additionalProperties: false
       required: [state, textAsRequested, textAsPublished, currentRevisionNumber, currentRevisionDigest]
-      description: "Five-state publication sub-state (`queued → publishing → published | refused | unresolved`) per ADR 0042 §1.3, distinct from the A2A Task state (`Submitted | Working | InputRequired | Completed | Rejected | Failed | Canceled | Expired`). Stores both `textAsRequested` and `textAsPublished`; `Completed` is refused while the publication state is not `published`."
+      description: "Five-state publication sub-state (`queued → publishing → published | refused | unresolved`), distinct from the A2A Task state (`Submitted | Working | InputRequired | Completed | Rejected | Failed | Canceled | Expired`). Stores both `textAsRequested` and `textAsPublished`; `Completed` is refused while the publication state is not `published`."
       properties:
         state:
           type: string

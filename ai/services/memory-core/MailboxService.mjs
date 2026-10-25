@@ -130,6 +130,7 @@ const
     REQUEST_PUBLISH_CHANNEL_SET       = new Set(REQUEST_PUBLISH_CHANNELS),
     REQUEST_PUBLISH_FORMAT_SET        = new Set(REQUEST_PUBLISH_FORMATS),
     PUBLICATION_STATE_SET             = new Set(PUBLICATION_STATES),
+    TERMINAL_TASK_STATE_SET           = new Set(['Completed', 'Canceled', 'Failed', 'Rejected', 'Expired']),
     FORBIDDEN_SECRET_KEY_LOWER_SET    = new Set(REQUEST_PUBLISH_FORBIDDEN_SECRET_KEYS.map(key => key.toLowerCase())),
     TASK_ENVELOPE_ALLOWED_FIELD_SET   = new Set(['id', 'state', 'assignee', 'expiresAt', 'fallback', 'requestPublish']),
     ADD_MESSAGE_ALLOWED_TOP_KEYS      = new Set([
@@ -380,7 +381,7 @@ function validateAndNormalizeRequestPublishPayload(rawPayload, {requireHypothesi
 
 /**
  * @summary Validates and resolves a cross-family review attestation against the graph.
- * Server-derives reviewer sender and model family from `reviewerMessageId`; ignores caller-supplied `reviewerFamily`.
+ * Server-derives reviewer sender and model family from `reviewerMessageId`.
  * @param {Object} args
  * @param {Object} args.db Graph database facade.
  * @param {Object} args.attestation Raw attestation object (`{reviewerMessageId, revisionDigest}`).
@@ -409,7 +410,7 @@ function resolveAndVerifyPublishAttestation({
         throw refuseRequestPublish('refused: secret-field', `Forbidden credential or secret field '${secretKey}' in attestation.`);
     }
 
-    const allowedAttestationKeys = new Set(['reviewerMessageId', 'revisionDigest', 'reviewerFamily']);
+    const allowedAttestationKeys = new Set(['reviewerMessageId', 'revisionDigest']);
     const unknownAttestationKeys = Object.keys(attestation).filter(key => !allowedAttestationKeys.has(key));
     if (unknownAttestationKeys.length > 0) {
         throw refuseRequestPublish('refused: unknown-field', `Unsupported field(s) in attestation: ${unknownAttestationKeys.sort().join(', ')}.`);
@@ -5912,12 +5913,23 @@ class MailboxService extends Base {
             me,
             messageNode,
             storedState,
-            isAssignee,
-            isOriginator
+            isAssignee
         } = this._loadPublishRequestContext(targetId, 'transitionPublishState');
 
-        if (!isAssignee && !isOriginator) {
-            throw refuseRequestPublish('refused: unauthorized', `Caller '${me}' is not authorized to transition publication state for ${targetId}.`);
+        const principalClass = resolveSenderPrincipalClass(db, me);
+        if (!isAssignee || principalClass !== 'human') {
+            throw refuseRequestPublish(
+                'refused: unauthorized',
+                `Only the assigned human operator may transition publication state for ${targetId} (caller='${me}', principalClass='${principalClass}').`
+            );
+        }
+
+        const taskState = storedState.task?.state;
+        if (TERMINAL_TASK_STATE_SET.has(taskState)) {
+            throw refuseRequestPublish(
+                'refused: task-terminal',
+                `Cannot transition publication state for ${targetId} while Task state is terminal ('${taskState}').`
+            );
         }
 
         const
@@ -6374,10 +6386,22 @@ class MailboxService extends Base {
         `);
         const stmt = sqlite.prepare(`
             UPDATE Nodes
-            SET data = json_set(data,
-                '$.properties.task.state', 'Expired',
-                '$.properties.lastModifiedAt', ?
-            )
+            SET data = CASE
+                WHEN json_extract(data, '$.properties.publication.state') = 'queued' THEN
+                    json_set(data,
+                        '$.properties.task.state', 'Expired',
+                        '$.properties.publication.state', 'refused',
+                        '$.properties.publication.refusalReason', 'refused: expired',
+                        '$.properties.task.publication.state', 'refused',
+                        '$.properties.task.publication.refusalReason', 'refused: expired',
+                        '$.properties.lastModifiedAt', ?
+                    )
+                ELSE
+                    json_set(data,
+                        '$.properties.task.state', 'Expired',
+                        '$.properties.lastModifiedAt', ?
+                    )
+            END
             WHERE
                 json_extract(data, '$.label') = 'MESSAGE'
                 AND json_extract(data, '$.properties.task.state') IN ('Submitted', 'Working', 'InputRequired')
@@ -6387,7 +6411,7 @@ class MailboxService extends Base {
         `);
         const sweepTransaction = sqlite.transaction(() => {
             const candidates = selectCandidates.all(timestamp);
-            const info       = stmt.run(timestamp, timestamp);
+            const info       = stmt.run(timestamp, timestamp, timestamp);
 
             if (info.changes !== candidates.length) {
                 throw new Error(
@@ -6436,8 +6460,16 @@ class MailboxService extends Base {
             for (const row of sweptRows) {
                 const cached = db.nodes.get(row.id);
                 if (cached?.properties?.task) {
-                    cached.properties.task.state    = 'Expired';
-                    cached.properties.lastModifiedAt = timestamp
+                    cached.properties.task.state     = 'Expired';
+                    cached.properties.lastModifiedAt = timestamp;
+                    if (cached.properties.publication?.state === 'queued') {
+                        cached.properties.publication.state         = 'refused';
+                        cached.properties.publication.refusalReason = 'refused: expired';
+                    }
+                    if (cached.properties.task.publication?.state === 'queued') {
+                        cached.properties.task.publication.state         = 'refused';
+                        cached.properties.task.publication.refusalReason = 'refused: expired';
+                    }
                 }
             }
 

@@ -8362,6 +8362,17 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
             });
             const taskId = created.messageId;
 
+            // The originating seat (@neo-gemini-maryam) is refused on transitionPublishState (`queued → publishing`)
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                    MailboxService.transitionPublishState({
+                        taskId,
+                        newState      : 'publishing',
+                        revisionDigest: created.revisionDigest
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: unauthorized'});
+
             // Illegal move: queued → published (skipping publishing)
             await expect(
                 RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
@@ -8542,6 +8553,88 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
                 code            : 'refused: not-published',
                 publicationState: 'refused'
             });
+
+            // A terminal Task (Rejected / Canceled / Failed / Expired) refuses publication moves (`queued → publishing`)
+            const terminalTaskCandidate = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, async () => {
+                return await MailboxService.addMessage({
+                    to            : '@tobiu',
+                    subject       : '[requestPublish] terminal Task guard test',
+                    body          : payload.text,
+                    taggedConcepts: ['requestPublish'],
+                    requestPublish: payload
+                });
+            });
+            await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                const res = await MailboxService.transitionTask({
+                    taskId  : terminalTaskCandidate.messageId,
+                    newState: 'Rejected'
+                });
+                expect(res.success).toBe(true);
+            });
+            await expect(
+                RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                    MailboxService.transitionPublishState({
+                        taskId  : terminalTaskCandidate.messageId,
+                        newState: 'publishing'
+                    })
+                )
+            ).rejects.toMatchObject({code: 'refused: task-terminal'});
+
+            // The TTL sweeper expires a queued requestPublish Task and writes publication.state = 'refused' (`refused: expired`), while excluding in-flight ('publishing') tasks
+            const expiredCandidate = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, async () => {
+                return await MailboxService.addMessage({
+                    to            : '@tobiu',
+                    subject       : '[requestPublish] TTL expiry sweeper test',
+                    body          : payload.text,
+                    taggedConcepts: ['requestPublish'],
+                    requestPublish: payload,
+                    task          : {
+                        state    : 'Submitted',
+                        expiresAt: '2020-01-01T00:00:00.000Z'
+                    }
+                });
+            });
+            const inFlightCandidate = await RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, async () => {
+                return await MailboxService.addMessage({
+                    to            : '@tobiu',
+                    subject       : '[requestPublish] in-flight TTL exclusion test',
+                    body          : payload.text,
+                    taggedConcepts: ['requestPublish'],
+                    requestPublish: payload,
+                    task          : {
+                        state    : 'Submitted',
+                        expiresAt: '2020-01-01T00:00:00.000Z'
+                    }
+                });
+            });
+            await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, async () => {
+                await MailboxService.transitionTask({
+                    taskId  : inFlightCandidate.messageId,
+                    newState: 'Working'
+                });
+                await MailboxService.transitionPublishState({
+                    taskId  : inFlightCandidate.messageId,
+                    newState: 'publishing'
+                });
+            });
+
+            const sweepRes = await MailboxService.sweepExpiredTasks();
+            expect(sweepRes.sweptCount).toBeGreaterThanOrEqual(1);
+
+            const expiredFetched = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                MailboxService.getMessage({messageId: expiredCandidate.messageId})
+            );
+            expect(expiredFetched.task.state).toBe('Expired');
+            expect(expiredFetched.publication.state).toBe('refused');
+            expect(expiredFetched.publication.refusalReason).toBe('refused: expired');
+            expect(expiredFetched.task.publication.state).toBe('refused');
+            expect(expiredFetched.task.publication.refusalReason).toBe('refused: expired');
+
+            const inFlightFetched = await RequestContextService.run({agentIdentityNodeId: '@tobiu'}, () =>
+                MailboxService.getMessage({messageId: inFlightCandidate.messageId})
+            );
+            expect(inFlightFetched.task.state).toBe('Working');
+            expect(inFlightFetched.publication.state).toBe('publishing');
         });
 
         test('AC-4 & AC-5: memory-core openapi.yaml describes requestPublish, its payload, revision, and publication state per ADR 0042, and no token, credential, or platform secret appears in the payload schema or runtime payload', async () => {
