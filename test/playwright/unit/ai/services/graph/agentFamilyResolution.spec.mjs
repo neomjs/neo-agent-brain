@@ -6,9 +6,11 @@ import 'neo.mjs/src/core/_export.mjs';
 import {
     getCoreSwarmAgentFamilies,
     groupReviewsByFamily,
+    parseSelfIdLogin,
     resolveAgentIdentityAlias,
     resolveAuthorFamily,
     resolveAuthorFamilyFromLogins,
+    resolveCrossFamilyVerdict,
     resolveFormerLoginMentions,
     resolveResidentFamily,
     resolveReviewerFamily
@@ -281,3 +283,95 @@ test.describe('ai/services/graph/agentFamilyResolution — formerLogins alias & 
     });
 });
 
+
+test.describe('ai/services/graph/agentFamilyResolution — own-entry authority', () => {
+    const keys   = ['constructor', 'toString', '__proto__'];
+    const review = login => ({author: {login}});
+
+    test('inherited names are not reviewers or authors', () => {
+        for (const login of [...keys, 'inherited-agent']) {
+            const families = Object.create({'inherited-agent': 'claude'});
+
+            expect(resolveReviewerFamily(review(login), families))
+                .toEqual({classified: false, family: null, login});
+            expect(resolveAuthorFamilyFromLogins({selfIdLogin: login}, families)).toBeUndefined();
+            expect(resolveAuthorFamilyFromLogins({openerLogin: login}, families)).toBeUndefined();
+            expect(resolveAuthorFamily({author: {login}}, families)).toBeUndefined();
+            expect(resolveAuthorFamily({body: `Authored by @${login}`}, families)).toBeUndefined();
+        }
+    });
+
+    test('an inherited self-id cannot displace a registered opener', () => {
+        const families = Object.assign(Object.create({'inherited-agent': 'claude'}), {opener: 'gpt'});
+
+        for (const selfIdLogin of ['constructor', 'inherited-agent']) {
+            expect(resolveAuthorFamilyFromLogins({selfIdLogin, openerLogin: 'opener'}, families))
+                .toBe('gpt');
+            expect(resolveAuthorFamily({
+                body: `Authored by @${selfIdLogin}`, author: {login: 'opener'}
+            }, families)).toBe('gpt');
+        }
+    });
+
+    test('unregistered prototype-named social authors do not parse as logins', () => {
+        for (const name of keys) {
+            expect(parseSelfIdLogin(`Authored by ${name} (probe)`)).toBeNull();
+        }
+
+        expect(parseSelfIdLogin('Authored by Sophie (probe)')).toBe('neo-gpt-sophie');
+    });
+
+    test('explicit own login and family values keep their exact identity', () => {
+        for (const family of [...keys, 'New Lab ', 'unknown']) {
+            const families = Object.fromEntries(keys.map(login => [login, family]));
+
+            for (const login of keys) {
+                expect(resolveReviewerFamily(review(`@${login}`), families))
+                    .toEqual({classified: true, family, login: `@${login}`});
+                expect(resolveAuthorFamilyFromLogins({selfIdLogin: login}, families)).toBe(family);
+                expect(resolveAuthorFamily({author: {login}}, families)).toBe(family);
+            }
+        }
+    });
+
+    test('exact family counts remain numeric, including absent and empty populations', () => {
+        const values                   = [...keys, 'New Lab ', 'unknown'];
+        const families                 = Object.fromEntries(values.map((family, i) => [`agent-${i}`, family]));
+        const reviews                  = Object.keys(families).flatMap(login => [review(login), review(login)]);
+        const expected                 = Object.fromEntries(values.map(family => [family, 2]));
+        const {byFamily, unclassified} = groupReviewsByFamily(reviews, families);
+        const empty                    = groupReviewsByFamily([], families).byFamily;
+
+        expect(unclassified).toEqual([]);
+        expect(Object.entries(byFamily)).toEqual(Object.entries(expected));
+        expect(JSON.parse(JSON.stringify(byFamily))).toEqual(expected);
+
+        for (const family of values) {
+            expect(byFamily[family]).toBe(2);
+            expect(empty[family]).toBeUndefined();
+        }
+
+        expect(byFamily.valueOf).toBeUndefined();
+        expect(JSON.stringify(empty)).toBe('{}');
+    });
+
+    test('inherited approvers cannot establish cross-family coverage', () => {
+        const families = Object.assign(Object.create({'inherited-agent': 'claude'}), {
+            author: 'gpt', peer: 'unknown'
+        });
+        const pr = {
+            author : {login: 'author'},
+            reviews: [...keys, 'inherited-agent'].map(login => ({...review(login), state: 'APPROVED'}))
+        };
+
+        expect(resolveCrossFamilyVerdict(pr, families)).toMatchObject({
+            authorFamily         : 'gpt',
+            approvingFamilies    : [],
+            unclassifiedApprovers: [...keys, 'inherited-agent'],
+            crossFamily          : false
+        });
+        expect(resolveCrossFamilyVerdict({
+            ...pr, reviews: [{...review('peer'), state: 'APPROVED'}]
+        }, families).crossFamily).toBe(true);
+    });
+});

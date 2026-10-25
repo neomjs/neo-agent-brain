@@ -12,6 +12,7 @@ import {IDENTITIES}          from '../../graph/identityRoots.mjs';
  * carries cross-family review coverage. These are import-safe utilities over the identity roster;
  * runtime owners inject their warning sink rather than pulling a server logger/config closure into
  * every source-only consumer.
+ * Identity dictionaries contribute only their own entries; prototypes carry no roster authority.
  * `GoldenPathSynthesizer` keeps thin static delegating shims so its public API stays stable.
  */
 
@@ -297,7 +298,9 @@ export function parseSelfIdLogin(body) {
 
     // Current form: `Authored by <Social Name> (…)` — resolve the Social Name to a login via the roster.
     const socialMatch = body.match(/^Authored by (.+?) \(/m);
-    return socialMatch ? (SOCIAL_NAME_TO_LOGIN[socialMatch[1].trim()] ?? null) : null
+    return socialMatch && Object.hasOwn(SOCIAL_NAME_TO_LOGIN, socialMatch[1].trim())
+        ? SOCIAL_NAME_TO_LOGIN[socialMatch[1].trim()]
+        : null
 }
 
 /**
@@ -330,8 +333,8 @@ export function resolveAuthorFamilyFromLogins(
     {warn = console.warn} = {}
 ) {
     const
-        selfIdFamily = selfIdLogin ? agentFamilies[selfIdLogin] : undefined,
-        openerFamily = openerLogin ? agentFamilies[openerLogin] : undefined;
+        selfIdFamily = selfIdLogin && Object.hasOwn(agentFamilies, selfIdLogin) ? agentFamilies[selfIdLogin] : undefined,
+        openerFamily = openerLogin && Object.hasOwn(agentFamilies, openerLogin) ? agentFamilies[openerLogin] : undefined;
 
     if (selfIdFamily) {
         if (openerFamily && openerFamily !== selfIdFamily) {
@@ -368,8 +371,9 @@ export function resolveAuthorFamily(
     {warn = console.warn} = {}
 ) {
     const selfIdLogin  = parseSelfIdLogin(pr?.body),
-          selfIdFamily = selfIdLogin ? agentFamilies[selfIdLogin] : undefined,
-          loginFamily  = agentFamilies[pr?.author?.login];
+          openerLogin  = pr?.author?.login,
+          selfIdFamily = selfIdLogin && Object.hasOwn(agentFamilies, selfIdLogin) ? agentFamilies[selfIdLogin] : undefined,
+          loginFamily  = openerLogin && Object.hasOwn(agentFamilies, openerLogin) ? agentFamilies[openerLogin] : undefined;
 
     if (selfIdFamily) {
         if (loginFamily && loginFamily !== selfIdFamily) {
@@ -410,7 +414,8 @@ export function resolveReviewerFamily(review, agentFamilies = getCoreSwarmAgentF
 
     if (!login) return {classified: false, family: null, login: null};
 
-    const family = agentFamilies[login.replace(/^@/, '')];
+    const key    = login.replace(/^@/, ''),
+          family = Object.hasOwn(agentFamilies, key) ? agentFamilies[key] : undefined;
 
     return family
         ? {classified: true,  family, login}
@@ -431,12 +436,14 @@ export function resolveReviewerFamily(review, agentFamilies = getCoreSwarmAgentF
  * them together would let two unrelated strangers share one budget. Neither is a decision this
  * function may make silently, so it reports and lets the admission point fail closed.
  *
+ * The count dictionary has no prototype, so arbitrary family keys and absent counts stay data.
+ *
  * @param {Object[]} reviews Submitted review payloads.
  * @param {Object} [agentFamilies=getCoreSwarmAgentFamilies()] Login-to-family map.
  * @returns {{byFamily: Object<String,Number>, unclassified: Array<{login: (String|null)}>}}
  */
 export function groupReviewsByFamily(reviews = [], agentFamilies = getCoreSwarmAgentFamilies()) {
-    const byFamily = {}, unclassified = [];
+    const byFamily = Object.create(null), unclassified = [];
 
     for (const review of reviews) {
         const resolved = resolveReviewerFamily(review, agentFamilies);
