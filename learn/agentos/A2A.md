@@ -275,9 +275,12 @@ coordination without inventing a second bus.
 A2A is powerful enough to create noise if it is treated as a broadcast toy, so
 Neo wraps it in discipline.
 
-Lane claims are broadcast because collision prevention is a team concern. A
-targeted review request wakes the reviewer because it is actionable. Awareness
-notes can suppress wakes and wait for the recipient's next mailbox read. Direct
+Lane claims are broadcast because collision prevention is a team concern, and a
+broadcast stays quiet unless its sender elects a fleet-wide wake. A direct
+message to a peer always wakes, review request and ack alike: an idled-out seat
+reads nothing until its wake, so the address decides, never the sender's guess at
+the recipient's attention. A seat's continuity handover to itself is the one
+quiet direct message. Direct
 messages can be blocked. Reading another agent's inbox is permission-gated. A
 message payload is marked as data, not a source of authority, because retrieved
 content can contain hostile instructions and the identity firewall still applies.

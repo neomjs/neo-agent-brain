@@ -4369,18 +4369,30 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         expect(node.properties.readAt).toBeNull();
     });
 
-    test('addMessage rejects wakeSuppressed known-actionable direct lifecycle messages', async () => {
+    test('#1250 addMessage rejects every wakeSuppressed direct message to a peer — the operator rule of 2026-10-24 retires the awareness carve-out', async () => {
         await RequestContextService.run({ agentIdentityNodeId: '@bob' }, async () => {
             await PermissionService.grantPermission({ to: '@alice', scope: 'CAN_REPLY_TO' });
         });
 
+        const rule = /Cannot suppress wake for a direct message to a peer \(a peer address always wakes/;
+
         await RequestContextService.run({ agentIdentityNodeId: '@alice' }, async () => {
+            // The specimen that drew the rule: a quiet ack. Nothing about it is "actionable", and
+            // the recipient, idled out, would have read it at its next boot — hours later.
+            await expect(MailboxService.addMessage({
+                to            : '@bob',
+                subject       : '[re: #1250 · ack] folded, nothing pending',
+                body          : 'An awareness note to one peer.',
+                wakeSuppressed: true
+            })).rejects.toThrow(rule);
+
+            // The arms the guard already refused keep refusing, now under the one rule.
             await expect(MailboxService.addMessage({
                 to            : '@bob',
                 subject       : '[review][REQUEST_CHANGES] #13290 — close-target gate',
                 body          : 'This must wake the PR author.',
                 wakeSuppressed: true
-            })).rejects.toThrow(/Cannot suppress wake for actionable direct lifecycle subject/);
+            })).rejects.toThrow(rule);
 
             await expect(MailboxService.addMessage({
                 to            : '@bob',
@@ -4388,13 +4400,69 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
                 body          : 'High-priority direct messages must wake.',
                 priority      : 'high',
                 wakeSuppressed: true
-            })).rejects.toThrow(/Cannot suppress wake for high-priority direct message/);
+            })).rejects.toThrow(rule);
+
+            // Omitting the flag is the fix the error names: the same ack lands, and wakes.
+            const {messageId} = await MailboxService.addMessage({
+                to     : '@bob',
+                subject: '[re: #1250 · ack] folded, nothing pending',
+                body   : 'An awareness note to one peer.'
+            });
+            expect(GraphService.db.nodes.get(messageId).properties.wakeSuppressed).toBe(false);
         });
 
         expect(GraphService.db.nodes.items.filter(node =>
             node.label === 'MESSAGE' &&
             node.properties?.wakeSuppressed === true
         )).toHaveLength(0);
+    });
+
+    test('#1250 the self-DM, a human recipient and a system sender keep the pre-rule arms', async () => {
+        GraphService.upsertNode({id: '@operator', type: 'AgentIdentity', name: 'Operator', properties: {accountType: 'human'}});
+        GraphService.upsertNode({id: '@sentinel', type: 'AgentIdentity', name: 'Sentinel', properties: {accountType: 'system'}});
+
+        await RequestContextService.run({ agentIdentityNodeId: '@operator' }, async () => {
+            await PermissionService.grantPermission({ to: '@alice', scope: 'CAN_REPLY_TO' });
+        });
+        await RequestContextService.run({ agentIdentityNodeId: '@bob' }, async () => {
+            await PermissionService.grantPermission({ to: '@sentinel', scope: 'CAN_REPLY_TO' });
+        });
+
+        await RequestContextService.run({ agentIdentityNodeId: '@alice' }, async () => {
+            // A seat's message to itself is not a message to a peer: the sunset handover stays quiet
+            // (pinned above) and the pre-rule arms still guard the self-DM.
+            await expect(MailboxService.addMessage({
+                to            : '@alice',
+                subject       : '[review][REQUEST_CHANGES] #13290 — a note to myself',
+                body          : 'An actionable subject on a self-DM keeps its own reason.',
+                wakeSuppressed: true
+            })).rejects.toThrow(/Cannot suppress wake for actionable direct lifecycle subject/);
+
+            // The human operator has no wake route an idled seat depends on: a quiet FYI to the
+            // operator is accepted — publication custody (requestPublish) rides the same arm.
+            const toOperator = await MailboxService.addMessage({
+                to            : '@operator',
+                subject       : '[fyi] the week plan is on main',
+                body          : 'Read at your next queue drain.',
+                wakeSuppressed: true
+            });
+            expect(GraphService.db.nodes.get(toOperator.messageId).properties.wakeSuppressed).toBe(true);
+        });
+
+        // A system principal writes audit records: mailbox-only by design, whatever the subject —
+        // the KB alerting daemon's `deliveryMode: 'audit'` under its `@system` sender.
+        await RequestContextService.run({ agentIdentityNodeId: '@sentinel' }, async () => {
+            const audit = await MailboxService.addMessage({
+                to            : '@bob',
+                subject       : '[alert] the embed drain has stalled — audit record',
+                body          : 'deliveryMode: audit',
+                priority      : 'high',
+                wakeSuppressed: true
+            });
+            const node = GraphService.db.nodes.get(audit.messageId);
+            expect(node.properties.wakeSuppressed).toBe(true);
+            expect(node.properties.senderPrincipalClass).toBe('system');
+        });
     });
 
     test('addMessage defaults claim-class broadcasts to wakeSuppressed (#15987 — supersedes the #14100 polarity)', async () => {
@@ -4969,30 +5037,34 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         expect(node.properties.wakeSuppressed).toBe(true);
     });
 
-    test('addMessage preserves explicit mailbox-only wakeSuppressed exceptions', async () => {
+    test('#1250 the broadcast is the one standing exception: the lead-role baton and an agent-sent [alert] to one peer wake now', async () => {
         await RequestContextService.run({ agentIdentityNodeId: '@bob' }, async () => {
             await PermissionService.grantPermission({ to: '@alice', scope: 'CAN_REPLY_TO' });
         });
 
         await RequestContextService.run({ agentIdentityNodeId: '@alice' }, async () => {
-            const baton = await MailboxService.addMessage({
+            const rule = /Cannot suppress wake for a direct message to a peer/;
+
+            // The baton's tag exemption is retired: the new lead is exactly a seat that may have
+            // idled out, so the baton wakes it.
+            await expect(MailboxService.addMessage({
                 to            : '@bob',
                 subject       : '[handoff] Lead Role Baton',
                 body          : 'fromLead: @alice\ntoLead: @bob',
                 taggedConcepts: ['lead-role-baton'],
                 wakeSuppressed: true
-            });
+            })).rejects.toThrow(rule);
 
-            const audit = await MailboxService.addMessage({
+            // An [alert] subject exempts a SYSTEM sender's audit record, not an agent's quiet DM.
+            await expect(MailboxService.addMessage({
                 to            : '@bob',
                 subject       : '[alert] critical: errorRate 0.9 over threshold 0.1 (tenant tenant-x)',
                 body          : 'KB audit alert.',
                 priority      : 'high',
                 wakeSuppressed: true
-            });
+            })).rejects.toThrow(rule);
 
-            // A [lane-claim] now always wakes (collision-prevention); a TRUE awareness broadcast uses a
-            // non-claim tag (lane-progress / FYI / ack) and stays suppressible — the scoping the guard preserves.
+            // A TRUE awareness broadcast stays suppressible — fleet awareness is what AGENT:* is for.
             const awareness = await MailboxService.addMessage({
                 to            : 'AGENT:*',
                 subject       : '[lane-progress] #13295 — non-overlapping awareness',
@@ -5000,8 +5072,6 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
                 wakeSuppressed: true
             });
 
-            expect((await MailboxService.getMessage({ messageId: baton.messageId })).wakeSuppressed).toBe(true);
-            expect((await MailboxService.getMessage({ messageId: audit.messageId })).wakeSuppressed).toBe(true);
             expect((await MailboxService.getMessage({ messageId: awareness.messageId })).wakeSuppressed).toBe(true);
         });
     });

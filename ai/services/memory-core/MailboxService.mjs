@@ -51,7 +51,7 @@ const
     RELATED_PULL_REQUEST_CACHE_TTL_MS     = 30 * 1000,
     RELATED_PULL_REQUEST_PATTERN          = /^#(\d+)$/,
     relatedPullRequestStateCache          = new Map(),
-    WAKE_SUPPRESSION_ALLOWED_TAGS         = new Set(['sunset-protocol-handover', 'lead-role-baton', 'requestPublish', 'request-publish']),
+    WAKE_SUPPRESSION_ALLOWED_TAGS         = new Set(['sunset-protocol-handover', 'requestPublish', 'request-publish']),
     MESSAGE_GRAPH_REPAIR_LIMIT            = 250,
     MESSAGE_GRAPH_COHORT_STAMP_LIMIT      = 200,
     MESSAGE_GRAPH_REPAIR_FAILURE_RETRY_MS = 30 * 1000,
@@ -391,7 +391,7 @@ function resolveAndVerifyPublishAttestation({
         throw refuseRequestPublish('refused: attestation', `Referenced reviewerMessageId '${reviewerMessageId}' has no verifiable sender.`);
     }
 
-    const reviewerPrincipalClass = resolveSenderPrincipalClass(db, reviewerFrom);
+    const reviewerPrincipalClass = resolvePrincipalClass(db,reviewerFrom);
     if (reviewerPrincipalClass !== 'agent') {
         throw refuseRequestPublish('refused: attestation', `Reviewer '${reviewerFrom}' has principal class '${reviewerPrincipalClass}'; cross-family attestation requires an 'agent' reviewer.`);
     }
@@ -746,38 +746,36 @@ function setRecordProperties(record, properties) {
 }
 
 /**
- * @summary Resolves the sender's server-stamped principal class from the identity graph node —
- * the write-time authority for the `senderPrincipalClass` stamp and the operator-steering
- * delivery-class derivation. Reads `properties.accountType` off the sender's AgentIdentity node
- * (hydrating the vicinity first so a fresh process sees peer-seeded identities); an unknown or
- * absent class resolves to `'unclassified'` — the class is never caller-supplied and never
- * inferred from message content, so it cannot be forged through the compose path.
+ * @summary Resolves an identity's server-stamped principal class from its graph node — the
+ * write-time authority for the `senderPrincipalClass` stamp, the operator-steering delivery-class
+ * derivation and the recipient arm of the wake guard. Reads `properties.accountType` off the
+ * AgentIdentity node (hydrating the vicinity first so a fresh process sees peer-seeded identities);
+ * an unknown or absent class resolves to `'unclassified'` — the class is never caller-supplied and
+ * never inferred from message content, so it cannot be forged through the compose path.
  * @param {Object} db The graph database (GraphService.requireDb result).
- * @param {String} sentBy Canonical `@`-form sender identity node id.
+ * @param {String} identityId Canonical `@`-form identity node id.
  * @returns {String} One of `'agent' | 'human' | 'system' | 'unclassified'`.
  * @private
  */
-function resolveSenderPrincipalClass(db, sentBy) {
-    db.getAdjacentNodes(sentBy, 'outbound');
+function resolvePrincipalClass(db, identityId) {
+    db.getAdjacentNodes(identityId, 'outbound');
 
-    const accountType = db.nodes.get(sentBy)?.properties?.accountType;
+    const accountType = db.nodes.get(identityId)?.properties?.accountType;
 
     return KNOWN_PRINCIPAL_CLASSES.has(accountType) ? accountType : 'unclassified'
 }
 
 /**
- * @summary True for intentionally mailbox-only wake suppression cases whose recipients should
- * pick the message up through `list_messages`, not through an interrupt wake.
+ * @summary True for the mailbox-only suppression cases a message NOT addressed to a peer may still
+ * use: the tag allow-list (the session-sunset continuity self-DM, publication custody) and `[alert]`
+ * audit subjects. A peer-addressed message never reaches this check — see {@link getWakeSuppressionRisk}.
  * @param {Object} args
  * @param {String} args.subject
  * @param {String[]} args.taggedConcepts
- * @param {String} args.to
  * @returns {Boolean}
  * @private
  */
-function isAllowedWakeSuppression({subject = '', taggedConcepts = [], to}) {
-    if (to === 'AGENT:*') return true;
-
+function isAllowedWakeSuppression({subject = '', taggedConcepts = []}) {
     if (taggedConcepts.some(tag => WAKE_SUPPRESSION_ALLOWED_TAGS.has(tag))) {
         return true;
     }
@@ -787,36 +785,45 @@ function isAllowedWakeSuppression({subject = '', taggedConcepts = [], to}) {
 
 /**
  * @summary Returns the wake-suppression-risk reason for an A2A message, or `null` when `wakeSuppressed`
- * is safe. `wakeSuppressed` is honored downstream by the wake substrate; this guard sits at message
- * acceptance so known-actionable DIRECT messages — actionable lifecycle subjects, high-priority or
- * task-bearing DMs — cannot silently become mailbox-only.
+ * is safe. The guard sits at message acceptance, so a message that must wake is refused with the
+ * rule rather than silently flipped.
  *
- * The collision-prevention class is deliberately NOT in this guard anymore. Its wake-mandatory
- * polarity (claims must wake, broadcast or direct) taxed every active seat with a full-context
- * wake per claim, and the collision defense it bought already exists at the claim surfaces
- * themselves: the `requireUnassigned` assignee gate at claim time plus the mandatory claim-race
- * live re-check at ticket intake/create. Claim-class broadcasts now default to quiet at the
- * resolution seam in `addMessage` instead (operator-directed 2026-07-26); a contested-lane
- * resolution that must wake is a sender election via explicit `wakeSuppressed: false`.
+ * A direct message to a peer always wakes (the operator, 2026-10-24: an idled-out seat runs no
+ * mailbox poll, so a quiet 1:1 waits until its next boot). The address decides — never the sender's
+ * judgement of the recipient's attention — which retires the awareness carve-out (quiet acks,
+ * lane-progress, PR-opened FYIs to one peer) and the lead-role baton's tag exemption: the new lead
+ * is exactly a seat that may have idled out. Fleet awareness goes to `AGENT:*`, quiet by default at
+ * the resolution seam in `addMessage` (operator-directed 2026-07-26) and woken only by election.
+ *
+ * Outside that rule — a `human` sender (durable-quiet is steering's default mode), a `system`
+ * sender (audit records), a `human` or `system` recipient (no wake route an idled seat depends on;
+ * `requestPublish` custody rides this arm) and a seat's message to itself (the session-sunset
+ * self-DM) — the pre-rule arms apply: the tag allow-list and `[alert]` subjects are safe; high
+ * priority, a task or an actionable lifecycle subject are not.
  * @param {Object} args
  * @param {Boolean} args.wakeSuppressed
- * @param {String} args.to
+ * @param {String} args.to Canonical recipient: `@login` or `AGENT:*`.
+ * @param {String} [args.sentBy=null] Canonical sender identity; equal to `to` on a self-DM.
  * @param {String} args.subject
  * @param {String} args.priority
  * @param {String[]} args.taggedConcepts
  * @param {Object} [args.task]
- * @param {String} [args.senderPrincipalClass='unclassified'] Server-stamped sender class; the
- *   `'human'` (operator-steering) class may always suppress — durable-quiet IS its default mode,
- *   per the operator's own datum that a late wake is noise, not steering.
+ * @param {String} [args.senderPrincipalClass='unclassified'] Server-stamped sender class.
+ * @param {String} [args.recipientPrincipalClass='unclassified'] The recipient identity's class,
+ *   resolved the same way; an unknown recipient counts as a peer seat — the guard fails toward waking.
  * @returns {String|null}
  * @private
  */
-function getWakeSuppressionRisk({wakeSuppressed, to, subject = '', priority = 'normal', taggedConcepts = [], task, senderPrincipalClass = 'unclassified'}) {
-    if (!wakeSuppressed || senderPrincipalClass === 'human' || isAllowedWakeSuppression({subject, taggedConcepts, to})) {
+function getWakeSuppressionRisk({wakeSuppressed, to, sentBy = null, subject = '', priority = 'normal', taggedConcepts = [], task, senderPrincipalClass = 'unclassified', recipientPrincipalClass = 'unclassified'}) {
+    if (!wakeSuppressed || senderPrincipalClass === 'human' || senderPrincipalClass === 'system' || !to?.startsWith('@')) {
         return null;
     }
 
-    if (!to?.startsWith('@')) {
+    if (to !== sentBy && recipientPrincipalClass !== 'human' && recipientPrincipalClass !== 'system') {
+        return 'a direct message to a peer (a peer address always wakes — operator rule, 2026-10-24)';
+    }
+
+    if (isAllowedWakeSuppression({subject, taggedConcepts})) {
         return null;
     }
 
@@ -3234,7 +3241,7 @@ class MailboxService extends Base {
         // caller input, so the operator-steering delivery class cannot be forged through compose.
         // 'human' inverts the delivery defaults: durable-quiet (wake is the sender's per-message
         // election, never the default) and priority-high as turn-start drain-ordering metadata.
-        const senderPrincipalClass = resolveSenderPrincipalClass(db, sentBy),
+        const senderPrincipalClass = resolvePrincipalClass(db,sentBy),
               operatorSteering     = senderPrincipalClass === 'human',
               // Captured BEFORE the defaults resolve below, and kept as a THREE-state value: the
               // coherence gate must tell "the sender elected a wake" and "the sender elected
@@ -3568,10 +3575,12 @@ class MailboxService extends Base {
             taggedConcepts.unshift('requestPublish');
         }
 
-        const wakeSuppressionRisk = getWakeSuppressionRisk({wakeSuppressed, to, subject, priority, taggedConcepts, task, senderPrincipalClass});
+        const
+            recipientPrincipalClass = typeof to === 'string' && to.startsWith('@') ? resolvePrincipalClass(db, to) : 'unclassified',
+            wakeSuppressionRisk     = getWakeSuppressionRisk({wakeSuppressed, to, sentBy, subject, priority, taggedConcepts, task, senderPrincipalClass, recipientPrincipalClass});
 
         if (wakeSuppressionRisk) {
-            throw new Error(`Cannot suppress wake for ${wakeSuppressionRisk}. Omit wakeSuppressed or set it to false; action-required direct messages must wake.`);
+            throw new Error(`Cannot suppress wake for ${wakeSuppressionRisk}. Omit wakeSuppressed or set it to false.`);
         }
 
         // 1. Build the accepted Message intent
@@ -5898,7 +5907,7 @@ class MailboxService extends Base {
             isAssignee
         } = this._loadPublishRequestContext(targetId, 'approvePublishRevision');
 
-        const principalClass = resolveSenderPrincipalClass(db, me);
+        const principalClass = resolvePrincipalClass(db,me);
         if (!isAssignee || principalClass !== 'human') {
             throw refuseRequestPublish(
                 'refused: unauthorized',
@@ -6026,7 +6035,7 @@ class MailboxService extends Base {
             isAssignee
         } = this._loadPublishRequestContext(targetId, 'transitionPublishState');
 
-        const principalClass = resolveSenderPrincipalClass(db, me);
+        const principalClass = resolvePrincipalClass(db,me);
         if (!isAssignee || principalClass !== 'human') {
             throw refuseRequestPublish(
                 'refused: unauthorized',
