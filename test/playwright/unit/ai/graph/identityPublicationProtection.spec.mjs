@@ -1,14 +1,19 @@
-import {setup} from '../../../setup.mjs';
-import Neo from 'neo.mjs/src/Neo.mjs';
-import * as core from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
-import {test, expect} from '@playwright/test';
-import {mkdtempSync, rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
-import Database from '../../../../../ai/graph/Database.mjs';
-import SQLite from '../../../../../ai/graph/storage/SQLite.mjs';
-import {fenceIdentityPublication} from '../../../../../ai/services/memory-core/helpers/identityPublicationFence.mjs';
+import {setup}                                                     from '../../../setup.mjs';
+import Neo                                                         from 'neo.mjs/src/Neo.mjs';
+import * as core                                                   from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                                             from 'neo.mjs/src/manager/Instance.mjs';
+import {test, expect}                                              from '@playwright/test';
+import {mkdtempSync, rmSync}                                       from 'node:fs';
+import {tmpdir}                                                    from 'node:os';
+import {join}                                                      from 'node:path';
+import {generateKeyPairSync, sign}                                 from 'node:crypto';
+import Database                                                    from '../../../../../ai/graph/Database.mjs';
+import SQLite                                                      from '../../../../../ai/graph/storage/SQLite.mjs';
+import {fenceIdentityPublication}                                  from '../../../../../ai/services/memory-core/helpers/identityPublicationFence.mjs';
+import {consumeIdentityPublicationBoot}                            from '../../../../../ai/services/memory-core/helpers/identityPublicationLineage.mjs';
+import {admitIdentityPublication, readIdentityPublicationSnapshot} from '../../../../../ai/services/memory-core/helpers/identityPublicationAdmission.mjs';
+import {stringifyCanonicalJson}                                    from '../../../../../ai/services/shared/canonicalJson.mjs';
+import {buildFamilyProjection, familyAt}                           from '../../../../../ai/graph/identityFamilyProjection.mjs';
 
 setup({appConfig: {name: 'IdentityPublicationProtectionTest'}});
 
@@ -70,6 +75,47 @@ test('new ordinary upserts cannot manufacture protected records through JSON per
     }
 });
 
+test('ordinary writable EmbodiedEpisode rows cannot impersonate admitted binding history', () => {
+    const target  = {planeId: 'ordinary-episode-fixture', dataRoot: '/fixture/ordinary-episode'};
+    const key     = generateKeyPairSync('ed25519');
+    const reserve = {version: 1, target, issuer: 'fixture-fleet', trust: null,
+        reservation: {attemptId: 'fixture-attempt', kid: 'key-a', originRunId: '123e4567-e89b-42d3-a456-426614174000'}};
+    const bootText = stringifyCanonicalJson({...reserve, trust: [{kid: 'key-a',
+        publicKey: key.publicKey.export({type: 'spki', format: 'der'}).toString('base64url')}]});
+    expect(consumeIdentityPublicationBoot(storage.db, stringifyCanonicalJson(reserve), target).state).toBe('reserved');
+    expect(consumeIdentityPublicationBoot(storage.db, bootText, target).state).toBe('bound');
+    const binding = {seatId: 'seat', incarnation: 'incarnation', subject: {authProvider: 'github',
+        providerBaseUrl: 'https://api.github.com', providerUserId: '123', providerUsername: 'fixture'}};
+    const publish = (operation, now) => {
+        const payload = Buffer.from(stringifyCanonicalJson({version: 1, purpose: 'identity-family-publication',
+            audience: target.planeId, issuer: reserve.issuer, kid: 'key-a', issuedAt: now, expiresAt: now + 300000, operation}));
+        const signature = sign(null, Buffer.concat([Buffer.from('neo.identity-family-publication.v1\0'), payload]), key.privateKey);
+        return admitIdentityPublication(storage.db, payload.toString('base64url') + '.' + signature.toString('base64url'),
+            {bootText, target, rosterFamilies: ['gpt', 'claude'], clock: () => now});
+    };
+    expect(publish({kind: 'baseline', operationId: 'baseline', effectiveAt: 100,
+        expectedPlaneRevision: 0, bindings: [binding]}, 100).state).toBe('accepted');
+    const admitted = publish({kind: 'confirm', operationId: 'confirm', effectiveAt: 110, binding,
+        expectedMembershipRevision: 1, expectedAdmissionRevision: 0, operatorPrincipal: 'operator',
+        family                    : 'gpt', model: null, newFamily: false, unattestedReason: 'No model attested'}, 110);
+    expect(admitted.state).toBe('accepted');
+    graph.syncCache();
+    const before   = readIdentityPublicationSnapshot(storage.db, {bootText, target});
+    const original = JSON.parse(stored('Nodes', admitted.receipt.admissionId));
+    const id       = 'embodied-episode-ordinary-fixture';
+    const forged   = {...original.properties, family: 'claude', admitted: true};
+    expect(forged.identityKey).toBe(before.snapshot.subjects[0].source.memberships[0].bindingId);
+    GraphService.upsertNode({id, type: 'EmbodiedEpisode', properties: forged});
+    expect(JSON.parse(stored('Nodes', id)).properties.family).toBe('claude');
+    expect(graph.nodes.has(id)).toBe(true);
+    const after = readIdentityPublicationSnapshot(storage.db, {bootText, target});
+    expect(after).toEqual(before);
+    expect(familyAt(buildFamilyProjection(after.snapshot.subjects[0].source), 120))
+        .toEqual({state: 'classified', family: 'gpt'});
+    GraphService.removeNodes([id]);
+    expect(readIdentityPublicationSnapshot(storage.db, {bootText, target})).toEqual(before);
+});
+
 test('bulk public deletion cannot cascade a cold protected relation or partially remove an earlier node', () => {
     node('free'); node('endpoint'); node('other');
     edge(protectedId, 'endpoint', 'other');
@@ -90,8 +136,8 @@ test('raw SQL link/reconciliation paths cannot reweight a protected edge or atta
 });
 
 test('raw link reweighting prevents a second connection changing protection between check and write', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'neo-graph-test-publication-lock-'));
-    const dbPath = join(directory, 'graph.sqlite');
+    const directory   = mkdtempSync(join(tmpdir(), 'neo-graph-test-publication-lock-'));
+    const dbPath      = join(directory, 'graph.sqlite');
     const fileStorage = Neo.create(SQLite, {dbPath});
     let fileGraph, peer;
     try {
@@ -102,8 +148,8 @@ test('raw link reweighting prevents a second connection changing protection betw
         fileStorage.addNodes([{id: 'a', label: 'NODE'}, {id: 'b', label: 'NODE'}]);
         fileStorage.addEdges([{id: 'ordinary-edge', source: 'a', target: 'b', type: 'MUTABLE_RELATION', properties: {weight: 0.5}}]);
         peer = new fileStorage.db.constructor(dbPath, {timeout: 1});
-        const prepare = fileStorage.db.prepare;
-        let observed = false;
+        const prepare  = fileStorage.db.prepare;
+        let   observed = false;
         fileStorage.db.prepare = function(sql) {
             if (sql.includes('SELECT id, json_extract')) {
                 observed = true;
@@ -169,11 +215,11 @@ for (const table of ['Nodes', 'Edges']) {
             node('a'); node('b');
             const original = table === 'Nodes' ? node('ordinary-existing') : edge('ordinary-existing', 'a', 'b');
             graph.getAdjacentNodes(table === 'Nodes' ? original.id : 'a', 'both');
-            const store = table === 'Nodes' ? graph.nodes : graph.edges;
-            const existing = store.get(original.id);
+            const store     = table === 'Nodes' ? graph.nodes : graph.edges;
+            const existing  = store.get(original.id);
             const forbidden = {...original, id: protectedId};
-            const cursor = graph.lastSyncId;
-            const write = () => store.add([existing, forbidden]);
+            const cursor    = graph.lastSyncId;
+            const write     = () => store.add([existing, forbidden]);
             expect(() => transactional ? graph.transaction(write) : write()).toThrow('typed admission owner');
             expect(stored(table, original.id)).toBe(JSON.stringify(original));
             expect(graph.lastSyncId).toBe(cursor);
@@ -230,7 +276,7 @@ for (const table of ['Nodes', 'Edges']) {
         if (table === 'Nodes') node(protectedId);
         else edge(protectedId, 'a', 'b');
         graph.getAdjacentNodes(table === 'Nodes' ? protectedId : 'a', 'both');
-        const store = table === 'Nodes' ? graph.nodes : graph.edges;
+        const store    = table === 'Nodes' ? graph.nodes : graph.edges;
         const addition = table === 'Nodes'
             ? {id: 'ordinary-added', label: 'NODE', properties: {}}
             : {id: 'ordinary-added', source: 'a', target: 'b', type: 'RELATED_TO', properties: {}};

@@ -178,6 +178,8 @@ and principal. Neither a graph flag nor MC's own lookup of a remote Fleet can su
 one physical read transaction. It returns frozen, detached per-subject histories and counters at one
 plane revision. Those normalized histories feed `identityFamilyProjection`; legacy single-head
 hydration is not an aggregate reader for simultaneous seats or fully retired incarnations.
+Admitted family facts are read only through this snapshot, never by the `EmbodiedEpisode` label:
+ordinary legacy episodes may share that label without possessing admitted-source authority.
 
 This helper opens no database, reads no configuration and is not wired to a service route or startup.
 Cache synchronization, the declared read client, roster composition and consumer integration remain
