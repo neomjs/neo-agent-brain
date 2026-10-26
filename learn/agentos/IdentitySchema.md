@@ -142,8 +142,9 @@ late delivery cannot move the boundary over an already-classified review. The ad
 requires a strictly later actual clock sample: equal time and a backwards clock produce distinct,
 retryable causes with the blocking boundary. The owner must perform accepted-receipt lookup before
 this check and write neither state nor receipt on refusal. It never bumps or backdates the clock.
-These pure controls do not establish that ordering in the still-pending physical writer. A correction
-inherits its exact target interval; fenced read-back activation remains a separate post-v1 path.
+The physical owner below exercises that ordering; service composition remains unfinished. Its clock
+must be a non-negative safe millisecond value representable by the episode schema's ISO timestamps.
+A correction inherits its exact target interval; fenced read-back activation remains a separate post-v1 path.
 
 Family introduction compares labels after NFKC, removing JavaScript whitespace, applying
 `toLowerCase().toUpperCase().toLowerCase()`, then NFKC again. Control/format characters (`Cc`/`Cf`)
@@ -157,21 +158,33 @@ name the conflicting labels for authorized catalog reconciliation by the separat
 outside ordinary typed operations. A roster conflict is repaired through review. Unrelated keys remain usable;
 old exact labels and historical classifications are not automatically merged or rewritten.
 
-### Physical membership source checkpoint
+### Physical admission source checkpoint
 
-[`identityPublicationMembership.mjs`](../../ai/services/memory-core/helpers/identityPublicationMembership.mjs)
-currently implements the four membership variants on an explicitly supplied SQLite connection.
+[`identityPublicationAdmission.mjs`](../../ai/services/memory-core/helpers/identityPublicationAdmission.mjs)
+implements the six typed variants on an explicitly supplied SQLite connection.
 It owns an immediate transaction, checks consumed lineage/fence and signed delivery inside it, then
 looks up the logical receipt before reading current revisions. Baseline, bind, re-key and completed
-retirement commit their protected history, revision counters and receipt together; rollback also
+retirement, explicit confirmation and targeted correction commit history, counters and receipt together; rollback also
 rolls back SQLite-triggered invalidation rows. Membership uses provider-stable incarnations, with
 rename and retirement provenance retained. Active capacity remains 128 after the initial census.
 
+Each forward declaration is a protected `EmbodiedEpisode` scoped to its immutable binding. Forward
+confirmation or retirement closes only that binding's preceding episode. Corrections are retained
+overlays naming the original episode and principal; they never rewrite its facts or interval. Fleet
+attests a fresh ownership check at issuance, while MC checks the active incarnation, original target
+and principal. Neither a graph flag nor MC's own lookup of a remote Fleet can substitute.
+
+`readIdentityPublicationSnapshot` reads current consumed trust/fence and all protected populations in
+one physical read transaction. It returns frozen, detached per-subject histories and counters at one
+plane revision. Those normalized histories feed `identityFamilyProjection`; legacy single-head
+hydration is not an aggregate reader for simultaneous seats or fully retired incarnations.
+
 This helper opens no database, reads no configuration and is not wired to a service route or startup.
-Declaration/correction persistence, the complete family snapshot, cache synchronization and consumer
-integration remain unfinished. In-memory fixtures prove transaction behavior, not installed ownership,
+Cache synchronization, the declared read client, roster composition and consumer integration remain
+unfinished. In-memory fixtures prove transaction behavior, not installed ownership,
 host cleanup or installed durability. Separate disposable WAL-file controls cover competing processes
-and process loss after commit before reply; they do not simulate a power failure or the live service.
+and process loss after commit before reply, plus a commit between a snapshot's authority and population
+reads; they do not simulate a power failure or the live service.
 The eventual owner must carry the original signed
 bytes to the transaction-local verifier and consume committed cache invalidations afterward.
 

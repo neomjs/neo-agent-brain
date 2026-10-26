@@ -5,7 +5,8 @@ import {spawn}                                                           from 'n
 import fs                                                                from 'node:fs';
 import os                                                                from 'node:os';
 import path                                                              from 'node:path';
-import {admitIdentityMembership}                                         from '../../../../../../../ai/services/memory-core/helpers/identityPublicationMembership.mjs';
+import {admitIdentityPublication, readIdentityPublicationSnapshot}       from '../../../../../../../ai/services/memory-core/helpers/identityPublicationAdmission.mjs';
+import {buildFamilyProjection, familyAt, familiesDuring}                 from '../../../../../../../ai/graph/identityFamilyProjection.mjs';
 import {consumeIdentityPublicationBoot}                                  from '../../../../../../../ai/services/memory-core/helpers/identityPublicationLineage.mjs';
 import {fenceIdentityPublication}                                        from '../../../../../../../ai/services/memory-core/helpers/identityPublicationFence.mjs';
 import {familyMembershipKey, familyPlaneStateKey, familySubjectStateKey} from '../../../../../../../ai/services/shared/identityPublicationKeys.mjs';
@@ -35,8 +36,14 @@ function token(value, issuedAt = 100, patch = {}) {
     return payload.toString('base64url') + '.' + sign(null,
         Buffer.concat([Buffer.from('neo.identity-family-publication.v1\0'), payload]), key.privateKey).toString('base64url');
 }
-const submit   = (value, at = 100) => admitIdentityMembership(db, token(value, at), {bootText: boot, target, clock: () => at});
-const snapshot = () => Object.fromEntries(['Nodes', 'Edges', 'GraphLog', 'IdentityPublicationFence'].map(table =>
+const submit = (value, at = 100, rosterFamilies = ['gpt', 'claude', 'gemini', 'unknown']) =>
+    admitIdentityPublication(db, token(value, at), {bootText: boot, target, rosterFamilies, clock: () => at});
+const publication = () => readIdentityPublicationSnapshot(db, {bootText: boot, target});
+const declaration = (operationId, targetBinding = binding(), membershipRevision = 1, admissionRevision = 0, extra = {}) =>
+    operation('confirm', operationId, targetBinding, membershipRevision, {expectedAdmissionRevision: admissionRevision,
+        operatorPrincipal: 'owner-a', family: 'gpt', model: null, unattestedReason: 'No model attested', newFamily: false, ...extra});
+const projection = (index = 0) => buildFamilyProjection(publication().snapshot.subjects[index].source);
+const snapshot   = () => Object.fromEntries(['Nodes', 'Edges', 'GraphLog', 'IdentityPublicationFence'].map(table =>
     [table, db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all()]));
 const properties = id => JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data).properties;
 const members    = () => db.prepare("SELECT data FROM Nodes WHERE json_extract(data, '$.label') = 'IDENTITY_FAMILY_MEMBERSHIP'")
@@ -75,6 +82,7 @@ test('missing baseline is unavailable, but an explicitly admitted empty census i
     expect(submit(operation('bind', 'first', binding(), 0)).code).toBe('membership-unknown');
     expect(snapshot()).toEqual(before);
     expect(submit(baseline([])).state).toBe('accepted');
+    expect(publication()).toMatchObject({state: 'available', snapshot: {revision: 1, baselineSince: 100, subjects: []}});
     expect(properties(familyPlaneStateKey(target)).memberCount).toBe(0);
     expect(submit(operation('bind', 'first', binding(), 0), 110).state).toBe('accepted');
 });
@@ -94,10 +102,11 @@ test('retry still needs current delivery expiry and an unfenced consumed lineage
     const value = baseline();
     submit(value);
     const before = snapshot();
-    expect(admitIdentityMembership(db, token(value), {bootText: boot, target, clock: () => 300100}).code).toBe('outside-validity');
+    expect(admitIdentityPublication(db, token(value), {bootText: boot, target, clock: () => 300100}).code).toBe('outside-validity');
     expect(snapshot()).toEqual(before);
     db.transaction(() => fenceIdentityPublication(db, {...target, operation: 'fixture-restore', source: 'fixture', at: 110})).immediate();
     expect(submit(value, 120).code).toBe('publication-restore-fenced');
+    expect(publication()).toMatchObject({state: 'unavailable', code: 'publication-restore-fenced'});
 });
 
 test('both revision expectations bind a new operation and stale competitors cannot write', () => {
@@ -218,7 +227,7 @@ test('protected labels under an unexpected physical id cannot disappear from bas
 
 test('ordinary objects and malformed complete baselines cannot manufacture admission', () => {
     const before = snapshot();
-    expect(admitIdentityMembership(db, {authenticated: true, operation: baseline()}, {bootText: boot, target, clock: () => 100}).state)
+    expect(admitIdentityPublication(db, {authenticated: true, operation: baseline()}, {bootText: boot, target, clock: () => 100}).state)
         .toBe('refused');
     expect(submit(baseline([binding(), null])).state).toBe('refused');
     expect(snapshot()).toEqual(before);
@@ -281,23 +290,189 @@ test('a later subject cannot retain a first bind at the plane baseline boundary'
 
 test('noncanonical owner clock values cannot produce a receipt that JSON silently changes', () => {
     const before = snapshot(), value = {...baseline(), effectiveAt: 0};
-    for (const at of [-0, -1, NaN, Infinity, 1.5]) {
-        expect(admitIdentityMembership(db, token(value, 0), {bootText: boot, target, clock: () => at}).code)
+    for (const at of [-0, -1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER]) {
+        expect(admitIdentityPublication(db, token(value, 0), {bootText: boot, target, clock: () => at}).code)
             .toBe('publication-clock-unavailable');
         expect(snapshot()).toEqual(before);
     }
+});
+
+test('the actual producer stores explicit null and the snapshot includes unconfirmed time', () => {
+    expect(publication()).toMatchObject({state: 'unavailable', code: 'membership-unknown'});
+    submit(baseline());
+    expect(familyAt(projection(), 105)).toEqual({state: 'unconfirmed-seat', family: null});
+    const accepted = submit(declaration('first'), 110);
+    expect(accepted).toMatchObject({state: 'accepted', receipt: {membershipRevision: 1, admissionRevision: 1, revision: 2}});
+    const episode = properties(accepted.receipt.admissionId);
+    expect(episode).toMatchObject({model: null, family: 'gpt', operatorPrincipal: 'owner-a',
+        unattestedReason: 'No model attested', since: '1970-01-01T00:00:00.110Z', until: null});
+    expect(familyAt(projection(), 109)).toEqual({state: 'unconfirmed-seat', family: null});
+    expect(familyAt(projection(), 110)).toEqual({state: 'classified', family: 'gpt'});
+    expect(publication().snapshot.subjects[0].source.declarations[0].model).toBeNull();
+});
+
+test('every admitted seat counts and a conflicting second owner never becomes a last-writer winner', () => {
+    const b = binding('seat-b', 'inc-b');
+    submit(baseline([binding(), b]));
+    const first = submit(declaration('first'), 110);
+    expect(familyAt(projection(), 115).state).toBe('unconfirmed-seat');
+    expect(submit(declaration('other-owner', b, 1, 1, {operatorPrincipal: 'owner-b', family: 'claude'}), 120).state).toBe('accepted');
+    expect(familyAt(projection(), 120)).toEqual({state: 'ambiguous-seats', family: null});
+    const before = snapshot();
+    expect(submit(declaration('rewrite-predecessor', binding(), 1, 2, {kind: 'correct', operatorPrincipal: 'owner-b',
+        targetAdmissionId: first.receipt.admissionId, reason: 'Transferred ownership'}), 130).code).toBe('correction-principal-mismatch');
+    expect(snapshot()).toEqual(before);
+});
+
+test('return-swap correction preserves the original episode and changes only its exact interval', () => {
+    submit(baseline());
+    const first = submit(declaration('first', binding(), 1, 0, {model: 'model-a', unattestedReason: null}), 110);
+    submit(declaration('middle', binding(), 1, 1, {family: 'claude'}), 120);
+    const last     = submit(declaration('last', binding(), 1, 2), 130);
+    const original = properties(first.receipt.admissionId), lastOriginal = properties(last.receipt.admissionId);
+    expect(submit(declaration('repair-first', binding(), 1, 3, {kind: 'correct', family: 'gemini',
+        targetAdmissionId: first.receipt.admissionId, reason: 'Correct the attested family'}), 140).state).toBe('accepted');
+    expect(properties(first.receipt.admissionId)).toEqual(original);
+    expect(properties(last.receipt.admissionId)).toEqual(lastOriginal);
+    const view = projection();
+    expect(view.valid).toBe(true);
+    expect([115, 125, 135].map(at => familyAt(view, at).family)).toEqual(['gemini', 'claude', 'gpt']);
+    expect(familiesDuring(view, 110, 140).families.sort()).toEqual(['claude', 'gemini', 'gpt']);
+    expect(publication().snapshot.subjects[0].source.declarations.map(value => value.model)).toEqual(['model-a', null, null]);
+});
+
+test('transfer permits forward confirmation but only the original principal can correct its own target', () => {
+    submit(baseline());
+    const first  = submit(declaration('old-owner'), 110);
+    const second = submit(declaration('new-owner', binding(), 1, 1, {operatorPrincipal: 'owner-b', family: 'claude'}), 120);
+    expect(second.state).toBe('accepted');
+    expect(submit(declaration('bad-target', binding(), 1, 2, {kind: 'correct', operatorPrincipal: 'owner-b',
+        targetAdmissionId: first.receipt.admissionId, reason: 'Overwrite previous owner'}), 130).code).toBe('correction-principal-mismatch');
+    expect(submit(declaration('own-target', binding(), 1, 2, {kind: 'correct', operatorPrincipal: 'owner-b',
+        targetAdmissionId: second.receipt.admissionId, reason: 'Correct own declaration', family: 'gemini'}), 130).state).toBe('accepted');
+    expect(familyAt(projection(), 115).family).toBe('gpt');
+    expect(familyAt(projection(), 125).family).toBe('gemini');
+});
+
+test('accepted introduction and correction retries precede catalog, target and stale-revision checks', () => {
+    submit(baseline());
+    const act   = declaration('novel', binding(), 1, 0, {family: '__proto__', newFamily: true});
+    const first = submit(act, 110);
+    expect(first.state).toBe('accepted');
+    const correction = declaration('repair', binding(), 1, 1, {kind: 'correct', family: 'unknown',
+        targetAdmissionId: first.receipt.admissionId, reason: 'An exact known family'});
+    const repaired = submit(correction, 120);
+    const before   = snapshot();
+    expect(admitIdentityPublication(db, token(act, 90), {bootText: boot, target, clock: () => 90}))
+        .toEqual({state: 'idempotent', receipt: first.receipt});
+    expect(submit(correction, 90, ['gpt', 'GPT'])).toEqual({state: 'idempotent', receipt: repaired.receipt});
+    expect(snapshot()).toEqual(before);
+    expect(familyAt(projection(), 115)).toEqual({state: 'classified', family: 'unknown'});
+});
+
+test('complete retained vocabulary blocks collisions even after the colliding episode was corrected', () => {
+    submit(baseline());
+    const first = submit(declaration('novel', binding(), 1, 0, {family: 'New Family', newFamily: true}), 110);
+    submit(declaration('repair', binding(), 1, 1, {kind: 'correct', family: 'gpt',
+        targetAdmissionId: first.receipt.admissionId, reason: 'Correct old declaration'}), 120);
+    const before = snapshot();
+    expect(submit(declaration('collision', binding(), 1, 2, {family: 'newfamily', newFamily: true}), 130).code)
+        .toBe('family-comparison-collision');
+    expect(submit(declaration('known-key', binding(), 1, 2), 130, ['gpt', 'GPT'])).toMatchObject({
+        code: 'known-family-comparison-collision', conflictingLabels: ['GPT', 'gpt'], remedy: 'authorized-catalog-reconciliation'});
+    expect(snapshot()).toEqual(before);
+    expect(submit(declaration('unrelated', binding(), 1, 2, {family: 'claude'}), 130, ['gpt', 'GPT', 'claude']).state).toBe('accepted');
+});
+
+test('missing or malformed owner catalog cannot admit a declaration', () => {
+    submit(baseline());
+    const before = snapshot();
+    for (const rosterFamilies of [undefined, null, ['gpt', null], new Array(2)]) {
+        expect(admitIdentityPublication(db, token(declaration('first'), 110),
+            {bootText: boot, target, rosterFamilies, clock: () => 110}).code).toBe('family-catalog-unavailable');
+    }
+    expect(snapshot()).toEqual(before);
+});
+
+test('same-time forward acts refuse, while targeted corrections are ordered by admission revision', () => {
+    submit(baseline());
+    const first  = submit(declaration('first'), 110);
+    const before = snapshot();
+    for (const at of [110, 105]) expect(submit(declaration('next', binding(), 1, 1), at).state).toBe('conflict');
+    expect(snapshot()).toEqual(before);
+    for (const [revision, family] of [[1, 'claude'], [2, 'gemini']]) expect(submit(declaration('repair-' + revision, binding(), 1, revision,
+        {kind: 'correct', targetAdmissionId: first.receipt.admissionId, reason: 'Correction', family}), 105).state).toBe('accepted');
+    expect(familyAt(projection(), 115).family).toBe('gemini');
+});
+
+test('rekey preserves declaration/correction targets and retirement closes only that incarnation', () => {
+    submit(baseline());
+    const first = submit(declaration('first'), 110), renamed = binding('renamed');
+    submit(operation('rekey', 'rename', binding(), 1, {newSeatId: 'renamed', expectedAdmissionRevision: 1}), 115);
+    expect(submit(declaration('repair', renamed, 2, 1, {kind: 'correct', family: 'claude',
+        targetAdmissionId: first.receipt.admissionId, reason: 'After rename'}), 120).state).toBe('accepted');
+    expect(submit(operation('retire', 'retire', renamed, 2, {expectedAdmissionRevision: 2, effectiveAt: 125,
+        removal: {operationId: 'removal', completedAt: 125, outcome: 'removed'}}), 130).state).toBe('accepted');
+    expect(properties(first.receipt.admissionId).until).toBe('1970-01-01T00:00:00.130Z');
+    expect(familyAt(projection(), 129).family).toBe('claude');
+    expect(familyAt(projection(), 130).state).toBe('empty-membership');
+    const fresh = binding('renamed', 'inc-new');
+    expect(submit(operation('bind', 'recreate', fresh, 3, {expectedAdmissionRevision: 2}), 140).state).toBe('accepted');
+    expect(familyAt(projection(), 140).state).toBe('unconfirmed-seat');
+    expect(submit(declaration('steal-target', fresh, 4, 2, {kind: 'correct',
+        targetAdmissionId: first.receipt.admissionId, reason: 'New incarnation'}), 150).code).toBe('correction-target-mismatch');
+});
+
+test('receipt failure rolls back episode closure, new declaration and both counters', () => {
+    submit(baseline());
+    submit(declaration('first'), 110);
+    db.exec("CREATE TRIGGER refuse_family_receipt BEFORE INSERT ON Nodes WHEN json_extract(NEW.data, '$.label') = 'IDENTITY_FAMILY_RECEIPT' BEGIN SELECT RAISE(ABORT, 'fixture'); END");
+    const before = snapshot();
+    expect(submit(declaration('next', binding(), 1, 1, {family: 'claude'}), 120).state).toBe('unavailable');
+    expect(snapshot()).toEqual(before);
+    expect(familyAt(projection(), 125).family).toBe('gpt');
+});
+
+test('complete snapshots are detached, frozen and revision-bound across subsequent admissions', () => {
+    submit(baseline([binding(), binding('seat-b', 'inc-b', '2')]));
+    submit(declaration('first'), 110);
+    const first = publication();
+    expect(first.snapshot.subjects).toHaveLength(2);
+    expect(Object.isFrozen(first.snapshot.subjects[0].source.declarations[0])).toBe(true);
+    expect(() => { first.snapshot.subjects[0].source.declarations[0].family = 'claude'; }).toThrow();
+    submit(declaration('second', binding('seat-b', 'inc-b', '2'), 1, 0, {family: 'claude'}), 120);
+    expect(first.snapshot.revision).toBe(2);
+    expect(first.snapshot.subjects[1].source.declarations).toHaveLength(0);
+    expect(publication().snapshot.revision).toBe(3);
+});
+
+test('snapshots refuse unavailable authority, outer transactions and missing retained episodes', () => {
+    submit(baseline());
+    const first = submit(declaration('first'), 110);
+    expect(db.transaction(() => publication())().code).toBe('publication-transaction-in-progress');
+    expect(readIdentityPublicationSnapshot(db, {bootText: null, target}).state).toBe('unavailable');
+    expect(readIdentityPublicationSnapshot(db, {bootText: stringifyCanonicalJson(reserve), target}).state).toBe('unavailable');
+    expect(readIdentityPublicationSnapshot(db, {bootText: boot, target: {...target, dataRoot: '/wrong-root'}}).state).toBe('unavailable');
+    const before = snapshot();
+    db.prepare('DELETE FROM Nodes WHERE id = ?').run(first.receipt.admissionId);
+    expect(publication().state).toBe('unavailable');
+    const missing = snapshot();
+    expect(submit(declaration('next', binding(), 1, 1), 120).state).toBe('unavailable');
+    expect(snapshot()).toEqual(missing);
+    expect(missing).not.toEqual(before);
 });
 
 /** @summary Runs the real helper in another process against only this test's explicitly named file. */
 function contender(file, bootText, value, servedTarget, mode = 'reply') {
     const script = `
         import Database from 'better-sqlite3';
-        import {admitIdentityMembership} from ${JSON.stringify(new URL('../../../../../../../ai/services/memory-core/helpers/identityPublicationMembership.mjs', import.meta.url).href)};
+        import {admitIdentityPublication} from ${JSON.stringify(new URL('../../../../../../../ai/services/memory-core/helpers/identityPublicationAdmission.mjs', import.meta.url).href)};
         const [file, bootText, token, target, mode] = process.argv.slice(1);
         const db = new Database(file, {timeout: 10000});
         process.on('message', message => {
             if (message !== 'go') return;
-            const result = admitIdentityMembership(db, token, {bootText, target: JSON.parse(target), clock: () => 120});
+            const result = admitIdentityPublication(db, token, {bootText, target: JSON.parse(target),
+                rosterFamilies: ['gpt', 'claude'], clock: () => 120});
             if (mode === 'lost-ack') { process.send({committed: result.state === 'accepted'}); return; }
             db.close(); process.send({result}, () => process.exit(0));
         });
@@ -369,6 +544,65 @@ test('two WAL processes competing at one revision yield one commit and one confl
     });
 });
 
+test('two signed confirmations at the same admission revision admit once across WAL processes', async () => {
+    submit(baseline());
+    await withWalFixture(async ({connection, file, children}) => {
+        for (const family of ['gpt', 'claude']) children.push(contender(file, boot, declaration('first-' + family,
+            binding(), 1, 0, {family}), target));
+        await Promise.all(children.map(item => item.ready));
+        children.forEach(item => item.child.send('go'));
+        const replies = await Promise.all(children.map(item => item.result));
+        expect(replies.map(value => value.result.state).sort()).toEqual(['accepted', 'conflict']);
+        expect(replies.find(value => value.result.state === 'conflict').result.code).toBe('admission-revision-conflict');
+        const read = readIdentityPublicationSnapshot(connection, {bootText: boot, target});
+        expect(read.snapshot.revision).toBe(2);
+        expect(read.snapshot.subjects[0].source.declarations).toHaveLength(1);
+        expect(buildFamilyProjection(read.snapshot.subjects[0].source).valid).toBe(true);
+    });
+});
+
+test('a WAL commit between authority and population reads cannot tear a physical snapshot', async () => {
+    submit(baseline());
+    submit(declaration('first'), 110);
+    await withWalFixture(async ({connection, file}) => {
+        const writer    = new Database(file), originalPrepare = connection.prepare.bind(connection);
+        let   committed = false;
+        try {
+            connection.prepare = sql => {
+                if (!committed && sql.startsWith('SELECT id, user_id, data FROM Nodes WHERE (')) {
+                    committed = true;
+                    const result = admitIdentityPublication(writer, token(declaration('second', binding(), 1, 1, {family: 'claude'}), 120),
+                        {bootText: boot, target, rosterFamilies: ['gpt', 'claude'], clock: () => 120});
+                    expect(result.state).toBe('accepted');
+                }
+                return originalPrepare(sql);
+            };
+            const read = readIdentityPublicationSnapshot(connection, {bootText: boot, target});
+            expect(committed).toBe(true);
+            expect(read.snapshot.revision).toBe(2);
+            expect(read.snapshot.subjects[0].source.declarations).toHaveLength(1);
+            expect(familyAt(buildFamilyProjection(read.snapshot.subjects[0].source), 125).family).toBe('gpt');
+            connection.prepare = originalPrepare;
+            const next = readIdentityPublicationSnapshot(connection, {bootText: boot, target});
+            expect(next.snapshot.revision).toBe(3);
+            expect(familyAt(buildFamilyProjection(next.snapshot.subjects[0].source), 125).family).toBe('claude');
+        } finally { connection.prepare = originalPrepare; writer.close(); }
+    });
+});
+
+test('a stored episode interval cannot diverge from the next admitted declaration', () => {
+    submit(baseline());
+    const first = submit(declaration('first'), 110);
+    submit(declaration('next', binding(), 1, 1, {family: 'claude'}), 120);
+    const row = db.prepare('SELECT data FROM Nodes WHERE id = ?').get(first.receipt.admissionId), node = JSON.parse(row.data);
+    node.properties.until = '1970-01-01T00:00:00.115Z';
+    db.prepare('UPDATE Nodes SET data = ? WHERE id = ?').run(stringifyCanonicalJson(node), node.id);
+    const before = snapshot();
+    expect(publication().state).toBe('unavailable');
+    expect(submit(declaration('later', binding(), 1, 2), 130).state).toBe('unavailable');
+    expect(snapshot()).toEqual(before);
+});
+
 test('process loss after commit but before delivery preserves the original retry receipt', async () => {
     submit(baseline());
     const value = operation('bind', 'lost-ack', binding('seat-b', 'inc-b'));
@@ -381,7 +615,7 @@ test('process loss after commit but before delivery preserves the original retry
         const reopened = new Database(file);
         try {
             const before = reopened.prepare('SELECT * FROM Nodes ORDER BY id').all();
-            const replay = admitIdentityMembership(reopened, token(value, 130), {bootText: boot, target, clock: () => 130});
+            const replay = admitIdentityPublication(reopened, token(value, 130), {bootText: boot, target, clock: () => 130});
             expect(replay).toMatchObject({state: 'idempotent', receipt: {revision: 2, admittedAt: 120, operationId: 'lost-ack'}});
             expect(reopened.prepare('SELECT * FROM Nodes ORDER BY id').all()).toEqual(before);
         } finally { reopened.close(); }

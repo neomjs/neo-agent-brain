@@ -72,19 +72,17 @@ function observe(db, descriptor, target) {
 }
 
 /**
- * @summary Rechecks signed delivery against consumed authority inside the admission owner's transaction.
+ * @summary Resolves consumed authority inside the physical owner's transaction.
  * A prior read witness is insufficient: current configuration must supply public trust, physical
- * lineage must agree with it, and the restore fence must still be clear. The owner supplies its
- * clock sample after acquiring serialization. This reads only; it never reserves or clears state.
+ * lineage must agree with it, and the restore fence must still be clear.
+ * This reads only; it never reserves or clears state.
  * The public witness API keeps its separate refusal of uncommitted transactions.
  * @param {Object} db Owner's physical SQLite connection, already in its admission transaction.
  * @param {String|null} bootText Trusted resolved boot descriptor, never request-provided configuration.
  * @param {Object} target Independently resolved served plane/root.
- * @param {String} token Original compact signed bytes, not a caller's authenticated flag or envelope.
- * @param {Number} now The owner's current shared-clock sample.
- * @returns {Object} Authenticated immutable envelope or explicit refusal; no operation is admitted here.
+ * @returns {Object} Compiled public trust and physical witness, or an explicit refusal.
  */
-export function verifyIdentityPublicationInTransaction(db, bootText, target, token, now) {
+function transactionAuthority(db, bootText, target) {
     const refuse = code => ({authenticated: false, code});
     if (!db?.open) return refuse('publication-graph-unavailable');
     if (!db.inTransaction) return refuse('publication-transaction-required');
@@ -94,11 +92,31 @@ export function verifyIdentityPublicationInTransaction(db, bootText, target, tok
         if (compiled.descriptor.trust === null) return refuse('publication-trust-unavailable');
         const current = observe(db, compiled.descriptor, target);
         if (current.state !== 'bound') return refuse(current.code ?? 'publication-lineage-unbound');
-        return verifyIdentityPublicationSignature(token, {audience: target.planeId,
-            issuer: compiled.descriptor.issuer, publicKeys: compiled.publicKeys, now});
+        return {compiled, current};
     } catch {
         return refuse('publication-history-unavailable');
     }
+}
+
+/**
+ * @summary Verifies original signed bytes against authority observed inside the owner's transaction.
+ * The owner samples now after acquiring serialization; a caller's authenticated flag is never input.
+ */
+export function verifyIdentityPublicationInTransaction(db, bootText, target, token, now) {
+    const authority = transactionAuthority(db, bootText, target);
+    if (!authority.compiled) return authority;
+    return verifyIdentityPublicationSignature(token, {audience: target.planeId,
+        issuer: authority.compiled.descriptor.issuer, publicKeys: authority.compiled.publicKeys, now});
+}
+
+/**
+ * @summary Observes current consumed trust and fence inside one physical snapshot transaction.
+ * No signed operation is required for a read; the service still owns caller authorization.
+ * This grants neither publication nor provisioning authority and refuses an absent outer transaction.
+ */
+export function readIdentityPublicationAuthorityInTransaction(db, bootText, target) {
+    const authority = transactionAuthority(db, bootText, target);
+    return authority.current ?? {state: 'unavailable', code: authority.code};
 }
 
 /**

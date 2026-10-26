@@ -1,24 +1,29 @@
 import {stringifyCanonicalJson} from '../../shared/canonicalJson.mjs';
-import {familyLineageKey, familyMembershipKey, familyPlaneStateKey,
+import {familyAdmissionKey, familyLineageKey, familyMembershipKey, familyPlaneStateKey,
     familyReceiptKey, familySubjectStateKey} from '../../shared/identityPublicationKeys.mjs';
 import {IDENTITY_PUBLICATION_NODE_SQL} from '../../../graph/identityPublicationProtection.mjs';
 import {IDENTITY_PUBLICATION_LIMITS, isIdentityPublicationBinding, isIdentityPublicationIdentifier,
     validateIdentityPublicationOperation} from '../../shared/identityPublicationOperation.mjs';
-import {IDENTITY_PUBLICATION_VALIDITY_MS}       from '../../shared/identityPublicationSignature.mjs';
-import {verifyIdentityPublicationInTransaction} from './identityPublicationLineage.mjs';
-import {resolveForwardFamilyBoundary}           from './identityPublicationTiming.mjs';
+import {IDENTITY_PUBLICATION_VALIDITY_MS}                                                      from '../../shared/identityPublicationSignature.mjs';
+import {readIdentityPublicationAuthorityInTransaction, verifyIdentityPublicationInTransaction} from './identityPublicationLineage.mjs';
+import {resolveForwardFamilyBoundary}                                                          from './identityPublicationTiming.mjs';
+import {validateIdentityFamilyIntroduction}                                                    from './identityPublicationVocabulary.mjs';
+import {createEmbodiedEpisodeNode, IDENTITY_NODE_TYPES}                                        from '../../../graph/identitySchema.mjs';
 
 /**
- * @module ai/services/memory-core/helpers/identityPublicationMembership
- * @summary Atomic admitted membership on an explicitly borrowed physical graph connection.
+ * @module ai/services/memory-core/helpers/identityPublicationAdmission
+ * @summary Atomic membership, family declarations and complete snapshots on a borrowed graph connection.
  * This unwired owner opens no database, reads no config and provisions no lineage or fence.
  * Membership history is canonical; revision nodes order it and receipts only evidence operations.
- * Declaration/correction admission remains a separate unfinished part of the same source boundary.
+ * Episodes and targeted corrections own family facts; aggregate eras are derived by the reader.
  */
 
 const LABELS = Object.freeze({plane: 'IDENTITY_FAMILY_STATE', subject: 'IDENTITY_FAMILY_SUBJECT',
-    member: 'IDENTITY_FAMILY_MEMBERSHIP', receipt: 'IDENTITY_FAMILY_RECEIPT'});
-const MEMBERSHIP_KINDS = ['baseline', 'bind', 'retire', 'rekey'];
+    member : 'IDENTITY_FAMILY_MEMBERSHIP', receipt: 'IDENTITY_FAMILY_RECEIPT',
+    episode: IDENTITY_NODE_TYPES.EMBODIED_EPISODE, correction: 'IDENTITY_FAMILY_CORRECTION'});
+const MEMBERSHIP_KINDS  = ['baseline', 'bind', 'retire', 'rekey'];
+const DECLARATION_KINDS = ['confirm', 'correct'];
+const ALL_KINDS         = [...MEMBERSHIP_KINDS, ...DECLARATION_KINDS];
 
 /** @summary Refuses malformed stored data without exposing its contents. */
 function requireState(condition) {
@@ -78,18 +83,45 @@ function readReceipt(db, target, issuer, operationId) {
     requireState(exact(value, ['version', 'planeId', 'issuer', 'operationId', 'digest', 'result']) && value.version === 1 &&
         value.planeId === target.planeId && value.issuer === issuer && value.operationId === operationId &&
         /^[a-f0-9]{64}$/.test(value.digest) && exact(result, ['operationId', 'kind', 'revision', 'admittedAt',
-            'membershipRevision', 'admissionRevision', 'bindingIds']) && result.operationId === operationId &&
-        MEMBERSHIP_KINDS.includes(result.kind) && integer(result.revision) && result.revision > 0 &&
+            'membershipRevision', 'admissionRevision', 'bindingIds', 'admissionId']) && result.operationId === operationId &&
+        ALL_KINDS.includes(result.kind) && integer(result.revision) && result.revision > 0 &&
         integer(result.admittedAt) && [result.membershipRevision, result.admissionRevision].every(v => v === null || integer(v)) &&
         Array.isArray(result.bindingIds) && result.bindingIds.length <= IDENTITY_PUBLICATION_LIMITS.baselineBindings &&
         result.bindingIds.every(isIdentityPublicationIdentifier) && new Set(result.bindingIds).size === result.bindingIds.length);
     requireState(result.kind === 'baseline' ? result.revision === 1 && result.membershipRevision === null &&
         result.admissionRevision === null : result.bindingIds.length === 1 && integer(result.membershipRevision) &&
         result.membershipRevision > 0 && integer(result.admissionRevision));
+    requireState(DECLARATION_KINDS.includes(result.kind) ? result.admissionRevision > 0 &&
+        result.admissionId === familyAdmissionKey({planeId: target.planeId, issuer, operationId, kind: result.kind}) :
+        result.admissionId === null);
     return value;
 }
 /** @summary Derives the current seat key from admitted rename history; original provenance stays immutable. */
 const currentSeat = member => member.rekeys.at(-1)?.seatId ?? member.binding.seatId;
+
+/** @summary Uses the established episode facts while replacing its handle/time id with an admitted id. */
+function episodeFacts(bindingId, family, model, since, until = null) {
+    const built = createEmbodiedEpisodeNode({identityKey: bindingId, family, model,
+        since: new Date(since).toISOString(), until: until === null ? null : new Date(until).toISOString()});
+    requireState(built.valid && Date.parse(built.node.since) === since &&
+        (until === null || Date.parse(built.node.until) === until));
+    const {id, type, ...facts} = built.node;
+    return facts;
+}
+
+/** @summary Validates retained explicit family facts with the same closed wire grammar as admission. */
+function checkDeclaration(value, member, state, issuer, kind) {
+    requireState(member && value.bindingId === familyMembershipKey({planeId: value.planeId, ...member.binding}));
+    checkProvenance(value.admission, state, issuer, [kind]);
+    requireState(value.admission.revision > member.bound.revision &&
+        (!member.retired || value.admission.revision < member.retired.admission.revision));
+    const operation = {kind, operationId: value.admission.operationId, effectiveAt: value.admission.effectiveAt,
+        binding          : member.binding, expectedMembershipRevision: 0, expectedAdmissionRevision: 0,
+        operatorPrincipal: value.operatorPrincipal, family: value.family, model: value.model,
+        newFamily        : value.newFamily, unattestedReason: value.unattestedReason,
+        ...(kind === 'correct' ? {targetAdmissionId: value.targetAdmissionId, reason: value.reason} : {})};
+    requireState(validateIdentityPublicationOperation(operation).valid);
+}
 
 /**
  * @summary Loads complete membership and revision populations under the same physical transaction.
@@ -105,15 +137,15 @@ function load(db, target, issuer) {
     const planeRow = rows.find(row => row.id === planeId);
     if (!planeRow) {
         requireState(rows.every(row => row.id === lineageId));
-        return {state: null, subjects: new Map(), members: new Map()};
+        return {state: null, subjects: new Map(), members: new Map(), declarations: new Map(), corrections: new Map()};
     }
     const state = decode(planeRow, LABELS.plane);
-    requireState(exact(state, ['version', 'planeId', 'revision', 'baseline', 'memberCount', 'subjectCount']) &&
+    requireState(exact(state, ['version', 'planeId', 'revision', 'baseline', 'memberCount', 'subjectCount', 'declarationCount', 'correctionCount']) &&
         state.version === 1 && state.planeId === target.planeId && integer(state.revision) && state.revision > 0 &&
-        integer(state.memberCount) && integer(state.subjectCount));
+        [state.memberCount, state.subjectCount, state.declarationCount, state.correctionCount].every(integer));
     checkProvenance(state.baseline, state, issuer, ['baseline']);
     requireState(state.baseline.revision === 1);
-    const subjects = new Map(), members = new Map(), receipts = new Map();
+    const subjects = new Map(), members = new Map(), receipts = new Map(), declarations = new Map(), corrections = new Map();
     for (const row of rows) {
         if (row.id === lineageId || row.id === planeId) continue;
         const label = JSON.parse(row.data).label;
@@ -129,7 +161,7 @@ function load(db, target, issuer) {
                 value.version === 1 && value.planeId === target.planeId &&
                 exact(value.subject, ['authProvider', 'providerBaseUrl', 'providerUserId']) &&
                 row.id === familySubjectStateKey({planeId: target.planeId, subject: value.subject}) &&
-                integer(value.membershipRevision) && value.membershipRevision > 0 && value.admissionRevision === 0 &&
+                integer(value.membershipRevision) && value.membershipRevision > 0 && integer(value.admissionRevision) &&
                 integer(value.lastBoundary) && value.lastBoundary >= state.baseline.admittedAt);
             subjects.set(row.id, value);
         } else if (label === LABELS.member) {
@@ -157,53 +189,93 @@ function load(db, target, issuer) {
                     value.retired.admission.revision > revision && value.retired.admission.admittedAt > value.bound.admittedAt);
             }
             members.set(row.id, value);
+        } else if (label === LABELS.episode || label === LABELS.correction) {
+            const value  = decode(row, label), kind = label === LABELS.episode ? 'confirm' : 'correct';
+            const common = ['version', 'planeId', 'bindingId', 'operatorPrincipal', 'family', 'model',
+                'newFamily', 'unattestedReason', 'admission'];
+            requireState(exact(value, [...common, ...(kind === 'confirm' ?
+                ['identityKey', 'since', 'until', 'capabilities'] : ['targetAdmissionId', 'reason'])]) &&
+                value.version === 1 && value.planeId === target.planeId &&
+                row.id === familyAdmissionKey({planeId: target.planeId, issuer,
+                    operationId: value.admission?.operationId, kind}));
+            (kind === 'confirm' ? declarations : corrections).set(row.id, value);
         } else {
             throw new Error('Unsupported admitted history.');
         }
     }
-    requireState(members.size === state.memberCount && subjects.size === state.subjectCount && receipts.size === state.revision);
-    const usedRevisions = new Set(), affectedBindings = new Map();
-    const checkReceipt  = (admission, bindingId = null) => {
+    requireState(members.size === state.memberCount && subjects.size === state.subjectCount && receipts.size === state.revision &&
+        declarations.size === state.declarationCount && corrections.size === state.correctionCount);
+    const events   = new Map();
+    const addEvent = (admission, bindingId = null, admissionId = null) => {
         const receipt = receipts.get(admission.revision);
         requireState(receipt && receipt.digest === admission.digest && receipt.operationId === admission.operationId &&
-            receipt.result.kind === admission.kind && receipt.result.admittedAt === admission.admittedAt);
-        usedRevisions.add(admission.revision);
-        const ids = affectedBindings.get(admission.revision) ?? new Set();
-        if (bindingId !== null) ids.add(bindingId);
-        affectedBindings.set(admission.revision, ids);
+            receipt.result.kind === admission.kind && receipt.result.admittedAt === admission.admittedAt &&
+            receipt.result.admissionId === admissionId);
+        const event = events.get(admission.revision) ?? {admission, bindings: new Set()};
+        requireState(stringifyCanonicalJson(event.admission) === stringifyCanonicalJson(admission));
+        if (bindingId !== null) event.bindings.add(bindingId);
+        events.set(admission.revision, event);
     };
-    checkReceipt(state.baseline);
-    const subjectRevisions = new Map(), subjectBoundaries = new Map(), activeSeats = new Set();
+    addEvent(state.baseline);
+    const activeSeats = new Set();
     for (const [bindingId, member] of members) {
         const subjectId = familySubjectStateKey({planeId: target.planeId, subject: member.binding.subject});
         requireState(subjects.has(subjectId));
-        const admissions = [member.bound, ...member.rekeys.map(value => value.admission),
-            ...(member.retired ? [member.retired.admission] : [])];
-        const revisions = subjectRevisions.get(subjectId) ?? new Set();
-        admissions.forEach(admission => { checkReceipt(admission, bindingId); revisions.add(admission.revision); });
-        subjectRevisions.set(subjectId, revisions);
-        const boundaries = subjectBoundaries.get(subjectId) ?? new Map();
-        for (const admission of admissions.filter(value => value.kind !== 'rekey')) {
-            requireState(!boundaries.has(admission.revision) || boundaries.get(admission.revision) === admission.admittedAt);
-            boundaries.set(admission.revision, admission.admittedAt);
-        }
-        subjectBoundaries.set(subjectId, boundaries);
+        [member.bound, ...member.rekeys.map(value => value.admission),
+            ...(member.retired ? [member.retired.admission] : [])].forEach(value => addEvent(value, bindingId));
         if (!member.retired) { requireState(!activeSeats.has(currentSeat(member))); activeSeats.add(currentSeat(member)); }
+        const episodes = [...declarations].filter(([, value]) => value.bindingId === bindingId)
+            .sort(([, a], [, b]) => a.admission.revision - b.admission.revision);
+        for (const [index, [id, value]] of episodes.entries()) {
+            checkDeclaration(value, member, state, issuer, 'confirm');
+            const until = episodes[index + 1]?.[1].admission.admittedAt ?? member.retired?.admission.admittedAt ?? null;
+            const facts = episodeFacts(bindingId, value.family, value.model, value.admission.admittedAt, until);
+            requireState(Object.entries(facts).every(([key, expected]) =>
+                stringifyCanonicalJson(value[key]) === stringifyCanonicalJson(expected)));
+            addEvent(value.admission, bindingId, id);
+        }
+    }
+    for (const [id, value] of declarations) requireState(members.has(value.bindingId) &&
+        id === familyAdmissionKey({planeId: target.planeId, issuer, operationId: value.admission.operationId, kind: 'confirm'}));
+    for (const [id, value] of corrections) {
+        const member = members.get(value.bindingId), original = declarations.get(value.targetAdmissionId);
+        checkDeclaration(value, member, state, issuer, 'correct');
+        requireState(original && original.bindingId === value.bindingId &&
+            original.operatorPrincipal === value.operatorPrincipal && original.admission.revision < value.admission.revision);
+        addEvent(value.admission, value.bindingId, id);
+    }
+    requireState(events.size === state.revision && activeSeats.size <= IDENTITY_PUBLICATION_LIMITS.baselineBindings);
+    const counters = new Map();
+    for (const [revision, event] of [...events].sort(([a], [b]) => a - b)) {
+        const result = receipts.get(revision).result, admission = event.admission;
+        requireState(stringifyCanonicalJson([...event.bindings].sort()) ===
+            stringifyCanonicalJson([...result.bindingIds].sort()));
+        const affectedSubjects = new Set([...event.bindings].map(id =>
+            familySubjectStateKey({planeId: target.planeId, subject: members.get(id).binding.subject})));
+        for (const id of affectedSubjects) {
+            const counter = counters.get(id) ?? {membershipRevision: 0, admissionRevision: 0,
+                lastBoundary: state.baseline.admittedAt};
+            if (admission.kind === 'baseline') {
+                requireState(counter.membershipRevision === 0 && counter.admissionRevision === 0);
+                counter.membershipRevision = 1;
+            } else {
+                if (['bind', 'retire', 'confirm'].includes(admission.kind)) {
+                    requireState(admission.admittedAt > counter.lastBoundary);
+                    counter.lastBoundary = admission.admittedAt;
+                }
+                counter[MEMBERSHIP_KINDS.includes(admission.kind) ? 'membershipRevision' : 'admissionRevision']++;
+                requireState(result.membershipRevision === counter.membershipRevision &&
+                    result.admissionRevision === counter.admissionRevision);
+            }
+            counters.set(id, counter);
+        }
     }
     for (const [id, subject] of subjects) {
-        const revisions  = [...(subjectRevisions.get(id) ?? [])].sort((a, b) => a - b);
-        const boundaries = [...(subjectBoundaries.get(id) ?? [])].sort(([a], [b]) => a - b);
-        requireState(revisions.length === subject.membershipRevision && boundaries.at(-1)?.[1] === subject.lastBoundary &&
-            boundaries.every((value, index) => index === 0 || value[1] > boundaries[index - 1][1]));
-        for (const [index, revision] of revisions.entries()) {
-            const receipt = receipts.get(revision).result;
-            requireState(receipt.kind === 'baseline' || receipt.membershipRevision === index + 1 && receipt.admissionRevision === 0);
-        }
+        const counter = counters.get(id);
+        requireState(counter && ['membershipRevision', 'admissionRevision', 'lastBoundary']
+            .every(key => subject[key] === counter[key]));
     }
-    for (const [revision, ids] of affectedBindings) requireState(stringifyCanonicalJson([...ids].sort()) ===
-        stringifyCanonicalJson([...receipts.get(revision).result.bindingIds].sort()));
-    requireState(usedRevisions.size === state.revision && activeSeats.size <= IDENTITY_PUBLICATION_LIMITS.baselineBindings);
-    return {state, subjects, members};
+    return {state, subjects, members, declarations, corrections};
 }
 
 /** @summary Constructs one new stable-subject counter record, independent of login and seat-key changes. */
@@ -213,24 +285,24 @@ const newSubject = (planeId, subject) => ({version: 1, planeId, subject: stableS
 const newMember = (planeId, binding, admission) => ({version: 1, planeId, binding, bound: admission, rekeys: [], retired: null});
 
 /**
- * @summary Admits one signed membership operation with history, counters and receipt in one commit.
+ * @summary Admits one signed membership or explicit family act with counters and receipt in one commit.
  * The source owner supplies boot/target/clock, never a request flag. Current physical trust/expiry
  * checks precede receipt lookup, which precedes all state-dependent and exact-revision checks.
  * No Store is touched; the eventual GraphService caller must sync committed cache invalidations.
  * This source helper is not wired to AuthService, startup, a tool or any live graph.
  * @param {Object} db Explicit physical connection; an outer transaction refuses.
  * @param {String} token Original signed compact carrier.
- * @param {Object} options Trusted composition, including bootText and independently resolved target.
+ * @param {Object} options Trusted composition, including bootText, independently resolved target and rosterFamilies.
  * @param {Function} [options.clock=Date.now] Clock sampled after physical transaction acquisition.
  * @returns {Object} Accepted/idempotent receipt, conflict, refusal or unavailable state.
  */
-export function admitIdentityMembership(db, token, {bootText, target, clock = Date.now} = {}) {
+export function admitIdentityPublication(db, token, {bootText, target, rosterFamilies, clock = Date.now} = {}) {
     if (!db?.open) return refusal('unavailable', 'publication-graph-unavailable');
     if (db.inTransaction) return refusal('unavailable', 'publication-transaction-in-progress');
     try {
         return db.transaction(() => {
             const now = clock();
-            if (!integer(now)) return refusal('unavailable', 'publication-clock-unavailable');
+            if (!integer(now) || !Number.isFinite(new Date(now).getTime())) return refusal('unavailable', 'publication-clock-unavailable');
             const verified = verifyIdentityPublicationInTransaction(db, bootText, target, token, now);
             if (!verified.authenticated) return refusal('refused', verified.code);
             const checked = validateIdentityPublicationOperation(verified.envelope.operation);
@@ -244,18 +316,17 @@ export function admitIdentityMembership(db, token, {bootText, target, clock = Da
                     stringifyCanonicalJson(bindings.map(binding => familyMembershipKey({planeId: target.planeId, ...binding}))));
                 requireState(operation.kind === 'baseline' ? prior.result.revision === 1 &&
                     prior.result.membershipRevision === null && prior.result.admissionRevision === null :
-                    prior.result.membershipRevision === operation.expectedMembershipRevision + 1 &&
-                    prior.result.admissionRevision === operation.expectedAdmissionRevision);
+                    prior.result.membershipRevision === operation.expectedMembershipRevision + (MEMBERSHIP_KINDS.includes(operation.kind) ? 1 : 0) &&
+                    prior.result.admissionRevision === operation.expectedAdmissionRevision + (DECLARATION_KINDS.includes(operation.kind) ? 1 : 0));
                 return freeze({state: 'idempotent', receipt: prior.result});
             }
-            if (!MEMBERSHIP_KINDS.includes(operation.kind)) return refusal('unavailable', 'declaration-admission-unavailable');
-            const data  = load(db, target, issuer), {members, subjects} = data;
-            let   state = data.state, subjectId = null, subject = null, bindingIds;
+            const data  = load(db, target, issuer), {members, subjects, declarations, corrections} = data;
+            let   state = data.state, subjectId = null, subject = null, bindingIds, admissionId = null;
             if (operation.kind === 'baseline') {
                 if (state) return refusal('conflict', 'baseline-already-admitted');
                 const admission = provenance(verified.envelope, digest, now, 1);
                 state = {version: 1, planeId: target.planeId, revision: 1, baseline: admission,
-                    memberCount: operation.bindings.length, subjectCount: 0};
+                    memberCount: operation.bindings.length, subjectCount: 0, declarationCount: 0, correctionCount: 0};
                 bindingIds = operation.bindings.map(binding => {
                     const id        = familyMembershipKey({planeId: target.planeId, ...binding});
                     const subjectId = familySubjectStateKey({planeId: target.planeId, subject: binding.subject});
@@ -274,7 +345,7 @@ export function admitIdentityMembership(db, token, {bootText, target, clock = Da
                     'membership-revision-conflict', {actualRevision: subject.membershipRevision});
                 if (operation.expectedAdmissionRevision !== subject.admissionRevision) return refusal('conflict',
                     'admission-revision-conflict', {actualRevision: subject.admissionRevision});
-                if (state.revision === Number.MAX_SAFE_INTEGER || subject.membershipRevision === Number.MAX_SAFE_INTEGER) {
+                if ([state.revision, subject.membershipRevision, subject.admissionRevision].includes(Number.MAX_SAFE_INTEGER)) {
                     return refusal('unavailable', 'publication-revision-exhausted');
                 }
                 const id     = familyMembershipKey({planeId: target.planeId, ...operation.binding});
@@ -291,7 +362,23 @@ export function admitIdentityMembership(db, token, {bootText, target, clock = Da
                 if (operation.kind !== 'retire' && active.some(value => value !== member && currentSeat(value) === proposedSeat)) {
                     return refusal('conflict', 'seat-key-already-bound');
                 }
-                if (operation.kind !== 'rekey') {
+                if (DECLARATION_KINDS.includes(operation.kind)) {
+                    if (operation.kind === 'correct') {
+                        const original = declarations.get(operation.targetAdmissionId);
+                        if (!original || original.bindingId !== id) return refusal('conflict', 'correction-target-mismatch');
+                        if (original.operatorPrincipal !== operation.operatorPrincipal) return refusal('refused', 'correction-principal-mismatch');
+                    }
+                    // The source owner supplies the roster; request fields never establish catalog completeness.
+                    const roster = validateIdentityFamilyIntroduction({family: operation.family,
+                        newFamily: operation.newFamily, knownFamilies: rosterFamilies});
+                    if (roster.code === 'family-catalog-unavailable') return refusal('unavailable', roster.code);
+                    const vocabulary = validateIdentityFamilyIntroduction({family: operation.family, newFamily: operation.newFamily,
+                        knownFamilies: [...rosterFamilies, ...[...declarations.values(), ...corrections.values()].map(value => value.family)]});
+                    if (!vocabulary.valid) return refusal('refused', vocabulary.code, {
+                        ...(vocabulary.conflictingLabels ? {conflictingLabels: vocabulary.conflictingLabels} : {}),
+                        ...(vocabulary.remedy ? {remedy: vocabulary.remedy} : {})});
+                }
+                if (!['rekey', 'correct'].includes(operation.kind)) {
                     const timing = resolveForwardFamilyBoundary({admittedAt: now,
                         previousBoundary: subject.lastBoundary ?? state.baseline.admittedAt});
                     if (!timing.allowed) return refusal('conflict', timing.code, timing);
@@ -302,21 +389,87 @@ export function admitIdentityMembership(db, token, {bootText, target, clock = Da
                     members.set(id, newMember(target.planeId, operation.binding, admission));
                     state.memberCount++;
                 } else if (operation.kind === 'rekey') member.rekeys.push({seatId: operation.newSeatId, admission});
-                else member.retired = {removal: operation.removal, admission};
+                else if (operation.kind === 'retire') member.retired = {removal: operation.removal, admission};
+                else {
+                    admissionId = familyAdmissionKey({planeId: target.planeId, issuer,
+                        operationId: operation.operationId, kind: operation.kind});
+                    const value = {version: 1, planeId: target.planeId, bindingId: id,
+                        operatorPrincipal: operation.operatorPrincipal, family: operation.family, model: operation.model,
+                        newFamily        : operation.newFamily, unattestedReason: operation.unattestedReason, admission};
+                    if (operation.kind === 'confirm') {
+                        declarations.set(admissionId, {...value, ...episodeFacts(id, operation.family, operation.model, now)});
+                        state.declarationCount++;
+                    } else {
+                        corrections.set(admissionId, {...value, targetAdmissionId: operation.targetAdmissionId, reason: operation.reason});
+                        state.correctionCount++;
+                    }
+                }
+                if (['confirm', 'retire'].includes(operation.kind)) {
+                    const previous = [...declarations].filter(([key, value]) => key !== admissionId && value.bindingId === id && value.until === null);
+                    requireState(previous.length <= 1);
+                    if (previous.length) previous[0][1].until = new Date(now).toISOString();
+                }
                 if (!subjects.has(subjectId)) state.subjectCount++;
-                subject.membershipRevision++; subjects.set(subjectId, subject);
+                subject[MEMBERSHIP_KINDS.includes(operation.kind) ? 'membershipRevision' : 'admissionRevision']++;
+                subjects.set(subjectId, subject);
                 state.revision++; bindingIds = [id];
             }
             const receipt = {operationId: operation.operationId, kind: operation.kind, revision: state.revision,
                 admittedAt       : now, membershipRevision: subject?.membershipRevision ?? null,
-                admissionRevision: subject?.admissionRevision ?? null, bindingIds};
+                admissionRevision: subject?.admissionRevision ?? null, bindingIds, admissionId};
             for (const [id, value] of subjects) put(db, id, LABELS.subject, value);
             for (const [id, value] of members) put(db, id, LABELS.member, value);
+            for (const [id, value] of declarations) put(db, id, LABELS.episode, value);
+            for (const [id, value] of corrections) put(db, id, LABELS.correction, value);
             put(db, familyPlaneStateKey(target), LABELS.plane, state);
             put(db, familyReceiptKey({planeId: target.planeId, issuer, operationId: operation.operationId}), LABELS.receipt,
                 {version: 1, planeId: target.planeId, issuer, operationId: operation.operationId, digest, result: receipt});
             return freeze({state: 'accepted', receipt});
         }).immediate();
+    } catch {
+        return refusal('unavailable', 'publication-history-unavailable');
+    }
+}
+
+/**
+ * @summary Reads every admitted binding, declaration and correction at one physical owner revision.
+ * Returned per-subject source objects feed identityFamilyProjection; legacy single-head hydration
+ * cannot represent simultaneous seats or fully retired incarnations. Service composition still owns
+ * caller authentication and roster precedence. No read repairs, reserves or clears source history.
+ * @param {Object} db Explicit physical connection, with no active caller transaction.
+ * @param {Object} options Trusted bootText and independently resolved plane/root target.
+ * @returns {Object} Detached frozen complete snapshot or an explicit unavailable result.
+ */
+export function readIdentityPublicationSnapshot(db, {bootText, target} = {}) {
+    if (!db?.open) return refusal('unavailable', 'publication-graph-unavailable');
+    if (db.inTransaction) return refusal('unavailable', 'publication-transaction-in-progress');
+    try {
+        return db.transaction(() => {
+            const authority = readIdentityPublicationAuthorityInTransaction(db, bootText, target);
+            if (authority.state !== 'bound') return refusal('unavailable', authority.code ?? 'publication-lineage-unbound');
+            const {state, subjects, members, declarations, corrections} = load(db, target, authority.issuer);
+            if (!state) return refusal('unavailable', 'membership-unknown');
+            const values = [...subjects.values()].map(subject => {
+                const key      = familySubjectStateKey({planeId: target.planeId, subject: subject.subject});
+                const bindings = [...members].filter(([, member]) =>
+                    familySubjectStateKey({planeId: target.planeId, subject: member.binding.subject}) === key);
+                const ids = new Set(bindings.map(([id]) => id));
+                return {subject: subject.subject, membershipRevision: subject.membershipRevision,
+                    admissionRevision: subject.admissionRevision,
+                    bindings         : bindings.map(([bindingId, member]) => ({bindingId, binding: member.binding, currentSeatId: currentSeat(member)})),
+                    source           : {baselineSince: state.baseline.admittedAt, revision: state.revision,
+                        memberships: bindings.map(([bindingId, member]) => ({bindingId,
+                            since: member.bound.admittedAt, until: member.retired?.admission.admittedAt ?? null})),
+                        declarations: [...declarations].filter(([, value]) => ids.has(value.bindingId)).map(([admissionId, value]) => ({
+                            admissionId, bindingId: value.bindingId, operatorPrincipal: value.operatorPrincipal,
+                            since: value.admission.admittedAt, revision: value.admission.revision, family: value.family, model: value.model})),
+                        corrections: [...corrections].filter(([, value]) => ids.has(value.bindingId)).map(([admissionId, value]) => ({
+                            admissionId, targetAdmissionId: value.targetAdmissionId, operatorPrincipal: value.operatorPrincipal,
+                            revision: value.admission.revision, family: value.family, model: value.model}))}};
+            });
+            return freeze({state: 'available', snapshot: {target: {...target}, revision: state.revision,
+                baselineSince: state.baseline.admittedAt, subjects: values}});
+        }).deferred();
     } catch {
         return refusal('unavailable', 'publication-history-unavailable');
     }

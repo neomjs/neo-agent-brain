@@ -106,6 +106,14 @@ export function familyReceiptKey({planeId, issuer, operationId} = {}) {
     ]);
 }
 
+/** @summary Names one immutable declaration or correction, separately from its operation receipt. */
+export function familyAdmissionKey({planeId, issuer, operationId, kind} = {}) {
+    if (!['confirm', 'correct'].includes(kind)) throw new TypeError('Expected a family declaration or correction.');
+    return recordKey(kind === 'confirm' ? 'episode' : 'correction', [
+        identityPart(planeId, 'planeId'), identityPart(issuer, 'issuer'), identityPart(operationId, 'operationId')
+    ]);
+}
+
 /**
  * @summary Names the plane's single lineage without giving a changed issuer a fresh namespace.
  * @param {Object} options
