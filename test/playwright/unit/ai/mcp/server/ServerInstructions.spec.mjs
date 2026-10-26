@@ -19,16 +19,12 @@ import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import Neo                 from 'neo.mjs/src/Neo.mjs';
 import * as core           from 'neo.mjs/src/core/_export.mjs';
 import BaseServer          from '../../../../../../ai/mcp/server/BaseServer.mjs';
-import nlConfig            from '../../../../../../ai/mcp/server/neural-link/config.template.mjs';
+import NeuralLinkServer    from '../../../../../../ai/mcp/server/neural-link/Server.mjs';
 
 let _testClassCounter = 0;
 
 test.describe('Neo.ai.mcp.server.BaseServer — MCP initialize instructions for handbook discovery', () => {
     test('an MCP client connecting to Neural Link learns from initialize.instructions to call get_mcp_tool_handbook(toolId) while tools/list stays compact', async () => {
-        nlConfig.data.autoConnect = false;
-
-        const {default: NeuralLinkServer} = await import('../../../../../../ai/mcp/server/neural-link/Server.mjs');
-
         class IsolatedNeuralLinkServer extends NeuralLinkServer {
             static config = {className: `Neo.test.mcp.server.IsolatedNeuralLinkServer${++_testClassCounter}`}
             async initAsync() {}
