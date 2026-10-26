@@ -1,9 +1,11 @@
 import Base                                              from 'neo.mjs/src/core/Base.mjs';
-import {createHash}                                      from 'crypto';
+import {createHash, KeyObject}                           from 'crypto';
 import {readFileSync, statSync}                          from 'fs';
 import {isLocalBearerToken, matchesLocalBearerToken}     from '../helpers/localBearer.mjs';
 import {readSeatTokenRegistry, verifySeatToken}          from '../helpers/seatToken.mjs';
 import {readPatValidationCache, writePatValidationCache} from '../helpers/patValidationCache.mjs';
+import {verifyIdentityPublicationSignature}              from '../../../../services/shared/identityPublicationSignature.mjs';
+import {stringifyCanonicalJson}                          from '../../../../services/shared/canonicalJson.mjs';
 
 /**
  * @summary Installs the configured Streamable HTTP authentication strategy.
@@ -165,16 +167,18 @@ class AuthService extends Base {
      * @param {URL}    options.mcpServerUrl The public URL of the MCP server
      * @param {Object} options.logger The logger instance
      * @param {String} options.resourceName The name of the protected resource
+     * @param {Object|null} [options.identityPublication=null] MC-owned boot trust and admission callback.
      * @returns {Promise<void>}
      */
     async setup(options) {
-        const {app, aiConfig, mcpServerUrl, logger, resourceName} = options;
+        const {app, aiConfig, mcpServerUrl, logger, resourceName, identityPublication = null} = options;
         const
             {auth}            = aiConfig,
             hasCustomAuth     = typeof aiConfig.authMiddleware === 'function',
             hasOidcEndpoint   = Boolean(auth.host || auth.issuerUrl),
             isProxyOnlyCompat = auth.mode === 'oidc' && !hasOidcEndpoint && auth.trustProxyIdentity;
 
+        this.installIdentityPublication({app, aiConfig, logger, boundary: identityPublication});
         this.#validateFirstProviderSubjectPolicy(aiConfig);
 
         // Custom middleware owns the complete authentication boundary and takes precedence over
@@ -651,6 +655,77 @@ class AuthService extends Base {
         }
 
         return []
+    }
+
+    /**
+     * @summary Installs the fixed signed-publication POST before ordinary bearer middleware.
+     * The initial supported profile is the standard GitHub-PAT composition. Null keeps
+     * existing auth behavior; a partial or incompatible provision refuses before listening.
+     * Trust is detached at boot. The callback owns operation validation, durable admission and
+     * its finite HTTP result; it receives no ordinary bearer identity or raw request envelope.
+     * @param {Object} options
+     * @param {Object} options.app Express app after the common host/origin/CORS guards.
+     * @param {Object} options.aiConfig This AuthService bootstrap's resolved configuration.
+     * @param {Object} options.logger Server logger.
+     * @param {Object|null} options.boundary {audience, issuer, publicKeys, admit}.
+     */
+    installIdentityPublication({app, aiConfig, logger, boundary}) {
+        if (boundary === null) return;
+
+        if (typeof aiConfig.authMiddleware === 'function' || aiConfig.auth.trustProxyIdentity ||
+            aiConfig.auth.mode !== 'github-pat') {
+            throw new Error('AuthService: provisioned identity publication requires the standard github-pat profile.');
+        }
+
+        if (!boundary || typeof boundary !== 'object' || Array.isArray(boundary) ||
+            typeof boundary.audience !== 'string' || !boundary.audience ||
+            typeof boundary.issuer !== 'string' || !boundary.issuer ||
+            !(boundary.publicKeys instanceof Map) || boundary.publicKeys.size === 0 ||
+            typeof boundary.admit !== 'function') {
+            throw new Error('AuthService: identity publication requires complete public trust and an MC admission callback.');
+        }
+
+        const {audience, issuer, admit} = boundary;
+        const publicKeys = new Map(boundary.publicKeys);
+
+        for (const [kid, key] of publicKeys) {
+            if (typeof kid !== 'string' || !kid || !(key instanceof KeyObject) ||
+                key.type !== 'public' || key.asymmetricKeyType !== 'ed25519') {
+                throw new Error('AuthService: identity publication trust must contain named public Ed25519 keys.');
+            }
+        }
+
+        app.post('/identity/family-publications', async (req, res) => {
+            const body = req.body;
+
+            if (!body || typeof body !== 'object' || Array.isArray(body) ||
+                Object.keys(body).length !== 1 || !Object.hasOwn(body, 'envelope') ||
+                typeof body.envelope !== 'string') {
+                return res.status(400).json({error: {code: 'malformed-publication-request'}});
+            }
+
+            const verified = verifyIdentityPublicationSignature(body.envelope, {audience, issuer, publicKeys, now: Date.now()});
+
+            if (!verified.authenticated) {
+                return res.status(401).json({error: {code: verified.code}});
+            }
+
+            try {
+                const reply = await admit(verified.envelope);
+
+                if (!reply || !Number.isInteger(reply.statusCode) || reply.statusCode < 200 || reply.statusCode > 599 ||
+                    [204, 205, 304].includes(reply.statusCode) || !Object.hasOwn(reply, 'body')) {
+                    throw new Error('Invalid admission response');
+                }
+
+                const encoded = stringifyCanonicalJson(reply.body);
+
+                return res.status(reply.statusCode).type('application/json').send(encoded);
+            } catch {
+                logger.error('[AuthService] Identity publication admission unavailable.');
+                return res.status(503).json({error: {code: 'publication-unavailable'}});
+            }
+        });
     }
 
     /**
