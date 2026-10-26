@@ -25,38 +25,125 @@ const __dirname    = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 const REPORT_DIR   = path.join(PROJECT_ROOT, '.neo-ai-data', 'community-activity-calibration');
 
-const ATTENTION_POLICY = Object.freeze({
-    responseBearingKinds: Object.freeze([
-        'issue.opened',
-        'issue.comment',
-        'pull_request.opened',
-        'pull_request.review',
-        'pull_request.review_comment',
-        'discussion.opened',
-        'discussion.comment',
-        'discussion.reply'
-    ]),
-    rosteredActorIds         : Object.freeze(['tobiu', 'neo-gpt', 'neo-opus-grace', 'neo-gemini-maryam']),
-    recordedActorDispositions: Object.freeze({})
+export const DEFAULT_CALIBRATION_FIXTURE = Object.freeze({
+    tenantId       : 'tenant-calibration',
+    viewerAgentId  : 'AGENT:@fixture-steward-1',
+    sessionId      : 'calibration-session',
+    attentionPolicy: Object.freeze({
+        responseBearingKinds: Object.freeze([
+            'issue.opened',
+            'issue.comment',
+            'pull_request.opened',
+            'pull_request.review',
+            'pull_request.review_comment',
+            'discussion.opened',
+            'discussion.comment',
+            'discussion.reply'
+        ]),
+        rosteredActorIds         : Object.freeze(['fixture-maintainer-1']),
+        recordedActorDispositions: Object.freeze({})
+    }),
+    buildFamilyBatches(sourceInstanceId, registrationEpoch) {
+        return [
+            {
+                schemaVersion             : 'community-activity-batch.v1',
+                sourceInstanceId,
+                resourceFamily            : 'issues',
+                adapterSchemaVersion      : 'github-issues.v1',
+                providerStateSchemaVersion: 'github-issues-state.v1',
+                registrationEpoch,
+                baseCheckpointVersion     : 0,
+                baseInventoryHash         : null,
+                batchId                   : 'cal-issues-b1',
+                observations              : [
+                    {
+                        providerEntityId    : 'I_19129',
+                        occurrenceKind      : 'issue.opened',
+                        occurrenceCoordinate: 'I_19129:opened:2026-10-26T18:00:00.000Z',
+                        occurredAt          : '2026-10-26T18:00:00.000Z',
+                        actorId             : 'fixture-maintainer-1',
+                        actorKind           : 'user',
+                        sourceAssociation   : 'OWNER'
+                    },
+                    {
+                        providerEntityId      : 'IC_6425153408',
+                        parentProviderEntityId: 'I_19129',
+                        occurrenceKind        : 'issue.comment',
+                        occurrenceCoordinate  : 'IC_6425153408:created:2026-10-26T19:18:05.000Z',
+                        occurredAt            : '2026-10-26T19:18:05.000Z',
+                        actorId               : 'SimonGebru',
+                        actorKind             : 'user',
+                        sourceAssociation     : 'NONE'
+                    }
+                ],
+                nextProviderState: {family: 'issues', rootCursor: 'cursor-issues-1'},
+                nextInventoryHash: 'inv-issues-1',
+                coverage         : {fromBasis: 'genesis', toBasis: '2026-10-26T19:20:00.000Z', complete: true, gaps: []}
+            },
+            {
+                schemaVersion             : 'community-activity-batch.v1',
+                sourceInstanceId,
+                resourceFamily            : 'pulls',
+                adapterSchemaVersion      : 'github-pulls.v1',
+                providerStateSchemaVersion: 'github-pulls-state.v1',
+                registrationEpoch,
+                baseCheckpointVersion     : 0,
+                baseInventoryHash         : null,
+                batchId                   : 'cal-pulls-b1',
+                observations              : [
+                    {
+                        providerEntityId    : 'PR_20119',
+                        occurrenceKind      : 'pull_request.opened',
+                        occurrenceCoordinate: 'PR_20119:opened:2026-10-26T06:00:05.000Z',
+                        occurredAt          : '2026-10-26T06:00:05.000Z',
+                        actorId             : 'drakeboley',
+                        actorKind           : 'user',
+                        sourceAssociation   : 'FIRST_TIME_CONTRIBUTOR'
+                    }
+                ],
+                nextProviderState: {family: 'pulls', rootCursor: 'cursor-pulls-1'},
+                nextInventoryHash: 'inv-pulls-1',
+                coverage         : {fromBasis: 'genesis', toBasis: '2026-10-26T19:20:00.000Z', complete: true, gaps: []}
+            },
+            {
+                schemaVersion             : 'community-activity-batch.v1',
+                sourceInstanceId,
+                resourceFamily            : 'discussions',
+                adapterSchemaVersion      : 'github-discussion.v1',
+                providerStateSchemaVersion: 'github-discussion-state.v1',
+                registrationEpoch,
+                baseCheckpointVersion     : 0,
+                baseInventoryHash         : null,
+                batchId                   : 'cal-discussions-b1',
+                observations              : [
+                    {
+                        providerEntityId    : 'D_15139',
+                        occurrenceKind      : 'discussion.comment',
+                        occurrenceCoordinate: 'DC_1:created:2026-10-26T18:30:00.000Z',
+                        occurredAt          : '2026-10-26T18:30:00.000Z',
+                        actorId             : 'external-discussant',
+                        actorKind           : 'user',
+                        sourceAssociation   : 'NONE'
+                    }
+                ],
+                nextProviderState: {family: 'discussions', rootCursor: 'cursor-discussions-1'},
+                nextInventoryHash: 'inv-discussions-1',
+                coverage         : {fromBasis: 'genesis', toBasis: '2026-10-26T19:20:00.000Z', complete: true, gaps: []}
+            }
+        ]
+    }
 });
 
 /**
- * @summary Executes one isolated live-substrate calibration pass across registry, admission, Bird View, claim, and hook projection.
+ * @summary Executes one isolated deterministic fixture pass across registry, admission, Bird View, claim, and count projection.
  * @param {Number} runIndex 1-based run index.
+ * @param {Object} [fixture=DEFAULT_CALIBRATION_FIXTURE]
  * @returns {Promise<Object>}
  */
-export async function executeLiveCalibrationPass(runIndex) {
-    await Promise.all([
-        SourceRegistryService.ready(),
-        CommunityBatchAdmissionService.ready(),
-        CommunityActivityService.ready(),
-        GraphService.ready()
-    ]);
-
+export async function executeLiveCalibrationPass(runIndex, fixture = DEFAULT_CALIBRATION_FIXTURE) {
     const startedMs = Date.now();
     const tempDir   = fsExtra.mkdtempSync(path.join(os.tmpdir(), `neo-community-calibration-${runIndex}-`));
     const dbPath    = path.join(tempDir, 'calibration.sqlite');
-    const hookDir   = path.join(tempDir, 'hooks');
     const db        = new Database(dbPath);
 
     const prevRegistryDb  = SourceRegistryService.db;
@@ -67,22 +154,30 @@ export async function executeLiveCalibrationPass(runIndex) {
     const prevStorageDb   = GraphService.db?.storage?.db || null;
 
     try {
-        SourceRegistryService.set({db, localSubjectId: 'tenant-calibration'});
-        CommunityBatchAdmissionService.set({db, attentionPolicy: ATTENTION_POLICY});
+        SourceRegistryService.set({db, localSubjectId: fixture.tenantId});
+        CommunityBatchAdmissionService.set({db, attentionPolicy: fixture.attentionPolicy});
         CommunityActivityService.set({db});
         if (GraphService.db?.storage) {
             GraphService.db.storage.db = db
         } else {
             GraphService.db = {storage: {db}}
         }
+
+        await Promise.all([
+            SourceRegistryService.ready(),
+            CommunityBatchAdmissionService.ready(),
+            CommunityActivityService.ready(),
+            GraphService.ready()
+        ]);
+
         SourceRegistryService.ensureSchema();
         CommunityBatchAdmissionService.ensureSchema();
         CommunityActivityService.ensureSchema();
 
         return await RequestContextService.run({
-            userId             : 'tenant-calibration',
-            agentIdentityNodeId: 'AGENT:neo-gemini-maryam',
-            sessionId          : 'calibration-session'
+            userId             : fixture.tenantId,
+            agentIdentityNodeId: fixture.viewerAgentId,
+            sessionId          : fixture.sessionId
         }, async () => {
             const registered = SourceRegistryService.register({
                 provider             : 'github',
@@ -102,93 +197,7 @@ export async function executeLiveCalibrationPass(runIndex) {
                 expectedEpoch: 2
             });
 
-            const familyBatches = [
-                {
-                    schemaVersion             : 'community-activity-batch.v1',
-                    sourceInstanceId          : active.sourceInstanceId,
-                    resourceFamily            : 'issues',
-                    adapterSchemaVersion      : 'github-issues.v1',
-                    providerStateSchemaVersion: 'github-issues-state.v1',
-                    registrationEpoch         : active.registrationEpoch,
-                    baseCheckpointVersion     : 0,
-                    baseInventoryHash         : null,
-                    batchId                   : 'cal-issues-b1',
-                    observations              : [
-                        {
-                            providerEntityId    : 'I_19129',
-                            occurrenceKind      : 'issue.opened',
-                            occurrenceCoordinate: 'I_19129:opened:2026-10-26T18:00:00.000Z',
-                            occurredAt          : '2026-10-26T18:00:00.000Z',
-                            actorId             : 'tobiu',
-                            actorKind           : 'user',
-                            sourceAssociation   : 'OWNER'
-                        },
-                        {
-                            providerEntityId      : 'IC_6425153408',
-                            parentProviderEntityId: 'I_19129',
-                            occurrenceKind        : 'issue.comment',
-                            occurrenceCoordinate  : 'IC_6425153408:created:2026-10-26T19:17:16.000Z',
-                            occurredAt            : '2026-10-26T19:17:16.000Z',
-                            actorId               : 'SimonGebru',
-                            actorKind             : 'user',
-                            sourceAssociation     : 'NONE'
-                        }
-                    ],
-                    nextProviderState: {family: 'issues', rootCursor: 'cursor-issues-1'},
-                    nextInventoryHash: 'inv-issues-1',
-                    coverage         : {fromBasis: 'genesis', toBasis: '2026-10-26T19:20:00.000Z', complete: true, gaps: []}
-                },
-                {
-                    schemaVersion             : 'community-activity-batch.v1',
-                    sourceInstanceId          : active.sourceInstanceId,
-                    resourceFamily            : 'pulls',
-                    adapterSchemaVersion      : 'github-pulls.v1',
-                    providerStateSchemaVersion: 'github-pulls-state.v1',
-                    registrationEpoch         : active.registrationEpoch,
-                    baseCheckpointVersion     : 0,
-                    baseInventoryHash         : null,
-                    batchId                   : 'cal-pulls-b1',
-                    observations              : [
-                        {
-                            providerEntityId    : 'PR_20119',
-                            occurrenceKind      : 'pull_request.opened',
-                            occurrenceCoordinate: 'PR_20119:opened:2026-10-26T18:45:00.000Z',
-                            occurredAt          : '2026-10-26T18:45:00.000Z',
-                            actorId             : 'drake-real',
-                            actorKind           : 'user',
-                            sourceAssociation   : 'FIRST_TIME_CONTRIBUTOR'
-                        }
-                    ],
-                    nextProviderState: {family: 'pulls', rootCursor: 'cursor-pulls-1'},
-                    nextInventoryHash: 'inv-pulls-1',
-                    coverage         : {fromBasis: 'genesis', toBasis: '2026-10-26T19:20:00.000Z', complete: true, gaps: []}
-                },
-                {
-                    schemaVersion             : 'community-activity-batch.v1',
-                    sourceInstanceId          : active.sourceInstanceId,
-                    resourceFamily            : 'discussions',
-                    adapterSchemaVersion      : 'github-discussion.v1',
-                    providerStateSchemaVersion: 'github-discussion-state.v1',
-                    registrationEpoch         : active.registrationEpoch,
-                    baseCheckpointVersion     : 0,
-                    baseInventoryHash         : null,
-                    batchId                   : 'cal-discussions-b1',
-                    observations              : [
-                        {
-                            providerEntityId    : 'D_15139',
-                            occurrenceKind      : 'discussion.comment',
-                            occurrenceCoordinate: 'DC_1:created:2026-10-26T18:30:00.000Z',
-                            occurredAt          : '2026-10-26T18:30:00.000Z',
-                            actorId             : 'external-discussant',
-                            actorKind           : 'user',
-                            sourceAssociation   : 'NONE'
-                        }
-                    ],
-                    nextProviderState: {family: 'discussions', rootCursor: 'cursor-discussions-1'},
-                    nextInventoryHash: 'inv-discussions-1',
-                    coverage         : {fromBasis: 'genesis', toBasis: '2026-10-26T19:20:00.000Z', complete: true, gaps: []}
-                }
-            ];
+            const familyBatches = fixture.buildFamilyBatches(active.sourceInstanceId, active.registrationEpoch);
 
             let admissionAttempts     = 0;
             let casConflicts          = 0;
@@ -201,12 +210,10 @@ export async function executeLiveCalibrationPass(runIndex) {
                 if (res.status === 'idempotent') idempotentReceiptHits++;
             }
 
-            // Replay first batch identically to measure receipt hit rate.
             admissionAttempts++;
             const replayRes = CommunityBatchAdmissionService.admitBatch(familyBatches[0]);
             if (replayRes.status === 'idempotent') idempotentReceiptHits++;
 
-            // Submit stale-basis batch to measure CAS conflict handling.
             admissionAttempts++;
             const conflictRes = CommunityBatchAdmissionService.admitBatch({
                 ...familyBatches[0],
@@ -221,7 +228,6 @@ export async function executeLiveCalibrationPass(runIndex) {
                 limit      : 25
             });
 
-            // Claim one external item and mark one seen to verify count & seen separation.
             const claimTarget = birdView.items[0];
             const seenTarget  = birdView.items[1];
             await CommunityActivityService.claimTask({sourceEventId: claimTarget.sourceEventId});
@@ -231,7 +237,6 @@ export async function executeLiveCalibrationPass(runIndex) {
                 sourceInstanceIds: [active.sourceInstanceId]
             });
 
-            // Mark another item seen and re-project to verify watermark non-regression/idempotency.
             await CommunityActivityService.markSeen({sourceEventId: birdView.items[2].sourceEventId});
             const counts2 = await CommunityActivityService.projectAttentionCounts({
                 sourceInstanceIds: [active.sourceInstanceId]
@@ -240,15 +245,15 @@ export async function executeLiveCalibrationPass(runIndex) {
             const checkpointRows = db.prepare(`
                 SELECT resource_family, checkpoint_version, inventory_hash, provider_state, coverage, last_receipt_id
                 FROM mc_community_checkpoint
-                WHERE tenant_id = 'tenant-calibration'
+                WHERE tenant_id = ?
                 ORDER BY resource_family ASC
-            `).all();
+            `).all(fixture.tenantId);
             const observationRows = db.prepare(`
                 SELECT occurrence_identity, provider_entity_id, occurrence_kind, occurred_at, attention_disposition, occurrence_digest
                 FROM mc_community_observation
-                WHERE tenant_id = 'tenant-calibration'
+                WHERE tenant_id = ?
                 ORDER BY provider_entity_id ASC
-            `).all();
+            `).all(fixture.tenantId);
 
             const checkpointBytesTotal     = Buffer.byteLength(JSON.stringify(checkpointRows), 'utf8');
             const admittedObservationBytes = Buffer.byteLength(JSON.stringify(observationRows), 'utf8');
