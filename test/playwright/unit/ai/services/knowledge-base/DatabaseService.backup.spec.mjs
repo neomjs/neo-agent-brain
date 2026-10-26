@@ -332,6 +332,25 @@ test.describe('KB_DatabaseService — manageDatabaseBackup (#10129 Phase 1)', ()
         expect(collection.calls.some(args => args.ids)).toBe(true) // the rescue path ran
     });
 
+    test('a default-tenant export that matches no rows is degraded as a scope miss, not reported as an empty corpus', async () => {
+        const {default: VectorService} = await import('../../../../../../ai/services/knowledge-base/VectorService.mjs'),
+              defaultTenantId          = VectorService.getTenantIsolationConfig().defaultTenantId,
+              otherRows                = tenantRows(defaultTenantId).filter(row => row.metadata.tenantId !== defaultTenantId),
+              collection               = makeTenantCollection({rows: otherRows}),
+              dir                      = path.join(tmpBackupDir, 'tenant-none');
+
+        KB_ChromaManager.getKnowledgeBaseCollection = async () => collection;
+        fs.mkdirSync(dir, {recursive: true});
+
+        const result = await KB_DatabaseService.manageDatabaseBackup({action: 'export', backupPath: dir, defaultTenantOnly: true});
+
+        expect(result.status).toBe('degraded');
+        expect(result.reason).toBe('scope-matched-no-rows');
+        expect(result.count).toBe(0);
+        expect(result.expected).toBe(0);
+        expect(readExportedIds(dir)).toEqual([])
+    });
+
     test('an unscoped export (the backup) still reads the whole collection, with no where on any read', async () => {
         const collection = makeTenantCollection({rows: tenantRows('neo-shared')}),
               dir        = path.join(tmpBackupDir, 'tenant-unscoped');
