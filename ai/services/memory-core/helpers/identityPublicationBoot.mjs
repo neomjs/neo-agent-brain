@@ -1,6 +1,7 @@
-import {createHash, createPublicKey} from 'node:crypto';
-import {stringifyCanonicalJson} from '../../shared/canonicalJson.mjs';
-import {isSetupRunId} from '../../fleet/setupRunRecord.mjs';
+import {createHash, createPublicKey}     from 'node:crypto';
+import {stringifyCanonicalJson}          from '../../shared/canonicalJson.mjs';
+import {isSetupRunId}                    from '../../fleet/setupRunRecord.mjs';
+import {isIdentityPublicationIdentifier} from '../../shared/identityPublicationOperation.mjs';
 
 /**
  * @module ai/services/memory-core/helpers/identityPublicationBoot
@@ -107,6 +108,10 @@ export function compileIdentityPublicationBoot(value, {planeId, dataRoot}) {
     identifier(descriptor.issuer, 'issuer');
     exactKeys(descriptor.reservation, ['attemptId', 'kid', 'originRunId'], 'reservation');
     for (const name of ['attemptId', 'kid', 'originRunId']) identifier(descriptor.reservation[name], name);
+    for (const [name, value] of [['planeId', descriptor.target.planeId], ['issuer', descriptor.issuer],
+        ['kid', descriptor.reservation.kid]]) {
+        if (!isIdentityPublicationIdentifier(value)) throw invalid(name + ' exceeds the fixed wire-profile identifier grammar.');
+    }
     if (!isSetupRunId(descriptor.reservation.originRunId)) {
         throw invalid('originRunId must identify a supported host setup run.');
     }
@@ -120,6 +125,7 @@ export function compileIdentityPublicationBoot(value, {planeId, dataRoot}) {
         descriptor.trust = descriptor.trust.map(entry => {
             exactKeys(entry, ['kid', 'publicKey'], 'trust entry');
             identifier(entry.kid, 'trust kid');
+            if (!isIdentityPublicationIdentifier(entry.kid)) throw invalid('trust kid exceeds the fixed wire-profile identifier grammar.');
             if (publicKeys.has(entry.kid)) throw invalid('duplicate trust kid.');
             const {key, fingerprint} = publicKey(entry.publicKey);
             publicKeys.set(entry.kid, key);

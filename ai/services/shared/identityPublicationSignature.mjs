@@ -1,5 +1,7 @@
 import crypto                   from 'node:crypto';
 import {stringifyCanonicalJson} from './canonicalJson.mjs';
+import {IDENTITY_PUBLICATION_LIMITS, IDENTITY_PUBLICATION_MAX_OPERATION_BYTES,
+    isIdentityPublicationIdentifier} from './identityPublicationOperation.mjs';
 
 /**
  * @module ai/services/shared/identityPublicationSignature
@@ -15,6 +17,21 @@ export const IDENTITY_PUBLICATION_DOMAIN = 'neo.identity-family-publication.v1';
 
 /** @type {Number} Exactly five minutes on the composition's shared wall clock. */
 export const IDENTITY_PUBLICATION_VALIDITY_MS = 300000;
+
+/** @type {String} Compact signed text bypasses the SDK's smaller ordinary JSON parser. */
+export const IDENTITY_PUBLICATION_MEDIA_TYPE = 'application/vnd.neo.identity-family-publication';
+
+/** @summary Derives a tenant-independent signed payload bound from fixed v1 grammar caps. */
+function maximumPayloadBytes() {
+    const id    = 'x'.repeat(IDENTITY_PUBLICATION_LIMITS.identifierBytes - 2);
+    const shell = {audience: id, issuer: id, kid: id, version: 1, purpose: IDENTITY_PUBLICATION_PURPOSE,
+        issuedAt : Number.MAX_SAFE_INTEGER - IDENTITY_PUBLICATION_VALIDITY_MS,
+        expiresAt: Number.MAX_SAFE_INTEGER, operation: null};
+    return Buffer.byteLength(stringifyCanonicalJson(shell), 'utf8') - 4 + IDENTITY_PUBLICATION_MAX_OPERATION_BYTES;
+}
+
+/** @type {Number} Unpadded base64url payload, one dot and the fixed 64-byte Ed25519 signature. */
+export const IDENTITY_PUBLICATION_MAX_COMPACT_BYTES = Math.ceil(maximumPayloadBytes() * 4 / 3) + 1 + 86;
 
 const ENVELOPE_KEYS = Object.freeze(['audience', 'expiresAt', 'issuedAt', 'issuer', 'kid', 'operation', 'purpose', 'version']);
 
@@ -66,17 +83,19 @@ function freezeJson(value) {
 export function verifyIdentityPublicationSignature(token, {audience, issuer, publicKeys, now} = {}) {
     const refuse = code => ({authenticated: false, code});
 
-    if (typeof audience !== 'string' || !audience || typeof issuer !== 'string' || !issuer ||
+    if (!isIdentityPublicationIdentifier(audience) || !isIdentityPublicationIdentifier(issuer) ||
         !(publicKeys instanceof Map) || !Number.isSafeInteger(now) || now < 0) {
         return refuse('verifier-unavailable');
     }
 
-    if (typeof token !== 'string') return refuse('malformed-envelope');
+    if (typeof token !== 'string' || Buffer.byteLength(token, 'utf8') > IDENTITY_PUBLICATION_MAX_COMPACT_BYTES) {
+        return refuse('malformed-envelope');
+    }
 
     const parts = token.split('.');
     if (parts.length !== 2) return refuse('malformed-envelope');
 
-    const payload = decodeSegment(parts[0]);
+    const payload   = decodeSegment(parts[0]);
     const signature = decodeSegment(parts[1]);
     if (!payload || !signature || signature.length !== 64) return refuse('malformed-envelope');
 
@@ -95,7 +114,7 @@ export function verifyIdentityPublicationSignature(token, {audience, issuer, pub
     if (!envelope || Array.isArray(envelope) || typeof envelope !== 'object' ||
         Object.keys(envelope).sort().join(',') !== ENVELOPE_KEYS.join(',') ||
         envelope.version !== 1 || envelope.purpose !== IDENTITY_PUBLICATION_PURPOSE ||
-        typeof envelope.kid !== 'string' || !envelope.kid ||
+        !['audience', 'issuer', 'kid'].every(key => isIdentityPublicationIdentifier(envelope[key])) ||
         !envelope.operation || Array.isArray(envelope.operation) || typeof envelope.operation !== 'object' ||
         !Number.isSafeInteger(envelope.issuedAt) || envelope.issuedAt < 0 ||
         !Number.isSafeInteger(envelope.expiresAt) ||

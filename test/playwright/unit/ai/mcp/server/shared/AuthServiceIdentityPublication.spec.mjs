@@ -1,27 +1,29 @@
-import {setup} from '../../../../../setup.mjs';
-import Neo from 'neo.mjs/src/Neo.mjs';
-import * as core from 'neo.mjs/src/core/_export.mjs';
-import {test, expect} from '@playwright/test';
-import crypto from 'node:crypto';
-import http from 'node:http';
-import {stringifyCanonicalJson} from '../../../../../../../ai/services/shared/canonicalJson.mjs';
+import {setup}                                                                   from '../../../../../setup.mjs';
+import Neo                                                                       from 'neo.mjs/src/Neo.mjs';
+import * as core                                                                 from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}                                                            from '@playwright/test';
+import crypto                                                                    from 'node:crypto';
+import http                                                                      from 'node:http';
+import {IDENTITY_PUBLICATION_MEDIA_TYPE, IDENTITY_PUBLICATION_MAX_COMPACT_BYTES} from '../../../../../../../ai/services/shared/identityPublicationSignature.mjs';
+import {IDENTITY_PUBLICATION_LIMITS, validateIdentityPublicationOperation}       from '../../../../../../../ai/services/shared/identityPublicationOperation.mjs';
+import {stringifyCanonicalJson}                                                  from '../../../../../../../ai/services/shared/canonicalJson.mjs';
 
 setup({appConfig: {name: 'IdentityPublicationAuthHttpTest'}});
 test.describe.configure({mode: 'serial'});
 
-const first = crypto.generateKeyPairSync('ed25519');
+const first  = crypto.generateKeyPairSync('ed25519');
 const second = crypto.generateKeyPairSync('ed25519');
-const path = '/identity/family-publications';
+const path   = '/identity/family-publications';
 
 /** @summary Signs fixture bytes independently of the HTTP owner. */
 function signed({patch = {}, privateKey = first.privateKey} = {}) {
     const issuedAt = Date.now();
-    const value = {
-        audience: 'plane-a', issuer: 'fleet-a', kid: 'key-a', version: 1,
-        purpose: 'identity-family-publication', issuedAt, expiresAt: issuedAt + 300000,
+    const value    = {
+        audience : 'plane-a', issuer: 'fleet-a', kid: 'key-a', version: 1,
+        purpose  : 'identity-family-publication', issuedAt, expiresAt: issuedAt + 300000,
         operation: {kind: 'confirm', model: null, operationId: 'act-a'}, ...patch
     };
-    const bytes = Buffer.from(stringifyCanonicalJson(value));
+    const bytes     = Buffer.from(stringifyCanonicalJson(value));
     const signature = crypto.sign(null, Buffer.concat([Buffer.from('neo.identity-family-publication.v1\0'), bytes]), privateKey);
 
     return bytes.toString('base64url') + '.' + signature.toString('base64url');
@@ -31,12 +33,12 @@ function signed({patch = {}, privateKey = first.privateKey} = {}) {
 function config(auth = {}, extra = {}) {
     return {
         mcpHttpHost: '127.0.0.1', mcpListenHost: '127.0.0.1', mcpHttpPort: 0,
-        fleet: {cockpitOrigins: ['http://127.0.0.1:8080']},
-        auth: {
-            mode: 'github-pat', githubApiBaseUrl: 'https://forge.fixture',
-            patCacheTtlSeconds: 60, patStaleGraceSeconds: 0, patDiskCachePath: '',
+        fleet      : {cockpitOrigins: ['http://127.0.0.1:8080']},
+        auth       : {
+            mode                  : 'github-pat', githubApiBaseUrl: 'https://forge.fixture',
+            patCacheTtlSeconds    : 60, patStaleGraceSeconds: 0, patDiskCachePath: '',
             patValidationTimeoutMs: 1000, allowedUsers: [], pinFirstProviderSubject: false,
-            host: null, issuerUrl: null, trustProxyIdentity: false, ...auth
+            host                  : null, issuerUrl: null, trustProxyIdentity: false, ...auth
         },
         ...extra
     };
@@ -85,7 +87,7 @@ test.describe('identity publication actual HTTP boundary', () => {
         await TransportService.setup({
             server: {mcpServer: {connect: async () => {}}, onSessionClosed() {}},
             aiConfig, identityPublication,
-            logger: {info: value => logs.push(value), warn: value => logs.push(value), error: value => logs.push(value)},
+            logger      : {info: value => logs.push(value), warn: value => logs.push(value), error: value => logs.push(value)},
             resourceName: 'IdentityPublicationHttpFixture'
         });
     }
@@ -96,7 +98,7 @@ test.describe('identity publication actual HTTP boundary', () => {
         return new Promise((resolve, reject) => {
             const req = http.request({
                 hostname: '127.0.0.1', port, path: route, method, agent: false,
-                headers: {'content-type': 'application/json', ...headers}
+                headers : {'content-type': IDENTITY_PUBLICATION_MEDIA_TYPE, ...headers}
             }, res => {
                 const chunks = [];
                 res.on('data', chunk => chunks.push(chunk));
@@ -109,13 +111,13 @@ test.describe('identity publication actual HTTP boundary', () => {
             });
             req.on('error', reject);
             req.setTimeout(5000, () => req.destroy(new Error('Fixture HTTP request timed out')));
-            req.end(rawBody === undefined ? body === undefined ? undefined : JSON.stringify(body) : rawBody);
+            req.end(rawBody === undefined ? body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body) : rawBody);
         });
     }
 
     test('signed service request reaches only the MC callback before ordinary bearer auth', async () => {
         await boot(boundary());
-        const result = await send({envelope: signed()}, {headers: {authorization: 'Bearer not-a-class9-credential'}});
+        const result = await send(signed(), {headers: {authorization: 'Bearer not-a-class9-credential'}});
 
         expect(result).toEqual({status: 200, body: {status: 'accepted', receiptId: 'receipt-fixture'}});
         expect(providerCalls).toBe(0);
@@ -147,15 +149,15 @@ test.describe('identity publication actual HTTP boundary', () => {
             signed({patch: {purpose: 'bridge-token'}}),
             signed({patch: {issuedAt: expired, expiresAt: expired + 300000}})
         ]) {
-            expect((await send({envelope: token})).status).toBe(401);
+            expect((await send(token)).status).toBe(401);
         }
         expect(admitted).toEqual([]);
     });
 
     test('common Host and Origin guards run before a valid signed publication', async () => {
         await boot(boundary());
-        expect((await send({envelope: signed()}, {headers: {host: 'untrusted.example'}})).status).toBe(403);
-        expect((await send({envelope: signed()}, {headers: {origin: 'https://untrusted.example'}})).status).toBe(403);
+        expect((await send(signed(), {headers: {host: 'untrusted.example'}})).status).toBe(403);
+        expect((await send(signed(), {headers: {origin: 'https://untrusted.example'}})).status).toBe(403);
         expect(admitted).toEqual([]);
     });
 
@@ -168,8 +170,8 @@ test.describe('identity publication actual HTTP boundary', () => {
         descriptor.issuer = 'other-issuer';
         descriptor.admit = () => {throw new Error('replacement callback must not run');};
 
-        expect((await send({envelope: signed()})).status).toBe(200);
-        expect((await send({envelope: signed({patch: {kid: 'key-b'}, privateKey: second.privateKey})})).status).toBe(401);
+        expect((await send(signed())).status).toBe(200);
+        expect((await send(signed({patch: {kid: 'key-b'}, privateKey: second.privateKey}))).status).toBe(401);
         expect(admitted).toHaveLength(1);
     });
 
@@ -194,7 +196,7 @@ test.describe('identity publication actual HTTP boundary', () => {
         await boot(descriptor);
         descriptor.publicKeys.set('key-a', first.publicKey);
         TransportService.app.get('/ordinary-probe', (req, res) => res.json({identity: req.auth.userId}));
-        expect((await send({envelope: signed()}, {headers: {authorization: 'Bearer fixture-pat'}})).status).toBe(401);
+        expect((await send(signed(), {headers: {authorization: 'Bearer fixture-pat'}})).status).toBe(401);
         expect(admitted).toEqual([]);
         expect(providerCalls).toBe(0);
         expect(await send(undefined, {route: '/ordinary-probe', method: 'GET', headers: {authorization: 'Bearer fixture-pat'}}))
@@ -220,7 +222,7 @@ test.describe('identity publication actual HTTP boundary', () => {
 
     test('unprovisioned custom profile remains unchanged and exposes no publication route', async () => {
         await boot(null, config({}, {authMiddleware: (_req, _res, next) => next()}));
-        expect((await send({envelope: signed()})).status).toBe(404);
+        expect((await send(signed())).status).toBe(404);
         expect(admitted).toEqual([]);
     });
 
@@ -228,7 +230,7 @@ test.describe('identity publication actual HTTP boundary', () => {
         await boot(boundary(async () => ({statusCode: 503, body: {status: 'unavailable', reason: 'graph-not-ready'}})));
         TransportService.app.get('/ordinary-probe', (req, res) => res.json({identity: req.auth.userId}));
 
-        expect(await send({envelope: signed()})).toEqual({status: 503, body: {status: 'unavailable', reason: 'graph-not-ready'}});
+        expect(await send(signed())).toEqual({status: 503, body: {status: 'unavailable', reason: 'graph-not-ready'}});
         const ordinary = await send(undefined, {route: '/ordinary-probe', method: 'GET', headers: {authorization: 'Bearer fixture-pat'}});
         expect(ordinary).toEqual({status: 200, body: {identity: 'operator'}});
         expect(providerCalls).toBe(1);
@@ -238,37 +240,86 @@ test.describe('identity publication actual HTTP boundary', () => {
         const secretMarker = 'must-not-escape-fixture';
         await boot(boundary(async () => {throw new Error(secretMarker);}));
 
-        expect(await send({envelope: signed()})).toEqual({status: 503, body: {error: {code: 'publication-unavailable'}}});
+        expect(await send(signed())).toEqual({status: 503, body: {error: {code: 'publication-unavailable'}}});
         expect(JSON.stringify(logs)).not.toContain(secretMarker);
     });
 
     test('invalid callback response becomes a named unavailable result', async () => {
         await boot(boundary(async () => ({statusCode: 0, body: {status: 'accepted'}})));
-        expect(await send({envelope: signed()})).toEqual({status: 503, body: {error: {code: 'publication-unavailable'}}});
+        expect(await send(signed())).toEqual({status: 503, body: {error: {code: 'publication-unavailable'}}});
     });
 
     test('undefined callback body cannot become an empty successful response', async () => {
         await boot(boundary(async () => ({statusCode: 200, body: undefined})));
-        expect(await send({envelope: signed()})).toEqual({status: 503, body: {error: {code: 'publication-unavailable'}}});
+        expect(await send(signed())).toEqual({status: 503, body: {error: {code: 'publication-unavailable'}}});
     });
 
     for (const statusCode of [204, 205, 304]) {
         test('body-suppressing callback status ' + statusCode + ' cannot erase its result', async () => {
             await boot(boundary(async () => ({statusCode, body: {status: 'accepted'}})));
-            expect(await send({envelope: signed()})).toEqual({status: 503, body: {error: {code: 'publication-unavailable'}}});
+            expect(await send(signed())).toEqual({status: 503, body: {error: {code: 'publication-unavailable'}}});
         });
     }
 
-    test('outer JSON parser refusals are pre-admission and may have a different error shape', async () => {
+    test('legacy JSON wrappers and other media types cannot reach admission', async () => {
         await boot(boundary());
-        const malformed = await send(undefined, {rawBody: '{"envelope":'});
-        expect(malformed.status).toBe(400);
-        const token = signed({patch: {operation: {kind: 'baseline', largeFixture: 'x'.repeat(80000)}}});
-        const bytes = Buffer.byteLength(JSON.stringify({envelope: token}));
-        expect(bytes).toBeGreaterThan(102400);
-        const oversized = await send({envelope: token});
-        expect(oversized.status).toBe(413);
+        for (const type of ['application/json', 'text/plain', 'application/octet-stream']) {
+            const response = await send(JSON.stringify({envelope: signed()}), {headers: {'content-type': type}});
+            expect(response.status).toBe(415);
+        }
         expect(admitted).toEqual([]);
-        expect(providerCalls).toBe(0);
+    });
+
+    test('the maximal supported baseline crosses the actual transport at the exact compact bound', async () => {
+        const originalNow = Date.now;
+        Date.now = () => Number.MAX_SAFE_INTEGER - 300000;
+        try {
+            const caps = IDENTITY_PUBLICATION_LIMITS;
+            const fill = (bytes, prefix = '') => {
+                const room = bytes - 2 - prefix.length;
+                return prefix + '"'.repeat(Math.floor(room / 2)) + (room % 2 ? 'x' : '');
+            };
+            const id        = fill(caps.identifierBytes);
+            const operation = {kind: 'baseline', operationId: id, effectiveAt: Date.now(), expectedPlaneRevision: 0,
+                bindings: Array.from({length: caps.baselineBindings}, (_, i) => ({
+                    subject: {authProvider: id, providerBaseUrl: fill(caps.providerBaseBytes),
+                        providerUserId: id, providerUsername: id},
+                    seatId: fill(caps.identifierBytes, 'seat-' + i), incarnation: fill(caps.identifierBytes, 'inc-' + i)
+                }))};
+            await boot({...boundary(async envelope => {
+                expect(validateIdentityPublicationOperation(envelope.operation).valid).toBe(true);
+                admitted.push(envelope);
+                return {statusCode: 200, body: {status: 'fixture-admitted'}};
+            }), audience: id, issuer: id, publicKeys: new Map([[id, first.publicKey]])});
+            const token = signed({patch: {audience: id, issuer: id, kid: id, operation}});
+            expect(Buffer.byteLength(token)).toBe(IDENTITY_PUBLICATION_MAX_COMPACT_BYTES);
+            expect(Buffer.byteLength(token)).toBeGreaterThan(102400);
+            expect(await send(token)).toEqual({status: 200, body: {status: 'fixture-admitted'}});
+            expect(admitted).toHaveLength(1);
+            expect(admitted[0].operation.bindings).toHaveLength(128);
+            expect(await send(token + 'x')).toEqual({status: 413, body: {error: {code: 'publication-body-too-large'}}});
+            expect(admitted).toHaveLength(1);
+            expect(providerCalls).toBe(0);
+        } finally {
+            Date.now = originalNow;
+        }
+    });
+
+    test('oversized compact bodies still meet Host and Origin refusal before parsing', async () => {
+        await boot(boundary());
+        const body = 'x'.repeat(IDENTITY_PUBLICATION_MAX_COMPACT_BYTES + 1);
+        expect((await send(body, {headers: {host: 'untrusted.example'}})).status).toBe(403);
+        expect((await send(body, {headers: {origin: 'https://untrusted.example'}})).status).toBe(403);
+        expect(admitted).toEqual([]);
+    });
+
+    test('noncanonical transport bytes and compressed content refuse without admission', async () => {
+        await boot(boundary());
+        const token = signed();
+        for (const prefix of [Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from([0xff]), Buffer.from(' ')]) {
+            expect((await send(undefined, {rawBody: Buffer.concat([prefix, Buffer.from(token)])})).status).toBe(401);
+        }
+        expect((await send(token, {headers: {'content-encoding': 'gzip'}})).status).toBe(400);
+        expect(admitted).toEqual([]);
     });
 });

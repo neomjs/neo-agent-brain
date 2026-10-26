@@ -134,7 +134,9 @@ test('baseline cardinality refusal never returns a truncated prefix', () => {
     value.bindings = make(IDENTITY_PUBLICATION_LIMITS.baselineBindings);
     expect(validateIdentityPublicationOperation(value).operation.bindings).toHaveLength(value.bindings.length);
     value.bindings.push({...structuredClone(target), seatId: 'overflow', incarnation: 'overflow'});
-    refused(value, 'bindings');
+    refused(value, 'bindings[' + IDENTITY_PUBLICATION_LIMITS.baselineBindings + ']');
+    expect(validateIdentityPublicationOperation(value)).toMatchObject({code: 'baseline-capacity-exceeded',
+        details: {seatCount: 129, limit: 128, entryIndex: 128, seatId: 'overflow', remedy: 'correct-or-retire'}});
 });
 
 test('all revisions and clocks reject coercion, fractional, unsafe and negative numbers', () => {

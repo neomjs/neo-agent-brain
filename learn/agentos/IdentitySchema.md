@@ -73,6 +73,44 @@ records—not the person node.
 
 **Update discipline:** Capability values that change post-provisioning (e.g., Anthropic releases a context-window upgrade for an existing identity) update via `ModelStats.md` first; the graph node is reseeded via `ai/scripts/setup/seedAgentIdentities.mjs` to reflect.
 
+## Manual family-publication v1 limits and carrier
+
+The supported v1 plane size is **128 managed bindings**, counting every binding across all forge
+subjects, including multiple seats for one subject. This is the complete-plane capacity, not a page
+size or a permission to select the first 128 entries. A capture over the limit refuses as a whole
+and names the first excess entry, total count, limit and correct-or-retire remedy. The Fleet capture
+owner must retain the complete census; a malformed or unreadable registry is not an empty baseline.
+
+The fixed profile bounds JSON-encoded strings, including quotes and escaping:
+
+| Field class | Maximum encoded bytes |
+|---|---:|
+| Identifiers, usernames, seat/incarnation keys, family, operator principal; envelope audience/issuer/kid | 256 |
+| Provider API base and reasons | 2,048 |
+| Model, when attested | 512 |
+
+An explicit `model: null` requires an admission-level unattested reason. Family strings remain exact;
+their spelling is not normalized by these bounds. Stable provider IDs, not mutable usernames, select
+the membership. The [operation grammar](../../ai/services/shared/identityPublicationOperation.mjs)
+owns the limits and derives the largest logical shape across all six variants.
+
+The dedicated `POST /identity/family-publications` consumes
+`Content-Type: application/vnd.neo.identity-family-publication`. Its uncompressed body is the compact
+`<payload>.<signature>` token itself, using canonical unpadded base64url. It does not accept an outer
+JSON wrapper. This lets the dedicated parser enforce the complete-baseline bound without changing
+the SDK's smaller ordinary JSON limit.
+
+The [signature profile](../../ai/services/shared/identityPublicationSignature.mjs) derives the request
+limit from the operation grammar, capped envelope identifiers, fixed claims, base64url expansion
+and the 64-byte Ed25519 signature. The current maxima are 440,680 logical JSON bytes, 441,600 signed
+payload bytes and **588,887 compact request-body bytes**. HTTP headers are outside that body bound.
+A larger body refuses before admission; a 129th binding is a distinct capture-capacity refusal.
+
+The route remains after the common Host and Origin/CORS guards and before ordinary bearer auth.
+Neither this capacity nor passing a schema/signature check grants graph-write authority. Provisioning,
+physical membership/declaration admission, complete temporal snapshots and the joined installed
+workflow have separate acceptance requirements; these source limits do not certify that rollout.
+
 ## Ingestion Mechanism
 
 Identity projection has two deliberately separate write authorities:

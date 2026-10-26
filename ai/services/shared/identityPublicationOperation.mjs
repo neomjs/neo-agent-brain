@@ -8,7 +8,7 @@ import {stringifyCanonicalJson} from './canonicalJson.mjs';
  * Those state-dependent checks remain with their service owners and physical transaction.
  */
 
-/** @type {Object} Encoded field and complete-baseline bounds for this wire-profile candidate. */
+/** @type {Object} Fixed v1 encoded-field bounds and supported complete-plane binding count. */
 export const IDENTITY_PUBLICATION_LIMITS = Object.freeze({
     identifierBytes: 256, providerBaseBytes: 2048, familyBytes: 256,
     modelBytes     : 512, reasonBytes: 2048, baselineBindings: 128
@@ -52,6 +52,40 @@ function text(value, field, bytes = LIMIT.identifierBytes, trimmed = true) {
     }
 }
 
+/** @summary Checks a fixed-profile identifier; it never normalizes a value or reads configuration. */
+export function isIdentityPublicationIdentifier(value) {
+    try {
+        text(value, 'identifier');
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** @summary Derives the largest logical JSON shape from the same encoded caps as validation. */
+function maximumOperationBytes() {
+    const id      = 'x'.repeat(LIMIT.identifierBytes - 2), reason = 'x'.repeat(LIMIT.reasonBytes - 2);
+    const binding = {subject: {authProvider: id, providerBaseUrl: 'x'.repeat(LIMIT.providerBaseBytes - 2),
+        providerUserId: id, providerUsername: id}, seatId: id, incarnation: id};
+    const common = {operationId: id, effectiveAt: Number.MAX_SAFE_INTEGER};
+    const target = {...common, binding, expectedMembershipRevision: Number.MAX_SAFE_INTEGER,
+        expectedAdmissionRevision: Number.MAX_SAFE_INTEGER};
+    const declaration = {...target, family: 'x'.repeat(LIMIT.familyBytes - 2), model: null,
+        newFamily: false, operatorPrincipal: id, unattestedReason: reason};
+    const size     = value => Buffer.byteLength(stringifyCanonicalJson(value), 'utf8');
+    const baseline = size({...common, kind: 'baseline', expectedPlaneRevision: 0, bindings: []}) +
+        LIMIT.baselineBindings * size(binding) + Math.max(0, LIMIT.baselineBindings - 1);
+    const attested = {...declaration, model: 'x'.repeat(LIMIT.modelBytes - 2), unattestedReason: null};
+    return Math.max(baseline, size({...target, kind: 'bind'}), size({...target, kind: 'rekey', newSeatId: id}),
+        size({...target, kind: 'retire', removal: {operationId: id, completedAt: Number.MAX_SAFE_INTEGER, outcome: 'removed'}}),
+        ...[declaration, attested].flatMap(value => [size({...value, kind: 'confirm'}),
+            size({...value, kind: 'correct', targetAdmissionId: id, reason})]));
+}
+
+/** @type {Number} Maximum canonical operation bytes across all six fixed-profile variants. */
+export const IDENTITY_PUBLICATION_MAX_OPERATION_BYTES = maximumOperationBytes();
+
+
 /** @summary Requires an explicit nonnegative safe integer for revision and shared-clock values. */
 function integer(value, field) {
     if (!Number.isSafeInteger(value) || value < 0 || Object.is(value, -0)) {
@@ -73,9 +107,19 @@ function binding(value, field) {
 
 /** @summary Refuses sparse, accessor-bearing or decorated arrays before inspecting bounded entries. */
 function baseline(values) {
-    if (!Array.isArray(values) || Object.getPrototypeOf(values) !== Array.prototype ||
-        values.length > LIMIT.baselineBindings) {
-        invalid('bindings', 'A complete baseline must fit the declared binding limit; never truncate it.');
+    if (!Array.isArray(values) || Object.getPrototypeOf(values) !== Array.prototype) {
+        invalid('bindings', 'Expected a complete dense binding array.');
+    }
+    if (values.length > LIMIT.baselineBindings) {
+        const entry  = Object.getOwnPropertyDescriptor(values, LIMIT.baselineBindings);
+        const value  = entry && Object.hasOwn(entry, 'value') ? entry.value : null;
+        const seat   = value && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'seatId') : null;
+        const seatId = seat && Object.hasOwn(seat, 'value') && isIdentityPublicationIdentifier(seat.value) ? seat.value : null;
+        throw Object.assign(new TypeError('Complete baseline exceeds the supported plane size; correct or retire the excess binding and recapture.'), {
+            code   : 'baseline-capacity-exceeded', field: 'bindings[' + LIMIT.baselineBindings + ']',
+            details: Object.freeze({seatCount: values.length, limit: LIMIT.baselineBindings,
+                entryIndex: LIMIT.baselineBindings, seatId, remedy: 'correct-or-retire'})
+        });
     }
     const descriptors = Object.getOwnPropertyDescriptors(values);
     if (Reflect.ownKeys(descriptors).length !== values.length + 1) {
@@ -180,7 +224,7 @@ export function validateIdentityPublicationOperation(value) {
             .update(canonicalOperation, 'utf8').digest('hex');
         return Object.freeze({valid: true, operation: freeze(JSON.parse(canonicalOperation)), canonicalOperation, digest});
     } catch (error) {
-        return Object.freeze({valid: false, code: 'invalid-operation', field: error.field ?? 'operation',
-            reason: error.message});
+        return Object.freeze({valid: false, code: error.code ?? 'invalid-operation', field: error.field ?? 'operation',
+            reason: error.message, ...(error.details ? {details: error.details} : {})});
     }
 }

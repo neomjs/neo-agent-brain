@@ -1,14 +1,15 @@
-import {test, expect} from '@playwright/test';
-import {createHash, generateKeyPairSync} from 'node:crypto';
+import {test, expect}                                  from '@playwright/test';
+import {createHash, generateKeyPairSync}               from 'node:crypto';
 import {compileIdentityPublicationBoot as compileText} from '../../../../../../../ai/services/memory-core/helpers/identityPublicationBoot.mjs';
-import {stringifyCanonicalJson} from '../../../../../../../ai/services/shared/canonicalJson.mjs';
-import {isSetupRunId, setupRecordPath} from '../../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {stringifyCanonicalJson}                        from '../../../../../../../ai/services/shared/canonicalJson.mjs';
+import {isSetupRunId, setupRecordPath}                 from '../../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {IDENTITY_PUBLICATION_LIMITS}                   from '../../../../../../../ai/services/shared/identityPublicationOperation.mjs';
 
-const first = generateKeyPairSync('ed25519');
+const first  = generateKeyPairSync('ed25519');
 const second = generateKeyPairSync('ed25519');
 const target = {planeId: 'plane-a', dataRoot: '/data/plane-a'};
 const origin = '123e4567-e89b-42d3-a456-426614174000';
-const spki = key => key.export({format: 'der', type: 'spki'}).toString('base64url');
+const spki   = key => key.export({format: 'der', type: 'spki'}).toString('base64url');
 
 /** @summary Encodes fixture descriptors into the actual atomic configuration carrier. */
 const compileIdentityPublicationBoot = (value, servedTarget) => compileText(stringifyCanonicalJson(value), servedTarget);
@@ -34,6 +35,18 @@ test('reservation has no fingerprint or public key; null alone means unprovision
     }
 });
 
+test('wire-profile identifiers refuse at compilation before reservation or trust consumption', () => {
+    const oversized = 'x'.repeat(IDENTITY_PUBLICATION_LIMITS.identifierBytes - 1);
+    for (const field of ['planeId', 'issuer', 'kid', 'trustKid']) {
+        const input = bound(), served = {...target};
+        if (field === 'planeId') input.target.planeId = served.planeId = oversized;
+        else if (field === 'issuer') input.issuer = oversized;
+        else if (field === 'kid') input.reservation.kid = oversized;
+        else input.trust[0].kid = oversized;
+        expect(() => compileIdentityPublicationBoot(input, served)).toThrow('fixed wire-profile identifier grammar');
+    }
+});
+
 test('compares independently served identity and root, never descriptor fields with themselves', () => {
     for (const served of [{...target, planeId: 'other'}, {...target, dataRoot: '/other'},
         {dataRoot: target.dataRoot}, {planeId: target.planeId}]) {
@@ -56,7 +69,7 @@ test('derives a public fingerprint and permits overlap under the original issuer
 });
 
 test('same kid with changed bytes yields different evidence, not a durable admission verdict', () => {
-    const firstValue = compileIdentityPublicationBoot(bound(), target);
+    const firstValue  = compileIdentityPublicationBoot(bound(), target);
     const replacement = bound();
     replacement.trust[0].publicKey = spki(second.publicKey);
     const next = compileIdentityPublicationBoot(replacement, target);
@@ -94,7 +107,7 @@ test('compiled records and keys are detached from later input mutation', () => {
 
 test('closed shapes reject missing fields, private material and asserted fingerprints', () => {
     for (const path of [[], ['target'], ['reservation'], ['trust', 0]]) {
-        const input = bound();
+        const input  = bound();
         const object = path.reduce((value, key) => value[key], input);
         object.fingerprint = 'sha256:' + 'a'.repeat(64);
         expect(() => compileIdentityPublicationBoot(input, target)).toThrow('unsupported fields');
@@ -123,7 +136,7 @@ test('duplicate kids and absent selected trust cannot be hidden by Map construct
 });
 
 test('private encodings, key wrappers, non-Ed25519 and noncanonical DER all refuse', () => {
-    const other = generateKeyPairSync('ec', {namedCurve: 'prime256v1'});
+    const other       = generateKeyPairSync('ec', {namedCurve: 'prime256v1'});
     const publicBytes = first.publicKey.export({type: 'spki', format: 'der'});
     for (const encoded of [
         first.privateKey.export({type: 'pkcs8', format: 'der'}).toString('base64url'),
@@ -142,8 +155,8 @@ test('private encodings, key wrappers, non-Ed25519 and noncanonical DER all refu
 });
 
 test('non-text programmatic overrides are rejected without executing accessors', () => {
-    let executed = false;
-    const input = reserved();
+    let   executed = false;
+    const input    = reserved();
     Object.defineProperty(input, 'issuer', {enumerable: true, get() {executed = true; return 'fleet-a';}});
     expect(() => compileText(input, target)).toThrow('canonical JSON text');
     expect(executed).toBe(false);

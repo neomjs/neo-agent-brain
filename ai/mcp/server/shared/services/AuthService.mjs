@@ -1,11 +1,14 @@
 import Base                                              from 'neo.mjs/src/core/Base.mjs';
 import {createHash, KeyObject}                           from 'crypto';
 import {readFileSync, statSync}                          from 'fs';
+import express                                           from 'express';
 import {isLocalBearerToken, matchesLocalBearerToken}     from '../helpers/localBearer.mjs';
 import {readSeatTokenRegistry, verifySeatToken}          from '../helpers/seatToken.mjs';
 import {readPatValidationCache, writePatValidationCache} from '../helpers/patValidationCache.mjs';
-import {verifyIdentityPublicationSignature}              from '../../../../services/shared/identityPublicationSignature.mjs';
-import {stringifyCanonicalJson}                          from '../../../../services/shared/canonicalJson.mjs';
+import {IDENTITY_PUBLICATION_MEDIA_TYPE, IDENTITY_PUBLICATION_MAX_COMPACT_BYTES,
+    verifyIdentityPublicationSignature} from '../../../../services/shared/identityPublicationSignature.mjs';
+import {isIdentityPublicationIdentifier} from '../../../../services/shared/identityPublicationOperation.mjs';
+import {stringifyCanonicalJson}          from '../../../../services/shared/canonicalJson.mjs';
 
 /**
  * @summary Installs the configured Streamable HTTP authentication strategy.
@@ -678,8 +681,8 @@ class AuthService extends Base {
         }
 
         if (!boundary || typeof boundary !== 'object' || Array.isArray(boundary) ||
-            typeof boundary.audience !== 'string' || !boundary.audience ||
-            typeof boundary.issuer !== 'string' || !boundary.issuer ||
+            !isIdentityPublicationIdentifier(boundary.audience) ||
+            !isIdentityPublicationIdentifier(boundary.issuer) ||
             !(boundary.publicKeys instanceof Map) ||
             typeof boundary.admit !== 'function') {
             throw new Error('AuthService: identity publication requires a public-key map and an MC admission callback.');
@@ -690,22 +693,33 @@ class AuthService extends Base {
         const publicKeys = new Map(boundary.publicKeys);
 
         for (const [kid, key] of publicKeys) {
-            if (typeof kid !== 'string' || !kid || !(key instanceof KeyObject) ||
+            if (!isIdentityPublicationIdentifier(kid) || !(key instanceof KeyObject) ||
                 key.type !== 'public' || key.asymmetricKeyType !== 'ed25519') {
                 throw new Error('AuthService: identity publication trust must contain named public Ed25519 keys.');
             }
         }
 
-        app.post('/identity/family-publications', async (req, res) => {
+        const parseCompact = express.raw({type: IDENTITY_PUBLICATION_MEDIA_TYPE,
+            limit: IDENTITY_PUBLICATION_MAX_COMPACT_BYTES, inflate: false});
+        app.post('/identity/family-publications', (req, res, next) => {
+            if (!req.is(IDENTITY_PUBLICATION_MEDIA_TYPE)) {
+                return res.status(415).json({error: {code: 'publication-media-type-required'}});
+            }
+            parseCompact(req, res, error => {
+                if (!error) return next();
+                const oversized = error.type === 'entity.too.large';
+                return res.status(oversized ? 413 : 400).json({error: {
+                    code: oversized ? 'publication-body-too-large' : 'malformed-publication-request'
+                }});
+            });
+        }, async (req, res) => {
             const body = req.body;
 
-            if (!body || typeof body !== 'object' || Array.isArray(body) ||
-                Object.keys(body).length !== 1 || !Object.hasOwn(body, 'envelope') ||
-                typeof body.envelope !== 'string') {
+            if (!Buffer.isBuffer(body)) {
                 return res.status(400).json({error: {code: 'malformed-publication-request'}});
             }
 
-            const verified = verifyIdentityPublicationSignature(body.envelope, {audience, issuer, publicKeys, now: Date.now()});
+            const verified = verifyIdentityPublicationSignature(body.toString('utf8'), {audience, issuer, publicKeys, now: Date.now()});
 
             if (!verified.authenticated) {
                 return res.status(401).json({error: {code: verified.code}});

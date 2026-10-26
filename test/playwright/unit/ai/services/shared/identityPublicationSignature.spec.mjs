@@ -1,6 +1,7 @@
-import {test, expect} from '@playwright/test';
-import crypto         from 'node:crypto';
-import {stringifyCanonicalJson} from '../../../../../../ai/services/shared/canonicalJson.mjs';
+import {test, expect}                from '@playwright/test';
+import crypto                        from 'node:crypto';
+import {stringifyCanonicalJson}      from '../../../../../../ai/services/shared/canonicalJson.mjs';
+import {IDENTITY_PUBLICATION_LIMITS} from '../../../../../../ai/services/shared/identityPublicationOperation.mjs';
 import {
     IDENTITY_PUBLICATION_DOMAIN,
     IDENTITY_PUBLICATION_PURPOSE,
@@ -8,23 +9,23 @@ import {
     verifyIdentityPublicationSignature
 } from '../../../../../../ai/services/shared/identityPublicationSignature.mjs';
 
-const first = crypto.generateKeyPairSync('ed25519');
+const first  = crypto.generateKeyPairSync('ed25519');
 const second = crypto.generateKeyPairSync('ed25519');
-const now = 1700000000000;
-const trust = {audience: 'plane-a', issuer: 'fleet-a', publicKeys: new Map([['key-a', first.publicKey]]), now};
+const now    = 1700000000000;
+const trust  = {audience: 'plane-a', issuer: 'fleet-a', publicKeys: new Map([['key-a', first.publicKey]]), now};
 
 /** @summary Fixture data; operation semantics deliberately remain outside the signature verifier. */
 function envelope(patch = {}) {
     return {
-        audience: 'plane-a', expiresAt: now + 300000, issuedAt: now, issuer: 'fleet-a', kid: 'key-a',
+        audience : 'plane-a', expiresAt: now + 300000, issuedAt: now, issuer: 'fleet-a', kid: 'key-a',
         operation: {kind: 'confirm', model: null, operationId: 'act-1'},
-        purpose: 'identity-family-publication', version: 1, ...patch
+        purpose  : 'identity-family-publication', version: 1, ...patch
     };
 }
 
 /** @summary Independent signer using the literal protocol prefix, including its one zero byte. */
 function signText(text, key = first.privateKey, prefix = 'neo.identity-family-publication.v1\0') {
-    const bytes = Buffer.isBuffer(text) ? text : Buffer.from(text, 'utf8');
+    const bytes     = Buffer.isBuffer(text) ? text : Buffer.from(text, 'utf8');
     const signature = crypto.sign(null, Buffer.concat([Buffer.from(prefix, 'utf8'), bytes]), key);
 
     return bytes.toString('base64url') + '.' + signature.toString('base64url');
@@ -36,6 +37,16 @@ function signed(patch = {}, key = first.privateKey) {
 }
 
 test.describe('identity publication fixed signature profile', () => {
+    test('fixed envelope identifiers obey the same encoded-byte grammar as the operation profile', () => {
+        const oversized = 'x'.repeat(IDENTITY_PUBLICATION_LIMITS.identifierBytes - 1);
+        for (const field of ['audience', 'issuer', 'kid']) {
+            expect(verifyIdentityPublicationSignature(signed({[field]: oversized}), trust).code).toBe('malformed-envelope');
+        }
+        for (const field of ['audience', 'issuer']) {
+            expect(verifyIdentityPublicationSignature(signed(), {...trust, [field]: oversized}).code).toBe('verifier-unavailable');
+        }
+    });
+
     test('pins the domain, purpose and validity independently', () => {
         expect(IDENTITY_PUBLICATION_DOMAIN).toBe('neo.identity-family-publication.v1');
         expect(IDENTITY_PUBLICATION_PURPOSE).toBe('identity-family-publication');
@@ -141,7 +152,7 @@ test.describe('identity publication fixed signature profile', () => {
     });
 
     test('detects payload tampering and rejects a valid signature over a different domain', () => {
-        const token = signed(), parts = token.split('.');
+        const token   = signed(), parts = token.split('.');
         const changed = Buffer.from(stringifyCanonicalJson(envelope({operation: {kind: 'correct'}}))).toString('base64url');
         expect(verifyIdentityPublicationSignature(changed + '.' + parts[1], trust).code).toBe('invalid-signature');
         for (const prefix of ['', 'neo.identity-family-publication.v1', 'neo.identity-family-publication.v1\0\0', 'bridge-token\0']) {
@@ -151,10 +162,10 @@ test.describe('identity publication fixed signature profile', () => {
     });
 
     test('rejects duplicate keys, whitespace and reordered bytes even when signed', () => {
-        const text = stringifyCanonicalJson(envelope());
-        const duplicate = text.replace('"version":1', '"version":0,"version":1');
+        const text            = stringifyCanonicalJson(envelope());
+        const duplicate       = text.replace('"version":1', '"version":0,"version":1');
         const nestedDuplicate = text.replace('"model":null', '"model":"old","model":null');
-        const reordered = JSON.stringify(Object.fromEntries(Object.entries(envelope()).reverse()));
+        const reordered       = JSON.stringify(Object.fromEntries(Object.entries(envelope()).reverse()));
 
         for (const payload of [' ' + text, text + '\n', duplicate, nestedDuplicate, reordered]) {
             expect(verifyIdentityPublicationSignature(signText(payload), trust).code).toBe('noncanonical-envelope');
@@ -162,9 +173,9 @@ test.describe('identity publication fixed signature profile', () => {
     });
 
     test('rejects noncanonical base64url and extra segments', () => {
-        const token = signed(), [payload, signature] = token.split('.');
-        const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-        const tail = alphabet[alphabet.indexOf(signature.at(-1)) ^ 1];
+        const token          = signed(), [payload, signature] = token.split('.');
+        const alphabet       = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+        const tail           = alphabet[alphabet.indexOf(signature.at(-1)) ^ 1];
         const changedPadBits = signature.slice(0, -1) + tail;
 
         expect(Buffer.from(changedPadBits, 'base64url')).toEqual(Buffer.from(signature, 'base64url'));
