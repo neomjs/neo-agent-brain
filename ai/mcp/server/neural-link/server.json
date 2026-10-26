@@ -10,5 +10,15 @@
         "source": "github",
         "subfolder": "ai/mcp/server/neural-link",
         "url": "https://github.com/neomjs/neo-agent-brain"
-    }
+    },
+    "packages": [
+        {
+            "registryType": "npm",
+            "identifier": "neo-neural-link",
+            "version": "1.0.0",
+            "transport": {
+                "type": "stdio"
+            }
+        }
+    ]
 }
