@@ -845,7 +845,6 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
                 state    : 'refused',
                 reason   : 'osascript is not allowed assistive access (-25211)',
                 requested: {x: 2056, y: 30, width: 788, height: 1056},
-                saved    : {x: 2056, y: 30, width: 788, height: 1056},
                 observed : null,
                 at       : '2026-10-26T15:00:00.000Z'
             };

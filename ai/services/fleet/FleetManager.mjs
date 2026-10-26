@@ -656,7 +656,7 @@ class FleetManager extends Base {
      *     `installedGeneration` independently observes the installer-owned package slot; neither
      *     substitutes for the original Start, and both are absent for checkout runtimes.
      *     `windowPlacement` carries the GUI seat's window restore disposition when present, including
-     *     macOS Accessibility refusal reasons (`-25211`).
+     *     macOS Accessibility / AppleEvents refusal reasons (`-25211`, `-1743`, `-10004`).
      */
     fleetRuntimeStatus() {
         const lifecycle             = this.getLifecycleService();

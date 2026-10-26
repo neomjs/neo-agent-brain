@@ -12,7 +12,8 @@ import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
  * writes none), so the lifecycle captures the rectangle by pid before it signals a stop and puts it back
  * once the next start has a window. The host reads and sets a window through one System Events query
  * each, addressed by unix id — the address and grant the wake adapter's dialog gate already uses;
- * nothing is written into a vendor's own state files. When macOS TCC denies Accessibility (`-25211`),
+ * nothing is written into a vendor's own state files. When macOS TCC or System Events denies access
+ * (`-25211` Accessibility, `-1743` Automation of System Events, or `-10004` AppleEvents privilege violation),
  * `readSeatWindowRect`, `placeSeatWindow`, and `waitForSeatWindowRect` return `{refused: true, reason}`
  * immediately without polling. Every host effect is injectable for hermetic unit specs.
  */
@@ -26,10 +27,18 @@ export const SEAT_WINDOW_RECORD_VERSION = 1;
 /** @summary Reason recorded when macOS TCC / System Events denies `osascript` assistive access (`-25211`). */
 export const ASSISTIVE_ACCESS_REFUSAL_REASON = 'osascript is not allowed assistive access (-25211)';
 
+/** @summary Reason recorded when macOS TCC denies `osascript` Automation of System Events (`-1743`). */
+export const AUTOMATION_ACCESS_REFUSAL_REASON = 'osascript is not authorized to send Apple events to System Events (-1743)';
+
+/** @summary Reason recorded when System Events reports an AppleEvents privilege violation (`-10004`). */
+export const PRIVILEGE_VIOLATION_REFUSAL_REASON = 'osascript privilege violation querying System Events (-10004)';
+
 const
-    ASSISTIVE_ACCESS_DENIED_RE = /not allowed assistive access|not authorized to send apple events|\(-25211\)|\(-1743\)|\(-10004\)/i,
-    RECT_KEYS                  = ['x', 'y', 'width', 'height'],
-    execFileAsync              = promisify(execFile);
+    ASSISTIVE_ACCESS_RE    = /not allowed assistive access|\(-25211\)/i,
+    AUTOMATION_ACCESS_RE   = /not authorized to send apple events|\(-1743\)/i,
+    PRIVILEGE_VIOLATION_RE = /\(-10004\)/,
+    RECT_KEYS              = ['x', 'y', 'width', 'height'],
+    execFileAsync          = promisify(execFile);
 
 /**
  * @summary Whether a value is a usable window rectangle: four finite numbers and a positive size.
@@ -50,22 +59,44 @@ export function isWindowRefusal(value) {
 }
 
 /**
+ * @summary Maps a deterministic macOS Accessibility / AppleEvents denial (`-25211`, `-1743`, `-10004`) to
+ * `{refused: true, reason}` with the matched class's code preserved, or `null` otherwise.
+ * @param {*} error
+ * @returns {{refused: Boolean, reason: String}|null}
+ */
+export function assistiveAccessRefusal(error) {
+    const text = `${error?.message ?? ''}\n${error?.stderr ?? ''}`;
+
+    if (ASSISTIVE_ACCESS_RE.test(text))    return {refused: true, reason: ASSISTIVE_ACCESS_REFUSAL_REASON};
+    if (AUTOMATION_ACCESS_RE.test(text))   return {refused: true, reason: AUTOMATION_ACCESS_REFUSAL_REASON};
+    if (PRIVILEGE_VIOLATION_RE.test(text)) return {refused: true, reason: PRIVILEGE_VIOLATION_REFUSAL_REASON};
+
+    return null
+}
+
+/**
  * @summary Whether an `osascript` error reflects a deterministic macOS Accessibility / AppleEvents denial
  * (`-25211`, `-1743`, `-10004`, `not allowed assistive access`) rather than a missing window (`-1719`).
  * @param {*} error
  * @returns {Boolean}
  */
 export function isAssistiveAccessError(error) {
-    return ASSISTIVE_ACCESS_DENIED_RE.test(`${error?.message ?? ''}\n${error?.stderr ?? ''}`)
+    return Boolean(assistiveAccessRefusal(error))
 }
 
 /**
- * @summary Maps a deterministic macOS Accessibility denial to `{refused: true, reason}`, or `null` otherwise.
- * @param {*} error
- * @returns {{refused: Boolean, reason: String}|null}
+ * @summary Returns the System Settings permission remedy when `reason` names its grant (`-25211` Accessibility,
+ * `-1743` Automation of System Events), or `null` when the denial class names no single pane (`-10004`).
+ * @param {String} reason
+ * @returns {String|null}
  */
-export function assistiveAccessRefusal(error) {
-    return isAssistiveAccessError(error) ? {refused: true, reason: ASSISTIVE_ACCESS_REFUSAL_REASON} : null
+export function windowRefusalRemedy(reason) {
+    const text = String(reason ?? '');
+
+    if (ASSISTIVE_ACCESS_RE.test(text))  return 'grant Accessibility permission to Neo Harness.app in System Settings';
+    if (AUTOMATION_ACCESS_RE.test(text)) return 'grant Automation of System Events permission to Neo Harness.app in System Settings';
+
+    return null
 }
 
 /**
@@ -132,7 +163,8 @@ export function parseWindowRect(stdout) {
 
 /**
  * @summary Reads a seat window's rectangle by pid. `null` when the process has no window yet (`-1719`) or the
- * platform has no adapter; `{refused: true, reason}` when macOS denies Accessibility (`-25211`); never throws.
+ * platform has no adapter; `{refused: true, reason}` when macOS denies Accessibility / AppleEvents (`-25211`,
+ * `-1743`, `-10004`); never throws.
  * @param {Number} pid
  * @param {Object} [options]
  * @param {Function} [options.execFileFn] `(file, args, options) => Promise<{stdout}>`; defaults to `execFile`.
@@ -174,7 +206,8 @@ export async function placeSeatWindow(pid, rect, {execFileFn = execFileAsync, pl
 
 /**
  * @summary Waits for the process's first window and answers its rectangle, polling the reader unless macOS
- * denies Accessibility (`-25211`), which short-circuits immediately on the first denied attempt.
+ * denies Accessibility / AppleEvents (`-25211`, `-1743`, `-10004`), which short-circuits immediately on the
+ * first denied attempt.
  * @param {Number} pid
  * @param {Object} options
  * @param {Function} options.readFn `(pid) => Promise<Object|null>`.

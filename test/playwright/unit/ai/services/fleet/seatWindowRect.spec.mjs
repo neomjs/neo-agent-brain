@@ -4,6 +4,8 @@ import os             from 'node:os';
 import path           from 'node:path';
 import {
     ASSISTIVE_ACCESS_REFUSAL_REASON,
+    AUTOMATION_ACCESS_REFUSAL_REASON,
+    PRIVILEGE_VIOLATION_REFUSAL_REASON,
     SEAT_WINDOW_FILE,
     assistiveAccessRefusal,
     isAssistiveAccessError,
@@ -17,6 +19,7 @@ import {
     readWindowRectArgs,
     sameWindowRect,
     waitForSeatWindowRect,
+    windowRefusalRemedy,
     writeSeatWindowRecord
 } from '../../../../../../ai/services/fleet/seatWindowRect.mjs';
 
@@ -75,10 +78,21 @@ test.describe('seatWindowRect — a GUI seat\'s window rectangle across stop and
 
         const refusing = async () => { throw new Error('System Events got an error: osascript is not allowed assistive access. (-25211)') };
         expect(isAssistiveAccessError(new Error('osascript is not allowed assistive access. (-25211)'))).toBe(true);
-        expect(assistiveAccessRefusal({stderr: 'execution error: Not authorized to send Apple events to System Events. (-1743)'})).toEqual({
+        expect(assistiveAccessRefusal(new Error('osascript is not allowed assistive access. (-25211)'))).toEqual({
             refused: true,
             reason : ASSISTIVE_ACCESS_REFUSAL_REASON
         });
+        expect(assistiveAccessRefusal({stderr: 'execution error: Not authorized to send Apple events to System Events. (-1743)'})).toEqual({
+            refused: true,
+            reason : AUTOMATION_ACCESS_REFUSAL_REASON
+        });
+        expect(assistiveAccessRefusal({stderr: 'execution error: A privilege violation occurred. (-10004)'})).toEqual({
+            refused: true,
+            reason : PRIVILEGE_VIOLATION_REFUSAL_REASON
+        });
+        expect(windowRefusalRemedy(ASSISTIVE_ACCESS_REFUSAL_REASON)).toBe('grant Accessibility permission to Neo Harness.app in System Settings');
+        expect(windowRefusalRemedy(AUTOMATION_ACCESS_REFUSAL_REASON)).toBe('grant Automation of System Events permission to Neo Harness.app in System Settings');
+        expect(windowRefusalRemedy(PRIVILEGE_VIOLATION_REFUSAL_REASON)).toBeNull();
         expect(await readSeatWindowRect(4242, {execFileFn: refusing, platform: 'darwin'})).toEqual({
             refused: true,
             reason : ASSISTIVE_ACCESS_REFUSAL_REASON

@@ -45,6 +45,7 @@ import {
     readSeatWindowRect,
     sameWindowRect,
     waitForSeatWindowRect,
+    windowRefusalRemedy,
     writeSeatWindowRecord
 } from './seatWindowRect.mjs';
 
@@ -1688,7 +1689,7 @@ class FleetLifecycleService extends Base {
      *     `runtimeGeneration` carries the original Start's runtime and retention pin; missing original
      *     bindings are explicitly unknown, even when this Fleet has a newer installed runtime.
      *     `windowPlacement` carries the GUI seat's window restore disposition (`none | pending | kept | restored | refused | unsupported`),
-     *     including macOS Accessibility refusal reasons (`-25211`).
+     *     including macOS Accessibility / AppleEvents refusal reasons (`-25211`, `-1743`, `-10004`).
      */
     status(id) {
         this.adoptLeasedSeats();
@@ -2687,9 +2688,25 @@ class FleetLifecycleService extends Base {
     }
 
     /**
+     * @summary Logs a single structured warning when a seat window capture or restore is refused by macOS,
+     * attaching a System Settings remedy only when the refusal class names its grant (`-25211` Accessibility,
+     * `-1743` Automation of System Events).
+     * @param {String} seatId
+     * @param {'capture'|'restore'} action
+     * @param {{reason: String}} refusal
+     * @private
+     */
+    warnWindowRefusal(seatId, action, refusal) {
+        const remedy = windowRefusalRemedy(refusal?.reason);
+
+        console.warn(`[FleetLifecycleService] seat '${seatId}' window ${action} refused: ${refusal?.reason}${remedy ? ` (${remedy})` : ''}.`)
+    }
+
+    /**
      * @summary Records a GUI seat's window rectangle before the seat is signalled, so the next start can
-     * put the window back. A failed or empty read, a macOS Accessibility refusal (`-25211`), or a minimised
-     * or missing window keeps the previous `.neo-fleet-window.json` record intact on disk.
+     * put the window back. A failed or empty read, a macOS Accessibility / AppleEvents refusal (`-25211`,
+     * `-1743`, `-10004`), or a minimised or missing window keeps the previous `.neo-fleet-window.json`
+     * record intact on disk.
      * @param {Object} record Lifecycle record about to be stopped.
      * @returns {Promise<Object|null>} The recorded rectangle, or `null` when nothing was recorded.
      * @private
@@ -2707,7 +2724,7 @@ class FleetLifecycleService extends Base {
 
         if (isWindowRefusal(rect)) {
             record.windowCapture = {state: 'refused', reason: rect.reason};
-            console.warn(`[FleetLifecycleService] seat '${record.id}' window capture refused: ${rect.reason} (grant Accessibility permission to Neo Harness.app in System Settings).`);
+            this.warnWindowRefusal(record.id, 'capture', rect);
             return null
         }
 
@@ -2723,8 +2740,9 @@ class FleetLifecycleService extends Base {
     /**
      * @summary Puts a started GUI seat's window back where its record says, once the seat has a window:
      * nothing when the harness restored it itself (`kept`), one placement with a read-back otherwise
-     * (`restored`), and a named reason when macOS denies Accessibility (`-25211`), the frame did not take,
-     * or no window appeared (`refused`). The disposition lives on `windowPlacement` and is projected by {@link status}.
+     * (`restored`), and a named reason when macOS denies Accessibility / AppleEvents (`-25211`, `-1743`,
+     * `-10004`), the frame did not take, or no window appeared (`refused`). The disposition lives on
+     * `windowPlacement` and is projected by {@link status}.
      * @param {Object} record Lifecycle record of a seat this server just started.
      * @returns {Promise<Object>} `{state, requested, observed, reason, at}`.
      * @private
@@ -2752,8 +2770,8 @@ class FleetLifecycleService extends Base {
             }
 
             if (isWindowRefusal(observed)) {
-                console.warn(`[FleetLifecycleService] seat '${record.id}' window restore refused: ${observed.reason} (grant Accessibility permission to Neo Harness.app in System Settings).`);
-                return Object.assign(placement, {state: 'refused', reason: observed.reason, saved: {...saved.rect}, at: new Date().toISOString()})
+                this.warnWindowRefusal(record.id, 'restore', observed);
+                return Object.assign(placement, {state: 'refused', reason: observed.reason, at: new Date().toISOString()})
             }
 
             if (!observed) return Object.assign(placement, {state: 'refused', reason: `no window appeared within ${this.windowRestoreTimeoutMs} ms`, at: new Date().toISOString()});
@@ -2767,8 +2785,8 @@ class FleetLifecycleService extends Base {
             placement.at = new Date().toISOString();
 
             if (isWindowRefusal(after)) {
-                console.warn(`[FleetLifecycleService] seat '${record.id}' window restore refused: ${after.reason} (grant Accessibility permission to Neo Harness.app in System Settings).`);
-                return Object.assign(placement, {state: 'refused', reason: after.reason, saved: {...saved.rect}})
+                this.warnWindowRefusal(record.id, 'restore', after);
+                return Object.assign(placement, {state: 'refused', reason: after.reason})
             }
 
             if (isWindowRect(after)) placement.observed = {...after};
@@ -2780,8 +2798,8 @@ class FleetLifecycleService extends Base {
             const refusal = assistiveAccessRefusal(error);
 
             if (refusal) {
-                console.warn(`[FleetLifecycleService] seat '${record.id}' window restore refused: ${refusal.reason} (grant Accessibility permission to Neo Harness.app in System Settings).`);
-                return Object.assign(placement, {state: 'refused', reason: refusal.reason, saved: {...saved.rect}, at: new Date().toISOString()})
+                this.warnWindowRefusal(record.id, 'restore', refusal);
+                return Object.assign(placement, {state: 'refused', reason: refusal.reason, at: new Date().toISOString()})
             }
 
             return Object.assign(placement, {state: 'refused', reason: error?.message ?? String(error), at: new Date().toISOString()})
