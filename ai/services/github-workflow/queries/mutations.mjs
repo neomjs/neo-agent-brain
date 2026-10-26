@@ -554,6 +554,11 @@ export const GET_PULL_REQUEST_ID = `
     $repo: String!
     $prNumber: Int!
   ) {
+    viewer {
+      __typename
+      login
+      databaseId
+    }
     homeRepository: repository(owner: $homeOwner, name: $homeRepo) {
       activationIssue: issue(number: $activationIssueNumber) {
         id

@@ -79,6 +79,11 @@ export const GET_CONVERSATION = `
  */
 export const GET_MERGE_READINESS = `
   query GetMergeReadiness($owner: String!, $repo: String!, $prNumber: Int!) {
+    viewer {
+      __typename
+      login
+      databaseId
+    }
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $prNumber) {
         number

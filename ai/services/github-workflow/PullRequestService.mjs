@@ -7,7 +7,6 @@ import Base                               from 'neo.mjs/src/core/Base.mjs';
 import GraphqlService                     from './GraphqlService.mjs';
 import aiConfig                           from '../../mcp/server/github-workflow/config.mjs';
 import logger                             from '../../mcp/server/github-workflow/logger.mjs';
-import RepositoryService                  from './RepositoryService.mjs';
 import {validateMergeReady}               from '../../scripts/lifecycle/validateMergeReady.mjs';
 import {mergeHoldToken, resolveMergeHold} from './shared/mergeHoldTokens.mjs';
 import {
@@ -559,7 +558,7 @@ function normalizeFamilyActor(actor) {
 }
 
 /** @summary Retains decision-relevant GitHub facts for the coherent two-read readiness observation. */
-function normalizeMergeReadinessSnapshot(pullRequest) {
+function normalizeMergeReadinessSnapshot(pullRequest, viewer) {
     if (!pullRequest) {
         throw createCodedError('PR_NOT_FOUND', 'The pull request does not exist or is not visible.');
     }
@@ -594,6 +593,7 @@ function normalizeMergeReadinessSnapshot(pullRequest) {
 
     return {
         number          : pullRequest.number,
+        viewer          : normalizeFamilyActor(viewer),
         createdAt       : pullRequest.createdAt ?? null,
         state           : pullRequest.state,
         mergedAt        : pullRequest.mergedAt,
@@ -815,8 +815,9 @@ async function buildMergeReadinessProjection({
     identityAssertion,
     owner = aiConfig.owner,
     repo = aiConfig.repo,
-    query = GraphqlService.query.bind(GraphqlService),
-    rest = GraphqlService.rest.bind(GraphqlService),
+    query,
+    rest,
+    source,
     now = () => new Date()
 }) {
     const observedValue = now();
@@ -843,12 +844,35 @@ async function buildMergeReadinessProjection({
 
     const identityBindingComplete = Boolean(principals.memoryCoreIdentity);
 
+    try {
+        if (query === undefined && rest === undefined && source === undefined) {
+            ({query, rest, source} = await GraphqlService.createOperationClient());
+        }
+        if (typeof query !== 'function' || typeof rest !== 'function' || source?.authProvider !== 'github' ||
+            typeof source.providerBaseUrl !== 'string' || !source.providerBaseUrl) {
+            throw createCodedError('GITHUB_SOURCE_UNBOUND', 'Readiness requires one bound GitHub acquisition source.');
+        }
+    } catch (error) {
+        return fail({code: error.code || 'GITHUB_SOURCE_UNBOUND', message: error.message});
+    }
+
+    const readSnapshot = data => {
+        const snapshot = normalizeMergeReadinessSnapshot(data?.repository?.pullRequest, data?.viewer);
+        const viewer = snapshot.viewer;
+        if (!viewer.providerUserId || typeof viewer.login !== 'string' || !viewer.login ||
+            typeof principals.githubLogin !== 'string' ||
+            viewer.login.toLowerCase() !== principals.githubLogin.replace(/^@/, '').toLowerCase()) {
+            throw createCodedError('GITHUB_VIEWER_UNBOUND', 'The readiness response does not prove the expected GitHub viewer.');
+        }
+        return snapshot;
+    };
+
     const variables = {owner, repo, prNumber};
     let firstSnapshot;
 
     try {
         const data = await query(GET_MERGE_READINESS, variables);
-        firstSnapshot = normalizeMergeReadinessSnapshot(data?.repository?.pullRequest);
+        firstSnapshot = readSnapshot(data);
         audit.push({source: 'github-graphql:pull-request-readiness', call: 1, outcome: 'read'});
     } catch (error) {
         return fail({
@@ -877,7 +901,7 @@ async function buildMergeReadinessProjection({
 
     try {
         const data = await query(GET_MERGE_READINESS, variables);
-        finalSnapshot = normalizeMergeReadinessSnapshot(data?.repository?.pullRequest);
+        finalSnapshot = readSnapshot(data);
         audit.push({source: 'github-graphql:pull-request-readiness', call: 2, outcome: 'read'});
     } catch (error) {
         return fail({
@@ -1075,6 +1099,8 @@ async function buildMergeReadinessProjection({
         mergedAt       : snapshot.mergedAt,
         observedAt,
         principals,
+        forgePrincipal: {authProvider: source.authProvider, providerBaseUrl: source.providerBaseUrl,
+            providerUserId: snapshot.viewer.providerUserId},
         identityBinding: {
             complete: identityBindingComplete,
             missing : identityBindingComplete ? [] : ['memoryCoreIdentity']
@@ -4276,7 +4302,8 @@ class PullRequestService extends Base {
             }
 
             try {
-                const idData = await GraphqlService.query(GET_PULL_REQUEST_ID, {
+                const operation = await GraphqlService.createOperationClient();
+                const idData = await operation.query(GET_PULL_REQUEST_ID, {
                     activationIssueNumber: this.reviewBudgetActivationIssueNumber,
                     homeOwner            : aiConfig.owner,
                     homeRepo             : aiConfig.repo,
@@ -4297,8 +4324,14 @@ class PullRequestService extends Base {
                         code   : 'PR_NOT_FOUND'
                     };
                 }
-
-
+                const viewer = normalizeFamilyActor(idData.viewer);
+                if (!viewer.providerUserId || typeof viewer.login !== 'string' || !viewer.login) {
+                    return {
+                        error: 'GitHub viewer unavailable',
+                        code: 'GITHUB_VIEWER_UNBOUND',
+                        message: 'The review context did not return an authenticated User identity; no cached viewer is substituted.'
+                    };
+                }
                 let reviewBudgetAudit;
                 let submissionBody = body;
 
@@ -4323,7 +4356,7 @@ class PullRequestService extends Base {
                         let states = null;
 
                         try {
-                            const resolved = await GraphqlService.query(buildIssueStatesQuery(ownerNumbers), {
+                            const resolved = await operation.query(buildIssueStatesQuery(ownerNumbers), {
                                 owner: target.owner,
                                 repo : target.repo
                             });
@@ -4404,13 +4437,9 @@ class PullRequestService extends Base {
                             pr_number,
                             pullRequest,
                             reviewBudgetOverrideReason,
-                            // The STARTUP-CACHED login, deliberately not the awaiting getter. Admission
-                            // is a hot path and must not acquire an identity over the network while
-                            // deciding whether to admit: a validator that makes its own round trip can
-                            // fail for reasons that have nothing to do with the review it is judging.
-                            // A cold cache resolves to null, which the budget already treats as
-                            // unclassifiable and refuses — the safe direction.
-                            reviewerLogin              : RepositoryService.viewerLogin
+                            // Viewer and history came from the same authenticated response; the
+                            // operation retains that credential through the final mutation.
+                            reviewerLogin              : viewer.login
                         });
 
                         if (budgetValidation.failure) {
@@ -4441,7 +4470,7 @@ class PullRequestService extends Base {
                     }
                 }
 
-                const reviewData = await GraphqlService.query(ADD_PULL_REQUEST_REVIEW, {
+                const reviewData = await operation.query(ADD_PULL_REQUEST_REVIEW, {
                     pullRequestId,
                     body: submissionBody,
                     event

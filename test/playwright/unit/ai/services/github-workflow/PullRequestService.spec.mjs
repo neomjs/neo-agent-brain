@@ -514,6 +514,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
     const dependencies = ({
         snapshots = [pullRequest(), pullRequest()],
         rules = [RULES, RULES],
+        viewers = [{__typename: 'User', login: PRINCIPALS.githubLogin, databaseId: 303}],
         restError = null
     } = {}) => {
         let   queryCall = 0;
@@ -521,8 +522,10 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         const restPaths = [];
 
         return {
+            source: {authProvider: 'github', providerBaseUrl: 'https://api.github.com'},
             now  : () => new Date('2026-07-29T08:00:00.000Z'),
             query: async () => ({
+                viewer: viewers[Math.min(queryCall, viewers.length - 1)],
                 repository: {
                     pullRequest: snapshots[Math.min(queryCall++, snapshots.length - 1)]
                 }
@@ -585,6 +588,84 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         expect(Object.isFrozen(result)).toBe(true);
         expect(Object.isFrozen(result.requiredSet.contexts)).toBe(true);
         expect(deps.calls()).toEqual({queryCall: 2, restCall: 2});
+    });
+
+    test('#1296: readiness requires the same-request expected User, with no viewer fallback', async () => {
+        for (const viewer of [null,
+            {__typename: 'User', login: 'another-viewer', databaseId: 303},
+            {__typename: 'Bot', login: PRINCIPALS.githubLogin, databaseId: 303},
+            {__typename: 'User', login: PRINCIPALS.githubLogin, databaseId: null}]) {
+            const deps = dependencies({viewers: [viewer]});
+            const result = await project(deps);
+            expect(result.blockers[0].code).toBe('GITHUB_VIEWER_UNBOUND');
+            expect(result.marker).toBeUndefined();
+            expect(deps.calls()).toEqual({queryCall: 1, restCall: 0});
+        }
+    });
+
+    test('#1296: a same-login viewer ID change invalidates readiness', async () => {
+        const result = await project(dependencies({viewers: [303, 304].map(databaseId =>
+            ({__typename: 'User', login: PRINCIPALS.githubLogin, databaseId}))}));
+        expect(result.blockers[0].code).toBe('SOURCE_CHANGED_DURING_READ');
+        expect(result.marker).toBeUndefined();
+    });
+
+    test('#1296: the observation binds numeric viewer identity to its acquisition base', async () => {
+        const first = await project(dependencies());
+        const second = await project({...dependencies(), source: {authProvider: 'github', providerBaseUrl: 'https://forge.test/api/v3'}});
+        expect(first.forgePrincipal).toEqual({authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '303'});
+        expect(second.forgePrincipal.providerUserId).toBe('303');
+        expect(second.forgePrincipal.providerBaseUrl).toBe('https://forge.test/api/v3');
+        expect(first.observationId).not.toBe(second.observationId);
+    });
+
+    test('#1296: readiness binds both PR and branch-rule reads before service rebinding', async () => {
+        const service = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
+        const saved = {fetch: globalThis.fetch, token: service.authTokenOverride, graphql: service.apiUrl, rest: service.restApiUrl};
+        const calls = [];
+        try {
+            service.authTokenOverride = 'fixture-a';
+            service.apiUrl = 'https://forge-a.test/api/graphql';
+            service.restApiUrl = 'https://forge-a.test/api/v3';
+            globalThis.fetch = async (url, options) => {
+                calls.push({url, authorization: options.headers.Authorization});
+                service.authTokenOverride = 'fixture-b';
+                service.apiUrl = 'https://forge-b.test/api/graphql';
+                service.restApiUrl = 'https://forge-b.test/api/v3';
+                return options.method === 'POST'
+                    ? Response.json({data: {viewer: {__typename: 'User', login: PRINCIPALS.githubLogin, databaseId: 303},
+                        repository: {pullRequest: pullRequest()}}})
+                    : Response.json(RULES);
+            };
+            const result = await project({now: () => new Date('2026-07-29T08:00:00.000Z')});
+            expect(result.verdict).toBe('merge-ready-observed');
+            expect(result.forgePrincipal.providerBaseUrl).toBe('https://forge-a.test/api/v3');
+            expect(calls).toHaveLength(4);
+            expect(calls.every(call => call.url.startsWith('https://forge-a.test/') && call.authorization.endsWith('fixture-a'))).toBe(true);
+        } finally {
+            globalThis.fetch = saved.fetch;
+            service.authTokenOverride = saved.token;
+            service.apiUrl = saved.graphql;
+            service.restApiUrl = saved.rest;
+        }
+    });
+
+    test('#1296: partial injected bindings refuse without acquiring production credentials', async () => {
+        const service = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
+        const original = service.createOperationClient;
+        let acquisitions = 0, requests = 0;
+        try {
+            service.createOperationClient = async () => { acquisitions++; throw new Error('Unexpected production acquisition'); };
+            for (const partial of [{source: {authProvider: 'github', providerBaseUrl: 'https://forge.test'}},
+                {query: null, rest: null}, {query: async () => { requests++; }}, {rest: async () => { requests++; }}]) {
+                const result = await project(partial);
+                expect(result.blockers[0].code).toBe('GITHUB_SOURCE_UNBOUND');
+            }
+            expect(acquisitions).toBe(0);
+            expect(requests).toBe(0);
+        } finally {
+            service.createOperationClient = original;
+        }
     });
 
     // The approval anchor. `validateMergeReady`'s own spec covers the advisory text; these cover the
@@ -1898,6 +1979,8 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     let RepositoryService;
     let originalQuery;
     let originalViewerLogin;
+    let originalCreateOperationClient;
+    let submittingLogin;
 
     // The submitting reviewer's family is what a round is charged to, so every budget case has to say
     // who is submitting. Seeded as a rostered gpt identity by default; the cases that care about
@@ -1939,6 +2022,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         ...overrides
     });
     const pullRequestLookup = (pullRequestOverrides = {}, activationIssue = activationIssueNode()) => ({
+        viewer: submittingLogin ? {__typename: 'User', login: submittingLogin, databaseId: 42} : null,
         repository: {
             activationIssue,
             pullRequest: pullRequestNode(pullRequestOverrides)
@@ -2190,17 +2274,24 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         RepositoryService  =(await import('../../../../../../ai/services/github-workflow/RepositoryService.mjs')).default;
         originalQuery      = GraphqlService.query.bind(GraphqlService);
         originalViewerLogin = RepositoryService.viewerLogin;
+        originalCreateOperationClient = GraphqlService.createOperationClient;
     });
 
     test.afterAll(() => {
         GraphqlService.query         = originalQuery;
+        GraphqlService.createOperationClient = originalCreateOperationClient;
         // Restored rather than left seeded: `RepositoryService` is a singleton every later spec in this
         // worker shares, and a leaked viewer identity would silently decide another suite's budget.
         RepositoryService.viewerLogin = originalViewerLogin;
     });
 
     test.beforeEach(() => {
-        RepositoryService.viewerLogin = SUBMITTING_LOGIN;
+        submittingLogin = SUBMITTING_LOGIN;
+        RepositoryService.viewerLogin = 'stale-cached-viewer';
+        GraphqlService.createOperationClient = async () => ({
+            source: {authProvider: 'github', providerBaseUrl: 'https://api.github.com'},
+            query: GraphqlService.query
+        });
 
         // Default mock: resolve PR id then return create-shaped review payload.
         // Tests override per-case via reassigning GraphqlService.query.
@@ -2351,6 +2442,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         GraphqlService.query = async query => {
             if (query.includes('GetPullRequestId')) {
                 return {
+                    viewer: pullRequestLookup().viewer,
                     repository: {
                         activationIssue: null,
                         pullRequest    : {
@@ -2720,6 +2812,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             if (queryString.includes('GetPullRequestId')) {
                 observations.push(variables);
                 return {
+                    viewer: pullRequestLookup().viewer,
                     homeRepository  : {activationIssue: activationIssueNode()},
                     targetRepository: {pullRequest: pullRequestNode()}
                 }
@@ -2784,6 +2877,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         GraphqlService.query = async (queryString) => {
             if (queryString.includes('GetPullRequestId')) {
                 return {
+                    viewer: pullRequestLookup().viewer,
                     repository: {
                         pullRequest: {
                             id            : PR_NODE_ID,
@@ -2841,6 +2935,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         GraphqlService.query = async (queryString, variables) => {
             if (queryString.includes('GetPullRequestId')) {
                 return {
+                    viewer: pullRequestLookup().viewer,
                     repository: {
                         pullRequest: {
                             id            : PR_NODE_ID,
@@ -2884,10 +2979,50 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         expect(result.state).toBe('APPROVED');
     });
 
+    test('#1296: review creation keeps one real transport binding and charges its response viewer', async () => {
+        const saved = {fetch: globalThis.fetch, factory: GraphqlService.createOperationClient,
+            token: GraphqlService.authTokenOverride, graphql: GraphqlService.apiUrl, rest: GraphqlService.restApiUrl};
+        const calls = [];
+        try {
+            submittingLogin = 'neo-opus-grace';
+            RepositoryService.viewerLogin = 'neo-gpt-emmy';
+            GraphqlService.authTokenOverride = 'fixture-a';
+            GraphqlService.apiUrl = 'https://forge-a.test/api/graphql';
+            GraphqlService.restApiUrl = 'https://forge-a.test/api/v3';
+            GraphqlService.createOperationClient = originalCreateOperationClient;
+            globalThis.fetch = async (url, options) => {
+                calls.push({url, authorization: options.headers.Authorization});
+                const query = JSON.parse(options.body).query;
+                if (query.includes('GetPullRequestId')) {
+                    GraphqlService.authTokenOverride = 'fixture-b';
+                    GraphqlService.apiUrl = 'https://forge-b.test/api/graphql';
+                    GraphqlService.restApiUrl = 'https://forge-b.test/api/v3';
+                    return Response.json({data: pullRequestLookup({createdAt: '2026-07-16T13:57:04Z',
+                        reviews: {nodes: [priorRequestChanges({reviewer: 'neo-gpt-emmy'})], pageInfo: {hasPreviousPage: false}}})});
+                }
+                expect(query).toContain('AddPullRequestReview');
+                return Response.json({data: {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}}});
+            };
+
+            const result = await PullRequestService.managePrReview({action: 'create', pr_number: 1296,
+                state: 'REQUEST_CHANGES', body: VALID_ORDINARY_REQUEST_CHANGES_BODY});
+            expect(result.error).toBeUndefined();
+            expect(result.reviewBudget.reviewerFamily).toBe('claude');
+            expect(calls).toEqual([1, 2].map(() => ({url: 'https://forge-a.test/api/graphql', authorization: 'bearer fixture-a'})));
+        } finally {
+            globalThis.fetch = saved.fetch;
+            GraphqlService.createOperationClient = saved.factory;
+            GraphqlService.authTokenOverride = saved.token;
+            GraphqlService.apiUrl = saved.graphql;
+            GraphqlService.restApiUrl = saved.rest;
+        }
+    });
+
     test('#14534: action:create + state:APPROVED rejects stale acknowledgment', async () => {
         GraphqlService.query = async (queryString) => {
             if (queryString.includes('GetPullRequestId')) {
                 return {
+                    viewer: pullRequestLookup().viewer,
                     repository: {
                         pullRequest: {
                             id            : PR_NODE_ID,
@@ -3118,7 +3253,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}}
         };
 
-        RepositoryService.viewerLogin = 'neo-opus-grace';
+        submittingLogin = 'neo-opus-grace';
 
         const claudeRound = await PullRequestService.managePrReview({
             action   : 'create',
@@ -3136,7 +3271,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         // The mirror, on the identical fixture: the family that already spent its round is refused.
         // Without this half the test above would pass on a guard that admits everyone.
-        RepositoryService.viewerLogin = 'neo-gpt-emmy';
+        submittingLogin = 'neo-gpt-emmy';
 
         const gptSecondRound = await PullRequestService.managePrReview({
             action   : 'create',
@@ -3164,9 +3299,9 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         for (const [label, login] of [
             ['an unrostered human contributor', 'some-human-contributor'],
-            ['a cold viewer cache',             null]
+            ['a missing same-request viewer',   null]
         ]) {
-            RepositoryService.viewerLogin = login;
+            submittingLogin = login;
 
             const result = await PullRequestService.managePrReview({
                 action   : 'create',
@@ -3175,8 +3310,8 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
                 body     : VALID_ORDINARY_REQUEST_CHANGES_BODY
             });
 
-            expect(result.code, label).toBe('PR_REVIEW_BUDGET_VALIDATION_FAILED');
-            expect(result.message, label).toContain('not a classifiable maintainer family');
+            expect(result.code, label).toBe(login ? 'PR_REVIEW_BUDGET_VALIDATION_FAILED' : 'GITHUB_VIEWER_UNBOUND');
+            expect(result.message, label).toContain(login ? 'not a classifiable maintainer family' : 'no cached viewer is substituted');
         }
 
         // Note the shape: a PR with ZERO prior reviews. Under the old global count this was the freest
@@ -3944,7 +4079,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
             return {addPullRequestReview: {pullRequestReview: {...REVIEW_NODE, state: 'CHANGES_REQUESTED'}}}
         };
 
-        RepositoryService.viewerLogin = 'neo-opus-grace';
+        submittingLogin = 'neo-opus-grace';
 
         const result = await PullRequestService.managePrReview({
             action   : 'create',
@@ -5169,7 +5304,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
         // ...and a different family gets no separate allowance either: the bound is the demand, so
         // there is no per-family COMMENT quota to spend in the first place.
-        RepositoryService.viewerLogin = 'neo-opus-grace';
+        submittingLogin = 'neo-opus-grace';
 
         const otherFamily = await submitComment(postBudgetCommentLookup());
 

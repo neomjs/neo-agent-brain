@@ -403,14 +403,18 @@ paths:
         twice around two effective branch-rules reads, compares the snapshots, selects every job
         from the latest exact-head invocation of each GitHub Actions workflow, derives
         required-vs-emitted context states, and feeds them to the existing `validateMergeReady()`
-        predicate. A missing Memory Core principal does not hide readable GitHub evidence: the
-        projection returns `verdict: unavailable` with a separate `checksVerdict`, names the missing
-        binding, and withholds the identity-bound marker. This preserves B-prime verdict semantics
-        while removing the need for a hand-rolled checks read. Only a positive observation with all
+        predicate. A missing Memory Core principal leaves the artifact verdict and `checksVerdict`
+        readable, names the missing binding, and withholds the identity-bound marker with
+        `certification.outcome: unbound-certification-withheld`. Only a positive observation with all
         three principals carries a copyable `[merge-eligible][B-prime:...]` marker. Negative or
         unreadable observations contain diagnostics and no marker. This resident-local observation
         reports what was merge-ready at `observedAt`; it never grants merge authority or promises
         later validity.
+
+        The PR and branch-rule reads share one captured GitHub credential and API pair. Each PR
+        response must prove the expected viewer with its typed numeric user ID; a stale viewer
+        cache is not a substitute. `forgePrincipal` binds that ID to the acquisition API base and
+        participates in the observation digest. Rebinding the service affects the next operation.
 
         **When to Use:**
         Use this tool to get the context of a pull request or issue — the initial proposal/body and the discussion history.
