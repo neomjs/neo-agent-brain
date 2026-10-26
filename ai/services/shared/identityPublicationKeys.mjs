@@ -97,6 +97,33 @@ export function familyReceiptKey({planeId, issuer, operationId} = {}) {
 }
 
 /**
+ * @summary Names the plane's single lineage without giving a changed issuer a fresh namespace.
+ * @param {Object} options
+ * @param {String} options.planeId Independently admitted plane identity.
+ * @returns {String} Protected lineage node key.
+ */
+export function familyLineageKey({planeId} = {}) {
+    return recordKey('lineage', [identityPart(planeId, 'planeId')]);
+}
+
+/**
+ * @summary Names the exact reserved or bound first-generation head before dispatch or after observation.
+ * @param {Object} options Validated boot lineage components.
+ * @param {String} options.planeId Plane identity.
+ * @param {String} options.issuer Stable Fleet issuer.
+ * @param {Object} options.reservation Original attempt, kid and host run.
+ * @param {String|null} options.fingerprint Derived public fingerprint; null before generation.
+ * @returns {String} Deterministic head; equality is evidence, never generation authority.
+ */
+export function familyLineageHead({planeId, issuer, reservation, fingerprint} = {}) {
+    if (fingerprint !== null && (typeof fingerprint !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(fingerprint))) {
+        throw new TypeError('Lineage fingerprint must be explicit null or a derived SHA-256 fingerprint.');
+    }
+    return recordKey('lineage-head', [identityPart(planeId, 'planeId'), identityPart(issuer, 'issuer'),
+        ...['attemptId', 'kid', 'originRunId'].map(key => identityPart(reservation?.[key], key)), fingerprint]);
+}
+
+/**
  * @summary Names one explicit operator act's retained retry custody, never its canonical family fact.
  * The target incarnation and logical contents live in this record; changing them must conflict,
  * not select a fresh key. Losing a client token creates another act and cannot imply a retry.

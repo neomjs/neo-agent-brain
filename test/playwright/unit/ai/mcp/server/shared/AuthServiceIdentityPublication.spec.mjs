@@ -189,9 +189,27 @@ test.describe('identity publication actual HTTP boundary', () => {
         });
     }
 
+    test('reserve-only boot rejects every signature while ordinary authenticated transport remains available', async () => {
+        const descriptor = {...boundary(), publicKeys: new Map()};
+        await boot(descriptor);
+        descriptor.publicKeys.set('key-a', first.publicKey);
+        TransportService.app.get('/ordinary-probe', (req, res) => res.json({identity: req.auth.userId}));
+        expect((await send({envelope: signed()}, {headers: {authorization: 'Bearer fixture-pat'}})).status).toBe(401);
+        expect(admitted).toEqual([]);
+        expect(providerCalls).toBe(0);
+        expect(await send(undefined, {route: '/ordinary-probe', method: 'GET', headers: {authorization: 'Bearer fixture-pat'}}))
+            .toEqual({status: 200, body: {identity: 'operator'}});
+    });
+
+    test('reserve-only configuration still rejects an unsupported auth profile before listening', async () => {
+        await expect(boot({...boundary(), publicKeys: new Map()}, config({}, {authMiddleware() {}})))
+            .rejects.toThrow('standard github-pat profile');
+        expect(TransportService.httpServer?.listening).not.toBe(true);
+    });
+
     test('partial provision and nonpublic trust refuse boot instead of disappearing', async () => {
         for (const descriptor of [
-            {}, {...boundary(), admit: null}, {...boundary(), publicKeys: new Map()},
+            {}, {...boundary(), admit: null}, {...boundary(), publicKeys: null},
             {...boundary(), publicKeys: new Map([['key-a', first.privateKey]])},
             {...boundary(), publicKeys: new Map([['key-a', {type: 'public', asymmetricKeyType: 'ed25519', key: first.privateKey}]])}
         ]) {

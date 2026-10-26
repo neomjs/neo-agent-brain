@@ -39,6 +39,14 @@ function refuse() {
 /** @summary Builds a null-safe prefix test over a fixed internal SQL expression and namespace. */
 const prefixSql = (expression, prefix) => `COALESCE(substr(${expression}, 1, ${prefix.length}) = '${prefix}', 0)`;
 
+/** @summary Fixed persisted-node predicate shared by the raw migration census. */
+export const IDENTITY_PUBLICATION_NODE_SQL = `(
+    ${prefixSql('Nodes.id', FAMILY_RECORD_PREFIX)} OR
+    ${prefixSql("json_extract(Nodes.data, '$.id')", FAMILY_RECORD_PREFIX)} OR
+    ${prefixSql("json_extract(Nodes.data, '$.label')", FAMILY_GRAPH_TYPE_PREFIX)} OR
+    ${prefixSql("json_extract(Nodes.data, '$.type')", FAMILY_GRAPH_TYPE_PREFIX)}
+)`;
+
 /**
  * Persisted edge predicate for bulk decay and cascading deletion. Only fixed source expressions
  * and namespace constants enter this SQL; it is not a caller-supplied query builder.
@@ -61,6 +69,26 @@ export const IDENTITY_PUBLICATION_EDGE_SQL = `(
                ${prefixSql("json_extract(familyEndpoint.data, '$.label')", FAMILY_GRAPH_TYPE_PREFIX)} OR
                ${prefixSql("json_extract(familyEndpoint.data, '$.type')", FAMILY_GRAPH_TYPE_PREFIX)}))
 )`;
+
+/**
+ * @summary Identifies existing admitted history and the endpoints raw migrations must retain.
+ * Apply owners take this unscoped census under their physical write transaction and still guard
+ * proposed mutations. A caller-held census does not authorize a later write or provision history.
+ * @param {Object} sqlite Physical graph connection.
+ * @returns {{nodes: Set<String>, edges: Set<String>, endpoints: Set<String>}}
+ */
+export function readIdentityPublicationPreservation(sqlite) {
+    const nodes = new Set(sqlite.prepare(`SELECT id FROM Nodes WHERE ${IDENTITY_PUBLICATION_NODE_SQL}`).all().map(row => row.id));
+    const edges = new Set(), endpoints = new Set();
+    for (const row of sqlite.prepare(`SELECT id, source, target, data FROM Edges WHERE ${IDENTITY_PUBLICATION_EDGE_SQL}`).all()) {
+        edges.add(row.id);
+        const data = JSON.parse(row.data);
+        for (const id of [row.source, row.target, data.source, data.target]) {
+            if (typeof id === 'string') endpoints.add(id);
+        }
+    }
+    return {nodes, edges, endpoints};
+}
 
 /**
  * @summary Refuses ordinary graph mutation of either proposed or persisted protected state.

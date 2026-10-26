@@ -680,12 +680,13 @@ class AuthService extends Base {
         if (!boundary || typeof boundary !== 'object' || Array.isArray(boundary) ||
             typeof boundary.audience !== 'string' || !boundary.audience ||
             typeof boundary.issuer !== 'string' || !boundary.issuer ||
-            !(boundary.publicKeys instanceof Map) || boundary.publicKeys.size === 0 ||
+            !(boundary.publicKeys instanceof Map) ||
             typeof boundary.admit !== 'function') {
-            throw new Error('AuthService: identity publication requires complete public trust and an MC admission callback.');
+            throw new Error('AuthService: identity publication requires a public-key map and an MC admission callback.');
         }
 
         const {audience, issuer, admit} = boundary;
+        // An empty snapshot is reserve-only; phase-two trust requires a new composition.
         const publicKeys = new Map(boundary.publicKeys);
 
         for (const [kid, key] of publicKeys) {
