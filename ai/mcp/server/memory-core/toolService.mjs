@@ -39,12 +39,8 @@ import {exploreLaneLandscape}            from '../../../services/graph/exploreLa
 import {exploreMemoryHistory}            from '../../../services/memory-core/helpers/exploreMemoryHistory.mjs';
 import {makeChatModelGenerate}           from '../../../services/memory-core/helpers/chatModelGenerate.mjs';
 import {
-    readSyncedPullRecords,
-    readWorkGraphIssueRecords
-}                                    from '../../../services/graph/issueFocusSections.mjs';
-import {
     makeLandscapeCensusSource,
-    makeMaterializedCorpusCensusReaders
+    makeRefusingCensusPageReader
 }                                    from '../../../services/graph/laneLandscapeCensusSource.mjs';
 import {synthesizeTemporalBirdView}  from '../../../services/memory-core/helpers/temporalBirdViewSynthesizer.mjs';
 import {
@@ -194,16 +190,20 @@ const exploreLaneLandscapeOp = () => {
     return exploreLaneLandscape({
         now : new Date(),
         deps: {
-            // The graph supplies relation edges through its RLS seam, while the open-work census reads
-            // the orchestrator's materialized corpus projection when present on this plane and degrades
-            // via `CensusSourceUnavailable` when the materialized tree is absent.
+            // The graph still supplies relation edges — the one thing it genuinely owns — through its RLS
+            // seam. The open-work census does NOT resolve here: it reads GitHub, which is host-edge, so
+            // this server refuses the read instead of reaching across the plane for it.
+            //
+            // Refusing rather than omitting, because `makeLandscapeCensusSource` is fail-closed on its
+            // injections: dropping the readers would throw and take `explore_lane_landscape` down with the
+            // plane violation. Refusing rather than returning an empty page, because an empty page reports
+            // `hasNextPage: false` — the walk would call that PROVEN exhaustion and the tool would assert
+            // zero open issues and zero open pull requests, a confident-wrong answer indistinguishable
+            // from a genuinely empty backlog. A refusal lands as `exhausted: false` with a reason,
+            // callers derive `coverage.degraded` from that, and the counts stay `unknown`.
             ...makeLandscapeCensusSource({
-                ...makeMaterializedCorpusCensusReaders({
-                    root             : AiConfig.orchestrator.corpusProjection.materializedRoot,
-                    unavailableReason: censusUnavailableOnThisPlane,
-                    readIssues       : readWorkGraphIssueRecords,
-                    readPulls        : readSyncedPullRecords
-                }),
+                fetchIssuesPage      : makeRefusingCensusPageReader(censusUnavailableOnThisPlane),
+                fetchPullRequestsPage: makeRefusingCensusPageReader(censusUnavailableOnThisPlane),
                 listEdgeRecordsByType: args => GraphService.listEdgeRecordsByType(args),
                 pageLimit            : census.pageLimit,
                 maxPages             : census.maxPages,
