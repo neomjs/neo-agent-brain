@@ -74,7 +74,7 @@ export function launch({argv = process.argv.slice(2), env = process.env, homedir
  * @param {Object} [proc=process]
  * @returns {Boolean}
  */
-function isParentProcessAlive(ppid, proc = process) {
+export function isParentProcessAlive(ppid, proc = process) {
     if (!Number.isInteger(ppid) || ppid <= 1) {
         return false
     }
@@ -104,7 +104,7 @@ function isParentProcessAlive(ppid, proc = process) {
  */
 export function superviseChild(child, {pollIntervalMs = 200, proc = process} = {}) {
     const
-        initialPpid = proc?.ppid,
+        initialPpid = proc.ppid,
         signals     = ['SIGINT', 'SIGTERM', 'SIGHUP'],
         listeners   = new Map();
 
@@ -116,18 +116,18 @@ export function superviseChild(child, {pollIntervalMs = 200, proc = process} = {
         terminated = true;
 
         try {
-            child?.kill?.(signal)
+            child.kill(signal)
         } catch {}
     };
 
     for (const signal of signals) {
         const handler = () => terminateChild(signal);
         listeners.set(signal, handler);
-        proc?.on?.(signal, handler)
+        proc.on(signal, handler)
     }
 
     const onProcExit = () => terminateChild('SIGTERM');
-    proc?.once?.('exit', onProcExit);
+    proc.once('exit', onProcExit);
 
     const parentTimer = Number.isInteger(initialPpid) && initialPpid > 1
         ? setInterval(() => {
@@ -137,21 +137,21 @@ export function superviseChild(child, {pollIntervalMs = 200, proc = process} = {
         }, pollIntervalMs)
         : null;
 
-    parentTimer?.unref?.();
+    parentTimer?.unref();
 
     const dispose = () => {
         if (parentTimer) {
             clearInterval(parentTimer)
         }
         for (const [signal, handler] of listeners) {
-            proc?.off?.(signal, handler)
+            proc.off(signal, handler)
         }
-        proc?.off?.('exit', onProcExit)
+        proc.off('exit', onProcExit)
     };
 
-    child?.on?.('exit', (code, signal) => {
+    child.on('exit', (code, signal) => {
         dispose();
-        proc?.exit?.(code ?? (signal ? 1 : 0))
+        proc.exit(code ?? (signal ? 1 : 0))
     });
 
     return dispose

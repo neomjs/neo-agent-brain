@@ -1109,24 +1109,12 @@ class ConnectionService extends Base {
                 throw new Error('Failed to connect to Neural Link Bridge after spawn attempt.');
             }
         } else if (action === 'stop') {
-            this.manualDisconnect = true;
-            this.clearReconnectTimer();
-
             // 1. Disconnect Client
-            if (this.bridgeSocket) {
-                this.bridgeSocket.close();
-                this.bridgeSocket = null;
-            }
-
-            this.sessionData.clear();
-            this.activeAgents.clear();
+            this.disconnectFromBridge();
 
             // 2. Kill Process
             if (this.bridgeProcess) {
-                const bridgeProcess = this.bridgeProcess,
-                      port          = this.spawnedBridgePort ?? aiConfig.port;
-
-                await this.stopBridgeProcess(bridgeProcess, {port});
+                await this.stopBridgeProcess(this.bridgeProcess, {port: this.spawnedBridgePort});
                 this.bridgeProcess     = null;
                 this.spawnedBridgePort = null;
                 logger.info('Bridge process terminated.');
@@ -1141,14 +1129,38 @@ class ConnectionService extends Base {
     }
 
     /**
+     * @summary Marks the connection as manually disconnected, clears the reconnect timer, closes any
+     * active Bridge WebSocket, and clears tracked session state.
+     * @returns {void}
+     */
+    disconnectFromBridge() {
+        this.manualDisconnect = true;
+        this.clearReconnectTimer();
+
+        if (this.bridgeSocket) {
+            try {
+                this.bridgeSocket.close()
+            } catch {}
+            this.bridgeSocket = null
+        }
+
+        this.sessionData.clear();
+        this.activeAgents.clear()
+    }
+
+    /**
      * @summary Checks whether a TCP listener is accepting connections on the given Bridge port.
-     * @param {Object} [options={}]
+     * @param {Object} options
      * @param {String} [options.host='127.0.0.1']
-     * @param {Number} [options.port=this.spawnedBridgePort ?? aiConfig.port]
+     * @param {Number} options.port
      * @param {Number} [options.timeoutMs=200]
      * @returns {Promise<Boolean>}
      */
-    isBridgePortListening({host = '127.0.0.1', port = this.spawnedBridgePort ?? aiConfig.port, timeoutMs = 200} = {}) {
+    isBridgePortListening({host = '127.0.0.1', port, timeoutMs = 200} = {}) {
+        if (!Number.isInteger(port) || port <= 0) {
+            return Promise.reject(new Error('ConnectionService#isBridgePortListening requires a valid port.'))
+        }
+
         return new Promise(resolve => {
             const socket  = net.connect({host, port});
             let   settled = false;
@@ -1188,7 +1200,7 @@ class ConnectionService extends Base {
         }
 
         try {
-            bridgeProcess?.kill?.(signal)
+            bridgeProcess.kill(signal)
         } catch (error) {
             if (error?.code !== 'ESRCH') {
                 logger.warn(`[ConnectionService] Failed to signal Bridge process (${signal}): ${error.message}`)
@@ -1234,19 +1246,22 @@ class ConnectionService extends Base {
      * This method signals the process group, polls until both the group and the Bridge port close, escalates
      * to `SIGKILL` when needed, and throws if the port remains open after `timeoutMs`.
      * @param {Object} bridgeProcess
-     * @param {Object} [options={}]
+     * @param {Object} options
      * @param {Number} [options.pollIntervalMs=50]
-     * @param {Number} [options.port=this.spawnedBridgePort ?? aiConfig.port]
+     * @param {Number} options.port
      * @param {Number} [options.sigkillAfterMs=1500]
      * @param {Number} [options.timeoutMs=5000]
      * @returns {Promise<void>}
      */
     async stopBridgeProcess(bridgeProcess, {
         pollIntervalMs = 50,
-        port           = this.spawnedBridgePort ?? aiConfig.port,
+        port,
         sigkillAfterMs = 1500,
         timeoutMs      = 5000
     } = {}) {
+        if (!Number.isInteger(port) || port <= 0) {
+            throw new Error('ConnectionService#stopBridgeProcess requires a valid port.')
+        }
         const startedAt = Date.now();
         let   escalated = false;
 

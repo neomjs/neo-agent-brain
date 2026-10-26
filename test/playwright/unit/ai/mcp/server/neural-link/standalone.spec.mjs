@@ -166,7 +166,6 @@ test.describe('ai/mcp/server/neural-link/standalone', () => {
 
         fs.mkdirSync(binDir, {recursive: true});
         fs.symlinkSync(STANDALONE_BIN, path.join(binDir, 'neo-neural-link'));
-        fs.chmodSync(STANDALONE_BIN, 0o755);
         fs.writeFileSync(path.join(workDir, 'package.json'), JSON.stringify({name: 'nl-npx-consumer', private: true}));
 
         const npxChild = spawn(npxCmd, ['--no-install', 'neo-neural-link'], {
@@ -204,6 +203,48 @@ test.describe('ai/mcp/server/neural-link/standalone', () => {
             try { npxChild.kill('SIGKILL') } catch {}
             await bridge.close();
             fs.rmSync(workDir, {force: true, recursive: true})
+        }
+    });
+
+    // The cloud-walk shape: a parent that dies on SIGTERM without forwarding it. `; true` keeps `sh` from
+    // exec-ing node, and the test keeps holding stdin's write end, so only a parent-death check can end the server.
+    test('SIGTERM to a parent shell that does not forward it still ends the MCP server (#1302)', async () => {
+        const
+            bridge  = await startLoopbackBridge(),
+            homedir = fs.mkdtempSync(path.join(os.tmpdir(), 'nl-sh-parent-')),
+            shChild = spawn('/bin/sh', ['-c', `"${process.execPath}" "${STANDALONE_BIN}"; true`], {
+                env: {
+                    ...process.env,
+                    HOME               : homedir,
+                    NEO_NL_AUTO_CONNECT: 'true',
+                    NEO_NL_PORT        : String(bridge.port),
+                    UNIT_TEST_MODE     : 'true'
+                },
+                stdio: ['pipe', 'pipe', 'pipe']
+            });
+
+        try {
+            await expect.poll(() => bridge.connections.size, {timeout: 10000}).toBe(1);
+
+            const
+                [bridgeSocket] = [...bridge.connections],
+                socketClosed   = once(bridgeSocket, 'close');
+
+            shChild.kill('SIGTERM');
+
+            await Promise.race([
+                socketClosed,
+                new Promise((_, reject) => setTimeout(
+                    () => reject(new Error('MCP server remained alive after its parent shell died')),
+                    5000
+                ))
+            ]);
+
+            expect(bridge.connections.size).toBe(0);
+        } finally {
+            try { shChild.kill('SIGKILL') } catch {}
+            await bridge.close();
+            fs.rmSync(homedir, {force: true, recursive: true})
         }
     });
 });

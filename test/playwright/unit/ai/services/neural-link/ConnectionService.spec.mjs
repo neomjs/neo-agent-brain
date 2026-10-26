@@ -1046,15 +1046,16 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
             try {
                 ConnectionService.bridgeProcess     = {kill() {}};
                 ConnectionService.spawnedBridgePort = stuckPort;
-                ConnectionService.stopBridgeProcess = originalStopBridgeProcess.bind(ConnectionService);
-
-                await expect(
-                    ConnectionService.stopBridgeProcess(ConnectionService.bridgeProcess, {
+                ConnectionService.stopBridgeProcess = (bridgeProcess, options = {}) =>
+                    originalStopBridgeProcess.call(ConnectionService, bridgeProcess, {
+                        ...options,
                         pollIntervalMs: 20,
-                        port          : stuckPort,
                         sigkillAfterMs: 40,
                         timeoutMs     : 100
-                    })
+                    });
+
+                await expect(
+                    ConnectionService.manageConnection({action: 'stop'})
                 ).rejects.toThrow(`Failed to stop Neural Link Bridge: port ${stuckPort} is still listening.`);
             } finally {
                 await new Promise(resolve => stuckServer.close(resolve))

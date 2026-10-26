@@ -6,6 +6,7 @@ import HealthService           from '../../../services/neural-link/HealthService
 import {listTools, callTool}   from './toolService.mjs';
 import {attestDiagnosticPaths} from './diagnosticPathAttestation.mjs';
 import {formatWithImages}      from './imageContent.mjs';
+import {isParentProcessAlive}  from './standalone.mjs';
 
 let _turnId = 0;
 
@@ -231,25 +232,6 @@ class Server extends BaseServer {
     }
 
     /**
-     * @summary Checks whether the initial parent process of a stdio server is still alive.
-     * @param {Number} ppid
-     * @param {Object} [proc=process]
-     * @returns {Boolean}
-     */
-    isParentProcessAlive(ppid, proc = process) {
-        if (!Number.isInteger(ppid) || ppid <= 1) {
-            return false
-        }
-
-        try {
-            proc.kill(ppid, 0);
-            return true
-        } catch (error) {
-            return error?.code === 'EPERM'
-        }
-    }
-
-    /**
      * @summary Installs stdio EOF/close, termination-signal, and parent-orphan exit handlers for the
      * stdio MCP server process.
      *
@@ -268,34 +250,34 @@ class Server extends BaseServer {
         this.#disposeStdioLifecycle?.();
 
         const
-            initialPpid = proc?.ppid,
+            initialPpid = proc.ppid,
             onStdinEnd  = () => void this.shutdown({exitCode: 0, proc}),
             onSignal    = () => void this.shutdown({exitCode: 0, proc}),
             parentTimer = Number.isInteger(initialPpid) && initialPpid > 1
                 ? setInterval(() => {
-                    if (proc.ppid !== initialPpid || !this.isParentProcessAlive(initialPpid, proc)) {
+                    if (proc.ppid !== initialPpid || !isParentProcessAlive(initialPpid, proc)) {
                         void this.shutdown({exitCode: 0, proc})
                     }
                 }, pollIntervalMs)
                 : null;
 
-        parentTimer?.unref?.();
+        parentTimer?.unref();
 
-        stdin?.once?.('end',   onStdinEnd);
-        stdin?.once?.('close', onStdinEnd);
-        proc?.once?.('SIGINT',  onSignal);
-        proc?.once?.('SIGTERM', onSignal);
-        proc?.once?.('SIGHUP',  onSignal);
+        stdin.once('end',   onStdinEnd);
+        stdin.once('close', onStdinEnd);
+        proc.once('SIGINT',  onSignal);
+        proc.once('SIGTERM', onSignal);
+        proc.once('SIGHUP',  onSignal);
 
         const dispose = () => {
             if (parentTimer) {
                 clearInterval(parentTimer)
             }
-            stdin?.off?.('end',   onStdinEnd);
-            stdin?.off?.('close', onStdinEnd);
-            proc?.off?.('SIGINT',  onSignal);
-            proc?.off?.('SIGTERM', onSignal);
-            proc?.off?.('SIGHUP',  onSignal);
+            stdin.off('end',   onStdinEnd);
+            stdin.off('close', onStdinEnd);
+            proc.off('SIGINT',  onSignal);
+            proc.off('SIGTERM', onSignal);
+            proc.off('SIGHUP',  onSignal);
 
             if (this.#disposeStdioLifecycle === dispose) {
                 this.#disposeStdioLifecycle = null
@@ -304,7 +286,7 @@ class Server extends BaseServer {
 
         this.#disposeStdioLifecycle = dispose;
 
-        if (stdin?.readableEnded || stdin?.destroyed) {
+        if (stdin.readableEnded || stdin.destroyed) {
             void this.shutdown({exitCode: 0, proc})
         }
 
@@ -326,23 +308,16 @@ class Server extends BaseServer {
 
         this.#shutdownPromise = (async () => {
             this.#disposeStdioLifecycle?.();
-            this.stopHeapObservation?.();
+            this.stopHeapObservation();
+            ConnectionService.disconnectFromBridge();
 
-            ConnectionService.manualDisconnect = true;
-            ConnectionService.clearReconnectTimer();
-
-            if (ConnectionService.bridgeSocket) {
+            if (this.mcpServer) {
                 try {
-                    ConnectionService.bridgeSocket.close()
+                    await this.mcpServer.close()
                 } catch {}
-                ConnectionService.bridgeSocket = null
             }
 
-            try {
-                await this.mcpServer?.close?.()
-            } catch {}
-
-            proc?.exit?.(exitCode)
+            proc.exit(exitCode)
         })();
 
         return this.#shutdownPromise
