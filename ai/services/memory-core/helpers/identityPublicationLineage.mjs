@@ -1,9 +1,9 @@
-import {compileIdentityPublicationBoot} from './identityPublicationBoot.mjs';
-import {IDENTITY_PUBLICATION_FENCE_TABLE, readIdentityPublicationFence} from './identityPublicationFence.mjs';
-import {readIdentityPublicationPreservation} from '../../../graph/identityPublicationProtection.mjs';
-import {familyLineageHead, familyLineageKey} from '../../shared/identityPublicationKeys.mjs';
-import {IDENTITY_PUBLICATION_PURPOSE} from '../../shared/identityPublicationSignature.mjs';
-import {stringifyCanonicalJson} from '../../shared/canonicalJson.mjs';
+import {compileIdentityPublicationBoot}                                   from './identityPublicationBoot.mjs';
+import {IDENTITY_PUBLICATION_FENCE_TABLE, readIdentityPublicationFence}   from './identityPublicationFence.mjs';
+import {readIdentityPublicationPreservation}                              from '../../../graph/identityPublicationProtection.mjs';
+import {familyLineageHead, familyLineageKey}                              from '../../shared/identityPublicationKeys.mjs';
+import {IDENTITY_PUBLICATION_PURPOSE, verifyIdentityPublicationSignature} from '../../shared/identityPublicationSignature.mjs';
+import {stringifyCanonicalJson}                                           from '../../shared/canonicalJson.mjs';
 
 /**
  * @module ai/services/memory-core/helpers/identityPublicationLineage
@@ -27,7 +27,7 @@ function witness(state, target, code, lineage) {
 
 /** @summary Reads canonical protected bytes and revalidates public-key evidence without cache hydration. */
 function readLineage(db, target) {
-    const id = familyLineageKey(target);
+    const id  = familyLineageKey(target);
     const row = db.prepare('SELECT id, user_id, data FROM Nodes WHERE id = ?').get(id);
     if (!row) return null;
     const node = JSON.parse(row.data), value = node.properties;
@@ -38,7 +38,7 @@ function readLineage(db, target) {
     }
     const compiled = compileIdentityPublicationBoot(stringifyCanonicalJson({version: value.version,
         target: value.target, issuer: value.issuer, reservation: value.reservation,
-        trust: value.publicKey === null ? null : [{kid: value.reservation.kid, publicKey: value.publicKey}]}), target);
+        trust : value.publicKey === null ? null : [{kid: value.reservation.kid, publicKey: value.publicKey}]}), target);
     const fingerprint = compiled.descriptor.trust?.[0].fingerprint ?? null;
     if (value.fingerprint !== fingerprint || value.head !== familyLineageHead({...value, planeId: target.planeId})) {
         throw new Error('Malformed lineage binding.');
@@ -69,6 +69,36 @@ function observe(db, descriptor, target) {
     const conflict = disagreement(value, descriptor);
     if (conflict) return witness('conflict', target, conflict, value);
     return witness(value.publicKey === null ? 'reserved' : 'bound', target, null, value);
+}
+
+/**
+ * @summary Rechecks signed delivery against consumed authority inside the admission owner's transaction.
+ * A prior read witness is insufficient: current configuration must supply public trust, physical
+ * lineage must agree with it, and the restore fence must still be clear. The owner supplies its
+ * clock sample after acquiring serialization. This reads only; it never reserves or clears state.
+ * The public witness API keeps its separate refusal of uncommitted transactions.
+ * @param {Object} db Owner's physical SQLite connection, already in its admission transaction.
+ * @param {String|null} bootText Trusted resolved boot descriptor, never request-provided configuration.
+ * @param {Object} target Independently resolved served plane/root.
+ * @param {String} token Original compact signed bytes, not a caller's authenticated flag or envelope.
+ * @param {Number} now The owner's current shared-clock sample.
+ * @returns {Object} Authenticated immutable envelope or explicit refusal; no operation is admitted here.
+ */
+export function verifyIdentityPublicationInTransaction(db, bootText, target, token, now) {
+    const refuse = code => ({authenticated: false, code});
+    if (!db?.open) return refuse('publication-graph-unavailable');
+    if (!db.inTransaction) return refuse('publication-transaction-required');
+    try {
+        const compiled = compileIdentityPublicationBoot(bootText, target);
+        if (!compiled) return refuse('publication-not-provisioned');
+        if (compiled.descriptor.trust === null) return refuse('publication-trust-unavailable');
+        const current = observe(db, compiled.descriptor, target);
+        if (current.state !== 'bound') return refuse(current.code ?? 'publication-lineage-unbound');
+        return verifyIdentityPublicationSignature(token, {audience: target.planeId,
+            issuer: compiled.descriptor.issuer, publicKeys: compiled.publicKeys, now});
+    } catch {
+        return refuse('publication-history-unavailable');
+    }
 }
 
 /**
@@ -111,8 +141,8 @@ export function consumeIdentityPublicationBoot(db, bootText, target) {
         if (db.inTransaction) return witness('unadmitted', target, 'publication-transaction-in-progress');
         return db.transaction(() => {
             const {descriptor} = compiled;
-            let value = readLineage(db, target);
-            const hasFence = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(IDENTITY_PUBLICATION_FENCE_TABLE));
+            let   value        = readLineage(db, target);
+            const hasFence     = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(IDENTITY_PUBLICATION_FENCE_TABLE));
             if (hasFence) {
                 const fence = readIdentityPublicationFence(db, target);
                 if (fence.state === 'fenced') return witness('fenced', target, 'publication-restore-fenced');
@@ -127,7 +157,7 @@ export function consumeIdentityPublicationBoot(db, bootText, target) {
                 if (descriptor.trust !== null) return witness('conflict', target, 'lineage-reservation-required');
                 value = {version: 1, target: {...target}, issuer: descriptor.issuer,
                     reservation: {...descriptor.reservation}, publicKey: null, fingerprint: null,
-                    head: familyLineageHead({planeId: target.planeId, issuer: descriptor.issuer,
+                    head       : familyLineageHead({planeId: target.planeId, issuer: descriptor.issuer,
                         reservation: descriptor.reservation, fingerprint: null})};
                 db.exec(`CREATE TABLE ${IDENTITY_PUBLICATION_FENCE_TABLE} (
                     capability TEXT PRIMARY KEY CHECK (capability = '${IDENTITY_PUBLICATION_PURPOSE}'), data TEXT NOT NULL)`);

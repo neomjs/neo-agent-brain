@@ -82,6 +82,16 @@ export function familyQueueKey({planeId, subject} = {}) {
     return recordKey('queue', [identityPart(planeId, 'planeId'), subjectTuple(subject)]);
 }
 
+/** @summary Names MC's complete-plane baseline and publication revision, separate from Fleet queues. */
+export function familyPlaneStateKey({planeId} = {}) {
+    return recordKey('plane-state', [identityPart(planeId, 'planeId')]);
+}
+
+/** @summary Names one stable subject's MC revision counters without using its mutable login or seat key. */
+export function familySubjectStateKey({planeId, subject} = {}) {
+    return recordKey('subject-state', [identityPart(planeId, 'planeId'), subjectTuple(subject)]);
+}
+
 /**
  * @summary Names an operation receipt across re-signing and key rotation under the stable issuer.
  * @param {Object} options

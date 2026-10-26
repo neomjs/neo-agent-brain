@@ -62,14 +62,28 @@ export function isIdentityPublicationIdentifier(value) {
     }
 }
 
-/** @summary Checks an exact family value using the same grammar as typed admission. */
-export function isIdentityPublicationFamily(value) {
+/**
+ * @summary Derives the conservative collision key without rewriting the admitted family label.
+ * This built-in NFKC/case comparison follows the running JavaScript Unicode version; it is not
+ * normative Unicode full case folding and does not identify cross-script visual confusables.
+ * @param {*} value Exact family label under the fixed encoded-byte grammar.
+ * @returns {String|null} Derived comparison key, or null for a refused label.
+ */
+export function identityFamilyComparisonKey(value) {
     try {
         text(value, 'family', LIMIT.familyBytes, false);
-        return true;
+        if (/[\p{Cc}\p{Cf}]/u.test(value)) return null;
+        const key = value.normalize('NFKC').replace(/\s/gu, '')
+            .toLowerCase().toUpperCase().toLowerCase().normalize('NFKC');
+        return key || null;
     } catch {
-        return false;
+        return null;
     }
+}
+
+/** @summary Checks an exact family value using the same grammar as typed admission. */
+export function isIdentityPublicationFamily(value) {
+    return identityFamilyComparisonKey(value) !== null;
 }
 
 /** @summary Checks model evidence without inheriting a previous model when null is explicit. */
@@ -126,6 +140,20 @@ function binding(value, field) {
     text(value.incarnation, field + '.incarnation');
 }
 
+/**
+ * @summary Revalidates a retained binding with the wire grammar, without granting membership authority.
+ * @param {*} value Stable subject, current seat key and immutable incarnation.
+ * @returns {Boolean} Whether the complete closed binding shape is valid.
+ */
+export function isIdentityPublicationBinding(value) {
+    try {
+        binding(value, 'binding');
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 /** @summary Refuses sparse, accessor-bearing or decorated arrays before inspecting bounded entries. */
 function baseline(values) {
     if (!Array.isArray(values) || Object.getPrototypeOf(values) !== Array.prototype) {
@@ -166,7 +194,9 @@ function baseline(values) {
 
 /** @summary Requires explicit model evidence or an admission-level reason for literal null. */
 function declaration(value) {
-    text(value.family, 'family', LIMIT.familyBytes, false);
+    if (!isIdentityPublicationFamily(value.family)) {
+        invalid('family', 'Expected a bounded family label without control/format characters and with a nonempty comparison key.');
+    }
     if (typeof value.newFamily !== 'boolean') invalid('newFamily', 'Expected explicit introduction intent.');
     text(value.operatorPrincipal, 'operatorPrincipal');
     if (value.model === null) {

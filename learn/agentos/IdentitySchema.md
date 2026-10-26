@@ -145,6 +145,36 @@ this check and write neither state nor receipt on refusal. It never bumps or bac
 These pure controls do not establish that ordering in the still-pending physical writer. A correction
 inherits its exact target interval; fenced read-back activation remains a separate post-v1 path.
 
+Family introduction compares labels after NFKC, removing JavaScript whitespace, applying
+`toLowerCase().toUpperCase().toLowerCase()`, then NFKC again. Control/format characters (`Cc`/`Cf`)
+and empty keys refuse. This conservative runtime-Unicode comparison intentionally over-matches;
+it is not normative full case folding or cross-script confusable detection. The exact label stays
+unchanged. The owner supplies the complete authoritative roster plus admitted declaration/correction
+vocabulary. Novel labels require explicit introduction intent and no comparison-key collision;
+known exact labels require ordinary confirmation intent. Accepted-receipt lookup precedes this check.
+If the known catalog already has distinct labels sharing a key, admissions into that key refuse and
+name the conflicting labels for authorized catalog reconciliation by the separate recovery authority,
+outside ordinary typed operations. A roster conflict is repaired through review. Unrelated keys remain usable;
+old exact labels and historical classifications are not automatically merged or rewritten.
+
+### Physical membership source checkpoint
+
+[`identityPublicationMembership.mjs`](../../ai/services/memory-core/helpers/identityPublicationMembership.mjs)
+currently implements the four membership variants on an explicitly supplied SQLite connection.
+It owns an immediate transaction, checks consumed lineage/fence and signed delivery inside it, then
+looks up the logical receipt before reading current revisions. Baseline, bind, re-key and completed
+retirement commit their protected history, revision counters and receipt together; rollback also
+rolls back SQLite-triggered invalidation rows. Membership uses provider-stable incarnations, with
+rename and retirement provenance retained. Active capacity remains 128 after the initial census.
+
+This helper opens no database, reads no configuration and is not wired to a service route or startup.
+Declaration/correction persistence, the complete family snapshot, cache synchronization and consumer
+integration remain unfinished. In-memory fixtures prove transaction behavior, not installed ownership,
+host cleanup or installed durability. Separate disposable WAL-file controls cover competing processes
+and process loss after commit before reply; they do not simulate a power failure or the live service.
+The eventual owner must carry the original signed
+bytes to the transaction-local verifier and consume committed cache invalidations afterward.
+
 ## Ingestion Mechanism
 
 Identity projection has two deliberately separate write authorities:
