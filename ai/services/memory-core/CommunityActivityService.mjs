@@ -30,6 +30,58 @@ const LIFECYCLE_WATERMARK_RANK = Object.freeze({
     REVOKED    : 4
 });
 
+const TERMINAL_RESOLUTION_KINDS = new Set([
+    'issue.closed',
+    'pull_request.closed',
+    'pull_request.merged',
+    'pull_request.review-dismissed',
+    'discussion.closed'
+]);
+
+const REOPEN_RESOLUTION_KINDS = new Set([
+    'issue.reopened',
+    'pull_request.reopened',
+    'discussion.reopened'
+]);
+
+/** @summary Computes latest unresolved terminal close/merge/dismiss timestamp per entity, cleared by any later reopen. */
+function collectResolvedByEntity(obsRows) {
+    const stateByEntity = new Map();
+
+    for (const obs of obsRows) {
+        const isClose  = TERMINAL_RESOLUTION_KINDS.has(obs.occurrence_kind),
+              isReopen = REOPEN_RESOLUTION_KINDS.has(obs.occurrence_kind);
+
+        if (!isClose && !isReopen) continue;
+
+        const parsedTime = Date.parse(obs.occurred_at);
+        if (!Number.isFinite(parsedTime)) continue;
+
+        const targets = obs.occurrence_kind === 'pull_request.review-dismissed'
+            ? [obs.provider_entity_id]
+            : [obs.provider_entity_id, obs.parent_provider_entity_id].filter(Boolean);
+
+        for (const entityId of targets) {
+            const prior = stateByEntity.get(entityId);
+            if (!prior || parsedTime > prior.time || (parsedTime === prior.time && isClose)) {
+                stateByEntity.set(entityId, {resolved: isClose, time: parsedTime})
+            }
+        }
+    }
+
+    return stateByEntity
+}
+
+/** @summary True when an observation was resolved by a later or contemporaneous terminal close/merge/dismiss without a subsequent reopen. */
+function isObservationResolved(obs, parsedTime, resolvedByEntity) {
+    return [obs.provider_entity_id, obs.parent_provider_entity_id]
+        .filter(Boolean)
+        .some(entityId => {
+            const state = resolvedByEntity.get(entityId);
+            return Boolean(state?.resolved && state.time >= parsedTime)
+        })
+}
+
 /** @summary Formats a fixed-width zero-padded monotonic watermark component. */
 function padWatermark(value) {
     return String(Math.max(0, Number(value) || 0)).padStart(16, '0')
@@ -541,6 +593,14 @@ class CommunityActivityService extends Base {
                 return denied('deleted', row.source_instance_id)
             }
 
+            const sourceObsRows    = this.db.prepare('SELECT occurrence_kind, occurred_at, provider_entity_id, parent_provider_entity_id FROM mc_community_observation WHERE tenant_id = ? AND source_instance_id = ? ORDER BY admitted_sequence ASC, observation_row_id ASC').all(tenantId, row.source_instance_id),
+                  resolvedByEntity = collectResolvedByEntity(sourceObsRows),
+                  rowParsedTime    = Date.parse(row.occurred_at);
+
+            if (Number.isFinite(rowParsedTime) && isObservationResolved(row, rowParsedTime, resolvedByEntity)) {
+                return denied('ineligible', row.source_instance_id)
+            }
+
             const existing = this.readExistingClaimBinding(tenantId, sourceEventId);
             if (existing) return existing;
 
@@ -808,19 +868,20 @@ class CommunityActivityService extends Base {
             totalRegStateRank       = 0;
 
         const sources = sourceCoverage.map(cov => {
-            const reg        = scopedRegs.find(row => row.source_instance_id === cov.sourceInstanceId),
-                  sourceId   = cov.sourceInstanceId,
-                  supported  = reg.provider === 'github' && reg.canonical_provider_host === 'github.com' && reg.resource_kind === 'repository',
-                  active     = reg.lifecycle_state === 'ACTIVE' && supported,
-                  sourceSeq  = db.prepare('SELECT COALESCE(MAX(admitted_sequence), 0) AS value FROM mc_community_batch_receipt WHERE tenant_id = ? AND source_instance_id = ? AND admitted_sequence <= ?').get(tenantId, sourceId, latest).value,
-                  claims     = db.prepare('SELECT rowid, occurrence_identity FROM mc_community_task_binding WHERE tenant_id = ? AND source_instance_id = ?').all(tenantId, sourceId),
-                  claimedIds = new Set(claims.map(row => row.occurrence_identity)),
-                  srcMaxRow  = claims.reduce((max, row) => Math.max(max, Number(row.rowid) || 0), 0),
-                  claimMark  = srcMaxRow * 1000 + claims.length,
-                  regUpdated = Number(reg.updated_at) || 0,
-                  regRank    = (Number(reg.registration_epoch) || 0) * 10 + (LIFECYCLE_WATERMARK_RANK[reg.lifecycle_state] || 0),
-                  obsRows    = db.prepare('SELECT * FROM mc_community_observation WHERE tenant_id = ? AND source_instance_id = ? AND admitted_sequence <= ? ORDER BY admitted_sequence ASC, observation_row_id ASC').all(tenantId, sourceId, latest),
-                  tombstones = new Set(obsRows.filter(row => row.absence === 'deleted' && parseEvidence(row.deletion_evidence)).map(row => row.provider_entity_id));
+            const reg              = scopedRegs.find(row => row.source_instance_id === cov.sourceInstanceId),
+                  sourceId         = cov.sourceInstanceId,
+                  supported        = reg.provider === 'github' && reg.canonical_provider_host === 'github.com' && reg.resource_kind === 'repository',
+                  active           = reg.lifecycle_state === 'ACTIVE' && supported,
+                  sourceSeq        = db.prepare('SELECT COALESCE(MAX(admitted_sequence), 0) AS value FROM mc_community_batch_receipt WHERE tenant_id = ? AND source_instance_id = ? AND admitted_sequence <= ?').get(tenantId, sourceId, latest).value,
+                  claims           = db.prepare('SELECT rowid, occurrence_identity FROM mc_community_task_binding WHERE tenant_id = ? AND source_instance_id = ?').all(tenantId, sourceId),
+                  claimedIds       = new Set(claims.map(row => row.occurrence_identity)),
+                  srcMaxRow        = claims.reduce((max, row) => Math.max(max, Number(row.rowid) || 0), 0),
+                  claimMark        = srcMaxRow * 1000 + claims.length,
+                  regUpdated       = Number(reg.updated_at) || 0,
+                  regRank          = (Number(reg.registration_epoch) || 0) * 10 + (LIFECYCLE_WATERMARK_RANK[reg.lifecycle_state] || 0),
+                  obsRows          = db.prepare('SELECT * FROM mc_community_observation WHERE tenant_id = ? AND source_instance_id = ? AND admitted_sequence <= ? ORDER BY admitted_sequence ASC, observation_row_id ASC').all(tenantId, sourceId, latest),
+                  tombstones       = new Set(obsRows.filter(row => row.absence === 'deleted' && parseEvidence(row.deletion_evidence)).map(row => row.provider_entity_id)),
+                  resolvedByEntity = collectResolvedByEntity(obsRows);
 
             maxClaimRowId      = Math.max(maxClaimRowId, srcMaxRow);
             totalClaimCount   += claims.length;
@@ -847,6 +908,11 @@ class CommunityActivityService extends Base {
                 if (!validTime) {
                     sourceInvalidTimes++;
                     invalidTimes++;
+                    ineligibleExcludedCount++;
+                    continue
+                }
+
+                if (isObservationResolved(obs, parsedTime, resolvedByEntity)) {
                     ineligibleExcludedCount++;
                     continue
                 }

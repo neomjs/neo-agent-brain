@@ -1,0 +1,50 @@
+# Community-Activity End-to-End Authority Chain Criteria Matrix
+
+> Public executable criterion-to-test matrix for [`neomjs/neo-agent-brain#98`](https://github.com/neomjs/neo-agent-brain/issues/98) under Epic [`neomjs/neo-agent-brain#106`](https://github.com/neomjs/neo-agent-brain/issues/106) and [ADR 0036](../decisions/0036-durable-community-activity-authority.md).
+> Every row maps a graduated Discussion [`#15139`](https://github.com/orgs/neomjs/discussions/15139) open question (`OQ1`–`OQ10`), a `STEP_BACK` gate (`STEP_BACK-1`–`STEP_BACK-3`), or a leaf acceptance criterion (`AC1`–`AC12`) to its executable verification test in [`test/playwright/unit/ai/services/memory-core/communityAuthorityChainE2E.spec.mjs`](../../../../test/playwright/unit/ai/services/memory-core/communityAuthorityChainE2E.spec.mjs).
+
+---
+
+## 1. Discussion `#15139` Open Questions (`OQ1`–`OQ10`)
+
+| Criterion | Architectural Contract (`ADR 0036`) | Executable Test in `communityAuthorityChainE2E.spec.mjs` |
+|---|---|---|
+| OQ1 | Event and actor classification separates source occurrence, attention eligibility, provider actor kind (`user`, `bot`, `organization`, `unknown`), source-relative trust, excluded popularity telemetry, and explicit v1 bot ineligibility. | `AC11: filters popularity telemetry, bots, unreviewed actor kinds, and rostered activity in an end-to-end noise-flood fixture so only the external response-bearing item counts` |
+| OQ2 | Exhaustive reconciliation within the declared supported GitHub family matrix (`issues`, `pulls`, `discussions`) surfaces explicit coverage gaps (`coverage.gaps`) without normalizing degraded sources to complete/fresh. | `AC5: proves coverage, explicit gaps, immutable revisions, tombstones, and uncertain vs deleted absence across Issue, PR/review, and Discussion fixtures` |
+| OQ3 | Distinct identities (`tenantId`, `sourceInstanceId`, provider coordinates, `displayLocator`, `grantRef`, `batchId`, `occurrenceIdentity`, `sourceEventId`, `taskId`) survive rename, grant rotation, crash, and idempotent retry. | `AC2: preserves sourceInstanceId across repository rename and grant rotation while fencing revoked and stale registration epochs` |
+| OQ4 | Dedicated tenant-scoped Memory Core tables (`mc_source_registration`, `mc_community_batch_receipt`, `mc_community_observation`, `mc_community_checkpoint`) own history; `Nodes`, `Edges`, and `GraphLog` store zero pre-claim community history. | `AC8: excludes unclaimed community activity from LifecycleFrontier and prevents community history from entering Nodes, Edges, or GraphLog before claim` |
+| OQ5 | Per-viewer `seen` is presentation-only; internal close/resolve or tombstone occurrences resolve existing external items without minting new attention; explicit `claimTask` atomically creates one `sourceEventId -> taskId` binding. | `AC7: guarantees atomic rollback on fault injection and produces one sourceEventId-to-taskId binding and one canonical Task under concurrent claims` |
+| OQ6 | Provider-neutral Bird View (`CommunityActivityService.query`) is cite-backed, coverage-explicit, `notAuthority: true`, and degrades visibly on missing/incomplete/unsupported families. | `AC9: keeps degraded sources visible across Bird View, attention counts, and steward wakes without normalizing to complete, empty, or fresh` |
+| OQ7 | Bounded tenant attention-count projection (`projectAttentionCounts`) and metric-gated steward wake leases (`acquireStewardLease`, `evaluateStewardWake`) remain count/metadata-only and `notAuthority: true`. | `AC1: enforces strict multi-tenant and multi-source isolation across registration, admission, query, seen, claim, counts, and steward wake` |
+| OQ8 | Automatic durable, query, count, and wake surfaces contain zero external prose; explicit drill-down (`getContent`) applies tenant/source-relative trust (`MEMBER` vs `FIRST_TIME_CONTRIBUTOR`) and quarantines untrusted URLs/signals without persisting prose in SQLite. | `AC6: keeps automatic rows, counts, and wakes prose-free while applying source-relative trust on explicit drill-down` |
+| OQ9 | Local direct (`admitBatch` / `CommunityReconciliationService`) and hosted authenticated (`admit_community_batch` over `streamable-http`) paths converge on identical canonical digests and receipts while enforcing epoch and tenant fences. | `AC4: admits identical canonical batches and receipts across local direct and hosted authenticated MCP paths while rejecting forged authority` |
+| OQ10 | Calibrated policy bounds (`CALIBRATED_BASELINE_POLICY`) and crash/replay bounds converge deterministically without pre-measurement hardcoding or duplicate rows. | `AC3: converges without loss or duplicate history across crash before/after admission receipt and lost-response retry` |
+
+---
+
+## 2. Step 2.5 Mandatory Implementation Gates (`STEP_BACK-1`–`STEP_BACK-3`)
+
+| Gate | Mandatory Contract (`ADR 0036 §4`) | Executable Test in `communityAuthorityChainE2E.spec.mjs` |
+|---|---|---|
+| STEP_BACK-1 | **Tenant/source-relative trust first:** Dedicated-table tenant/source read isolation holds on every surface, and explicit prose drill-down computes trust relative to the admitting source (`MEMBER` on `repoMember` vs `FIRST_TIME_CONTRIBUTOR` on `repoExternal`) with zero `sharedEntity` or persisted prose. | `AC6: keeps automatic rows, counts, and wakes prose-free while applying source-relative trust on explicit drill-down` |
+| STEP_BACK-2 | **Atomic canonical claim:** Concurrent callers and fault-injected transactions produce at most one `(tenant_id, occurrence_identity) -> task_id` binding and one `MESSAGE:<uuid>` Task node, keeping unclaimed observations out of `LifecycleFrontier`. | `AC7: guarantees atomic rollback on fault injection and produces one sourceEventId-to-taskId binding and one canonical Task under concurrent claims` |
+| STEP_BACK-3 | **Shadow measurement first:** Steward lease and wake evaluation consume `CALIBRATED_BASELINE_POLICY` from measured shadow/live evidence (`community-activity-calibration-2026-10-26.md`), keeping `stewardActivation` disabled by default unless explicitly enabled. | `AC1: enforces strict multi-tenant and multi-source isolation across registration, admission, query, seen, claim, counts, and steward wake` |
+
+---
+
+## 3. Leaf `#98` Acceptance Criteria (`AC1`–`AC12`)
+
+| Criterion | Requirement Summary | Executable Test in `communityAuthorityChainE2E.spec.mjs` |
+|---|---|---|
+| AC1 | At least two tenants and multiple sources prove strict isolation on registration, admission, query, seen, claim, counts, and steward wake. | `AC1: enforces strict multi-tenant and multi-source isolation across registration, admission, query, seen, claim, counts, and steward wake` |
+| AC2 | Repository rename and grant rotation preserve `sourceInstanceId`; revoked and stale epochs reject writes. | `AC2: preserves sourceInstanceId across repository rename and grant rotation while fencing revoked and stale registration epochs` |
+| AC3 | Crash before/after admission receipt and lost-response retry converge without loss or duplicate history. | `AC3: converges without loss or duplicate history across crash before/after admission receipt and lost-response retry` |
+| AC4 | Local direct and hosted authenticated paths admit the same canonical batch and receipt semantics. | `AC4: admits identical canonical batches and receipts across local direct and hosted authenticated MCP paths while rejecting forged authority` |
+| AC5 | Issue, PR/review, and Discussion fixtures prove coverage, explicit gaps, revisions, tombstones, and uncertain absence. | `AC5: proves coverage, explicit gaps, immutable revisions, tombstones, and uncertain vs deleted absence across Issue, PR/review, and Discussion fixtures` |
+| AC6 | Automatic rows/counts/wakes contain no external prose; explicit drill-down applies source-relative trust. | `AC6: keeps automatic rows, counts, and wakes prose-free while applying source-relative trust on explicit drill-down` |
+| AC7 | Concurrent claims produce one `sourceEventId`-to-`taskId` binding and one canonical Task. | `AC7: guarantees atomic rollback on fault injection and produces one sourceEventId-to-taskId binding and one canonical Task under concurrent claims` |
+| AC8 | Unclaimed events never enter `LifecycleFrontier`; community history never becomes Native Edge Graph/`GraphLog` authority. | `AC8: excludes unclaimed community activity from LifecycleFrontier and prevents community history from entering Nodes, Edges, or GraphLog before claim` |
+| AC9 | Degraded sources remain visible and never normalize to complete/zero. | `AC9: keeps degraded sources visible across Bird View, attention counts, and steward wakes without normalizing to complete, empty, or fresh` |
+| AC10 | A public criterion-to-test matrix maps every OQ and `STEP_BACK` gate to executable evidence. | `AC10: publishes a criterion-to-test matrix mapping OQ1-OQ10, the three STEP_BACK gates, and AC1-AC12 to executable tests in this suite` |
+| AC11 | An end-to-end noise-flood fixture combines star/fork/watch events, internal/rostered context, and one external response-bearing occurrence; only the external occurrence enters Bird View/count eligibility. | `AC11: filters popularity telemetry, bots, unreviewed actor kinds, and rostered activity in an end-to-end noise-flood fixture so only the external response-bearing item counts` |
+| AC12 | An internal close/resolve occurrence can remove or resolve the existing external attention item without creating a second attention item or Task. | `AC12: resolves existing external attention items on internal close/resolve or tombstone occurrences without minting a second attention item or Task while preserving post-close external replies` |
