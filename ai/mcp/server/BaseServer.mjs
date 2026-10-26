@@ -46,6 +46,8 @@ const canonicalDataRoot = resolvePlaneDataRoot({
  * - `buildToolProjectionContext({request, phase, toolName?, args?})` — return an explicit tool
  *   projection context for embedded harness agents. Default `null` preserves the full
  *   developer/operator surface.
+ * - `getServerInstructions()` — return MCP `initialize` instructions (default assumes the server's tool
+ *   service compacts descriptions/schemas and points clients to `get_mcp_tool_handbook({toolId})`; `null` disables).
  * - `logStartupStatus(health)` — per-server startup log formatting.
  * - `buildRequestContext(reqAuth)` — Streamable-HTTP-only hook called by `TransportService.setup()` for per-request
  *   context construction. Default returns `{}`.
@@ -369,10 +371,8 @@ class BaseServer extends Base {
      */
     createMcpServer() {
         const metadata     = this.getServerMetadata();
-        const instructions = metadata.instructions !== undefined
-            ? metadata.instructions
-            : this.getServerInstructions();
-        const mcpServer = new McpServer({
+        const instructions = this.getServerInstructions();
+        const mcpServer    = new McpServer({
             name   : metadata.name,
             version: metadata.version || process.env.npm_package_version || '1.0.0'
         }, {
@@ -440,6 +440,7 @@ class BaseServer extends Base {
                 // Throws bubble to the outer catch and route to formatToolError.
                 await this.beforeToolDispatch({toolName: name, args, t0});
 
+                // get_mcp_tool_handbook reads static OpenAPI metadata and needs no healthy backend.
                 if (healthService && name !== 'get_mcp_tool_handbook' && !exemptTools.includes(name)) {
                     try {
                         if (healthService.ensureHealthy) {

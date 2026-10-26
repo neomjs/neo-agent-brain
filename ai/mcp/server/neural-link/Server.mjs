@@ -137,7 +137,7 @@ class Server extends BaseServer {
      * @returns {Array<String>}
      */
     getHealthExemptTools() {
-        return ['healthcheck', 'get_mcp_tool_handbook', 'manage_connection'];
+        return ['healthcheck', 'manage_connection'];
     }
 
     /**
