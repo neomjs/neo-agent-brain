@@ -62,6 +62,15 @@ const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 /**
+ * @summary Checks the original-run reference grammar used by host records and plane lineage.
+ * @param {*} runId Candidate run identifier; no coercion or normalization is performed.
+ * @returns {Boolean} Whether the supported host record owner can address this run id.
+ */
+export function isSetupRunId(runId) {
+    return typeof runId === 'string' && RUN_ID_PATTERN.test(runId);
+}
+
+/**
  * @summary The sha256 hex digest of a string — the receipt's provenance of applied content, never the
  * content itself.
  * @param {String} content
@@ -139,7 +148,7 @@ export function runTarget({record = null, named = {}, profile}) {
  * @returns {Object}
  */
 export function createSetupRecord({runId, target, recipeVersion, now = Date.now}) {
-    if (!RUN_ID_PATTERN.test(runId ?? '')) {
+    if (!isSetupRunId(runId)) {
         throw new Error('createSetupRecord: runId must be a UUID.');
     }
 
@@ -172,7 +181,7 @@ export function setupRecordPath(setupRoot, runId) {
         throw new Error('setupRecordPath: setupRoot must be an absolute path.');
     }
 
-    if (!RUN_ID_PATTERN.test(runId ?? '')) {
+    if (!isSetupRunId(runId)) {
         throw new Error('setupRecordPath: runId must be a UUID.');
     }
 
@@ -197,7 +206,7 @@ export function describeRecordProblem(record) {
         return `schemaVersion ${record.schemaVersion ?? 'missing'} is not ${SETUP_RECORD_SCHEMA_VERSION}`;
     }
 
-    if (!RUN_ID_PATTERN.test(record.runId ?? '')) {
+    if (!isSetupRunId(record.runId)) {
         return 'runId is not a UUID';
     }
 
