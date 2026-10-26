@@ -1146,6 +1146,66 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
         expect(result.source.final.head).toBe(NEXT_HEAD);
     });
 
+    for (const [field, change] of [
+        ['author ID', pr => pr.author.databaseId++],
+        ['approval actor ID', pr => pr.reviews.nodes[0].author.databaseId++],
+        ['author kind', pr => pr.author.__typename = 'Bot'],
+        ['approval actor kind', pr => pr.reviews.nodes[0].author.__typename = 'Bot'],
+        ['approval submission time', pr => pr.reviews.nodes[0].submittedAt = '2026-07-29T07:30:00.000Z'],
+        ['creation time', pr => pr.createdAt = '2026-07-28T11:00:00.000Z']
+    ]) {
+        test(`#1296: a changed ${field} invalidates a same-login, same-head observation`, async () => {
+            const initial = pullRequest();
+            initial.createdAt = '2026-07-28T10:00:00.000Z';
+            Object.assign(initial.author, {__typename: 'User', databaseId: 101});
+            Object.assign(initial.reviews.nodes[0].author, {__typename: 'User', databaseId: 202});
+            const final = structuredClone(initial);
+            change(final);
+
+            const result = await project(dependencies({snapshots: [initial, final]}));
+
+            expect(result.verdict).toBe('unavailable');
+            expect(result.blockers[0].code).toBe('SOURCE_CHANGED_DURING_READ');
+            expect(result.marker).toBeUndefined();
+        });
+    }
+
+    test('#1296: tied approvals normalize independently of connection order', async () => {
+        const initial = pullRequest();
+        const first = initial.reviews.nodes[0];
+        Object.assign(first.author, {__typename: 'User', databaseId: 101});
+        initial.reviews.nodes.push({...structuredClone(first), author: {login: 'neo-gpt-euclid', __typename: 'User', databaseId: 202}});
+        const final = structuredClone(initial);
+        final.reviews.nodes.reverse();
+
+        const result = await project(dependencies({snapshots: [initial, final]}));
+
+        expect(result.verdict).toBe('merge-ready-observed');
+        expect(result.marker).toMatch(/^\[merge-eligible]/);
+    });
+
+    test('#1296: review IDs, opaque IDs and invalid User IDs never become the actor database ID', async () => {
+        for (const [actorBefore, actorAfter] of [
+            [{__typename: 'User', databaseId: 101, id: 'U_old'}, {__typename: 'User', databaseId: 101, id: 'U_new'}],
+            [{__typename: 'Bot', databaseId: 101}, {__typename: 'Bot', databaseId: 202}],
+            [{__typename: 'User', databaseId: null}, {__typename: 'User', databaseId: '101'}],
+            [{__typename: 'User', databaseId: 0}, {__typename: 'User', databaseId: -1}],
+            [{__typename: 'User', databaseId: 1.5}, {__typename: 'User', databaseId: Number.MAX_SAFE_INTEGER + 1}]
+        ]) {
+            const initial = pullRequest(), final = structuredClone(initial);
+            Object.assign(initial.reviews.nodes[0], {databaseId: 456, id: 'PRR_old'});
+            Object.assign(final.reviews.nodes[0], {databaseId: 789, id: 'PRR_new'});
+            Object.assign(initial.reviews.nodes[0].author, actorBefore);
+            Object.assign(final.reviews.nodes[0].author, actorAfter);
+
+            const result = await project(dependencies({snapshots: [initial, final]}));
+
+            // This slice preserves the existing roster decision; unavailable stable identity
+            // is retained as null for the admitted reader, never manufactured from another ID.
+            expect(result.verdict).toBe('merge-ready-observed');
+        }
+    });
+
     test('fails closed before source reads when AgentIdentity or GitHub identity is unbound', async () => {
         const assertions = [
             undefined,

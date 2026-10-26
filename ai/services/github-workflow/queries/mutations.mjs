@@ -576,6 +576,13 @@ export const GET_PULL_REQUEST_ID = `
       pullRequest(number: $prNumber) {
         body
         createdAt
+        author {
+          __typename
+          login
+          ... on User {
+            databaseId
+          }
+        }
         id
         headRefOid
         reviewDecision
@@ -588,7 +595,11 @@ export const GET_PULL_REQUEST_ID = `
             url
             databaseId
             author {
+              __typename
               login
+              ... on User {
+                databaseId
+              }
             }
             commit {
               oid

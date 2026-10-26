@@ -541,6 +541,24 @@ function selectLatestWorkflowContexts(contexts) {
     return {contexts: selected, readable};
 }
 
+/**
+ * @summary Retains a GitHub actor and its decimal user ID; other actor kinds never borrow a User ID.
+ * @param {Object|null} actor Original GraphQL Actor, including the User-specific databaseId.
+ * @returns {{login: String|null, kind: String|null, providerUserId: String|null}}
+ */
+function normalizeFamilyActor(actor) {
+    const kind = actor?.__typename ?? null;
+
+    return {
+        login         : actor?.login ?? null,
+        kind,
+        providerUserId: kind === 'User' && Number.isSafeInteger(actor.databaseId) && actor.databaseId > 0
+            ? String(actor.databaseId)
+            : null
+    };
+}
+
+/** @summary Retains decision-relevant GitHub facts for the coherent two-read readiness observation. */
 function normalizeMergeReadinessSnapshot(pullRequest) {
     if (!pullRequest) {
         throw createCodedError('PR_NOT_FOUND', 'The pull request does not exist or is not visible.');
@@ -559,15 +577,13 @@ function normalizeMergeReadinessSnapshot(pullRequest) {
     const commentsConnection = pullRequest.comments;
     const approvals          = (reviewsConnection?.nodes || [])
         .filter(node => node?.state === 'APPROVED' && node?.commit?.oid && node?.submittedAt)
-        // `login` rides along because the cross-family mandate is a question about WHO approved,
-        // and this map is the only place the reviewer identity survives into the snapshot. It is
-        // drift-safe: a login is a fixed property of a node whose arrival already moves this array.
-        .map(node => ({oid: node.commit.oid, submittedAt: node.submittedAt, login: node.author?.login ?? null}))
+        .map(node => ({oid: node.commit.oid, submittedAt: node.submittedAt, ...normalizeFamilyActor(node.author)}))
         // Sorted rather than trusting connection order: the caller reads `.at(-1)` as "latest", and
         // an ordering assumption that holds today would fail silently — as a WRONG anchor, not a
         // missing one. `oid` breaks ties so two approvals sharing a timestamp stay deterministic
         // across the two reads, which the drift comparison requires.
-        .sort((a, b) => a.submittedAt.localeCompare(b.submittedAt) || a.oid.localeCompare(b.oid));
+        .sort((a, b) => a.submittedAt.localeCompare(b.submittedAt) || a.oid.localeCompare(b.oid) ||
+            stableStringify(a).localeCompare(stableStringify(b)));
     const commit            = pullRequest.commits?.nodes?.[0]?.commit || null;
     const rollup            = commit?.statusCheckRollup;
     const contextConnection = rollup?.contexts;
@@ -578,13 +594,14 @@ function normalizeMergeReadinessSnapshot(pullRequest) {
 
     return {
         number          : pullRequest.number,
+        createdAt       : pullRequest.createdAt ?? null,
         state           : pullRequest.state,
         mergedAt        : pullRequest.mergedAt,
         baseRefName     : pullRequest.baseRefName,
         headRefOid      : pullRequest.headRefOid,
         mergeStateStatus: pullRequest.mergeStateStatus,
         reviewDecision  : pullRequest.reviewDecision,
-        authorLogin     : pullRequest.author?.login ?? null,
+        author          : normalizeFamilyActor(pullRequest.author),
         // The DERIVED self-id, never the body itself. This snapshot is compared by
         // `stableStringify` across two reads to detect source drift, so carrying the raw `body`
         // would make any prose edit mid-read invalidate the observation. Parsing once and keeping
@@ -987,12 +1004,12 @@ async function buildMergeReadinessProjection({
             ...resolveCrossFamilyVerdict({
                 authorFamily      : resolveAuthorFamilyFromLogins({
                     selfIdLogin: snapshot.authorSelfIdLogin,
-                    openerLogin: snapshot.authorLogin
+                    openerLogin: snapshot.author.login
                 }, undefined, {warn: logger.warn}) ?? null,
                 approvalsTruncated: snapshot.approvals.hasPreviousPage,
                 reviews           : snapshot.approvals.nodes.map(node => ({state: 'APPROVED', author: {login: node.login}}))
             }),
-            authorLogin: snapshot.authorSelfIdLogin || snapshot.authorLogin
+            authorLogin: snapshot.authorSelfIdLogin || snapshot.author.login
         }
         : undefined;
 
