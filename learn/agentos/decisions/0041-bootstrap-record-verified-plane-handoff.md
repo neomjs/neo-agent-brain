@@ -10,6 +10,7 @@
 |---|---|
 | **Status** | Accepted — 2026-10-01 (PR #680; ADR 0005 §9: Accepted by the human merge of the approved, green PR that publishes this record — the Discussion's quorum graduated the design, not this record). Graduated from Discussion neomjs/neo#18965 at its §6.2 quorum on 2026-10-01 (`[GRADUATED_TO_TICKET: neomjs/neo-agent-institution#351]`; the gpt family's `[GRADUATION_APPROVED]` by @neo-gpt, `DC_kwDODSospM4BHUr8`); drafted 2026-09-30 at `[GRADUATION_PROPOSED]`; published by its own leaf, neomjs/neo-agent-brain#678, under Epic neomjs/neo-agent-institution#351. Amended 2026-10-03 by neomjs/neo-agent-brain#788: §3 names how a host-file effect settles (one sentence); amended 2026-10-03 by neomjs/neo-agent-brain#802: §2.9 records the run's `verification` section and §3 its reconciliation arm |
 | **Author** | @neo-fable-clio (Claude Fable 5.1, Claude Code) drafting; the boundary was answered by @neo-gpt on the Discussion (`DC_kwDODSospM4BG0hx`, OQ1) and folded `[RESOLVED_TO_AC]` |
+| **Class-9 amendment** | 2026-10-26 (neomjs/neo-agent-brain#1294): §2.11 records the post-plane reservation → original-host-run relation from [Institution D811 C7](https://github.com/neomjs/neo-agent-institution/discussions/811), graduated body edited at `2026-10-26T04:29:27Z`, with [GPT author signal](https://github.com/neomjs/neo-agent-institution/discussions/811#discussioncomment-19188256) and [Claude approval including the two census-AC tightenings](https://github.com/neomjs/neo-agent-institution/discussions/811#discussioncomment-19188284). The existing host ownership and observation rules remain. Decision authority, not executable or installed delivery. |
 | **Graduated from** | Discussion neomjs/neo#18965 — *the first-run journey: an outside operator provisions their own institution through the setup wizard* (`Decision Record: REQUIRED`, minted by OQ1) |
 | **Implementation** | Epic neomjs/neo-agent-institution#351 — the recipe/record leaf neomjs/neo-agent-brain#679 (Brain) writes the record; the cockpit renderer leaf (Institution) projects it |
 | **Supersedes** | the implicit assumption that an installer stores step status; the Institution's connection-profile roster read as a plane proof |
@@ -38,13 +39,55 @@ One Brain surface already keeps the discipline this record generalises: the reco
 9. **The run's witness is a record section, historical by construction** (amended 2026-10-03, neomjs/neo-agent-brain#782). The record's `verification` section holds THIS run's witness exchange with the served plane: the host's own metadata of the attempt — `attempt.marker` and `dispatchedAt` (durable before the write is dispatched), the `at` stamps of `readback` and `recall`, the stamp of a reconciliation read that answered without the marker (`attempt.searchedAt`) and the exits the row named when the attempt was consented (`attempt.offered`; both amended 2026-10-04, neomjs/neo-agent-brain#840), a recorded `failure` — beside what the plane returned — `memory.id` and `memory.at`, the `sessionId`, a recall hit — and never a field invented for either; written by the one writer beside the `verify` receipt, retired with the receipts on rebinding. It is never readiness: `validation` stays a fresh observation that reads no receipt, and `done` turns `ok` only in an evaluation whose `served-plane` and `validation` are fresh and `ok` beside the witness. One dispatched write per attempt: a lost acknowledgement is adopted from a positive read or left `reconcile-required`, never replayed; a second write exists only as a new attempt the operator consents to explicitly.
 10. **The evaluated row is the consumer's whole contract** (amended 2026-10-04, neomjs/neo-agent-brain#840). The recipe's step list is the one order: the effects run in the order their steps are listed, and no second list exists, for display or for execution. An effect row that is not `ok` names as data (`waitsFor`) the first earlier question, effect or declared gate that is not `ok`; selecting an effect behind an unsettled one reports that wait and performs nothing past it — consent to one effect is never consent to run another. A question the consented preset decides names `preset` the same way until one is consented. The `verify` row names its exits as data (`exits`, `duplicatePossible`): `run` before a first attempt; `resume` while a read is outstanding — a sub-step that has not landed or that the plane refused, an unacknowledged write no read has searched for yet; `new-attempt` alone, no duplicate possible, once the plane refused the write; `resume` and `new-attempt`, a duplicate possible, once a reconciliation read answered without the attempt's marker; none once the witness is accepted. The Brain trusts a consumer's request no more than a consumer parses a reason: a new attempt on an accepted witness is refused by the effect itself and reported, because nothing is left for it to prove; one consented while the row did not name it is still made — admission is the shell's (ADR 0034), and the host's own flag is the operator's consent — and every attempt keeps the exits it was offered, so the record shows which writes were made outside them. No consumer reads a `reason` to choose an action — reasons are written for the operator.
 
+11. **A post-plane class-9 reservation points to the original host run.** Once the capable plane exists,
+    trusted MC boot configuration may admit a protected identity-publication reservation containing
+    attempt, stable issuer, kid and `originRunId`. This is a class-specific cross-run index, not a
+    plane-owned bootstrap record: the original host record still owns consent, prior effects and
+    generation-dispatch evidence, and only the host-effect owner writes it. Ordinary PAT admission
+    grants no provisioning privilege. The companion credential/custody boundary is Institution
+    [ADR 0038 §2.5.3](https://github.com/neomjs/neo-agent-institution/blob/dev/learn/agentos/decisions/0038-fm-client-topology.md),
+    whose amendment is carried by [Institution #816](https://github.com/neomjs/neo-agent-institution/issues/816).
+
+    `class9.reserve` and `class9.generate` have separate durable dispatch records. Reservation is
+    witnessed for the exact attempt, served plane id and expected data root before generation; its
+    descriptor contains no future public-key fingerprint. The fingerprint is derived after durable
+    private custody and bound once by phase-two trusted configuration. A later CLI, shell or update
+    run resolves the original record through the canonical setup root and `originRunId`; its own
+    empty record cannot replace that history. Current and retired class-9 dispositions remain
+    readable, and same-effect receipt replacement must not erase whether generation was dispatched.
+
+    “Never generated” requires positive evidence in the intact original attempt record. Missing or
+    unreadable history, a changed root, or an interrupted/failed generation is unknown: reconcile
+    correctly bound existing custody or refuse to recovery, never mint a replacement. Each pending
+    phase binds its expected previous and exact intended next lineage head. A fresh witness matching
+    that pending target reconciles a lost acknowledgement normally; an unexplained divergence stays
+    unavailable/fenced. A plane-ahead head alone does not prove rollback, and equal heads do not
+    prove safety if both evidence domains were restored together. These observations remain subject
+    to §2.4's two target comparisons and never turn a receipt into current readiness.
+
+    First provisioning completes its reservation and trust-consumption phases within one ordinary
+    install/update, without another credential question or host-script step. Intermediate health is
+    not completion. The plane's publication/restore fence belongs to the class-9 delivery contract;
+    supported graph restoration cannot turn its original-run relation into permission for a fresh
+    mint. Out-of-band restoration requires the separately admitted recovery path.
+
 ## 3. The witness every implementing leaf inherits
 
 Accept an effect → interrupt before its acknowledgement → resume through the *other* renderer → answer from a wrong or stale plane: a different id, the same id over a different root, or the bound plane while `degraded`. Expected: the effect does not replay, and no step turns green until a fresh observation from the matching plane — id and root — arrives. One kind of effect is matched without the plane: a host-file effect ordered before the plane's own exists to bring that plane up, so it settles by the file's own fresh matching observation — present, unproblematic, and the content its receipt expected where it recorded one; the plane's effect and every step after it settle only by the plane's. Two companions: the attach branch never rewrites the attached plane's provider settings or data root (the Discussion's option G falsifier, run 2026-09-23 against the live plane and held); a witness with no Brain and no config dismisses the setup path before any step ran and the frame is still operable (OQ2, neomjs/neo-agent-institution#12). A third, for the run's own witness (§2.9): write the witness → lose its acknowledgement → read an empty or unavailable recency page → resume twice. Expected: one attempt, no second row, `reconcile-required` until a read carries the attempt's marker; and a record holding a complete witness against a served plane that no longer matches reads `done` not ok with the witnessed timestamp in its reason. A fourth, for the row contract (§2.10): select the last host effect while the first is not performed; then run a `verify` whose write the plane refused. Expected: a report naming the effect it waits for, with no receipt and no file written; and a row naming `new-attempt` with no duplicate possible, which a plain run leaves unchanged.
 
+For class 9 (§2.11), reserve → commit at MC → lose the reply → resume through the other renderer:
+a matching pending target reconciles the same attempt without another reservation or an operator
+recovery merely for the lost reply. Repeat after trust binding; existing matching custody is reused.
+Then stage a key, interrupt before consumption, and resume under a new run id after losing the
+original record or private custody. Expected: the plane's original-run relation remains visible,
+generation history is unknown, and no replacement key is minted. A fresh empty run, a retired
+generation disposition, a failed dispatch or a wrong-plane/root witness cannot bypass that refusal.
+A supported restore fence keeps publication unavailable until its admitted recovery reconciliation;
+no current-head comparison is claimed to detect every out-of-band rewind.
+
 ## 4. Rejected
 
-- **A plane-owned record.** The plane does not exist for the steps that create it.
+- **A plane-owned bootstrap record.** The plane does not exist for the steps that create it. The later class-specific index in §2.11 points to the original host record; it replaces neither pre-plane consent nor host-effect history.
 - **A cockpit-owned status** (browser storage). Unauthenticated, lost per viewer, and the green-over-stale machine by construction.
 - **Endpoint-keyed binding.** Labels and paths stood in for identity in the cockpit until neomjs/neo-agent-institution#181; the plane's served identity is the only key.
 - **Identity-only binding.** An id match without the bound root's corroboration admits a same-identity/different-storage responder; the root is a check, never the key, and never optional where the run holds an expectation.
@@ -58,6 +101,8 @@ The record leaf is small: a file, a writer module, a projector. The CLI and the 
 ## 6. Merge gate
 
 The first leaf that writes the record (neomjs/neo-agent-brain#679) cannot merge before this record is on `dev` — Accepted, per ADR 0005 §9, by the human merge of its approved, green PR. The witness in §3 is that PR's required test evidence; a PR that replays an accepted effect on resume, turns a step green from a receipt, or binds on the id alone where a bound root exists, is rejected at review regardless of CI.
+
+The class-9 implementation cannot merge before this relation and the companion Institution ADR 0038 amendment are accepted. Its source evidence must exercise the §2.11 witness and the class-9 contract's refusal/restore controls; neither an accepted ADR nor a passing source test certifies the installed outside-roster confirmation/review witness.
 
 ---
 
