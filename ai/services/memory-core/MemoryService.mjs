@@ -33,6 +33,7 @@ import {readSecretCarrier}                                      from '../shared/
 import RequestContextService, {SHARED_USER_ID, normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
 import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER}              from '../../graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId}                           from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {resolveAgentIdentityAlias}                              from '../graph/agentFamilyResolution.mjs';
 
 import {CONCEPT_EXPANSION_EDGE_TYPES, MEMORY_TERMINAL_EDGE_TYPES, enrichWithConceptWalk} from '../graph/conceptAnchoredRetrieval.mjs';
 import {buildMemoryResolveCandidate}                                                     from './conceptWalkMemoryGate.mjs';
@@ -402,7 +403,19 @@ class MemoryService extends Base {
         singleton: true
     }
 
-    static identityTrustTiers = new Map(IDENTITIES.map(identity => [identity.id, identity.properties?.trustTier || TRUST_TIERS.UNCLASSIFIED]))
+    static identityTrustTiers = new Map(IDENTITIES.flatMap(identity => {
+        const
+            tier         = identity.properties?.trustTier || TRUST_TIERS.UNCLASSIFIED,
+            formerLogins = Array.isArray(identity.properties?.formerLogins) ? identity.properties.formerLogins : [];
+
+        return [
+            [identity.id, tier],
+            ...formerLogins
+                .map(login => normalizeAgentIdentityNodeId(login))
+                .filter(id => typeof id === 'string' && id.startsWith('@'))
+                .map(id => [id, tier])
+        ];
+    }))
 
     static trustTierRanks = new Map(TRUST_TIER_ORDER.map((tier, index) => [tier, index]))
 
@@ -441,11 +454,64 @@ class MemoryService extends Base {
 
     /**
      * @summary Resolves a raw memory row's provenance trust tier from its AgentIdentity metadata.
+     *
+     * Checks the live `GraphService` `AgentIdentity` node first (so runtime/auto-provisioned seats
+     * such as `@neo-gemini-maryam` resolve their graph-stamped `trustTier` without requiring an
+     * entry in `identityRoots.mjs`), resolving `formerLogins` aliases before falling back to the
+     * seeded `identityTrustTiers` map (`id` + `formerLogins`) when the graph is unseeded or offline.
+     *
      * @param {Object} metadata Chroma metadata row.
-     * @returns {String} Trust tier, or `unclassified` when no seeded identity matches.
+     * @returns {String} Trust tier, or `unclassified` when neither the graph nor seeded identities match.
      */
     static resolveMemoryTrustTier(metadata) {
-        return this.identityTrustTiers.get(metadata?.agentIdentity) || TRUST_TIERS.UNCLASSIFIED;
+        const rawId = typeof metadata?.agentIdentity === 'string' ? metadata.agentIdentity.trim() : '';
+
+        if (!rawId) {
+            return TRUST_TIERS.UNCLASSIFIED;
+        }
+
+        const
+            normalizedId = normalizeAgentIdentityNodeId(rawId),
+            canonicalId  = resolveAgentIdentityAlias(normalizedId)?.id || normalizedId;
+
+        if (GraphService.db) {
+            const
+                readNode = id => {
+                    try {
+                        return GraphService.getNodeRecord?.({id}) || GraphService.getNode?.({id, projection: 'full'}) || GraphService.db?.nodes?.get?.(id) || null;
+                    } catch {
+                        return GraphService.db?.nodes?.get?.(id) || null;
+                    }
+                },
+                directNode = readNode(canonicalId)
+                    || (canonicalId !== normalizedId ? readNode(normalizedId) : null)
+                    || (normalizedId !== rawId ? readNode(rawId) : null),
+                matchedNode = directNode || (!this.identityTrustTiers.has(canonicalId) && typeof GraphService.listNodeRecordsByType === 'function'
+                    ? (() => {
+                        try {
+                            const {records = []} = GraphService.listNodeRecordsByType({type: 'AgentIdentity'}) || {};
+
+                            return records.find(record =>
+                                Array.isArray(record?.properties?.formerLogins) &&
+                                record.properties.formerLogins.some(login => normalizeAgentIdentityNodeId(login) === normalizedId)
+                            ) || null;
+                        } catch {
+                            return null;
+                        }
+                    })()
+                    : null),
+                graphProps = matchedNode?.isRecord ? matchedNode.get('properties') : matchedNode?.properties,
+                graphTier  = graphProps?.trustTier;
+
+            if (this.trustTierRanks.has(graphTier)) {
+                return graphTier;
+            }
+        }
+
+        return this.identityTrustTiers.get(canonicalId)
+            || this.identityTrustTiers.get(normalizedId)
+            || this.identityTrustTiers.get(rawId)
+            || TRUST_TIERS.UNCLASSIFIED;
     }
 
     /**

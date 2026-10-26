@@ -70,6 +70,7 @@ export const FETCH_ISSUES_FOR_SYNC = `
           author {
             login
           }
+          authorAssociation
 
           labels(first: $maxLabels) {
             nodes {
@@ -164,6 +165,7 @@ export const FETCH_ISSUES_FOR_SYNC = `
               ... on IssueComment {
                 createdAt
                 author { login }
+                authorAssociation
                 body
               }
               ... on ReferencedEvent {
@@ -432,6 +434,7 @@ export const FETCH_SINGLE_ISSUE = `
         author {
           login
         }
+        authorAssociation
         labels(first: $maxLabels) {
           nodes {
             name
@@ -514,6 +517,7 @@ export const FETCH_SINGLE_ISSUE = `
               ... on IssueComment {
                 createdAt
                 author { login }
+                authorAssociation
                 body
               }
               ... on ReferencedEvent {
@@ -696,6 +700,7 @@ export const FETCH_ISSUE_TIMELINE_PAGE = `
             ... on IssueComment {
               createdAt
               author { login }
+              authorAssociation
               body
             }
             ... on ReferencedEvent {
@@ -945,6 +950,7 @@ export const GET_ISSUE_CONVERSATION = `
         author {
           login
         }
+        authorAssociation
         comments(first: $maxComments) {
           nodes {
             id
@@ -952,6 +958,7 @@ export const GET_ISSUE_CONVERSATION = `
             author {
               login
             }
+            authorAssociation
             body
             createdAt
           }

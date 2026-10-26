@@ -30,10 +30,11 @@ export function createContentTrustSummary() {
 }
 
 /**
- * Projects one authored node (`{author, body, ...}`): stamps `authorTrust`, sanitizes an untrusted
- * author's `body`, and records redaction counts plus stealth-intent signals against `path`.
- * Non-object nodes pass through untouched so sparse / null GraphQL entries never change shape.
- * @param {Object} node a GitHub node carrying optional `author.login` and `body`
+ * Projects one authored node (`{author, authorAssociation, body, ...}`): stamps `authorTrust`,
+ * sanitizes an untrusted author's `body`, and records redaction counts plus stealth-intent signals
+ * against `path`. Non-object nodes pass through untouched so sparse / null GraphQL entries never
+ * change shape.
+ * @param {Object} node a GitHub node carrying optional `author.login`, `authorAssociation`, and `body`
  * @param {Object} ctx  `{collaborators, productNameDenylist, summary}` shared projection context
  * @param {String} path signal location label (e.g. `body`, `comment:<id>`)
  * @returns {Object} a new node object (or the input verbatim for non-objects)
@@ -43,7 +44,10 @@ function projectNode(node, ctx, path) {
         return node
     }
 
-    const tier      = classifyAuthorTrust(node.author?.login, {collaborators: ctx.collaborators});
+    const tier      = classifyAuthorTrust(node.author?.login, {
+        collaborators    : ctx.collaborators,
+        authorAssociation: node.authorAssociation
+    });
     const projected = {...node, authorTrust: tier};
 
     if (typeof node.body === 'string' && node.body.length > 0) {

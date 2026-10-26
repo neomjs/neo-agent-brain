@@ -205,4 +205,54 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
         expect(linkNodesCalls.some(([, , relationship]) => relationship === 'AUTHORED_BY')).toBe(false);
         expect(linkNodesCalls.some(([, , relationship]) => relationship === 'SPAWNED_MEMORY')).toBe(true);
     });
+
+    test('resolveMemoryTrustTier resolves canonical roster ids and all formerLogins aliases to their owning trust tier (#1279)', () => {
+        expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: '@neo-gemini-julia'})).toBe(TRUST_TIERS.PEER_TRUSTED);
+
+        for (const formerLogin of [
+            '@neo-gemini-pro',
+            'neo-gemini-pro',
+            '@neo-gemini-3-1-pro',
+            '@neo-fable',
+            'neo-fable',
+            '@neo-gpt',
+            'neo-gpt',
+            '@neo-opus-4-7',
+            '@neo-claude-opus'
+        ]) {
+            expect(
+                MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: formerLogin}),
+                `formerLogin ${formerLogin}`
+            ).toBe(TRUST_TIERS.PEER_TRUSTED);
+        }
+    });
+
+    test('resolveMemoryTrustTier resolves auto-provisioned AgentIdentity graph nodes (e.g. @neo-gemini-maryam) from GraphService (#1279)', () => {
+        const
+            originalDb            = GraphService.db,
+            originalGetNodeRecord = GraphService.getNodeRecord;
+
+        try {
+            GraphService.db = {nodes: new Map()};
+            GraphService.getNodeRecord = ({id}) => {
+                if (id === '@neo-gemini-maryam') {
+                    return {
+                        id        : '@neo-gemini-maryam',
+                        type      : 'AgentIdentity',
+                        properties: {
+                            trustTier: TRUST_TIERS.INTERNAL_AUTHORED
+                        }
+                    };
+                }
+                return null;
+            };
+
+            expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: '@neo-gemini-maryam'})).toBe(TRUST_TIERS.INTERNAL_AUTHORED);
+            expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: 'neo-gemini-maryam'})).toBe(TRUST_TIERS.INTERNAL_AUTHORED);
+            expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: '@unknown-unprovisioned'})).toBe(TRUST_TIERS.UNCLASSIFIED);
+        } finally {
+            GraphService.db            = originalDb;
+            GraphService.getNodeRecord = originalGetNodeRecord;
+        }
+    });
 });

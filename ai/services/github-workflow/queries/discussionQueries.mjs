@@ -75,6 +75,7 @@ export const GET_DISCUSSION_CONVERSATION = `
         author {
           login
         }
+        authorAssociation
 
         category {
           name
@@ -87,6 +88,7 @@ export const GET_DISCUSSION_CONVERSATION = `
             author {
               login
             }
+            authorAssociation
             body
             createdAt
             updatedAt
@@ -99,6 +101,7 @@ export const GET_DISCUSSION_CONVERSATION = `
                 author {
                   login
                 }
+                authorAssociation
                 body
                 createdAt
                 updatedAt
@@ -158,6 +161,7 @@ export const FETCH_DISCUSSIONS_FOR_SYNC = `
           author {
             login
           }
+          authorAssociation
 
           category {
             name
@@ -174,6 +178,7 @@ export const FETCH_DISCUSSIONS_FOR_SYNC = `
               author {
                 login
               }
+              authorAssociation
               body
               createdAt
               isAnswer
@@ -187,6 +192,7 @@ export const FETCH_DISCUSSIONS_FOR_SYNC = `
                   author {
                     login
                   }
+                  authorAssociation
                   body
                   createdAt
                   isAnswer
@@ -235,6 +241,7 @@ export const FETCH_SINGLE_DISCUSSION_FOR_SYNC = `
         author {
           login
         }
+        authorAssociation
 
         category {
           name
@@ -251,6 +258,7 @@ export const FETCH_SINGLE_DISCUSSION_FOR_SYNC = `
             author {
               login
             }
+            authorAssociation
             body
             createdAt
             isAnswer
@@ -264,6 +272,7 @@ export const FETCH_SINGLE_DISCUSSION_FOR_SYNC = `
                 author {
                   login
                 }
+                authorAssociation
                 body
                 createdAt
                 isAnswer
@@ -314,6 +323,7 @@ export const FETCH_DISCUSSION_COMMENTS_PAGE = `
             author {
               login
             }
+            authorAssociation
             body
             createdAt
             isAnswer
@@ -327,6 +337,7 @@ export const FETCH_DISCUSSION_COMMENTS_PAGE = `
                 author {
                   login
                 }
+                authorAssociation
                 body
                 createdAt
                 isAnswer
@@ -368,6 +379,7 @@ export const FETCH_DISCUSSION_REPLIES_PAGE = `
             author {
               login
             }
+            authorAssociation
             body
             createdAt
             isAnswer

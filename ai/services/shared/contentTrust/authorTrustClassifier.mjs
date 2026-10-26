@@ -31,31 +31,57 @@ export function normalizeLogin(login) {
 }
 
 /**
- * Canonical login → trustTier map, built once from the frozen identity roster.
+ * Canonical and former login → trustTier map, built once from the frozen identity roster.
+ * Indexes both `properties.githubLogin` and `properties.formerLogins` so historical GitHub
+ * comments, reviews, and issues authored before an identity rename still resolve to the
+ * owning resident's trust tier.
  * @type {Map<String, String>}
  */
 const KNOWN_TIER_BY_LOGIN = new Map(
     IDENTITIES
         .filter(identity => identity.properties?.githubLogin)
-        .map(identity => [normalizeLogin(identity.properties.githubLogin), identity.properties.trustTier])
+        .flatMap(identity => {
+            const
+                tier         = identity.properties.trustTier,
+                formerLogins = Array.isArray(identity.properties.formerLogins) ? identity.properties.formerLogins : [];
+
+            return [
+                [normalizeLogin(identity.properties.githubLogin), tier],
+                ...formerLogins
+                    .map(normalizeLogin)
+                    .filter(Boolean)
+                    .map(login => [login, tier])
+            ];
+        })
 );
+
+/**
+ * GitHub `CommentAuthorAssociation` values that prove repository maintainer / organization member
+ * standing even when the author login is not listed in `identityRoots.mjs` (e.g. non-rostered
+ * Fleet-Manager-created seats such as `@neo-gemini-maryam` or human org members).
+ * @type {Set<String>}
+ */
+const REPO_TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 /**
  * @summary Classifies a GitHub author login into a content-trust tier — fail-closed.
  *
  * Resolution order:
  * 1. Empty / non-string login → `UNCLASSIFIED` (no author info; still untrusted).
- * 2. Login present in the canonical roster → that identity's tier (owner / peer-trusted / system).
+ * 2. Login present in the canonical roster (`githubLogin` or `formerLogins`) → that identity's tier (`owner` / `peer-trusted` / `system`).
  * 3. Login in the injected repo-collaborator set → `REPO_TRUSTED` (write-access humans we don't seed).
- * 4. Anything else → `EXTERNAL` (the conservative default; never inferred up from prose).
+ * 4. GitHub `authorAssociation` in `['OWNER', 'MEMBER', 'COLLABORATOR']` → `REPO_TRUSTED` (non-rostered org members and collaborators).
+ * 5. Anything else → `EXTERNAL` (the conservative default; never inferred up from prose).
  *
  * @param {String} login GitHub author login (bare `octocat` or `@octocat` both accepted)
- * @param {Object}             [opts]
+ * @param {Object}               [opts]
  * @param {Set<String>|String[]} [opts.collaborators] Repo collaborator logins (write+). Members not
  *        in the canonical roster classify `REPO_TRUSTED`. Injected for purity — never fetched here.
+ * @param {String}               [opts.authorAssociation] GitHub `CommentAuthorAssociation` (`OWNER`,
+ *        `MEMBER`, `COLLABORATOR`, `CONTRIBUTOR`, `NONE`, etc.) from the GraphQL/REST node.
  * @returns {String} a `TRUST_TIERS` value
  */
-export function classifyAuthorTrust(login, {collaborators} = {}) {
+export function classifyAuthorTrust(login, {collaborators, authorAssociation} = {}) {
     const normalized = normalizeLogin(login);
 
     if (!normalized) {
@@ -74,6 +100,14 @@ export function classifyAuthorTrust(login, {collaborators} = {}) {
     const collaboratorSet = new Set(collaboratorList.map(normalizeLogin));
 
     if (collaboratorSet.has(normalized)) {
+        return TRUST_TIERS.REPO_TRUSTED
+    }
+
+    const normalizedAssociation = typeof authorAssociation === 'string'
+        ? authorAssociation.trim().toUpperCase()
+        : '';
+
+    if (REPO_TRUSTED_ASSOCIATIONS.has(normalizedAssociation)) {
         return TRUST_TIERS.REPO_TRUSTED
     }
 

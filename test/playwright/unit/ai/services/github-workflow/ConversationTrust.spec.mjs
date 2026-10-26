@@ -18,6 +18,24 @@ import Neo                                                                      
 import * as core                                                                       from 'neo.mjs/src/core/_export.mjs';
 import {TRUST_TIERS}                                                                   from '../../../../../../ai/graph/identityRoots.mjs';
 import {createContentTrustSummary, projectAuthoredNodeTrust, projectConversationTrust} from '../../../../../../ai/services/github-workflow/shared/conversationTrust.mjs';
+import {
+    FETCH_DISCUSSION_COMMENTS_PAGE,
+    FETCH_DISCUSSION_REPLIES_PAGE,
+    FETCH_DISCUSSIONS_FOR_SYNC,
+    FETCH_SINGLE_DISCUSSION_FOR_SYNC,
+    GET_DISCUSSION_CONVERSATION
+} from '../../../../../../ai/services/github-workflow/queries/discussionQueries.mjs';
+import {
+    FETCH_ISSUE_TIMELINE_PAGE,
+    FETCH_ISSUES_FOR_SYNC,
+    FETCH_SINGLE_ISSUE,
+    GET_ISSUE_CONVERSATION
+} from '../../../../../../ai/services/github-workflow/queries/issueQueries.mjs';
+import {
+    FETCH_PULL_REQUESTS_FOR_SYNC,
+    FETCH_SINGLE_PULL_FOR_SYNC,
+    GET_CONVERSATION
+} from '../../../../../../ai/services/github-workflow/queries/pullRequestQueries.mjs';
 
 /**
  * @summary Read-boundary trust-projection fixtures — the pure helper + its wiring into the three
@@ -166,6 +184,41 @@ test.describe('Neo.ai.services.github-workflow.shared.conversationTrust — pure
         expect(summary.projected).toBe(true);
         expect(summary.quarantined).toBe(2)
     });
+
+    test('non-rostered org MEMBER (authorAssociation: MEMBER) and formerLogins comments classify as trusted and preserve GitHub URLs untouched (#1279)', () => {
+        const maryamBody = 'Receipt: https://github.com/neomjs/neo-agent-brain/blob/dev/ai/services/memory-core/MemoryService.mjs#L466';
+        const formerBody = 'Historical peer receipt: https://github.com/neomjs/neo/pull/19835';
+
+        const projected = projectConversationTrust({
+            title   : 'Discussion #19835',
+            body    : 'Root body',
+            author  : {login: 'tobiu'},
+            comments: {nodes: [{
+                id               : 'DC_maryam',
+                author           : {login: 'neo-gemini-maryam'},
+                authorAssociation: 'MEMBER',
+                body             : maryamBody,
+                replies          : {nodes: [{
+                    id    : 'DC_former',
+                    author: {login: 'neo-gemini-pro'},
+                    body  : formerBody
+                }]}
+            }]}
+        });
+
+        const maryamComment = projected.comments.nodes[0];
+        const formerReply   = maryamComment.replies.nodes[0];
+
+        expect(maryamComment.authorTrust).toBe(TRUST_TIERS.REPO_TRUSTED);
+        expect(maryamComment.body).toBe(maryamBody);
+        expect(maryamComment.body).not.toContain('[QUARANTINED_URL');
+
+        expect(formerReply.authorTrust).toBe(TRUST_TIERS.PEER_TRUSTED);
+        expect(formerReply.body).toBe(formerBody);
+        expect(formerReply.body).not.toContain('[QUARANTINED_URL');
+
+        expect(projected.contentTrust.quarantined).toBe(0)
+    });
 });
 
 test.describe('Neo.ai.services.github-workflow — getConversation trust wiring', () => {
@@ -310,5 +363,55 @@ test.describe('Neo.ai.services.github-workflow — getConversation trust wiring'
         const result = await DiscussionService.getConversation({discussion_number: 404});
 
         expect(result.code).toBe('NOT_FOUND')
+    });
+
+    test('DiscussionService, IssueService, and PullRequestService preserve URLs for authorAssociation: MEMBER non-rostered org seats and select authorAssociation in GraphQL queries (#1279)', async () => {
+        const maryamUrlBody = 'Verified receipt: https://github.com/neomjs/neo-agent-brain/issues/1279';
+
+        GraphqlService.query = async () => ({repository: {discussion: {
+            title            : 'A discussion',
+            body             : maryamUrlBody,
+            author           : {login: 'neo-gemini-maryam'},
+            authorAssociation: 'MEMBER',
+            comments         : {nodes: [{
+                id               : 'DC_maryam',
+                author           : {login: 'neo-gemini-maryam'},
+                authorAssociation: 'MEMBER',
+                body             : maryamUrlBody,
+                replies          : {nodes: [{
+                    id               : 'DC_maryam_reply',
+                    author           : {login: 'neo-gemini-maryam'},
+                    authorAssociation: 'MEMBER',
+                    body             : maryamUrlBody
+                }]}
+            }]}
+        }}});
+
+        const result = await DiscussionService.getConversation({discussion_number: 19835});
+
+        expect(result.authorTrust).toBe(TRUST_TIERS.REPO_TRUSTED);
+        expect(result.body).toBe(maryamUrlBody);
+        expect(result.comments.nodes[0].authorTrust).toBe(TRUST_TIERS.REPO_TRUSTED);
+        expect(result.comments.nodes[0].body).toBe(maryamUrlBody);
+        expect(result.comments.nodes[0].replies.nodes[0].authorTrust).toBe(TRUST_TIERS.REPO_TRUSTED);
+        expect(result.comments.nodes[0].replies.nodes[0].body).toBe(maryamUrlBody);
+        expect(result.contentTrust.quarantined).toBe(0);
+
+        for (const [name, query] of [
+            ['GET_DISCUSSION_CONVERSATION', GET_DISCUSSION_CONVERSATION],
+            ['FETCH_DISCUSSIONS_FOR_SYNC', FETCH_DISCUSSIONS_FOR_SYNC],
+            ['FETCH_SINGLE_DISCUSSION_FOR_SYNC', FETCH_SINGLE_DISCUSSION_FOR_SYNC],
+            ['FETCH_DISCUSSION_COMMENTS_PAGE', FETCH_DISCUSSION_COMMENTS_PAGE],
+            ['FETCH_DISCUSSION_REPLIES_PAGE', FETCH_DISCUSSION_REPLIES_PAGE],
+            ['GET_ISSUE_CONVERSATION', GET_ISSUE_CONVERSATION],
+            ['FETCH_ISSUES_FOR_SYNC', FETCH_ISSUES_FOR_SYNC],
+            ['FETCH_SINGLE_ISSUE', FETCH_SINGLE_ISSUE],
+            ['FETCH_ISSUE_TIMELINE_PAGE', FETCH_ISSUE_TIMELINE_PAGE],
+            ['GET_CONVERSATION', GET_CONVERSATION],
+            ['FETCH_PULL_REQUESTS_FOR_SYNC', FETCH_PULL_REQUESTS_FOR_SYNC],
+            ['FETCH_SINGLE_PULL_FOR_SYNC', FETCH_SINGLE_PULL_FOR_SYNC]
+        ]) {
+            expect(query, `${name} should select authorAssociation`).toContain('authorAssociation')
+        }
     });
 });

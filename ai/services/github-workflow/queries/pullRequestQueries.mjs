@@ -22,6 +22,7 @@ export const GET_CONVERSATION = `
         author {
           login
         }
+        authorAssociation
         comments(first: $maxComments) {
           nodes {
             id
@@ -29,6 +30,7 @@ export const GET_CONVERSATION = `
             author {
               login
             }
+            authorAssociation
             body
             createdAt
           }
@@ -549,6 +551,7 @@ export const FETCH_PULL_REQUESTS_FOR_SYNC = `
           author {
             login
           }
+          authorAssociation
 
           comments(first: $maxComments) {
             nodes {
@@ -556,6 +559,7 @@ export const FETCH_PULL_REQUESTS_FOR_SYNC = `
               author {
                 login
               }
+              authorAssociation
               body
             }
           }
@@ -566,6 +570,7 @@ export const FETCH_PULL_REQUESTS_FOR_SYNC = `
               author {
                 login
               }
+              authorAssociation
               body
               state
             }
@@ -615,6 +620,7 @@ export const FETCH_SINGLE_PULL_FOR_SYNC = `
         author {
           login
         }
+        authorAssociation
 
         comments(first: $maxComments) {
           nodes {
@@ -622,6 +628,7 @@ export const FETCH_SINGLE_PULL_FOR_SYNC = `
             author {
               login
             }
+            authorAssociation
             body
           }
         }
@@ -632,6 +639,7 @@ export const FETCH_SINGLE_PULL_FOR_SYNC = `
             author {
               login
             }
+            authorAssociation
             body
             state
           }
