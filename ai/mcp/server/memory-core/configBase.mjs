@@ -919,6 +919,25 @@ class ConfigBase extends ConfigProvider {
                 defaultPolicy: leaf('team', 'NEO_MEMORY_SHARING_DEFAULT_POLICY', 'string', {parse: parseMemorySharingPolicy})
             },
             /**
+             * Community-steward wake lease and coalesced count-only wake policy.
+             *
+             * Stage 2 of Option J runs in shadow-only mode (`stewardActivation: false`) until the shadow
+             * steward experiment records a retained window of steward vacancy, response latency, and wake
+             * cost. Every numeric threshold leaf remains `null` (`unset`) by default so no threshold
+             * literal lives outside AiConfig leaves and live wake activation requires explicit measured
+             * leaf values.
+             * @type {Object}
+             */
+            communityStewardWake: {
+                stewardActivation        : leaf(false, 'NEO_COMMUNITY_STEWARD_ACTIVATION',                   'boolean'),
+                stewardLeaseTtlMs        : leaf(null,  'NEO_COMMUNITY_STEWARD_LEASE_TTL_MS',                 'number'),
+                wakeCoalesceWindowMs     : leaf(null,  'NEO_COMMUNITY_STEWARD_WAKE_COALESCE_WINDOW_MS',      'number'),
+                vacancyFallbackCooldownMs: leaf(null,  'NEO_COMMUNITY_STEWARD_VACANCY_FALLBACK_COOLDOWN_MS', 'number'),
+                minUnclaimedEligibleCount: leaf(null,  'NEO_COMMUNITY_STEWARD_MIN_UNCLAIMED_ELIGIBLE_COUNT', 'number'),
+                wakeAmplificationCap     : leaf(null,  'NEO_COMMUNITY_STEWARD_WAKE_AMPLIFICATION_CAP',       'number'),
+                maxWakePayloadBytes      : leaf(null,  'NEO_COMMUNITY_STEWARD_MAX_WAKE_PAYLOAD_BYTES',       'number')
+            },
+            /**
              * Target file path for the lazy backfill queue of unresolved provenance edges.
              * @type {string}
              */

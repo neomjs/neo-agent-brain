@@ -14,6 +14,12 @@ import {
 import {resolveTemporalWindow}            from './helpers/temporalWindowResolver.mjs';
 import {buildTemporalBirdViewEnvelope}    from './helpers/temporalBirdViewEnvelope.mjs';
 import {SUPPORTED_GITHUB_COMMUNITY_KINDS} from '../github-workflow/community/communityContentKinds.mjs';
+import {
+    acquireStewardWakeLease,
+    ensureStewardWakeLeaseSchema,
+    evaluateStewardWake,
+    releaseStewardWakeLease
+} from './communityStewardWakeLease.mjs';
 
 export const COMMUNITY_ATTENTION_SCHEMA_VERSION = 'community-attention.v1';
 
@@ -164,7 +170,8 @@ class CommunityActivityService extends Base {
             CREATE TRIGGER IF NOT EXISTS edge_insert AFTER INSERT ON Edges BEGIN INSERT INTO GraphLog(entity_id, entity_type) VALUES (NEW.id, 'edges'); END;
             CREATE TRIGGER IF NOT EXISTS edge_update AFTER UPDATE ON Edges BEGIN INSERT INTO GraphLog(entity_id, entity_type) VALUES (NEW.id, 'edges'); END;
             CREATE TRIGGER IF NOT EXISTS edge_delete AFTER DELETE ON Edges BEGIN INSERT INTO GraphLog(entity_id, entity_type) VALUES (OLD.id, 'edges'); END;
-        `)
+        `);
+        ensureStewardWakeLeaseSchema(this.db)
     }
 
     /** @summary Resolves the bound read scope, refusing absent storage or tenant context. */
@@ -935,6 +942,74 @@ class CommunityActivityService extends Base {
         baseEnvelope.measurement.payloadBytes = Buffer.byteLength(JSON.stringify(baseEnvelope), 'utf8');
 
         return baseEnvelope
+    }
+
+    /**
+     * @summary Acquires or reclaims a tenant/source-scoped TTL-bound steward wake lease for the current tenant.
+     * @param {Object} [options={}]
+     * @returns {Promise<Object>}
+     */
+    async acquireStewardLease({holderPrincipal, leaseTtlMs, mintToken, now = Date.now(), policy, sourceInstanceIds = null} = {}) {
+        await this.ready();
+
+        const tenantId = this.scope();
+
+        return acquireStewardWakeLease({
+            db: this.db,
+            holderPrincipal,
+            leaseTtlMs,
+            mintToken,
+            now,
+            policy,
+            sourceInstanceIds,
+            tenantId
+        })
+    }
+
+    /**
+     * @summary Releases an active steward wake lease for the current tenant when token and fencingEpoch match.
+     * @param {Object} [options={}]
+     * @returns {Promise<Object>}
+     */
+    async releaseStewardLease({fencingEpoch, sourceInstanceIds = null, token} = {}) {
+        await this.ready();
+
+        const tenantId = this.scope();
+
+        return releaseStewardWakeLease({
+            db: this.db,
+            fencingEpoch,
+            sourceInstanceIds,
+            tenantId,
+            token
+        })
+    }
+
+    /**
+     * @summary Projects tenant attention counts and evaluates whether to emit a metric-gated count-only steward wake.
+     * @param {Object} [options={}]
+     * @returns {Promise<Object>}
+     */
+    async evaluateStewardWake({
+        holderProof           = null,
+        now                   = Date.now(),
+        policy,
+        sourceInstanceIds     = null,
+        vacancyFallbackTarget = null
+    } = {}) {
+        const attentionCounts = await this.projectAttentionCounts({sourceInstanceIds});
+        const tenantId        = this.scope();
+
+        return evaluateStewardWake({
+            attentionCounts,
+            db: this.db,
+            holderProof,
+            now,
+            policy,
+            sourceInstanceIds,
+            tenantId,
+            vacancyFallbackTarget
+        })
     }
 }
 
