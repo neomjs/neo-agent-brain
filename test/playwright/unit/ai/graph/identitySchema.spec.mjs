@@ -110,6 +110,39 @@ test.describe('identitySchema — node-types + the reflexive-landing acceptance 
         expect(identity.socialLayer.name).toBe('Mnemosyne');
     });
 
+    test('explicit null model remains unattested while a family can be declared', () => {
+        const built = schema.createEmbodiedEpisodeNode({
+            identityKey: '@manual-seat', model: null, family: 'gpt', since: '2026-10-26T00:00:00Z'
+        });
+
+        expect(built.valid).toBe(true);
+        expect(Object.hasOwn(built.node, 'model')).toBe(true);
+        expect(built.node.model).toBeNull();
+        expect(built.node.family).toBe('gpt');
+        expect(Object.isFrozen(built.node)).toBe(true);
+
+        for (const model of [undefined, '', '   ', 0, false, {}]) {
+            expect(schema.createEmbodiedEpisodeNode({
+                identityKey: '@manual-seat', model, family: 'gpt', since: '2026-10-26T00:00:00Z'
+            }).valid).toBe(false);
+        }
+    });
+
+    test('migration to an unattested model never inherits the prior model', () => {
+        const {identity, episodes} = buildRealResident();
+        const migrated = schema.migrateEra({
+            identityNode: identity, episodes,
+            newEra: {model: null, family: 'gpt', since: '2026-10-26T00:00:00Z'}
+        });
+
+        expect(migrated.valid).toBe(true);
+        expect(migrated.episodes[0].model).toBe('claude-opus-4-8');
+        expect(migrated.episodes[1].model).toBeNull();
+        expect(migrated.episodes[1].family).toBe('gpt');
+        expect(schema.validateEraChain(identity, migrated.episodes).valid).toBe(true);
+        expect(episodes[0].until).toBeNull();
+    });
+
     test('the falsifier has teeth (§2.2.3): a snapshot-as-self model FAILS this fixture', () => {
         // The counter-model: identity-with-flat-mutable-facts (the live pre-schema shape).
         // Representing the swap in that model REQUIRES overwriting — which destroys the pre-swap
