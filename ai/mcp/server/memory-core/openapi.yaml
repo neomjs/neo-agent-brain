@@ -2244,8 +2244,10 @@ paths:
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Read the graph visible to the caller, with display fields and historical issue/PR and agent-memory attribution.
+      x-neo-tool-summary: Whole-graph columnar scene for Observatory/Cockpit; in agent turns use query_hybrid_graph, get_neighbors, or get_node.
       description: >-
+        IMPORTANT: Whole-graph columnar scene bulk-read for the Observatory/Cockpit — interactive agent sessions should
+        use `query_hybrid_graph`, `get_neighbors`, `get_node`, or `get_context_frontier` instead.
         Reads every node the caller may see, and every relation between two of them, under the graph's
         row-level security. Answers columnar data, `{kinds, types, nodes: {ids, kinds, labels}, edges, counts,
         budget, truncated}`, where `edges` is a flat `[source, target, type, …]` list of indices into `nodes` and

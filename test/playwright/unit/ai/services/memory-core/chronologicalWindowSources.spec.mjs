@@ -84,6 +84,32 @@ test.describe('chronologicalWindowSources — the recency-exhaustion completenes
         expect(coverage).toMatchObject({totalResolved: 2, identitiesWalked: 2, exhausted: true, degraded: false})
     });
 
+    test('unified: walks identities concurrently via Promise.all while preserving deterministic first-walk-wins order (#1281)', async () => {
+        let inFlight = 0,
+            maxInFlight = 0;
+
+        const {sources, coverage} = await enumerateChronologicalWindowSources({
+            window    : WINDOW,
+            identities: ['@first', '@second'],
+            fetchPage : async ({identity}) => {
+                inFlight++;
+                maxInFlight = Math.max(maxInFlight, inFlight);
+                // @second resolves faster than @first, but @first must still win cross-agent deduplication
+                await new Promise(resolve => setTimeout(resolve, identity === '@first' ? 25 : 5));
+                inFlight--;
+
+                return {
+                    items     : [{id: 'shared', timestamp: 1500, marker: identity}],
+                    nextCursor: null
+                }
+            }
+        });
+
+        expect(maxInFlight).toBe(2);
+        expect(coverage.exhausted).toBe(true);
+        expect(sources).toEqual([{id: 'shared', timestamp: 1500, marker: '@first', identity: '@first'}])
+    });
+
     test('a page-fetch failure degrades (never throws) and preserves the sources it did enumerate', async () => {
         const {sources, coverage} = await enumerateChronologicalWindowSources({
             window    : WINDOW,

@@ -98,6 +98,56 @@ test.describe('exploreMemoryHistory — the full Memory/session Bird View compos
         expect(envelope.coverage.degraded).toBe(false)
     });
 
+    test('bounds a slow synthesis leg via synthesisTimeoutMs and returns deterministic citations with synthesis-failed: timeout (#1281)', async () => {
+        const envelope = await exploreMemoryHistory({
+            partition         : '@a',
+            preset            : 'weekly',
+            now               : NOW,
+            synthesisTimeoutMs: 25,
+            deps              : makeDeps({
+                generate: () => new Promise(resolve => setTimeout(() => resolve('too late'), 200))
+            })
+        });
+
+        expect(envelope.notAuthority).toBe(true);
+        expect(envelope.synthesisAvailable).toBe(false);
+        expect(envelope.synthesis).toBeNull();
+        expect(envelope.coverage.degraded).toBe(true);
+        expect(envelope.coverage.degradedReason).toBe('synthesis-failed: timeout');
+        expect(envelope.citations.map(c => c.id)).toEqual(['turn-@a'])
+    });
+
+    test('runs recency-turn enumeration and session-summary retrieval concurrently inside retrieve (#1281)', async () => {
+        let inFlight    = 0,
+            maxInFlight = 0;
+
+        const envelope = await exploreMemoryHistory({
+            partition: '@a',
+            preset   : 'weekly',
+            now      : NOW,
+            deps     : makeDeps({
+                queryRecentTurns: async ({agentIdentity}) => {
+                    inFlight++;
+                    maxInFlight = Math.max(maxInFlight, inFlight);
+                    await new Promise(resolve => setTimeout(resolve, 20));
+                    inFlight--;
+                    return {turns: [{id: `turn-${agentIdentity}`, timestamp: '2026-07-08T00:00:00.000Z'}], nextCursor: null}
+                },
+                listSummaries: async () => {
+                    inFlight++;
+                    maxInFlight = Math.max(maxInFlight, inFlight);
+                    await new Promise(resolve => setTimeout(resolve, 20));
+                    inFlight--;
+                    return {summaries: [{id: 'sess-peer', sessionId: 's-peer', timestamp: '2026-07-08T00:00:00.000Z', impact: 90, summary: 'peer'}]}
+                }
+            })
+        });
+
+        expect(maxInFlight).toBe(2);
+        expect(envelope.coverage.degraded).toBe(false);
+        expect(envelope.citations.map(c => c.id).sort()).toEqual(['sess-peer', 'turn-@a'])
+    });
+
     test('fails loud when a dep is missing', async () => {
         await expect(exploreMemoryHistory({preset: 'weekly', now: NOW, deps: {queryRecentTurns: async () => ({})}}))
             .rejects.toThrow(/deps must supply/)

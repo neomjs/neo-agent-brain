@@ -21,6 +21,34 @@ import {synthesizeTemporalBirdView}          from './temporalBirdViewSynthesizer
  */
 
 const DEFAULT_ENRICHMENT_QUERY = 'notable engineering decisions, friction, and outcomes';
+const DEFAULT_SYNTHESIS_TIMEOUT_MS = 15000;
+
+/**
+ * @summary Bounds an async synthesis step to `timeoutMs` so a slow LLM or enrichment call degrades the
+ * Bird View envelope with `synthesis-failed: timeout` rather than exceeding the MCP transport deadline.
+ * @param {Promise<*>} promise
+ * @param {Number} timeoutMs
+ * @returns {Promise<*>}
+ */
+async function withTimeout(promise, timeoutMs) {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        return promise
+    }
+
+    let timerId = null;
+
+    try {
+        return await Promise.race([
+            promise,
+            new Promise((_, reject) => {
+                timerId = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+                timerId?.unref?.()
+            })
+        ])
+    } finally {
+        if (timerId !== null) clearTimeout(timerId)
+    }
+}
 
 /**
  * @summary Runs one `explore_memory_history` synthesis and returns the non-authoritative Bird View envelope.
@@ -33,6 +61,7 @@ const DEFAULT_ENRICHMENT_QUERY = 'notable engineering decisions, friction, and o
  * @param {Date|String|Number} [options.now] Injected reference clock (required for a preset).
  * @param {Date|String|Number} [options.generatedAt] Injected generation stamp; defaults to `now`.
  * @param {String} [options.enrichmentQuery] Semantic theme query (best-effort).
+ * @param {Number} [options.synthesisTimeoutMs=15000] Timeout in milliseconds for the enrichment + LLM synthesis leg.
  * @param {Object} options.deps Injected Memory Core / inference touchpoints.
  * @param {Function} options.deps.queryRecentTurns Bound `queryRecentTurns` (the recency spine source).
  * @param {Function} options.deps.queryMemories   Bound `queryMemories` (semantic enrichment).
@@ -43,7 +72,9 @@ const DEFAULT_ENRICHMENT_QUERY = 'notable engineering decisions, friction, and o
  */
 export async function exploreMemoryHistory({
     partition = 'unified', preset, windowStart, windowEnd, now, generatedAt,
-    enrichmentQuery = DEFAULT_ENRICHMENT_QUERY, deps
+    enrichmentQuery = DEFAULT_ENRICHMENT_QUERY,
+    synthesisTimeoutMs = DEFAULT_SYNTHESIS_TIMEOUT_MS,
+    deps
 } = {}) {
     const {queryRecentTurns, queryMemories, generate, listIdentities, listSummaries} = deps || {};
 
@@ -63,9 +94,11 @@ export async function exploreMemoryHistory({
     // is userId-bound). Merged + deduped by id; a failure in EITHER leg degrades coverage honestly, so the
     // narrative is withheld rather than served partial.
     const retrieve = async ({window}) => {
-        const identities = window.partition === 'unified' ? await listIdentities() : [window.partition],
-              turnResult = await enumerateChronologicalWindowSources({window, identities, fetchPage}),
-              summaries  = await fetchWindowSessions({windowStart: window.windowStart, windowEnd: window.windowEnd, partition: window.partition});
+        const identities              = window.partition === 'unified' ? await listIdentities() : [window.partition],
+              [turnResult, summaries] = await Promise.all([
+                  enumerateChronologicalWindowSources({window, identities, fetchPage}),
+                  fetchWindowSessions({windowStart: window.windowStart, windowEnd: window.windowEnd, partition: window.partition})
+              ]);
 
         const byId = new Map(turnResult.sources.map(source => [source.id, source]));
         for (const source of summaries.sources) if (!byId.has(source.id)) byId.set(source.id, source);
@@ -83,13 +116,13 @@ export async function exploreMemoryHistory({
     };
 
     // synthesis foregrounds themes (best-effort, never coverage) then runs the fidelity-bound generation
-    const synthesize = async ({window, sources}) => {
+    const synthesize = ({window, sources}) => withTimeout((async () => {
         // enrichment is window-bound to the resolved window so a relevance-ranked theme cannot leak in
         // from outside [windowStart, windowEnd) and fabricate a narrative this window was never about.
         const {themes} = await enrich({query: enrichmentQuery, windowStart: window.windowStart, windowEnd: window.windowEnd});
 
         return generateNarrative({window, sources, themes})
-    };
+    })(), synthesisTimeoutMs);
 
     return synthesizeTemporalBirdView({partition, preset, windowStart, windowEnd, now, generatedAt, retrieve, synthesize})
 }

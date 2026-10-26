@@ -125,9 +125,14 @@ export async function enumerateChronologicalWindowSources({window, identities, f
           failed                   = [];
     let   allExhausted = true;
 
-    for (const identity of identityList) {
-        const walk = await walkIdentity({identity, windowStart, windowEnd, fetchPage, maxPages: maxPagesPerIdentity});
+    const walks = await Promise.all(
+        identityList.map(identity =>
+            walkIdentity({identity, windowStart, windowEnd, fetchPage, maxPages: maxPagesPerIdentity})
+                .then(walk => ({identity, walk}))
+        )
+    );
 
+    for (const {identity, walk} of walks) {
         if (!walk.exhausted) {
             allExhausted = false;
             failed.push(walk.error ? `${identity}: ${walk.error}` : `${identity}: page-cap`)
