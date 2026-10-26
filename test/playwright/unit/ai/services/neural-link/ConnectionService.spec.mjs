@@ -12,11 +12,14 @@ setup({
 });
 
 import {test, expect}                                     from '@playwright/test';
+import {spawn}                                            from 'child_process';
 import crypto                                             from 'crypto';
 import fs                                                 from 'fs';
+import net                                                from 'net';
 import {once}                                             from 'node:events';
 import os                                                 from 'os';
 import path                                               from 'path';
+import {fileURLToPath}                                    from 'url';
 import {WebSocketServer}                                  from 'ws';
 import Neo                                                from 'neo.mjs/src/Neo.mjs';
 import * as core                                          from 'neo.mjs/src/core/_export.mjs';
@@ -37,7 +40,7 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         TARGET_DISCONNECTED_ERROR_CODE, BRIDGE_CLOSED_ERROR_CODE,
         originalBridgeTokenEnv, originalConnectToBridge, originalCreateBridgeUrl, originalCwd,
         originalOpenBridgeLogFile, originalReconnectDelayMs, originalRefreshEnvFn,
-        originalSpawnBridge, originalSpawnBridgeProcess;
+        originalSpawnBridge, originalSpawnBridgeProcess, originalStopBridgeProcess;
     const localBridgeServers = new Set();
 
     test.beforeAll(async () => {
@@ -64,10 +67,12 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         originalRefreshEnvFn       = ConnectionService.refreshEnvFn;
         originalSpawnBridge        = ConnectionService.spawnBridge;
         originalSpawnBridgeProcess = ConnectionService.spawnBridgeProcess;
+        originalStopBridgeProcess  = ConnectionService.stopBridgeProcess;
         delete process.env.NEO_FLEET_BRIDGE_TOKEN;
         ConnectionService.clearReconnectTimer();
         ConnectionService.bridgeSocket               = null;
         ConnectionService.bridgeProcess              = null;
+        ConnectionService.spawnedBridgePort          = null;
         ConnectionService.bridgeToken                = null;
         ConnectionService.hasAttemptedInitialConnect = false;
         ConnectionService.manualDisconnect           = false;
@@ -90,6 +95,7 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         if (ConnectionService.bridgeSocket?.readyState === 1) ConnectionService.bridgeSocket.close();
         ConnectionService.bridgeSocket               = null;
         ConnectionService.bridgeProcess              = null;
+        ConnectionService.spawnedBridgePort          = null;
         ConnectionService.bridgeToken                = null;
         ConnectionService.hasAttemptedInitialConnect = false;
         ConnectionService.manualDisconnect           = false;
@@ -101,6 +107,7 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         ConnectionService.refreshEnvFn               = originalRefreshEnvFn;
         ConnectionService.spawnBridge                = originalSpawnBridge;
         ConnectionService.spawnBridgeProcess         = originalSpawnBridgeProcess;
+        ConnectionService.stopBridgeProcess          = originalStopBridgeProcess;
         if (originalBridgeTokenEnv === undefined) delete process.env.NEO_FLEET_BRIDGE_TOKEN;
         else process.env.NEO_FLEET_BRIDGE_TOKEN = originalBridgeTokenEnv;
         await Promise.all([...localBridgeServers].map(async server => {
@@ -961,5 +968,165 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         };
         await expect(ConnectionService.ensureBridgeAndConnect()).rejects.toThrow('ECONNREFUSED');
         expect(spawned).toBe(0)
+    });
+
+    /** @summary Allocates an available loopback TCP port and releases the probe listener immediately. */
+    async function getFreeLoopbackPort() {
+        const probe = net.createServer();
+
+        probe.listen(0, '127.0.0.1');
+        await once(probe, 'listening');
+
+        const {port} = probe.address();
+
+        await new Promise(resolve => probe.close(resolve));
+        return port
+    }
+
+    test('manageConnection stop terminates a detached npm-spawned Bridge process group, waits until the Bridge port closes, and rejects if the port remains open (#1302)', async () => {
+        const
+            root    = fs.mkdtempSync(path.join(os.tmpdir(), 'nl-stop-spawned-bridge-')),
+            pidFile = path.join(root, 'bridge-child.pid'),
+            port    = await getFreeLoopbackPort();
+
+        // Reproduce the exact detached `npm run ai:server-neural-link` -> `node bridge.mjs` hierarchy:
+        // `npm` is the detached process-group leader (`ConnectionService.bridgeProcess.pid`), while the
+        // actual TCP listener lives in its child `node` process (`bridgePid !== bridgeProcess.pid`).
+        fs.writeFileSync(path.join(root, 'bridge.mjs'), [
+            "import fs from 'node:fs';",
+            "import net from 'node:net';",
+            'const port = Number(process.env.NEO_NL_PORT);',
+            'const server = net.createServer();',
+            "server.listen(port, '127.0.0.1', () => {",
+            `    fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+            '});',
+            "process.on('SIGTERM', () => server.close(() => process.exit(0)));",
+            "process.on('SIGINT',  () => server.close(() => process.exit(0)));"
+        ].join('\n'));
+        fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+            name   : 'nl-spawned-bridge-fixture',
+            private: true,
+            type   : 'module',
+            scripts: {
+                [BRIDGE_NPM_SCRIPT]: 'node ./bridge.mjs'
+            }
+        }));
+
+        ConnectionService.cwd = root;
+
+        let bridgePid = null;
+
+        try {
+            await ConnectionService.spawnBridge({logPath: root, port, startupDelayMs: 50});
+
+            await expect.poll(
+                () => ConnectionService.isBridgePortListening({port}),
+                {timeout: 5000}
+            ).toBe(true);
+
+            bridgePid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+            expect(Number.isInteger(bridgePid) && bridgePid > 0).toBe(true);
+            expect(bridgePid, 'listener runs in the child of `npm`, not the `npm` wrapper PID itself')
+                .not.toBe(ConnectionService.bridgeProcess.pid);
+
+            const stopReply = await ConnectionService.manageConnection({action: 'stop'});
+
+            expect(stopReply).toEqual({message: 'Neural Link Bridge stopped.'});
+            expect(ConnectionService.bridgeProcess).toBeNull();
+            expect(await ConnectionService.isBridgePortListening({port})).toBe(false);
+            expect(() => process.kill(bridgePid, 0)).toThrow();
+
+            // Non-vacuity / truthfulness guard: if a port remains open after stop attempts complete,
+            // `manageConnection({action: 'stop'})` must reject instead of claiming the Bridge stopped.
+            const stuckServer = net.createServer();
+            stuckServer.listen(0, '127.0.0.1');
+            await once(stuckServer, 'listening');
+            const stuckPort = stuckServer.address().port;
+
+            try {
+                ConnectionService.bridgeProcess     = {kill() {}};
+                ConnectionService.spawnedBridgePort = stuckPort;
+                ConnectionService.stopBridgeProcess = originalStopBridgeProcess.bind(ConnectionService);
+
+                await expect(
+                    ConnectionService.stopBridgeProcess(ConnectionService.bridgeProcess, {
+                        pollIntervalMs: 20,
+                        port          : stuckPort,
+                        sigkillAfterMs: 40,
+                        timeoutMs     : 100
+                    })
+                ).rejects.toThrow(`Failed to stop Neural Link Bridge: port ${stuckPort} is still listening.`);
+            } finally {
+                await new Promise(resolve => stuckServer.close(resolve))
+            }
+        } finally {
+            if (bridgePid) {
+                try { process.kill(bridgePid, 'SIGKILL') } catch {}
+            }
+            if (ConnectionService.bridgeProcess?.pid) {
+                try { process.kill(-ConnectionService.bridgeProcess.pid, 'SIGKILL') } catch {}
+            }
+            fs.rmSync(root, {force: true, recursive: true})
+        }
+    });
+
+    test('manageConnection stop never stops an already-running external Bridge that this server did not spawn (#1302)', async () => {
+        const
+            externalBridge = await startLocalBridge(),
+            externalPort   = externalBridge.server.address().port;
+
+        ConnectionService.createBridgeUrl = () => externalBridge.url;
+
+        await ConnectionService.ensureBridgeAndConnect();
+
+        expect(ConnectionService.getStatus().bridgeConnected).toBe(true);
+        expect(ConnectionService.bridgeProcess, 'external Bridge was found running, not spawned here').toBeNull();
+        expect(await ConnectionService.isBridgePortListening({port: externalPort})).toBe(true);
+
+        const reply = await ConnectionService.manageConnection({action: 'stop'});
+
+        expect(reply).toEqual({
+            message: 'Disconnected. Bridge process was not managed by this session (not killed).'
+        });
+        expect(ConnectionService.getStatus().bridgeConnected).toBe(false);
+        expect(
+            await ConnectionService.isBridgePortListening({port: externalPort}),
+            'external Bridge must remain listening after client disconnect'
+        ).toBe(true);
+    });
+
+    test('run-bridge.mjs shuts down cleanly and releases its port on SIGTERM (#1302)', async () => {
+        const
+            runBridgePath = fileURLToPath(new URL('../../../../../../ai/mcp/server/neural-link/run-bridge.mjs', import.meta.url)),
+            logDir        = fs.mkdtempSync(path.join(os.tmpdir(), 'nl-run-bridge-sigterm-')),
+            port          = await getFreeLoopbackPort(),
+            child         = spawn(process.execPath, [runBridgePath], {
+                env: {
+                    ...process.env,
+                    NEO_NL_LOG_PATH: logDir,
+                    NEO_NL_PORT    : String(port),
+                    UNIT_TEST_MODE : 'true'
+                },
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+
+        try {
+            await expect.poll(
+                () => ConnectionService.isBridgePortListening({port}),
+                {timeout: 8000}
+            ).toBe(true);
+
+            const exitPromise = once(child, 'exit');
+
+            child.kill('SIGTERM');
+
+            const [code] = await exitPromise;
+
+            expect(code).toBe(0);
+            expect(await ConnectionService.isBridgePortListening({port})).toBe(false);
+        } finally {
+            try { child.kill('SIGKILL') } catch {}
+            fs.rmSync(logDir, {force: true, recursive: true})
+        }
     });
 });

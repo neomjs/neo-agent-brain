@@ -68,14 +68,97 @@ export function launch({argv = process.argv.slice(2), env = process.env, homedir
     })
 }
 
+/**
+ * @summary Checks whether a parent process is still alive.
+ * @param {Number} ppid
+ * @param {Object} [proc=process]
+ * @returns {Boolean}
+ */
+function isParentProcessAlive(ppid, proc = process) {
+    if (!Number.isInteger(ppid) || ppid <= 1) {
+        return false
+    }
+
+    try {
+        proc.kill(ppid, 0);
+        return true
+    } catch (error) {
+        return error?.code === 'EPERM'
+    }
+}
+
+/**
+ * @summary Forwards termination signals and parent-orphan detection from the standalone launcher to
+ * the spawned `mcp-server.mjs` child process.
+ *
+ * When a harness starts `npx -y neo-neural-link` (`npm exec`), `/bin/sh -c` may spawn this launcher
+ * without `exec` and exit on `SIGTERM` without forwarding the signal to its children. Polling
+ * `proc.ppid` alongside direct signal forwarding guarantees that killing the top-level `npx`
+ * process also ends both this launcher and its `mcp-server.mjs` child.
+ *
+ * @param {import('node:child_process').ChildProcess} child
+ * @param {Object} [options={}]
+ * @param {Number} [options.pollIntervalMs=200]
+ * @param {Object} [options.proc=process]
+ * @returns {Function} Disposer that removes the installed listeners and interval.
+ */
+export function superviseChild(child, {pollIntervalMs = 200, proc = process} = {}) {
+    const
+        initialPpid = proc?.ppid,
+        signals     = ['SIGINT', 'SIGTERM', 'SIGHUP'],
+        listeners   = new Map();
+
+    let terminated = false;
+
+    const terminateChild = (signal = 'SIGTERM') => {
+        if (terminated) return;
+
+        terminated = true;
+
+        try {
+            child?.kill?.(signal)
+        } catch {}
+    };
+
+    for (const signal of signals) {
+        const handler = () => terminateChild(signal);
+        listeners.set(signal, handler);
+        proc?.on?.(signal, handler)
+    }
+
+    const onProcExit = () => terminateChild('SIGTERM');
+    proc?.once?.('exit', onProcExit);
+
+    const parentTimer = Number.isInteger(initialPpid) && initialPpid > 1
+        ? setInterval(() => {
+            if (proc.ppid !== initialPpid || !isParentProcessAlive(initialPpid, proc)) {
+                terminateChild('SIGTERM')
+            }
+        }, pollIntervalMs)
+        : null;
+
+    parentTimer?.unref?.();
+
+    const dispose = () => {
+        if (parentTimer) {
+            clearInterval(parentTimer)
+        }
+        for (const [signal, handler] of listeners) {
+            proc?.off?.(signal, handler)
+        }
+        proc?.off?.('exit', onProcExit)
+    };
+
+    child?.on?.('exit', (code, signal) => {
+        dispose();
+        proc?.exit?.(code ?? (signal ? 1 : 0))
+    });
+
+    return dispose
+}
+
 // `npx` runs a `bin` through a symlink, so both sides are realpathed: comparing the link path with
 // the module URL would never match, and the launcher would load, do nothing and exit 0.
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
-    const child = launch();
-
-    for (const signal of ['SIGINT', 'SIGTERM']) {
-        process.on(signal, () => child.kill(signal))
-    }
-
-    child.on('exit', (code, signal) => process.exit(code ?? (signal ? 1 : 0)))
+    superviseChild(launch())
 }

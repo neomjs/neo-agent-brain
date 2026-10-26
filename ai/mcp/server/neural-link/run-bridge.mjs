@@ -54,12 +54,20 @@ if (options.debug) {
         await Bridge.ready();
         await Bridge.startServer({host: '127.0.0.1', port: aiConfig.port});
 
-        // Keep process alive
-        process.on('SIGINT', async () => {
-            logger.info('Received SIGINT. Shutting down...');
+        let shuttingDown = false;
+
+        const shutdown = async signal => {
+            if (shuttingDown) return;
+
+            shuttingDown = true;
+            logger.info(`Received ${signal}. Shutting down...`);
             await Bridge.stopServer();
             process.exit(0);
-        });
+        };
+
+        // Keep process alive and shut down cleanly on either interactive or process-group termination.
+        process.on('SIGINT',  () => void shutdown('SIGINT'));
+        process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
     } catch (error) {
         console.error('Fatal error starting Bridge:', error);

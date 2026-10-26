@@ -49,6 +49,18 @@ class Server extends BaseServer {
     logger   = logger
 
     /**
+     * Disposer returned by {@link #installStdioLifecycle}.
+     * @member {Function|null} #disposeStdioLifecycle=null
+     */
+    #disposeStdioLifecycle = null
+
+    /**
+     * In-flight {@link #shutdown} promise so repeated EOF/signal events coalesce onto one exit sequence.
+     * @member {Promise<void>|null} #shutdownPromise=null
+     */
+    #shutdownPromise = null
+
+    /**
      * Bridge daemon working directory; passed via CLI / env. When set, propagated to
      * `ConnectionService.cwd` before its `ready()` is awaited so the Bridge spawn uses the
      * correct working tree.
@@ -190,6 +202,10 @@ class Server extends BaseServer {
         await this.connectTransport();
         this.logger.info('Neural Link MCP Server transport connected');
 
+        if (this.transport) {
+            this.installStdioLifecycle()
+        }
+
         // ConnectionService — set cwd then ready, with non-fatal error tolerance.
         try {
             if (this.bridgeCwd) {
@@ -212,6 +228,133 @@ class Server extends BaseServer {
         await this.runHealthcheckAndLogStatus();
 
         this.logger.info('Neural Link MCP Server started');
+    }
+
+    /**
+     * @summary Checks whether the initial parent process of a stdio server is still alive.
+     * @param {Number} ppid
+     * @param {Object} [proc=process]
+     * @returns {Boolean}
+     */
+    isParentProcessAlive(ppid, proc = process) {
+        if (!Number.isInteger(ppid) || ppid <= 1) {
+            return false
+        }
+
+        try {
+            proc.kill(ppid, 0);
+            return true
+        } catch (error) {
+            return error?.code === 'EPERM'
+        }
+    }
+
+    /**
+     * @summary Installs stdio EOF/close, termination-signal, and parent-orphan exit handlers for the
+     * stdio MCP server process.
+     *
+     * `@modelcontextprotocol/sdk`'s `StdioServerTransport` attaches only `data` and `error` listeners
+     * to `process.stdin`. When the MCP client closes `stdin` or when an `npx` / shell launcher receives
+     * `SIGTERM` without forwarding it to its grandchildren, an active Bridge WebSocket or reconnect
+     * timer would otherwise keep the server event loop alive indefinitely.
+     *
+     * @param {Object} [options={}]
+     * @param {Number} [options.pollIntervalMs=200]
+     * @param {Object} [options.proc=process]
+     * @param {Object} [options.stdin=process.stdin]
+     * @returns {Function} Disposer that removes the installed listeners and interval.
+     */
+    installStdioLifecycle({pollIntervalMs = 200, proc = process, stdin = process.stdin} = {}) {
+        this.#disposeStdioLifecycle?.();
+
+        const
+            initialPpid = proc?.ppid,
+            onStdinEnd  = () => void this.shutdown({exitCode: 0, proc}),
+            onSignal    = () => void this.shutdown({exitCode: 0, proc}),
+            parentTimer = Number.isInteger(initialPpid) && initialPpid > 1
+                ? setInterval(() => {
+                    if (proc.ppid !== initialPpid || !this.isParentProcessAlive(initialPpid, proc)) {
+                        void this.shutdown({exitCode: 0, proc})
+                    }
+                }, pollIntervalMs)
+                : null;
+
+        parentTimer?.unref?.();
+
+        stdin?.once?.('end',   onStdinEnd);
+        stdin?.once?.('close', onStdinEnd);
+        proc?.once?.('SIGINT',  onSignal);
+        proc?.once?.('SIGTERM', onSignal);
+        proc?.once?.('SIGHUP',  onSignal);
+
+        const dispose = () => {
+            if (parentTimer) {
+                clearInterval(parentTimer)
+            }
+            stdin?.off?.('end',   onStdinEnd);
+            stdin?.off?.('close', onStdinEnd);
+            proc?.off?.('SIGINT',  onSignal);
+            proc?.off?.('SIGTERM', onSignal);
+            proc?.off?.('SIGHUP',  onSignal);
+
+            if (this.#disposeStdioLifecycle === dispose) {
+                this.#disposeStdioLifecycle = null
+            }
+        };
+
+        this.#disposeStdioLifecycle = dispose;
+
+        if (stdin?.readableEnded || stdin?.destroyed) {
+            void this.shutdown({exitCode: 0, proc})
+        }
+
+        return dispose
+    }
+
+    /**
+     * @summary Tears down the active Bridge client socket, reconnect timer, and MCP server before
+     * exiting the process.
+     * @param {Object} [options={}]
+     * @param {Number} [options.exitCode=0]
+     * @param {Object} [options.proc=process]
+     * @returns {Promise<void>}
+     */
+    async shutdown({exitCode = 0, proc = process} = {}) {
+        if (this.#shutdownPromise) {
+            return this.#shutdownPromise
+        }
+
+        this.#shutdownPromise = (async () => {
+            this.#disposeStdioLifecycle?.();
+            this.stopHeapObservation?.();
+
+            ConnectionService.manualDisconnect = true;
+            ConnectionService.clearReconnectTimer();
+
+            if (ConnectionService.bridgeSocket) {
+                try {
+                    ConnectionService.bridgeSocket.close()
+                } catch {}
+                ConnectionService.bridgeSocket = null
+            }
+
+            try {
+                await this.mcpServer?.close?.()
+            } catch {}
+
+            proc?.exit?.(exitCode)
+        })();
+
+        return this.#shutdownPromise
+    }
+
+    /**
+     * @summary Cleans up stdio lifecycle listeners when the instance is destroyed in-process.
+     * @param {...*} args
+     */
+    destroy(...args) {
+        this.#disposeStdioLifecycle?.();
+        super.destroy(...args)
     }
 
     /**

@@ -2,6 +2,7 @@ import aiConfig                  from '../../mcp/server/neural-link/config.mjs';
 import {spawn}                   from 'child_process';
 import crypto                    from 'crypto';
 import fs                        from 'fs';
+import net                       from 'net';
 import path                      from 'path';
 import WebSocket                 from 'ws';
 import Base                      from 'neo.mjs/src/core/Base.mjs';
@@ -263,6 +264,11 @@ class ConnectionService extends Base {
      * Bridge child process (if spawned by this service).
      */
     bridgeProcess = null
+    /**
+     * Port on which {@link #bridgeProcess} was spawned by this service, or `null` when no managed Bridge is tracked.
+     * @type {Number|null}
+     */
+    spawnedBridgePort = null
     /**
      * The WebSocket connection to the Bridge.
      */
@@ -1117,8 +1123,12 @@ class ConnectionService extends Base {
 
             // 2. Kill Process
             if (this.bridgeProcess) {
-                this.bridgeProcess.kill();
-                this.bridgeProcess = null;
+                const bridgeProcess = this.bridgeProcess,
+                      port          = this.spawnedBridgePort ?? aiConfig.port;
+
+                await this.stopBridgeProcess(bridgeProcess, {port});
+                this.bridgeProcess     = null;
+                this.spawnedBridgePort = null;
                 logger.info('Bridge process terminated.');
                 return {message: 'Neural Link Bridge stopped.'};
             } else {
@@ -1128,6 +1138,145 @@ class ConnectionService extends Base {
         }
 
         throw new Error(`Invalid action: ${action}`);
+    }
+
+    /**
+     * @summary Checks whether a TCP listener is accepting connections on the given Bridge port.
+     * @param {Object} [options={}]
+     * @param {String} [options.host='127.0.0.1']
+     * @param {Number} [options.port=this.spawnedBridgePort ?? aiConfig.port]
+     * @param {Number} [options.timeoutMs=200]
+     * @returns {Promise<Boolean>}
+     */
+    isBridgePortListening({host = '127.0.0.1', port = this.spawnedBridgePort ?? aiConfig.port, timeoutMs = 200} = {}) {
+        return new Promise(resolve => {
+            const socket  = net.connect({host, port});
+            let   settled = false;
+
+            const finish = listening => {
+                if (settled) return;
+
+                settled = true;
+                socket.destroy();
+                resolve(listening)
+            };
+
+            socket.setTimeout(timeoutMs);
+            socket.once('connect', () => finish(true));
+            socket.once('timeout', () => finish(false));
+            socket.once('error',   () => finish(false))
+        })
+    }
+
+    /**
+     * @summary Sends a signal to a spawned Bridge process and, on POSIX, its detached process group.
+     * @param {Object} bridgeProcess
+     * @param {String} [signal='SIGTERM']
+     * @returns {void}
+     */
+    signalBridgeProcess(bridgeProcess, signal = 'SIGTERM') {
+        const pid = Number(bridgeProcess?.pid);
+
+        if (process.platform !== 'win32' && Number.isInteger(pid) && pid > 0) {
+            try {
+                process.kill(-pid, signal)
+            } catch (error) {
+                if (error?.code !== 'ESRCH') {
+                    logger.warn(`[ConnectionService] Failed to signal Bridge process group -${pid} (${signal}): ${error.message}`)
+                }
+            }
+        }
+
+        try {
+            bridgeProcess?.kill?.(signal)
+        } catch (error) {
+            if (error?.code !== 'ESRCH') {
+                logger.warn(`[ConnectionService] Failed to signal Bridge process (${signal}): ${error.message}`)
+            }
+        }
+    }
+
+    /**
+     * @summary Checks whether the spawned Bridge process or its POSIX process group is still alive.
+     * @param {Object} bridgeProcess
+     * @returns {Boolean}
+     */
+    isBridgeProcessAlive(bridgeProcess) {
+        const pid = Number(bridgeProcess?.pid);
+
+        if (!Number.isInteger(pid) || pid <= 0) {
+            return false
+        }
+
+        if (process.platform !== 'win32') {
+            try {
+                process.kill(-pid, 0);
+                return true
+            } catch (error) {
+                if (error?.code === 'EPERM') return true
+            }
+        }
+
+        try {
+            process.kill(pid, 0);
+            return true
+        } catch (error) {
+            return error?.code === 'EPERM'
+        }
+    }
+
+    /**
+     * @summary Terminates a Bridge process spawned by this service and waits until its listener port closes.
+     *
+     * `spawnBridge` launches `npm run ai:server-neural-link` with `detached: true`, placing `npm` and its
+     * child `run-bridge.mjs` in a dedicated process group (`pgid === bridgeProcess.pid`). Signaling only
+     * `bridgeProcess.kill()` kills the `npm` wrapper and leaves `run-bridge.mjs` bound to the Bridge port.
+     * This method signals the process group, polls until both the group and the Bridge port close, escalates
+     * to `SIGKILL` when needed, and throws if the port remains open after `timeoutMs`.
+     * @param {Object} bridgeProcess
+     * @param {Object} [options={}]
+     * @param {Number} [options.pollIntervalMs=50]
+     * @param {Number} [options.port=this.spawnedBridgePort ?? aiConfig.port]
+     * @param {Number} [options.sigkillAfterMs=1500]
+     * @param {Number} [options.timeoutMs=5000]
+     * @returns {Promise<void>}
+     */
+    async stopBridgeProcess(bridgeProcess, {
+        pollIntervalMs = 50,
+        port           = this.spawnedBridgePort ?? aiConfig.port,
+        sigkillAfterMs = 1500,
+        timeoutMs      = 5000
+    } = {}) {
+        const startedAt = Date.now();
+        let   escalated = false;
+
+        this.signalBridgeProcess(bridgeProcess, 'SIGTERM');
+
+        while (Date.now() - startedAt < timeoutMs) {
+            const [portListening, processAlive] = await Promise.all([
+                this.isBridgePortListening({port}),
+                Promise.resolve(this.isBridgeProcessAlive(bridgeProcess))
+            ]);
+
+            if (!portListening && !processAlive) {
+                return
+            }
+
+            if (!escalated && Date.now() - startedAt >= sigkillAfterMs) {
+                escalated = true;
+                this.signalBridgeProcess(bridgeProcess, 'SIGKILL')
+            }
+
+            await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
+        }
+
+        if (!escalated) {
+            this.signalBridgeProcess(bridgeProcess, 'SIGKILL')
+        }
+
+        if (await this.isBridgePortListening({port})) {
+            throw new Error(`Failed to stop Neural Link Bridge: port ${port} is still listening.`)
+        }
     }
 
     /**
@@ -1191,10 +1340,11 @@ class ConnectionService extends Base {
      * Spawns the Bridge process.
      * @param {Object} [options={}]
      * @param {String} [options.logPath=aiConfig.logPath] Directory for spawned Bridge stdout/stderr.
+     * @param {Number} [options.port=aiConfig.port] Port passed to the spawned Bridge process.
      * @param {Number} [options.startupDelayMs=2000] Delay before resolving after spawning.
      * @returns {Promise<void>}
      */
-    async spawnBridge({logPath = aiConfig.logPath, startupDelayMs = 2000} = {}) {
+    async spawnBridge({logPath = aiConfig.logPath, port = aiConfig.port, startupDelayMs = 2000} = {}) {
         // `this.cwd || process.cwd()` was a hidden-default fallback, and it substituted the WRONG
         // value silently. A GUI-launched MCP server has `process.cwd() === '/'`, so `npm run` looked
         // for `/package.json`, the Bridge never started, and the resulting ECONNREFUSED took the whole
@@ -1209,7 +1359,6 @@ class ConnectionService extends Base {
             const args    = ['run', BRIDGE_NPM_SCRIPT];
             const file    = getBridgeStdioLogPath({logPath});
             const logFile = this.openBridgeLogFile(file);
-            const port    = aiConfig.port;
 
             // Checked AFTER argument validation and immediately before the spawn: a caller who passed
             // a bad `logPath` should hear about their argument, not about instance state they did not
@@ -1232,7 +1381,8 @@ class ConnectionService extends Base {
                 );
             }
 
-            this.bridgeProcess = this.spawnBridgeProcess('npm', args, {
+            this.spawnedBridgePort = port;
+            this.bridgeProcess     = this.spawnBridgeProcess('npm', args, {
                 cwd     : this.cwd,
                 detached: true,
                 env     : {...process.env, NEO_NL_PORT: String(port)},
