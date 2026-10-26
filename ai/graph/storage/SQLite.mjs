@@ -1,6 +1,8 @@
 import Base                                           from './Base.mjs';
 import { SQLITE_IN_CLAUSE_BATCH_SIZE }                from './constants.mjs';
 import { isDisposableStorePath, isTestRunnerContext } from '../../services/shared/storeWriteGuard.mjs';
+import {assertOrdinaryGraphMutation} from '../identityPublicationProtection.mjs';
+import {IDENTITY_PUBLICATION_FENCE_TABLE} from '../../services/memory-core/helpers/identityPublicationFence.mjs';
 
 const GRAPH_SCHEMA_VERSION    = 1;
 const GRAPH_SCHEMA_VERSION_ID = 'graph';
@@ -319,6 +321,10 @@ class SQLite extends Base {
             );
         }
 
+        if (this.hasTable(IDENTITY_PUBLICATION_FENCE_TABLE)) {
+            throw new Error('Graph schema reset with identity-publication state requires separately admitted recovery.');
+        }
+
         console.warn(
             `[SQLite] ${GRAPH_SCHEMA_WIPE_ENV}=true; resetting graph schema at ` +
             `${this.dbPath || ':memory:'}. Reason: ${reason}`
@@ -442,11 +448,13 @@ class SQLite extends Base {
                     throw new Error(`SQLite graph node writes require a non-empty string id. Received: ${String(nodeData.id)}`);
                 }
 
+                assertOrdinaryGraphMutation(this.db, {table: 'Nodes', id: nodeData.id, record: nodeData});
+
                 stmt.run(nodeData.id, nodeData.properties?.userId || null, JSON.stringify(nodeData));
             }
         });
 
-        insertMany(nodes);
+        insertMany.immediate(nodes);
     }
 
     /**
@@ -500,12 +508,15 @@ class SQLite extends Base {
 
         if (!path) return false;
 
-        return narrowWriteResult(this.db.prepare(`
-            UPDATE ${table}
-            SET   data = json_set(data, '${path}', ?)
-            WHERE id = ?
-              AND json_extract(data, '${path}') IS NULL
-        `).run(value, id));
+        return this.db.transaction(() => {
+            assertOrdinaryGraphMutation(this.db, {table, id});
+            return narrowWriteResult(this.db.prepare(`
+                UPDATE ${table}
+                SET   data = json_set(data, '${path}', ?)
+                WHERE id = ?
+                  AND json_extract(data, '${path}') IS NULL
+            `).run(value, id));
+        }).immediate();
     }
 
     /**
@@ -525,11 +536,14 @@ class SQLite extends Base {
 
         if (!path) return false;
 
-        return narrowWriteResult(this.db.prepare(`
-            UPDATE ${table}
-            SET   data = json_set(data, '${path}', ?)
-            WHERE id = ?
-        `).run(value, id));
+        return this.db.transaction(() => {
+            assertOrdinaryGraphMutation(this.db, {table, id});
+            return narrowWriteResult(this.db.prepare(`
+                UPDATE ${table}
+                SET   data = json_set(data, '${path}', ?)
+                WHERE id = ?
+            `).run(value, id));
+        }).immediate();
     }
 
     /**
@@ -561,11 +575,12 @@ class SQLite extends Base {
                     type      : isRecord ? edge.get('type') : edge.type,
                     properties: isRecord ? edge.get('properties') : edge.properties
                 };
+                assertOrdinaryGraphMutation(this.db, {table: 'Edges', id: edgeData.id, record: edgeData});
                 stmt.run(edgeData.id, edgeData.properties?.userId || null, edgeData.source, edgeData.target, edgeData.type || null, JSON.stringify(edgeData));
             }
         });
 
-        insertMany(edges);
+        insertMany.immediate(edges);
     }
 
     /**
@@ -581,11 +596,12 @@ class SQLite extends Base {
         const removeMany = this.db.transaction((nodesList) => {
             for (const node of nodesList) {
                 let resolvedId = typeof node === 'object' ? node.id : node;
+                assertOrdinaryGraphMutation(this.db, {table: 'Nodes', id: resolvedId, remove: true});
                 stmt.run(resolvedId);
             }
         });
 
-        removeMany(nodes);
+        removeMany.immediate(nodes);
     }
 
     /**
@@ -634,9 +650,12 @@ class SQLite extends Base {
             propertyValue = typeof requiredPropertyValue === 'boolean'
                 ? Number(requiredPropertyValue)
                 : requiredPropertyValue,
-            result        = requiredPropertyPath == null
-                ? statement.run(nodeId)
-                : statement.run(nodeId, requiredPropertyPath, propertyValue);
+            result        = this.db.transaction(() => {
+                assertOrdinaryGraphMutation(this.db, {table: 'Nodes', id: nodeId, remove: true});
+                return requiredPropertyPath == null
+                    ? statement.run(nodeId)
+                    : statement.run(nodeId, requiredPropertyPath, propertyValue);
+            }).immediate();
 
         return result.changes === 1
     }
@@ -654,11 +673,12 @@ class SQLite extends Base {
         const removeMany = this.db.transaction((edgesList) => {
             for (const edge of edgesList) {
                 let resolvedId = typeof edge === 'object' ? edge.id : edge;
+                assertOrdinaryGraphMutation(this.db, {table: 'Edges', id: resolvedId, remove: true});
                 stmt.run(resolvedId);
             }
         });
 
-        removeMany(edges);
+        removeMany.immediate(edges);
     }
 
     /**
@@ -683,6 +703,16 @@ class SQLite extends Base {
         const removeEdgeStmt = this.db.prepare('DELETE FROM Edges WHERE id = ?');
 
         const batchCommit = this.db.transaction((logs) => {
+            for (const {type, mutation} of logs) {
+                const table = type === 'nodes' ? 'Nodes' : type === 'edges' ? 'Edges' : null;
+                if (!table) continue;
+                for (const record of mutation.addedItems || []) {
+                    assertOrdinaryGraphMutation(this.db, {table, id: record.id, record});
+                }
+                for (const record of mutation.removedItems || []) {
+                    assertOrdinaryGraphMutation(this.db, {table, id: record.id, remove: true});
+                }
+            }
             for (const trace of logs) {
                 const storeType = trace.type;
                 const mutation  = trace.mutation;
@@ -705,7 +735,7 @@ class SQLite extends Base {
             }
         });
 
-        batchCommit(diffLog);
+        batchCommit.immediate(diffLog);
     }
 
     /**

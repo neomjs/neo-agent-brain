@@ -108,7 +108,7 @@ class Database extends Base {
      * Evaluates hardware SQLite `GraphLog` boundaries securely identifying structural mutations dynamically created by concurrent Nodes/AppWorkers.
      * Splices identified cache diffs executing perfectly accurately guaranteeing perfect isolated thread execution topologies.
      *
-     * Cache-coherence invariants (ADR 0001; ticket-ref-ok: file-owned decision record):
+     * Cache-coherence invariants:
      * 1. A fresh boot (`lastSyncId === 0`) is a legitimate "catch me up" trigger, not a short-circuit skip.
      * 2. This method INVALIDATES stale cache entries; it does not upsert new ones (lazy-load handles that).
      *
@@ -336,6 +336,7 @@ class Database extends Base {
      * Extracts adjacent nodes based on semantic relationship topologies for GraphRAG evaluation smoothly dynamically loading Cache Misses synchronously!
      * Ensures strict Multi-Worker Coherence identically verifying Delta bounds, and lazily injecting requested Vicinity networks securely executing isolated.
      * @see Neo.ai.graph.Database#syncCache
+     * @see ../../learn/agentos/decisions/0001-cross-process-cache-coherence.md
      * @see Neo.ai.graph.storage.SQLite#loadNodeVicinitySync
      * @param {String} nodeId
      * @param {String} direction 'outbound' | 'inbound' | 'both'
@@ -431,11 +432,18 @@ class Database extends Base {
             return;
         }
         if (this.autoSave && this.storage) {
-            if (mutation.addedItems?.length > 0) {
-                this.storage.addEdges(mutation.addedItems);
-            }
-            if (mutation.removedItems?.length > 0) {
-                this.storage.removeEdges(mutation.removedItems);
+            try {
+                if (mutation.addedItems?.length > 0 && mutation.removedItems?.length > 0) {
+                    this.storage.executeTransaction([{type: 'edges', mutation}]);
+                } else {
+                    if (mutation.addedItems?.length > 0) this.storage.addEdges(mutation.addedItems);
+                    if (mutation.removedItems?.length > 0) this.storage.removeEdges(mutation.removedItems);
+                }
+            } catch (error) {
+                if (error.code === 'IDENTITY_PUBLICATION_WRITE_PROTECTED') {
+                    this.invalidateRejectedMutations([{type: 'edges', mutation}]);
+                }
+                throw error;
             }
             this.acknowledgeLocalMutations();
         }
@@ -452,11 +460,18 @@ class Database extends Base {
             return;
         }
         if (this.autoSave && this.storage) {
-            if (mutation.addedItems?.length > 0) {
-                this.storage.addNodes(mutation.addedItems);
-            }
-            if (mutation.removedItems?.length > 0) {
-                this.storage.removeNodes(mutation.removedItems);
+            try {
+                if (mutation.addedItems?.length > 0 && mutation.removedItems?.length > 0) {
+                    this.storage.executeTransaction([{type: 'nodes', mutation}]);
+                } else {
+                    if (mutation.addedItems?.length > 0) this.storage.addNodes(mutation.addedItems);
+                    if (mutation.removedItems?.length > 0) this.storage.removeNodes(mutation.removedItems);
+                }
+            } catch (error) {
+                if (error.code === 'IDENTITY_PUBLICATION_WRITE_PROTECTED') {
+                    this.invalidateRejectedMutations([{type: 'nodes', mutation}]);
+                }
+                throw error;
             }
             this.acknowledgeLocalMutations();
         }
@@ -578,6 +593,58 @@ class Database extends Base {
     }
 
     /**
+     * @summary Evicts affected cache entries after SQLite refuses a protected publication write.
+     * Collection events include no-op duplicate additions, so their input lists are not an inverse.
+     * Persisted state and the GraphLog cursor stay unchanged; ordinary scoped reads reload the rows.
+     * @param {Object[]} diffLog The complete refused mutation batch.
+     * @protected
+     */
+    invalidateRejectedMutations(diffLog) {
+        const nodeIds = new Set(), edgeIds = new Set(), affectedNodes = new Set(), indexed = new Set();
+        for (const {type, mutation} of diffLog) {
+            for (const item of [...(mutation.addedItems || []), ...(mutation.removedItems || [])]) {
+                (type === 'nodes' ? nodeIds : edgeIds).add(item.id);
+                if (type === 'edges') {
+                    affectedNodes.add(item.source);
+                    affectedNodes.add(item.target);
+                }
+            }
+        }
+        // Include index-only raw objects as well as any lazily hydrated map replacements.
+        const cachedEdges = new Set(this.edges.map.values());
+        for (const map of this.edges.indexMaps.values()) {
+            for (const references of map.values()) {
+                for (const edge of references) cachedEdges.add(edge);
+            }
+        }
+        for (const edge of cachedEdges) {
+            if (nodeIds.has(edge.source) || nodeIds.has(edge.target)) edgeIds.add(edge.id);
+        }
+        for (const edge of cachedEdges) {
+            if (edgeIds.has(edge.id)) {
+                indexed.add(edge);
+                affectedNodes.add(edge.source);
+                affectedNodes.add(edge.target);
+            }
+        }
+        const wasAutoSave = this.autoSave, wasTransacting = this.isExecutingTransaction;
+        this.autoSave = this.isExecutingTransaction = false;
+        try {
+            this.edges.remove([...edgeIds]);
+            this.edges.updateIndexMaps(null, [...indexed]);
+            this.nodes.remove([...nodeIds]);
+            for (const id of new Set([...nodeIds, ...affectedNodes])) {
+                if (id == null) continue;
+                this.vicinityLoadedNodes.delete(id);
+                this.lastAccessMap.delete(id);
+            }
+        } finally {
+            this.autoSave = wasAutoSave;
+            this.isExecutingTransaction = wasTransacting;
+        }
+    }
+
+    /**
      * Parses the identical mutation buffer inversely mapping strict `.splice()` limits natively resolving failures.
      * @param {Object[]} diffLog
      * @protected
@@ -629,8 +696,11 @@ class Database extends Base {
                 this.acknowledgeLocalMutations();
             }
         } catch (error) {
-            // Intercept internal throw commands seamlessly rendering perfect state erasures instantly
-            this.rollbackTransaction(this.transactionDiff);
+            if (error.code === 'IDENTITY_PUBLICATION_WRITE_PROTECTED') {
+                this.invalidateRejectedMutations(this.transactionDiff);
+            } else {
+                this.rollbackTransaction(this.transactionDiff);
+            }
             throw error;
         } finally {
             this.isExecutingTransaction = false;
