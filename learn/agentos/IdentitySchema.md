@@ -188,6 +188,25 @@ reads; they do not simulate a power failure or the live service.
 The eventual owner must carry the original signed
 bytes to the transaction-local verifier and consume committed cache invalidations afterward.
 
+### Declared remote read client
+
+[`identityPublicationClient.mjs`](../../ai/services/shared/identityPublicationClient.mjs) reuses the
+existing direct-to-MC plane client. It requires an explicit credential, authenticated expected viewer,
+and independently declared remote `{planeId,dataRoot}`. Initialization and every reconnect prove the
+viewer through `list_permissions` and the target through the same session's `healthcheck(scope:plane)`;
+every returned version-1 snapshot is also checked against that target, the physical population counts,
+subject/global revision accounting and the complete history shape. Revision 1 is baseline-only, and
+the 128-active-binding limit is checked across retained time intervals without capping retired history.
+It exposes only `readSnapshot` and `close`, caches no family history, and preserves named source
+refusals instead of turning failure into an empty map. Existing mailbox callers need not opt into the
+new target proof; this admitted-history reader always requires it.
+
+This is an unwired client contract. The existing seat bootstrap declares endpoint and credential but
+does not yet declare the expected remote plane/root. Local `plane.dataRoot` is not that remote
+expectation, and learning the expectation from the response being checked would be circular. Target
+serialization, the registered snapshot endpoint, roster composition and consumer migration remain
+delivery work; absence of their declared inputs refuses rather than using an ambient credential.
+
 ## Ingestion Mechanism
 
 Identity projection has two deliberately separate write authorities:

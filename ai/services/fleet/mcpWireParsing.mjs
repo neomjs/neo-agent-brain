@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 /**
  * @module ai/services/fleet/mcpWireParsing
  * @summary The fleet subsystem's ONE MCP-wire parsing authority — the pure envelope/payload/identity
@@ -18,6 +20,18 @@
  * @type {Set<String>}
  */
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** @summary Copies an independently declared remote plane/root without consulting local storage or a remote answer. */
+export function normalizeExpectedPlaneTarget(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+    const fields = Object.getOwnPropertyDescriptors(value), keys = ['planeId', 'dataRoot'];
+    if (Reflect.ownKeys(fields).length !== keys.length || keys.some(key =>
+        !Object.hasOwn(fields, key) || !fields[key].enumerable || !Object.hasOwn(fields[key], 'value') ||
+        typeof fields[key].value !== 'string' || !fields[key].value || fields[key].value.trim() !== fields[key].value)) return null;
+    const planeId = fields.planeId.value, dataRoot = fields.dataRoot.value;
+    return path.posix.isAbsolute(dataRoot) || path.win32.isAbsolute(dataRoot) ? Object.freeze({planeId, dataRoot}) : null;
+}
 
 /**
  * The Memory Core's route below a plane endpoint — the one every plane client composes (`<base>/mc/mcp`; the

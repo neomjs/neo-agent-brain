@@ -7,6 +7,7 @@ import os                                                                from 'n
 import path                                                              from 'node:path';
 import {admitIdentityPublication, readIdentityPublicationSnapshot}       from '../../../../../../../ai/services/memory-core/helpers/identityPublicationAdmission.mjs';
 import {buildFamilyProjection, familyAt, familiesDuring}                 from '../../../../../../../ai/graph/identityFamilyProjection.mjs';
+import {validateIdentityPublicationSnapshot}                             from '../../../../../../../ai/services/shared/identityPublicationClient.mjs';
 import {consumeIdentityPublicationBoot}                                  from '../../../../../../../ai/services/memory-core/helpers/identityPublicationLineage.mjs';
 import {fenceIdentityPublication}                                        from '../../../../../../../ai/services/memory-core/helpers/identityPublicationFence.mjs';
 import {familyMembershipKey, familyPlaneStateKey, familySubjectStateKey} from '../../../../../../../ai/services/shared/identityPublicationKeys.mjs';
@@ -438,6 +439,7 @@ test('complete snapshots are detached, frozen and revision-bound across subseque
     submit(declaration('first'), 110);
     const first = publication();
     expect(first.snapshot.subjects).toHaveLength(2);
+    expect(validateIdentityPublicationSnapshot(first.snapshot, target).valid).toBe(true);
     expect(Object.isFrozen(first.snapshot.subjects[0].source.declarations[0])).toBe(true);
     expect(() => { first.snapshot.subjects[0].source.declarations[0].family = 'claude'; }).toThrow();
     submit(declaration('second', binding('seat-b', 'inc-b', '2'), 1, 0, {family: 'claude'}), 120);

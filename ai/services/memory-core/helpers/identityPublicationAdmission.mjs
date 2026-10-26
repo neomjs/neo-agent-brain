@@ -467,8 +467,9 @@ export function readIdentityPublicationSnapshot(db, {bootText, target} = {}) {
                             admissionId, targetAdmissionId: value.targetAdmissionId, operatorPrincipal: value.operatorPrincipal,
                             revision: value.admission.revision, family: value.family, model: value.model}))}};
             });
-            return freeze({state: 'available', snapshot: {target: {...target}, revision: state.revision,
-                baselineSince: state.baseline.admittedAt, subjects: values}});
+            return freeze({state: 'available', snapshot: {version: 1, target: {...target}, revision: state.revision,
+                baselineSince: state.baseline.admittedAt, counts: {subjects: state.subjectCount, memberships: state.memberCount,
+                    declarations: state.declarationCount, corrections: state.correctionCount}, subjects: values}});
         }).deferred();
     } catch {
         return refusal('unavailable', 'publication-history-unavailable');
