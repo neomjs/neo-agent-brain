@@ -136,6 +136,15 @@ the inclusive creation-through-evaluation window and refuses a partial answer if
 unclassified. Historical correction changes the supplied owner revision even when the current head
 and interval count stay unchanged. This derived view is regenerable, not another persisted ledger.
 
+Forward boundaries use MC admission time. The signed act's effective time remains provenance, so
+late delivery cannot move the boundary over an already-classified review. The admission owner's
+[`identityPublicationTiming.mjs`](../../ai/services/memory-core/helpers/identityPublicationTiming.mjs)
+requires a strictly later actual clock sample: equal time and a backwards clock produce distinct,
+retryable causes with the blocking boundary. The owner must perform accepted-receipt lookup before
+this check and write neither state nor receipt on refusal. It never bumps or backdates the clock.
+These pure controls do not establish that ordering in the still-pending physical writer. A correction
+inherits its exact target interval; fenced read-back activation remains a separate post-v1 path.
+
 ## Ingestion Mechanism
 
 Identity projection has two deliberately separate write authorities:
