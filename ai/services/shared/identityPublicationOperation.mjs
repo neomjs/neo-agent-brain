@@ -62,6 +62,27 @@ export function isIdentityPublicationIdentifier(value) {
     }
 }
 
+/** @summary Checks an exact family value using the same grammar as typed admission. */
+export function isIdentityPublicationFamily(value) {
+    try {
+        text(value, 'family', LIMIT.familyBytes, false);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** @summary Checks model evidence without inheriting a previous model when null is explicit. */
+export function isIdentityPublicationModel(value) {
+    if (value === null) return true;
+    try {
+        text(value, 'model', LIMIT.modelBytes);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 /** @summary Derives the largest logical JSON shape from the same encoded caps as validation. */
 function maximumOperationBytes() {
     const id      = 'x'.repeat(LIMIT.identifierBytes - 2), reason = 'x'.repeat(LIMIT.reasonBytes - 2);

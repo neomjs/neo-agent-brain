@@ -111,6 +111,31 @@ Neither this capacity nor passing a schema/signature check grants graph-write au
 physical membership/declaration admission, complete temporal snapshots and the joined installed
 workflow have separate acceptance requirements; these source limits do not certify that rollout.
 
+### Temporal projection of admitted family history
+
+[`identityFamilyProjection.mjs`](../../ai/graph/identityFamilyProjection.mjs) derives a view for one
+stable provider subject from a complete owner-revision snapshot. Its normalized input contains the
+complete baseline boundary, binding lifetimes, forward declarations and targeted corrections. These
+are canonical admitted intervals; the projector does not choose an admission timestamp from a signed
+act or delivery clock. Physical admission must establish authority and the read owner must establish
+completeness, identity and plane binding before this view can serve a decision.
+
+Every active binding counts. Missing declarations produce `unconfirmed-seat`; disagreement produces
+`ambiguous-seats`; an admitted empty set produces `empty-membership`. Before the complete baseline,
+the result is `membership-unknown`. Malformed history produces `unavailable`. Each is distinct from
+the valid, exact family string `"unknown"`. Model evidence stays per binding, including literal null.
+
+A correction replaces only its original declaration's family/model within that declaration's original
+interval. It cannot target a correction or another principal's declaration. Admission still owns the
+additional check that the principal operates the incarnation. Re-key retains the binding identity;
+remove/recreate needs a fresh binding and declaration. A retirement boundary represents completed,
+admitted removal; a pending stop leaves the binding active.
+
+Point reads use half-open era intervals. The author-family union includes every interval overlapping
+the inclusive creation-through-evaluation window and refuses a partial answer if any span is
+unclassified. Historical correction changes the supplied owner revision even when the current head
+and interval count stay unchanged. This derived view is regenerable, not another persisted ledger.
+
 ## Ingestion Mechanism
 
 Identity projection has two deliberately separate write authorities:
