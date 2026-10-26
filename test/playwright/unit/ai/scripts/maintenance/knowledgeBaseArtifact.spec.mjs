@@ -38,7 +38,7 @@ const zipFlat = (zipPath, members) => execFileAsync('zip', ['-j', '-q', zipPath,
 test.describe.configure({mode: 'serial'});
 
 test.describe('Knowledge Base release artifact — collection-scoped contract (#12157)', () => {
-    let assertCollectionScopedArtifact, ARTIFACT_BASENAME, ARTIFACT_META_FILENAME, KB_BACKUP_FILE_PREFIX;
+    let assertCollectionScopedArtifact, assertTenantScopedRows, ARTIFACT_BASENAME, ARTIFACT_META_FILENAME, KB_BACKUP_FILE_PREFIX;
     let ARTIFACT_VECTORS_FILENAME, ARTIFACT_SCHEMA_VERSION, packVectorsFp16, unpackVectorsFp16, recordOrderDigest;
     let shortestFp16Decimal;
     let packArtifactToV2, rehydrateArtifactFromV2, resolveSingleArtifactJsonl, ARTIFACT_VECTOR_BYTE_ORDER;
@@ -72,6 +72,9 @@ test.describe('Knowledge Base release artifact — collection-scoped contract (#
 
     const readyLifecycleSeam = () => ({ready: async () => {}});
 
+    /** The KB config seam: the collection plus the default tenant every shipped row must carry. */
+    const KB_CONFIG = {collectionName: 'neo-knowledge-base', defaultTenantId: 'neo-shared'};
+
     /**
      * Fixture vector width. Deliberately tiny — the real corpus is dim 4096, but the wiring under test
      * is dimension-agnostic and a 4096-wide fixture would only make the spec slow and unreadable.
@@ -81,12 +84,12 @@ test.describe('Knowledge Base release artifact — collection-scoped contract (#
     /** fp16-exact values, so a round-trip assertion can be exact rather than tolerance-based. */
     const fixtureVector = seed => [seed, seed + 0.5, -seed, 0.25];
 
-    /** A v1-shaped KB export: one record per line, embeddings inline as decimal text. */
-    const jsonlFixture = ids => ids
+    /** A v1-shaped KB export: one record per line, embeddings inline as decimal text, every row tenant-stamped. */
+    const jsonlFixture = (ids, tenantOf = () => KB_CONFIG.defaultTenantId) => ids
         .map((id, index) => JSON.stringify({
             id,
             embedding: fixtureVector(index + 1),
-            metadata : {content: `content-${id}`},
+            metadata : {content: `content-${id}`, tenantId: tenantOf(id), repoSlug: 'neo'},
             document : null
         }))
         .join('\n') + '\n';
@@ -119,7 +122,7 @@ test.describe('Knowledge Base release artifact — collection-scoped contract (#
             }),
             lifecycleService   : readyLifecycleSeam(),
             embeddingConfig    : {embeddingProvider: 'openAiCompatible', vectorDimension: dimension},
-            knowledgeBaseConfig: {collectionName: 'neo-knowledge-base'},
+            knowledgeBaseConfig: KB_CONFIG,
             runGh              : async () => {},
             skipReleaseCheck   : true,
             skipUpload         : true,
@@ -151,6 +154,7 @@ test.describe('Knowledge Base release artifact — collection-scoped contract (#
     test.beforeAll(async () => {
         ({
             assertCollectionScopedArtifact,
+            assertTenantScopedRows,
             ARTIFACT_BASENAME,
             ARTIFACT_META_FILENAME,
             KB_BACKUP_FILE_PREFIX,
@@ -193,6 +197,34 @@ test.describe('Knowledge Base release artifact — collection-scoped contract (#
 
         const result = await assertCollectionScopedArtifact({artifactDir: dir});
         expect(result.jsonlFiles).toEqual([`${KB_BACKUP_FILE_PREFIX}2026-01-01.jsonl`]);
+    });
+
+    // ───────── assertTenantScopedRows: the no-tenant-leak guard ─────────
+
+    test('the tenant guard passes a single-tenant artifact and censuses it by repository slug', async () => {
+        const dir = path.join(workRoot, 'tenant-clean');
+        await fsExtra.ensureDir(dir);
+        fs.writeFileSync(path.join(dir, `${KB_BACKUP_FILE_PREFIX}t.jsonl`), jsonlFixture(['kb-1', 'kb-2']));
+
+        await expect(assertTenantScopedRows({artifactDir: dir, tenantId: 'neo-shared'})).resolves.toEqual({
+            tenantId: 'neo-shared',
+            rows    : 2,
+            pairs   : [{tenantId: 'neo-shared', repoSlug: 'neo', count: 2}]
+        });
+    });
+
+    test('the tenant guard refuses a row of another tenant, a row with no tenant, and a missing scope', async () => {
+        const foreign   = path.join(workRoot, 'tenant-foreign'),
+              unstamped = path.join(workRoot, 'tenant-unstamped');
+
+        await fsExtra.ensureDir(foreign);
+        await fsExtra.ensureDir(unstamped);
+        fs.writeFileSync(path.join(foreign, `${KB_BACKUP_FILE_PREFIX}t.jsonl`), jsonlFixture(['kb-1', 'kb-2'], id => id === 'kb-2' ? 'tenant-b' : 'neo-shared'));
+        fs.writeFileSync(path.join(unstamped, `${KB_BACKUP_FILE_PREFIX}t.jsonl`), JSON.stringify({id: 'kb-1', metadata: {repoSlug: 'neo'}}) + '\n');
+
+        await expect(assertTenantScopedRows({artifactDir: foreign, tenantId: 'neo-shared'})).rejects.toThrow(/row 'kb-2' carries tenantId 'tenant-b'/);
+        await expect(assertTenantScopedRows({artifactDir: unstamped, tenantId: 'neo-shared'})).rejects.toThrow(/row 'kb-1' carries tenantId '\(none\)'/);
+        await expect(assertTenantScopedRows({artifactDir: foreign, tenantId: undefined})).rejects.toThrow(/no tenant to scope/);
     });
 
     // ───────── schema v2: packed fp16 vectors ─────────
@@ -338,7 +370,7 @@ test.describe('Knowledge Base release artifact — collection-scoped contract (#
             databaseService,
             lifecycleService   : readyLifecycleSeam(),
             embeddingConfig    : {embeddingProvider: 'openAiCompatible', vectorDimension: FIXTURE_DIMENSION},
-            knowledgeBaseConfig: {collectionName: 'neo-knowledge-base'},
+            knowledgeBaseConfig: KB_CONFIG,
             runGh              : async (args) => { ghCalls.push(args); },
             stageRoot,
             logger             : silentLogger
@@ -372,12 +404,75 @@ test.describe('Knowledge Base release artifact — collection-scoped contract (#
             databaseService,
             lifecycleService   : readyLifecycleSeam(),
             embeddingConfig    : {embeddingProvider: 'openAiCompatible', vectorDimension: 4096},
-            knowledgeBaseConfig: {collectionName: 'neo-knowledge-base'},
+            knowledgeBaseConfig: KB_CONFIG,
             runGh              : async () => {},
             skipReleaseCheck   : true,
             stageRoot,
             logger             : silentLogger
         })).rejects.toThrow(/exported 0 records/);
+    });
+
+    test('upload asks for the default-tenant export and records the tenant census in the meta', async () => {
+        const stageRoot = path.join(workRoot, 'upload-tenant-meta'),
+              extracted = path.join(workRoot, 'upload-tenant-meta-zip');
+
+        await fsExtra.ensureDir(stageRoot);
+
+        const databaseService = makeDatabaseServiceSeam({
+            onExport: async ({backupPath}) => {
+                fs.writeFileSync(path.join(backupPath, `${KB_BACKUP_FILE_PREFIX}meta.jsonl`), jsonlFixture(['kb-1', 'kb-2']));
+            }
+        });
+
+        const result = await uploadKnowledgeBase({
+            tagName            : '99.0.0',
+            databaseService,
+            lifecycleService   : readyLifecycleSeam(),
+            embeddingConfig    : {embeddingProvider: 'openAiCompatible', vectorDimension: FIXTURE_DIMENSION},
+            knowledgeBaseConfig: KB_CONFIG,
+            runGh              : async () => {},
+            skipReleaseCheck   : true,
+            skipUpload         : true,
+            stageRoot,
+            logger             : silentLogger
+        });
+
+        try {
+            await unzipTo(result.artifactPath, extracted)
+        } finally {
+            fs.rmSync(result.artifactPath, {force: true})
+        }
+
+        expect(databaseService.calls[0]).toMatchObject({action: 'export', defaultTenantOnly: true});
+        expect(JSON.parse(fs.readFileSync(path.join(extracted, ARTIFACT_META_FILENAME), 'utf8')).tenantScope).toEqual({
+            tenantId: 'neo-shared',
+            pairs   : [{tenantId: 'neo-shared', repoSlug: 'neo', count: 2}]
+        });
+    });
+
+    test('upload refuses an export holding another tenant\'s row before anything is uploaded', async () => {
+        const stageRoot = path.join(workRoot, 'upload-tenant-leak'),
+              ghCalls   = [];
+
+        await fsExtra.ensureDir(stageRoot);
+
+        await expect(uploadKnowledgeBase({
+            tagName        : '99.0.0',
+            databaseService: makeDatabaseServiceSeam({
+                onExport: async ({backupPath}) => {
+                    fs.writeFileSync(path.join(backupPath, `${KB_BACKUP_FILE_PREFIX}leak.jsonl`),
+                        jsonlFixture(['kb-1', 'kb-2'], id => id === 'kb-2' ? 'tenant-b' : 'neo-shared'));
+                }
+            }),
+            lifecycleService   : readyLifecycleSeam(),
+            embeddingConfig    : {embeddingProvider: 'openAiCompatible', vectorDimension: FIXTURE_DIMENSION},
+            knowledgeBaseConfig: KB_CONFIG,
+            runGh              : async args => { ghCalls.push(args) },
+            stageRoot,
+            logger             : silentLogger
+        })).rejects.toThrow(/row 'kb-2' carries tenantId 'tenant-b'/);
+
+        expect(ghCalls.some(args => args[0] === 'release' && args[1] === 'upload')).toBe(false);
     });
 
     // ───────── downloadKnowledgeBase: merge-only contract ─────────

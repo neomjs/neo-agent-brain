@@ -253,6 +253,99 @@ test.describe('KB_DatabaseService — manageDatabaseBackup (#10129 Phase 1)', ()
         expect(produced).toHaveLength(0);
     });
 
+    /**
+     * A two-tenant collection double that honours `where` the way Chroma does (a row without the field
+     * matches nothing) and records every `get`. `failBatchReads` breaks the full-row page reads so the
+     * per-id rescue path runs.
+     */
+    const makeTenantCollection = ({rows, failBatchReads = false}) => {
+        const calls = [];
+
+        return {
+            calls,
+            name : 'fake-kb-tenants',
+            count: async () => rows.length,
+            get  : async (args = {}) => {
+                calls.push(args);
+
+                const {ids, where, include = [], limit = rows.length, offset = 0} = args;
+
+                if (failBatchReads && !ids && include.includes('embeddings')) throw new Error('corrupted segment');
+
+                const selected = ids
+                    ? rows.filter(row => ids.includes(row.id))
+                    : rows.filter(row => !where || row.metadata.tenantId === where.tenantId.$eq).slice(offset, offset + limit);
+
+                return {
+                    ids       : selected.map(row => row.id),
+                    documents : selected.map(row => row.document),
+                    metadatas : selected.map(row => row.metadata),
+                    embeddings: selected.map(row => row.embedding)
+                }
+            }
+        }
+    };
+
+    const readExportedIds = dir => fs.readdirSync(dir)
+        .filter(f => f.startsWith('knowledge-base-backup-') && f.endsWith('.jsonl'))
+        .flatMap(f => fs.readFileSync(path.join(dir, f), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line).id));
+
+    const tenantRows = defaultTenantId => [
+        {id: 'shared-1', embedding: [0.1], metadata: {tenantId: defaultTenantId, repoSlug: 'neo'}, document: 'shared-1'},
+        {id: 'tenant-1', embedding: [0.2], metadata: {tenantId: 'tenant-b', repoSlug: 'private-repo'}, document: 'tenant-1'},
+        {id: 'shared-2', embedding: [0.3], metadata: {tenantId: defaultTenantId, repoSlug: 'neo'}, document: 'shared-2'},
+        {id: 'legacy-1', embedding: [0.4], metadata: {repoSlug: 'neo'}, document: 'legacy-1'}
+    ];
+
+    test('a default-tenant export writes only the default tenant\'s rows and names its scope', async () => {
+        const {default: VectorService} = await import('../../../../../../ai/services/knowledge-base/VectorService.mjs'),
+              defaultTenantId          = VectorService.getTenantIsolationConfig().defaultTenantId,
+              collection               = makeTenantCollection({rows: tenantRows(defaultTenantId)}),
+              dir                      = path.join(tmpBackupDir, 'tenant-scoped');
+
+        KB_ChromaManager.getKnowledgeBaseCollection = async () => collection;
+        fs.mkdirSync(dir, {recursive: true});
+
+        const result = await KB_DatabaseService.manageDatabaseBackup({action: 'export', backupPath: dir, defaultTenantOnly: true});
+
+        expect(readExportedIds(dir)).toEqual(['shared-1', 'shared-2']);
+        expect(result.scope).toEqual({tenantId: defaultTenantId});
+        // `count()` cannot be scoped, so the snapshot is the scoped id count: a complete capture, not a partial one.
+        expect(result.expected).toBe(2);
+        expect(result.count).toBe(2);
+        expect(result.status).toBe('complete');
+        expect(collection.calls.every(args => args.where?.tenantId?.$eq === defaultTenantId)).toBe(true)
+    });
+
+    test('the per-id rescue path keeps the tenant scope, so a corrupted page cannot rescue another tenant\'s rows', async () => {
+        const {default: VectorService} = await import('../../../../../../ai/services/knowledge-base/VectorService.mjs'),
+              defaultTenantId          = VectorService.getTenantIsolationConfig().defaultTenantId,
+              collection               = makeTenantCollection({rows: tenantRows(defaultTenantId), failBatchReads: true}),
+              dir                      = path.join(tmpBackupDir, 'tenant-rescue');
+
+        KB_ChromaManager.getKnowledgeBaseCollection = async () => collection;
+        fs.mkdirSync(dir, {recursive: true});
+
+        await KB_DatabaseService.manageDatabaseBackup({action: 'export', backupPath: dir, defaultTenantOnly: true});
+
+        expect(readExportedIds(dir)).toEqual(['shared-1', 'shared-2']);
+        expect(collection.calls.some(args => args.ids)).toBe(true) // the rescue path ran
+    });
+
+    test('an unscoped export (the backup) still reads the whole collection, with no where on any read', async () => {
+        const collection = makeTenantCollection({rows: tenantRows('neo-shared')}),
+              dir        = path.join(tmpBackupDir, 'tenant-unscoped');
+
+        KB_ChromaManager.getKnowledgeBaseCollection = async () => collection;
+        fs.mkdirSync(dir, {recursive: true});
+
+        const result = await KB_DatabaseService.manageDatabaseBackup({action: 'export', backupPath: dir});
+
+        expect(readExportedIds(dir)).toEqual(['shared-1', 'tenant-1', 'shared-2', 'legacy-1']);
+        expect(result.scope).toBeNull();
+        expect(collection.calls.some(args => 'where' in args)).toBe(false)
+    });
+
     test('rejects unsupported actions at the dispatcher layer', async () => {
         // No openapi operation is registered for `manage_database_backup` in KB (retired in the
         // script-over-tool reduction, which is why no no-match passthrough applies), so `makeSafe`

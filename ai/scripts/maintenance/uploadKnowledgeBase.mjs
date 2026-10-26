@@ -19,6 +19,8 @@ import {
     KB_LifecycleService
 } from '../../services.mjs';
 
+import {resolveTenantIsolationConfig} from '../../services/knowledge-base/VectorService.mjs';
+
 import {
     ARTIFACT_BASENAME,
     KB_BACKUP_FILE_PREFIX,
@@ -27,6 +29,7 @@ import {
     ARTIFACT_VECTORS_FILENAME,
     MEMORY_CORE_COLLECTION_PREFIXES,
     assertCollectionScopedArtifact,
+    assertTenantScopedRows,
     packArtifactToV2
 } from './knowledgeBaseArtifact.mjs';
 
@@ -46,6 +49,10 @@ const execFileAsync = promisify(execFile);
  * directory, which holds private Memory Core memories, the graph SQLite, and the A2A
  * mailbox. A defense-in-depth assertion (`assertCollectionScopedArtifact`) fails the upload
  * if any Memory Core collection or a `sqlite/` payload leaks into the staged artifact.
+ *
+ * Tenant repositories share that collection, told apart only by `metadata.tenantId`, so the export
+ * reads the default tenant alone (`defaultTenantOnly`) and `assertTenantScopedRows` refuses any staged
+ * row of another tenant before anything is packaged. The meta records what shipped (`tenantScope`).
  *
  * ## Artifact shape (schema v2)
  *
@@ -117,7 +124,8 @@ async function countJsonlRecords(filePath) {
  * @param {Object}  [options.databaseService]    KB database SDK seam (tests).
  * @param {Object}  [options.lifecycleService]   KB lifecycle SDK seam (tests).
  * @param {Object}  [options.embeddingConfig]    Tier-1 AI config seam exposing `embeddingProvider` + `vectorDimension`.
- * @param {Object}  [options.knowledgeBaseConfig] KB server config seam exposing `collectionName`.
+ * @param {Object}  [options.knowledgeBaseConfig] KB server config seam exposing `collectionName` and the
+ *                                               tenant-isolation leaves (`defaultTenantId`).
  * @param {Function}[options.runGh]              Async `(args[]) => Promise` seam for `gh` invocations (tests).
  * @param {Boolean} [options.skipReleaseCheck]   Skip the `gh release view` pre-flight (tests).
  * @param {Boolean} [options.skipUpload]         Stage + assert + meta only; do not invoke `gh release upload` (tests).
@@ -163,7 +171,7 @@ export async function uploadKnowledgeBase({
         // 2. Export ONLY the neo-knowledge-base collection to JSONL via the canonical SDK.
         await lifecycleService.ready();
         logger.log(`📤 Exporting collection '${collectionName}' to JSONL...`);
-        await databaseService.manageDatabaseBackup({action: 'export', backupPath: stageDir});
+        await databaseService.manageDatabaseBackup({action: 'export', backupPath: stageDir, defaultTenantOnly: true});
 
         const stagedJsonl = (await fs.readdir(stageDir))
             .filter(name => name.startsWith(KB_BACKUP_FILE_PREFIX) && name.endsWith('.jsonl'));
@@ -181,6 +189,13 @@ export async function uploadKnowledgeBase({
         if (recordCount === 0) {
             throw new Error(`Knowledge Base collection '${collectionName}' exported 0 records. Run 'npm run ai:sync-kb' before releasing.`);
         }
+
+        // Resolved independently of the export, so an export that lost its scope still cannot ship.
+        const tenantScope = await assertTenantScopedRows({
+            artifactDir: stageDir,
+            tenantId   : resolveTenantIsolationConfig(knowledgeBaseConfig).defaultTenantId
+        });
+        logger.log(`✅ Every staged row belongs to tenant '${tenantScope.tenantId}' (${tenantScope.pairs.length} repository slug(s)).`);
 
         // 3. Move embeddings out of the JSONL into the packed fp16 sidecar (schema v2). ~97% of a v1
         // artifact was embeddings as decimal TEXT; the vectors still ship in full, so the
@@ -203,9 +218,10 @@ export async function uploadKnowledgeBase({
             vectorDigest   : packed.vectorDigest,
             // Stamped, not assumed: `Float16Array` writes in the agent's native order and Node ships a
             // big-endian build, so the consumer must be told what order it is reading.
-            byteOrder : packed.byteOrder,
-            neoVersion: resolvedTag,
-            createdAt : new Date().toISOString()
+            byteOrder  : packed.byteOrder,
+            neoVersion : resolvedTag,
+            tenantScope: {tenantId: tenantScope.tenantId, pairs: tenantScope.pairs},
+            createdAt  : new Date().toISOString()
         };
         await fs.writeJson(path.join(stageDir, ARTIFACT_META_FILENAME), meta, {spaces: 2});
 

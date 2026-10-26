@@ -604,3 +604,44 @@ export async function assertCollectionScopedArtifact({artifactDir, fsModule = fs
 
     return {entries, jsonlFiles};
 }
+
+/**
+ * Asserts every row of a staged artifact belongs to one tenant, and censuses what the artifact holds.
+ *
+ * Tenant rows share the Knowledge Base collection with the public corpus, separated only by
+ * `metadata.tenantId`, so `assertCollectionScopedArtifact` (which proves the artifact holds ONE
+ * collection) cannot prove the collection slice holds one tenant. This row-level guard can: it refuses
+ * the first row whose `tenantId` differs from `tenantId`, a row without one included, since ingestion
+ * stamps every row. The census is the receipt of what ships.
+ *
+ * @param {Object} options
+ * @param {String} options.artifactDir Absolute path to the staged/unzipped artifact directory.
+ * @param {String} options.tenantId The only tenant the artifact may carry.
+ * @param {Object} [options.fsModule=fs] Filesystem seam (tests).
+ * @returns {Promise<{tenantId: String, rows: Number, pairs: Array<{tenantId: String, repoSlug: String|null, count: Number}>}>}
+ */
+export async function assertTenantScopedRows({artifactDir, tenantId, fsModule = fs}) {
+    if (typeof tenantId !== 'string' || !tenantId) {
+        throw new Error('Artifact tenant violation: no tenant to scope the artifact to.');
+    }
+
+    const counts = new Map(),
+          rows   = await streamJsonlRecords({
+              jsonlPath: await resolveSingleArtifactJsonl({artifactDir, fsModule}),
+              onRecord : record => {
+                  const {repoSlug = null, tenantId: rowTenant} = record.metadata ?? {};
+
+                  if (rowTenant !== tenantId) {
+                      throw new Error(`Artifact tenant violation: row '${record.id}' carries tenantId '${rowTenant ?? '(none)'}'; the release artifact ships only '${tenantId}'.`);
+                  }
+
+                  counts.set(repoSlug, (counts.get(repoSlug) ?? 0) + 1)
+              }
+          });
+
+    return {
+        tenantId,
+        rows,
+        pairs: [...counts].map(([repoSlug, count]) => ({tenantId, repoSlug, count})).sort((a, b) => String(a.repoSlug).localeCompare(String(b.repoSlug)))
+    }
+}

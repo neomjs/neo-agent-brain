@@ -70,14 +70,16 @@ dotenv.config({
  * @param {String}         options.verdict From {@link classifyExportCompleteness}.
  * @param {Boolean|null}  [options.bootstrapped] Whether the resolution CREATED the source collection
  *                        rather than finding it. From `ChromaManager.knowledgeBaseCollectionBootstrapped`.
+ * @param {Boolean}       [options.scoped=false] Whether the export read a tenant scope: its zero says
+ *                        the scope matched nothing, not that the collection is empty.
  * @returns {{status: String, reason: String|null}}
  * @private
  */
-function describeKbExportOutcome({exported, verdict, bootstrapped = null}) {
+function describeKbExportOutcome({exported, verdict, bootstrapped = null, scoped = false}) {
     if (exported === 0) {
-        return bootstrapped === true
-            ? {status: 'degraded', reason: 'source-collection-unresolved'}
-            : {status: 'degraded', reason: 'source-collection-empty'}
+        if (bootstrapped === true) return {status: 'degraded', reason: 'source-collection-unresolved'};
+
+        return {status: 'degraded', reason: scoped ? 'scope-matched-no-rows' : 'source-collection-empty'}
     }
 
     if (verdict === EXPORT_COMPLETENESS.grew) {
@@ -182,7 +184,10 @@ class DatabaseService extends Base {
      * @param {String} [options.backupPath=aiConfig.backupPath] Directory for the JSONL artifact.
      * @param {String} [options.payloadEncoding='jsonl'] A `bundlePayload` encoding token. The daily bundle
      *          asks for `jsonl+br`; the release uploader and every other caller keep plain JSONL.
-     * @returns {Promise<{message: String, status: String, reason: String|null, count: Number, expected: Number, collectionId: String|null, payloadEncoding: String|null}>}
+     * @param {Boolean} [options.defaultTenantOnly=false] Export only the rows stamped with the default
+     *          tenant, resolved as `VectorService.resolveTenantStamp` resolves it. Tenant rows share this
+     *          collection, so a public release export must not read it whole; backups keep the default.
+     * @returns {Promise<{message: String, status: String, reason: String|null, count: Number, expected: Number, collectionId: String|null, payloadEncoding: String|null, scope: {tenantId: String}|null}>}
      *          `status` is the branchable field — `degraded` when the source collection was empty, so a
      *          consumer never has to string-match the prose to learn the bundle holds no KB rows.
      *          `expected` is the pre-pass collection count, carried so a zero has something to be zero
@@ -195,14 +200,15 @@ class DatabaseService extends Base {
      *          source's identity at capture time — the axis that lets a `count: 0` receipt
      *          distinguish "this source was empty" from "a different source is here now"; `null`
      *          degrades that axis to `unknown` rather than asserting continuity.
-     *          See `ai/services/shared/captureReceipt.mjs`.
+     *          See `ai/services/shared/captureReceipt.mjs`. `scope` names the tenant a scoped export kept.
      */
-    async exportDatabase({backupPath = aiConfig.backupPath, payloadEncoding: requestedEncoding = 'jsonl'} = {}) {
+    async exportDatabase({backupPath = aiConfig.backupPath, payloadEncoding: requestedEncoding = 'jsonl', defaultTenantOnly = false} = {}) {
         try {
             logger.log('Starting knowledge base export...');
             const collection                                     = await ChromaManager.getKnowledgeBaseCollection();
             const bootstrapped                                   = ChromaManager.knowledgeBaseCollectionBootstrapped;
-            const {expected, exported, payloadEncoding, verdict} = await this.#exportCollection(collection, backupPath, 'knowledge-base-backup', requestedEncoding);
+            const scope                                          = defaultTenantOnly ? {tenantId: VectorService.getTenantIsolationConfig().defaultTenantId} : null;
+            const {expected, exported, payloadEncoding, verdict} = await this.#exportCollection(collection, backupPath, 'knowledge-base-backup', requestedEncoding, scope && {tenantId: {$eq: scope.tenantId}});
 
             // A zero-row export against a POPULATED collection already throws upstream
             // (`PARTIAL_COLLECTION_EXPORT`). What reaches here is an empty corpus — a real state, and
@@ -223,7 +229,7 @@ class DatabaseService extends Base {
             // and that branch's own source says it is complete-or-better but NOT provably exact,
             // because the export pages by offset. A new branchable field must model every state the
             // producer already had, or it over-certifies the one it was not written for.
-            const {reason, status} = describeKbExportOutcome({exported, verdict, bootstrapped});
+            const {reason, status} = describeKbExportOutcome({exported, verdict, bootstrapped, scoped: scope !== null});
 
             return {
                 message     : status === 'complete'
@@ -235,7 +241,8 @@ class DatabaseService extends Base {
                 expected,
                 collectionId: collection?.id ?? null,
                 // A receipt for `bundle-meta.json`, never a reader input: readers detect by extension.
-                payloadEncoding
+                payloadEncoding,
+                scope
             };
         } catch (error) {
             logger.error('[DatabaseService] Error exporting knowledge base:', error);
@@ -260,6 +267,9 @@ class DatabaseService extends Base {
      * @param {Object} collection The ChromaDB collection to export.
      * @param {String} backupPath The directory to save the backup file.
      * @param {String} filePrefix The prefix for the backup filename.
+     * @param {String} [payloadEncoding='jsonl'] A `bundlePayload` encoding token.
+     * @param {Object|null} [where=null] A Chroma `where` filter scoping every read, the rescue path's
+     *          id page included. `count()` takes no filter, so a scoped snapshot counts the filtered ids.
      * @returns {Promise<{expected: Number, exported: Number, verdict: String}>} `exported` is what was
      *          WRITTEN, `expected` the pre-pass snapshot, `verdict` the classifier's judgement — so no
      *          caller has to re-derive completeness from the two counts. The number of rows actually written to the artifact. An empty
@@ -270,10 +280,11 @@ class DatabaseService extends Base {
      *          certify a bundle.
      * @private
      */
-    async #exportCollection(collection, backupPath, filePrefix, payloadEncoding = 'jsonl') {
-        logger.log(`Fetching all documents from "${collection.name}"...`);
+    async #exportCollection(collection, backupPath, filePrefix, payloadEncoding = 'jsonl', where = null) {
+        logger.log(`Fetching ${where ? 'scoped' : 'all'} documents from "${collection.name}"...`);
 
-        const count = await collection.count();
+        const scope = where ? {where} : {},
+              count = where ? (await collection.get({where, include: []})).ids.length : await collection.count();
         if (count === 0) {
             logger.log(`No documents found in ${collection.name} to export.`);
             return {expected: 0, exported: 0, payloadEncoding: null, verdict: EXPORT_COMPLETENESS.complete};
@@ -299,12 +310,13 @@ class DatabaseService extends Base {
                 batch = await collection.get({
                     include: ['documents', 'embeddings', 'metadatas'],
                     limit,
-                    offset
+                    offset,
+                    ...scope
                 });
             } catch (batchErr) {
                 logger.log(`Batch ${offset} fetch failed: ${batchErr.message}. Initiating surgical 1-by-1 rescue mode...`);
 
-                const idBatch = await collection.get({include: [], limit, offset});
+                const idBatch = await collection.get({include: [], limit, offset, ...scope});
 
                 batch = {ids: [], metadatas: [], documents: [], embeddings: []};
 
