@@ -6,7 +6,8 @@ import Base                                                     from 'neo.mjs/sr
 import StorageRouter                                            from './managers/StorageRouter.mjs';
 import logger                                                   from '../../mcp/server/memory-core/logger.mjs';
 import RequestContextService, {SHARED_USER_ID, normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
-import {TRUST_TIERS, TRUST_TIER_ORDER}                          from '../../graph/identityRoots.mjs';
+import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER}              from '../../graph/identityRoots.mjs';
+import {resolveAgentIdentityAlias}                              from '../graph/agentFamilyResolution.mjs';
 
 /**
  * @summary Service for handling deleting, listing, and querying session summaries.
@@ -100,6 +101,69 @@ class SummaryService extends Base {
         }
 
         return String(resolved).replace(/^@/, '');
+    }
+
+    /**
+     * @summary Expands an `@`-stripped author scope into all canonical and formerLogins handle variants.
+     * @param {String|null} authorScope Canonical or alias handle without leading `@`, or `null`.
+     * @returns {Set<String>|null} Set of `@`-stripped handles, or `null` when unscoped.
+     */
+    static expandAuthorScopeVariants(authorScope) {
+        if (!authorScope) {
+            return null;
+        }
+
+        const bare     = String(authorScope).trim().replace(/^@/, '');
+        const atHandle = `@${bare}`;
+        const variants = new Set([bare]);
+
+        const canonical = resolveAgentIdentityAlias(atHandle);
+        if (canonical?.id) {
+            variants.add(canonical.id.replace(/^@/, ''));
+            for (const login of canonical.formerLogins || []) {
+                variants.add(String(login).replace(/^@/, ''));
+            }
+        }
+
+        for (const entry of Object.values(IDENTITIES)) {
+            const entryBare   = entry.id.replace(/^@/, '');
+            const formerBares = (entry.properties?.formerLogins || entry.formerLogins || []).map(login => String(login).replace(/^@/, ''));
+
+            if (variants.has(entryBare) || formerBares.some(login => variants.has(login))) {
+                variants.add(entryBare);
+                for (const login of formerBares) {
+                    variants.add(login);
+                }
+            }
+        }
+
+        return variants;
+    }
+
+    /**
+     * @summary Returns true when a summary row's `sourceAgentIdentities` matches the expanded author scope.
+     * @param {String|String[]|undefined} sourceAgentIdentities Comma-delimited or array provenance list.
+     * @param {Set<String>|String|null} authorScope Expanded variant set, `@`-stripped handle, or `null`.
+     * @returns {Boolean}
+     */
+    static matchesAuthorScope(sourceAgentIdentities, authorScope) {
+        if (!authorScope) {
+            return true;
+        }
+
+        const variants = authorScope instanceof Set
+            ? authorScope
+            : this.expandAuthorScopeVariants(authorScope);
+
+        if (!variants) {
+            return true;
+        }
+
+        const entries = Array.isArray(sourceAgentIdentities)
+            ? sourceAgentIdentities
+            : this.splitMetadataList(sourceAgentIdentities);
+
+        return entries.some(identity => variants.has(String(identity).replace(/^@/, '')));
     }
 
     /**
@@ -205,7 +269,8 @@ class SummaryService extends Base {
     async listSummaries({limit=50, offset=0, agentIdentity, category} = {}) {
         // Resolve the optional author-identity scope BEFORE the storage try/catch: a fail-closed
         // `@me` (no bound identity) must throw, not be swallowed into the SUMMARY_LIST_ERROR envelope.
-        const authorScope = this.constructor.resolveAuthorScope(agentIdentity);
+        const authorScope    = this.constructor.resolveAuthorScope(agentIdentity);
+        const authorVariants = this.constructor.expandAuthorScopeVariants(authorScope);
 
         try {
             const collection = await StorageRouter.getSummaryCollection();
@@ -277,10 +342,9 @@ class SummaryService extends Base {
             // Optional author-identity scope (own vs team boot ledger): post-filter on the chroma
             // sourceAgentIdentities provenance — see resolveAuthorScope for the AUTHORED_BY
             // equivalence + the @-namespace canonicalization.
-            if (authorScope !== null) {
+            if (authorVariants !== null) {
                 allRecords = allRecords.filter(r =>
-                    this.constructor.splitMetadataList(r.metadata.sourceAgentIdentities)
-                        .some(identity => identity.replace(/^@/, '') === authorScope)
+                    this.constructor.matchesAuthorScope(r.metadata.sourceAgentIdentities, authorVariants)
                 );
             }
 
@@ -383,12 +447,16 @@ class SummaryService extends Base {
      * @param {String} [options.category]    Optional category to filter results.
      * @param {String} [options.memorySharing] Optional override for tenant isolation policy.
      * @param {String} [options.minTrustTier] Optional minimum accepted source trust tier.
+     * @param {String} [options.agentIdentity] Optional author identity filter (`'@me'`, `'@<handle>'`, or `'all'`).
      * @returns {Promise<{query: String, count: Number, results: Object[], malformedTimestamps: (Number|undefined)}>}
      *   A row whose stored `timestamp` is absent or unparseable is returned with `timestamp: null` and
      *   counted in `malformedTimestamps` rather than failing the call — see
      *   {@link module:ai/services/memory-core/helpers/resolveRowTimestamp~resolveRowTimestamp}. `malformedTimestamps` is omitted when zero.
      */
-    async querySummaries({query, nResults, category, memorySharing, minTrustTier}) {
+    async querySummaries({query, nResults, category, memorySharing, minTrustTier, agentIdentity}) {
+        const authorScope    = this.constructor.resolveAuthorScope(agentIdentity);
+        const authorVariants = this.constructor.expandAuthorScopeVariants(authorScope);
+
         try {
             if (minTrustTier && !this.constructor.trustTierRanks.has(minTrustTier)) {
                 return {
@@ -434,7 +502,7 @@ class SummaryService extends Base {
                 tenantScope = {userId};
             }
 
-            if ((tenantScope === null && userId && additivePolicy) || minTrustTier) {
+            if ((tenantScope === null && userId && additivePolicy) || minTrustTier || authorVariants !== null) {
                 queryArgs.nResults = nResults * 5;
             }
 
@@ -470,14 +538,15 @@ class SummaryService extends Base {
             let metadatas = searchResult.metadatas?.[0] || [];
             let documents = searchResult.documents?.[0] || [];
 
-            if ((userId && additivePolicy) || minTrustTier) {
+            if ((userId && additivePolicy) || minTrustTier || authorVariants !== null) {
                 const filteredIndices = [];
                 for (let i = 0; i < metadatas.length; i++) {
                     const metaUserId  = metadatas[i]?.userId;
                     const tenantMatch = !userId || !additivePolicy || !metaUserId || metaUserId === userId || metaUserId === SHARED_USER_ID;
                     const trustMatch  = this.constructor.matchesMinTrustTier(metadatas[i], minTrustTier);
+                    const authorMatch = this.constructor.matchesAuthorScope(metadatas[i]?.sourceAgentIdentities, authorVariants);
 
-                    if (tenantMatch && trustMatch) {
+                    if (tenantMatch && trustMatch && authorMatch) {
                         filteredIndices.push(i);
                         if (filteredIndices.length === nResults) break;
                     }

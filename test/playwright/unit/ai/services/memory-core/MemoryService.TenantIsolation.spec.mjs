@@ -916,3 +916,102 @@ test.describe('MemoryService — context frontier trust-tier weighting (#10292)'
         expect(otherTenant.topology).toBeUndefined()
     });
 });
+
+test.describe('MemoryService.queryMemories — agentIdentity, detail, and projection (#1280)', () => {
+    let spyCollection;
+    let originalGetMemoryCollection;
+
+    test.beforeEach(() => {
+        spyCollection                     = createSpyCollection();
+        originalGetMemoryCollection       = StorageRouter.getMemoryCollection;
+        StorageRouter.getMemoryCollection = async () => spyCollection;
+
+        spyCollection.rows.set('m-ada', {
+            id      : 'm-ada',
+            metadata: {
+                sessionId    : 's-1',
+                userId       : 'neo-opus-4-7',
+                agentIdentity: '@neo-opus-4-7',
+                timestamp    : 1000,
+                type         : 'agent-turn',
+                prompt       : 'Ada prompt text',
+                thought      : 'Ada private thought',
+                response     : 'Ada response text'
+            },
+            document: 'Ada prompt text'
+        });
+        spyCollection.rows.set('m-grace', {
+            id      : 'm-grace',
+            metadata: {
+                sessionId    : 's-2',
+                userId       : 'neo-opus-grace',
+                agentIdentity: '@neo-opus-grace',
+                timestamp    : 2000,
+                type         : 'agent-turn',
+                prompt       : 'Grace prompt text ' + 'x'.repeat(320),
+                thought      : 'Grace private thought',
+                response     : 'Grace response text'
+            },
+            document: 'Grace prompt text'
+        });
+    });
+
+    test.afterEach(() => {
+        StorageRouter.getMemoryCollection = originalGetMemoryCollection;
+    });
+
+    test('filters by agentIdentity across canonical and formerLogins aliases and fails closed on unbound @me', async () => {
+        const adaByCanonical = await RequestContextService.run({userId: 'neo-gemini-maryam'}, () =>
+            MemoryService.queryMemories({
+                query        : 'prompt',
+                nResults     : 10,
+                memorySharing: 'team',
+                agentIdentity: '@neo-opus-ada'
+            })
+        );
+        expect(adaByCanonical.count).toBe(1);
+        expect(adaByCanonical.results[0].id).toBe('m-ada');
+
+        const unboundMe = await MemoryService.queryMemories({
+            query        : 'prompt',
+            nResults     : 10,
+            agentIdentity: '@me'
+        });
+        expect(unboundMe.count).toBe(0);
+        expect(unboundMe.results).toEqual([]);
+    });
+
+    test('supports detail=summary (graph miniSummary or <=300 char summaryFallback, omitting prompt/thought/response) and detail=full with projection=public', async () => {
+        const summaryView = await MemoryService.queryMemories({
+            query        : 'Grace',
+            nResults     : 10,
+            agentIdentity: '@neo-opus-grace',
+            detail       : 'summary'
+        });
+        expect(summaryView.count).toBe(1);
+        const item = summaryView.results[0];
+        expect(item.prompt).toBeUndefined();
+        expect(item.thought).toBeUndefined();
+        expect(item.response).toBeUndefined();
+        expect(item.miniSummary).toBeNull();
+        expect(typeof item.summaryFallback).toBe('string');
+        expect(item.summaryFallback.length).toBeLessThanOrEqual(300);
+
+        const publicFullView = await MemoryService.queryMemories({
+            query        : 'Grace',
+            nResults     : 10,
+            agentIdentity: '@neo-opus-grace',
+            detail       : 'full',
+            projection   : 'public'
+        });
+        expect(publicFullView.count).toBe(1);
+        expect(publicFullView.results[0].prompt).toContain('Grace prompt text');
+        expect(publicFullView.results[0].response).toBe('Grace response text');
+        expect(publicFullView.results[0].thought).toBeUndefined();
+
+        await expect(MemoryService.queryMemories({query: 'Grace', nResults: 5, detail: 'invalid'}))
+            .rejects.toThrow(TypeError);
+        await expect(MemoryService.queryMemories({query: 'Grace', nResults: 5, projection: 'invalid'}))
+            .rejects.toThrow(TypeError);
+    });
+});
