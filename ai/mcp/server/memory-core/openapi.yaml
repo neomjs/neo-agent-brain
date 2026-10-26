@@ -194,6 +194,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/CommunityActivitySeenResponse'
 
+  /community/activity/claim:
+    post:
+      summary: Claim community activity task
+      operationId: claim_community_activity_task
+      x-neo-tool-tier: write
+      x-pass-as-object: true
+      x-neo-tool-summary: Atomically validate an eligible community event and bind it to one canonical A2A Task.
+      description: |
+        Atomically creates or returns the single canonical A2A Task bound to `(tenant_id, sourceEventId)`
+        when the event is admitted, attention-eligible, active, and visible to the authenticated tenant.
+        Seen markers, count projections, and provider delivery ids never authorize claim; tenant and
+        claimant identity are server-derived.
+      tags: [Community Activity]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommunityActivityClaimRequest'
+      responses:
+        '200':
+          description: Canonical community activity task claim outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunityActivityClaimResponse'
+
   /healthcheck:
     get:
       summary: Health Check
@@ -6181,6 +6208,69 @@ components:
         notAuthority:
           type: boolean
           enum: [true]
+
+    CommunityActivityClaimRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceEventId]
+      properties:
+        sourceEventId:
+          type: string
+          minLength: 1
+
+    CommunityActivityClaimResponse:
+      type: object
+      additionalProperties: false
+      required: [status, created, sourceEventId, sourceInstanceId, taskId, claimedBy, claimedAt, notAuthority, task]
+      properties:
+        status:
+          type: string
+          enum: [claimed, deleted, inaccessible, ineligible]
+        created:
+          type: boolean
+        sourceEventId:
+          type: string
+          minLength: 1
+        sourceInstanceId:
+          type: string
+          nullable: true
+        taskId:
+          type: string
+          nullable: true
+        claimedBy:
+          type: string
+          nullable: true
+        claimedAt:
+          type: string
+          format: date-time
+          nullable: true
+        notAuthority:
+          type: boolean
+        task:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [id, state, assignee, sourceEventId, sourceInstanceId, providerEntityId, parentProviderEntityId, occurrenceKind]
+          properties:
+            id:
+              type: string
+              pattern: '^MESSAGE:'
+            state:
+              type: string
+              enum: [Submitted, Working, InputRequired, Completed, Canceled, Failed, Rejected, AuthRequired, Unknown, Expired, Blocked]
+            assignee:
+              type: string
+            sourceEventId:
+              type: string
+            sourceInstanceId:
+              type: string
+            providerEntityId:
+              type: string
+            parentProviderEntityId:
+              type: string
+              nullable: true
+            occurrenceKind:
+              type: string
 
     RequestPublishMediaDescriptor:
       type: object

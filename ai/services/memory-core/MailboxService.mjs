@@ -6,6 +6,7 @@ import RequestContextService, {normalizeUserId}           from '../../mcp/server
 import {canonicalizeTaggedConceptIds}                     from '../graph/conceptSpineCanonicalization.mjs';
 import GraphService, {isRlsVisible, resolveRlsUserId}     from './GraphService.mjs';
 import PermissionService                                  from './PermissionService.mjs';
+import SourceRegistryService                              from './SourceRegistryService.mjs';
 import WakeSubscriptionService                            from './WakeSubscriptionService.mjs';
 import {inspectDefectNoteCapture}                         from './helpers/defectObservationFold.mjs';
 import {normalizeMailboxObserver, readMailboxObservation} from './helpers/mailboxObservation.mjs';
@@ -1396,6 +1397,9 @@ function getStorageTaskMutableState(messageId) {
 
     const row = sqlite.prepare(`
         SELECT
+            user_id AS userId,
+            json_extract(data, '$.properties.sharedEntity') AS sharedEntity,
+            json_extract(data, '$.properties.tenantId') AS tenantId,
             json_extract(data, '$.properties.task') AS task,
             json_extract(data, '$.properties.taskAssignmentAuthority') AS taskAssignmentAuthority,
             json_extract(data, '$.properties.requestPublish') AS requestPublish,
@@ -1411,6 +1415,9 @@ function getStorageTaskMutableState(messageId) {
     if (!row) return {};
 
     const state = {};
+    if (row.userId != null)                  state.userId                  = row.userId;
+    if (row.sharedEntity != null)            state.sharedEntity            = row.sharedEntity === 1 || row.sharedEntity === true;
+    if (row.tenantId != null)                state.tenantId                = row.tenantId;
     if (row.task != null)                    state.task                    = parseStorageJsonObject(row.task, 'task', messageId);
     if (row.taskAssignmentAuthority != null) state.taskAssignmentAuthority = row.taskAssignmentAuthority;
     if (row.requestPublish != null)          state.requestPublish          = parseStorageJsonObject(row.requestPublish, 'requestPublish', messageId);
@@ -6233,17 +6240,49 @@ class MailboxService extends Base {
         }
         const me = normalizeMailboxIdentityForComparison(boundIdentity);
 
-        const db = GraphService.requireDb('MailboxService.transitionTask');
+        const db          = GraphService.requireDb('MailboxService.transitionTask');
+        const storedState = getStorageTaskMutableState(taskId);
+
+        if (storedState.sharedEntity === false || storedState.tenantId != null) {
+            const activeTenantId = RequestContextService.getUserId() || SourceRegistryService.localSubjectId || null,
+                  expectedOwner  = normalizeUserId(storedState.tenantId || storedState.userId);
+
+            if (!activeTenantId || normalizeUserId(activeTenantId) !== expectedOwner) {
+                throw new Error(`Task not found: ${taskId}`);
+            }
+        }
 
         // Trigger syncCache to ensure we have latest vicinity
         db.getAdjacentNodes(taskId, 'both');
 
-        const messageNode = db.nodes.get(taskId);
+        let messageNode = db.nodes.get(taskId);
+        if (!messageNode && (storedState.sharedEntity === false || storedState.tenantId != null) && db.storage?.db) {
+            const sqlite      = db.storage.db,
+                  rawNodeRow  = sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(taskId),
+                  rawEdgeRows = sqlite.prepare('SELECT target, data FROM Edges WHERE source = ?').all(taskId),
+                  wasAutoSave = db.autoSave;
+
+            if (rawNodeRow) {
+                db.autoSave = false;
+                try {
+                    db.addNode(JSON.parse(rawNodeRow.data));
+                    for (const edgeRow of rawEdgeRows) {
+                        const targetRow = sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(edgeRow.target);
+                        if (targetRow) db.addNode(JSON.parse(targetRow.data));
+                        db.addEdge(JSON.parse(edgeRow.data));
+                    }
+                    db.acknowledgeLocalMutations?.();
+                } finally {
+                    db.autoSave = wasAutoSave;
+                }
+                messageNode = db.nodes.get(taskId);
+            }
+        }
+
         if (!messageNode || getRecordField(messageNode, 'label') !== 'MESSAGE') {
             throw new Error(`Task not found: ${taskId}`);
         }
 
-        const storedState = getStorageTaskMutableState(taskId);
         if (!storedState.task?.state) {
             throw new Error(`Message ${taskId} is not an A2A Task (missing task.state)`);
         }

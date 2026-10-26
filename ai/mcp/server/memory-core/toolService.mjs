@@ -60,6 +60,7 @@ import {
 } from './communityBatchTool.mjs';
 import {
     assertCommunityActivityToolBoundary,
+    claimCommunityActivityTask,
     getCommunityActivity,
     getCommunityActivityContent,
     markCommunityActivitySeen
@@ -653,6 +654,7 @@ const serviceMapping = {
     revoke_permission            : PermissionService      .revokePermission        .bind(PermissionService),
     list_permissions             : PermissionService      .listPermissions         .bind(PermissionService),
     manage_wake_subscription     : WakeSubscriptionService.manage                  .bind(WakeSubscriptionService),
+    claim_community_activity_task: claimCommunityActivityTask,
     mark_community_activity_seen : markCommunityActivitySeen,
     record_turn_presence         : TurnPresenceService    .recordTurnPresence      .bind(TurnPresenceService),
     admit_community_batch        : admitCommunityBatch,

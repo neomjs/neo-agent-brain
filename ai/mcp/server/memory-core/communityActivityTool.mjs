@@ -1,4 +1,5 @@
 const COMMUNITY_ACTIVITY_TOOL_NAMES = new Set([
+    'claim_community_activity_task',
     'get_community_activity',
     'get_community_activity_content',
     'mark_community_activity_seen'
@@ -10,7 +11,13 @@ const FORBIDDEN_AUTHORITY_FIELDS = new Set([
     'viewerId',
     'sessionId',
     'registrationEpoch',
-    'agentIdentityNodeId'
+    'agentIdentityNodeId',
+    'taskId',
+    'claimedBy',
+    'assignee',
+    'seen',
+    'deliveryId',
+    'providerDeliveryId'
 ]);
 
 /** @summary Resolves a namespaced MCP tool id to the operation id guarded by this boundary. */
@@ -85,4 +92,11 @@ export async function markCommunityActivitySeen({sourceEventId} = {}) {
           result  = await service.markSeen({sourceEventId});
 
     return {...result, notAuthority: true, sourceEventId}
+}
+
+/** @summary Atomically validates an eligible community event and binds it to one canonical A2A Task. */
+export async function claimCommunityActivityTask({sourceEventId} = {}) {
+    const service = await getService();
+
+    return service.claimTask({sourceEventId})
 }

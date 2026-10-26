@@ -19,19 +19,21 @@ const WINDOW = {
     windowStart: '2026-09-19T00:00:00.000Z'
 };
 
-test.describe('Memory Core community activity MCP surface (#103)', () => {
-    let CommunityActivityService, createFacade, originalQuery, originalGetContent, originalMarkSeen, calls;
+test.describe('Memory Core community activity MCP surface (#103 / #102)', () => {
+    let CommunityActivityService, createFacade, originalClaimTask, originalQuery, originalGetContent, originalMarkSeen, calls;
 
     const facadeFor = transport => createFacade({resolveTransport: () => transport});
 
     const toolNames = [
+        'claim_community_activity_task',
         'get_community_activity',
         'get_community_activity_content',
         'mark_community_activity_seen'
     ];
 
     const toolArguments = {
-        get_community_activity: {
+        claim_community_activity_task: {sourceEventId: 'event-1'},
+        get_community_activity       : {
             ...WINDOW,
             cursor           : 'opaque-cursor',
             sourceInstanceIds: ['source-a']
@@ -48,12 +50,14 @@ test.describe('Memory Core community activity MCP surface (#103)', () => {
             '../../../../../../../ai/services/memory-core/CommunityActivityService.mjs'
         )).default;
 
-        originalQuery     = CommunityActivityService.query;
+        originalClaimTask  = CommunityActivityService.claimTask;
+        originalQuery      = CommunityActivityService.query;
         originalGetContent = CommunityActivityService.getContent;
-        originalMarkSeen  = CommunityActivityService.markSeen;
+        originalMarkSeen   = CommunityActivityService.markSeen;
     });
 
     test.afterAll(() => {
+        CommunityActivityService.claimTask  = originalClaimTask;
         CommunityActivityService.query      = originalQuery;
         CommunityActivityService.getContent = originalGetContent;
         CommunityActivityService.markSeen   = originalMarkSeen;
@@ -62,6 +66,29 @@ test.describe('Memory Core community activity MCP surface (#103)', () => {
     test.beforeEach(() => {
         calls = [];
 
+        CommunityActivityService.claimTask = async args => {
+            calls.push({operation: 'claim', args});
+            return {
+                claimedAt       : '2026-09-19T12:00:00.000Z',
+                claimedBy       : '@neo-gemini-maryam',
+                created         : true,
+                notAuthority    : false,
+                sourceEventId   : args.sourceEventId,
+                sourceInstanceId: 'source-a',
+                status          : 'claimed',
+                task            : {
+                    assignee              : '@neo-gemini-maryam',
+                    id                    : 'MESSAGE:00000000-0000-4000-8000-000000000001',
+                    occurrenceKind        : 'issue.comment',
+                    parentProviderEntityId: null,
+                    providerEntityId      : 'entity-1',
+                    sourceEventId         : args.sourceEventId,
+                    sourceInstanceId      : 'source-a',
+                    state                 : 'Working'
+                },
+                taskId: 'MESSAGE:00000000-0000-4000-8000-000000000001'
+            };
+        };
         CommunityActivityService.query = async args => {
             calls.push({operation: 'query', args});
             return {items: [], nextCursor: null, notAuthority: true};
@@ -77,12 +104,13 @@ test.describe('Memory Core community activity MCP surface (#103)', () => {
     });
 
     test.afterEach(() => {
+        CommunityActivityService.claimTask  = originalClaimTask;
         CommunityActivityService.query      = originalQuery;
         CommunityActivityService.getContent = originalGetContent;
         CommunityActivityService.markSeen   = originalMarkSeen;
     });
 
-    test('advertises read/write tiers and dispatches all three operations on stdio and streamable-http', async () => {
+    test('advertises read/write tiers and dispatches all four operations on stdio and streamable-http', async () => {
         for (const transport of ['stdio', 'streamable-http']) {
             const facade = facadeFor(transport),
                   listed = new Map(facade.listTools({toolProjection: {mode: 'harness-embedded'}}).tools
@@ -93,10 +121,12 @@ test.describe('Memory Core community activity MCP surface (#103)', () => {
             expect(listed.get('get_community_activity').inputSchema.required).toContain('limit');
             expect(listed.get('get_community_activity_content').annotations).toEqual({readOnlyHint: true});
             expect(listed.get('mark_community_activity_seen').annotations).toBeUndefined();
+            expect(listed.get('claim_community_activity_task').annotations).toBeUndefined();
 
             await facade.callTool('get_community_activity', toolArguments.get_community_activity);
             await facade.callTool('get_community_activity_content', toolArguments.get_community_activity_content);
             await facade.callTool('mark_community_activity_seen', toolArguments.mark_community_activity_seen);
+            await facade.callTool('claim_community_activity_task', toolArguments.claim_community_activity_task);
         }
 
         expect(calls).toEqual([
@@ -112,6 +142,7 @@ test.describe('Memory Core community activity MCP surface (#103)', () => {
             },
             {operation: 'content', args: {sourceEventId: 'event-1'}},
             {operation: 'seen', args: {sourceEventId: 'event-1'}},
+            {operation: 'claim', args: {sourceEventId: 'event-1'}},
             {
                 operation: 'query',
                 args     : {
@@ -123,7 +154,8 @@ test.describe('Memory Core community activity MCP surface (#103)', () => {
                 }
             },
             {operation: 'content', args: {sourceEventId: 'event-1'}},
-            {operation: 'seen', args: {sourceEventId: 'event-1'}}
+            {operation: 'seen', args: {sourceEventId: 'event-1'}},
+            {operation: 'claim', args: {sourceEventId: 'event-1'}}
         ]);
     });
 
@@ -138,14 +170,20 @@ test.describe('Memory Core community activity MCP surface (#103)', () => {
         expect(calls).toEqual([]);
     });
 
-    test('rejects every current request-authority field before normalization on every operation and transport', async () => {
+    test('rejects every current request-authority and task-authority field before normalization on every operation and transport', async () => {
         const forgedFields = [
             ['tenantId', 'forged-tenant'],
             ['userId', 'forged-user'],
             ['viewerId', 'forged-viewer'],
             ['sessionId', 'forged-session'],
             ['registrationEpoch', 7],
-            ['agentIdentityNodeId', '@forged-agent']
+            ['agentIdentityNodeId', '@forged-agent'],
+            ['taskId', 'MESSAGE:forged'],
+            ['claimedBy', '@forged-agent'],
+            ['assignee', '@forged-agent'],
+            ['seen', true],
+            ['deliveryId', 'delivery-1'],
+            ['providerDeliveryId', 'delivery-1']
         ];
 
         for (const transport of ['stdio', 'streamable-http']) {

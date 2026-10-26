@@ -278,6 +278,7 @@ const expectedMemoryCoreToolTiers = {
     get_pr_lane_activity          : 'read',
     get_community_activity        : 'read',
     get_community_activity_content: 'read',
+    claim_community_activity_task : 'write',
     mark_community_activity_seen  : 'write',
     who_is_online                 : 'read',
     add_memory                    : 'write',
@@ -319,6 +320,7 @@ const expectedMemoryCoreToolTiers = {
 // record_turn_presence) are visible `write`; the rest of the mutations are withheld `extended`.
 const memoryCoreDangerousReadForbidden = [
     'admit_community_batch',
+    'claim_community_activity_task',
     'add_memory',
     'add_message',
     'mark_read',
