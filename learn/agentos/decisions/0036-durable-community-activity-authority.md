@@ -442,3 +442,13 @@ window question without changing the selected architecture.
 Human merge of this ADR is the implementation-authority transition. This PR remains docs-only.
 The first runtime leaf is shadow instrumentation, and every later leaf remains gated by the live
 Epic dependency graph, the contracts above, and cross-family review.
+
+## 9. Operational calibration record (`2026-10-26`)
+
+Measured policy calibration (`community-activity-calibration-report.v1`, `reportId: 62f4d25f6ce7a5b6b28198f716aed78fc28c14c9fd94e9919e1322ea718e863d`, recorded in [`../measurements/community-activity-calibration-2026-10-26.md`](../measurements/community-activity-calibration-2026-10-26.md)) combined the 30-day GitHub shadow baseline (`79a6d84d9212d00f0f9ca8db33d517c64f0f90bfd0d2ef68fee88103bcc770dd`) with two comparable live-substrate runs (`stateManifestHash: f21fec867db27c9e3d9f97ac68f1557dd299f3a9f144c1e08315aaa79533b5e3`) and the `2026-10-26` live external-contributor observation window:
+
+- **Calibrated reconciliation & admission bounds (disabled by default in `AiConfig`):** `reconciliationCadenceMs = 2,131,596` (`[1,065,798 .. 86,400,000]`), `maxAdmissionAttempts = 2` (`[1 .. 5]`), `providerRootPageSize = 50` (`[1 .. 100]`), `providerChildPageSize = 100` (`[1 .. 100]`), and `hookProjectionTtlMs = 300,000` (`[60,000 .. 900,000]`).
+- **Explicitly `unset` thresholds:** `paginationCap = null` (exhaustive reconciliation under `H` forbids silent page truncation), `retentionMs = null`, and `archiveThreshold = null` (`126,984.57 bytes/day` metadata growth is below any SQLite compaction floor).
+- **Deferred options (`E`, `F`, `K`, `O`, `V`, `X`):** all six remain `keep-deferred` with recorded `revalidationTrigger` thresholds in `communityActivityPolicyCalibrationCore.mjs`.
+- **Stage-2 `J` (steward lease & coalesced count-only wake):** `activate-gated` (`wakeChildDecision.authorized = true` for `#100`, `aiConfigDefault: false`) with measured bounds `stewardLeaseTtlMs = 1,590,000`, `wakeCoalesceWindowMs = 397,500`, `vacancyFallbackCooldownMs = 795,000`, `minUnclaimedEligibleCount = 1`, `wakeAmplificationCap = 1`, and `maxWakePayloadBytes = 1,024`.
+- **Gemini family liveness revalidation (§6):** discharged via non-author `/epic-review` on [`neomjs/neo-agent-brain#106#issuecomment-6426058715`](https://github.com/neomjs/neo-agent-brain/issues/106#issuecomment-6426058715).

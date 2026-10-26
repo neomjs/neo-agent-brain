@@ -264,3 +264,19 @@ file/lock/writer and no prose, ranking scores, assignment hints, or wake thresho
 `HookProjectionChannels` owner admits a community-attention slot.
 
 This section documents the query, claim, and count-projection contract; retire or update it when these five operations change.
+
+## 7. Calibrate operational policy from measured evidence
+
+Run the two-pass calibration probe to synthesize the 30-day GitHub shadow baseline (`79a6d84d...`) with live-substrate admission, claim, and hook-projection measurements:
+
+```bash
+node ai/scripts/maintenance/calibrateCommunityActivityPolicy.mjs \
+  --runs 2 \
+  --output .neo-ai-data/community-activity-calibration/report-2026-10-26-v1.json
+```
+
+The calibration report (`community-activity-calibration-report.v1`, recorded in [`../measurements/community-activity-calibration-2026-07-18.md`](../measurements/community-activity-shadow-2026-07-18.md) and [`../measurements/community-activity-calibration-2026-10-26.md`](../measurements/community-activity-calibration-2026-10-26.md)) enforces `noHiddenDefaults: true`:
+
+- **Calibrated active bounds (when explicitly configured):** `reconciliationCadenceMs = 2,131,596` (`[1,065,798 .. 86,400,000]`), `maxAdmissionAttempts = 2` (`[1 .. 5]`), `providerRootPageSize = 50` (`[1 .. 100]`), `providerChildPageSize = 100` (`[1 .. 100]`), `hookProjectionTtlMs = 300,000` (`[60,000 .. 900,000]`), `stewardLeaseTtlMs = 1,590,000` (`[397,500 .. 3,180,000]`), `wakeCoalesceWindowMs = 397,500` (`[60,000 .. 1,590,000]`), `vacancyFallbackCooldownMs = 795,000` (`[397,500 .. 3,180,000]`), `minUnclaimedEligibleCount = 1` (`[1 .. 22]`), `wakeAmplificationCap = 1` (`[1 .. 1]`), and `maxWakePayloadBytes = 1,024` (`[256 .. 1,024]`).
+- **Explicitly `unset` thresholds (`null`):** `paginationCap`, `retentionMs`, and `archiveThreshold` must remain `null`; `validateCommunityPolicyThresholds` rejects non-null overrides (`POLICY_THRESHOLD_MUST_REMAIN_UNSET:*`).
+- **Default `AiConfig` posture:** `communityReconciliationEnabled = false`, `communityReconciliationCadenceMs = null`, `communityReconciliationMaxAdmissionAttempts = null` (validated via `validateCommunityReconciliationConfig`).
