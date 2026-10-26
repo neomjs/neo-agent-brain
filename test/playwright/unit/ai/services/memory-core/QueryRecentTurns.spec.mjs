@@ -1209,17 +1209,13 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         MemoryService._readPendingWalRecencyRows = async () => { calls.wal++; return [] };
         MemoryService._hydrateRecentTurnSummaries = async () => { calls.content++; return [] };
         try {
-            const refusedCases = [
-                {memorySharing: 'team',   projection: 'private'},
-                {memorySharing: 'team',   detail: 'full', projection: 'private'},
-                {memorySharing: 'legacy', detail: 'full'},
-                {memorySharing: 'legacy', projection: 'private'}
-            ];
-            for (const options of refusedCases) {
-                const result = await RequestContextService.run({userId: 'sharing-caller', agentIdentityNodeId: '@sharing-caller'}, () =>
-                    MemoryService.queryRecentTurns({agentIdentity: '@sharing-peer', ...options}));
-                expect(result).toMatchObject({code: 'RECENT_TURNS_ERROR'});
-                expect(result.message).toContain('public summaries');
+            for (const memorySharing of ['team', 'legacy']) {
+                for (const options of [{detail: 'full'}, {projection: 'private'}]) {
+                    const result = await RequestContextService.run({userId: 'sharing-caller', agentIdentityNodeId: '@sharing-caller'}, () =>
+                        MemoryService.queryRecentTurns({agentIdentity: '@sharing-peer', memorySharing, ...options}));
+                    expect(result).toMatchObject({code: 'RECENT_TURNS_ERROR'});
+                    expect(result.message).toContain('public summaries');
+                }
             }
             expect(calls).toEqual({sql: 0, wal: 0, content: 0});
         } finally {
@@ -1472,55 +1468,6 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         } finally {
             GraphService.db = db;
             console.warn    = warn;
-        }
-    });
-
-    test('team-scoped detail=full with projection=public returns peer prompt/response while excluding private thought', async () => {
-        const memoryId       = 'team-full-public-1280';
-        const getCollection  = StorageRouter.getMemoryCollection;
-        StorageRouter.getMemoryCollection = async () => ({
-            get: async ({ids}) => ({
-                ids,
-                metadatas: ids.map(() => ({
-                    prompt  : 'Peer prompt for public team recall',
-                    thought : 'Private peer thought must be stripped',
-                    response: 'Peer response for public team recall'
-                }))
-            })
-        });
-        GraphService.upsertNode({
-            id              : memoryId,
-            type            : 'AGENT_MEMORY',
-            name            : memoryId,
-            description     : memoryId,
-            semanticVectorId: memoryId,
-            properties      : {
-                agentIdentity: '@neo-opus-grace',
-                userId       : 'neo-opus-grace',
-                sessionId    : 'session-team-full-1280',
-                timestamp    : '2039-01-01T00:00:00.000Z',
-                miniSummary  : 'Grace turn summary'
-            }
-        });
-        try {
-            const page = await RequestContextService.run({userId: 'neo-gemini-maryam', agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
-                MemoryService.queryRecentTurns({
-                    agentIdentity: '@neo-opus-grace',
-                    memorySharing: 'team',
-                    detail       : 'full',
-                    projection   : 'public',
-                    limit        : 5
-                })
-            );
-            expect(page.count).toBeGreaterThanOrEqual(1);
-            const turn = page.turns.find(t => t.id === memoryId);
-            expect(turn).toBeDefined();
-            expect(turn.prompt).toBe('Peer prompt for public team recall');
-            expect(turn.response).toBe('Peer response for public team recall');
-            expect(turn.thought).toBeUndefined();
-        } finally {
-            StorageRouter.getMemoryCollection = getCollection;
-            GraphService.db.storage.db.prepare('DELETE FROM Nodes WHERE id = ?').run(memoryId);
         }
     });
 

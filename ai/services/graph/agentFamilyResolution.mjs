@@ -130,6 +130,43 @@ export function resolveAgentIdentityAlias(handle) {
 }
 
 /**
+ * @summary Expands an `@`-stripped or `@`-prefixed author handle into all canonical and
+ * `formerLogins` bare-handle variants without introducing a new runtime reader of `identityRoots.mjs`.
+ * @param {String|null|undefined} handle Candidate handle (`@neo-gemini-julia`, `neo-gemini-pro`, etc.).
+ * @returns {Set<String>|null} Set of `@`-stripped handle variants, or `null` when empty/unscoped.
+ */
+export function expandAgentIdentityVariants(handle) {
+    if (!handle) return null;
+
+    const bare = String(handle).trim().replace(/^@+/, '');
+    if (!bare) return null;
+
+    const variants  = new Set([bare]);
+    const canonical = resolveAgentIdentityAlias(`@${bare}`);
+
+    if (canonical?.id) {
+        variants.add(canonical.id.replace(/^@+/, ''));
+        for (const login of canonical.formerLogins || []) {
+            variants.add(String(login).replace(/^@+/, ''));
+        }
+    }
+
+    for (const descriptor of Object.values(FORMER_LOGIN_TO_IDENTITY)) {
+        const entryBare   = descriptor.id.replace(/^@+/, '');
+        const formerBares = (descriptor.formerLogins || []).map(login => String(login).replace(/^@+/, ''));
+
+        if (variants.has(entryBare) || formerBares.some(login => variants.has(login))) {
+            variants.add(entryBare);
+            for (const login of formerBares) {
+                variants.add(login);
+            }
+        }
+    }
+
+    return variants;
+}
+
+/**
  * @summary Detects whole-token `@`-prefixed mentions of former logins in a query or text string
  * without matching sibling prefixes (`@neo-gpt-emmy`), email addresses (`neo-fable@neomjs.com`),
  * filesystem paths (`agents/neo-fable/memory`), or bare Fleet ids (`id neo-fable`), returning the

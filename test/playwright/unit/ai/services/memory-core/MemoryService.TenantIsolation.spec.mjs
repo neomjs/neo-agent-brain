@@ -57,6 +57,9 @@ function createSpyCollection() {
                 const exists = metadata && Object.prototype.hasOwnProperty.call(metadata, key);
                 return value.$exists ? exists : !exists;
             }
+            if (value && typeof value === 'object' && '$in' in value) {
+                return Array.isArray(value.$in) && value.$in.includes(metadata?.[key]);
+            }
             return metadata?.[key] === value;
         });
     };
@@ -960,7 +963,51 @@ test.describe('MemoryService.queryMemories — agentIdentity, detail, and projec
         StorageRouter.getMemoryCollection = originalGetMemoryCollection;
     });
 
-    test('filters by agentIdentity across canonical and formerLogins aliases and fails closed on unbound @me', async () => {
+    test('filters by agentIdentity in Chroma where across canonical/formerLogins aliases, never short-pages behind prolific peers, and fails closed on unbound @me', async () => {
+        for (let i = 1; i <= 5; i++) {
+            spyCollection.rows.set(`m-grace-rank-${i}`, {
+                id      : `m-grace-rank-${i}`,
+                metadata: {
+                    sessionId    : 's-grace',
+                    userId       : 'neo-opus-grace',
+                    agentIdentity: '@neo-opus-grace',
+                    timestamp    : 100 + i,
+                    type         : 'agent-turn',
+                    prompt       : `Grace turn ${i}`,
+                    thought      : 'Grace thought',
+                    response     : 'Grace response'
+                },
+                document: `Grace turn ${i}`
+            });
+        }
+        for (let i = 1; i <= 2; i++) {
+            spyCollection.rows.set(`m-maryam-${i}`, {
+                id      : `m-maryam-${i}`,
+                metadata: {
+                    sessionId    : 's-maryam',
+                    userId       : 'neo-gemini-maryam',
+                    agentIdentity: '@neo-gemini-maryam',
+                    timestamp    : 300 + i,
+                    type         : 'agent-turn',
+                    prompt       : `Maryam turn ${i}`,
+                    thought      : 'Maryam thought',
+                    response     : 'Maryam response'
+                },
+                document: `Maryam turn ${i}`
+            });
+        }
+
+        const maryamTopOne = await RequestContextService.run({userId: 'neo-gemini-maryam'}, () =>
+            MemoryService.queryMemories({
+                query        : 'turn',
+                nResults     : 1,
+                memorySharing: 'team',
+                agentIdentity: '@neo-gemini-maryam'
+            })
+        );
+        expect(maryamTopOne.count).toBe(1);
+        expect(maryamTopOne.results[0].id).toBe('m-maryam-1');
+
         const adaByCanonical = await RequestContextService.run({userId: 'neo-gemini-maryam'}, () =>
             MemoryService.queryMemories({
                 query        : 'prompt',
@@ -972,16 +1019,16 @@ test.describe('MemoryService.queryMemories — agentIdentity, detail, and projec
         expect(adaByCanonical.count).toBe(1);
         expect(adaByCanonical.results[0].id).toBe('m-ada');
 
-        const unboundMe = await MemoryService.queryMemories({
+        await expect(MemoryService.queryMemories({
             query        : 'prompt',
             nResults     : 10,
             agentIdentity: '@me'
-        });
-        expect(unboundMe.count).toBe(0);
-        expect(unboundMe.results).toEqual([]);
+        })).rejects.toThrow(/requires a bound caller identity/);
     });
 
-    test('supports detail=summary (graph miniSummary or <=300 char summaryFallback, omitting prompt/thought/response) and detail=full with projection=public', async () => {
+    test('supports detail=summary (miniSummary string + boolean summaryFallback, omitting prompt/thought/response) and detail=full with projection=public', async () => {
+        const GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+
         const summaryView = await MemoryService.queryMemories({
             query        : 'Grace',
             nResults     : 10,
@@ -993,9 +1040,36 @@ test.describe('MemoryService.queryMemories — agentIdentity, detail, and projec
         expect(item.prompt).toBeUndefined();
         expect(item.thought).toBeUndefined();
         expect(item.response).toBeUndefined();
-        expect(item.miniSummary).toBeNull();
-        expect(typeof item.summaryFallback).toBe('string');
-        expect(item.summaryFallback.length).toBeLessThanOrEqual(300);
+        expect(typeof item.miniSummary).toBe('string');
+        expect(item.miniSummary.length).toBeGreaterThan(0);
+        expect(item.summaryFallback).toBe(true);
+
+        GraphService.upsertNode({
+            id              : 'm-grace',
+            type            : 'AGENT_MEMORY',
+            name            : 'm-grace',
+            description     : 'm-grace',
+            semanticVectorId: 'm-grace',
+            properties      : {
+                agentIdentity: '@neo-opus-grace',
+                sessionId    : 's-2',
+                timestamp    : '2026-10-26T00:00:00.000Z',
+                miniSummary  : 'Stored SQLite graph miniSummary for Grace'
+            }
+        });
+        try {
+            const graphBackedView = await MemoryService.queryMemories({
+                query        : 'Grace',
+                nResults     : 10,
+                agentIdentity: '@neo-opus-grace',
+                detail       : 'summary'
+            });
+            expect(graphBackedView.count).toBe(1);
+            expect(graphBackedView.results[0].miniSummary).toBe('Stored SQLite graph miniSummary for Grace');
+            expect(graphBackedView.results[0].summaryFallback).toBe(false);
+        } finally {
+            GraphService.db?.storage?.db?.prepare('DELETE FROM Nodes WHERE id = ?').run('m-grace');
+        }
 
         const publicFullView = await MemoryService.queryMemories({
             query        : 'Grace',
