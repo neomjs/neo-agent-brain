@@ -62,6 +62,7 @@ import {
     assertCommunityActivityToolBoundary,
     claimCommunityActivityTask,
     getCommunityActivity,
+    getCommunityActivityAttentionCounts,
     getCommunityActivityContent,
     markCommunityActivitySeen
 } from './communityActivityTool.mjs';
@@ -633,12 +634,13 @@ const serviceMapping = {
     search_nodes                : GraphService           .searchNodes             .bind(GraphService),
     get_memory_core_tool_metrics:
                               MemoryCoreRecorderService.getMemoryCoreToolMetrics.bind(MemoryCoreRecorderService),
-    add_message                   : addMessageTool,
-    get_community_activity        : getCommunityActivity,
-    get_community_activity_content: getCommunityActivityContent,
-    list_messages                 : listMessagesTool,
-    get_message                   : MailboxService         .getMessage              .bind(MailboxService),
-    get_rem_pipeline_state        : HealthService          .getRemPipelineState     .bind(HealthService),
+    add_message                            : addMessageTool,
+    get_community_activity                 : getCommunityActivity,
+    get_community_activity_attention_counts: getCommunityActivityAttentionCounts,
+    get_community_activity_content         : getCommunityActivityContent,
+    list_messages                          : listMessagesTool,
+    get_message                            : MailboxService         .getMessage              .bind(MailboxService),
+    get_rem_pipeline_state                 : HealthService          .getRemPipelineState     .bind(HealthService),
     get_sqlite_holder_diagnostics:
                               HealthService          .getSqliteHolderDiagnostics.bind(HealthService),
     get_deployment_state_snapshot: readDeploymentInspection,

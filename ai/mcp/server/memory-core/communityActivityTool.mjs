@@ -1,6 +1,7 @@
 const COMMUNITY_ACTIVITY_TOOL_NAMES = new Set([
     'claim_community_activity_task',
     'get_community_activity',
+    'get_community_activity_attention_counts',
     'get_community_activity_content',
     'mark_community_activity_seen'
 ]);
@@ -99,4 +100,11 @@ export async function claimCommunityActivityTask({sourceEventId} = {}) {
     const service = await getService();
 
     return service.claimTask({sourceEventId})
+}
+
+/** @summary Projects bounded tenant/source community-attention counts without prose or wake thresholds. */
+export async function getCommunityActivityAttentionCounts({sourceInstanceIds = null} = {}) {
+    const service = await getService();
+
+    return service.projectAttentionCounts({sourceInstanceIds})
 }

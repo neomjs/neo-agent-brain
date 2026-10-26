@@ -51,8 +51,9 @@ export const PROJECTION_SCHEMA_VERSION = 'live-lane-awareness-projection.v1';
  * @type {Object}
  */
 export const PROJECTION_CHANNEL_SLOTS = Object.freeze({
-    'lifecycle-frontier': 'lifecycleActions',
-    'computed-route'    : 'computedRoute'
+    'lifecycle-frontier' : 'lifecycleActions',
+    'computed-route'     : 'computedRoute',
+    'community-attention': 'communityAttention'
 });
 
 /**
@@ -71,8 +72,9 @@ export const PROJECTION_CHANNEL_SLOTS = Object.freeze({
  * @type {Object}
  */
 export const PROJECTION_CHANNEL_SCHEMAS = Object.freeze({
-    'lifecycle-frontier': 'lifecycle-frontier.v2',
-    'computed-route'    : 'computed-route.v1'
+    'lifecycle-frontier' : 'lifecycle-frontier.v2',
+    'computed-route'     : 'computed-route.v1',
+    'community-attention': 'community-attention.v1'
 });
 
 /**
@@ -170,11 +172,12 @@ export function buildProjectionEnvelope({targetId, fencingEpoch, generatedAt, co
             producerWatermarks
         },
         consumerBinding,
-        lifecycleActions: channels.get('lifecycle-frontier') ?? missing(),
-        computedRoute   : channels.get('computed-route')     ?? missing(),
+        lifecycleActions  : channels.get('lifecycle-frontier')  ?? missing(),
+        computedRoute     : channels.get('computed-route')      ?? missing(),
+        communityAttention: channels.get('community-attention') ?? missing(),
         contextViews,
-        coverage        : {sources: [...channels.keys()], degradedSources},
-        notAuthority    : true
+        coverage          : {sources: [...channels.keys()], degradedSources},
+        notAuthority      : true
     }
 }
 

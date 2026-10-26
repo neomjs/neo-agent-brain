@@ -252,4 +252,14 @@ transaction, so concurrent or retrying callers receive the same server-owned can
 injected crash points leave neither orphan authority nor duplicate Tasks. Once committed, existing
 `MailboxService.transitionTask` assignment/RBAC/state-transition rules govern the Task.
 
-This section documents the query and claim contract; retire or update it when these four operations change.
+Call `get_community_activity_attention_counts` (optionally scoped by `sourceInstanceIds`) or submit the
+`community-attention` channel (`community-attention.v1`) via `CommunityActivityService.submitAttentionProjectionChannel`
+into ADR 0035's `HookProjectionChannels` writer owner to inspect bounded tenant/source attention counts,
+`oldestOccurredAt`, `sourceWatermark`, coverage honesty (`fresh`, `empty`, `degraded`, `missing`), and
+structured calibration measurements (`eligibleUnclaimedCount`, `claimedExcludedCount`, `ineligibleExcludedCount`,
+`totalAdmittedObservations`, `payloadBytes`, `attentionAmplification`). Claimed occurrences are
+excluded from `count` and `oldestOccurredAt` (canonical Task authority owns them); per-viewer `seen` markers
+never alter `count`, `oldestOccurredAt`, or the projected channel envelope. Count projections remain strictly
+`notAuthority: true` with no prose, ranking scores, assignment hints, or wake thresholds.
+
+This section documents the query, claim, and count-projection contract; retire or update it when these five operations change.
