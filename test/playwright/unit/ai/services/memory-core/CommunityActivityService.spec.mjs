@@ -853,9 +853,9 @@ test.describe('Neo.ai.services.memory-core.CommunityActivityService', () => {
         });
     });
 
-    test('projects bounded tenant attention counts, composes through ADR 0035 HookProjectionWriter, and isolates popularity noise from human signal (#101)', async () => {
-        const {makeHookProjectionWriter} = await import(
-            '../../../../../../ai/services/memory-core/hookProjectionWriter.mjs'
+    test('projects bounded tenant attention counts query-only per AC6, preserves watermark monotonicity past 56 sources, and isolates popularity noise from human signal (#101)', async () => {
+        const {PROJECTION_CHANNEL_SLOTS} = await import(
+            '../../../../../../ai/services/memory-core/hookProjectionLease.mjs'
         );
 
         const serviceSource = fs.readFileSync(
@@ -863,6 +863,7 @@ test.describe('Neo.ai.services.memory-core.CommunityActivityService', () => {
             'utf8'
         );
         expect(serviceSource).not.toMatch(/from\s+['"]node:fs['"]|writeFileSync|renameSync/);
+        expect(Object.keys(PROJECTION_CHANNEL_SLOTS)).toEqual(['lifecycle-frontier', 'computed-route']);
 
         const noSourceCounts = await inTenant(() => ActivityService.projectAttentionCounts());
         expect(noSourceCounts.status).toBe('missing');
@@ -896,6 +897,10 @@ test.describe('Neo.ai.services.memory-core.CommunityActivityService', () => {
 
         await expect(inTenant(() => ActivityService.projectAttentionCounts({
             sourceInstanceIds: ['']
+        }))).rejects.toThrow('COMMUNITY_SOURCE_FILTER_INVALID');
+
+        await expect(inTenant(() => ActivityService.projectAttentionCounts({
+            sourceInstanceIds: []
         }))).rejects.toThrow('COMMUNITY_SOURCE_FILTER_INVALID');
 
         AdmissionService.attentionPolicy = {
@@ -1011,45 +1016,6 @@ test.describe('Neo.ai.services.memory-core.CommunityActivityService', () => {
         expect(validateCounts(freshSourceA), JSON.stringify(validateCounts.errors)).toBe(true);
         expect(validateCounts(noSourceCounts), JSON.stringify(validateCounts.errors)).toBe(true);
 
-        const writtenFiles = new Map(),
-              mockFs       = {
-                  written      : writtenFiles,
-                  mkdirSync    : () => {},
-                  writeFileSync: (filePath, body) => writtenFiles.set(filePath, body),
-                  renameSync   : (from, to) => { writtenFiles.set(to, writtenFiles.get(from)); writtenFiles.delete(from) },
-                  openSync     : () => 1,
-                  fsyncSync    : () => {},
-                  closeSync    : () => {},
-                  unlinkSync   : filePath => writtenFiles.delete(filePath),
-                  readdirSync  : () => []
-              },
-              tuple = {
-                  schemaVersion     : 'live-lane-awareness-projection.v1',
-                  capability        : 'self-awareness',
-                  agentId           : '@neo-gemini-maryam',
-                  harnessType       : 'antigravity',
-                  instanceKeyDigest : 'inst-101',
-                  workspaceKeyDigest: 'ws-101',
-                  projectionKind    : 'hook'
-              },
-              projectionWriter = makeHookProjectionWriter({
-                  getDb : () => activityDb,
-                  config: {hookProjectionRoot: '/runtime/mc/hook-projections', hookProjectionLeaseTtlMs: 15_000},
-                  fs    : mockFs,
-                  clock : () => Date.parse('2026-09-19T12:03:00.000Z')
-              });
-
-        const firstSub = await inTenant(() => ActivityService.submitAttentionProjectionChannel({
-            sourceInstanceIds: [sourceA],
-            tuple,
-            capturedAt       : '2026-09-19T12:00:00.000Z',
-            expiresAt        : '2026-09-19T12:05:00.000Z',
-            isTargetAdmitted : () => true,
-            mayProduceChannel: () => true,
-            projectionWriter
-        }));
-        expect(firstSub.submission).toEqual({accepted: true, outcome: 'advanced'});
-
         const page          = await inTenant(() => ActivityService.query({...WINDOW, limit: 10, sourceInstanceIds: [sourceA]}));
         const firstTimeItem = page.items.find(entry => entry.providerEntityId === 'first-time-human-1');
         expect(firstTimeItem).toBeDefined();
@@ -1059,50 +1025,47 @@ test.describe('Neo.ai.services.memory-core.CommunityActivityService', () => {
             userId             : SUBJECT
         }, () => ActivityService.markSeen({sourceEventId: firstTimeItem.sourceEventId}));
 
-        const afterSeenSub = await inTenant(() => ActivityService.submitAttentionProjectionChannel({
-            sourceInstanceIds: [sourceA],
-            tuple,
-            capturedAt       : '2026-09-19T12:01:00.000Z',
-            expiresAt        : '2026-09-19T12:06:00.000Z',
-            isTargetAdmitted : () => true,
-            mayProduceChannel: () => true,
-            projectionWriter
+        const afterSeenCounts = await inTenant(() => ActivityService.projectAttentionCounts({
+            sourceInstanceIds: [sourceA]
         }));
-        expect(afterSeenSub.submission).toEqual({accepted: true, outcome: 'replayed'});
-        expect(afterSeenSub.envelope).toEqual(firstSub.envelope);
+        expect(afterSeenCounts).toEqual(freshSourceA);
 
         await RequestContextService.run({
             agentIdentityNodeId: '@neo-gemini-maryam',
             userId             : SUBJECT
         }, () => ActivityService.claimTask({sourceEventId: firstTimeItem.sourceEventId}));
 
-        const afterClaimSub = await inTenant(() => ActivityService.submitAttentionProjectionChannel({
-            sourceInstanceIds: [sourceA],
-            tuple,
-            capturedAt       : '2026-09-19T12:02:00.000Z',
-            expiresAt        : '2026-09-19T12:07:00.000Z',
-            isTargetAdmitted : () => true,
-            mayProduceChannel: () => true,
-            projectionWriter
+        const afterClaimCounts = await inTenant(() => ActivityService.projectAttentionCounts({
+            sourceInstanceIds: [sourceA]
         }));
-        expect(afterClaimSub.submission).toEqual({accepted: true, outcome: 'advanced'});
-        expect(afterClaimSub.envelope.count).toBe(1);
-        expect(afterClaimSub.envelope.oldestOccurredAt).toBe('2026-09-19T04:00:00.000Z');
-        expect(afterClaimSub.envelope.measurement.claimedExcludedCount).toBe(1);
-        expect(afterClaimSub.envelope.sourceWatermark > firstSub.envelope.sourceWatermark).toBe(true);
+        expect(afterClaimCounts.count).toBe(1);
+        expect(afterClaimCounts.oldestOccurredAt).toBe('2026-09-19T04:00:00.000Z');
+        expect(afterClaimCounts.measurement.claimedExcludedCount).toBe(1);
+        expect(afterClaimCounts.sourceWatermark > freshSourceA.sourceWatermark).toBe(true);
 
-        const pub = projectionWriter.publish({
-            tuple,
-            consumerBinding: {agentId: '@neo-gemini-maryam', harnessType: 'antigravity'}
+        const epochMs = Date.parse('2026-10-26T22:00:00.000Z');
+        while (registryDb.prepare('SELECT COUNT(*) AS count FROM mc_source_registration WHERE tenant_id = ?').get(SUBJECT).count < 55) {
+            const idx = registryDb.prepare('SELECT COUNT(*) AS count FROM mc_source_registration WHERE tenant_id = ?').get(SUBJECT).count + 1;
+            activeSource({
+                displayLocator    : `neomjs/scale-${idx}`,
+                providerResourceId: `neomjs/scale-${idx}`
+            });
+        }
+        registryDb.prepare('UPDATE mc_source_registration SET updated_at = ? WHERE tenant_id = ?').run(epochMs, SUBJECT);
+
+        const countsAt55 = await inTenant(() => ActivityService.projectAttentionCounts());
+        expect(countsAt55.coverage.sourceCount).toBe(55);
+        expect(countsAt55.sourceWatermark).toMatch(/^seq:\d{16}:claims:\d{16}:reg:\d{16}:\d{16}$/);
+
+        activeSource({
+            displayLocator    : 'neomjs/scale-56',
+            providerResourceId: 'neomjs/scale-56'
         });
-        expect(pub.published).toBe(true);
+        registryDb.prepare('UPDATE mc_source_registration SET updated_at = ? WHERE tenant_id = ?').run(epochMs, SUBJECT);
 
-        const publishedPayload = JSON.parse(
-            writtenFiles.get(`/runtime/mc/hook-projections/${pub.targetId}/current.json`)
-        );
-        expect(publishedPayload.communityAttention.status).toBe('fresh');
-        expect(publishedPayload.communityAttention.envelope.count).toBe(1);
-        expect(publishedPayload.communityAttention.envelope.oldestOccurredAt).toBe('2026-09-19T04:00:00.000Z');
-        expect(publishedPayload.publication.producerWatermarks['community-attention']).toBe(afterClaimSub.envelope.sourceWatermark);
+        const countsAt56 = await inTenant(() => ActivityService.projectAttentionCounts());
+        expect(countsAt56.coverage.sourceCount).toBe(56);
+        expect(countsAt56.sourceWatermark).toMatch(/^seq:\d{16}:claims:\d{16}:reg:\d{16}:\d{16}$/);
+        expect(countsAt56.sourceWatermark > countsAt55.sourceWatermark).toBe(true);
     });
 });

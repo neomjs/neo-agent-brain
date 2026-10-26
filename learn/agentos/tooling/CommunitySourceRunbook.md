@@ -252,14 +252,15 @@ transaction, so concurrent or retrying callers receive the same server-owned can
 injected crash points leave neither orphan authority nor duplicate Tasks. Once committed, existing
 `MailboxService.transitionTask` assignment/RBAC/state-transition rules govern the Task.
 
-Call `get_community_activity_attention_counts` (optionally scoped by `sourceInstanceIds`) or submit the
-`community-attention` channel (`community-attention.v1`) via `CommunityActivityService.submitAttentionProjectionChannel`
-into ADR 0035's `HookProjectionChannels` writer owner to inspect bounded tenant/source attention counts,
-`oldestOccurredAt`, `sourceWatermark`, coverage honesty (`fresh`, `empty`, `degraded`, `missing`), and
-structured calibration measurements (`eligibleUnclaimedCount`, `claimedExcludedCount`, `ineligibleExcludedCount`,
-`totalAdmittedObservations`, `payloadBytes`, `attentionAmplification`). Claimed occurrences are
-excluded from `count` and `oldestOccurredAt` (canonical Task authority owns them); per-viewer `seen` markers
-never alter `count`, `oldestOccurredAt`, or the projected channel envelope. Count projections remain strictly
-`notAuthority: true` with no prose, ranking scores, assignment hints, or wake thresholds.
+Call `get_community_activity_attention_counts` (optionally scoped by a non-empty `sourceInstanceIds` array) to
+inspect bounded tenant/source attention counts (`community-attention.v1`), `oldestOccurredAt`, the bounded
+monotonic `sourceWatermark` (`seq:<16d>:claims:<16d>:reg:<16d-maxUpdatedAt>:<16d-epochStateRankSum>`), coverage
+honesty (`fresh`, `empty`, `degraded`, `missing`), and structured calibration measurements
+(`eligibleUnclaimedCount`, `claimedExcludedCount`, `ineligibleExcludedCount`, `totalAdmittedObservations`,
+`payloadBytes`, `attentionAmplification`). Claimed occurrences are excluded from `count` and `oldestOccurredAt`
+(canonical Task authority owns them); per-viewer `seen` markers never alter `count`, `oldestOccurredAt`, or
+`sourceWatermark`. Count projections remain strictly query-only (`notAuthority: true`) with no second projection
+file/lock/writer and no prose, ranking scores, assignment hints, or wake thresholds until ADR 0035's
+`HookProjectionChannels` owner admits a community-attention slot.
 
 This section documents the query, claim, and count-projection contract; retire or update it when these five operations change.

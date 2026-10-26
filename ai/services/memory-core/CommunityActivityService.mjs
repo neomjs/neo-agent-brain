@@ -14,23 +14,24 @@ import {
 import {resolveTemporalWindow}            from './helpers/temporalWindowResolver.mjs';
 import {buildTemporalBirdViewEnvelope}    from './helpers/temporalBirdViewEnvelope.mjs';
 import {SUPPORTED_GITHUB_COMMUNITY_KINDS} from '../github-workflow/community/communityContentKinds.mjs';
-import {createHookProjectionTables}       from './hookProjectionLease.mjs';
-import {
-    addProjectionConflictColumn,
-    submitProjectionChannel
-} from './hookProjectionSubmission.mjs';
 
-export const COMMUNITY_ATTENTION_CHANNEL        = 'community-attention';
 export const COMMUNITY_ATTENTION_SCHEMA_VERSION = 'community-attention.v1';
+
+const LIFECYCLE_WATERMARK_RANK = Object.freeze({
+    REQUESTED  : 1,
+    PROVISIONED: 2,
+    ACTIVE     : 3,
+    REVOKED    : 4
+});
 
 /** @summary Formats a fixed-width zero-padded monotonic watermark component. */
 function padWatermark(value) {
     return String(Math.max(0, Number(value) || 0)).padStart(16, '0')
 }
 
-/** @summary Encodes admission, claim, and registration watermarks for lexicographical monotonicity. */
-function formatAttentionWatermark(snapshot, claimWatermark, regWatermark) {
-    return `seq:${padWatermark(snapshot)}:claims:${padWatermark(claimWatermark)}:reg:${padWatermark(regWatermark)}`
+/** @summary Encodes bounded admission, claim, max-timestamp, and epoch/state components for lexicographical monotonicity at any source count. */
+function formatAttentionWatermark(snapshot, claimWatermark, maxRegUpdatedAt, regStateRankSum) {
+    return `seq:${padWatermark(snapshot)}:claims:${padWatermark(claimWatermark)}:reg:${padWatermark(maxRegUpdatedAt)}:${padWatermark(regStateRankSum)}`
 }
 
 /** @summary The authenticated viewer key is distinct from tenant scope and never session-owned. */
@@ -764,6 +765,7 @@ class CommunityActivityService extends Base {
         await this.ready();
 
         if (sourceInstanceIds !== null && (!Array.isArray(sourceInstanceIds) ||
+            sourceInstanceIds.length === 0 ||
             sourceInstanceIds.some(id => typeof id !== 'string' || !id))) {
             throw new Error('COMMUNITY_SOURCE_FILTER_INVALID')
         }
@@ -793,8 +795,10 @@ class CommunityActivityService extends Base {
             claimedExcludedCount    = 0,
             ineligibleExcludedCount = 0,
             totalAdmitted           = 0,
-            totalClaimWatermark     = 0,
-            totalRegWatermark       = 0;
+            maxClaimRowId           = 0,
+            totalClaimCount         = 0,
+            maxRegUpdatedAt         = 0,
+            totalRegStateRank       = 0;
 
         const sources = sourceCoverage.map(cov => {
             const reg        = scopedRegs.find(row => row.source_instance_id === cov.sourceInstanceId),
@@ -804,14 +808,18 @@ class CommunityActivityService extends Base {
                   sourceSeq  = db.prepare('SELECT COALESCE(MAX(admitted_sequence), 0) AS value FROM mc_community_batch_receipt WHERE tenant_id = ? AND source_instance_id = ? AND admitted_sequence <= ?').get(tenantId, sourceId, latest).value,
                   claims     = db.prepare('SELECT rowid, occurrence_identity FROM mc_community_task_binding WHERE tenant_id = ? AND source_instance_id = ?').all(tenantId, sourceId),
                   claimedIds = new Set(claims.map(row => row.occurrence_identity)),
-                  claimMark  = claims.reduce((max, row) => Math.max(max, Number(row.rowid) || 0), 0) * 1000 + claims.length,
-                  regMark    = (Number(reg.updated_at) || 0) * 100 + (Number(reg.registration_epoch) || 0),
+                  srcMaxRow  = claims.reduce((max, row) => Math.max(max, Number(row.rowid) || 0), 0),
+                  claimMark  = srcMaxRow * 1000 + claims.length,
+                  regUpdated = Number(reg.updated_at) || 0,
+                  regRank    = (Number(reg.registration_epoch) || 0) * 10 + (LIFECYCLE_WATERMARK_RANK[reg.lifecycle_state] || 0),
                   obsRows    = db.prepare('SELECT * FROM mc_community_observation WHERE tenant_id = ? AND source_instance_id = ? AND admitted_sequence <= ? ORDER BY admitted_sequence ASC, observation_row_id ASC').all(tenantId, sourceId, latest),
                   tombstones = new Set(obsRows.filter(row => row.absence === 'deleted' && parseEvidence(row.deletion_evidence)).map(row => row.provider_entity_id));
 
-            totalClaimWatermark += claimMark;
-            totalRegWatermark   += regMark;
-            totalAdmitted       += obsRows.length;
+            maxClaimRowId      = Math.max(maxClaimRowId, srcMaxRow);
+            totalClaimCount   += claims.length;
+            maxRegUpdatedAt    = Math.max(maxRegUpdatedAt, regUpdated);
+            totalRegStateRank += regRank;
+            totalAdmitted     += obsRows.length;
 
             let sourceCount        = 0,
                 sourceOldest       = null,
@@ -870,7 +878,7 @@ class CommunityActivityService extends Base {
                 registrationEpoch: cov.registrationEpoch,
                 count            : sourceCount,
                 oldestOccurredAt : sourceOldest ? sourceOldest.occurredAt : null,
-                sourceWatermark  : formatAttentionWatermark(sourceSeq, claimMark, regMark),
+                sourceWatermark  : formatAttentionWatermark(sourceSeq, claimMark, regUpdated, regRank),
                 degraded         : sourceDegradedReasons.length > 0,
                 degradedReasons  : sourceDegradedReasons,
                 families         : cov.families
@@ -883,9 +891,10 @@ class CommunityActivityService extends Base {
             degradedReasons.push('invalid-occurrence-time')
         }
 
-        const degraded            = sources.length === 0 || degradedReasons.length > 0,
+        const totalClaimWatermark = maxClaimRowId * 1000 + totalClaimCount,
+              degraded            = sources.length === 0 || degradedReasons.length > 0,
               status              = sources.length === 0 ? 'missing' : (degraded ? 'degraded' : (totalCount === 0 ? 'empty' : 'fresh')),
-              sourceWatermark     = formatAttentionWatermark(latest, totalClaimWatermark, totalRegWatermark),
+              sourceWatermark     = formatAttentionWatermark(latest, totalClaimWatermark, maxRegUpdatedAt, totalRegStateRank),
               activeSourceCount   = sources.filter(source => source.lifecycleState === 'ACTIVE').length,
               completeSourceCount = sources.filter(source => !source.degraded).length;
 
@@ -926,70 +935,6 @@ class CommunityActivityService extends Base {
         baseEnvelope.measurement.payloadBytes = Buffer.byteLength(JSON.stringify(baseEnvelope), 'utf8');
 
         return baseEnvelope
-    }
-
-    /**
-     * @summary Submits the tenant's bounded `community-attention.v1` count projection into the
-     * existing `HookProjectionChannels` writer owner without creating a parallel file writer.
-     * @param {Object} options
-     * @param {String[]|null} [options.sourceInstanceIds=null] Optional registered source filter.
-     * @param {String|null} [options.targetId=null] Server-derived target id when submitting directly to `submitProjectionChannel`.
-     * @param {Object|null} [options.tuple=null] Attested target tuple when submitting through `projectionWriter.submitChannel`.
-     * @param {String} options.capturedAt ISO capture timestamp.
-     * @param {String} options.expiresAt ISO expiry timestamp.
-     * @param {String} [options.now=new Date().toISOString()] ISO update timestamp.
-     * @param {Function} options.isTargetAdmitted Synchronous target-admission predicate.
-     * @param {Function} options.mayProduceChannel Synchronous producer-authorization predicate.
-     * @param {Object|null} [options.projectionWriter=null] Optional `makeHookProjectionWriter` instance.
-     * @returns {Promise<{envelope: Object, submission: Object}>}
-     */
-    async submitAttentionProjectionChannel({
-        sourceInstanceIds = null,
-        targetId          = null,
-        tuple             = null,
-        capturedAt,
-        expiresAt,
-        now               = new Date().toISOString(),
-        isTargetAdmitted,
-        mayProduceChannel,
-        projectionWriter  = null
-    } = {}) {
-        const envelope = await this.projectAttentionCounts({sourceInstanceIds});
-
-        if (projectionWriter && typeof projectionWriter.submitChannel === 'function') {
-            projectionWriter.ensureSchema?.();
-
-            const submission = projectionWriter.submitChannel({
-                tuple,
-                channel        : COMMUNITY_ATTENTION_CHANNEL,
-                envelope,
-                sourceWatermark: envelope.sourceWatermark,
-                capturedAt,
-                expiresAt,
-                isTargetAdmitted,
-                mayProduceChannel
-            });
-
-            return {envelope, submission}
-        }
-
-        createHookProjectionTables(this.db);
-        addProjectionConflictColumn(this.db);
-
-        const submission = submitProjectionChannel({
-            db             : this.db,
-            targetId,
-            channel        : COMMUNITY_ATTENTION_CHANNEL,
-            envelope,
-            sourceWatermark: envelope.sourceWatermark,
-            capturedAt,
-            expiresAt,
-            now,
-            isTargetAdmitted,
-            mayProduceChannel
-        });
-
-        return {envelope, submission}
     }
 }
 
