@@ -12,7 +12,7 @@ setup({
 import {expect, test} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
-import aiConfig       from '../../../../../../ai/config.mjs';
+import aiConfig       from '../../../../../../ai/config.template.mjs';
 import {
     CALIBRATION_REPORT_SCHEMA_VERSION,
     LIVE_INCIDENT_MANIFEST,
