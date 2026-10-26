@@ -26,7 +26,7 @@ import {
  */
 test.describe('restoreReceipts maintenance script', () => {
     let tmpRoot, dbPath, jsonlPath;
-    const quiet = {log() {}};
+    const quiet = {log() {}, error() {}};
 
     const node = (id, label, properties = {}) => ({type: 'node', data: {id, label, properties}});
     const edge = (id, source, target, type, properties = {}) => ({type: 'edge', data: {id, source, target, type, properties: {weight: 1, ...properties}}});
@@ -78,6 +78,41 @@ test.describe('restoreReceipts maintenance script', () => {
 
     test.afterEach(async () => {
         await fs.remove(tmpRoot);
+    });
+
+    test('protected family relation insertion refuses, while dry-run remains read-only', async () => {
+        seedLive([node('@a', 'AgentIdentity'), node('@b', 'AgentIdentity')]);
+        writeBundle([edge('family-edge', '@a', '@b', 'IDENTITY_FAMILY_DECLARES')]);
+        await expect(runRestoreReceipts({dbPath, source: jsonlPath, apply: true,
+            edgeTypes: ['IDENTITY_FAMILY_DECLARES'], logger: quiet})).rejects.toThrow('admitted recovery');
+        await runRestoreReceipts({dbPath, source: jsonlPath, edgeTypes: ['IDENTITY_FAMILY_DECLARES'], logger: quiet});
+        expect(liveEdges()).toEqual([]);
+    });
+
+    test('ordinary edge types cannot smuggle relations to protected ids or cold labels', async () => {
+        seedLive([node('identity-family-receipt-fixture', 'NODE'), node('cold', 'IDENTITY_FAMILY_LINEAGE'), node('@a', 'AgentIdentity')]);
+        for (const source of ['identity-family-receipt-fixture', 'cold']) {
+            writeBundle([edge('smuggled', source, '@a', 'RELATED_TO')]);
+            await expect(runRestoreReceipts({dbPath, source: jsonlPath, apply: true,
+                edgeTypes: ['RELATED_TO'], logger: quiet})).rejects.toThrow('admitted recovery');
+            expect(liveEdges()).toEqual([]);
+        }
+    });
+
+    test('a reserved edge id cannot be inserted through an ordinary relation type', async () => {
+        seedLive([node('@a', 'AgentIdentity'), node('@b', 'AgentIdentity')]);
+        writeBundle([edge('identity-family-receipt-fixture', '@a', '@b', 'RELATED_TO')]);
+        await expect(runRestoreReceipts({dbPath, source: jsonlPath, apply: true,
+            edgeTypes: ['RELATED_TO'], logger: quiet})).rejects.toThrow('admitted recovery');
+        expect(liveEdges()).toEqual([]);
+    });
+
+    test('a reserved edge id cannot receive receipt fields through ordinary endpoints', async () => {
+        seedLive([node('MESSAGE:m', 'MESSAGE'), node('@a', 'AgentIdentity'),
+            edge('identity-family-receipt-fixture', 'MESSAGE:m', '@a', 'DELIVERED_TO', {readAt: null})]);
+        writeBundle([edge('ordinary-bundle-id', 'MESSAGE:m', '@a', 'DELIVERED_TO', {readAt: '2026-10-26T00:00:00Z'})]);
+        await expect(runRestoreReceipts({dbPath, source: jsonlPath, apply: true, logger: quiet})).rejects.toThrow('admitted recovery');
+        expect(liveEdges()[0].readAt).toBeNull();
     });
 
     test('a null live receipt takes the bundle value; a committed one is never regressed', async () => {

@@ -50,6 +50,7 @@ const ELECTION_KEY_BY_ROLE = Object.freeze({memories: 'mc.memory', summaries: 'm
  * @param {Object} options.chromaClient Raw Chroma client.
  * @param {Object} options.dummyEmbeddingFunction Provider-free EF.
  * @param {Object} options.graphDb Open production better-sqlite3 graph DB.
+ * @param {Function} options.beforeGraphMutation Synchronous source-owned fence on the live graph handle.
  * @param {Object} options.expectedDestinations `{memories,summaries,graph}`.
  * @param {String} options.stagingRoot Gitignored run-owned staging directory.
  * @param {String} [options.electionDir=null] Shared vector-generation election directory (resolved
@@ -65,6 +66,7 @@ export function createRestoreTargetSetStorage({
     chromaClient,
     dummyEmbeddingFunction,
     graphDb,
+    beforeGraphMutation,
     expectedDestinations,
     stagingRoot,
     electionDir = null,
@@ -82,6 +84,9 @@ export function createRestoreTargetSetStorage({
         syncGraphCache,
         onPhase
     });
+    if (typeof beforeGraphMutation !== 'function') {
+        throw new TypeError('restoreTargetSetStorage: a synchronous live graph mutation fence is required');
+    }
 
     // One captured view per restore ATTEMPT, taken at STAGING start: every role's promote inside
     // one attempt validates against the SAME view captured when the attempt's content generation
@@ -563,6 +568,8 @@ export function createRestoreTargetSetStorage({
             }
 
             const receipt = await importGraphJsonl({
+                // This handle was opened for this run's disposable staging file, never the served graph.
+                beforeMutation: () => {},
                 db,
                 filePath: component.filePath,
                 mode    : 'replace'
@@ -650,6 +657,10 @@ export function createRestoreTargetSetStorage({
         graphDb.prepare('ATTACH DATABASE ? AS restore_stage').run(graphPath);
         try {
             graphDb.transaction(() => {
+                const fence = beforeGraphMutation({db: graphDb, operation: 'graph-target-set-promotion', source: component.fileFingerprint});
+                if (fence && typeof fence.then === 'function') {
+                    throw new TypeError('restoreTargetSetStorage: graph mutation fence must be synchronous');
+                }
                 graphDb.prepare('DELETE FROM restore_stage.PriorEdges').run();
                 graphDb.prepare('DELETE FROM restore_stage.PriorNodes').run();
                 graphDb.prepare(`

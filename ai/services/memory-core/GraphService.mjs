@@ -14,6 +14,7 @@ import fsExtra                         from 'fs-extra';
 import {isDeepStrictEqual}             from 'node:util';
 import {projectNode}                   from './nodeProjection.mjs';
 import {LEGACY_RAW_MEMORY_NODE_LABEL}  from './helpers/rawMemoryGraphIdentity.mjs';
+import {fenceIdentityPublication} from './helpers/identityPublicationFence.mjs';
 
 /**
  * @summary Applies canonical row visibility to a node or edge snapshot.
@@ -386,6 +387,26 @@ class GraphService extends Base {
         }
 
         return this.db;
+    }
+
+    /**
+     * @summary Fences class-9 publication on this owner's exact live physical mutation handle.
+     * @param {Object} options Trusted source-composition callback, never request admission data.
+     * @param {Object} options.db Physical SQLite handle already in the mutation transaction.
+     * @param {String} options.operation Mutation owner operation.
+     * @param {String} options.source Source-file or attempt provenance.
+     * @returns {Object} Durable fenced disposition; this method cannot clear it.
+     */
+    fenceIdentityPublication({db, operation, source}) {
+        if (db !== this.requireDb('IdentityPublicationFence').storage.db) {
+            throw new Error('Identity publication fence requires the live GraphService connection.');
+        }
+        return fenceIdentityPublication(db, {
+            planeId: aiConfig.plane.id,
+            dataRoot: aiConfig.plane.dataRoot,
+            operation,
+            source
+        });
     }
 
     /**

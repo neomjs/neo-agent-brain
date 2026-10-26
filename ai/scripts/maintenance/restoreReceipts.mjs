@@ -5,6 +5,7 @@ import path            from 'node:path';
 import {pathToFileURL} from 'node:url';
 
 import {isBundlePayload, openBundlePayload} from '../../services/shared/bundlePayload.mjs';
+import {FAMILY_GRAPH_TYPE_PREFIX, FAMILY_RECORD_PREFIX} from '../../services/shared/identityPublicationKeys.mjs';
 
 /**
  * @module ai/scripts/maintenance/restoreReceipts
@@ -132,6 +133,19 @@ export async function validateGraphJsonl(file) {
  */
 export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}) {
     const requested = edgeTypes.filter(type => !MAILBOX_EDGE_TYPES.includes(type));
+    if (apply && requested.some(type => type.startsWith(FAMILY_GRAPH_TYPE_PREFIX))) {
+        throw new Error('restoreReceipts: protected identity-publication relations require admitted recovery.');
+    }
+
+    /** @summary Refuses protected record ids and live endpoint labels before a receipt-restoration write. */
+    const assertUnprotectedReferences = (...ids) => {
+        for (const id of ids) {
+            const label = db.prepare("SELECT json_extract(data, '$.label') FROM Nodes WHERE id = ?").pluck().get(id);
+            if (id.startsWith(FAMILY_RECORD_PREFIX) || label?.startsWith(FAMILY_GRAPH_TYPE_PREFIX)) {
+                throw new Error('restoreReceipts: protected identity-publication records require admitted recovery.');
+            }
+        }
+    };
 
     const
         findDeliveries = db.prepare(`
@@ -212,7 +226,10 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
                 if (!live) { result.receipts.nodes.missingLive++; continue; }
 
                 result.receipts.nodes.matched++;
-                fillFields(result.receipts.nodes, data.id, live, props, (field, value) => setNodeField[field].run(value, data.id));
+                fillFields(result.receipts.nodes, data.id, live, props, (field, value) => {
+                    assertUnprotectedReferences(data.id);
+                    return setNodeField[field].run(value, data.id);
+                });
                 continue;
             }
 
@@ -227,7 +244,10 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
                 if (rows.length === 0) { result.receipts.edges.missingLive++; continue; }
 
                 result.receipts.edges.matched++;
-                rows.forEach(row => fillFields(result.receipts.edges, row.id, row, properties, (field, value) => setEdgeField[field].run(value, row.id)));
+                rows.forEach(row => fillFields(result.receipts.edges, row.id, row, properties, (field, value) => {
+                    assertUnprotectedReferences(row.id, source, target);
+                    return setEdgeField[field].run(value, row.id);
+                }));
                 continue;
             }
 
@@ -250,6 +270,7 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
 
             if (apply && requested.includes(type)) {
                 queue(() => {
+                    assertUnprotectedReferences(id, source, target);
                     const edgeId = edgeIdTaken.get(id) ? globalThis.crypto.randomUUID() : id;
                     row.inserted += insertEdge.run(edgeId, properties.userId ?? null, source, target, type, JSON.stringify({id: edgeId, source, target, type, properties}), source, target, type).changes;
                 });

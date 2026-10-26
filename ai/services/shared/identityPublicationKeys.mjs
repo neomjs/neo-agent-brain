@@ -8,6 +8,11 @@ import {stringifyCanonicalJson} from './canonicalJson.mjs';
  * Provider/API-base normalization belongs to authentication, not to a later key lookup.
  */
 
+/** @type {String} Reserved family record-id namespace, including lineage and receipts. */
+export const FAMILY_RECORD_PREFIX = 'identity-family-';
+/** @type {String} Reserved graph label/relation namespace owned by typed family admission. */
+export const FAMILY_GRAPH_TYPE_PREFIX = 'IDENTITY_FAMILY_';
+
 /**
  * @summary Requires an explicit non-empty identity component without coercion or normalization.
  * @param {*} value Identity component.
@@ -49,7 +54,7 @@ function recordKey(kind, tuple) {
         .update(stringifyCanonicalJson(tuple), 'utf8')
         .digest('hex');
 
-    return 'identity-family-' + kind + '-' + digest;
+    return FAMILY_RECORD_PREFIX + kind + '-' + digest;
 }
 
 /**

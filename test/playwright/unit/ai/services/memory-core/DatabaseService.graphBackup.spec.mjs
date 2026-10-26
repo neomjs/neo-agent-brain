@@ -81,6 +81,7 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
             ).get('graph-backup-source', 'graph-backup-target', 'TEST_RESTORE_EDGE');
 
             console.log('GRAPH_BACKUP_RESULT:' + JSON.stringify({
+                publicationFence  : JSON.parse(db.prepare('SELECT data FROM IdentityPublicationFence').get().data),
                 edgeRecords       : graphBackupRecords.filter(record => record.type === 'edge').length,
                 endsWithNewline   : graphBackupContent.endsWith('\n'),
                 expectedRecordCount,
@@ -116,6 +117,8 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
 
             const proof = JSON.parse(output[1]);
 
+            expect(proof.publicationFence.state).toBe('fenced');
+            expect(proof.publicationFence.cause.operation).toBe('graph-import-merge');
             expect(proof.expectedRecordCount).toBeGreaterThanOrEqual(3);
             expect(proof.exportedMessage).toContain('graph elements');
             expect(proof.graphStats.expected).toBe(proof.expectedRecordCount);

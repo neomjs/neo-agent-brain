@@ -5,6 +5,7 @@ import path from 'node:path';
 import {setup}        from '../../../../../setup.mjs';
 import {test, expect} from '@playwright/test';
 import Database       from 'better-sqlite3';
+import {fenceIdentityPublication, readIdentityPublicationFence} from '../../../../../../../ai/services/memory-core/helpers/identityPublicationFence.mjs';
 
 import 'neo.mjs/src/Neo.mjs';
 
@@ -148,6 +149,31 @@ test.describe('restoreTargetSetStorage — fake Chroma + disposable SQLite targe
         expect(proof.reason).toContain('persisted graph differs from boot seed')
     });
 
+    test('a committed graph promotion stays fenced when its external receipt is interrupted', async () => {
+        const storage = createStorage(fixture, event => {
+            if (event.phase === 'promote-graph' && event.event === 'complete') {
+                throw new Error('lost reply after graph commit');
+            }
+        });
+        const identity = deriveRestoreTargetSetIdentity(fixture.targetSet);
+        const operation = createRestoreEmptyTargetOperation({
+            withWriterFence: async (_identity, task) => task(),
+            ...storage,
+            readTransitions: ({attemptFingerprint}) => readRestoreTargetSetTransitions({dir: fixture.ledgerDir, attemptFingerprint}),
+            appendTransition: input => appendRestoreTargetSetTransition(input, {dir: fixture.ledgerDir})
+        });
+        await expect(operation({targetSet: fixture.targetSet, ...identity})).rejects.toThrow('lost reply after graph commit');
+        const transitions = await readRestoreTargetSetTransitions({dir: fixture.ledgerDir, attemptFingerprint: identity.attemptFingerprint});
+        expect(transitions.map(row => row.state)).not.toContain('promoted:graph');
+        const observer = new Database(fixture.destinations.graph);
+        try {
+            expect(readIdentityPublicationFence(observer, {planeId: 'restore-fixture', dataRoot: fixture.root})).toMatchObject({
+                state: 'fenced', cause: {operation: 'graph-target-set-promotion'}
+            });
+            expect(observer.prepare('SELECT count(*) AS n FROM Nodes').get().n).toBe(2);
+        } finally {observer.close();}
+    });
+
     test('an election landing during staging fences every vector promote of that attempt (#17035)', async () => {
         const {
             VECTOR_PLANE_COLLECTION_KEYS,
@@ -179,6 +205,7 @@ test.describe('restoreTargetSetStorage — fake Chroma + disposable SQLite targe
                 chromaClient          : fixture.client,
                 dummyEmbeddingFunction: fixture.dummyEmbeddingFunction,
                 graphDb               : fixture.graphDb,
+                beforeGraphMutation: info => fenceIdentityPublication(info.db, {planeId: 'restore-fixture', dataRoot: fixture.root, ...info}),
                 expectedDestinations  : fixture.destinations,
                 stagingRoot           : fixture.stagingRoot,
                 electionDir
@@ -614,6 +641,7 @@ function createStorage(fixture, onPhase = () => {}) {
         chromaClient          : fixture.client,
         dummyEmbeddingFunction: fixture.dummyEmbeddingFunction,
         graphDb               : fixture.graphDb,
+        beforeGraphMutation: info => fenceIdentityPublication(info.db, {planeId: 'restore-fixture', dataRoot: fixture.root, ...info}),
         expectedDestinations  : fixture.destinations,
         stagingRoot           : fixture.stagingRoot,
         invalidateCollectionCache(type) {
