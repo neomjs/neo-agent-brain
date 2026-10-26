@@ -655,6 +655,8 @@ class FleetManager extends Base {
      *     `nextRuntimeGeneration` is this connected Fleet's verified boot selection for new Starts.
      *     `installedGeneration` independently observes the installer-owned package slot; neither
      *     substitutes for the original Start, and both are absent for checkout runtimes.
+     *     `windowPlacement` carries the GUI seat's window restore disposition when present, including
+     *     macOS Accessibility refusal reasons (`-25211`).
      */
     fleetRuntimeStatus() {
         const lifecycle             = this.getLifecycleService();
@@ -691,6 +693,7 @@ class FleetManager extends Base {
             if (status.repos != null)         row.repos           = status.repos;
             if (status.dependencies != null)  row.dependencies    = status.dependencies;
             if (status.sessionFolder != null)   row.sessionFolder   = status.sessionFolder;
+            if (status.windowPlacement != null) row.windowPlacement = status.windowPlacement;
             if (status.exitReason != null)      row.exitReason      = status.exitReason;
             if (status.gitIdentity != null)     row.gitIdentity     = status.gitIdentity;
             if (status.seatModel != null)       row.seatModel       = status.seatModel;

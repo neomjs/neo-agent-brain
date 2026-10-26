@@ -3800,6 +3800,55 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
 
             expect(fs.existsSync(path.join(home, WINDOW_FILE))).toBe(false)
         });
+
+        test('a macOS Accessibility denial (-25211) short-circuits restore with the assistive-access reason and saved rect, and leaves the saved file intact on stop (#1301)', async () => {
+            let   {home} = installSeat('antigravity');
+            const file   = writeRecord(home, 'antigravity'), before = fs.readFileSync(file, 'utf8');
+            const log    = windowSeams({reads: [{refused: true, reason: 'osascript is not allowed assistive access (-25211)'}]});
+            FleetLifecycleService.windowRestoreTimeoutMs = 20000;
+            FleetLifecycleService.windowRestorePollMs    = 250;
+
+            FleetLifecycleService.start('seat');
+
+            const record    = FleetLifecycleService.processes.get('seat');
+            const placement = await record.windowRestore;
+
+            expect(log).toEqual([['read', record.pid]]);
+            expect(placement).toMatchObject({
+                state    : 'refused',
+                reason   : 'osascript is not allowed assistive access (-25211)',
+                requested: RECT,
+                saved    : RECT,
+                observed : null
+            });
+            expect(placement.reason).not.toContain('no window appeared');
+            expect(FleetLifecycleService.status('seat').windowPlacement).toMatchObject({
+                state : 'refused',
+                reason: 'osascript is not allowed assistive access (-25211)',
+                saved : RECT
+            });
+
+            await FleetLifecycleService.stop('seat');
+            expect(record.windowCapture).toEqual({
+                state : 'refused',
+                reason: 'osascript is not allowed assistive access (-25211)'
+            });
+            expect(fs.readFileSync(file, 'utf8')).toBe(before);
+
+            ({home} = installSeat('antigravity'));
+            writeRecord(home, 'antigravity');
+            windowSeams({reads: [OTHER], place: () => ({refused: true, reason: 'osascript is not allowed assistive access (-25211)'})});
+            FleetLifecycleService.start('seat');
+            const placeDenied = await FleetLifecycleService.processes.get('seat').windowRestore;
+            expect(placeDenied).toMatchObject({
+                state    : 'refused',
+                reason   : 'osascript is not allowed assistive access (-25211)',
+                requested: RECT,
+                saved    : RECT,
+                observed : OTHER
+            });
+            await FleetLifecycleService.stop('seat');
+        });
     });
 });
 

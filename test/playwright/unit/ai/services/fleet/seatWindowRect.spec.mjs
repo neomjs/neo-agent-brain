@@ -3,8 +3,12 @@ import fs             from 'node:fs';
 import os             from 'node:os';
 import path           from 'node:path';
 import {
+    ASSISTIVE_ACCESS_REFUSAL_REASON,
     SEAT_WINDOW_FILE,
+    assistiveAccessRefusal,
+    isAssistiveAccessError,
     isWindowRect,
+    isWindowRefusal,
     parseWindowRect,
     placeSeatWindow,
     placeWindowRectArgs,
@@ -64,13 +68,31 @@ test.describe('seatWindowRect — a GUI seat\'s window rectangle across stop and
         expect(calls).toHaveLength(3);
         expect(calls[1][1].join('\n')).toContain('set position of window 1 to {2056, 30}');
 
-        const refusing = async () => { throw new Error('osascript is not allowed assistive access') };
-        expect(await readSeatWindowRect(4242, {execFileFn: refusing, platform: 'darwin'})).toBeNull();
-        expect(await placeSeatWindow(4242, RECT, {execFileFn: refusing, platform: 'darwin'})).toBeNull();
+        const missingWindow = async () => { throw new Error('System Events got an error: Can’t get window 1 of process 1. Invalid index. (-1719)') };
+        expect(isAssistiveAccessError(new Error('Can’t get window 1. Invalid index. (-1719)'))).toBe(false);
+        expect(await readSeatWindowRect(4242, {execFileFn: missingWindow, platform: 'darwin'})).toBeNull();
+        expect(await placeSeatWindow(4242, RECT, {execFileFn: missingWindow, platform: 'darwin'})).toBeNull();
+
+        const refusing = async () => { throw new Error('System Events got an error: osascript is not allowed assistive access. (-25211)') };
+        expect(isAssistiveAccessError(new Error('osascript is not allowed assistive access. (-25211)'))).toBe(true);
+        expect(assistiveAccessRefusal({stderr: 'execution error: Not authorized to send Apple events to System Events. (-1743)'})).toEqual({
+            refused: true,
+            reason : ASSISTIVE_ACCESS_REFUSAL_REASON
+        });
+        expect(await readSeatWindowRect(4242, {execFileFn: refusing, platform: 'darwin'})).toEqual({
+            refused: true,
+            reason : ASSISTIVE_ACCESS_REFUSAL_REASON
+        });
+        expect(await placeSeatWindow(4242, RECT, {execFileFn: refusing, platform: 'darwin'})).toEqual({
+            refused: true,
+            reason : ASSISTIVE_ACCESS_REFUSAL_REASON
+        });
+        expect(isWindowRefusal({refused: true, reason: ASSISTIVE_ACCESS_REFUSAL_REASON})).toBe(true);
+        expect(isWindowRefusal(RECT)).toBe(false);
         expect(await placeSeatWindow(4242, {x: 1, y: 1, width: 0, height: 0}, {execFileFn, platform: 'darwin'})).toBeNull();
     });
 
-    test('waiting for the first window polls the reader until a rectangle or the bound', async () => {
+    test('waiting for the first window polls the reader until a rectangle or the bound, and short-circuits immediately on macOS Accessibility denial (#1301)', async () => {
         const answers = [null, null, RECT];
         let   clock   = 0;
         const sleeps  = [];
@@ -82,6 +104,42 @@ test.describe('seatWindowRect — a GUI seat\'s window rectangle across stop and
 
         clock = 0;
         expect(await waitForSeatWindowRect(7, {readFn: async () => null, timeoutMs: 250, pollMs: 100, now: () => clock, sleep: async ms => { clock += ms }})).toBeNull();
+
+        let   deniedCalls  = 0;
+        const deniedSleeps = [];
+        const deniedResult = await waitForSeatWindowRect(7, {
+            readFn   : pid => readSeatWindowRect(pid, {
+                execFileFn: async () => {
+                    deniedCalls += 1;
+                    throw new Error('System Events got an error: osascript is not allowed assistive access. (-25211)')
+                },
+                platform: 'darwin'
+            }),
+            timeoutMs: 20000,
+            pollMs   : 250,
+            now      : () => 0,
+            sleep    : async ms => { deniedSleeps.push(ms) }
+        });
+
+        expect(deniedResult).toEqual({refused: true, reason: ASSISTIVE_ACCESS_REFUSAL_REASON});
+        expect(deniedCalls).toBe(1);
+        expect(deniedSleeps).toEqual([]);
+
+        let   thrownCalls  = 0;
+        const thrownResult = await waitForSeatWindowRect(7, {
+            readFn   : async () => {
+                thrownCalls += 1;
+                throw new Error('osascript is not allowed assistive access (-25211)')
+            },
+            timeoutMs: 20000,
+            pollMs   : 250,
+            now      : () => 0,
+            sleep    : async ms => { deniedSleeps.push(ms) }
+        });
+
+        expect(thrownResult).toEqual({refused: true, reason: ASSISTIVE_ACCESS_REFUSAL_REASON});
+        expect(thrownCalls).toBe(1);
+        expect(deniedSleeps).toEqual([]);
     });
 
     test('the record is written atomically beside the lease, mode 0600, and read back only when valid', () => {

@@ -32,11 +32,21 @@ import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences}  
 import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot}           from './seatRuntimeRecord.mjs';
 import {writeFileAtomicSync}                                                              from '../shared/atomicFileWrite.mjs';
 
-import {createResidentMcpInputOwner, createBridgeTokenOwner, restoreLaunchCredentialOwner}                                                     from './launchCredentialOwners.mjs';
-import {recoverLaunchProfileGrants}                                                                                                            from './launchProfileCustody.mjs';
-import {LAUNCH_ADMISSION_PROTOCOL, LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR}                                                                from './mcpLaunchAdmission.mjs';
-import {probeAntigravityRuntime}                                                                                                               from './probeAntigravityRuntime.mjs';
-import {isWindowRect, placeSeatWindow, readSeatWindowRecord, readSeatWindowRect, sameWindowRect, waitForSeatWindowRect, writeSeatWindowRecord} from './seatWindowRect.mjs';
+import {createResidentMcpInputOwner, createBridgeTokenOwner, restoreLaunchCredentialOwner} from './launchCredentialOwners.mjs';
+import {recoverLaunchProfileGrants}                                                        from './launchProfileCustody.mjs';
+import {LAUNCH_ADMISSION_PROTOCOL, LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR}            from './mcpLaunchAdmission.mjs';
+import {probeAntigravityRuntime}                                                           from './probeAntigravityRuntime.mjs';
+import {
+    assistiveAccessRefusal,
+    isWindowRect,
+    isWindowRefusal,
+    placeSeatWindow,
+    readSeatWindowRecord,
+    readSeatWindowRect,
+    sameWindowRect,
+    waitForSeatWindowRect,
+    writeSeatWindowRecord
+} from './seatWindowRect.mjs';
 
 // Reserve the Neural Link policy slot against credential collisions and launch-metadata overrides.
 // Fleet does not impose a projection; explicitly restricted NL servers own their own ceiling.
@@ -1677,6 +1687,8 @@ class FleetLifecycleService extends Base {
      *     declared model in its harness's catalog ({@link setSeatModel}); `null` before a start read one.
      *     `runtimeGeneration` carries the original Start's runtime and retention pin; missing original
      *     bindings are explicitly unknown, even when this Fleet has a newer installed runtime.
+     *     `windowPlacement` carries the GUI seat's window restore disposition (`none | pending | kept | restored | refused | unsupported`),
+     *     including macOS Accessibility refusal reasons (`-25211`).
      */
     status(id) {
         this.adoptLeasedSeats();
@@ -2676,7 +2688,8 @@ class FleetLifecycleService extends Base {
 
     /**
      * @summary Records a GUI seat's window rectangle before the seat is signalled, so the next start can
-     * put the window back. A failed or empty read, a minimised or missing window keeps the previous record.
+     * put the window back. A failed or empty read, a macOS Accessibility refusal (`-25211`), or a minimised
+     * or missing window keeps the previous `.neo-fleet-window.json` record intact on disk.
      * @param {Object} record Lifecycle record about to be stopped.
      * @returns {Promise<Object|null>} The recorded rectangle, or `null` when nothing was recorded.
      * @private
@@ -2690,7 +2703,13 @@ class FleetLifecycleService extends Base {
 
         let rect = null;
 
-        try { rect = await read(record.pid) } catch { rect = null }
+        try { rect = await read(record.pid) } catch (error) { rect = assistiveAccessRefusal(error) }
+
+        if (isWindowRefusal(rect)) {
+            record.windowCapture = {state: 'refused', reason: rect.reason};
+            console.warn(`[FleetLifecycleService] seat '${record.id}' window capture refused: ${rect.reason} (grant Accessibility permission to Neo Harness.app in System Settings).`);
+            return null
+        }
 
         if (!isWindowRect(rect)) return null;
 
@@ -2704,8 +2723,8 @@ class FleetLifecycleService extends Base {
     /**
      * @summary Puts a started GUI seat's window back where its record says, once the seat has a window:
      * nothing when the harness restored it itself (`kept`), one placement with a read-back otherwise
-     * (`restored`), and a named reason when the frame did not take or no window appeared (`refused`).
-     * The disposition lives on the record as `windowPlacement` and is projected by {@link status}.
+     * (`restored`), and a named reason when macOS denies Accessibility (`-25211`), the frame did not take,
+     * or no window appeared (`refused`). The disposition lives on `windowPlacement` and is projected by {@link status}.
      * @param {Object} record Lifecycle record of a seat this server just started.
      * @returns {Promise<Object>} `{state, requested, observed, reason, at}`.
      * @private
@@ -2732,6 +2751,11 @@ class FleetLifecycleService extends Base {
                 return Object.assign(placement, {state: 'refused', reason: 'the seat stopped before its window appeared', at: new Date().toISOString()})
             }
 
+            if (isWindowRefusal(observed)) {
+                console.warn(`[FleetLifecycleService] seat '${record.id}' window restore refused: ${observed.reason} (grant Accessibility permission to Neo Harness.app in System Settings).`);
+                return Object.assign(placement, {state: 'refused', reason: observed.reason, saved: {...saved.rect}, at: new Date().toISOString()})
+            }
+
             if (!observed) return Object.assign(placement, {state: 'refused', reason: `no window appeared within ${this.windowRestoreTimeoutMs} ms`, at: new Date().toISOString()});
 
             placement.observed = {...observed};
@@ -2742,12 +2766,24 @@ class FleetLifecycleService extends Base {
 
             placement.at = new Date().toISOString();
 
-            if (after) placement.observed = {...after};
+            if (isWindowRefusal(after)) {
+                console.warn(`[FleetLifecycleService] seat '${record.id}' window restore refused: ${after.reason} (grant Accessibility permission to Neo Harness.app in System Settings).`);
+                return Object.assign(placement, {state: 'refused', reason: after.reason, saved: {...saved.rect}})
+            }
 
-            return Object.assign(placement, after && sameWindowRect(after, saved.rect)
+            if (isWindowRect(after)) placement.observed = {...after};
+
+            return Object.assign(placement, isWindowRect(after) && sameWindowRect(after, saved.rect)
                 ? {state: 'restored'}
-                : {state: 'refused', reason: after ? 'the window did not take the recorded frame (a display missing, or the frame clamped)' : 'the window could not be placed or read back'})
+                : {state: 'refused', reason: isWindowRect(after) ? 'the window did not take the recorded frame (a display missing, or the frame clamped)' : 'the window could not be placed or read back'})
         } catch (error) {
+            const refusal = assistiveAccessRefusal(error);
+
+            if (refusal) {
+                console.warn(`[FleetLifecycleService] seat '${record.id}' window restore refused: ${refusal.reason} (grant Accessibility permission to Neo Harness.app in System Settings).`);
+                return Object.assign(placement, {state: 'refused', reason: refusal.reason, saved: {...saved.rect}, at: new Date().toISOString()})
+            }
+
             return Object.assign(placement, {state: 'refused', reason: error?.message ?? String(error), at: new Date().toISOString()})
         }
     }

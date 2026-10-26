@@ -838,6 +838,32 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         expect(Object.hasOwn(bob, 'sessionFolder')).toBe(false)
     });
 
+    test('a GUI seat\'s windowPlacement rides its runtime row when present, including macOS Accessibility refusal reasons, and a status without one adds nothing (#1301)', () => {
+        const
+            registryStub    = {listAgents: () => [{id: 'julia'}, {id: 'ada'}]},
+            windowPlacement = {
+                state    : 'refused',
+                reason   : 'osascript is not allowed assistive access (-25211)',
+                requested: {x: 2056, y: 30, width: 788, height: 1056},
+                saved    : {x: 2056, y: 30, width: 788, height: 1056},
+                observed : null,
+                at       : '2026-10-26T15:00:00.000Z'
+            };
+
+        FleetManager.lifecycleService = {
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            : id => id === 'julia'
+                ? {id, state: 'running', running: true, pid: 4242, startedAt: '2026-10-26T15:00:00Z', exitCode: null, windowPlacement}
+                : {id, state: 'running', running: true, pid: 4343, startedAt: '2026-10-26T15:00:00Z', exitCode: null, windowPlacement: null}
+        };
+
+        const [julia, ada] = FleetManager.fleetRuntimeStatus();
+
+        expect(julia.windowPlacement).toEqual(windowPlacement);
+        expect(Object.hasOwn(ada, 'windowPlacement')).toBe(false)
+    });
+
     test('why a seat exited without a Stop rides its runtime row when present', () => {
         const
             registryStub = {listAgents: () => [{id: 'alice'}, {id: 'bob'}]},
@@ -2039,8 +2065,8 @@ test.describe.serial('Neo.ai.services.fleet.FleetManager — replaceSeatCredenti
             originalInstanceRoot  = FleetLifecycleService.instanceRoot,
             originalProcessListFn = FleetLifecycleService.processListFn,
             originalDesktopCheck  = FleetLifecycleService.desktopProfileInUse;
-        let desktopCheckCalls     = 0,
-            desktopCheckOutcome   = true;
+        let desktopCheckCalls   = 0,
+            desktopCheckOutcome = true;
 
         FleetManager.lifecycleService             = null;
         FleetLifecycleService.registry            = FleetRegistryService;

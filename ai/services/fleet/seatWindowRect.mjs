@@ -12,8 +12,9 @@ import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
  * writes none), so the lifecycle captures the rectangle by pid before it signals a stop and puts it back
  * once the next start has a window. The host reads and sets a window through one System Events query
  * each, addressed by unix id — the address and grant the wake adapter's dialog gate already uses;
- * nothing is written into a vendor's own state files. Every host effect is injectable, so the
- * lifecycle's unit arms run without a window, a process or a permission.
+ * nothing is written into a vendor's own state files. When macOS TCC denies Accessibility (`-25211`),
+ * `readSeatWindowRect`, `placeSeatWindow`, and `waitForSeatWindowRect` return `{refused: true, reason}`
+ * immediately without polling. Every host effect is injectable for hermetic unit specs.
  */
 
 /** @summary The Fleet-owned record beside the seat lease in the harness home. */
@@ -22,9 +23,13 @@ export const SEAT_WINDOW_FILE = '.neo-fleet-window.json';
 /** @summary The record's schema version. */
 export const SEAT_WINDOW_RECORD_VERSION = 1;
 
+/** @summary Reason recorded when macOS TCC / System Events denies `osascript` assistive access (`-25211`). */
+export const ASSISTIVE_ACCESS_REFUSAL_REASON = 'osascript is not allowed assistive access (-25211)';
+
 const
-    RECT_KEYS     = ['x', 'y', 'width', 'height'],
-    execFileAsync = promisify(execFile);
+    ASSISTIVE_ACCESS_DENIED_RE = /not allowed assistive access|not authorized to send apple events|\(-25211\)|\(-1743\)|\(-10004\)/i,
+    RECT_KEYS                  = ['x', 'y', 'width', 'height'],
+    execFileAsync              = promisify(execFile);
 
 /**
  * @summary Whether a value is a usable window rectangle: four finite numbers and a positive size.
@@ -33,6 +38,34 @@ const
  */
 export function isWindowRect(rect) {
     return Boolean(rect) && typeof rect === 'object' && RECT_KEYS.every(key => Number.isFinite(rect[key])) && rect.width > 0 && rect.height > 0
+}
+
+/**
+ * @summary Whether a value is an explicit host window-access refusal (`{refused: true, reason}`).
+ * @param {*} value
+ * @returns {Boolean}
+ */
+export function isWindowRefusal(value) {
+    return Boolean(value) && typeof value === 'object' && value.refused === true && typeof value.reason === 'string' && value.reason.length > 0
+}
+
+/**
+ * @summary Whether an `osascript` error reflects a deterministic macOS Accessibility / AppleEvents denial
+ * (`-25211`, `-1743`, `-10004`, `not allowed assistive access`) rather than a missing window (`-1719`).
+ * @param {*} error
+ * @returns {Boolean}
+ */
+export function isAssistiveAccessError(error) {
+    return ASSISTIVE_ACCESS_DENIED_RE.test(`${error?.message ?? ''}\n${error?.stderr ?? ''}`)
+}
+
+/**
+ * @summary Maps a deterministic macOS Accessibility denial to `{refused: true, reason}`, or `null` otherwise.
+ * @param {*} error
+ * @returns {{refused: Boolean, reason: String}|null}
+ */
+export function assistiveAccessRefusal(error) {
+    return isAssistiveAccessError(error) ? {refused: true, reason: ASSISTIVE_ACCESS_REFUSAL_REASON} : null
 }
 
 /**
@@ -98,8 +131,8 @@ export function parseWindowRect(stdout) {
 }
 
 /**
- * @summary Reads a seat window's rectangle by pid. `null` when the process has no window yet, the platform
- * has no adapter, or the host refuses the query — an unreadable window is not a rectangle, never a throw.
+ * @summary Reads a seat window's rectangle by pid. `null` when the process has no window yet (`-1719`) or the
+ * platform has no adapter; `{refused: true, reason}` when macOS denies Accessibility (`-25211`); never throws.
  * @param {Number} pid
  * @param {Object} [options]
  * @param {Function} [options.execFileFn] `(file, args, options) => Promise<{stdout}>`; defaults to `execFile`.
@@ -114,33 +147,34 @@ export async function readSeatWindowRect(pid, {execFileFn = execFileAsync, platf
         const {stdout} = await execFileFn('osascript', readWindowRectArgs(pid), {timeout: timeoutMs});
 
         return parseWindowRect(stdout)
-    } catch {
-        return null
+    } catch (error) {
+        return assistiveAccessRefusal(error)
     }
 }
 
 /**
  * @summary Places a seat window by pid and reads the frame back. The read-back is the proof: the OS may clamp
- * or refuse the frame (a display no longer attached), and only the observed rectangle is reported.
+ * or refuse the frame (a display no longer attached), and only the observed rectangle or TCC refusal is reported.
  * @param {Number} pid
  * @param {Object} rect
  * @param {Object} [options] As {@link readSeatWindowRect}.
- * @returns {Promise<Object|null>} The observed rectangle after the move, or `null` when nothing could be placed or read.
+ * @returns {Promise<Object|null>} The observed rectangle after the move, `{refused: true, reason}`, or `null`.
  */
 export async function placeSeatWindow(pid, rect, {execFileFn = execFileAsync, platform = process.platform, timeoutMs = 3000} = {}) {
     if (platform !== 'darwin' || !isWindowRect(rect)) return null;
 
     try {
         await execFileFn('osascript', placeWindowRectArgs(pid, rect), {timeout: timeoutMs})
-    } catch {
-        return null
+    } catch (error) {
+        return assistiveAccessRefusal(error)
     }
 
     return readSeatWindowRect(pid, {execFileFn, platform, timeoutMs})
 }
 
 /**
- * @summary Waits for the process's first window and answers its rectangle, polling the reader.
+ * @summary Waits for the process's first window and answers its rectangle, polling the reader unless macOS
+ * denies Accessibility (`-25211`), which short-circuits immediately on the first denied attempt.
  * @param {Number} pid
  * @param {Object} options
  * @param {Function} options.readFn `(pid) => Promise<Object|null>`.
@@ -148,15 +182,23 @@ export async function placeSeatWindow(pid, rect, {execFileFn = execFileAsync, pl
  * @param {Number} [options.pollMs=500]
  * @param {Function} [options.now=Date.now]
  * @param {Function} [options.sleep] `(ms) => Promise`; defaults to a timer.
- * @returns {Promise<Object|null>} `null` when no window appeared within the bound.
+ * @returns {Promise<Object|null>} Observed rectangle, `{refused: true, reason}`, or `null` on timeout.
  */
 export async function waitForSeatWindowRect(pid, {readFn, timeoutMs = 20000, pollMs = 500, now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
     const deadline = now() + timeoutMs;
 
     for (;;) {
-        const rect = await readFn(pid);
+        let rect;
 
-        if (isWindowRect(rect)) return rect;
+        try {
+            rect = await readFn(pid)
+        } catch (error) {
+            const refusal = assistiveAccessRefusal(error);
+            if (refusal) return refusal;
+            throw error
+        }
+
+        if (isWindowRect(rect) || isWindowRefusal(rect)) return rect;
         if (now() >= deadline) return null;
 
         await sleep(pollMs)
