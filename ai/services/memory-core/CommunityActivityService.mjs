@@ -40,8 +40,7 @@ const TERMINAL_RESOLUTION_KINDS = new Set([
 
 const REOPEN_RESOLUTION_KINDS = new Set([
     'issue.reopened',
-    'pull_request.reopened',
-    'discussion.reopened'
+    'pull_request.reopened'
 ]);
 
 const INTERNAL_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);

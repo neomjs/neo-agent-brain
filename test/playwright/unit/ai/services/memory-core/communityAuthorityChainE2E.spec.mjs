@@ -1108,7 +1108,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
         const afterBotCloseCounts = await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts());
         expect(afterBotCloseCounts).toMatchObject({count: 6, status: 'fresh'});
 
-        // Rostered closes across all three mappers clear all 6 remaining unclaimed items
+        // Rostered Issue/PR closes resolve their items; reconciled Discussion closure (fetched closed + closedAt only) emits an unknown closer and stays counted
         const issueCloseReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
             batchAt(source.sourceInstanceId, issueToObservations({
                 ...baseIssue,
@@ -1130,14 +1130,13 @@ test.describe('Community-activity end-to-end authority chain', () => {
         const discussionCloseReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
             batchAt(source.sourceInstanceId, discussionToObservations({
                 ...baseDiscussion,
-                closed    : true,
-                closedAt  : '2026-09-19T11:05:00.000Z',
-                closedBy  : {__typename: 'User', login: 'steward-agent-1'},
-                updatedAt : '2026-09-19T11:05:00.000Z'
+                closed   : true,
+                closedAt : '2026-09-19T11:05:00.000Z',
+                updatedAt: '2026-09-19T11:05:00.000Z'
             }), {
                 baseCheckpointVersion: firstBatch.discussions.receipt.nextCheckpointVersion,
                 baseInventoryHash    : firstBatch.discussions.receipt.nextInventoryHash,
-                batchId              : 'b-rostered-close-discussion',
+                batchId              : 'b-reconciled-close-discussion',
                 resourceFamily       : 'discussions'
             })
         ));
@@ -1161,10 +1160,24 @@ test.describe('Community-activity end-to-end authority chain', () => {
         ));
         expect(prCloseReceipt.status).toBe('accepted');
 
+        const storedDiscussionClose = activityDb.prepare(
+            "SELECT actor_id, actor_kind, source_association FROM mc_community_observation WHERE occurrence_kind = 'discussion.closed'"
+        ).get();
+        expect(storedDiscussionClose).toEqual({
+            actor_id          : null,
+            actor_kind        : 'unknown',
+            source_association: null
+        });
+
         const afterCloseCounts = await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts()),
               afterClosePage   = await inTenant(TENANT_ALPHA, () => ActivityService.query({...WINDOW, limit: 20}));
 
-        expect(afterCloseCounts).toMatchObject({count: 0, oldestOccurredAt: null, status: 'empty'});
+        // Issue and PR external items resolved to 0; Discussion's 3 items (D_900, DC_900_1, DR_900_1) stay counted because closer is unknown
+        expect(afterCloseCounts).toMatchObject({
+            count           : 3,
+            oldestOccurredAt: '2026-09-19T10:10:00.000Z',
+            status          : 'fresh'
+        });
         expect(afterClosePage.items.some(i => i.occurrenceKind.endsWith('.closed'))).toBe(false);
         expect(activityDb.prepare('SELECT COUNT(*) AS c FROM mc_community_task_binding').get().c).toBe(1);
         expect(activityDb.prepare("SELECT COUNT(*) AS c FROM Nodes WHERE json_extract(data, '$.label') = 'MESSAGE'").get().c).toBe(1);
@@ -1177,7 +1190,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
         expect(replayedClaim).toEqual({...initialClaim, created: false});
         expect(activityDb.prepare('SELECT COUNT(*) AS c FROM mc_community_task_binding').get().c).toBe(1);
 
-        // Post-close external comment on the closed issue still surfaces as fresh attention
+        // Post-close external comment on the closed issue still surfaces as fresh attention (+1 -> count 4)
         const postCloseReplyReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
             batchAt(source.sourceInstanceId, issueToObservations({
                 ...baseIssue,
@@ -1207,34 +1220,51 @@ test.describe('Community-activity end-to-end authority chain', () => {
 
         const postCloseCounts = await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts());
         expect(postCloseCounts).toMatchObject({
-            count           : 1,
-            oldestOccurredAt: '2026-09-19T12:00:00.000Z',
+            count           : 4,
+            oldestOccurredAt: '2026-09-19T10:10:00.000Z',
             status          : 'fresh'
         });
 
-        // Reopening the closed Discussion via discussionToObservations restores its 3 external items
-        const discussionReopenReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
-            batchAt(source.sourceInstanceId, discussionToObservations({
-                ...baseDiscussion,
-                closed    : false,
-                closedAt  : '2026-09-19T11:05:00.000Z',
-                closedBy  : {__typename: 'User', login: 'steward-agent-1'},
-                reopenedAt: '2026-09-19T12:30:00.000Z',
-                reopenedBy: {__typename: 'User', login: 'steward-agent-1'},
-                updatedAt : '2026-09-19T12:30:00.000Z'
+        // Reopening the closed Issue via issueToObservations restores its pre-close unclaimed comment (+1 -> count 5)
+        const issueReopenReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
+            batchAt(source.sourceInstanceId, issueToObservations({
+                ...baseIssue,
+                comments: [
+                    ...baseIssue.comments,
+                    {
+                        author           : {__typename: 'User', login: 'external-followup'},
+                        authorAssociation: 'NONE',
+                        createdAt        : '2026-09-19T12:00:00.000Z',
+                        id               : 'IC_900_POST_CLOSE'
+                    }
+                ],
+                timeline: [
+                    {
+                        __typename: 'ClosedEvent',
+                        actor     : {__typename: 'User', login: 'steward-agent-1'},
+                        createdAt : '2026-09-19T11:00:00.000Z',
+                        id        : 'CE_900_ROSTERED'
+                    },
+                    {
+                        __typename: 'ReopenedEvent',
+                        actor     : {__typename: 'User', login: 'steward-agent-1'},
+                        createdAt : '2026-09-19T12:30:00.000Z',
+                        id        : 'RE_900_ROSTERED'
+                    }
+                ]
             }), {
-                baseCheckpointVersion: discussionCloseReceipt.receipt.nextCheckpointVersion,
-                baseInventoryHash    : discussionCloseReceipt.receipt.nextInventoryHash,
-                batchId              : 'b-reopen-discussion',
-                resourceFamily       : 'discussions'
+                baseCheckpointVersion: postCloseReplyReceipt.receipt.nextCheckpointVersion,
+                baseInventoryHash    : postCloseReplyReceipt.receipt.nextInventoryHash,
+                batchId              : 'b-reopen-issue',
+                resourceFamily       : 'issues'
             })
         ));
-        expect(discussionReopenReceipt.status).toBe('accepted');
+        expect(issueReopenReceipt.status).toBe('accepted');
 
         const afterReopenCounts = await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts());
         expect(afterReopenCounts).toMatchObject({
-            count           : 4,
-            oldestOccurredAt: '2026-09-19T10:10:00.000Z',
+            count           : 5,
+            oldestOccurredAt: '2026-09-19T10:05:00.000Z',
             status          : 'fresh'
         });
     });

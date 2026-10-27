@@ -32,7 +32,7 @@ export const SUPPORTED_GITHUB_COMMUNITY_KINDS = Object.freeze([
     ...Object.keys(CONTENT_TYPES),
     ...Object.values(TIMELINE_KIND_BY_TYPENAME),
     ...Object.values(PULL_REQUEST_TIMELINE_KIND_BY_TYPENAME),
-    'discussion.closed', 'discussion.reopened',
+    'discussion.closed',
     'issue.deleted', 'pull_request.deleted', 'discussion.deleted',
     'discussion.comment-deleted', 'discussion.reply-deleted'
 ]);

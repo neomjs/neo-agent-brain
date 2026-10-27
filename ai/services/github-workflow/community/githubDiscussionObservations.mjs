@@ -83,49 +83,27 @@ function appendReplyObservations(observations, reply, commentId) {
     appendDeletion(observations, reply, 'discussion.reply-deleted', commentId)
 }
 
-/** @summary Emits `discussion.closed` and `discussion.reopened` from reconciled closure state; unnamed actors stay `'unknown'`. */
+/** @summary Emits `discussion.closed` only from reconciled closure facts (`closed`, `closedAt`); closer stays `'unknown'`. */
 function appendClosureState(observations, discussion) {
-    const closedAt = typeof discussion.closedAt === 'string' && discussion.closedAt ? discussion.closedAt : null;
-
-    if (closedAt && (discussion.closed !== false || discussion.reopenedAt || (discussion.updatedAt && discussion.updatedAt > closedAt))) {
+    if (discussion.closed === true && typeof discussion.closedAt === 'string' && discussion.closedAt) {
         observations.push({
             providerEntityId    : discussion.id,
             occurrenceKind      : 'discussion.closed',
-            occurrenceCoordinate: `${discussion.id}:closed:${closedAt}`,
-            occurredAt          : closedAt,
-            ...projectActor(
-                discussion.closedBy ?? discussion.closer ?? null,
-                discussion.closedByAssociation ?? discussion.closerAssociation ?? null
-            )
-        })
-    }
-
-    const reopenedAt = typeof discussion.reopenedAt === 'string' && discussion.reopenedAt
-        ? discussion.reopenedAt
-        : (discussion.closed === false && closedAt && typeof discussion.updatedAt === 'string' && discussion.updatedAt > closedAt
-            ? discussion.updatedAt
-            : null);
-
-    if (reopenedAt) {
-        observations.push({
-            providerEntityId    : discussion.id,
-            occurrenceKind      : 'discussion.reopened',
-            occurrenceCoordinate: `${discussion.id}:reopened:${reopenedAt}`,
-            occurredAt          : reopenedAt,
-            ...projectActor(
-                discussion.reopenedBy ?? discussion.reopener ?? null,
-                discussion.reopenedByAssociation ?? discussion.reopenerAssociation ?? null
-            )
+            occurrenceCoordinate: `${discussion.id}:closed:${discussion.closedAt}`,
+            occurredAt          : discussion.closedAt,
+            actorId             : null,
+            actorKind           : 'unknown',
+            sourceAssociation   : null
         })
     }
 }
 
 /**
  * @summary Maps one fully reconciled Discussion to stable, metadata-only occurrence observations.
- * Root, comment, reply, closure (`discussion.closed`, `discussion.reopened`), and revision
+ * Root, comment, reply, closure (`discussion.closed` from reconciled `closed`/`closedAt`), and revision
  * identities remain distinct; a root revision that lacks a granular source fact becomes an
- * explicitly unattributed snapshot marker, never invented state history, and an unnamed closer or
- * reopener stays `'unknown'`. Attention remains server policy, not adapter policy.
+ * explicitly unattributed snapshot marker, never invented state history or a reopen inferred from
+ * `updatedAt`, and an unnamed closer stays `'unknown'`. Attention remains server policy, not adapter policy.
  * @param {Object} discussion Reconciled root with flat `comments` and flat nested `replies` arrays.
  * @returns {Object[]}
  */

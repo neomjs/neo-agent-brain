@@ -143,16 +143,16 @@ test.describe('githubDiscussionObservations normalizer', () => {
         expect(validateBatch(batchAround(observations))).toEqual({valid: true, errors: []});
     });
 
-    test('emits discussion.closed and discussion.reopened from reconciled closure state while keeping unnamed closers unknown (#1315 AC-2)', () => {
-        const unnamedClosed = discussionToObservations({
+    test('emits discussion.closed only from fetched closure state with an unknown closer and never infers reopen from updatedAt (#1315 AC-2)', () => {
+        const closedOnReconcilerFields = discussionToObservations({
             ...discussion,
             closed   : true,
             closedAt : '2026-09-20T10:00:00Z',
             updatedAt: '2026-09-20T10:00:00Z'
         });
-        const unnamedCloseObs = unnamedClosed.find(o => o.occurrenceKind === 'discussion.closed');
+        const closeObs = closedOnReconcilerFields.find(o => o.occurrenceKind === 'discussion.closed');
 
-        expect(unnamedCloseObs).toEqual({
+        expect(closeObs).toEqual({
             actorId             : null,
             actorKind           : 'unknown',
             occurredAt          : '2026-09-20T10:00:00Z',
@@ -161,41 +161,30 @@ test.describe('githubDiscussionObservations normalizer', () => {
             providerEntityId    : 'D_1',
             sourceAssociation   : null
         });
-        expect(unnamedClosed.some(o => o.occurrenceKind === 'discussion.observed-snapshot-change')).toBe(false);
-        expect(validateBatch(batchAround(unnamedClosed))).toEqual({valid: true, errors: []});
+        expect(closedOnReconcilerFields.some(o => o.occurrenceKind === 'discussion.observed-snapshot-change')).toBe(false);
+        expect(validateBatch(batchAround(closedOnReconcilerFields))).toEqual({valid: true, errors: []});
 
-        const namedCloseAndReopen = discussionToObservations({
+        const reopenedAtFirstActivity = discussionToObservations({
             ...discussion,
-            closed               : false,
-            closedAt             : '2026-09-20T10:05:00Z',
-            closedBy             : {__typename: 'User', login: 'steward-closer'},
-            closedByAssociation  : 'MEMBER',
-            reopenedAt           : '2026-09-20T10:15:00Z',
-            reopenedBy           : null,
-            updatedAt            : '2026-09-20T10:15:00Z'
+            closed   : false,
+            closedAt : '2026-09-20T10:00:00Z',
+            updatedAt: '2026-09-20T12:00:00Z'
         });
-        const closeObs  = namedCloseAndReopen.find(o => o.occurrenceKind === 'discussion.closed'),
-              reopenObs = namedCloseAndReopen.find(o => o.occurrenceKind === 'discussion.reopened');
+        const reopenedAtLaterActivity = discussionToObservations({
+            ...discussion,
+            closed   : false,
+            closedAt : '2026-09-20T10:00:00Z',
+            updatedAt: '2026-09-20T13:30:00Z'
+        });
 
-        expect(closeObs).toEqual({
-            actorId             : 'steward-closer',
-            actorKind           : 'user',
-            occurredAt          : '2026-09-20T10:05:00Z',
-            occurrenceCoordinate: 'D_1:closed:2026-09-20T10:05:00Z',
-            occurrenceKind      : 'discussion.closed',
-            providerEntityId    : 'D_1',
-            sourceAssociation   : 'MEMBER'
+        expect(reopenedAtFirstActivity.some(o => o.occurrenceKind === 'discussion.closed')).toBe(false);
+        expect(reopenedAtFirstActivity.some(o => o.occurrenceKind === 'discussion.reopened')).toBe(false);
+        expect(reopenedAtLaterActivity.some(o => o.occurrenceKind === 'discussion.reopened')).toBe(false);
+        expect(reopenedAtFirstActivity.find(o => o.occurrenceKind === 'discussion.observed-snapshot-change')).toMatchObject({
+            occurrenceCoordinate: 'D_1:snapshot:2026-09-20T12:00:00Z',
+            occurredAt          : '2026-09-20T12:00:00Z'
         });
-        expect(reopenObs).toEqual({
-            actorId             : null,
-            actorKind           : 'unknown',
-            occurredAt          : '2026-09-20T10:15:00Z',
-            occurrenceCoordinate: 'D_1:reopened:2026-09-20T10:15:00Z',
-            occurrenceKind      : 'discussion.reopened',
-            providerEntityId    : 'D_1',
-            sourceAssociation   : null
-        });
-        expect(validateBatch(batchAround(namedCloseAndReopen))).toEqual({valid: true, errors: []})
+        expect(validateBatch(batchAround(reopenedAtFirstActivity))).toEqual({valid: true, errors: []})
     });
 
     test('rejects missing stable child ids or missing revision evidence for a claimed edit', () => {
