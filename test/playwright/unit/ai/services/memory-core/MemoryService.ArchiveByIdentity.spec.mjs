@@ -131,7 +131,8 @@ test.describe('MemoryService — archiveMemoriesByAgentIdentity tombstone + reca
         // `transaction` + `removeNode` back the unarchive op's durable-marker removal (the real
         // GraphService.removeNodes wraps removeNode in db.transaction); the real upsertGlobalNode routes
         // through the stubbed upsertNode, so both marker ops no-op here.
-        GraphService.db  = {storage: {db: {prepare: () => ({run: () => {}})}}, nodes: new Map(), removeNode: () => {}, transaction: fn => fn()};
+        GraphService.db  = {storage: {db: {prepare: () => ({get: () => undefined, run: () => {}})}},
+            nodes: new Map(), removeNode: () => {}, transaction: fn => fn()};
     });
 
     test.afterEach(() => {
