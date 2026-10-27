@@ -1776,7 +1776,8 @@ class MemoryService extends Base {
      * axis. Built for post-compaction context recovery ("what just happened, in order"), which
      * semantic search cannot reconstruct. Reads graph-projected `AGENT_MEMORY` rows plus WAL-pending
      * rows whose graph projection has not caught up yet. Default recovery is tenant-scoped; explicit
-     * wider sharing is policy-clamped and public-summary-only. A request-bound tenant is always required.
+     * wider sharing is policy-clamped (effective `team` permits public summary or full `prompt`/`response`;
+     * effective `legacy` remains public-summary-only). A request-bound tenant is always required.
      *
      * Graduated from a cross-family Ideation Sandbox; see the originating issue for the full
      * acceptance-criteria + signal ledger.
@@ -1787,9 +1788,9 @@ class MemoryService extends Base {
      * @param {Object} [options.before]              Compound cursor `{timestamp, id}` (pass a prior page's `nextCursor`); returns turns strictly older than it. The `(timestamp, id)` pair — not timestamp alone — disambiguates turns sharing a timestamp, so pages never duplicate or skip a row.
      * @param {String} [options.before.timestamp]    ISO timestamp of the last turn on the previous page.
      * @param {String} [options.before.id]           Node id of the last turn on the previous page (tiebreaks equal timestamps).
-     * @param {String} [options.detail='summary']    `'summary'` → compact `miniSummary` straight from the graph (no Chroma join); `'full'` → join Chroma for `prompt`/`response`.
-     * @param {String} [options.projection='public'] `'public'` excludes the private `thought` field; `'private'` includes it (own-agent recall only).
-     * @param {String} [options.memorySharing] Explicit private/team/legacy policy, never broader than the configured default.
+     * @param {String} [options.detail='summary']    `'summary'` → compact `miniSummary` straight from the graph (no Chroma join); `'full'` → join Chroma (with pending-embed WAL overlay when missing/rejected; `collection.get` has no local timeout) for `prompt`/`response`.
+     * @param {String} [options.projection='public'] `'public'` (default) excludes the private `thought` field; `'private'` includes it (own-agent tenant recovery only; refused on effective `team`/`legacy` before reads and clamped to `'public'` on `private`-policy peer reads).
+     * @param {String} [options.memorySharing] Explicit private/team/legacy policy, never broader than the configured default. Effective `team` permits `detail:'summary'|'full'` with `projection:'public'`; effective `legacy` (including clamped `team`) and `implicitTeam` accept `detail:'summary'` with `projection:'public'` only.
      * @returns {Promise<{count: number, turns: Object[], nextCursor: {timestamp: String, id: String}|null, memorySharing?: Object, hint?: String}>} Reverse-chronological turns; `nextCursor` is the compound cursor to pass as `before` for the next page, or `null` when no further turns remain. `hint` explains an empty page for another identity under an owner-scoped policy.
      */
     async queryRecentTurns({agentIdentity='@me', limit=20, before, detail='summary', projection='public', memorySharing} = {}) {
@@ -1828,8 +1829,8 @@ class MemoryService extends Base {
             if (!['private', 'team', 'legacy'].includes(policy)) {
                 throw new TypeError('The configured memory sharing policy is unavailable.');
             }
-            if (sharing && policy !== 'private' && (projection !== 'public' || detail !== 'summary')) {
-                throw new TypeError('Shared recency reads accept public summaries only.');
+            if (sharing && policy !== 'private' && (projection !== 'public' || (policy !== 'team' && detail !== 'summary'))) {
+                throw new TypeError('Shared recency reads accept public summaries only (or public full turns under effective team sharing).');
             }
             if (!sqlite) {
                 throw new Error('The graph recency reader is unavailable.');
@@ -1893,7 +1894,7 @@ class MemoryService extends Base {
             // page must not read as "this identity has no turns". A hint, never a `scope` refusal.
             const hint = turns.length === 0 && identity !== callerIdentity && policy !== 'team'
                 ? `${policy} reads only rows owned by this caller${policy === 'legacy' ? ', shared or untagged' : ''}; ${identity} may have turns outside it, ` +
-                  (configuredDefault === 'team' ? 'readable with memorySharing \'team\' (public summaries)' : 'which this deployment\'s sharing default keeps unreadable')
+                  (configuredDefault === 'team' ? 'readable with memorySharing \'team\' (public summaries or public full turns)' : 'which this deployment\'s sharing default keeps unreadable')
                 : null;
 
             return {
@@ -2838,8 +2839,8 @@ class MemoryService extends Base {
                 metadatas = filteredIndices.map(i => metadatas[i]);
             }
 
-            let malformedTimestamps = 0;
-            const miniSummaryById   = detail === 'summary' ? this._getMiniSummariesByIds(ids) : null;
+            let   malformedTimestamps = 0;
+            const miniSummaryById     = detail === 'summary' ? this._getMiniSummariesByIds(ids) : null;
 
             const shapeMemoryRow = (row, metadata = {}, summaryMap = miniSummaryById) => {
                 if (detail === 'summary') {

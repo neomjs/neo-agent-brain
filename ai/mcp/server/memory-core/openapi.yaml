@@ -1095,7 +1095,7 @@ paths:
       operationId: query_recent_turns
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Recall recent turns for recovery; opt in to policy-clamped public peer summaries.
+      x-neo-tool-summary: Recall recent turns for recovery; opt in to policy-clamped public peer summaries or team public turns.
       x-annotations:
         readOnlyHint: true
       description: |
@@ -1105,9 +1105,12 @@ paths:
         **When to Use:**
         After a context compaction, to rebuild "what just happened, in order" — the chronological
         sequence semantic search cannot reconstruct. Returns compact per-turn summaries by default
-        (detail=summary, straight from the graph) or full prompt/response content on demand (detail=full).
-        An explicit memorySharing request is narrowed by deployment policy and accepts only public
-        summaries when wider than private. Its result reports the effective policy and clamping;
+        (detail=summary, straight from the graph) or full prompt/response content on demand (detail=full,
+        joining Chroma with a pending-embed WAL overlay when missing/rejected; collection.get has no
+        local timeout). An explicit memorySharing request is narrowed by deployment policy: effective
+        team sharing accepts public summaries or public full prompt/response (projection=public, omitting
+        thought), whereas effective legacy (including team clamped to legacy) and implicit peer reads
+        accept public summaries only. Effective shared policies refuse projection=private before reads;
         omitted sharing preserves tenant-scoped recovery and own-private recall.
       tags: [Memories]
       parameters:
@@ -1139,7 +1142,7 @@ paths:
         - name: detail
           in: query
           required: false
-          description: "'summary' returns the compact per-turn miniSummary straight from the graph; 'full' joins Chroma for prompt/response content"
+          description: "'summary' returns the compact per-turn miniSummary straight from the graph; 'full' joins Chroma (with pending-embed WAL fallback; no local Chroma timeout) for prompt/response content"
           schema:
             type: string
             enum: [summary, full]
@@ -1147,14 +1150,14 @@ paths:
         - name: memorySharing
           in: query
           required: false
-          description: "Explicit narrow-only sharing for public summaries. Omit to keep caller-tenant recovery; team/legacy refuse full or private reads."
+          description: "Explicit narrow-only sharing. Omit to keep caller-tenant recovery; effective team allows public summary/full reads, effective legacy allows public summaries only, and both refuse projection=private before reads."
           schema:
             type: string
             enum: [private, team, legacy]
         - name: projection
           in: query
           required: false
-          description: "'public' (default) excludes the private thought field; 'private' includes it (own-agent recall only)"
+          description: "'public' (default) excludes the private thought field; 'private' includes it (own-agent tenant recovery only; refused on effective team/legacy before reads)"
           schema:
             type: string
             enum: [public, private]

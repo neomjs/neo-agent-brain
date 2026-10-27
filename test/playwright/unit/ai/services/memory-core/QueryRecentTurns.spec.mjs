@@ -1134,20 +1134,31 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         // The archived row is the newest, yet excluded by the fetch filter; only the live row runs.
         expect(calls).toEqual(['live prompt']);
     });
-    test('explicit public-summary sharing admits peer and same-identity foreign-tenant rows without changing recovery', async () => {
-        const identity = '@sharing-recovery-741', secret = 'FOREIGN-THOUGHT-741';
-        const seed     = (id, userId, timestamp) => {
-            memStore.set(id, {prompt: 'public prompt', response: 'public response',
-                thought: userId === 'sharing-caller' ? 'OWN-THOUGHT-741' : secret});
+    test('explicit public sharing admits peer and same-identity foreign-tenant rows (summary and team full) without changing recovery', async () => {
+        const identity = '@sharing-recovery-741', peerIdentity = '@sharing-peer-741';
+        const secret   = 'FOREIGN-THOUGHT-741', peerSameTenantSecret = 'PEER-SAME-TENANT-THOUGHT-741';
+        const seed     = (id, agentIdentity, userId, timestamp, thought) => {
+            memStore.set(id, {prompt: `public prompt ${id}`, response: `public response ${id}`, thought});
             GraphService.upsertNode({id, type: 'AGENT_MEMORY', name: id, description: id, semanticVectorId: id,
-                properties: {agentIdentity: identity, userId, sessionId: 'sharing-recovery-741', timestamp, miniSummary: id}});
+                properties: {agentIdentity, userId, sessionId: 'sharing-recovery-741', timestamp, miniSummary: id}});
         };
-        seed('sharing-own-741', 'sharing-caller', '2031-01-01T00:00:00.000Z');
-        seed('sharing-foreign-741', 'sharing-other', '2031-01-02T00:00:00.000Z');
+        seed('sharing-own-741', identity, 'sharing-caller', '2031-01-01T00:00:00.000Z', 'OWN-THOUGHT-741');
+        seed('sharing-foreign-741', identity, 'sharing-other', '2031-01-02T00:00:00.000Z', secret);
+        seed('sharing-peer-same-tenant-741', peerIdentity, 'sharing-caller', '2031-01-01T00:00:00.000Z', peerSameTenantSecret);
+        seed('sharing-peer-foreign-741', peerIdentity, 'sharing-other', '2031-01-02T00:00:00.000Z', secret);
         const read = options => RequestContextService.run({userId: 'sharing-caller', agentIdentityNodeId: identity}, () =>
             MemoryService.queryRecentTurns({agentIdentity: identity, limit: 10, ...options}));
         const recovery = await read({});
         expect(recovery.turns.map(turn => turn.id)).toEqual(['sharing-own-741']);
+        const ownFullPublic = await read({detail: 'full'});
+        expect(ownFullPublic.turns.map(turn => turn.id)).toEqual(['sharing-own-741']);
+        expect(ownFullPublic.memorySharing).toBeUndefined();
+        expect(ownFullPublic.turns[0]).toMatchObject({
+            id      : 'sharing-own-741',
+            prompt  : 'public prompt sharing-own-741',
+            response: 'public response sharing-own-741'
+        });
+        expect('thought' in ownFullPublic.turns[0]).toBe(false);
         const ownPrivate = await read({detail: 'full', projection: 'private'});
         expect(ownPrivate.turns.map(turn => turn.id)).toEqual(['sharing-own-741']);
         expect(ownPrivate.turns[0].thought).toBe('OWN-THOUGHT-741');
@@ -1157,6 +1168,53 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         expect(shared.memorySharing).toEqual({policy: 'team', clamped: false});
         expect(JSON.stringify(shared)).not.toContain(secret);
         expect(shared.turns.every(turn => turn.prompt === undefined && turn.response === undefined && turn.thought === undefined)).toBe(true);
+        // Explicit team + detail:'full' uses the public projection default, hydrating distinct prompt and response
+        // across foreign-tenant rows (including same-identity foreign row sharing-foreign-741) while omitting thought.
+        const sharedFull = await read({memorySharing: 'team', detail: 'full'});
+        expect(sharedFull.turns.map(turn => turn.id)).toEqual(['sharing-foreign-741', 'sharing-own-741']);
+        expect(sharedFull.memorySharing).toEqual({policy: 'team', clamped: false});
+        expect(sharedFull.turns[0]).toMatchObject({
+            id      : 'sharing-foreign-741',
+            prompt  : 'public prompt sharing-foreign-741',
+            response: 'public response sharing-foreign-741'
+        });
+        expect(sharedFull.turns[1]).toMatchObject({
+            id      : 'sharing-own-741',
+            prompt  : 'public prompt sharing-own-741',
+            response: 'public response sharing-own-741'
+        });
+        expect(sharedFull.turns.every(turn => turn.thought === undefined && !('thought' in turn))).toBe(true);
+        expect(JSON.stringify(sharedFull)).not.toContain(secret);
+        expect(JSON.stringify(sharedFull)).not.toContain('OWN-THOUGHT-741');
+        // Peer cross-tenant + same-tenant Chroma hydration under explicit team + detail:'full'.
+        const peerSharedFull = await read({agentIdentity: peerIdentity, memorySharing: 'team', detail: 'full'});
+        expect(peerSharedFull.turns.map(turn => turn.id)).toEqual(['sharing-peer-foreign-741', 'sharing-peer-same-tenant-741']);
+        expect(peerSharedFull.memorySharing).toEqual({policy: 'team', clamped: false});
+        expect(peerSharedFull.turns[0]).toMatchObject({
+            id      : 'sharing-peer-foreign-741',
+            prompt  : 'public prompt sharing-peer-foreign-741',
+            response: 'public response sharing-peer-foreign-741'
+        });
+        expect(peerSharedFull.turns[1]).toMatchObject({
+            id      : 'sharing-peer-same-tenant-741',
+            prompt  : 'public prompt sharing-peer-same-tenant-741',
+            response: 'public response sharing-peer-same-tenant-741'
+        });
+        expect(peerSharedFull.turns.every(turn => turn.thought === undefined && !('thought' in turn))).toBe(true);
+        expect(JSON.stringify(peerSharedFull)).not.toContain(secret);
+        expect(JSON.stringify(peerSharedFull)).not.toContain(peerSameTenantSecret);
+        // Omitted sharing with detail:'full' on a peer does NOT trigger implicitTeam (retains private tenant scope),
+        // and projection:'private' on a same-tenant peer row clamps effectiveProjection to 'public' rather than throwing.
+        const peerOmittedFull = await read({agentIdentity: peerIdentity, detail: 'full', projection: 'private'});
+        expect(peerOmittedFull.turns.map(turn => turn.id)).toEqual(['sharing-peer-same-tenant-741']);
+        expect(peerOmittedFull.memorySharing).toBeUndefined();
+        expect(peerOmittedFull.turns[0]).toMatchObject({
+            id      : 'sharing-peer-same-tenant-741',
+            prompt  : 'public prompt sharing-peer-same-tenant-741',
+            response: 'public response sharing-peer-same-tenant-741'
+        });
+        expect('thought' in peerOmittedFull.turns[0]).toBe(false);
+        expect(JSON.stringify(peerOmittedFull)).not.toContain(peerSameTenantSecret);
     });
 
     test('another identity\'s summaries follow the deployment default; an empty owner-scoped page carries a hint, never a scope refusal (#1019)', async () => {
@@ -1173,6 +1231,13 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
             expect(foreignDefault.turns.map(turn => turn.id)).toEqual([id]);
             expect(foreignDefault.memorySharing).toEqual({policy: 'team', clamped: false});
             expect(foreignDefault.hint).toBeUndefined();
+
+            // Implicit team stays summary-only: omitted sharing with detail:'full' retains private tenant scope.
+            const foreignImplicitFull = await read({agentIdentity: identity, detail: 'full'});
+            expect(foreignImplicitFull.count).toBe(0);
+            expect(foreignImplicitFull.memorySharing).toBeUndefined();
+            expect(foreignImplicitFull.hint).toContain('private reads only rows owned by this caller;');
+            expect(foreignImplicitFull.hint).toContain("memorySharing 'team'");
 
             const foreignPrivate = await read({agentIdentity: identity, memorySharing: 'private'});
             expect(foreignPrivate.count).toBe(0);
@@ -1201,27 +1266,37 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         }
     });
 
-    test('a widened full/private request refuses before SQL, WAL or content reads', async () => {
-        const sqlite  = GraphService.db.storage.db, prepare = sqlite.prepare;
-        const pending = MemoryService._readPendingWalRecencyRows, hydrate = MemoryService._hydrateRecentTurnSummaries;
-        const calls   = {sql: 0, wal: 0, content: 0};
+    test('a widened private projection or legacy full-detail request refuses before SQL, WAL or content reads', async () => {
+        const sqlite      = GraphService.db.storage.db, prepare = sqlite.prepare;
+        const pending     = MemoryService._readPendingWalRecencyRows, hydrate = MemoryService._hydrateRecentTurnSummaries;
+        const hydrateFull = MemoryService._hydrateRecentTurnContent;
+        const calls       = {sql: 0, wal: 0, content: 0};
         sqlite.prepare = function(...args) { calls.sql++; return prepare.apply(this, args) };
-        MemoryService._readPendingWalRecencyRows = async () => { calls.wal++; return [] };
+        MemoryService._readPendingWalRecencyRows  = async () => { calls.wal++; return [] };
         MemoryService._hydrateRecentTurnSummaries = async () => { calls.content++; return [] };
+        MemoryService._hydrateRecentTurnContent   = async () => { calls.content++; return [] };
         try {
-            for (const memorySharing of ['team', 'legacy']) {
-                for (const options of [{detail: 'full'}, {projection: 'private'}]) {
-                    const result = await RequestContextService.run({userId: 'sharing-caller', agentIdentityNodeId: '@sharing-caller'}, () =>
-                        MemoryService.queryRecentTurns({agentIdentity: '@sharing-peer', memorySharing, ...options}));
-                    expect(result).toMatchObject({code: 'RECENT_TURNS_ERROR'});
-                    expect(result.message).toContain('public summaries');
-                }
+            const refusedRequests = [
+                {agentIdentity: '@sharing-peer',   memorySharing: 'team',   projection: 'private'},
+                {agentIdentity: '@sharing-peer',   memorySharing: 'team',   detail: 'full', projection: 'private'},
+                {agentIdentity: '@sharing-caller', memorySharing: 'team',   projection: 'private'},
+                {agentIdentity: '@sharing-caller', memorySharing: 'team',   detail: 'full', projection: 'private'},
+                {agentIdentity: '@sharing-peer',   memorySharing: 'legacy', detail: 'full'},
+                {agentIdentity: '@sharing-peer',   memorySharing: 'legacy', projection: 'private'},
+                {agentIdentity: '@sharing-peer',   memorySharing: 'legacy', detail: 'full', projection: 'private'}
+            ];
+            for (const options of refusedRequests) {
+                const result = await RequestContextService.run({userId: 'sharing-caller', agentIdentityNodeId: '@sharing-caller'}, () =>
+                    MemoryService.queryRecentTurns(options));
+                expect(result).toMatchObject({code: 'RECENT_TURNS_ERROR'});
+                expect(result.message).toContain('public summaries');
             }
             expect(calls).toEqual({sql: 0, wal: 0, content: 0});
         } finally {
             sqlite.prepare = prepare;
-            MemoryService._readPendingWalRecencyRows = pending;
+            MemoryService._readPendingWalRecencyRows  = pending;
             MemoryService._hydrateRecentTurnSummaries = hydrate;
+            MemoryService._hydrateRecentTurnContent   = hydrateFull;
         }
     });
 
@@ -1304,14 +1379,15 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
             }
             const read = options => Context.run({userId: caller, agentIdentityNodeId: '@policy-caller-741'}, () =>
                 Memory.queryRecentTurns({agentIdentity: identity, limit: 30, ...options}));
-            const recovery = await read({});
-            const clamped  = await read({memorySharing: 'team'});
-            const first    = await read({memorySharing: 'team', limit: 1});
-            const narrowed = await read({memorySharing: 'private'});
-            const pending  = await readPendingWalRecords({dir: config.memoryWal.dir, markerType: 'graph'});
+            const recovery    = await read({});
+            const clamped     = await read({memorySharing: 'team'});
+            const clampedFull = await read({memorySharing: 'team', detail: 'full'});
+            const first       = await read({memorySharing: 'team', limit: 1});
+            const narrowed    = await read({memorySharing: 'private'});
+            const pending     = await readPendingWalRecords({dir: config.memoryWal.dir, markerType: 'graph'});
             console.log(JSON.stringify({configuredPolicy: config.memorySharing.defaultPolicy, graph: config.storagePaths.graph,
                 walCount: pending.length, aliasStored: pending.find(row => row.id === 'wal-alias').metadata.userId,
-                recovery, clamped, first, narrowed}));
+                recovery, clamped, clampedFull, first, narrowed}));
         };
         const own    = ['wal-own', 'graph-own'];
         const legacy = ['wal-zero', 'wal-false', 'wal-blank', 'wal-untagged', 'wal-shared', 'wal-own',
@@ -1328,6 +1404,15 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
             expect(result.clamped.turns.map(turn => turn.id)).toEqual(expected);
             expect(result.clamped.turns.filter(turn => turn.projectionPending).map(turn => turn.id))
                 .toEqual(expected.filter(id => id.startsWith('wal-')));
+            if (policy === 'legacy') {
+                // A requested team read clamped to legacy must remain summary-only and refuse detail:'full'.
+                expect(result.clampedFull).toMatchObject({code: 'RECENT_TURNS_ERROR'});
+                expect(result.clampedFull.message).toContain('public summaries');
+            } else {
+                expect(result.clampedFull.memorySharing).toEqual({policy: 'private', clamped: true});
+                expect(result.clampedFull.turns.map(turn => turn.id)).toEqual(own);
+                expect(result.clampedFull.turns.every(turn => turn.thought === undefined && !('thought' in turn))).toBe(true);
+            }
             expect(result.first.turns.map(turn => turn.id)).toEqual([expected[0]]);
             expect(result.narrowed.turns.map(turn => turn.id)).toEqual(own);
             expect(result.narrowed.memorySharing).toEqual({policy: 'private', clamped: false});
@@ -1335,7 +1420,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         }
     });
 
-    test('explicit shared recency takes the newest real pending WAL before bounding, uses public fallback, and fails closed without a tenant', async () => {
+    test('explicit shared recency takes the newest real pending WAL before bounding, serves public summary/full WAL content, and fails closed without a tenant', async () => {
         const identity = '@sharing-wal-741', secret = 'WAL-PRIVATE-CANARY-741';
         expect(path.isAbsolute(testWalDir)).toBe(true);
         expect(testWalDir.startsWith(os.tmpdir())).toBe(true);
@@ -1367,6 +1452,44 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         const second = await RequestContextService.run({userId: 'wal-caller-741', agentIdentityNodeId: '@wal-caller-741'}, () =>
             MemoryService.queryRecentTurns({agentIdentity: identity, memorySharing: 'team', limit: 2, before: result.nextCursor}));
         expect(second.turns.map(turn => turn.id)).toEqual(['sharing-wal-1', 'sharing-wal-graph']);
+        // Full public hydration under effective team sharing reads distinct prompt + response from the pending WAL
+        // overlay while omitting private thought, and reports null prompt/response when a graph row has no Chroma/WAL record.
+        const fullFirst = await RequestContextService.run({userId: 'wal-caller-741', agentIdentityNodeId: '@wal-caller-741'}, () =>
+            MemoryService.queryRecentTurns({agentIdentity: identity, memorySharing: 'team', detail: 'full', limit: 2}));
+        expect(fullFirst.turns.map(turn => turn.id)).toEqual(['sharing-wal-3', 'sharing-wal-2']);
+        expect(fullFirst.memorySharing).toEqual({policy: 'team', clamped: false});
+        expect(fullFirst.turns[0]).toMatchObject({
+            id               : 'sharing-wal-3',
+            projectionPending: true,
+            prompt           : 'public wal prompt 3',
+            response         : 'public wal response 3'
+        });
+        expect(fullFirst.turns[1]).toMatchObject({
+            id               : 'sharing-wal-2',
+            projectionPending: true,
+            prompt           : 'public wal prompt 2',
+            response         : 'public wal response 2'
+        });
+        expect(fullFirst.turns.every(turn => turn.thought === undefined && !('thought' in turn))).toBe(true);
+        expect(JSON.stringify(fullFirst)).not.toContain(secret);
+        const fullSecond = await RequestContextService.run({userId: 'wal-caller-741', agentIdentityNodeId: '@wal-caller-741'}, () =>
+            MemoryService.queryRecentTurns({agentIdentity: identity, memorySharing: 'team', detail: 'full', limit: 2, before: fullFirst.nextCursor}));
+        expect(fullSecond.turns.map(turn => turn.id)).toEqual(['sharing-wal-1', 'sharing-wal-graph']);
+        expect(fullSecond.turns[0]).toMatchObject({
+            id               : 'sharing-wal-1',
+            projectionPending: true,
+            prompt           : 'public wal prompt 1',
+            response         : 'public wal response 1'
+        });
+        expect(fullSecond.turns[1]).toMatchObject({
+            id               : 'sharing-wal-graph',
+            projectionPending: false,
+            miniSummary      : 'older graph summary',
+            prompt           : null,
+            response         : null
+        });
+        expect(fullSecond.turns.every(turn => turn.thought === undefined && !('thought' in turn))).toBe(true);
+        expect(JSON.stringify(fullSecond)).not.toContain(secret);
         const unbound = await MemoryService.queryRecentTurns({agentIdentity: identity, memorySharing: 'team', limit: 2});
         expect(unbound).toMatchObject({count: 0, turns: [], nextCursor: null, scope: 'fail-closed: no resolvable tenant'});
     });
