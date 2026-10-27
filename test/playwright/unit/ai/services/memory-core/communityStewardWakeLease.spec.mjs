@@ -30,6 +30,7 @@ import MailboxService                 from '../../../../../../ai/services/memory
 import SourceRegistryService          from '../../../../../../ai/services/memory-core/SourceRegistryService.mjs';
 import RequestContextService          from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 import {snapshotAiConfig}             from './util.mjs';
+import {runOperatorWindow}            from '../../../../../../ai/scripts/maintenance/observeCommunitySteward.mjs';
 import {
     COMMUNITY_STEWARD_WAKE_SCHEMA_VERSION,
     REQUIRED_LIVE_STEWARD_THRESHOLD_KEYS,
@@ -751,6 +752,94 @@ test.describe('communityStewardWakeLease', () => {
             });
         } finally {
             restoreLive()
+        }
+    });
+
+    test('retains the exact scoped count snapshot consumed by one shadow evaluation', async () => {
+        const source = registerActiveGitHubSource('tenant-window', 'org-window', 'repo');
+        admitCompleteBaseline('tenant-window', source.sourceInstanceId, [
+            makeObservation('comment:window-1', '2026-10-26T12:01:00.000Z')
+        ]);
+
+        const originalProjection = CommunityActivityService.projectAttentionCounts;
+        let captured, projectionCalls = 0;
+        CommunityActivityService.projectAttentionCounts = async function(options) {
+            projectionCalls++;
+            captured = await originalProjection.call(this, options);
+            return captured
+        };
+
+        try {
+            await inTenant('tenant-window', async () => {
+                const policyBefore = JSON.stringify(memoryCoreConfig.communityStewardWake);
+                const observed = await CommunityActivityService.observeStewardWake({
+                    now: Date.parse('2026-10-26T13:00:00.000Z'),
+                    sourceInstanceIds: [source.sourceInstanceId],
+                    vacancyFallbackTarget: 'steward:tenant-window:observer'
+                });
+                expect(projectionCalls).toBe(1);
+                expect(observed.attentionCounts).toEqual(captured);
+                expect(observed.attentionCounts).toMatchObject({status: 'fresh', count: 1});
+                expect(observed.evaluation).toMatchObject({
+                    mode: 'shadow', shouldWake: false, shadowWouldWake: true,
+                    wakePayload: {count: captured.count, sourceWatermark: captured.sourceWatermark}
+                });
+                expect(db.prepare('SELECT COUNT(*) AS count FROM mc_community_task_binding').get().count).toBe(0);
+                expect(JSON.stringify(memoryCoreConfig.communityStewardWake)).toBe(policyBefore);
+            });
+        } finally {
+            CommunityActivityService.projectAttentionCounts = originalProjection;
+        }
+
+        await inTenant('tenant-other-window', async () => {
+            const observed = await CommunityActivityService.observeStewardWake();
+            expect(observed.attentionCounts).toMatchObject({status: 'missing'});
+            expect(observed.evaluation).toMatchObject({reason: 'coverage-missing', shouldWake: false});
+            expect(db.prepare('SELECT COUNT(*) AS count FROM mc_community_steward_wake_state WHERE tenant_id = ?')
+                .get('tenant-other-window').count).toBe(0);
+        });
+    });
+
+    test('retains a finite window through the real service and admitted isolated records', async () => {
+        const source = registerActiveGitHubSource('tenant-retained-window', 'org-retained-window', 'repo');
+        admitCompleteBaseline('tenant-retained-window', source.sourceInstanceId, [
+            makeObservation('comment:retained-window-1', '2026-10-26T12:01:00.000Z')
+        ]);
+        const output = path.join(fs.realpathSync(tmpDir), 'window.json');
+        const report = await runOperatorWindow({
+            args: {tenantId: 'tenant-retained-window', sourceInstanceIds: [source.sourceInstanceId],
+                samples: 2, intervalMs: 0, output,
+                vacancyFallbackPrincipal: 'steward:tenant-retained-window:observer'},
+            runtimeLoader: async () => ({activity: CommunityActivityService, context: RequestContextService,
+                readPolicy: resolveValidatedStewardWakePolicy, testStore: true, unitTestStore: true})
+        });
+        expect(report.status).toBe('completed');
+        expect(report.windowEvidence).toBe('fixture-only');
+        expect(report.denominator).toMatchObject({recorded: 2, freshDemand: 2});
+        expect(report.observations.every(row => row.attentionCounts.count === 1 &&
+            row.evaluation.mode === 'shadow' && row.evaluation.shouldWake === false)).toBe(true);
+        expect(report.summary.wouldWake.numerator).toBe(1);
+        expect(report.summary.payloadBytes.observedDenominator).toBe(1);
+        expect(JSON.parse(fs.readFileSync(output, 'utf8')).observations).toEqual(report.observations);
+        expect(db.prepare('SELECT COUNT(*) AS count FROM mc_community_task_binding').get().count).toBe(0);
+    });
+
+    test('the observation surface refuses a live policy without recording a wake', async () => {
+        const source = registerActiveGitHubSource('tenant-live-window', 'org-live-window', 'repo');
+        admitCompleteBaseline('tenant-live-window', source.sourceInstanceId, [
+            makeObservation('comment:live-window-1', '2026-10-26T12:01:00.000Z')
+        ]);
+        const restoreLive = snapshotAiConfig(memoryCoreConfig, TEST_MEASURED_LIVE_LEAVES);
+        try {
+            await inTenant('tenant-live-window', async () => {
+                await expect(CommunityActivityService.observeStewardWake({
+                    vacancyFallbackTarget: 'steward:tenant-live-window:observer'
+                })).rejects.toThrow('COMMUNITY_STEWARD_SHADOW_OBSERVATION_ONLY');
+                expect(db.prepare('SELECT COUNT(*) AS count FROM mc_community_steward_wake_state').get().count).toBe(0);
+                expect(db.prepare('SELECT COUNT(*) AS count FROM mc_community_task_binding').get().count).toBe(0);
+            });
+        } finally {
+            restoreLive();
         }
     });
 

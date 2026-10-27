@@ -1069,16 +1069,39 @@ class CommunityActivityService extends Base {
      * @param {Object} [options={}]
      * @returns {Promise<Object>}
      */
-    async evaluateStewardWake({
+    async evaluateStewardWake(options) {
+        return (await this.#evaluateStewardObservation(options, false)).evaluation
+    }
+
+    /**
+     * @summary Retains the exact tenant count input and its shadow-only evaluation together.
+     * @param {Object} [options] Existing source, clock and fallback inputs.
+     * @returns {Promise<Object>} The consumed attentionCounts and evaluation, without a second read.
+     */
+    async observeStewardWake(options) {
+        return this.#evaluateStewardObservation(options, true)
+    }
+
+    /**
+     * @summary Shares one scoped projection while keeping the observation-only gate unoverrideable.
+     * @param {Object} options Existing evaluator inputs.
+     * @param {Boolean} shadowOnly Internal observation restriction, never a caller policy override.
+     * @returns {Promise<Object>} Exact count input paired with its decision.
+     */
+    async #evaluateStewardObservation({
         holderProof           = null,
         now                   = Date.now(),
         sourceInstanceIds     = null,
         vacancyFallbackTarget = null
-    } = {}) {
+    } = {}, shadowOnly) {
         const attentionCounts = await this.projectAttentionCounts({sourceInstanceIds});
         const tenantId        = this.scope();
 
-        return evaluateStewardWake({
+        if (shadowOnly && config.communityStewardWake.stewardActivation !== false) {
+            throw new Error('COMMUNITY_STEWARD_SHADOW_OBSERVATION_ONLY')
+        }
+
+        const evaluation = evaluateStewardWake({
             attentionCounts,
             db: this.db,
             holderProof,
@@ -1086,7 +1109,9 @@ class CommunityActivityService extends Base {
             sourceInstanceIds,
             tenantId,
             vacancyFallbackTarget
-        })
+        });
+
+        return {attentionCounts, evaluation}
     }
 }
 

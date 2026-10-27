@@ -49,7 +49,7 @@ Create a credential-free registration document:
 authorization header. Register it for the deployment-owned tenant key:
 
 ```bash
-npm run ai:community-source-operator -- \
+node ai/scripts/maintenance/communitySourceOperator.mjs \
   --action register \
   --tenant-id tenant-a \
   --source-file /run/community/source.json
@@ -63,14 +63,14 @@ Every lifecycle write presents the state and epoch the operator observed. This p
 activation from resurrecting a source after a concurrent revoke.
 
 ```bash
-npm run ai:community-source-operator -- \
+node ai/scripts/maintenance/communitySourceOperator.mjs \
   --action provision \
   --tenant-id tenant-a \
   --source-instance-id SOURCE_ID \
   --expected-state REQUESTED \
   --expected-epoch 1
 
-npm run ai:community-source-operator -- \
+node ai/scripts/maintenance/communitySourceOperator.mjs \
   --action activate \
   --tenant-id tenant-a \
   --source-instance-id SOURCE_ID \
@@ -163,7 +163,7 @@ collapses unknown-source and wrong-tenant lookups so the read path does not beco
 Revoke from the last observed control generation:
 
 ```bash
-npm run ai:community-source-operator -- \
+node ai/scripts/maintenance/communitySourceOperator.mjs \
   --action revoke \
   --tenant-id tenant-a \
   --source-instance-id SOURCE_ID \
@@ -178,7 +178,7 @@ it cannot partially admit under stale authority.
 Inspect the credential-free control-plane trail:
 
 ```bash
-npm run ai:community-source-operator -- \
+node ai/scripts/maintenance/communitySourceOperator.mjs \
   --action audit \
   --tenant-id tenant-a \
   --source-instance-id SOURCE_ID
@@ -285,8 +285,67 @@ The calibration report (`community-activity-calibration-report.v1`, recorded alo
 
 Authorized as a shadow-only steward experiment by the calibration report (`reportId: dd78a28718cf0db9a526876c271053c674e713c9dc4b0fe99882f410ee7f2664`, `optionDispositions.J.disposition = 'shadow-only steward experiment authorized; activation thresholds unset until its window'`), `ai/services/memory-core/communityStewardWakeLease.mjs` and `CommunityActivityService.{acquireStewardLease,releaseStewardLease,evaluateStewardWake}` instrument Stage 2 of Option J:
 
-- **Shadow-first default & `AiConfig` threshold leaves (`ai/mcp/server/memory-core/configBase.mjs`):** `communityStewardWake.stewardActivation` defaults to `false`, and `stewardLeaseTtlMs`, `wakeCoalesceWindowMs`, `vacancyFallbackCooldownMs`, `minUnclaimedEligibleCount`, `wakeAmplificationCap`, and `maxWakePayloadBytes` default to `null` (`unset`). Leaves are read directly at the use site (`ADR-0019 §5.1, B5`) with no caller override parameters on the service or helper surfaces. When `stewardActivation` is `false`, `evaluateStewardWake` runs in shadow mode (`mode: 'shadow'`, `shouldWake: false`, `shadowWouldWake: true`): it records steward vacancy (`vacancy_count`), would-be coalesced count-only wakes (`shadow_would_wake_count`), and observed payload bytes (`max_shadow_payload_bytes`) in `mc_community_steward_wake_state`, and sends no live wake. Live activation (`stewardActivation: true`) fails closed (`COMMUNITY_STEWARD_POLICY_THRESHOLD_UNSET:*`) unless every numeric threshold leaf is set in `AiConfig` to a measured positive integer; selecting production thresholds and enabling live activation remain gated on the retained shadow observation window under parent Epic `#106`.
+- **Shadow-first default & `AiConfig` threshold leaves (`ai/mcp/server/memory-core/configBase.mjs`):** `communityStewardWake.stewardActivation` defaults to `false`, and `stewardLeaseTtlMs`, `wakeCoalesceWindowMs`, `vacancyFallbackCooldownMs`, `minUnclaimedEligibleCount`, `wakeAmplificationCap`, and `maxWakePayloadBytes` default to `null` (`unset`). Leaves are read directly at the use site (`ADR-0019 §5.1, B5`) with no caller override parameters on the service or helper surfaces. When `stewardActivation` is `false`, `evaluateStewardWake` runs in shadow mode (`mode: 'shadow'`, `shouldWake: false`): eligible evaluations can record steward vacancy (`vacancy_count`), would-be coalesced count-only wakes (`shadow_would_wake_count`), and observed payload bytes (`max_shadow_payload_bytes`) in `mc_community_steward_wake_state`, and sends no live wake. Live activation (`stewardActivation: true`) fails closed (`COMMUNITY_STEWARD_POLICY_THRESHOLD_UNSET:*`) unless every numeric threshold leaf is set in `AiConfig` to a measured positive integer; selecting production thresholds and enabling live activation remain gated on the retained shadow observation window under parent Epic `#106`.
 - **Tenant/source-scoped SQLite-fenced lease (`mc_community_steward_lease`):** `acquireStewardWakeLease` binds a deterministic `leaseScopeKey` (`tenant:<tenantId>:sources:<ALL|hash>`), stores only the SHA-256 hash of the minted holder token (`holder_token_hash`), increments a monotonic `fencing_epoch`, and requires a positive integer `stewardLeaseTtlMs` leaf. Competing callers while `expires_at > now` receive explicit contention (`acquired: false`, `contention: true`, `retryAfterMs`); expired leases are reclaimed (`reclaimed: true`, `fencingEpoch + 1`), and stale holders are rejected (`superseded-epoch` / `stale-lease-holder`).
 - **Count-only bounded wake envelope & degraded-demand honesty (`community-steward-wake.v1`):** `evaluateStewardWake` consumes `projectAttentionCounts` (`notAuthority: true`) and builds a count-only payload containing `count`, `sourceCount`, `oldestOccurredAt`, `sourceWatermark`, `coverageStatus`, `routingMode`, and `targetPrincipalId` — never titles, bodies, excerpts, URLs, actor handles, ranking scores, or task assignments (`assertCountOnlyWakePayload`). If `attentionCounts.count` is not a non-negative safe integer, `evaluateStewardWake` returns `{reason: 'degraded-unclaimed-count', count: null, coverageStatus: 'degraded', shadowWouldWake: false, shouldWake: false}` without incrementing `vacancy_count` or `shadow_would_wake_count`.
 - **Attention routing vs. ownership (`AC4`):** Acquiring a lease or evaluating/observing a wake never creates or assigns a Task; `claim_community_activity_task` (`CommunityActivityService.claimTask`) remains the sole ownership transition, and claiming an item immediately decrements the unclaimed `count` and advances `sourceWatermark`.
 - **Vacancy fallback & positive server-derived tenant isolation (`AC5`, `AC6`):** When no active lease is held, `evaluateStewardWake` routes only to a single explicit same-tenant `vacancyFallbackTarget` subject to `vacancyFallbackCooldownMs` and `wakeAmplificationCap` per `(sourceWatermark, wakeCoalesceWindowMs)`. `validateTenantScopedPrincipal` verifies the server-derived `expectedTenantId` (`CommunityActivityService.scope()` + active `RequestContextService` userId) and requires the canonical tenant-qualified namespace `steward:<tenantId>:<seatId>`, rejecting wildcard/all-resident broadcasts (`'*'`, `'AGENT:*'`), unscoped global handles (`@*` / `scope: 'global-roster'`), and cross-tenant targets.
+
+## 9. Retain a finite steward shadow window
+
+The count projection and the steward's counters answer different questions. A count shows admitted
+demand at a watermark; an observation window retains the exact count snapshot consumed by each
+steward evaluation, including samples where coverage or a metric was unavailable. This lets an
+operator review the evidence without mistaking a fixture, a missing source, or a successful command
+exit for calibrated wake policy.
+
+Run this from the deployment that owns the selected Memory Core store, using a runtime containing
+`ai/scripts/maintenance/observeCommunitySteward.mjs`. The caller does not bootstrap sources. First
+use sections 1–3 to register, provision and activate the approved source and perform reviewed manual
+admission. Acquisition `--mode shadow` alone does not populate the ledger. Public source health and
+attention counts must be read under the matching authenticated tenant: the co-located `--tenant-id`
+is a deployment-operator choice, not a public tenant override or a grant to another tenant's data.
+
+Choose the sample count and spacing explicitly for this one experiment. They do not configure a
+scheduler, lease TTL, coalescing window or wake threshold. The output parent must already exist;
+use a fresh absolute file under real directories, without symlink ancestors.
+
+```bash
+node ai/scripts/maintenance/observeCommunitySteward.mjs \
+  --tenant-id "$TENANT" \
+  --source-instance-id "$SOURCE_ID" \
+  --samples "$SAMPLE_COUNT" \
+  --interval-ms "$OBSERVATION_SPACING_MS" \
+  --output "$FRESH_REPORT"
+```
+
+Repeat `--source-instance-id` for each approved source. For packaged or container deployments, use the absolute
+script path in that deployment's actual layout; a host checkout or a cloud wrapper pointing at a
+different package is not the selected store. `--help` and invalid arguments load no storage.
+
+The optional `--vacancy-fallback-principal steward:<tenant>:<seat>` supplies one explicit same-tenant
+counterfactual recipient. It assigns no work and sends no message. Without that input, fresh eligible
+demand can record vacancy while payload-byte and would-wake evidence may remain unavailable.
+The command never acquires a lease, admits a source event or claims a Task. `observeStewardWake`
+enforces shadow mode at the service use site; live activation refuses rather than being overridden.
+All governed leaves remain unchanged.
+
+The report records the caller's code hashes, Node/platform identity, available checkout and packaged
+revision evidence, resolved test-store posture and policy snapshots. Every sample retains its exact
+source generations, coverage, watermark, count input and decision. UTC timestamps locate observations;
+elapsed durations use a monotonic clock. Summary values carry observed denominators: an absent
+vacancy, would-wake or byte field is unknown, not false or zero. Lease occupancy and response-latency
+slots remain explicitly unavailable because this caller does not measure those independent paths.
+
+Exit 0 means the requested collection completed; partial or failed collection exits 1, and invalid
+arguments exit 2. Completed samples and a typed failure are retained after a later service error.
+Read `status`, `denominator` and `windowEvidence` together. A stable, ACTIVE, fully covered source
+with zero eligible demand is an observed empty sample; missing/degraded coverage is different.
+Injected runtimes and resolved test stores remain `fixture-only`. Even a
+`source-bound-window-observed` result attests only the selected ledger window: bind the actual
+registration and admission receipts before describing it as a real deployment observation.
+Zero dispatch is a command capability invariant backed by the retained shadow decisions and
+service tests, not a measurement of every other process on the host. Calibration and activation
+still require their separate evidence and review.
+
+Update this procedure when the caller arguments, report schema or service observation contract changes.
