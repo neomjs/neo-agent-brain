@@ -166,7 +166,7 @@ test.describe('SummaryService — author-identity scope (#12437)', () => {
             resolveAuthorScope('@me')
         );
         expect(resolved).toBe('neo-opus-4-7');
-        expect(() => resolveAuthorScope('@me')).toThrow(/requires a bound caller identity/);
+        expect(() => resolveAuthorScope('@me')).toThrow(/^SummaryService\.resolveAuthorScope: agentIdentity "@me" requires a bound caller identity/);
     });
 
     test('querySummaries scopes by agentIdentity across canonical and formerLogins aliases', async () => {

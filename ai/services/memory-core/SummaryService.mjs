@@ -91,7 +91,7 @@ class SummaryService extends Base {
 
             if (!resolved) {
                 throw new Error(
-                    'SummaryService.listSummaries: agentIdentity "@me" requires a bound caller ' +
+                    'SummaryService.resolveAuthorScope: agentIdentity "@me" requires a bound caller ' +
                     'identity, but RequestContextService.getAgentIdentityNodeId() resolved none. ' +
                     'Failing closed rather than returning the team-wide view.'
                 );
