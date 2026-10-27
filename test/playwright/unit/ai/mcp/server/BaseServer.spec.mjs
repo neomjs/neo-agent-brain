@@ -932,7 +932,10 @@ test.describe('Neo.ai.mcp.server.BaseServer — plane-member boundary (#15799)',
         // The re-review falsifier: a member server asserting only its LOCAL list would pass
         // while the inherited Tier-1 members it consumes stay on the old anchor. The
         // composition makes that bypass impossible.
+        const previousRoot = process.env.NEO_PLANE_DATA_ROOT,
+            previousHeartbeat = process.env.NEO_HEARTBEAT_ALIVE_PATH;
         process.env.NEO_PLANE_DATA_ROOT = path.join(os.tmpdir(), 'neo-relocated-composed-spec');
+        process.env.NEO_HEARTBEAT_ALIVE_PATH = Tier1ConfigBase.config.data.wakeDaemonHeartbeatAlivePath.default;
 
         try {
             const isolated = createConfigProxy(Neo.create(ConfigProvider, {
@@ -944,15 +947,18 @@ test.describe('Neo.ai.mcp.server.BaseServer — plane-member boundary (#15799)',
                 const server = Neo.create(makeBoundaryServerClass({member: true, composed: true}));
                 server.aiConfig = isolated;
 
-                // The witness is any inherited Tier-1 member: `backupPath` is now an explicit
-                // non-member and therefore no longer a stray this walk can name. The point of
-                // the test is that the LOCAL list alone cannot satisfy the assertion.
+                // Pin one inherited member to its build-time default despite launcher env overrides.
+                expect(isolated.plane.dataRoot).toBe(path.join(os.tmpdir(), 'neo-relocated-composed-spec'));
+                expect(isolated.wakeDaemonHeartbeatAlivePath).toBe(Tier1ConfigBase.config.data.wakeDaemonHeartbeatAlivePath.default);
                 expect(() => server.assertPlaneIdentity()).toThrow('wakeDaemonHeartbeatAlivePath');
             } finally {
                 isolated.destroy()
             }
         } finally {
-            delete process.env.NEO_PLANE_DATA_ROOT
+            if (previousRoot === undefined) delete process.env.NEO_PLANE_DATA_ROOT;
+            else process.env.NEO_PLANE_DATA_ROOT = previousRoot;
+            if (previousHeartbeat === undefined) delete process.env.NEO_HEARTBEAT_ALIVE_PATH;
+            else process.env.NEO_HEARTBEAT_ALIVE_PATH = previousHeartbeat;
         }
     });
 

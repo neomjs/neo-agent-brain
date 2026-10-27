@@ -160,6 +160,12 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
             const db         = GraphService.db.storage.db;
             const insertNode = db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)');
 
+            // Model corrupt pre-index storage: current JSON expression indexes reject these rows
+            // before the export guard can observe them. Drop only this throwaway fixture's indexes.
+            db.exec('DROP INDEX idx_nodes_label; ' +
+                'DROP INDEX idx_nodes_message_sent_at; ' +
+                'DROP INDEX idx_nodes_agent_memory_recency;');
+
             insertNode.run('graph-backup-corrupt-source', null, '{invalid-source-json');
             insertNode.run('graph-backup-corrupt-target', null, '{invalid-target-json');
             db.prepare('INSERT INTO Edges (id, user_id, source, target, type, data) VALUES (?, ?, ?, ?, ?, ?)')
