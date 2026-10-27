@@ -1079,6 +1079,28 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         expect(await readContentIndex(aiConfig.issueSync)).toContainEqual(expect.objectContaining({type: 'pulls', id: prNumber}));
     });
 
+    test('syncPullRequests rewrites a named archived pull where it lives, not where a fresh plan would put it (#1323)', async () => {
+        // The plan for this merged PR is `v13.0.0` (the first release after its merge), but its artifact
+        // lives under `v12.9.0/chunk-3`: a refresh overwrites the occupied file instead of writing a second.
+        const
+            prNumber     = 9879,
+            archivedPath = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v12.9.0', 'chunk-3', `pr-${prNumber}.md`);
+
+        ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
+        await fs.ensureDir(path.dirname(archivedPath));
+        await fs.writeFile(archivedPath, '# stale archived rendering\n');
+
+        GraphqlService.query = async query => query.includes('FetchSinglePullForSync')
+            ? {repository: {pullRequest: buildPullRequest(prNumber)}}
+            : {repository: {pullRequests: {nodes: [], pageInfo: {hasNextPage: false, endCursor: null}}}};
+
+        await PullRequestSyncer.syncPullRequests({pulls: {}}, {refetchPulls: [prNumber]});
+        const files = (await fsPromises.readdir(tmpRoot, {recursive: true})).filter(file => file.endsWith(`pr-${prNumber}.md`));
+
+        expect(files).toEqual([path.relative(tmpRoot, archivedPath)]);
+        expect(matter(await fs.readFile(archivedPath, 'utf8')).data.number).toBe(prNumber);
+    });
+
     test('syncPullRequests throws when a named pull does not come back (#1323)', async () => {
         GraphqlService.query = async query => query.includes('FetchSinglePullForSync')
             ? {repository: {pullRequest: null}}

@@ -86,6 +86,43 @@ class DiscussionSyncer extends Base {
     }
 
     /**
+     * @summary Removes every copy of a discussion except the rendering just written to `targetPath`.
+     *
+     * Mirrors `IssueSyncer#removeOtherCopies`: active-tier copies go wherever `reconcileActiveChunks`
+     * left them, and so does the metadata path's file; other archived copies are sealed and stay. No
+     * pass archives a closed discussion the delta stopped visiting, so its file stays in the active tier
+     * until a refetch plans it into the archive — and without this the corpus would then hold both.
+     * @param {Number} discussionNumber
+     * @param {String} targetPath The fresh rendering
+     * @param {Map<Number, Array<{absPath: String}>>} inventory Output of `buildContentInventory`
+     * @param {String|null} oldAbsolutePath The metadata path
+     * @returns {Promise<Number>} The count of removed files
+     * @private
+     */
+    async #removeOtherCopies(discussionNumber, targetPath, inventory, oldAbsolutePath) {
+        const archiveRoot = path.resolve(aiConfig.issueSync.archiveRoot),
+              candidates  = new Set((inventory.get(discussionNumber) || [])
+                  .map(copy => path.resolve(copy.absPath))
+                  .filter(absPath => !absPath.startsWith(archiveRoot)));
+
+        if (oldAbsolutePath) candidates.add(path.resolve(oldAbsolutePath));
+        candidates.delete(path.resolve(targetPath));
+
+        let removed = 0;
+
+        for (const absPath of candidates) {
+            try {
+                await fs.unlink(absPath);
+                removed++;
+            } catch (e) {
+                if (e.code !== 'ENOENT') logger.warn(`Could not remove a stale copy of discussion #${discussionNumber} at ${absPath}: ${e.message}`);
+            }
+        }
+
+        return removed;
+    }
+
+    /**
      * Converts an absolute path to a path relative to the project root.
      * @param {string} p The absolute path.
      * @returns {string|null} The relative path.
@@ -815,7 +852,8 @@ class DiscussionSyncer extends Base {
      * `PullRequestSyncer#refetchPullsByNumber` / `IssueSyncer#refetchIssuesByNumber`.
      *
      * A denylisted discussion is never written: like a denylisted issue, it is skipped and its index
-     * entry removed, so a recovery run cannot publish what the bulk sync quarantines.
+     * entry removed, so a recovery run cannot publish what the bulk sync quarantines. Any other written
+     * rendering is left as the discussion's only active copy (`#removeOtherCopies`).
      *
      * @param {Array<Number>|Set<Number>} numbers The discussion numbers to refetch.
      * @param {Object} metadata The sync metadata object (mutated in place).
@@ -870,11 +908,13 @@ class DiscussionSyncer extends Base {
                     continue;
                 }
 
-                const content     = this.#renderDiscussionMarkdown(discussion);
-                const contentHash = this.#calculateContentHash(content);
+                const content         = this.#renderDiscussionMarkdown(discussion);
+                const contentHash     = this.#calculateContentHash(content);
+                const oldAbsolutePath = this.#resolvePath(metadata.discussions[discussionNumber]?.path);
 
                 await fs.mkdir(path.dirname(targetPath), {recursive: true});
                 await fs.writeFile(targetPath, content, 'utf-8');
+                await this.#removeOtherCopies(discussionNumber, targetPath, inventory, oldAbsolutePath);
 
                 stats.refetched.count++;
                 stats.refetched.discussions.push(discussionNumber);
