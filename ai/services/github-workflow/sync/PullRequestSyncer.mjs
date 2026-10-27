@@ -568,9 +568,12 @@ class PullRequestSyncer extends Base {
     /**
      * Fetches pull requests from GitHub and syncs them to local markdown.
      * @param {object} metadata The sync metadata containing cached records.
+     * @param {object} [options]
+     * @param {number[]} [options.refetchPulls=[]] Pull requests to force-refetch in this sync, for local files
+     * that drifted from GitHub without an `updatedAt` change. Each one must come back refetched, or the sync throws.
      * @returns {Promise<object>} Statistics about the operation.
      */
-    async syncPullRequests(metadata) {
+    async syncPullRequests(metadata, {refetchPulls = []} = {}) {
         const issueSyncConfig   = aiConfig.issueSync;
         const pullRequestConfig = aiConfig.pullRequest;
 
@@ -732,7 +735,24 @@ class PullRequestSyncer extends Base {
             }));
         });
 
-        await updateContentIndex(issueSyncConfig, {upsert: indexEntries});
+        const indexMutations = {upsert: indexEntries, remove: []};
+
+        // Named pulls are refetched even when the delta returned them: the delta writes on an `updatedAt`
+        // change, and a named pull is one whose file drifted without one. They run after the cache rebuild
+        // above, which would otherwise drop the rows they write.
+        if (refetchPulls.length > 0) {
+            const refetchStats = await this.refetchPullsByNumber(refetchPulls, metadata, indexMutations);
+
+            stats.count += refetchStats.refetched.count;
+            stats.synced.push(...refetchStats.refetched.pulls);
+
+            const missing = refetchPulls.filter(prNumber => !refetchStats.refetched.pulls.includes(prNumber));
+            if (missing.length > 0) {
+                throw new Error(`Named pull requests were not refetched: #${missing.join(', #')}`);
+            }
+        }
+
+        await updateContentIndex(issueSyncConfig, indexMutations);
 
         if (stats.count > 0) {
             logger.info(`✨ Synced ${stats.count} modified pull requests to disk.`);

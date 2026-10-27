@@ -538,12 +538,10 @@ class IssueSyncer extends Base {
     /**
      * Containment gate: is this issue on the sync denylist (by number or author)?
      *
-     * Mirrors `DiscussionSyncer#isDenylisted`, deliberately without that sibling's `|| {}` fallback:
-     * `issueDenylist` is an AiConfig leaf with an object default, so the SSOT guarantees the subtree
-     * and a defensive fallback would only hide a broken config tree.
-     * Authority: ADR 0019 [not-ticket-ref: decision record] §3 B3. The divergence from the adjacent
-     * sibling is deliberate, and without the citation a future maintainer reads it as an oversight and
-     * "fixes" it back.
+     * Mirrors `DiscussionSyncer#isDenylisted`, and like it carries no `|| {}` fallback: `issueDenylist`
+     * is an AiConfig leaf with an object default, so the SSOT guarantees the subtree and a defensive
+     * fallback would only hide a broken config tree.
+     * Authority: ADR 0019 [not-ticket-ref: decision record] §3 B3.
      *
      * The two legs have different reach, and the difference is structural rather than incidental.
      * `number` is present at every `#getIssuePath` call site, including the reconciliation paths that

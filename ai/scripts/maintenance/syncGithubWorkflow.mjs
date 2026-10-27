@@ -59,10 +59,11 @@ import {fileURLToPath, pathToFileURL} from 'url';
  * `.corpus-sync.lock` is transient and must not be published. Progress stays in the destination;
  * the publisher owns cleanup of unsuccessful attempts and serialization across jobs.
  *
- * `--refetch-issues=<n,…>` heals corpus files that drifted from GitHub without an `updatedAt` change,
- * which the delta sync never revisits: the issues facet force-refetches the named numbers of the
- * selected source in the same emission, so they publish with it. Every token must be a positive
- * integer, checked before the emitter loads; a named issue that does not come back fails the run.
+ * `--refetch-issues=<n,…>`, `--refetch-pulls=<n,…>` and `--refetch-discussions=<n,…>` heal corpus files
+ * that drifted from GitHub without an `updatedAt` change, which the delta sync never revisits: each facet
+ * force-refetches the numbers named for it in the same emission, so they publish with it. Every token
+ * must be a positive integer, checked before the emitter loads; a named item that does not come back
+ * fails the run.
  *
  * The emission writes origin-qualified index identities. Bootstrapping an unqualified legacy index
  * requires explicit `NEO_MCP_GITHUB_LEGACY_REPO_SLUG`; the current source is never guessed as owner.
@@ -84,32 +85,34 @@ import {fileURLToPath, pathToFileURL} from 'url';
  *   NEO_MCP_GITHUB_OWNER=neomjs NEO_MCP_GITHUB_REPO=neo \
  *     NEO_MCP_GITHUB_CONTENT_ROOT=/checkout/corpus npm run ai:sync-github-workflow -- --corpus-only
  *   NEO_MCP_GITHUB_CONTENT_ROOT=/checkout/corpus \
- *     npm run ai:sync-github-workflow -- --corpus-only --verbose --refetch-issues=19565,19637
+ *     npm run ai:sync-github-workflow -- --corpus-only --verbose --refetch-issues=19565,19637 --refetch-pulls=19640
  *
  *   # Full output streamed to stdout/stderr (no MCP timeout ceiling).
  *   # Exit code 0 on success / 1 on failure.
  */
 
 /**
- * @summary Reads `--refetch-issues=<n,…>` into issue numbers, refusing anything but positive integers.
+ * @summary Reads one `--refetch-<facet>=<n,…>` flag into the numbers that facet force-refetches,
+ * refusing anything but positive integers.
  * @param {String[]} argv CLI arguments.
- * @returns {Number[]} The named issue numbers, deduplicated; empty when the flag is absent.
+ * @param {String} flag The flag, e.g. `--refetch-pulls`.
+ * @returns {Number[]} The named numbers, deduplicated; empty when the flag is absent.
  * @throws {Error} If the flag repeats, has no `=` value, or holds a token that is not a positive integer.
  */
-function parseRefetchIssues(argv) {
-    const flags = argv.filter(arg => arg === '--refetch-issues' || arg.startsWith('--refetch-issues='));
+function parseRefetchNumbers(argv, flag) {
+    const flags = argv.filter(arg => arg === flag || arg.startsWith(`${flag}=`));
 
     if (flags.length === 0) return [];
-    if (flags.length > 1 || flags[0] === '--refetch-issues') {
-        throw new Error('--refetch-issues takes one comma-separated list: --refetch-issues=<n,…>.');
+    if (flags.length > 1 || flags[0] === flag) {
+        throw new Error(`${flag} takes one comma-separated list: ${flag}=<n,…>.`);
     }
 
     const
-        tokens  = flags[0].slice('--refetch-issues='.length).split(','),
+        tokens  = flags[0].slice(flag.length + 1).split(','),
         invalid = tokens.find(token => !/^[1-9]\d*$/.test(token) || !Number.isSafeInteger(Number(token)));
 
     if (invalid !== undefined) {
-        throw new Error(`--refetch-issues takes positive issue numbers, not "${invalid}".`);
+        throw new Error(`${flag} takes positive numbers, not "${invalid}".`);
     }
 
     return [...new Set(tokens.map(Number))]
@@ -196,14 +199,18 @@ async function assertCorpusDestination() {
 async function syncGithubWorkflow() {
     const verbose = process.argv.includes('--verbose');
 
-    let refetchIssues;
+    let refetch;
 
     try {
         if (!process.argv.includes('--corpus-only') || process.argv.includes('--emit-only')) {
             throw new Error('syncGithubWorkflow emits the corpus only: run it with --corpus-only. ' +
                 'The full sync and --emit-only modes are retired.');
         }
-        refetchIssues = parseRefetchIssues(process.argv);
+        refetch = {
+            refetchDiscussions: parseRefetchNumbers(process.argv, '--refetch-discussions'),
+            refetchIssues     : parseRefetchNumbers(process.argv, '--refetch-issues'),
+            refetchPulls      : parseRefetchNumbers(process.argv, '--refetch-pulls')
+        };
         await assertCorpusDestination();
     } catch (error) {
         console.error(error.message);
@@ -215,7 +222,7 @@ async function syncGithubWorkflow() {
     if (verbose) console.log('Corpus context:', {
         source     : `${GH_Config.owner}/${GH_Config.repo}`,
         contentRoot: GH_Config.issueSync.contentRoot,
-        ...(refetchIssues.length > 0 && {refetchIssues})
+        ...Object.fromEntries(Object.entries(refetch).filter(([, numbers]) => numbers.length > 0))
     });
 
     console.log('🔄 Starting origin-qualified conversation corpus emission...');
@@ -224,7 +231,7 @@ async function syncGithubWorkflow() {
     let outcome;
     try {
         outcome = await withHeavyMaintenanceLease(
-            async () => GH_SyncService.emitConversationCorpus({refetchIssues}),
+            async () => GH_SyncService.emitConversationCorpus(refetch),
             {
                 leasePath   : GH_Config.issueSync.corpusLeaseFile,
                 owner       : 'syncGithubWorkflow',
@@ -254,4 +261,4 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
     syncGithubWorkflow();
 }
 
-export {assertCorpusDestination, parseRefetchIssues, syncGithubWorkflow};
+export {assertCorpusDestination, parseRefetchNumbers, syncGithubWorkflow};

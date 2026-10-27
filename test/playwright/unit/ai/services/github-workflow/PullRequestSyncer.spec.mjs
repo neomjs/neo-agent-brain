@@ -1057,6 +1057,37 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         expect(metadata.pulls[prNumber]).toBeUndefined();
     });
 
+    test('syncPullRequests rewrites a named pull the delta does not reach, inside the same index update (#1323)', async () => {
+        const
+            prNumber  = 9877,
+            stalePath = path.join(aiConfig.issueSync.pullsDir, 'chunk-1', `pr-${prNumber}.md`),
+            metadata  = {pulls: {}};
+
+        await fs.ensureDir(path.dirname(stalePath));
+        await fs.writeFile(stalePath, '# stale rendering\n');
+
+        // The delta returns nothing: a named pull is one whose file drifted without an `updatedAt` change.
+        GraphqlService.query = async query => query.includes('FetchSinglePullForSync')
+            ? {repository: {pullRequest: buildPullRequest(prNumber)}}
+            : {repository: {pullRequests: {nodes: [], pageInfo: {hasNextPage: false, endCursor: null}}}};
+
+        const stats = await PullRequestSyncer.syncPullRequests(metadata, {refetchPulls: [prNumber]});
+
+        expect(stats.synced).toEqual([prNumber]);
+        expect(matter(await fs.readFile(stalePath, 'utf8')).data.number).toBe(prNumber);
+        expect(metadata.pulls[prNumber].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, stalePath));
+        expect(await readContentIndex(aiConfig.issueSync)).toContainEqual(expect.objectContaining({type: 'pulls', id: prNumber}));
+    });
+
+    test('syncPullRequests throws when a named pull does not come back (#1323)', async () => {
+        GraphqlService.query = async query => query.includes('FetchSinglePullForSync')
+            ? {repository: {pullRequest: null}}
+            : {repository: {pullRequests: {nodes: [], pageInfo: {hasNextPage: false, endCursor: null}}}};
+
+        await expect(PullRequestSyncer.syncPullRequests({pulls: {}}, {refetchPulls: [9878]}))
+            .rejects.toThrow('Named pull requests were not refetched: #9878');
+    });
+
     test('PullRequestSyncer spec uses snapshotAiConfig instead of shared-config writes', async () => {
         const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
 

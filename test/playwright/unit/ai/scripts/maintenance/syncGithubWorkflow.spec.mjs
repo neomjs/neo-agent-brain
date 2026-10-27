@@ -107,6 +107,24 @@ function issueNode(overrides = {}) {
 }
 
 /**
+ * @summary Builds one GitHub discussion node as the sync queries return it.
+ * @param {Object} [overrides] Fields replacing those of the open fixture discussion, number 102.
+ * @returns {Object}
+ */
+function discussionNode(overrides = {}) {
+    return {number: 102, title: 'Corpus discussion', body: 'discussion body', closed: false, closedAt: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', author: {login: 'fixture'}, category: {name: 'General'}, comments: {nodes: [], totalCount: 0, pageInfo: {hasNextPage: false, endCursor: null}}, ...overrides};
+}
+
+/**
+ * @summary Builds one GitHub pull-request node as the sync queries return it.
+ * @param {Object} [overrides] Fields replacing those of the open fixture pull request, number 103.
+ * @returns {Object}
+ */
+function pullNode(overrides = {}) {
+    return {number: 103, title: 'Corpus pull', body: 'pull body', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', closedAt: null, mergedAt: null, headRefName: 'fixture', baseRefName: 'dev', url: 'https://github.com/neomjs/neo/pull/103', author: {login: 'fixture'}, milestone: null, comments: {nodes: []}, reviews: {nodes: []}, ...overrides};
+}
+
+/**
  * @summary Controls remote acquisition while exercising the actual CLI and filesystem writers. With
  * `fail`, every request throws a marker, so a run that must not reach GitHub can prove it did not.
  * @param {Object} [options]
@@ -114,12 +132,14 @@ function issueNode(overrides = {}) {
  * @param {Boolean} [options.releases=true] False answers as a repository that has never cut a release.
  * @param {Object[]} [options.issues] The delta's issue nodes; defaults to the open fixture issue alone.
  * @param {Object} [options.singles={}] Issue nodes by number for single-issue refetches; others are absent.
+ * @param {Object} [options.singlePulls={}] Pull-request nodes by number for single-pull refetches; others are absent.
+ * @param {Object} [options.singleDiscussions={}] Discussion nodes by number for single-discussion refetches; others are absent.
  * @returns {String} Node preload data URL.
  */
-function corpusAcquisitionPreload({fail = false, releases = true, issues = [issueNode()], singles = {}} = {}) {
+function corpusAcquisitionPreload({fail = false, releases = true, issues = [issueNode()], singles = {}, singlePulls = {}, singleDiscussions = {}} = {}) {
     const release    = releases ? "{tagName:'v1.0.0',name:'v1.0.0',description:'fixture',publishedAt:'2026-01-03T00:00:00Z',url:'https://example.test/release'}" : '';
-    const discussion = {number: 102, title: 'Corpus discussion', body: 'discussion body', closed: false, closedAt: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', author: {login: 'fixture'}, category: {name: 'General'}, comments: {nodes: [], totalCount: 0, pageInfo: {hasNextPage: false, endCursor: null}}};
-    const pull       = {number: 103, title: 'Corpus pull', body: 'pull body', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', closedAt: null, mergedAt: null, headRefName: 'fixture', baseRefName: 'dev', url: 'https://github.com/neomjs/neo/pull/103', author: {login: 'fixture'}, milestone: null, comments: {nodes: []}, reviews: {nodes: []}};
+    const discussion = discussionNode();
+    const pull       = pullNode();
     const source     = `
       import Neo from ${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'node_modules/neo.mjs/src/Neo.mjs')).href)};
       import ${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'node_modules/neo.mjs/src/core/_export.mjs')).href)};
@@ -129,6 +149,8 @@ function corpusAcquisitionPreload({fail = false, releases = true, issues = [issu
         if (query.includes('FetchLatestRelease')) return {repository:{latestRelease:${releases ? "{tagName:'v1.0.0',publishedAt:'2026-01-03T00:00:00Z'}" : 'null'}}};
         if (query.includes('FetchReleases')) return {repository:{releases:{nodes:[${release}],pageInfo:{hasNextPage:false,endCursor:null}}}};
         if (query.includes('FetchSingleIssue')) return {repository:{issue:${JSON.stringify(singles)}[variables.number] ?? null}};
+        if (query.includes('FetchSinglePullForSync')) return {repository:{pullRequest:${JSON.stringify(singlePulls)}[variables.prNumber] ?? null}};
+        if (query.includes('FetchSingleDiscussionForSync')) return {repository:{discussion:${JSON.stringify(singleDiscussions)}[variables.number] ?? null}};
         if (query.includes('FetchIssuesForSync')) return {rateLimit:{cost:1,remaining:5000,resetAt:'2026-01-04T00:00:00Z'},repository:{issues:{nodes:${JSON.stringify(issues)},pageInfo:{hasNextPage:false,endCursor:null}}}};
         if (query.includes('FetchDiscussionsForSync')) return {repository:{discussions:{nodes:[${JSON.stringify(discussion)}],pageInfo:{hasNextPage:false,endCursor:null}}}};
         if (query.includes('FetchPullRequestsForSync')) return {repository:{pullRequests:{nodes:[${JSON.stringify(pull)}],pageInfo:{hasNextPage:false,endCursor:null}}}};
@@ -139,15 +161,16 @@ function corpusAcquisitionPreload({fail = false, releases = true, issues = [issu
 }
 
 /**
- * @summary Runs `parseRefetchIssues` over each argument list in one fresh Node process.
+ * @summary Runs `parseRefetchNumbers` for one flag over each argument list in one fresh Node process.
+ * @param {String} flag The refetch flag to parse.
  * @param {String[][]} argvs Argument lists.
  * @returns {Promise<Object[]>} Per list, `{numbers}` or `{error}`.
  */
-async function parseRefetchIssuesInChild(argvs) {
+async function parseRefetchNumbersInChild(flag, argvs) {
     const script = `
-        const {parseRefetchIssues} = await import(${JSON.stringify(pathToFileURL(cliScriptPath).href)});
+        const {parseRefetchNumbers} = await import(${JSON.stringify(pathToFileURL(cliScriptPath).href)});
         console.log(JSON.stringify(${JSON.stringify(argvs)}.map(argv => {
-            try { return {numbers: parseRefetchIssues(argv)} } catch (error) { return {error: error.message} }
+            try { return {numbers: parseRefetchNumbers(argv, ${JSON.stringify(flag)})} } catch (error) { return {error: error.message} }
         })));
     `;
     const {stdout} = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
@@ -226,9 +249,11 @@ test.describe('syncGithubWorkflow CLI', () => {
     test('keeps the literals the corpus publisher greps for before it invokes the CLI', async () => {
         const source = await fs.readFile(cliScriptPath, 'utf8');
 
-        // neomjs/github-content-sync publish-corpus.yml refuses a Brain whose CLI lacks either flag.
+        // neomjs/github-content-sync publish-corpus.yml refuses a Brain whose CLI lacks a flag it passes.
         expect(source).toContain('corpus-only');
         expect(source).toContain('--refetch-issues');
+        expect(source).toContain('--refetch-pulls');
+        expect(source).toContain('--refetch-discussions');
     });
 
     test('a held lease fails the run', async () => {
@@ -413,32 +438,35 @@ test.describe('syncGithubWorkflow CLI', () => {
         });
     });
 
-    test('parseRefetchIssues accepts a list of positive integers and refuses anything else', async () => {
-        const [absent, list, single, ...refused] = await parseRefetchIssuesInChild([
-            [], ['--refetch-issues=19565,19637,19565'], ['--refetch-issues=7'],
-            ['--refetch-issues=1;id'], ['--refetch-issues=1 2'], ['--refetch-issues=-1'], ['--refetch-issues=0'],
-            ['--refetch-issues=12,'], ['--refetch-issues=99999999999999999999'],
-            ['--refetch-issues', '5'], ['--refetch-issues=1', '--refetch-issues=2']
-        ]);
+    for (const flag of ['--refetch-issues', '--refetch-pulls', '--refetch-discussions']) {
+        test(`parseRefetchNumbers reads ${flag} as a list of positive integers and refuses anything else`, async () => {
+            const [absent, otherFlag, list, single, ...refused] = await parseRefetchNumbersInChild(flag, [
+                [], ['--refetch-other=5'], [`${flag}=19565,19637,19565`], [`${flag}=7`],
+                [`${flag}=1;id`], [`${flag}=1 2`], [`${flag}=-1`], [`${flag}=0`],
+                [`${flag}=12,`], [`${flag}=99999999999999999999`],
+                [flag, '5'], [`${flag}=1`, `${flag}=2`]
+            ]);
 
-        expect(absent).toEqual({numbers: []});
-        expect(list).toEqual({numbers: [19565, 19637]});
-        expect(single).toEqual({numbers: [7]});
-        expect(refused.map(result => result.error)).toEqual([
-            ...['1;id', '1 2', '-1', '0', '', '99999999999999999999']
-                .map(token => `--refetch-issues takes positive issue numbers, not "${token}".`),
-            ...Array(2).fill('--refetch-issues takes one comma-separated list: --refetch-issues=<n,…>.')
-        ]);
-    });
+            expect(absent).toEqual({numbers: []});
+            expect(otherFlag).toEqual({numbers: []});
+            expect(list).toEqual({numbers: [19565, 19637]});
+            expect(single).toEqual({numbers: [7]});
+            expect(refused.map(result => result.error)).toEqual([
+                ...['1;id', '1 2', '-1', '0', '', '99999999999999999999']
+                    .map(token => `${flag} takes positive numbers, not "${token}".`),
+                ...Array(2).fill(`${flag} takes one comma-separated list: ${flag}=<n,…>.`)
+            ]);
+        });
+    }
 
-    test('refuses a non-integer --refetch-issues token in the CLI child before importing the emitter', async () => {
+    test('refuses a non-integer --refetch-pulls token in the CLI child before importing the emitter', async () => {
         await withOwnedFixture(async ({corpusRoot}) => {
             await fs.mkdir(corpusRoot);
-            const result = await runCliChild({args: ['--corpus-only', '--refetch-issues=12,1;id'], contentRoot: corpusRoot});
+            const result = await runCliChild({args: ['--corpus-only', '--refetch-pulls=12,1;id'], contentRoot: corpusRoot});
             const output = `${result.stdout}\n${result.stderr}`;
 
             expect(result.code).toBe(1);
-            expect(output).toContain('--refetch-issues takes positive issue numbers, not "1;id".');
+            expect(output).toContain('--refetch-pulls takes positive numbers, not "1;id".');
             expect(output).not.toContain('Starting origin-qualified conversation corpus emission');
             expect(await fs.readdir(corpusRoot)).toEqual([]);
         });
@@ -493,6 +521,66 @@ test.describe('syncGithubWorkflow CLI', () => {
             expect(`${result.stdout}\n${result.stderr}`).toContain('Named issues were not refetched: #202');
             const metadata = JSON.parse(await fs.readFile(path.join(corpusRoot, 'neo', '.sync-metadata.json'), 'utf8'));
             expect(metadata.issues ?? {}).toEqual({});
+        });
+    });
+
+    test('actual corpus CLI rewrites a named pull and a named discussion whose stale copies the delta never revisits', async () => {
+        await withOwnedFixture(async ({corpusRoot}) => {
+            const
+                origin = path.join(corpusRoot, 'neo'),
+                stale  = {pull: 'pulls/chunk-1/pr-301.md', discussion: 'discussions/chunk-1/discussion-302.md'};
+
+            // The drift these flags heal: the metadata holds the current `updatedAt`, the files a stale rendering.
+            for (const file of Object.values(stale)) {
+                await fs.mkdir(path.join(origin, path.dirname(file)), {recursive: true});
+                await fs.writeFile(path.join(origin, file), '---\ntitle: Stale\n---\nstale body\n');
+            }
+            await fs.writeFile(path.join(origin, '.sync-metadata.json'), JSON.stringify({
+                lastSync   : '2026-01-05T00:00:00Z', issues: {},
+                releases   : {'v1.0.0': {publishedAt: '2026-01-03T00:00:00Z'}},
+                pulls      : {301: {number: 301, state: 'OPEN', path: `neo/${stale.pull}`, updatedAt: '2026-01-02T00:00:00Z', contentHash: 'stale'}},
+                discussions: {302: {number: 302, closed: false, closedAt: null, path: `neo/${stale.discussion}`, updatedAt: '2026-01-02T00:00:00Z', contentHash: 'stale'}}
+            }));
+
+            const result = await runCliChild({
+                args       : ['--corpus-only', '--refetch-pulls=301', '--refetch-discussions=302'],
+                contentRoot: corpusRoot,
+                preload    : corpusAcquisitionPreload({
+                    issues           : [],
+                    singlePulls      : {301: pullNode({number: 301, title: 'Fresh pull', url: 'https://github.com/neomjs/neo/pull/301'})},
+                    singleDiscussions: {302: discussionNode({number: 302, title: 'Fresh discussion'})}
+                })
+            });
+
+            expect(result.code, result.stderr).toBe(0);
+            const
+                files = await fs.readdir(origin, {recursive: true}),
+                index = JSON.parse(await fs.readFile(path.join(corpusRoot, '_index.json'), 'utf8'));
+
+            expect(files.filter(file => file.endsWith('pr-301.md'))).toEqual([stale.pull]);
+            expect(files.filter(file => file.endsWith('discussion-302.md'))).toEqual([stale.discussion]);
+            expect(await fs.readFile(path.join(origin, stale.pull), 'utf8')).toContain('Fresh pull');
+            expect(await fs.readFile(path.join(origin, stale.discussion), 'utf8')).toContain('Fresh discussion');
+            expect(index).toEqual(expect.arrayContaining([
+                expect.objectContaining({repoSlug: 'neo', type: 'pulls', id: 301, path: `neo/${stale.pull}`}),
+                expect.objectContaining({repoSlug: 'neo', type: 'discussions', id: 302, path: `neo/${stale.discussion}`})
+            ]));
+        });
+    });
+
+    test('actual corpus CLI fails the run, and each facet, when a named pull or discussion does not come back', async () => {
+        await withOwnedFixture(async ({corpusRoot}) => {
+            await fs.mkdir(corpusRoot);
+            const result = await runCliChild({
+                args       : ['--corpus-only', '--refetch-pulls=304', '--refetch-discussions=305'],
+                contentRoot: corpusRoot,
+                preload    : corpusAcquisitionPreload()
+            });
+            const output = `${result.stdout}\n${result.stderr}`;
+
+            expect(result.code).toBe(1);
+            expect(output).toContain('Named pull requests were not refetched: #304');
+            expect(output).toContain('Named discussions were not refetched: #305');
         });
     });
 

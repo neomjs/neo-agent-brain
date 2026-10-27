@@ -258,19 +258,21 @@ class DiscussionSyncer extends Base {
 
     /**
      * Containment gate: is this fetched discussion on the sync denylist (by number or author)?
-     * Denylisted fetched discussions are excluded from emission/indexing. Quarantine of an
-     * already-synced copy is driven separately in `syncDiscussions`: by `number` it removes cached
-     * copies (file + content-index entry) even when GitHub no longer lists them (the hidden /
-     * spam-hammered case); `author` matching is fetch-time only, since `metadata.discussions`
-     * persists `number` but not author login. The empty default denylist makes this a no-op.
+     * Denylisted fetched discussions are excluded from emission/indexing, by the bulk sync and the
+     * force-refetch alike. Quarantine of an already-synced copy is driven separately in
+     * `syncDiscussions`: by `number` it removes cached copies (file + content-index entry) even when
+     * GitHub no longer lists them (the hidden / spam-hammered case); `author` matching is fetch-time
+     * only, since `metadata.discussions` persists `number` but not author login. The empty default
+     * denylist makes this a no-op. `discussionDenylist` is an AiConfig leaf with an object default, so
+     * it is read without a fallback (ADR 0019 [not-ticket-ref: decision record] §3 B3).
      * @param {Object} discussion
      * @returns {Boolean}
      */
     #isDenylisted(discussion) {
-        const issueSyncConfig = aiConfig.issueSync;
-        const denylist        = issueSyncConfig.discussionDenylist || {};
-        return (denylist.numbers || []).includes(discussion.number) ||
-               (denylist.authors || []).includes(discussion.author?.login);
+        const denylist = aiConfig.issueSync.discussionDenylist;
+
+        return denylist.numbers.includes(discussion.number) ||
+               denylist.authors.includes(discussion.author?.login)
     }
 
     /**
@@ -549,9 +551,13 @@ class DiscussionSyncer extends Base {
     /**
      * Fetches discussions from GitHub and syncs them to local markdown.
      * @param {object} metadata The sync metadata containing cached records.
+     * @param {object} [options]
+     * @param {number[]} [options.refetchDiscussions=[]] Discussions to force-refetch in this sync, for local
+     * files that drifted from GitHub without an `updatedAt` change. Each one must come back refetched, or
+     * the sync throws.
      * @returns {Promise<object>} Statistics about the operation.
      */
-    async syncDiscussions(metadata) {
+    async syncDiscussions(metadata, {refetchDiscussions = []} = {}) {
         const issueSyncConfig = aiConfig.issueSync;
 
         logger.info('💭 Fetching discussions from GitHub via GraphQL...');
@@ -629,7 +635,7 @@ class DiscussionSyncer extends Base {
         };
 
         const cachedDiscussions = metadata.discussions || {};
-        const denylistNumbers   = new Set((issueSyncConfig.discussionDenylist?.numbers) || []);
+        const denylistNumbers   = new Set(issueSyncConfig.discussionDenylist.numbers);
 
         // Containment: quarantine denylisted discussions — removing both the file AND the
         // content-index entry — for the current fetch AND for cached copies GitHub no longer lists
@@ -770,7 +776,23 @@ class DiscussionSyncer extends Base {
             }));
         });
 
-        await updateContentIndex(issueSyncConfig, {upsert: indexEntries, remove: quarantineRemovals});
+        const indexMutations = {upsert: indexEntries, remove: quarantineRemovals};
+
+        // Named discussions are refetched whether or not the delta returned them: a named one drifted
+        // without an `updatedAt` change, so the delta's cutoff does not reach it.
+        if (refetchDiscussions.length > 0) {
+            const refetchStats = await this.refetchDiscussionsByNumber(refetchDiscussions, metadata, indexMutations);
+
+            stats.count += refetchStats.refetched.count;
+            stats.synced.push(...refetchStats.refetched.discussions);
+
+            const missing = refetchDiscussions.filter(number => !refetchStats.refetched.discussions.includes(number));
+            if (missing.length > 0) {
+                throw new Error(`Named discussions were not refetched: #${missing.join(', #')}`);
+            }
+        }
+
+        await updateContentIndex(issueSyncConfig, indexMutations);
 
         if (stats.count > 0) {
             logger.info(`✨ Interacted and synced ${stats.count} modified discussions to disk.`);
@@ -791,6 +813,9 @@ class DiscussionSyncer extends Base {
      * re-renders via {@link #renderDiscussionMarkdown}, writes the file, and mutates the passed
      * `metadata` in place. The caller persists metadata afterwards. Mirrors
      * `PullRequestSyncer#refetchPullsByNumber` / `IssueSyncer#refetchIssuesByNumber`.
+     *
+     * A denylisted discussion is never written: like a denylisted issue, it is skipped and its index
+     * entry removed, so a recovery run cannot publish what the bulk sync quarantines.
      *
      * @param {Array<Number>|Set<Number>} numbers The discussion numbers to refetch.
      * @param {Object} metadata The sync metadata object (mutated in place).
@@ -823,6 +848,14 @@ class DiscussionSyncer extends Base {
                 const discussion = data.repository.discussion;
                 if (!discussion) {
                     logger.warn(`Discussion #${discussionNumber} not found on GitHub, skipping refetch`);
+                    continue;
+                }
+
+                if (this.#isDenylisted(discussion)) {
+                    logger.warn(`🛡️ Discussion #${discussionNumber} is denylisted (containment); not refetched.`);
+                    if (indexMutations) {
+                        indexMutations.remove.push({repoSlug: aiConfig.repo, type: 'discussions', id: discussionNumber});
+                    }
                     continue;
                 }
 

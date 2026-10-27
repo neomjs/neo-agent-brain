@@ -80,12 +80,16 @@ class SyncService extends Base {
      * 8. Throws one aggregate verdict naming every facet that did not advance — partial progress must
      *    never report as a clean run.
      * @param {Object} [options]
+     * @param {Number[]} [options.refetchDiscussions=[]] Discussions the `discussions` facet force-refetches
+     * in this run, failing the facet unless each comes back (`DiscussionSyncer#syncDiscussions`).
      * @param {Number[]} [options.refetchIssues=[]] Issues the `issues` facet force-refetches in this run,
      * failing the facet unless each comes back (`IssueSyncer#pullFromGitHub`).
+     * @param {Number[]} [options.refetchPulls=[]] Pull requests the `pulls` facet force-refetches in this
+     * run, before its integrity verdict, failing the facet unless each comes back (`PullRequestSyncer#syncPullRequests`).
      * @returns {Promise<object>} Statistics for the emitted generated content, plus `facetOutcomes`.
      * @throws {Error} When no corpus root is declared, before any metadata loads or request is made.
      */
-    async emitGeneratedContent({refetchIssues = []} = {}) {
+    async emitGeneratedContent({refetchDiscussions = [], refetchIssues = [], refetchPulls = []} = {}) {
         if (!aiConfig.issueSync.contentRoot) {
             throw new Error(
                 'SyncService#emitGeneratedContent: no GitHub workflow contentRoot is configured ' +
@@ -186,7 +190,7 @@ class SyncService extends Base {
         const releaseStats = await dependentFacet('releaseNotes', ['releases'], () => ReleaseNotesSyncer.syncNotes(metadata));
 
         // 6. Sync discussions
-        const discussionStats = await dependentFacet('discussions', ['discussions'], () => DiscussionSyncer.syncDiscussions(metadata));
+        const discussionStats = await dependentFacet('discussions', ['discussions'], () => DiscussionSyncer.syncDiscussions(metadata, {refetchDiscussions}));
 
         // 7. The pull facet: reconcile, sync, repair, project, and the integrity verdict that decides
         //    whether any of it counts. All one facet because 7c's abort must revert THIS facet and only
@@ -207,7 +211,7 @@ class SyncService extends Base {
             //      what its own rationale requires is only that it precede `syncPullRequests`.
             pullReconcileStats = await PullRequestSyncer.reconcileClosedPullRequestLocations(metadata);
 
-            const stats = await PullRequestSyncer.syncPullRequests(metadata);
+            const stats = await PullRequestSyncer.syncPullRequests(metadata, {refetchPulls});
 
             // 7-b. Restore any pull request owning more than one artifact from canonical GitHub state.
             //      A divergent pair cannot be resolved locally — both files are real renderings and
@@ -308,17 +312,19 @@ class SyncService extends Base {
      * Release history remains the prerequisite for issue, discussion and pull bucketing, and the
      * notes are written beside the conversations, so a reader of the corpus alone has them. Portal/SEO
      * output and git publication stay outside this producer-only boundary.
-     * @param {Object} [options]
-     * @param {Number[]} [options.refetchIssues=[]] Issues to force-refetch in this emission, for corpus files
+     * @param {Object} [options] The items to force-refetch in this emission, per facet, for corpus files
      * that drifted from GitHub without an `updatedAt` change.
+     * @param {Number[]} [options.refetchDiscussions=[]] Discussion numbers.
+     * @param {Number[]} [options.refetchIssues=[]] Issue numbers.
+     * @param {Number[]} [options.refetchPulls=[]] Pull-request numbers.
      * @returns {Promise<object>} Facet statistics and truthful aggregate outcome.
      * @throws {Error} When a facet fails to advance or this run writes a logical-identity collision in the archive.
      */
-    async emitConversationCorpus({refetchIssues = []} = {}) {
+    async emitConversationCorpus({refetchDiscussions = [], refetchIssues = [], refetchPulls = []} = {}) {
         const
             archiveRoot     = aiConfig.issueSync.archiveRoot,
             baselineArchive = snapshotArchiveTree(archiveRoot),
-            result          = await this.emitGeneratedContent({refetchIssues}),
+            result          = await this.emitGeneratedContent({refetchDiscussions, refetchIssues, refetchPulls}),
             targets         = collectWrittenArchiveTargets(archiveRoot, baselineArchive),
             collisions      = findLogicalIdentityCollisions({archiveRoot, targets});
 
