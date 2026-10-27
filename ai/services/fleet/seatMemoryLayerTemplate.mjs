@@ -97,7 +97,7 @@ export function renderMemoryIndexMd({harness} = {}) {
         '> **Hot index — target <17KB, read-limit 24.6KB.** One terse line per entry: the line',
         '> carries the lesson, the linked file carries the detail. Cold entries move to',
         '> `ARCHIVE.md` (created on first need), grep on demand. The Memory Core is the deep',
-        '> archive (`query_raw_memories` semantic (`detail: \'summary\'` + `agentIdentity` first, then `detail: \'full\'`), `query_recent_turns` recency).',
+        '> archive (`query_raw_memories` semantic (`detail: \'summary\'` first, plus `agentIdentity` when author-scoped, then `detail: \'full\'`), `query_recent_turns` recency).',
         '> **Compaction is measured:** `wc -c`, not vibes. Levers: merge-facet · move-to-ARCHIVE ·',
         '> trim hooks. Re-check pointers after merges — orphaning deletes the memory.',
         '> Mechanically-enforced rules get one line; the guard is the reminder.',
@@ -154,7 +154,7 @@ export function renderAboutThisLayerMd({harness} = {}) {
             '**Rules of the layer:**',
             '- `identity.md` is the bearer\'s self-story; nobody else writes it.',
             '- Keep useful working knowledge in these files and cite durable claims to their source record.',
-            '- Use the Memory Core for provenance-bearing turn records and deeper retrieval (`query_raw_memories` with `detail: \'summary\'` and `agentIdentity` for discovery sweeps before `detail: \'full\'` hydration).',
+            '- Use the Memory Core for provenance-bearing turn records and deeper retrieval (`query_raw_memories` with `detail: \'summary\'`, plus `agentIdentity` when author-scoped, for discovery sweeps before `detail: \'full\'` hydration).',
             ''
         ].join('\n')
     }
@@ -173,7 +173,7 @@ export function renderAboutThisLayerMd({harness} = {}) {
             '**Rules of the layer:**',
             '- `identity.md` is the bearer\'s self-story; nobody else writes it.',
             '- Keep useful working knowledge in these files and cite durable claims to their source record.',
-            '- Use the Memory Core for provenance-bearing turn records and deeper retrieval (`query_raw_memories` with `detail: \'summary\'` and `agentIdentity` for discovery sweeps before `detail: \'full\'` hydration).',
+            '- Use the Memory Core for provenance-bearing turn records and deeper retrieval (`query_raw_memories` with `detail: \'summary\'`, plus `agentIdentity` when author-scoped, for discovery sweeps before `detail: \'full\'` hydration).',
             ''
         ].join('\n')
     }
@@ -203,7 +203,7 @@ export function renderAboutThisLayerMd({harness} = {}) {
         'auto-memory shape): ONE capped hot index (`MEMORY.md`, <17KB target / 24.6KB read limit)',
         'loaded every session boot + post-compact; detail files on demand in the same directory;',
         'cold storage in `ARCHIVE.md` (created on first need); the Memory Core is the deep archive,',
-        'queried semantically (`detail: \'summary\'` and `agentIdentity` for discovery sweeps before `detail: \'full\'` hydration). Map-vs-world-atlas: the index stays small and POINTS; depth lives in',
+        'queried semantically (`detail: \'summary\'`, plus `agentIdentity` when author-scoped, for discovery sweeps before `detail: \'full\'` hydration). Map-vs-world-atlas: the index stays small and POINTS; depth lives in',
         'detail files and the Memory Core.',
         '',
         `**How it loads (${harness}):**`,

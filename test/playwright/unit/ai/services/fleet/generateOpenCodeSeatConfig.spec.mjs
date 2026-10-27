@@ -118,7 +118,7 @@ test.describe('generateOpenCodeSeatConfig (OpenCode seat scaffold emission)', ()
         // Verified against `origin/dev` at `bea77518…` before rebasing, so this bump is attributable to
         // the hook and not to inherited drift.
         // The explicit /seat/memory/** grant is the sole change from the prior artifact digest.
-        expect(digest).toBe('2449de89d8517e4db7a4a5a9c95234560bdbc219f25027c24782b323f8f850fa')
+        expect(digest).toBe('e9e4707d9ffab4bef77230eb2fd466b6693a420c90bf09c3dd4771c92c69f9e5')
     });
 
     test('remote map replaces only selected servers with the exact OpenCode HTTP adapter grammar', () => {
