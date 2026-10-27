@@ -1,31 +1,33 @@
-import crypto                                           from 'node:crypto';
-import memoryCoreConfig                                 from '../../mcp/server/memory-core/config.mjs';
-import {OPTION_REVALIDATION_LEDGER, deriveCalibratedPolicy} from '../../scripts/maintenance/communityActivityPolicyCalibrationCore.mjs';
+import crypto                                   from 'node:crypto';
+import memoryCoreConfig                         from '../../mcp/server/memory-core/config.mjs';
+import RequestContextService, {normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
 
 /**
  * @module ai/services/memory-core/communityStewardWakeLease
  * @summary Tenant- and source-scoped TTL-bound community-steward wake lease and coalesced count-only
  * wake evaluator.
  *
- * Implements Stage 2 of Option J:
+ * Implements the Option J shadow-experiment observer and metric-gated lease primitive:
+ * - Reads `memoryCoreConfig.communityStewardWake` leaves directly at the use site;
+ *   no caller parameter can override `stewardActivation` or threshold leaves.
  * - Runs in shadow-only mode (`mode: 'shadow'`, `stewardActivation: false`) by default while
  *   activation thresholds in `AiConfig` (`communityStewardWake.*`) remain `null` (`unset`),
  *   recording steward vacancy (`vacancy_count`), would-be coalesced count-only wakes
  *   (`shadow_would_wake_count`), and observed payload bytes (`max_shadow_payload_bytes`) while
  *   emitting no live wakes (`shouldWake: false`).
- * - No numeric threshold literal lives outside `AiConfig` leaves. Live wake activation
- *   (`stewardActivation: true`) fails closed (`COMMUNITY_STEWARD_POLICY_THRESHOLD_UNSET:*`) unless
- *   every numeric threshold leaf (`stewardLeaseTtlMs`, `wakeCoalesceWindowMs`,
- *   `vacancyFallbackCooldownMs`, `minUnclaimedEligibleCount`, `wakeAmplificationCap`,
- *   `maxWakePayloadBytes`) is populated with a measured positive integer.
+ * - Live wake activation (`stewardActivation: true`) fails closed
+ *   (`COMMUNITY_STEWARD_POLICY_THRESHOLD_UNSET:*`) unless every numeric threshold leaf
+ *   (`stewardLeaseTtlMs`, `wakeCoalesceWindowMs`, `vacancyFallbackCooldownMs`,
+ *   `minUnclaimedEligibleCount`, `wakeAmplificationCap`, `maxWakePayloadBytes`) is populated in
+ *   `AiConfig` with a measured positive safe integer.
  * - Lease state is persisted in SQLite (`mc_community_steward_lease`) with hashed holder tokens and
  *   monotonic fencing epochs so contention, expiry, reclaim, and stale-holder rejection are explicit.
  * - Wake payloads (`community-steward-wake.v1`) are count-only and coalesced, carrying
  *   `notAuthority: true` and zero prose, titles, bodies, excerpts, URLs, actor handles, ranking, or
  *   task assignments.
- * - Vacancy fallback routes only to a single explicit same-tenant fallback target under a measured
- *   cooldown (`vacancyFallbackCooldownMs`), refusing wildcard/all-resident broadcasts, cross-tenant
- *   targets, and global maintainer roster identities.
+ * - Vacancy fallback routes only to a single explicit same-tenant `steward:<tenantId>:<seatId>`
+ *   principal verified against the server-resolved tenant scope, refusing wildcard/all-resident
+ *   broadcasts, unscoped global handles, and cross-tenant targets.
  */
 
 export const COMMUNITY_STEWARD_WAKE_SCHEMA_VERSION = 'community-steward-wake.v1';
@@ -35,11 +37,6 @@ export const STEWARD_LEASE_STATES = Object.freeze({
     released: 'released'
 });
 
-export const CALIBRATED_STEWARD_WAKE_REPORT_ID =
-    'dd78a28718cf0db9a526876c271053c674e713c9dc4b0fe99882f410ee7f2664';
-
-const CALIBRATED_BASELINE_POLICY = deriveCalibratedPolicy();
-
 export const REQUIRED_LIVE_STEWARD_THRESHOLD_KEYS = Object.freeze([
     'stewardLeaseTtlMs',
     'wakeCoalesceWindowMs',
@@ -47,35 +44,6 @@ export const REQUIRED_LIVE_STEWARD_THRESHOLD_KEYS = Object.freeze([
     'minUnclaimedEligibleCount',
     'wakeAmplificationCap',
     'maxWakePayloadBytes'
-]);
-
-export const CALIBRATED_STEWARD_WAKE_POLICY = Object.freeze({
-    calibrationReportId       : CALIBRATED_STEWARD_WAKE_REPORT_ID,
-    disposition               : OPTION_REVALIDATION_LEDGER.J.disposition,
-    maxWakePayloadBytes       : CALIBRATED_BASELINE_POLICY.thresholds.maxWakePayloadBytes.value,
-    minUnclaimedEligibleCount : CALIBRATED_BASELINE_POLICY.thresholds.minUnclaimedEligibleCount.value,
-    mode                      : 'shadow',
-    shadowExperimentAuthorized: OPTION_REVALIDATION_LEDGER.J.disposition.startsWith('shadow-only'),
-    stewardActivation         : Boolean(CALIBRATED_BASELINE_POLICY.thresholds.stewardActivation.value),
-    stewardLeaseTtlMs         : CALIBRATED_BASELINE_POLICY.thresholds.stewardLeaseTtlMs.value,
-    vacancyFallbackCooldownMs : CALIBRATED_BASELINE_POLICY.thresholds.vacancyFallbackCooldownMs.value,
-    wakeAmplificationCap      : CALIBRATED_BASELINE_POLICY.thresholds.wakeAmplificationCap.value,
-    wakeCoalesceWindowMs      : CALIBRATED_BASELINE_POLICY.thresholds.wakeCoalesceWindowMs.value
-});
-
-const FORBIDDEN_GLOBAL_ROSTER_HANDLES = new Set([
-    '@neo-fable',
-    '@neo-fable-clio',
-    '@neo-gemini-julia',
-    '@neo-gemini-maryam',
-    '@neo-gemini-pro',
-    '@neo-gpt',
-    '@neo-gpt-emmy',
-    '@neo-gpt-euclid',
-    '@neo-gpt-sophie',
-    '@neo-opus-ada',
-    '@neo-opus-grace',
-    '@neo-opus-vega'
 ]);
 
 const FORBIDDEN_WAKE_PAYLOAD_KEYS = new Set([
@@ -97,6 +65,8 @@ const FORBIDDEN_WAKE_PAYLOAD_KEYS = new Set([
     'title',
     'url'
 ]);
+
+const TENANT_SCOPED_STEWARD_PATTERN = /^steward:([^:\s]+):([^:\s]+)$/;
 
 function defaultMintToken() {
     return crypto.randomBytes(24).toString('base64url')
@@ -200,25 +170,47 @@ export function buildStewardLeaseScopeKey(tenantId, sourceInstanceIds = null) {
 }
 
 /**
- * @summary Validates a tenant-scoped steward or vacancy-fallback principal, rejecting broadcasts,
- * global Neo maintainer roster handles, and cross-tenant principals.
+ * @summary Positively validates a tenant-scoped steward or vacancy-fallback principal against the
+ * server-derived tenant scope, rejecting broadcasts, unscoped/global handles, and cross-tenant
+ * principals.
+ *
+ * Both tenant values are verified against server authority:
+ * 1. `expectedTenantId` is resolved by `CommunityActivityService.scope()` (`SourceRegistryService.resolveTenantId()`)
+ *    and cross-checked against any active `RequestContextService` userId so a caller cannot spoof
+ *    the target tenant.
+ * 2. The principal identifier itself must carry the canonical tenant-qualified namespace
+ *    `steward:<tenantId>:<seatId>` whose embedded `<tenantId>` (and any optional `candidate.tenantId`)
+ *    equals `expectedTenantId`. Unscoped `@<handle>` identities and `scope: 'global-roster'`
+ *    candidates fail closed with `COMMUNITY_STEWARD_GLOBAL_ROSTER_FORBIDDEN`.
+ *
  * @param {Object|String} candidate
- * @param {String} expectedTenantId
- * @param {String} roleLabel
+ * @param {String} expectedTenantId Server-derived tenant identifier.
+ * @param {String} [roleLabel='steward']
  * @returns {{principalId: String, tenantId: String}}
  */
 export function validateTenantScopedPrincipal(candidate, expectedTenantId, roleLabel = 'steward') {
-    if (!candidate || Array.isArray(candidate)) {
+    const normalizedExpectedTenantId = typeof expectedTenantId === 'string' ? expectedTenantId.trim() : '';
+
+    if (!normalizedExpectedTenantId) {
+        throw new Error('COMMUNITY_TENANT_UNRESOLVED')
+    }
+
+    const contextTenantId = normalizeUserId(RequestContextService.getUserId());
+    if (contextTenantId && contextTenantId !== normalizedExpectedTenantId) {
+        throw new Error('COMMUNITY_STEWARD_CROSS_TENANT_FORBIDDEN')
+    }
+
+    if (!candidate || Array.isArray(candidate) || (typeof candidate !== 'string' && typeof candidate !== 'object')) {
         throw new Error(`COMMUNITY_STEWARD_PRINCIPAL_INVALID:${roleLabel}`)
     }
 
     const principalId = typeof candidate === 'string'
         ? candidate.trim()
         : typeof candidate.principalId === 'string' ? candidate.principalId.trim() : '';
-    const candidateTenantId = typeof candidate === 'object' && candidate !== null && typeof candidate.tenantId === 'string'
+    const declaredTenantId = typeof candidate === 'object' && typeof candidate.tenantId === 'string'
         ? candidate.tenantId.trim()
-        : expectedTenantId;
-    const candidateScope = typeof candidate === 'object' && candidate !== null && typeof candidate.scope === 'string'
+        : null;
+    const candidateScope = typeof candidate === 'object' && typeof candidate.scope === 'string'
         ? candidate.scope.trim()
         : 'tenant';
 
@@ -229,51 +221,46 @@ export function validateTenantScopedPrincipal(candidate, expectedTenantId, roleL
         principalId.toUpperCase().startsWith('AGENT:*') || candidate.broadcast === true) {
         throw new Error('COMMUNITY_STEWARD_ALL_RESIDENT_BROADCAST_FORBIDDEN')
     }
-    if (candidateScope === 'global-roster' || FORBIDDEN_GLOBAL_ROSTER_HANDLES.has(principalId.toLowerCase())) {
+    if (candidateScope === 'global-roster' || principalId.startsWith('@')) {
         throw new Error('COMMUNITY_STEWARD_GLOBAL_ROSTER_FORBIDDEN')
     }
-    if (candidateTenantId !== expectedTenantId) {
+    if (declaredTenantId !== null && declaredTenantId !== normalizedExpectedTenantId) {
+        throw new Error('COMMUNITY_STEWARD_CROSS_TENANT_FORBIDDEN')
+    }
+
+    const match = TENANT_SCOPED_STEWARD_PATTERN.exec(principalId);
+    if (!match) {
+        throw new Error('COMMUNITY_STEWARD_GLOBAL_ROSTER_FORBIDDEN')
+    }
+
+    const [, principalTenantId] = match;
+    if (principalTenantId !== normalizedExpectedTenantId) {
         throw new Error('COMMUNITY_STEWARD_CROSS_TENANT_FORBIDDEN')
     }
 
     return {
         principalId,
-        tenantId: expectedTenantId
+        tenantId: normalizedExpectedTenantId
     }
 }
 
 /**
- * @summary Resolves and validates the steward wake policy from `AiConfig` leaves and optional test/runtime overrides.
+ * @summary Resolves and validates the steward wake policy directly from `AiConfig` leaves at the use site.
  *
- * When `stewardActivation` is `false` (the default), the evaluator runs in `'shadow'` mode: numeric
- * thresholds may remain `null` (`unset`), and any supplied non-null threshold must be a positive safe
- * integer. When `stewardActivation` is `true`, every numeric threshold in
- * {@link REQUIRED_LIVE_STEWARD_THRESHOLD_KEYS} MUST be a positive safe integer; any `null` or invalid
- * threshold fails closed.
+ * No caller override is accepted. When `stewardActivation` is `false` (the
+ * default), the evaluator runs in `'shadow'` mode: numeric thresholds may remain `null` (`unset`),
+ * and any configured non-null threshold must be a positive safe integer. When `stewardActivation`
+ * is `true`, every numeric threshold in {@link REQUIRED_LIVE_STEWARD_THRESHOLD_KEYS} MUST be a
+ * positive safe integer in `AiConfig`; any `null` or invalid threshold fails closed.
  *
- * @param {Object} [policyOverride={}]
  * @returns {Object}
  */
-export function resolveValidatedStewardWakePolicy(policyOverride = {}) {
-    if (!policyOverride || typeof policyOverride !== 'object') {
-        throw new Error('COMMUNITY_STEWARD_POLICY_INVALID')
-    }
-
-    const configuredLeaves = readConfiguredStewardWakeLeaves();
-    const merged           = {
-        ...CALIBRATED_STEWARD_WAKE_POLICY,
-        ...configuredLeaves,
-        ...policyOverride
-    };
-
-    if (merged.shadowExperimentAuthorized !== true || merged.calibrationReportId !== CALIBRATED_STEWARD_WAKE_REPORT_ID) {
-        throw new Error('COMMUNITY_STEWARD_WAKE_NOT_AUTHORIZED')
-    }
-
-    const stewardActivation = Boolean(merged.stewardActivation);
+export function resolveValidatedStewardWakePolicy() {
+    const configuredLeaves  = readConfiguredStewardWakeLeaves();
+    const stewardActivation = Boolean(configuredLeaves.stewardActivation);
 
     for (const key of REQUIRED_LIVE_STEWARD_THRESHOLD_KEYS) {
-        const value = merged[key];
+        const value = configuredLeaves[key];
 
         if (value === null || value === undefined) {
             if (stewardActivation) {
@@ -288,14 +275,15 @@ export function resolveValidatedStewardWakePolicy(policyOverride = {}) {
     }
 
     return {
-        ...merged,
-        mode             : stewardActivation ? 'live' : 'shadow',
+        ...configuredLeaves,
+        mode: stewardActivation ? 'live' : 'shadow',
         stewardActivation
     }
 }
 
 /**
- * @summary Acquires or reclaims a tenant/source-scoped TTL-bound steward wake lease.
+ * @summary Acquires or reclaims a tenant/source-scoped TTL-bound steward wake lease using the
+ * `stewardLeaseTtlMs` leaf from `AiConfig`.
  * @param {Object} params
  * @returns {Object}
  */
@@ -303,10 +291,8 @@ export function acquireStewardWakeLease({
     db,
     hashToken         = defaultHashToken,
     holderPrincipal,
-    leaseTtlMs,
     mintToken         = defaultMintToken,
     now,
-    policy            = {},
     sourceInstanceIds = null,
     tenantId
 } = {}) {
@@ -316,9 +302,7 @@ export function acquireStewardWakeLease({
         throw new Error('COMMUNITY_STEWARD_CLOCK_REQUIRED')
     }
 
-    const validatedPolicy = resolveValidatedStewardWakePolicy(
-        leaseTtlMs === undefined ? policy : {...policy, stewardLeaseTtlMs: leaseTtlMs}
-    );
+    const validatedPolicy = resolveValidatedStewardWakePolicy();
 
     if (!isPositiveSafeInteger(validatedPolicy.stewardLeaseTtlMs)) {
         throw new Error('COMMUNITY_STEWARD_POLICY_THRESHOLD_UNSET:stewardLeaseTtlMs')
@@ -400,21 +384,20 @@ export function acquireStewardWakeLease({
         );
 
         return {
-            acquired           : true,
-            acquiredAt         : now,
-            calibrationReportId: validatedPolicy.calibrationReportId,
-            contention         : false,
+            acquired         : true,
+            acquiredAt       : now,
+            contention       : false,
             expiresAt,
             fencingEpoch,
-            holderPrincipalId  : holder.principalId,
+            holderPrincipalId: holder.principalId,
             leaseScopeKey,
-            leaseTtlMs         : validatedPolicy.stewardLeaseTtlMs,
-            mode               : validatedPolicy.mode,
+            leaseTtlMs       : validatedPolicy.stewardLeaseTtlMs,
+            mode             : validatedPolicy.mode,
             normalizedSourceIds,
-            notAuthority       : true,
+            notAuthority     : true,
             reclaimed,
-            state              : STEWARD_LEASE_STATES.held,
-            tenantId           : holder.tenantId,
+            state            : STEWARD_LEASE_STATES.held,
+            tenantId         : holder.tenantId,
             token
         }
     });
@@ -511,7 +494,7 @@ export function assertCountOnlyWakePayload(
 /**
  * @summary Evaluates a tenant/source count projection in shadow mode (`shouldWake: false`, recording
  * vacancy and would-be coalesced count-only wakes) or live mode (`shouldWake: true` when
- * `stewardActivation` and all threshold leaves are configured).
+ * `stewardActivation` and all threshold leaves are configured in `AiConfig`).
  * @param {Object} params
  * @returns {Object}
  */
@@ -521,7 +504,6 @@ export function evaluateStewardWake({
     hashToken             = defaultHashToken,
     holderProof           = null,
     now,
-    policy                = {},
     sourceInstanceIds     = null,
     tenantId,
     vacancyFallbackTarget = null
@@ -535,7 +517,7 @@ export function evaluateStewardWake({
         throw new Error('COMMUNITY_STEWARD_COUNTS_REQUIRED')
     }
 
-    const validatedPolicy                      = resolveValidatedStewardWakePolicy(policy);
+    const validatedPolicy                      = resolveValidatedStewardWakePolicy();
     const isShadowMode                         = validatedPolicy.mode === 'shadow';
     const {leaseScopeKey, normalizedSourceIds} = buildStewardLeaseScopeKey(tenantId, sourceInstanceIds);
 
@@ -595,18 +577,32 @@ export function evaluateStewardWake({
             }
         }
 
-        const countIsEligible = isPositiveSafeInteger(validatedPolicy.minUnclaimedEligibleCount)
-            ? Number.isSafeInteger(attentionCounts.count) && attentionCounts.count >= validatedPolicy.minUnclaimedEligibleCount
-            : Number.isSafeInteger(attentionCounts.count) && attentionCounts.count > 0;
-
-        if (!countIsEligible) {
+        if (!Number.isSafeInteger(attentionCounts.count) || attentionCounts.count < 0) {
             return {
-                count       : attentionCounts.count ?? 0,
+                count          : null,
+                coverageStatus : 'degraded',
                 leaseScopeKey,
-                mode        : validatedPolicy.mode,
-                notAuthority: true,
-                reason      : 'below-min-unclaimed-count',
-                shouldWake  : false
+                mode           : validatedPolicy.mode,
+                notAuthority   : true,
+                reason         : 'degraded-unclaimed-count',
+                shadowWouldWake: false,
+                shouldWake     : false
+            }
+        }
+
+        const minRequiredCount = isPositiveSafeInteger(validatedPolicy.minUnclaimedEligibleCount)
+            ? validatedPolicy.minUnclaimedEligibleCount
+            : 1;
+
+        if (attentionCounts.count < minRequiredCount) {
+            return {
+                count          : attentionCounts.count,
+                leaseScopeKey,
+                mode           : validatedPolicy.mode,
+                notAuthority   : true,
+                reason         : 'below-min-unclaimed-count',
+                shadowWouldWake: false,
+                shouldWake     : false
             }
         }
 
@@ -732,33 +728,32 @@ export function evaluateStewardWake({
         }
 
         const wakePayload = {
-            calibrationReportId: validatedPolicy.calibrationReportId,
-            coalesceWindowMs   : validatedPolicy.wakeCoalesceWindowMs,
-            count              : attentionCounts.count,
-            coverageStatus     : attentionCounts.status,
+            coalesceWindowMs: validatedPolicy.wakeCoalesceWindowMs,
+            count           : attentionCounts.count,
+            coverageStatus  : attentionCounts.status,
             fencingEpoch,
             leaseScopeKey,
-            mode               : validatedPolicy.mode,
-            notAuthority       : true,
-            oldestOccurredAt   : attentionCounts.oldestOccurredAt ?? null,
+            mode            : validatedPolicy.mode,
+            notAuthority    : true,
+            oldestOccurredAt: attentionCounts.oldestOccurredAt ?? null,
             routingMode,
-            schemaVersion      : COMMUNITY_STEWARD_WAKE_SCHEMA_VERSION,
-            sourceCount        : attentionCounts.coverage?.sourceCount ?? 0,
-            sourceScopeIds     : normalizedSourceIds,
-            sourceWatermark    : attentionCounts.sourceWatermark,
+            schemaVersion   : COMMUNITY_STEWARD_WAKE_SCHEMA_VERSION,
+            sourceCount     : attentionCounts.coverage?.sourceCount ?? 0,
+            sourceScopeIds  : normalizedSourceIds,
+            sourceWatermark : attentionCounts.sourceWatermark,
             targetPrincipalId,
-            tenantId           : tenantId.trim()
+            tenantId        : tenantId.trim()
         };
 
-        const payloadBytes            = assertCountOnlyWakePayload(wakePayload, validatedPolicy.maxWakePayloadBytes);
-        const nextWindowStart         = inCoalesceWindow ? Number(wakeState.window_started_at) : now;
-        const nextWindowCount         = currentWindowCount + 1;
-        const nextVacancyWakeAt       = routingMode === 'vacancy-fallback'
+        const payloadBytes      = assertCountOnlyWakePayload(wakePayload, validatedPolicy.maxWakePayloadBytes);
+        const nextWindowStart   = inCoalesceWindow ? Number(wakeState.window_started_at) : now;
+        const nextWindowCount   = currentWindowCount + 1;
+        const nextVacancyWakeAt = routingMode === 'vacancy-fallback'
             ? now
             : (wakeState ? wakeState.last_vacancy_wake_at : null);
-        const nextVacancyCount        = (wakeState ? Number(wakeState.vacancy_count) : 0) + (stewardVacant ? 1 : 0);
-        const nextShadowWouldWake     = (wakeState ? Number(wakeState.shadow_would_wake_count) : 0) + (isShadowMode ? 1 : 0);
-        const nextMaxShadowBytes      = Math.max(
+        const nextVacancyCount    = (wakeState ? Number(wakeState.vacancy_count) : 0) + (stewardVacant ? 1 : 0);
+        const nextShadowWouldWake = (wakeState ? Number(wakeState.shadow_would_wake_count) : 0) + (isShadowMode ? 1 : 0);
+        const nextMaxShadowBytes  = Math.max(
             wakeState ? Number(wakeState.max_shadow_payload_bytes) : 0,
             isShadowMode ? payloadBytes : 0
         );

@@ -29,13 +29,13 @@ import GraphService                   from '../../../../../../ai/services/memory
 import MailboxService                 from '../../../../../../ai/services/memory-core/MailboxService.mjs';
 import SourceRegistryService          from '../../../../../../ai/services/memory-core/SourceRegistryService.mjs';
 import RequestContextService          from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import {snapshotAiConfig}             from './util.mjs';
 import {
-    CALIBRATED_STEWARD_WAKE_POLICY,
-    CALIBRATED_STEWARD_WAKE_REPORT_ID,
     COMMUNITY_STEWARD_WAKE_SCHEMA_VERSION,
     REQUIRED_LIVE_STEWARD_THRESHOLD_KEYS,
     acquireStewardWakeLease,
     assertCountOnlyWakePayload,
+    evaluateStewardWake,
     releaseStewardWakeLease,
     resolveValidatedStewardWakePolicy,
     validateTenantScopedPrincipal
@@ -47,14 +47,14 @@ const ATTENTION_POLICY = {
     rosteredActorIds         : []
 };
 
-const TEST_MEASURED_LIVE_POLICY = Object.freeze({
-    maxWakePayloadBytes      : 1_024,
-    minUnclaimedEligibleCount: 1,
-    stewardActivation        : true,
-    stewardLeaseTtlMs        : 1_590_000,
-    vacancyFallbackCooldownMs: 795_000,
-    wakeAmplificationCap     : 1,
-    wakeCoalesceWindowMs     : 397_500
+const TEST_MEASURED_LIVE_LEAVES = Object.freeze({
+    'communityStewardWake.maxWakePayloadBytes'      : 1_024,
+    'communityStewardWake.minUnclaimedEligibleCount': 1,
+    'communityStewardWake.stewardActivation'        : true,
+    'communityStewardWake.stewardLeaseTtlMs'        : 1_590_000,
+    'communityStewardWake.vacancyFallbackCooldownMs': 795_000,
+    'communityStewardWake.wakeAmplificationCap'     : 1,
+    'communityStewardWake.wakeCoalesceWindowMs'     : 397_500
 });
 
 function makeObservation(providerEntityId, occurredAt, over = {}) {
@@ -226,7 +226,7 @@ test.describe('communityStewardWakeLease', () => {
         if (tmpDir) fs.rmSync(tmpDir, {force: true, recursive: true})
     });
 
-    test('keeps AiConfig and calibrated thresholds unset by default in shadow mode and requires all numeric leaves for live activation', () => {
+    test('reads AiConfig leaves at the use site, keeps thresholds unset by default in shadow mode, requires all numeric leaves for live activation, and ignores caller overrides', async () => {
         expect(memoryCoreConfig.communityStewardWake).toEqual({
             maxWakePayloadBytes      : null,
             minUnclaimedEligibleCount: null,
@@ -237,61 +237,132 @@ test.describe('communityStewardWakeLease', () => {
             wakeCoalesceWindowMs     : null
         });
 
-        expect(CALIBRATED_STEWARD_WAKE_POLICY).toEqual({
-            calibrationReportId       : CALIBRATED_STEWARD_WAKE_REPORT_ID,
-            disposition               : 'shadow-only steward experiment authorized; activation thresholds unset until its window',
-            maxWakePayloadBytes       : null,
-            minUnclaimedEligibleCount : null,
-            mode                      : 'shadow',
-            shadowExperimentAuthorized: true,
-            stewardActivation         : false,
-            stewardLeaseTtlMs         : null,
-            vacancyFallbackCooldownMs : null,
-            wakeAmplificationCap      : null,
-            wakeCoalesceWindowMs      : null
+        const defaultResolved = resolveValidatedStewardWakePolicy();
+        expect(defaultResolved).toEqual({
+            maxWakePayloadBytes      : null,
+            minUnclaimedEligibleCount: null,
+            mode                     : 'shadow',
+            stewardActivation        : false,
+            stewardLeaseTtlMs        : null,
+            vacancyFallbackCooldownMs: null,
+            wakeAmplificationCap     : null,
+            wakeCoalesceWindowMs     : null
         });
 
-        const defaultResolved = resolveValidatedStewardWakePolicy();
-        expect(defaultResolved.mode).toBe('shadow');
-        expect(defaultResolved.stewardActivation).toBe(false);
-
-        expect(() => resolveValidatedStewardWakePolicy({shadowExperimentAuthorized: false}))
-            .toThrow('COMMUNITY_STEWARD_WAKE_NOT_AUTHORIZED');
-        expect(() => resolveValidatedStewardWakePolicy({calibrationReportId: 'untrusted-report'}))
-            .toThrow('COMMUNITY_STEWARD_WAKE_NOT_AUTHORIZED');
+        const ignoredCallerArg = resolveValidatedStewardWakePolicy({
+            maxWakePayloadBytes      : 1_024,
+            minUnclaimedEligibleCount: 1,
+            stewardActivation        : true,
+            stewardLeaseTtlMs        : 60_000,
+            vacancyFallbackCooldownMs: 60_000,
+            wakeAmplificationCap     : 1,
+            wakeCoalesceWindowMs     : 60_000
+        });
+        expect(ignoredCallerArg.mode).toBe('shadow');
+        expect(ignoredCallerArg.stewardActivation).toBe(false);
 
         for (const key of REQUIRED_LIVE_STEWARD_THRESHOLD_KEYS) {
-            expect(() => resolveValidatedStewardWakePolicy({
-                ...TEST_MEASURED_LIVE_POLICY,
-                [key]: null
-            })).toThrow(`COMMUNITY_STEWARD_POLICY_THRESHOLD_UNSET:${key}`);
+            const restoreMissing = snapshotAiConfig(memoryCoreConfig, {
+                ...TEST_MEASURED_LIVE_LEAVES,
+                [`communityStewardWake.${key}`]: null
+            });
+            try {
+                expect(() => resolveValidatedStewardWakePolicy())
+                    .toThrow(`COMMUNITY_STEWARD_POLICY_THRESHOLD_UNSET:${key}`);
+            } finally {
+                restoreMissing()
+            }
 
-            expect(() => resolveValidatedStewardWakePolicy({
-                ...TEST_MEASURED_LIVE_POLICY,
-                [key]: 0
-            })).toThrow(`COMMUNITY_STEWARD_POLICY_INVALID:${key}`);
+            const restoreInvalid = snapshotAiConfig(memoryCoreConfig, {
+                ...TEST_MEASURED_LIVE_LEAVES,
+                [`communityStewardWake.${key}`]: 0
+            });
+            try {
+                expect(() => resolveValidatedStewardWakePolicy())
+                    .toThrow(`COMMUNITY_STEWARD_POLICY_INVALID:${key}`);
+            } finally {
+                restoreInvalid()
+            }
         }
 
-        const liveResolved = resolveValidatedStewardWakePolicy(TEST_MEASURED_LIVE_POLICY);
-        expect(liveResolved.mode).toBe('live');
-        expect(liveResolved.stewardActivation).toBe(true);
+        const restoreLive = snapshotAiConfig(memoryCoreConfig, TEST_MEASURED_LIVE_LEAVES);
+        try {
+            const liveResolved = resolveValidatedStewardWakePolicy();
+            expect(liveResolved.mode).toBe('live');
+            expect(liveResolved.stewardActivation).toBe(true);
+        } finally {
+            restoreLive()
+        }
+
+        const srcAlpha = registerActiveGitHubSource('tenant-alpha', 'org-a', 'repo-a');
+        admitCompleteBaseline('tenant-alpha', srcAlpha.sourceInstanceId, [
+            makeObservation('comment:override-test-1', '2026-10-26T12:01:00.000Z')
+        ]);
+
+        await inTenant('tenant-alpha', async () => {
+            await expect(CommunityActivityService.acquireStewardLease({
+                holderPrincipal  : 'steward:tenant-alpha:seat-1',
+                leaseTtlMs       : 60_000,
+                now              : 1_000,
+                policy           : {stewardActivation: true, stewardLeaseTtlMs: 60_000},
+                stewardActivation: true
+            })).rejects.toThrow('COMMUNITY_STEWARD_POLICY_THRESHOLD_UNSET:stewardLeaseTtlMs');
+
+            const shadowDespiteOverride = await CommunityActivityService.evaluateStewardWake({
+                now   : 1_000,
+                policy: {
+                    maxWakePayloadBytes      : 1_024,
+                    minUnclaimedEligibleCount: 1,
+                    stewardActivation        : true,
+                    stewardLeaseTtlMs        : 60_000,
+                    vacancyFallbackCooldownMs: 60_000,
+                    wakeAmplificationCap     : 1,
+                    wakeCoalesceWindowMs     : 60_000
+                },
+                stewardActivation    : true,
+                vacancyFallbackTarget: {
+                    principalId: 'steward:tenant-alpha:oncall-fallback',
+                    tenantId   : 'tenant-alpha'
+                }
+            });
+
+            expect(shadowDespiteOverride).toMatchObject({
+                mode           : 'shadow',
+                reason         : 'shadow-vacancy-would-wake',
+                shadowWouldWake: true,
+                shouldWake     : false
+            });
+        });
     });
 
-    test('rejects all-resident broadcasts, global Neo maintainer roster handles, and cross-tenant principals', () => {
+    test('positively enforces server-derived tenant scope on steward principals and rejects broadcasts, unscoped global handles, and cross-tenant spoofing', () => {
         expect(() => validateTenantScopedPrincipal('AGENT:*', 'tenant-alpha'))
             .toThrow('COMMUNITY_STEWARD_ALL_RESIDENT_BROADCAST_FORBIDDEN');
         expect(() => validateTenantScopedPrincipal('*', 'tenant-alpha'))
             .toThrow('COMMUNITY_STEWARD_ALL_RESIDENT_BROADCAST_FORBIDDEN');
-        expect(() => validateTenantScopedPrincipal({broadcast: true, principalId: 'steward-1'}, 'tenant-alpha'))
+        expect(() => validateTenantScopedPrincipal({broadcast: true, principalId: 'steward:tenant-alpha:seat-1'}, 'tenant-alpha'))
             .toThrow('COMMUNITY_STEWARD_ALL_RESIDENT_BROADCAST_FORBIDDEN');
+
         expect(() => validateTenantScopedPrincipal('@neo-opus-grace', 'tenant-alpha'))
             .toThrow('COMMUNITY_STEWARD_GLOBAL_ROSTER_FORBIDDEN');
         expect(() => validateTenantScopedPrincipal('@neo-gemini-maryam', 'tenant-alpha'))
             .toThrow('COMMUNITY_STEWARD_GLOBAL_ROSTER_FORBIDDEN');
+        expect(() => validateTenantScopedPrincipal('@neo-fable-mnemosyne', 'tenant-alpha'))
+            .toThrow('COMMUNITY_STEWARD_GLOBAL_ROSTER_FORBIDDEN');
+        expect(() => validateTenantScopedPrincipal('unscoped-seat-1', 'tenant-alpha'))
+            .toThrow('COMMUNITY_STEWARD_GLOBAL_ROSTER_FORBIDDEN');
         expect(() => validateTenantScopedPrincipal({principalId: 'seat-1', scope: 'global-roster'}, 'tenant-alpha'))
             .toThrow('COMMUNITY_STEWARD_GLOBAL_ROSTER_FORBIDDEN');
-        expect(() => validateTenantScopedPrincipal({principalId: 'steward-beta', tenantId: 'tenant-beta'}, 'tenant-alpha'))
+
+        expect(() => validateTenantScopedPrincipal({principalId: 'steward:tenant-beta:seat-1', tenantId: 'tenant-beta'}, 'tenant-alpha'))
             .toThrow('COMMUNITY_STEWARD_CROSS_TENANT_FORBIDDEN');
+        expect(() => validateTenantScopedPrincipal({principalId: 'steward:tenant-beta:seat-1', tenantId: 'tenant-alpha'}, 'tenant-alpha'))
+            .toThrow('COMMUNITY_STEWARD_CROSS_TENANT_FORBIDDEN');
+
+        RequestContextService.run({userId: 'tenant-alpha'}, () => {
+            expect(() => validateTenantScopedPrincipal('steward:tenant-beta:seat-1', 'tenant-beta'))
+                .toThrow('COMMUNITY_STEWARD_CROSS_TENANT_FORBIDDEN');
+        });
 
         expect(validateTenantScopedPrincipal(
             {principalId: 'steward:tenant-alpha:primary', tenantId: 'tenant-alpha'},
@@ -341,17 +412,17 @@ test.describe('communityStewardWakeLease', () => {
                 stewardVacant  : true
             });
             expect(shadowVacancyObservation.wakePayload).toMatchObject({
-                calibrationReportId: CALIBRATED_STEWARD_WAKE_REPORT_ID,
-                count              : 2,
-                coverageStatus     : 'fresh',
-                mode               : 'shadow',
-                notAuthority       : true,
-                oldestOccurredAt   : '2026-10-26T12:01:00.000Z',
-                routingMode        : 'vacancy-fallback',
-                schemaVersion      : COMMUNITY_STEWARD_WAKE_SCHEMA_VERSION,
-                sourceCount        : 1,
-                targetPrincipalId  : 'steward:tenant-alpha:oncall-fallback',
-                tenantId           : 'tenant-alpha'
+                coalesceWindowMs : null,
+                count            : 2,
+                coverageStatus   : 'fresh',
+                mode             : 'shadow',
+                notAuthority     : true,
+                oldestOccurredAt : '2026-10-26T12:01:00.000Z',
+                routingMode      : 'vacancy-fallback',
+                schemaVersion    : COMMUNITY_STEWARD_WAKE_SCHEMA_VERSION,
+                sourceCount      : 1,
+                targetPrincipalId: 'steward:tenant-alpha:oncall-fallback',
+                tenantId         : 'tenant-alpha'
             });
 
             const stateRow = db.prepare(
@@ -366,11 +437,46 @@ test.describe('communityStewardWakeLease', () => {
         });
     });
 
+    test('reports non-integer or negative attentionCounts.count as degraded-unclaimed-count with count: null and leaves shadow tallies untouched', () => {
+        const t0 = Date.parse('2026-10-26T22:00:00.000Z');
+
+        for (const badCount of [null, undefined, Number.NaN, -1, 1.5, '2']) {
+            const verdict = evaluateStewardWake({
+                attentionCounts: {
+                    count          : badCount,
+                    coverage       : {sourceCount: 1},
+                    notAuthority   : true,
+                    sourceWatermark: 'seq:1',
+                    status         : 'fresh'
+                },
+                db,
+                now                  : t0,
+                tenantId             : 'tenant-alpha',
+                vacancyFallbackTarget: 'steward:tenant-alpha:oncall-fallback'
+            });
+
+            expect(verdict).toMatchObject({
+                count          : null,
+                coverageStatus : 'degraded',
+                mode           : 'shadow',
+                notAuthority   : true,
+                reason         : 'degraded-unclaimed-count',
+                shadowWouldWake: false,
+                shouldWake     : false
+            });
+        }
+
+        const stateRow = db.prepare(
+            'SELECT vacancy_count, shadow_would_wake_count FROM mc_community_steward_wake_state WHERE tenant_id = ?'
+        ).get('tenant-alpha');
+        expect(stateRow).toBeUndefined();
+    });
+
     test('manages lease acquisition, contention, expiry reclaim, release, and stale-holder rejection', async () => {
         const srcAlpha = registerActiveGitHubSource('tenant-alpha', 'org-a', 'repo-a');
         const srcBeta  = registerActiveGitHubSource('tenant-beta', 'org-b', 'repo-b');
         const t0       = Date.parse('2026-10-26T22:00:00.000Z');
-        const ttlMs    = TEST_MEASURED_LIVE_POLICY.stewardLeaseTtlMs;
+        const ttlMs    = TEST_MEASURED_LIVE_LEAVES['communityStewardWake.stewardLeaseTtlMs'];
 
         expect(() => acquireStewardWakeLease({
             db,
@@ -380,312 +486,319 @@ test.describe('communityStewardWakeLease', () => {
             tenantId         : 'tenant-alpha'
         })).toThrow('COMMUNITY_STEWARD_POLICY_THRESHOLD_UNSET:stewardLeaseTtlMs');
 
-        expect(() => acquireStewardWakeLease({
-            db,
-            holderPrincipal  : 'steward:tenant-alpha:seat-1',
-            leaseTtlMs       : ttlMs,
-            now              : t0,
-            sourceInstanceIds: [srcBeta.sourceInstanceId],
-            tenantId         : 'tenant-alpha'
-        })).toThrow('COMMUNITY_SOURCE_NOT_OWNED');
-
-        const firstLease = acquireStewardWakeLease({
-            db,
-            holderPrincipal  : 'steward:tenant-alpha:seat-1',
-            leaseTtlMs       : ttlMs,
-            now              : t0,
-            sourceInstanceIds: [srcAlpha.sourceInstanceId],
-            tenantId         : 'tenant-alpha'
+        const restoreLeaseTtl = snapshotAiConfig(memoryCoreConfig, {
+            'communityStewardWake.stewardLeaseTtlMs': ttlMs
         });
 
-        expect(firstLease).toMatchObject({
-            acquired         : true,
-            contention       : false,
-            expiresAt        : t0 + ttlMs,
-            fencingEpoch     : 1,
-            holderPrincipalId: 'steward:tenant-alpha:seat-1',
-            notAuthority     : true,
-            reclaimed        : false,
-            state            : 'held',
-            tenantId         : 'tenant-alpha'
-        });
-        expect(typeof firstLease.token).toBe('string');
+        try {
+            expect(() => acquireStewardWakeLease({
+                db,
+                holderPrincipal  : 'steward:tenant-alpha:seat-1',
+                now              : t0,
+                sourceInstanceIds: [srcBeta.sourceInstanceId],
+                tenantId         : 'tenant-alpha'
+            })).toThrow('COMMUNITY_SOURCE_NOT_OWNED');
 
-        const rawRow = db.prepare('SELECT holder_token_hash FROM mc_community_steward_lease WHERE lease_scope_key = ?')
-            .get(firstLease.leaseScopeKey);
-        expect(rawRow.holder_token_hash).not.toBe(firstLease.token);
+            const firstLease = acquireStewardWakeLease({
+                db,
+                holderPrincipal  : 'steward:tenant-alpha:seat-1',
+                now              : t0,
+                sourceInstanceIds: [srcAlpha.sourceInstanceId],
+                tenantId         : 'tenant-alpha'
+            });
 
-        const contended = acquireStewardWakeLease({
-            db,
-            holderPrincipal  : 'steward:tenant-alpha:seat-2',
-            leaseTtlMs       : ttlMs,
-            now              : t0 + 60_000,
-            sourceInstanceIds: [srcAlpha.sourceInstanceId],
-            tenantId         : 'tenant-alpha'
-        });
+            expect(firstLease).toMatchObject({
+                acquired         : true,
+                contention       : false,
+                expiresAt        : t0 + ttlMs,
+                fencingEpoch     : 1,
+                holderPrincipalId: 'steward:tenant-alpha:seat-1',
+                mode             : 'shadow',
+                notAuthority     : true,
+                reclaimed        : false,
+                state            : 'held',
+                tenantId         : 'tenant-alpha'
+            });
+            expect(typeof firstLease.token).toBe('string');
 
-        expect(contended).toMatchObject({
-            acquired         : false,
-            contention       : true,
-            fencingEpoch     : 1,
-            holderPrincipalId: 'steward:tenant-alpha:seat-1',
-            retryAfterMs     : ttlMs - 60_000,
-            state            : 'held'
-        });
-        expect(contended.token).toBeUndefined();
+            const rawRow = db.prepare('SELECT holder_token_hash FROM mc_community_steward_lease WHERE lease_scope_key = ?')
+                .get(firstLease.leaseScopeKey);
+            expect(rawRow.holder_token_hash).not.toBe(firstLease.token);
 
-        const reclaimed = acquireStewardWakeLease({
-            db,
-            holderPrincipal  : 'steward:tenant-alpha:seat-2',
-            leaseTtlMs       : ttlMs,
-            now              : t0 + ttlMs,
-            sourceInstanceIds: [srcAlpha.sourceInstanceId],
-            tenantId         : 'tenant-alpha'
-        });
+            const contended = acquireStewardWakeLease({
+                db,
+                holderPrincipal  : 'steward:tenant-alpha:seat-2',
+                now              : t0 + 60_000,
+                sourceInstanceIds: [srcAlpha.sourceInstanceId],
+                tenantId         : 'tenant-alpha'
+            });
 
-        expect(reclaimed).toMatchObject({
-            acquired         : true,
-            contention       : false,
-            fencingEpoch     : 2,
-            holderPrincipalId: 'steward:tenant-alpha:seat-2',
-            reclaimed        : true,
-            state            : 'held'
-        });
+            expect(contended).toMatchObject({
+                acquired         : false,
+                contention       : true,
+                fencingEpoch     : 1,
+                holderPrincipalId: 'steward:tenant-alpha:seat-1',
+                retryAfterMs     : ttlMs - 60_000,
+                state            : 'held'
+            });
+            expect(contended.token).toBeUndefined();
 
-        const staleRelease = releaseStewardWakeLease({
-            db,
-            fencingEpoch     : firstLease.fencingEpoch,
-            sourceInstanceIds: [srcAlpha.sourceInstanceId],
-            tenantId         : 'tenant-alpha',
-            token            : firstLease.token
-        });
-        expect(staleRelease).toMatchObject({
-            released: false,
-            reason  : 'superseded-epoch'
-        });
+            const reclaimed = acquireStewardWakeLease({
+                db,
+                holderPrincipal  : 'steward:tenant-alpha:seat-2',
+                now              : t0 + ttlMs,
+                sourceInstanceIds: [srcAlpha.sourceInstanceId],
+                tenantId         : 'tenant-alpha'
+            });
 
-        const wrongTokenRelease = releaseStewardWakeLease({
-            db,
-            fencingEpoch     : reclaimed.fencingEpoch,
-            sourceInstanceIds: [srcAlpha.sourceInstanceId],
-            tenantId         : 'tenant-alpha',
-            token            : 'wrong-token'
-        });
-        expect(wrongTokenRelease).toMatchObject({
-            released: false,
-            reason  : 'foreign-token'
-        });
+            expect(reclaimed).toMatchObject({
+                acquired         : true,
+                contention       : false,
+                fencingEpoch     : 2,
+                holderPrincipalId: 'steward:tenant-alpha:seat-2',
+                reclaimed        : true,
+                state            : 'held'
+            });
 
-        const validRelease = releaseStewardWakeLease({
-            db,
-            fencingEpoch     : reclaimed.fencingEpoch,
-            sourceInstanceIds: [srcAlpha.sourceInstanceId],
-            tenantId         : 'tenant-alpha',
-            token            : reclaimed.token
-        });
-        expect(validRelease).toMatchObject({
-            fencingEpoch: 2,
-            released    : true
-        });
+            const staleRelease = releaseStewardWakeLease({
+                db,
+                fencingEpoch     : firstLease.fencingEpoch,
+                sourceInstanceIds: [srcAlpha.sourceInstanceId],
+                tenantId         : 'tenant-alpha',
+                token            : firstLease.token
+            });
+            expect(staleRelease).toMatchObject({
+                released: false,
+                reason  : 'superseded-epoch'
+            });
+
+            const wrongTokenRelease = releaseStewardWakeLease({
+                db,
+                fencingEpoch     : reclaimed.fencingEpoch,
+                sourceInstanceIds: [srcAlpha.sourceInstanceId],
+                tenantId         : 'tenant-alpha',
+                token            : 'wrong-token'
+            });
+            expect(wrongTokenRelease).toMatchObject({
+                released: false,
+                reason  : 'foreign-token'
+            });
+
+            const validRelease = releaseStewardWakeLease({
+                db,
+                fencingEpoch     : reclaimed.fencingEpoch,
+                sourceInstanceIds: [srcAlpha.sourceInstanceId],
+                tenantId         : 'tenant-alpha',
+                token            : reclaimed.token
+            });
+            expect(validRelease).toMatchObject({
+                fencingEpoch: 2,
+                released    : true
+            });
+        } finally {
+            restoreLeaseTtl()
+        }
     });
 
-    test('emits count-only bounded wakes when live policy leaves are supplied, enforces amplification caps and vacancy cooldown, and preserves Task claim as sole ownership authority', async () => {
-        const srcAlpha = registerActiveGitHubSource('tenant-alpha', 'org-a', 'repo-a');
-        const t0       = Date.parse('2026-10-26T22:00:00.000Z');
+    test('emits count-only bounded wakes when live policy leaves are configured in AiConfig, enforces amplification caps and vacancy cooldown, and preserves Task claim as sole ownership authority', async () => {
+        const srcAlpha    = registerActiveGitHubSource('tenant-alpha', 'org-a', 'repo-a');
+        const t0          = Date.parse('2026-10-26T22:00:00.000Z');
+        const restoreLive = snapshotAiConfig(memoryCoreConfig, TEST_MEASURED_LIVE_LEAVES);
 
-        admitCompleteBaseline('tenant-alpha', srcAlpha.sourceInstanceId, [
-            makeObservation('comment:1001', '2026-10-26T12:01:00.000Z'),
-            makeObservation('comment:1002', '2026-10-26T12:02:00.000Z', {
-                occurrenceKind   : 'discussion.comment',
-                sourceAssociation: 'FIRST_TIME_CONTRIBUTOR'
-            })
-        ]);
+        try {
+            admitCompleteBaseline('tenant-alpha', srcAlpha.sourceInstanceId, [
+                makeObservation('comment:1001', '2026-10-26T12:01:00.000Z'),
+                makeObservation('comment:1002', '2026-10-26T12:02:00.000Z', {
+                    occurrenceKind   : 'discussion.comment',
+                    sourceAssociation: 'FIRST_TIME_CONTRIBUTOR'
+                })
+            ]);
 
-        await inTenant('tenant-alpha', async () => {
-            const noFallback = await CommunityActivityService.evaluateStewardWake({
-                now   : t0,
-                policy: TEST_MEASURED_LIVE_POLICY
-            });
-            expect(noFallback).toMatchObject({
-                mode      : 'live',
-                reason    : 'steward-vacant-no-fallback-target',
-                shouldWake: false
-            });
+            await inTenant('tenant-alpha', async () => {
+                const noFallback = await CommunityActivityService.evaluateStewardWake({
+                    now: t0
+                });
+                expect(noFallback).toMatchObject({
+                    mode      : 'live',
+                    reason    : 'steward-vacant-no-fallback-target',
+                    shouldWake: false
+                });
 
-            const vacancyWake = await CommunityActivityService.evaluateStewardWake({
-                now                  : t0,
-                policy               : TEST_MEASURED_LIVE_POLICY,
-                vacancyFallbackTarget: {
-                    principalId: 'steward:tenant-alpha:oncall-fallback',
-                    tenantId   : 'tenant-alpha'
-                }
-            });
+                const vacancyWake = await CommunityActivityService.evaluateStewardWake({
+                    now                  : t0,
+                    vacancyFallbackTarget: {
+                        principalId: 'steward:tenant-alpha:oncall-fallback',
+                        tenantId   : 'tenant-alpha'
+                    }
+                });
 
-            expect(vacancyWake.shouldWake).toBe(true);
-            expect(vacancyWake.mode).toBe('live');
-            expect(vacancyWake.routingMode).toBe('vacancy-fallback');
-            expect(vacancyWake.payloadBytes).toBeLessThanOrEqual(TEST_MEASURED_LIVE_POLICY.maxWakePayloadBytes);
-            expect(vacancyWake.wakePayload).toMatchObject({
-                calibrationReportId: CALIBRATED_STEWARD_WAKE_REPORT_ID,
-                coalesceWindowMs   : TEST_MEASURED_LIVE_POLICY.wakeCoalesceWindowMs,
-                count              : 2,
-                coverageStatus     : 'fresh',
-                mode               : 'live',
-                notAuthority       : true,
-                oldestOccurredAt   : '2026-10-26T12:01:00.000Z',
-                routingMode        : 'vacancy-fallback',
-                schemaVersion      : COMMUNITY_STEWARD_WAKE_SCHEMA_VERSION,
-                sourceCount        : 1,
-                targetPrincipalId  : 'steward:tenant-alpha:oncall-fallback',
-                tenantId           : 'tenant-alpha'
-            });
+                expect(vacancyWake.shouldWake).toBe(true);
+                expect(vacancyWake.mode).toBe('live');
+                expect(vacancyWake.routingMode).toBe('vacancy-fallback');
+                expect(vacancyWake.payloadBytes).toBeLessThanOrEqual(
+                    TEST_MEASURED_LIVE_LEAVES['communityStewardWake.maxWakePayloadBytes']
+                );
+                expect(vacancyWake.wakePayload).toMatchObject({
+                    coalesceWindowMs : TEST_MEASURED_LIVE_LEAVES['communityStewardWake.wakeCoalesceWindowMs'],
+                    count            : 2,
+                    coverageStatus   : 'fresh',
+                    mode             : 'live',
+                    notAuthority     : true,
+                    oldestOccurredAt : '2026-10-26T12:01:00.000Z',
+                    routingMode      : 'vacancy-fallback',
+                    schemaVersion    : COMMUNITY_STEWARD_WAKE_SCHEMA_VERSION,
+                    sourceCount      : 1,
+                    targetPrincipalId: 'steward:tenant-alpha:oncall-fallback',
+                    tenantId         : 'tenant-alpha'
+                });
 
-            expect(() => assertCountOnlyWakePayload({
-                ...vacancyWake.wakePayload,
-                title: 'Forbidden prose title'
-            }, TEST_MEASURED_LIVE_POLICY.maxWakePayloadBytes))
-                .toThrow(/COMMUNITY_STEWARD_WAKE_PROSE_OR_AUTHORITY_FORBIDDEN:title/);
+                expect(() => assertCountOnlyWakePayload({
+                    ...vacancyWake.wakePayload,
+                    title: 'Forbidden prose title'
+                }, TEST_MEASURED_LIVE_LEAVES['communityStewardWake.maxWakePayloadBytes']))
+                    .toThrow(/COMMUNITY_STEWARD_WAKE_PROSE_OR_AUTHORITY_FORBIDDEN:title/);
 
-            expect(() => assertCountOnlyWakePayload(vacancyWake.wakePayload, 32))
-                .toThrow(/COMMUNITY_STEWARD_WAKE_PAYLOAD_TOO_LARGE/);
+                expect(() => assertCountOnlyWakePayload(vacancyWake.wakePayload, 32))
+                    .toThrow(/COMMUNITY_STEWARD_WAKE_PAYLOAD_TOO_LARGE/);
 
-            const bindingCountAfterWake = db.prepare('SELECT count(*) AS count FROM mc_community_task_binding').get().count;
-            expect(bindingCountAfterWake).toBe(0);
+                const bindingCountAfterWake = db.prepare('SELECT count(*) AS count FROM mc_community_task_binding').get().count;
+                expect(bindingCountAfterWake).toBe(0);
 
-            const duplicateWatermark = await CommunityActivityService.evaluateStewardWake({
-                now                  : t0 + 10_000,
-                policy               : TEST_MEASURED_LIVE_POLICY,
-                vacancyFallbackTarget: {
-                    principalId: 'steward:tenant-alpha:oncall-fallback',
-                    tenantId   : 'tenant-alpha'
-                }
-            });
-            expect(duplicateWatermark).toMatchObject({
-                reason    : 'watermark-already-woken',
-                shouldWake: false
-            });
+                const duplicateWatermark = await CommunityActivityService.evaluateStewardWake({
+                    now                  : t0 + 10_000,
+                    vacancyFallbackTarget: {
+                        principalId: 'steward:tenant-alpha:oncall-fallback',
+                        tenantId   : 'tenant-alpha'
+                    }
+                });
+                expect(duplicateWatermark).toMatchObject({
+                    reason    : 'watermark-already-woken',
+                    shouldWake: false
+                });
 
-            const bird = await CommunityActivityService.query({
-                limit      : 10,
-                windowEnd  : '2026-10-26T13:00:00.000Z',
-                windowStart: '2026-10-26T12:00:00.000Z'
-            });
-            const sortedItems = [...bird.items].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
-            const claimed     = await CommunityActivityService.claimTask({
-                sourceEventId: sortedItems[0].sourceEventId
-            });
-            expect(claimed.status).toBe('claimed');
+                const bird = await CommunityActivityService.query({
+                    limit      : 10,
+                    windowEnd  : '2026-10-26T13:00:00.000Z',
+                    windowStart: '2026-10-26T12:00:00.000Z'
+                });
+                const sortedItems = [...bird.items].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
+                const claimed     = await CommunityActivityService.claimTask({
+                    sourceEventId: sortedItems[0].sourceEventId
+                });
+                expect(claimed.status).toBe('claimed');
 
-            const vacancyCooldownSuppressed = await CommunityActivityService.evaluateStewardWake({
-                now                  : t0 + 450_000,
-                policy               : TEST_MEASURED_LIVE_POLICY,
-                vacancyFallbackTarget: {
-                    principalId: 'steward:tenant-alpha:oncall-fallback',
-                    tenantId   : 'tenant-alpha'
-                }
-            });
-            expect(vacancyCooldownSuppressed).toMatchObject({
-                reason    : 'vacancy-fallback-cooldown',
-                shouldWake: false
-            });
+                const vacancyCooldownSuppressed = await CommunityActivityService.evaluateStewardWake({
+                    now                  : t0 + 450_000,
+                    vacancyFallbackTarget: {
+                        principalId: 'steward:tenant-alpha:oncall-fallback',
+                        tenantId   : 'tenant-alpha'
+                    }
+                });
+                expect(vacancyCooldownSuppressed).toMatchObject({
+                    reason    : 'vacancy-fallback-cooldown',
+                    shouldWake: false
+                });
 
-            const lease = await CommunityActivityService.acquireStewardLease({
-                holderPrincipal: 'steward:tenant-alpha:leased-1',
-                now            : t0 + 450_000,
-                policy         : TEST_MEASURED_LIVE_POLICY
-            });
-            expect(lease.acquired).toBe(true);
+                const lease = await CommunityActivityService.acquireStewardLease({
+                    holderPrincipal: 'steward:tenant-alpha:leased-1',
+                    now            : t0 + 450_000
+                });
+                expect(lease.acquired).toBe(true);
 
-            const leasedWake = await CommunityActivityService.evaluateStewardWake({
-                holderProof: {
-                    fencingEpoch: lease.fencingEpoch,
-                    token       : lease.token
-                },
-                now   : t0 + 450_000,
-                policy: TEST_MEASURED_LIVE_POLICY
-            });
-            expect(leasedWake).toMatchObject({
-                mode       : 'live',
-                reason     : 'leased-steward-wake',
-                routingMode: 'leased-steward',
-                shouldWake : true
-            });
-            expect(leasedWake.wakePayload).toMatchObject({
-                count            : 1,
-                oldestOccurredAt : '2026-10-26T12:02:00.000Z',
-                targetPrincipalId: 'steward:tenant-alpha:leased-1'
-            });
+                const leasedWake = await CommunityActivityService.evaluateStewardWake({
+                    holderProof: {
+                        fencingEpoch: lease.fencingEpoch,
+                        token       : lease.token
+                    },
+                    now: t0 + 450_000
+                });
+                expect(leasedWake).toMatchObject({
+                    mode       : 'live',
+                    reason     : 'leased-steward-wake',
+                    routingMode: 'leased-steward',
+                    shouldWake : true
+                });
+                expect(leasedWake.wakePayload).toMatchObject({
+                    count            : 1,
+                    oldestOccurredAt : '2026-10-26T12:02:00.000Z',
+                    targetPrincipalId: 'steward:tenant-alpha:leased-1'
+                });
 
-            const staleHolderAttempt = await CommunityActivityService.evaluateStewardWake({
-                holderProof: {
-                    fencingEpoch: lease.fencingEpoch - 1,
-                    token       : lease.token
-                },
-                now   : t0 + 460_000,
-                policy: TEST_MEASURED_LIVE_POLICY
-            });
-            expect(staleHolderAttempt).toMatchObject({
-                reason    : 'stale-lease-holder',
-                shouldWake: false
-            });
+                const staleHolderAttempt = await CommunityActivityService.evaluateStewardWake({
+                    holderProof: {
+                        fencingEpoch: lease.fencingEpoch - 1,
+                        token       : lease.token
+                    },
+                    now: t0 + 460_000
+                });
+                expect(staleHolderAttempt).toMatchObject({
+                    reason    : 'stale-lease-holder',
+                    shouldWake: false
+                });
 
-            await CommunityActivityService.claimTask({
-                sourceEventId: sortedItems[1].sourceEventId
-            });
+                await CommunityActivityService.claimTask({
+                    sourceEventId: sortedItems[1].sourceEventId
+                });
 
-            const emptyAfterAllClaimed = await CommunityActivityService.evaluateStewardWake({
-                now   : t0 + 900_000,
-                policy: TEST_MEASURED_LIVE_POLICY
+                const emptyAfterAllClaimed = await CommunityActivityService.evaluateStewardWake({
+                    now: t0 + 900_000
+                });
+                expect(emptyAfterAllClaimed).toMatchObject({
+                    coverageStatus: 'empty',
+                    reason        : 'coverage-empty',
+                    shouldWake    : false
+                });
             });
-            expect(emptyAfterAllClaimed).toMatchObject({
-                coverageStatus: 'empty',
-                reason        : 'coverage-empty',
-                shouldWake    : false
-            });
-        });
+        } finally {
+            restoreLive()
+        }
     });
 
     test('suppresses wake when count coverage is degraded or missing and isolates tenants', async () => {
-        const srcIncomplete = registerActiveGitHubSource('tenant-degraded', 'org-d', 'repo-d');
-        const t0            = Date.parse('2026-10-26T22:00:00.000Z');
-
-        await inTenant('tenant-degraded', async () => {
-            CommunityBatchAdmissionService.admitBatch(batchAt(
-                srcIncomplete.sourceInstanceId,
-                [makeObservation('comment:901', '2026-10-26T12:01:00.000Z')],
-                {
-                    batchId       : 'degraded-issues-1',
-                    resourceFamily: 'issues'
-                }
-            ));
-
-            await CommunityActivityService.acquireStewardLease({
-                holderPrincipal: 'steward:tenant-degraded:seat-1',
-                now            : t0,
-                policy         : TEST_MEASURED_LIVE_POLICY
-            });
-
-            const degradedVerdict = await CommunityActivityService.evaluateStewardWake({
-                now   : t0,
-                policy: TEST_MEASURED_LIVE_POLICY
-            });
-            expect(degradedVerdict).toMatchObject({
-                coverageStatus: 'degraded',
-                reason        : 'coverage-degraded',
-                shouldWake    : false
-            });
+        const srcIncomplete   = registerActiveGitHubSource('tenant-degraded', 'org-d', 'repo-d');
+        const t0              = Date.parse('2026-10-26T22:00:00.000Z');
+        const restoreLeaseTtl = snapshotAiConfig(memoryCoreConfig, {
+            'communityStewardWake.stewardLeaseTtlMs': TEST_MEASURED_LIVE_LEAVES['communityStewardWake.stewardLeaseTtlMs']
         });
 
-        await inTenant('tenant-missing', async () => {
-            const missingVerdict = await CommunityActivityService.evaluateStewardWake({
-                now   : t0,
-                policy: TEST_MEASURED_LIVE_POLICY
+        try {
+            await inTenant('tenant-degraded', async () => {
+                CommunityBatchAdmissionService.admitBatch(batchAt(
+                    srcIncomplete.sourceInstanceId,
+                    [makeObservation('comment:901', '2026-10-26T12:01:00.000Z')],
+                    {
+                        batchId       : 'degraded-issues-1',
+                        resourceFamily: 'issues'
+                    }
+                ));
+
+                await CommunityActivityService.acquireStewardLease({
+                    holderPrincipal: 'steward:tenant-degraded:seat-1',
+                    now            : t0
+                });
+
+                const degradedVerdict = await CommunityActivityService.evaluateStewardWake({
+                    now: t0
+                });
+                expect(degradedVerdict).toMatchObject({
+                    coverageStatus: 'degraded',
+                    reason        : 'coverage-degraded',
+                    shouldWake    : false
+                });
             });
-            expect(missingVerdict).toMatchObject({
-                coverageStatus: 'missing',
-                reason        : 'coverage-missing',
-                shouldWake    : false
+
+            await inTenant('tenant-missing', async () => {
+                const missingVerdict = await CommunityActivityService.evaluateStewardWake({
+                    now: t0
+                });
+                expect(missingVerdict).toMatchObject({
+                    coverageStatus: 'missing',
+                    reason        : 'coverage-missing',
+                    shouldWake    : false
+                });
             });
-        });
+        } finally {
+            restoreLeaseTtl()
+        }
     });
 });

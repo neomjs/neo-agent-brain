@@ -949,7 +949,7 @@ class CommunityActivityService extends Base {
      * @param {Object} [options={}]
      * @returns {Promise<Object>}
      */
-    async acquireStewardLease({holderPrincipal, leaseTtlMs, mintToken, now = Date.now(), policy, sourceInstanceIds = null} = {}) {
+    async acquireStewardLease({holderPrincipal, mintToken, now = Date.now(), sourceInstanceIds = null} = {}) {
         await this.ready();
 
         const tenantId = this.scope();
@@ -957,10 +957,8 @@ class CommunityActivityService extends Base {
         return acquireStewardWakeLease({
             db: this.db,
             holderPrincipal,
-            leaseTtlMs,
             mintToken,
             now,
-            policy,
             sourceInstanceIds,
             tenantId
         })
@@ -993,7 +991,6 @@ class CommunityActivityService extends Base {
     async evaluateStewardWake({
         holderProof           = null,
         now                   = Date.now(),
-        policy,
         sourceInstanceIds     = null,
         vacancyFallbackTarget = null
     } = {}) {
@@ -1005,7 +1002,6 @@ class CommunityActivityService extends Base {
             db: this.db,
             holderProof,
             now,
-            policy,
             sourceInstanceIds,
             tenantId,
             vacancyFallbackTarget
