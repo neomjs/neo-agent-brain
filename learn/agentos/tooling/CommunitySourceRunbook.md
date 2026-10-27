@@ -35,18 +35,17 @@ Create a credential-free registration document:
   "provider": "github",
   "canonicalProviderHost": "github.com",
   "resourceKind": "repository",
-  "providerResourceId": "neomjs/neo",
-  "displayLocator": "neomjs/neo",
-  "grantRef": "github-installation:12345",
-  "providerCapabilities": {
-    "issues": true,
-    "pullRequests": true
-  }
+  "providerResourceId": "220867748",
+  "displayLocator": "neomjs/neo"
 }
 ```
 
-`grantRef` is a neutral binding identifier, never a token, credential reference, private key, or
-authorization header. Register it for the deployment-owned tenant key:
+`providerResourceId` is the stable provider object ID; the example is GitHub's repository ID for
+`neomjs/neo`, verified through `gh api repos/neomjs/neo --jq .id`. Resolve the selected repository's
+actual ID before registration. `displayLocator` is the mutable `owner/repo` used by acquisition,
+not durable source identity (ADR 0036 §2.2). An optional `grantRef` must name an actual neutral
+binding, never a token, credential reference, private key or authorization header. Register for
+the deployment-owned tenant key:
 
 ```bash
 node ai/scripts/maintenance/communitySourceOperator.mjs \
@@ -341,6 +340,15 @@ Exit 0 means the requested collection completed; partial or failed collection ex
 arguments exit 2. Completed samples and a typed failure are retained after a later service error.
 Read `status`, `denominator` and `windowEvidence` together. A stable, ACTIVE, fully covered source
 with zero eligible demand is an observed empty sample; missing/degraded coverage is different.
+The current GitHub PR and Discussion collectors always retain unsupported-history gaps, including
+deletion histories the provider cannot enumerate. `readCoverage` requires complete, zero-gap
+receipts for all three resource families, so even an exhaustive acquisition currently leaves the
+source degraded. The steward returns `coverage-degraded` before vacancy or payload calculation;
+this caller preserves the resulting unknown metrics and `insufficient-evidence` classification.
+Source registration, acquisition cost or a successful command exit cannot remove that ceiling.
+Resolve its measurement disposition before expecting a qualified vacancy/wake window; keep every
+provider gap visible.
+
 Injected runtimes and resolved test stores remain `fixture-only`. Even a
 `source-bound-window-observed` result attests only the selected ledger window: bind the actual
 registration and admission receipts before describing it as a real deployment observation.
