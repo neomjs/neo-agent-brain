@@ -17,6 +17,7 @@
 | **Composes** | ADR 0035 — community history and attention projections remain outside `LifecycleFrontier` until explicit claim |
 | **Mechanically amends** | ADR 0031's seam table and `learn/benefits/ArchitectureOverview.md` pointers only; no prior ADR is superseded |
 | **Selected bundle** | H + I; K only for non-reconstructable acquisition; staged J; L/M with N transitional and O measurement-gated; T backed by R; U locally and W for hosted bootstrap; V/X deferred |
+| **Coverage amendment** | 2026-10-28 under [Brain #1327](https://github.com/neomjs/neo-agent-brain/issues/1327), from [Discussion #20161](https://github.com/orgs/neomjs/discussions/20161); human merge accepts this amendment, not live activation |
 | **Anti-anchor for** | Notification-as-ledger, graph snapshots as history, provider polling inside Memory Core, caller-asserted tenant identity, automatic prose delivery, popularity telemetry, auto-assignment, or intuition-derived thresholds |
 
 ---
@@ -58,9 +59,29 @@ deployments.
 
 ### 2.1 Source occurrence and attention classification
 
-A provider adapter declares a supported resource × event-family matrix. Reconciliation is
-exhaustive **within that declared matrix** and reports unsupported or degraded families rather than
-implying global provider completeness.
+A provider adapter declares a versioned resource × event-family matrix. Reconciliation is
+exhaustive **within that declared matrix**, not across all provider history.
+
+Coverage distinguishes two kinds of evidence:
+
+- **Acquisition gaps:** incomplete supported traversal, page caps, permission/access uncertainty,
+  fetch errors, mutation during verification, or failed identity/count/revision/census checks.
+  Any such gap makes acquisition incomplete and prevents qualified attention conclusions.
+- **Provider limitations:** fixed historical or attribution surfaces the declared adapter matrix
+  cannot reconstruct. They remain explicit machine-readable declarations even after a successful
+  supported traversal; they do not become invented events or disappear from the evidence.
+
+A recognized contract binds the exact required limitation set to its resource family, adapter
+version and provider-state version. Missing, duplicate, extra, wrong-family or unknown declarations
+fail closed. A list of allowed limitations alone is insufficient: omission must not manufacture
+completeness. Issue-family loss/attribution caveats are declared as explicitly as PR/Discussion
+limitations. Neither a caller nor an attention policy may relabel a runtime acquisition failure as a
+fixed provider limitation.
+
+Acquisition completeness therefore requires both zero acquisition gaps and a recognized complete
+declaration binding. It proves enumeration/verification of the supported axes, not universal recall
+of current human demand. Actor attribution, loss markers and the reviewed attention policy still
+bound the attention population.
 
 Provider actor kind and security/content trust are independent axes:
 
@@ -195,6 +216,31 @@ One serialized transaction:
 9. stores bounded, canonical, secret-free, prose-free provider state, inventory, coverage, and the
    receipt; then advances that partition.
 
+#### Coverage generation and replay
+
+The stored `coverage` evidence carries the recognized contract/generation binding, including the
+resource family and adapter/provider-state versions needed to interpret its declarations. Keeping
+those identities only on the transient batch is insufficient: receipt readers must validate them
+without reconstructing or guessing the writer's version.
+
+Coverage, acquisition gaps and `providerLimitations` participate in the canonical digest.
+Declarations have a contract-defined deterministic order; changed coverage under the same
+`batchId` remains a digest conflict. Local admission and hosted submission use one neutral gap-item
+definition, including actual producer gap shapes, with a derived/drift-checked OpenAPI component.
+Closed-key, authority, secret and prose refusals remain. Validation has no per-call schema-file I/O,
+provider lookup or credential resolution; fixing schema parity does not change qualification.
+
+Version the new qualification semantics explicitly. Historical receipt/checkpoint JSON and digests
+are not rewritten or promoted. Legacy receipts remain readable under their original meaning, and
+exact known-receipt replay preserves that digest contract. New qualified evidence requires fresh
+exhaustive admission under a recognized declaration contract. A legacy complete-looking receipt
+without its declaration binding, an unknown version or mixed family generations cannot qualify a
+source. Snapshot reads must not gain stronger completeness from later admissions.
+
+Assembly preserves this evidence instead of rebuilding a partial coverage object. Public family,
+count and measurement schemas expose the same declaration/qualification boundary as the stored
+receipt; no internal-only field may silently disappear at a strict transport boundary.
+
 Two batches from one old basis may legitimately differ as the provider changes. One CAS wins; the
 other receives stale-basis/reconcile. A lease may reduce duplicate API work but is not correctness.
 The contract promises idempotent admission and durable receipts, not provider exactly-once.
@@ -248,6 +294,44 @@ The provider-neutral community Bird View:
 - cannot assign, rank, claim, resolve, or become durable storage;
 - reapplies tenant/source isolation before counts or drill-down.
 
+#### Qualified conclusions and measurement
+
+For the initial GitHub repository contract, qualification retains the three expected families:
+issues, pull requests and Discussions, under an ACTIVE registration and its current epoch. Every
+family needs recognized post-contract evidence and complete supported acquisition. A disabled or
+empty current connection does not prove historical absence or permission continuity; it cannot
+silently remove an expected family. Keep fixed provider limitations visible on every derived
+conclusion.
+
+A count describes an upper bound on unresolved **eligible admitted** items under the retained
+classification policy. A qualified empty result means zero in that named population, not that no
+unattributed or otherwise excluded person is waiting. It is not an exact current-provider-demand or
+universal-recall claim. Unknown/mixed error direction, missing declarations or real acquisition gaps
+remain unqualified rather than normalized to zero.
+
+Preserve the existing internal/rostered closer predicate and actor eligibility. A provider
+Discussion close with an unknown closer does not resolve prior attention. Do not suppress a closed
+container wholesale or infer a Discussion reopen from an open snapshot: later replies must remain
+eligible, and omitted closes do not erase append-only admitted history. Claims remain intentional
+Task transitions, never a way to clean up a count.
+
+Read-time measurements may expose the eligible unclaimed slice at or before the latest admitted
+unattributed closure, labelled **latest admitted closure; reopen not observable**. This is a
+historical slice, not a current-closed-container or measured false-positive count. Report actual
+unknown/unreviewed-actor exclusions separately; their reason alone does not establish membership in
+the response-bearing kind list. A response-bearing subset is unknown without independently bound
+policy evidence. Do not reclassify historical rows under a current policy to manufacture the
+original denominator.
+
+A qualified zero-demand evaluation reports observed lease vacancy and false shadow would-wake
+through the same evaluator used for nonzero demand. Missing/degraded coverage must not acquire
+fabricated vacancy, would-wake or payload measurements. Latency, payload and denominator fields
+remain explicitly unknown wherever no matching observation exists.
+
+No provider calls are added to the neutral observer. Any candidate live re-verification or
+false-positive-rate conclusion needs its own source-authority and budget evidence; accessibility
+alone is not a proof of unresolved demand.
+
 J is staged. First ship the Bird View plus a bounded tenant count-only projection. A tenant-scoped,
 TTL-bound steward lease, wake, stale-unacknowledged fallback, or Fleet claim affordance remains
 disabled until shadow measurements justify explicit thresholds. An unfilled steward role must not
@@ -288,7 +372,7 @@ cannot promote a rejected/deferred option by citing only the selected bundle.
 | E | **Adopt only as an accelerator under H.** Webhooks may lower hosted latency. | Reordering and non-redelivery still require reconciliation. |
 | F | **Defer as an optional accelerator under H.** | Repository automation must prove value across runner, fork, credential, and replay boundaries. |
 | G | **Reject as authority; retain its seam through N.** | Existing sync may emit honest snapshots only; child-bounded traversal is lossy. |
-| H | **Adopt.** Durable exhaustive-within-supported-matrix reconciliation is completeness authority. | Unsupported revisions/families remain explicit coverage gaps. |
+| H | **Adopt, with the 2026-10-28 coverage amendment.** Versioned exhaustive-within-supported-matrix reconciliation is acquisition-completeness authority. | Provider limitations remain declared; incomplete supported acquisition remains a degrading gap. Unknown or missing declaration bindings cannot qualify. |
 | I | **Adopt as baseline durable owner.** Tenant-scoped Memory-Core CAS admission owns history; claim binds later. | Shared Memory Core is the initial consistency topology. |
 | K | **Adopt conditionally for non-reconstructable acquisition only.** | Applying it to replayable polling creates duplicate durability. |
 | J | **Adopt in stages.** Bird View and bounded tenant count first; lease/wake only after measurement. | Tenant-relative trust and attention amplification are hard gates. |
@@ -333,7 +417,8 @@ There is no dual-authority migration:
 4. **Neutral admission:** add I's partitioned CAS, receipt, immutable revision, coverage, opaque
    checkpoint, and absence semantics. Add K only for a proven non-reconstructable acquisition mode.
 5. **Provider reconciliation:** ship GitHub first under H, using L and removable N locally; declare
-   the supported family matrix and every gap. Later adapters reuse the neutral contract.
+   the versioned supported matrix, exact provider limitations and every acquisition gap. Later
+   adapters reuse the neutral contract.
 6. **Read/seen/claim:** add provider-neutral Bird View, per-viewer seen facts, and the canonical Task
    claim only after their tenant/trust/atomicity dependencies exist.
 7. **Hosted delivery:** add M for independently deployed connectors; add O only after measured
@@ -366,8 +451,11 @@ Additional empirical revalidation triggers:
 - **O:** M cannot satisfy measured burst/backpressure/scale needs;
 - **V:** an authoritative tenant-membership/source-admin substrate exists;
 - **X:** measured self-service demand justifies request/provisioning without self-activation;
-- **H:** a provider cannot exhaust a required family or stable revision identity; the unsupported
-  surface must be excluded explicitly rather than silently approximated;
+- **H:** a provider cannot exhaust a required family or stable revision identity, a limitation's
+  error direction changes, or a declaration/consumer population no longer matches. Reopen the
+  versioned matrix explicitly; do not approximate history, demote runtime failures, or upgrade old
+  receipts. Fixed exclusions remain provider limitations and failed supported traversal remains an
+  acquisition gap;
 - **bot attention:** measured missed-response evidence justifies an explicit ADR amendment;
 - **popularity telemetry:** any proposal to admit it requires an ADR amendment and cannot arrive via
   an accelerator shortcut;
@@ -424,7 +512,7 @@ Signal Ledger at graduation:
 | Graduated criterion | Executable authority in this record |
 |---|---|
 | OQ1 — event and actor classification | §2.1 separates occurrence, attention, actor kind, trust, excluded telemetry, and the explicit v1 bot disposition. |
-| OQ2 — source completeness | §2.1 and H in §3 require exhaustive reconciliation within a declared supported matrix plus honest gaps. |
+| OQ2 — source completeness | §2.1, the coverage amendment in §2.4, and H in §3 require versioned supported acquisition, exact provider limitations and honest acquisition gaps. |
 | OQ3 — identity and replay | §2.2 and §2.4 keep registration, provider entity, occurrence/revision, delivery, batch, checkpoint, receipt, sequence, source-event, and Task identities distinct. |
 | OQ4 — durable owner | §2.3–§2.4 select tenant-scoped Memory Core and exclude GraphLog/Native Edge Graph as history. |
 | OQ5 — seen, claim, and resolve | §1.1, §2.6, and §2.7 keep seen zero-authority and require one canonical atomic claim. |
@@ -452,3 +540,39 @@ Measured policy calibration (`community-activity-calibration-report.v1`, `report
 - **Deferred options (`E`, `F`, `K`, `O`, `V`, `X`):** all six remain `keep-deferred` with recorded `revalidationTrigger` thresholds in `communityActivityPolicyCalibrationCore.mjs`.
 - **Stage-2 `J` (`#100` steward experiment):** recorded as `shadow-only steward experiment authorized; activation thresholds unset until its window` (`wakeChildDecision.mode = 'shadow-only'`, `authorized = true`, `activationAuthorized = false`), motivated by the 30-day attention-eligible density (`22 / 11,253 = 0.1955%`) and two unstewarded 2026-10-26 external contributions (`neomjs/neo#20119` by `drakeboley`, opened `06:00:05Z` -> first comment `13:00:33Z`; `neomjs/neo#19129#issuecomment-6425153408` by `SimonGebru`, posted `19:18:05Z` -> first reply `19:22:58Z`).
 - **Gemini family liveness revalidation (§6):** discharged via non-author `/epic-review` on [`neomjs/neo-agent-brain#106#issuecomment-6426058715`](https://github.com/neomjs/neo-agent-brain/issues/106#issuecomment-6426058715).
+
+
+## 10. Coverage amendment provenance (2026-10-28)
+
+[Discussion #20161](https://github.com/orgs/neomjs/discussions/20161), contract body
+`2026-10-27T23:23:23Z`, selects B1 plus bounded D. The [author signal](https://github.com/neomjs/neo/discussions/20161#discussioncomment-19229945)
+and [Claude non-author approval](https://github.com/neomjs/neo/discussions/20161#discussioncomment-19229948)
+bind that contract. [The re-bound STEP_BACK](https://github.com/neomjs/neo/discussions/20161#discussioncomment-19229871)
+retains three mandatory implementation criteria: persisted generation visibility, observed vacancy
+and false would-wake on qualified empty demand, and lossless assembly plus strict public-schema
+propagation. No substantive dissent remains at that anchor. The Discussion's archival ledger
+retains participation and attribution limits; it does not rewrite the original signal ledger in §8.
+
+The source falsifiers at `06f5574e` were permanent PR/Discussion history gaps sharing the acquisition
+failure path, hosted/neutral gap validation disagreement, and an unknown-closer waiver that would
+retain stale close resolution after an unobserved reopen. The waiver, blanket closed-container
+exclusion, synthetic reopen and universal recall claim were rejected. Corpus closure counts were
+partitioned by occurrence time; they are not a real-window false-positive rate.
+
+The required implementation source→assembly→admission→public-count→shared-evaluator→observer proof
+uses real producer paths, not synthetic complete batches alone. Metadata/code fixtures remain
+separate from deployment and source-window evidence.
+
+The main window is proposed against `neomjs/neo` (stable repository ID `220867748`) to observe a
+population with external-activity evidence across all three families. The smaller Institution
+candidate may be an empty control, but cannot substitute for the goal's wake-cost population.
+Provider metadata implied 399 initial root pages at size 50 before child/edit/verification/census
+reads; total cost is unmeasured and requires operator approval, not a calibrated budget. This source
+choice grants no source-administration, credential, acquisition or deployment authority.
+
+[Brain #1327](https://github.com/neomjs/neo-agent-brain/issues/1327) amends this decision only. Human
+merge accepts the amendment before qualification-changing implementation is merge-ready. The full
+real tenant/source/store-bound zero-dispatch window and independent calibration/disposition remain
+owned by [Brain #106](https://github.com/neomjs/neo-agent-brain/issues/106). Existing calibration in
+§9 stays evidence-scoped: activation remains false and unmeasured thresholds remain unset. Neither
+this amendment nor an empty control completes that outcome.
