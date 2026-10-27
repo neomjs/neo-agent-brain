@@ -44,12 +44,24 @@ const REOPEN_RESOLUTION_KINDS = new Set([
     'discussion.reopened'
 ]);
 
-/** @summary Computes latest unresolved terminal close/merge/dismiss timestamp per entity, cleared by any later reopen. */
+const INTERNAL_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+/** @summary Only internal or rostered actors may resolve an existing external item. */
+function isInternalOrRosteredCloser(obs) {
+    return obs.attention_reason === 'rostered-actor' || INTERNAL_ASSOCIATIONS.has(obs.source_association)
+}
+
+/** @summary Computes latest unresolved terminal close/merge/dismiss timestamp per entity and parent chain, cleared by any later reopen. */
 function collectResolvedByEntity(obsRows) {
-    const stateByEntity = new Map();
+    const stateByEntity  = new Map(),
+          parentByEntity = new Map();
 
     for (const obs of obsRows) {
-        const isClose  = TERMINAL_RESOLUTION_KINDS.has(obs.occurrence_kind),
+        if (obs.provider_entity_id && obs.parent_provider_entity_id && !parentByEntity.has(obs.provider_entity_id)) {
+            parentByEntity.set(obs.provider_entity_id, obs.parent_provider_entity_id)
+        }
+
+        const isClose  = TERMINAL_RESOLUTION_KINDS.has(obs.occurrence_kind) && isInternalOrRosteredCloser(obs),
               isReopen = REOPEN_RESOLUTION_KINDS.has(obs.occurrence_kind);
 
         if (!isClose && !isReopen) continue;
@@ -69,17 +81,29 @@ function collectResolvedByEntity(obsRows) {
         }
     }
 
-    return stateByEntity
+    return {parentByEntity, stateByEntity}
 }
 
-/** @summary True when an observation was resolved by a later or contemporaneous terminal close/merge/dismiss without a subsequent reopen. */
-function isObservationResolved(obs, parsedTime, resolvedByEntity) {
-    return [obs.provider_entity_id, obs.parent_provider_entity_id]
-        .filter(Boolean)
-        .some(entityId => {
-            const state = resolvedByEntity.get(entityId);
-            return Boolean(state?.resolved && state.time >= parsedTime)
-        })
+/** @summary True when an observation or any ancestor in its thread was resolved by a later or contemporaneous terminal close/merge/dismiss without a subsequent reopen. */
+function isObservationResolved(obs, parsedTime, {parentByEntity, stateByEntity}) {
+    const visited = new Set(),
+          queue   = [obs.provider_entity_id, obs.parent_provider_entity_id].filter(Boolean);
+
+    while (queue.length > 0) {
+        const entityId = queue.shift();
+        if (!entityId || visited.has(entityId)) continue;
+        visited.add(entityId);
+
+        const state = stateByEntity.get(entityId);
+        if (state?.resolved && state.time >= parsedTime) return true;
+
+        const parentId = parentByEntity.get(entityId);
+        if (parentId && !visited.has(parentId)) {
+            queue.push(parentId)
+        }
+    }
+
+    return false
 }
 
 /** @summary Formats a fixed-width zero-padded monotonic watermark component. */
@@ -591,14 +615,6 @@ class CommunityActivityService extends Base {
             if ((row.absence === 'deleted' && parseEvidence(row.deletion_evidence)) ||
                 tombstones.some(tombstone => parseEvidence(tombstone.deletion_evidence))) {
                 return denied('deleted', row.source_instance_id)
-            }
-
-            const sourceObsRows    = this.db.prepare('SELECT occurrence_kind, occurred_at, provider_entity_id, parent_provider_entity_id FROM mc_community_observation WHERE tenant_id = ? AND source_instance_id = ? ORDER BY admitted_sequence ASC, observation_row_id ASC').all(tenantId, row.source_instance_id),
-                  resolvedByEntity = collectResolvedByEntity(sourceObsRows),
-                  rowParsedTime    = Date.parse(row.occurred_at);
-
-            if (Number.isFinite(rowParsedTime) && isObservationResolved(row, rowParsedTime, resolvedByEntity)) {
-                return denied('ineligible', row.source_instance_id)
             }
 
             const existing = this.readExistingClaimBinding(tenantId, sourceEventId);

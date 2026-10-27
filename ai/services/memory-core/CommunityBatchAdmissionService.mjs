@@ -288,6 +288,18 @@ class CommunityBatchAdmissionService extends Base {
                              OR (provider_state IS NULL AND @providerState IS NOT NULL)
                              OR (source_association IS NULL AND @sourceAssociation IS NOT NULL))`
                     ),
+                    upgradeParentProjectionStatement = this.db.prepare(
+                        `UPDATE mc_community_observation
+                         SET parent_provider_entity_id = @parentProviderEntityId,
+                             occurrence_digest         = @nextDigest,
+                             provider_state            = COALESCE(provider_state, @providerState),
+                             source_association        = COALESCE(source_association, @sourceAssociation)
+                         WHERE tenant_id = @tenantId
+                           AND source_instance_id = @sourceInstanceId
+                           AND occurrence_identity = @identity
+                           AND parent_provider_entity_id IS NULL
+                           AND occurrence_digest = @legacyDigest`
+                    ),
                     backfillObservationProjection = (
                         observation,
                         identity = occurrenceIdentity(sourceInstanceId, observation),
@@ -360,7 +372,9 @@ class CommunityBatchAdmissionService extends Base {
                     const identity = occurrenceIdentity(sourceInstanceId, observation),
                           oDigest  = observationDigest(observation),
                           prior    = this.db.prepare(
-                              `SELECT occurrence_digest FROM mc_community_observation WHERE tenant_id = ? AND occurrence_identity = ?`
+                              `SELECT occurrence_digest, parent_provider_entity_id
+                               FROM mc_community_observation
+                               WHERE tenant_id = ? AND occurrence_identity = ?`
                           ).get(tenantId, identity);
 
                     if (prior) {
@@ -369,6 +383,28 @@ class CommunityBatchAdmissionService extends Base {
                         if (prior.occurrence_digest === oDigest) {
                             backfillObservationProjection(observation, identity, oDigest);
                             continue
+                        }
+                        // Step 6b — re-reconciling an earlier child row whose stored
+                        // parent_provider_entity_id is NULL and whose payload matches the legacy
+                        // parentless digest upgrades the parent projection and digest in place without
+                        // conflict or duplicate rows. Any other payload mutation still fails closed.
+                        if (prior.parent_provider_entity_id === null && observation.parentProviderEntityId) {
+                            const {parentProviderEntityId: _omittedParent, ...legacyObservation} = observation,
+                                  legacyDigest = observationDigest(legacyObservation);
+
+                            if (prior.occurrence_digest === legacyDigest) {
+                                upgradeParentProjectionStatement.run({
+                                    identity,
+                                    legacyDigest,
+                                    nextDigest            : oDigest,
+                                    parentProviderEntityId: observation.parentProviderEntityId,
+                                    providerState         : observation.providerState ?? null,
+                                    sourceAssociation     : observation.sourceAssociation ?? null,
+                                    sourceInstanceId,
+                                    tenantId
+                                });
+                                continue
+                            }
                         }
                         // Step 7 — same identity + different digest: integrity conflict, abort.
                         throw new ObservationConflict('OBSERVATION_DIGEST_MISMATCH')

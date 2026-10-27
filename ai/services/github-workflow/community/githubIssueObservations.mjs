@@ -99,6 +99,12 @@ function unattributedEdit() {
  *
  * Identity is stable across runs: the root, each comment, and each timeline event key off the
  * provider's own node id, so re-reconciling the same issue reproduces byte-identical coordinates.
+ * Every child occurrence (comment, comment edit, and timeline event) carries
+ * `parentProviderEntityId: issue.id` so downstream thread resolution and task bindings can walk
+ * from child to issue root. When re-reconciling a source whose issue children were admitted before
+ * `parentProviderEntityId` was emitted, `CommunityBatchAdmissionService.admitBatch` verifies the
+ * legacy parentless `observationDigest` and upgrades `parent_provider_entity_id` and
+ * `occurrence_digest` in place without conflict or duplicate rows.
  * A revision (edit, re-close, re-open) is a distinct coordinate on the same entity, never a
  * silent overwrite of the create.
  * @param {Object}        issue                  A reconciled issue node.
@@ -110,7 +116,7 @@ function unattributedEdit() {
  * @param {String}        [issue.authorAssociation] Provider association-with-source of the author.
  * @param {Object[]}      [issue.comments]       `[{id, createdAt, lastEditedAt, author, authorAssociation}]`.
  * @param {Object[]}      [issue.timeline]       `[{id, __typename, createdAt, actor}]` normalized events.
- * @returns {Object[]} Observations, each `{providerEntityId, occurrenceKind, occurrenceCoordinate, occurredAt, actorId, actorKind, sourceAssociation}`.
+ * @returns {Object[]} Observations, each `{providerEntityId, parentProviderEntityId?, occurrenceKind, occurrenceCoordinate, occurredAt, actorId, actorKind, sourceAssociation}`.
  */
 export function issueToObservations(issue) {
     if (!issue || typeof issue !== 'object' || !issue.id) {
@@ -145,19 +151,21 @@ export function issueToObservations(issue) {
         }
 
         observations.push({
-            providerEntityId    : comment.id,
-            occurrenceKind      : 'issue.comment',
-            occurrenceCoordinate: `${comment.id}:created`,
-            occurredAt          : comment.createdAt,
+            providerEntityId      : comment.id,
+            parentProviderEntityId: issue.id,
+            occurrenceKind        : 'issue.comment',
+            occurrenceCoordinate  : `${comment.id}:created`,
+            occurredAt            : comment.createdAt,
             ...projectActor(comment.author, comment.authorAssociation ?? null)
         });
 
         if (comment.lastEditedAt) {
             observations.push({
-                providerEntityId    : comment.id,
-                occurrenceKind      : 'issue.comment-edited',
-                occurrenceCoordinate: `${comment.id}:edited:${comment.lastEditedAt}`,
-                occurredAt          : comment.lastEditedAt,
+                providerEntityId      : comment.id,
+                parentProviderEntityId: issue.id,
+                occurrenceKind        : 'issue.comment-edited',
+                occurrenceCoordinate  : `${comment.id}:edited:${comment.lastEditedAt}`,
+                occurredAt            : comment.lastEditedAt,
                 ...unattributedEdit()
             })
         }
@@ -176,10 +184,11 @@ export function issueToObservations(issue) {
         }
 
         observations.push({
-            providerEntityId    : event.id,
+            providerEntityId      : event.id,
+            parentProviderEntityId: issue.id,
             occurrenceKind,
-            occurrenceCoordinate: `${event.id}:${occurrenceKind}`,
-            occurredAt          : event.createdAt,
+            occurrenceCoordinate  : `${event.id}:${occurrenceKind}`,
+            occurredAt            : event.createdAt,
             ...projectActor(event.actor)
         })
     }

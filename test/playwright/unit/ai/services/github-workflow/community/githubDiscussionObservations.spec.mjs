@@ -143,6 +143,61 @@ test.describe('githubDiscussionObservations normalizer', () => {
         expect(validateBatch(batchAround(observations))).toEqual({valid: true, errors: []});
     });
 
+    test('emits discussion.closed and discussion.reopened from reconciled closure state while keeping unnamed closers unknown (#1315 AC-2)', () => {
+        const unnamedClosed = discussionToObservations({
+            ...discussion,
+            closed   : true,
+            closedAt : '2026-09-20T10:00:00Z',
+            updatedAt: '2026-09-20T10:00:00Z'
+        });
+        const unnamedCloseObs = unnamedClosed.find(o => o.occurrenceKind === 'discussion.closed');
+
+        expect(unnamedCloseObs).toEqual({
+            actorId             : null,
+            actorKind           : 'unknown',
+            occurredAt          : '2026-09-20T10:00:00Z',
+            occurrenceCoordinate: 'D_1:closed:2026-09-20T10:00:00Z',
+            occurrenceKind      : 'discussion.closed',
+            providerEntityId    : 'D_1',
+            sourceAssociation   : null
+        });
+        expect(unnamedClosed.some(o => o.occurrenceKind === 'discussion.observed-snapshot-change')).toBe(false);
+        expect(validateBatch(batchAround(unnamedClosed))).toEqual({valid: true, errors: []});
+
+        const namedCloseAndReopen = discussionToObservations({
+            ...discussion,
+            closed               : false,
+            closedAt             : '2026-09-20T10:05:00Z',
+            closedBy             : {__typename: 'User', login: 'steward-closer'},
+            closedByAssociation  : 'MEMBER',
+            reopenedAt           : '2026-09-20T10:15:00Z',
+            reopenedBy           : null,
+            updatedAt            : '2026-09-20T10:15:00Z'
+        });
+        const closeObs  = namedCloseAndReopen.find(o => o.occurrenceKind === 'discussion.closed'),
+              reopenObs = namedCloseAndReopen.find(o => o.occurrenceKind === 'discussion.reopened');
+
+        expect(closeObs).toEqual({
+            actorId             : 'steward-closer',
+            actorKind           : 'user',
+            occurredAt          : '2026-09-20T10:05:00Z',
+            occurrenceCoordinate: 'D_1:closed:2026-09-20T10:05:00Z',
+            occurrenceKind      : 'discussion.closed',
+            providerEntityId    : 'D_1',
+            sourceAssociation   : 'MEMBER'
+        });
+        expect(reopenObs).toEqual({
+            actorId             : null,
+            actorKind           : 'unknown',
+            occurredAt          : '2026-09-20T10:15:00Z',
+            occurrenceCoordinate: 'D_1:reopened:2026-09-20T10:15:00Z',
+            occurrenceKind      : 'discussion.reopened',
+            providerEntityId    : 'D_1',
+            sourceAssociation   : null
+        });
+        expect(validateBatch(batchAround(namedCloseAndReopen))).toEqual({valid: true, errors: []})
+    });
+
     test('rejects missing stable child ids or missing revision evidence for a claimed edit', () => {
         expect(() => discussionToObservations({id: 'D', createdAt: 't', comments: [{replies: []}]}))
             .toThrow('DISCUSSION_OBSERVATIONS_REQUIRE_COMMENT_AND_REPLIES');

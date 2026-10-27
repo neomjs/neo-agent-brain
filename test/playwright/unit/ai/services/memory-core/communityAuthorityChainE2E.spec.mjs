@@ -72,7 +72,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
                 'discussion.comment',
                 'discussion.reply'
             ],
-            rosteredActorIds: ['neo-opus-ada', 'neo-opus-grace', 'neo-gpt', 'neo-gemini-maryam']
+            rosteredActorIds: ['maintainer-alpha', 'maintainer-beta', 'steward-agent-1', 'steward-agent-2']
         },
         observation = (providerEntityId, occurredAt, over = {}) => ({
             actorId             : `external-${providerEntityId}`,
@@ -228,9 +228,9 @@ test.describe('Community-activity end-to-end authority chain', () => {
     });
 
     test(TEST_NAMES[0], async () => {
-        const alphaRepo1 = registerActiveSource(TENANT_ALPHA, 'neomjs/neo'),
-              alphaRepo2 = registerActiveSource(TENANT_ALPHA, 'neomjs/neo-agent-brain'),
-              betaRepo1  = registerActiveSource(TENANT_BETA, 'neomjs/neo');
+        const alphaRepo1 = registerActiveSource(TENANT_ALPHA, 'acme-org/widgets'),
+              alphaRepo2 = registerActiveSource(TENANT_ALPHA, 'acme-org/platform'),
+              betaRepo1  = registerActiveSource(TENANT_BETA, 'acme-org/widgets');
 
         expect(alphaRepo1.sourceInstanceId).not.toBe(betaRepo1.sourceInstanceId);
 
@@ -259,10 +259,10 @@ test.describe('Community-activity end-to-end authority chain', () => {
         expect(crossAdmit).toMatchObject({status: 'conflict', reason: 'REGISTRATION_NOT_ADMISSIBLE'});
 
         const alphaPage1 = await inTenant(TENANT_ALPHA, () => ActivityService.query({...WINDOW, limit: 1}), {
-                  agentIdentityNodeId: '@neo-gemini-maryam'
+                  agentIdentityNodeId: '@steward-alpha'
               }),
               betaPage   = await inTenant(TENANT_BETA, () => ActivityService.query({...WINDOW, limit: 10}), {
-                  agentIdentityNodeId: '@neo-opus-grace'
+                  agentIdentityNodeId: '@steward-beta'
               });
 
         expect(alphaPage1.coverage.totalResolved).toBe(2);
@@ -281,10 +281,10 @@ test.describe('Community-activity end-to-end authority chain', () => {
         const alphaEventId = alphaPage1.items[0].sourceEventId;
 
         const betaSeen = await inTenant(TENANT_BETA, () => ActivityService.markSeen({sourceEventId: alphaEventId}), {
-                  agentIdentityNodeId: '@neo-opus-grace'
+                  agentIdentityNodeId: '@steward-beta'
               }),
               betaClaim = await inTenant(TENANT_BETA, () => ActivityService.claimTask({sourceEventId: alphaEventId}), {
-                  agentIdentityNodeId: '@neo-opus-grace'
+                  agentIdentityNodeId: '@steward-beta'
               });
 
         expect(betaSeen.status).toBe('ineligible');
@@ -325,7 +325,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
     });
 
     test(TEST_NAMES[1], async () => {
-        const initial = registerActiveSource(TENANT_ALPHA, 'neomjs/legacy-name');
+        const initial = registerActiveSource(TENANT_ALPHA, 'acme-org/legacy-name');
 
         await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
             batchAt(initial.sourceInstanceId, [observation('pre-rename', '2026-09-19T10:00:00.000Z')], {
@@ -335,15 +335,15 @@ test.describe('Community-activity end-to-end authority chain', () => {
 
         const renamedAndRotated = SourceRegistryService.registerForTenant(TENANT_ALPHA, {
             canonicalProviderHost: 'github.com',
-            displayLocator       : 'neomjs/renamed-repo',
+            displayLocator       : 'acme-org/renamed-repo',
             grantRef             : 'grant:rotated-v2',
             provider             : 'github',
-            providerResourceId   : 'repo:neomjs/legacy-name',
+            providerResourceId   : 'repo:acme-org/legacy-name',
             resourceKind         : 'repository'
         }, {actorId: `operator:${TENANT_ALPHA}`});
 
         expect(renamedAndRotated.sourceInstanceId).toBe(initial.sourceInstanceId);
-        expect(renamedAndRotated.displayLocator).toBe('neomjs/renamed-repo');
+        expect(renamedAndRotated.displayLocator).toBe('acme-org/renamed-repo');
         expect(renamedAndRotated.grantRef).toBe('grant:rotated-v2');
         expect(renamedAndRotated.lifecycleState).toBe('ACTIVE');
         expect(renamedAndRotated.registrationEpoch).toBe(2);
@@ -400,7 +400,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
     });
 
     test(TEST_NAMES[2], async () => {
-        const source               = registerActiveSource(TENANT_ALPHA, 'neomjs/neo');
+        const source               = registerActiveSource(TENANT_ALPHA, 'acme-org/widgets');
         let   crashBeforeAdmission = true,
               loseResponseAfterCommit = true;
         const batchIds = ['batch-run-1', 'batch-run-2'];
@@ -476,7 +476,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
     });
 
     test(TEST_NAMES[3], async () => {
-        const source       = registerActiveSource(TENANT_ALPHA, 'neomjs/neo'),
+        const source       = registerActiveSource(TENANT_ALPHA, 'acme-org/widgets'),
               hostedFacade = createTransportVisibleToolFacade({resolveTransport: () => 'streamable-http'}),
               stdioFacade  = createTransportVisibleToolFacade({resolveTransport: () => 'stdio'}),
               canonical    = batchAt(source.sourceInstanceId, [
@@ -492,7 +492,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
             batch : authorityFreeBatch,
             source: {
                 canonicalProviderHost: 'github.com',
-                providerResourceId   : 'repo:neomjs/neo',
+                providerResourceId   : 'repo:acme-org/widgets',
                 resourceKind         : 'repository'
             }
         };
@@ -536,7 +536,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
     });
 
     test(TEST_NAMES[4], async () => {
-        const source = registerActiveSource(TENANT_ALPHA, 'neomjs/neo');
+        const source = registerActiveSource(TENANT_ALPHA, 'acme-org/widgets');
 
         const issueObs = issueToObservations({
             author           : {__typename: 'User', login: 'external-issue-author'},
@@ -552,7 +552,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
             id       : 'I_10',
             timeline : [{
                 __typename: 'LabeledEvent',
-                actor     : {__typename: 'User', login: 'neo-opus-ada'},
+                actor     : {__typename: 'User', login: 'maintainer-alpha'},
                 createdAt : '2026-09-19T10:12:00.000Z',
                 id        : 'LE_10'
             }]
@@ -582,7 +582,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
             }],
             timeline: [{
                 __typename         : 'ReviewDismissedEvent',
-                actor              : {__typename: 'User', login: 'neo-opus-grace'},
+                actor              : {__typename: 'User', login: 'maintainer-beta'},
                 createdAt          : '2026-09-19T11:20:00.000Z',
                 id                 : 'RDE_20',
                 previousReviewState: 'CHANGES_REQUESTED',
@@ -664,8 +664,8 @@ test.describe('Community-activity end-to-end authority chain', () => {
     });
 
     test(TEST_NAMES[5], async () => {
-        const repoMember   = registerActiveSource(TENANT_ALPHA, 'neomjs/member-repo'),
-              repoExternal = registerActiveSource(TENANT_ALPHA, 'neomjs/external-repo');
+        const repoMember   = registerActiveSource(TENANT_ALPHA, 'acme-org/member-repo'),
+              repoExternal = registerActiveSource(TENANT_ALPHA, 'acme-org/external-repo');
 
         const proseBatchValidation = validateBatch(batchAt(repoMember.sourceInstanceId, [
             observation('prose-attempt', '2026-09-19T10:00:00.000Z', {
@@ -776,7 +776,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
     });
 
     test(TEST_NAMES[6], async () => {
-        const source = registerActiveSource(TENANT_ALPHA, 'neomjs/neo');
+        const source = registerActiveSource(TENANT_ALPHA, 'acme-org/widgets');
         await admitAllFamilies(TENANT_ALPHA, source.sourceInstanceId, {
             issues: [observation('claim-target-1', '2026-09-19T10:00:00.000Z', {parentProviderEntityId: 'I_500'})]
         });
@@ -788,7 +788,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
             await expect(inTenant(TENANT_ALPHA, () => ActivityService.claimTask({
                 crashPoint,
                 sourceEventId
-            }), {agentIdentityNodeId: '@neo-gemini-maryam'})).rejects.toThrow(/COMMUNITY_CLAIM_CRASH_/);
+            }), {agentIdentityNodeId: '@steward-alpha'})).rejects.toThrow(/COMMUNITY_CLAIM_CRASH_/);
 
             expect(activityDb.prepare('SELECT COUNT(*) AS c FROM mc_community_task_binding').get().c).toBe(0);
             expect(activityDb.prepare("SELECT COUNT(*) AS c FROM Nodes WHERE json_extract(data, '$.label') = 'MESSAGE'").get().c).toBe(0);
@@ -798,10 +798,10 @@ test.describe('Community-activity end-to-end authority chain', () => {
 
         const [claimA, claimB] = await Promise.all([
             inTenant(TENANT_ALPHA, () => ActivityService.claimTask({sourceEventId}), {
-                agentIdentityNodeId: '@neo-gemini-maryam'
+                agentIdentityNodeId: '@steward-alpha'
             }),
             inTenant(TENANT_ALPHA, () => ActivityService.claimTask({sourceEventId}), {
-                agentIdentityNodeId: '@neo-gpt-euclid'
+                agentIdentityNodeId: '@steward-gamma'
             })
         ]);
 
@@ -817,29 +817,29 @@ test.describe('Community-activity end-to-end authority chain', () => {
         await expect(inTenant(TENANT_ALPHA, () => MailboxService.transitionTask({
             newState: 'Completed',
             taskId  : claimA.taskId
-        }), {agentIdentityNodeId: '@neo-gpt-euclid'})).rejects.toThrow(/neither originator nor assignee/);
+        }), {agentIdentityNodeId: '@steward-gamma'})).rejects.toThrow(/neither originator nor assignee/);
 
         const completed = await inTenant(TENANT_ALPHA, () => MailboxService.transitionTask({
             expectedCurrentState: 'Working',
             newState            : 'Completed',
             taskId              : claimA.taskId
-        }), {agentIdentityNodeId: '@neo-gemini-maryam'});
+        }), {agentIdentityNodeId: '@steward-alpha'});
 
         expect(completed.success).toBe(true);
         expect(completed.task.state).toBe('Completed');
     });
 
     test(TEST_NAMES[7], async () => {
-        const source = registerActiveSource(TENANT_ALPHA, 'neomjs/neo');
+        const source = registerActiveSource(TENANT_ALPHA, 'acme-org/widgets');
         await admitAllFamilies(TENANT_ALPHA, source.sourceInstanceId, {
             issues: [observation('frontier-event-1', '2026-09-19T10:00:00.000Z')]
         });
 
         const page = await inTenant(TENANT_ALPHA, () => ActivityService.query({...WINDOW, limit: 10}), {
-            agentIdentityNodeId: '@neo-gemini-maryam'
+            agentIdentityNodeId: '@steward-alpha'
         });
         await inTenant(TENANT_ALPHA, () => ActivityService.markSeen({sourceEventId: page.items[0].sourceEventId}), {
-            agentIdentityNodeId: '@neo-gemini-maryam'
+            agentIdentityNodeId: '@steward-alpha'
         });
         await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts());
 
@@ -849,8 +849,8 @@ test.describe('Community-activity end-to-end authority chain', () => {
 
         const unclaimedTasks = await inTenant(TENANT_ALPHA, () => ActivityService.listClaimedTasks());
         expect(unclaimedTasks).toEqual([]);
-        expect(collectLifecycleItems({agentId: '@neo-gemini-maryam', tasks: unclaimedTasks})).toEqual([]);
-        expect(admitClaimedTask({agentId: '@neo-gemini-maryam', task: page.items[0]})).toBeNull();
+        expect(collectLifecycleItems({agentId: '@steward-alpha', tasks: unclaimedTasks})).toEqual([]);
+        expect(admitClaimedTask({agentId: '@steward-alpha', task: page.items[0]})).toBeNull();
         expect(isActionableComputedRecommendation({
             action       : 'community_observation',
             notAuthority : true,
@@ -859,7 +859,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
 
         const claimed = await inTenant(TENANT_ALPHA, () => ActivityService.claimTask({
             sourceEventId: page.items[0].sourceEventId
-        }), {agentIdentityNodeId: '@neo-gemini-maryam'});
+        }), {agentIdentityNodeId: '@steward-alpha'});
 
         const claimedTasks = await inTenant(TENANT_ALPHA, () => ActivityService.listClaimedTasks({
             checkedAt: '2026-09-19T12:00:00.000Z'
@@ -867,14 +867,14 @@ test.describe('Community-activity end-to-end authority chain', () => {
         expect(claimedTasks).toHaveLength(1);
         expect(admitClaimedTask({
             actionableStates: new Set(['Working', 'InputRequired', 'AuthRequired']),
-            agentId         : '@neo-gemini-maryam',
+            agentId         : '@steward-alpha',
             task            : claimedTasks[0]
         })?.subjectId).toBe(claimed.taskId);
     });
 
     test(TEST_NAMES[8], async () => {
-        const partialSource     = registerActiveSource(TENANT_ALPHA, 'neomjs/partial-repo'),
-              unsupportedSource = registerActiveSource(TENANT_ALPHA, 'neomjs/gitlab-repo', {
+        const partialSource     = registerActiveSource(TENANT_ALPHA, 'acme-org/partial-repo'),
+              unsupportedSource = registerActiveSource(TENANT_ALPHA, 'acme-org/gitlab-repo', {
                   canonicalProviderHost: 'gitlab.com',
                   provider             : 'gitlab'
               });
@@ -935,7 +935,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
     });
 
     test(TEST_NAMES[10], async () => {
-        const source = registerActiveSource(TENANT_ALPHA, 'neomjs/neo');
+        const source = registerActiveSource(TENANT_ALPHA, 'acme-org/widgets');
 
         for (const popularityKind of [
             'repository.starred',
@@ -955,11 +955,11 @@ test.describe('Community-activity end-to-end authority chain', () => {
 
         const noiseAndSignal = [
             observation('rostered-open', '2026-09-19T10:00:00.000Z', {
-                actorId       : 'neo-opus-ada',
+                actorId       : 'maintainer-alpha',
                 occurrenceKind: 'issue.opened'
             }),
             observation('rostered-comment', '2026-09-19T10:01:00.000Z', {
-                actorId       : 'neo-gpt',
+                actorId       : 'steward-agent-1',
                 occurrenceKind: 'issue.comment'
             }),
             observation('bot-comment', '2026-09-19T10:02:00.000Z', {
@@ -968,7 +968,7 @@ test.describe('Community-activity end-to-end authority chain', () => {
                 occurrenceKind: 'issue.comment'
             }),
             observation('org-actor', '2026-09-19T10:03:00.000Z', {
-                actorId       : 'neomjs-org',
+                actorId       : 'acme-org',
                 actorKind     : 'organization',
                 occurrenceKind: 'issue.comment'
             }),
@@ -1005,67 +1005,200 @@ test.describe('Community-activity end-to-end authority chain', () => {
     });
 
     test(TEST_NAMES[11], async () => {
-        const source = registerActiveSource(TENANT_ALPHA, 'neomjs/neo');
+        const source = registerActiveSource(TENANT_ALPHA, 'acme-org/widgets');
+
+        const baseIssue = {
+            author           : {__typename: 'User', login: 'external-issue-opener'},
+            authorAssociation: 'NONE',
+            comments         : [{
+                author           : {__typename: 'User', login: 'external-issue-commenter'},
+                authorAssociation: 'FIRST_TIME_CONTRIBUTOR',
+                createdAt        : '2026-09-19T10:05:00.000Z',
+                id               : 'IC_900_1'
+            }],
+            createdAt: '2026-09-19T10:00:00.000Z',
+            id       : 'I_900',
+            timeline : []
+        };
+
+        const baseDiscussion = {
+            author           : {__typename: 'User', login: 'external-disc-opener'},
+            authorAssociation: 'NONE',
+            comments         : [{
+                author           : {__typename: 'User', login: 'external-disc-commenter'},
+                authorAssociation: 'CONTRIBUTOR',
+                contentEdits     : [],
+                createdAt        : '2026-09-19T10:15:00.000Z',
+                id               : 'DC_900_1',
+                replies          : [{
+                    author           : {__typename: 'User', login: 'external-disc-replier'},
+                    authorAssociation: 'NONE',
+                    contentEdits     : [],
+                    createdAt        : '2026-09-19T10:20:00.000Z',
+                    id               : 'DR_900_1'
+                }]
+            }],
+            contentEdits: [],
+            createdAt   : '2026-09-19T10:10:00.000Z',
+            id          : 'D_900'
+        };
+
+        const basePr = {
+            author           : {__typename: 'User', login: 'external-pr-opener'},
+            authorAssociation: 'FIRST_TIME_CONTRIBUTOR',
+            comments         : [],
+            contentEdits     : [],
+            createdAt        : '2026-09-19T10:25:00.000Z',
+            id               : 'PR_900',
+            reviewComments   : [],
+            reviews          : [{
+                author           : {__typename: 'User', login: 'external-pr-reviewer'},
+                authorAssociation: 'NONE',
+                contentEdits     : [],
+                createdAt        : '2026-09-19T10:30:00.000Z',
+                id               : 'PRR_900_1',
+                state            : 'COMMENTED',
+                submittedAt      : '2026-09-19T10:30:00.000Z'
+            }],
+            timeline: []
+        };
 
         const firstBatch = await admitAllFamilies(TENANT_ALPHA, source.sourceInstanceId, {
-            issues: [
-                observation('I_900', '2026-09-19T10:00:00.000Z', {
-                    actorId       : 'external-opener',
-                    occurrenceKind: 'issue.opened'
-                }),
-                observation('IC_900_1', '2026-09-19T10:05:00.000Z', {
-                    actorId               : 'external-opener',
-                    occurrenceKind        : 'issue.comment',
-                    parentProviderEntityId: 'I_900'
-                })
-            ]
+            discussions: discussionToObservations(baseDiscussion),
+            issues     : issueToObservations(baseIssue),
+            pulls      : pullRequestToObservations(basePr)
         });
 
-        const beforeCloseCounts = await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts());
-        expect(beforeCloseCounts).toMatchObject({status: 'fresh', count: 2});
+        const initialCounts = await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts()),
+              initialPage   = await inTenant(TENANT_ALPHA, () => ActivityService.query({...WINDOW, limit: 20}));
 
-        const closeReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
-            batchAt(source.sourceInstanceId, [
-                observation('CE_900', '2026-09-19T11:00:00.000Z', {
-                    actorId               : 'neo-opus-ada',
-                    occurrenceCoordinate  : 'CE_900:issue.closed',
-                    occurrenceKind        : 'issue.closed',
-                    parentProviderEntityId: 'I_900'
-                })
-            ], {
+        // 2 issue items (I_900, IC_900_1) + 3 discussion items (D_900, DC_900_1, DR_900_1) + 2 PR items (PR_900, PRR_900_1) = 7
+        expect(initialCounts).toMatchObject({count: 7, status: 'fresh'});
+
+        // Claim I_900 before close so we can prove post-close claim replay returns the existing binding
+        const issueOpenItem = initialPage.items.find(i => i.providerEntityId === 'I_900'),
+              initialClaim  = await inTenant(TENANT_ALPHA, () => ActivityService.claimTask({
+                  sourceEventId: issueOpenItem.sourceEventId
+              }), {agentIdentityNodeId: '@steward-alpha'});
+
+        expect(initialClaim).toMatchObject({created: true, status: 'claimed'});
+
+        const afterClaimCounts = await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts());
+        expect(afterClaimCounts).toMatchObject({count: 6, status: 'fresh'});
+
+        // A bot close does NOT resolve the issue's external comment
+        const botCloseReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
+            batchAt(source.sourceInstanceId, issueToObservations({
+                ...baseIssue,
+                timeline: [{
+                    __typename: 'ClosedEvent',
+                    actor     : {__typename: 'Bot', login: 'stale-bot[bot]'},
+                    createdAt : '2026-09-19T10:45:00.000Z',
+                    id        : 'CE_900_BOT'
+                }]
+            }), {
                 baseCheckpointVersion: firstBatch.issues.receipt.nextCheckpointVersion,
                 baseInventoryHash    : firstBatch.issues.receipt.nextInventoryHash,
-                batchId              : 'b-internal-close',
+                batchId              : 'b-bot-close-issue',
                 resourceFamily       : 'issues'
             })
         ));
-        expect(closeReceipt.status).toBe('accepted');
+        expect(botCloseReceipt.status).toBe('accepted');
+
+        const afterBotCloseCounts = await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts());
+        expect(afterBotCloseCounts).toMatchObject({count: 6, status: 'fresh'});
+
+        // Rostered closes across all three mappers clear all 6 remaining unclaimed items
+        const issueCloseReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
+            batchAt(source.sourceInstanceId, issueToObservations({
+                ...baseIssue,
+                timeline: [{
+                    __typename: 'ClosedEvent',
+                    actor     : {__typename: 'User', login: 'steward-agent-1'},
+                    createdAt : '2026-09-19T11:00:00.000Z',
+                    id        : 'CE_900_ROSTERED'
+                }]
+            }), {
+                baseCheckpointVersion: botCloseReceipt.receipt.nextCheckpointVersion,
+                baseInventoryHash    : botCloseReceipt.receipt.nextInventoryHash,
+                batchId              : 'b-rostered-close-issue',
+                resourceFamily       : 'issues'
+            })
+        ));
+        expect(issueCloseReceipt.status).toBe('accepted');
+
+        const discussionCloseReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
+            batchAt(source.sourceInstanceId, discussionToObservations({
+                ...baseDiscussion,
+                closed    : true,
+                closedAt  : '2026-09-19T11:05:00.000Z',
+                closedBy  : {__typename: 'User', login: 'steward-agent-1'},
+                updatedAt : '2026-09-19T11:05:00.000Z'
+            }), {
+                baseCheckpointVersion: firstBatch.discussions.receipt.nextCheckpointVersion,
+                baseInventoryHash    : firstBatch.discussions.receipt.nextInventoryHash,
+                batchId              : 'b-rostered-close-discussion',
+                resourceFamily       : 'discussions'
+            })
+        ));
+        expect(discussionCloseReceipt.status).toBe('accepted');
+
+        const prCloseReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
+            batchAt(source.sourceInstanceId, pullRequestToObservations({
+                ...basePr,
+                timeline: [{
+                    __typename: 'ClosedEvent',
+                    actor     : {__typename: 'User', login: 'steward-agent-1'},
+                    createdAt : '2026-09-19T11:10:00.000Z',
+                    id        : 'PRCE_900_ROSTERED'
+                }]
+            }), {
+                baseCheckpointVersion: firstBatch.pulls.receipt.nextCheckpointVersion,
+                baseInventoryHash    : firstBatch.pulls.receipt.nextInventoryHash,
+                batchId              : 'b-rostered-close-pr',
+                resourceFamily       : 'pulls'
+            })
+        ));
+        expect(prCloseReceipt.status).toBe('accepted');
 
         const afterCloseCounts = await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts()),
-              afterClosePage   = await inTenant(TENANT_ALPHA, () => ActivityService.query({...WINDOW, limit: 10}));
+              afterClosePage   = await inTenant(TENANT_ALPHA, () => ActivityService.query({...WINDOW, limit: 20}));
 
-        expect(afterCloseCounts).toMatchObject({status: 'empty', count: 0, oldestOccurredAt: null});
-        expect(afterClosePage.items.some(i => i.providerEntityId === 'CE_900')).toBe(false);
-        expect(activityDb.prepare('SELECT COUNT(*) AS c FROM mc_community_task_binding').get().c).toBe(0);
-        expect(activityDb.prepare("SELECT COUNT(*) AS c FROM Nodes WHERE json_extract(data, '$.label') = 'MESSAGE'").get().c).toBe(0);
+        expect(afterCloseCounts).toMatchObject({count: 0, oldestOccurredAt: null, status: 'empty'});
+        expect(afterClosePage.items.some(i => i.occurrenceKind.endsWith('.closed'))).toBe(false);
+        expect(activityDb.prepare('SELECT COUNT(*) AS c FROM mc_community_task_binding').get().c).toBe(1);
+        expect(activityDb.prepare("SELECT COUNT(*) AS c FROM Nodes WHERE json_extract(data, '$.label') = 'MESSAGE'").get().c).toBe(1);
 
-        const closedIssueItem = afterClosePage.items.find(i => i.providerEntityId === 'I_900'),
-              claimClosed     = await inTenant(TENANT_ALPHA, () => ActivityService.claimTask({
-                  sourceEventId: closedIssueItem.sourceEventId
-              }), {agentIdentityNodeId: '@neo-gemini-maryam'});
-        expect(claimClosed.status).toBe('ineligible');
-        expect(claimClosed.taskId).toBeNull();
+        // Replaying claimTask after the entity closes returns the existing binding with 1 binding row
+        const replayedClaim = await inTenant(TENANT_ALPHA, () => ActivityService.claimTask({
+            sourceEventId: issueOpenItem.sourceEventId
+        }), {agentIdentityNodeId: '@steward-beta'});
 
+        expect(replayedClaim).toEqual({...initialClaim, created: false});
+        expect(activityDb.prepare('SELECT COUNT(*) AS c FROM mc_community_task_binding').get().c).toBe(1);
+
+        // Post-close external comment on the closed issue still surfaces as fresh attention
         const postCloseReplyReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
-            batchAt(source.sourceInstanceId, [
-                observation('IC_900_POST_CLOSE', '2026-09-19T12:00:00.000Z', {
-                    actorId               : 'external-followup',
-                    occurrenceKind        : 'issue.comment',
-                    parentProviderEntityId: 'I_900'
-                })
-            ], {
-                baseCheckpointVersion: closeReceipt.receipt.nextCheckpointVersion,
-                baseInventoryHash    : closeReceipt.receipt.nextInventoryHash,
+            batchAt(source.sourceInstanceId, issueToObservations({
+                ...baseIssue,
+                comments: [
+                    ...baseIssue.comments,
+                    {
+                        author           : {__typename: 'User', login: 'external-followup'},
+                        authorAssociation: 'NONE',
+                        createdAt        : '2026-09-19T12:00:00.000Z',
+                        id               : 'IC_900_POST_CLOSE'
+                    }
+                ],
+                timeline: [{
+                    __typename: 'ClosedEvent',
+                    actor     : {__typename: 'User', login: 'steward-agent-1'},
+                    createdAt : '2026-09-19T11:00:00.000Z',
+                    id        : 'CE_900_ROSTERED'
+                }]
+            }), {
+                baseCheckpointVersion: issueCloseReceipt.receipt.nextCheckpointVersion,
+                baseInventoryHash    : issueCloseReceipt.receipt.nextInventoryHash,
                 batchId              : 'b-post-close-reply',
                 resourceFamily       : 'issues'
             })
@@ -1079,26 +1212,30 @@ test.describe('Community-activity end-to-end authority chain', () => {
             status          : 'fresh'
         });
 
-        const tombstoneReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
-            batchAt(source.sourceInstanceId, [
-                observation('IC_900_POST_CLOSE', '2026-09-19T12:30:00.000Z', {
-                    absence               : 'deleted',
-                    actorId               : 'neo-opus-ada',
-                    deletionEvidence      : {deletedAt: '2026-09-19T12:30:00.000Z', tombstoneId: 'del-900'},
-                    occurrenceCoordinate  : 'IC_900_POST_CLOSE:deleted',
-                    occurrenceKind        : 'issue.deleted',
-                    parentProviderEntityId: 'I_900'
-                })
-            ], {
-                baseCheckpointVersion: postCloseReplyReceipt.receipt.nextCheckpointVersion,
-                baseInventoryHash    : postCloseReplyReceipt.receipt.nextInventoryHash,
-                batchId              : 'b-tombstone-resolve',
-                resourceFamily       : 'issues'
+        // Reopening the closed Discussion via discussionToObservations restores its 3 external items
+        const discussionReopenReceipt = await inTenant(TENANT_ALPHA, () => AdmissionService.admitBatch(
+            batchAt(source.sourceInstanceId, discussionToObservations({
+                ...baseDiscussion,
+                closed    : false,
+                closedAt  : '2026-09-19T11:05:00.000Z',
+                closedBy  : {__typename: 'User', login: 'steward-agent-1'},
+                reopenedAt: '2026-09-19T12:30:00.000Z',
+                reopenedBy: {__typename: 'User', login: 'steward-agent-1'},
+                updatedAt : '2026-09-19T12:30:00.000Z'
+            }), {
+                baseCheckpointVersion: discussionCloseReceipt.receipt.nextCheckpointVersion,
+                baseInventoryHash    : discussionCloseReceipt.receipt.nextInventoryHash,
+                batchId              : 'b-reopen-discussion',
+                resourceFamily       : 'discussions'
             })
         ));
-        expect(tombstoneReceipt.status).toBe('accepted');
+        expect(discussionReopenReceipt.status).toBe('accepted');
 
-        const afterTombstoneCounts = await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts());
-        expect(afterTombstoneCounts).toMatchObject({status: 'empty', count: 0, oldestOccurredAt: null});
+        const afterReopenCounts = await inTenant(TENANT_ALPHA, () => ActivityService.projectAttentionCounts());
+        expect(afterReopenCounts).toMatchObject({
+            count           : 4,
+            oldestOccurredAt: '2026-09-19T10:10:00.000Z',
+            status          : 'fresh'
+        });
     });
 });
