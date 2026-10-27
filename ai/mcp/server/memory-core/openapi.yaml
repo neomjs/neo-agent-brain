@@ -926,7 +926,7 @@ paths:
       operationId: add_memory
       x-neo-tool-tier: write
       x-pass-as-object: true
-      x-neo-tool-summary: Write a diary for future sessions. Durable on return; recency reads it now, semantic recall waits for embedding.
+      x-neo-tool-summary: "Write a fresh diary: decisions/evidence in thought; outcomes/next steps in response. Semantic recall follows embedding."
       description: |
         Write a newly authored diary entry for future sessions. Give a later reader enough context
         to understand what mattered, why a consequential choice was sensible, and how to continue.
