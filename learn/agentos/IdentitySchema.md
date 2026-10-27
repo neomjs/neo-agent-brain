@@ -75,6 +75,28 @@ records—not the person node.
 
 ## Manual family-publication v1 limits and carrier
 
+### Founding-family source input
+
+The roster module's `FOUNDING_FAMILY_SUBJECTS` export carries literal provider/base/user-ID tuples
+separately from ordinary `IDENTITIES` nodes. Changes require source review against the provider's
+stable account ID; neither current nor former logins are a runtime lookup key for these facts.
+[The pure compiler](../../ai/graph/identityFoundingSeed.mjs) binds every agent roster entry's exact
+family and identity key to its tuple in one detached, content-addressed payload. Multiple entries
+for the same subject survive, including disagreement. Missing or duplicate mappings refuse the
+whole compilation. Human and sentinel entries contribute no family.
+
+This payload is input to the dedicated protected seed owner; compiling or hashing it grants no
+write authority. The protected writer, complete snapshot composition and founding-family reader
+remain pending in the current source checkpoint. The ordinary boot manifest is unchanged.
+
+The [founding-cutoff disposition](https://github.com/neomjs/neo-agent-brain/issues/1296#issuecomment-6431146484)
+keeps roster precedence through baseline and matching confirmations. It ends at the first admitted
+different-family declaration, after which the complete seat-derived rule applies. Membership state
+and unconfirmed/conflicting seats remain visible throughout; source unavailability is never a
+successful empty roster. This policy still requires the pending reader integration.
+
+### Signed manual carrier
+
 The supported v1 plane size is **128 managed bindings**, counting every binding across all forge
 subjects, including multiple seats for one subject. This is the complete-plane capacity, not a page
 size or a permission to select the first 128 entries. A capture over the limit refuses as a whole

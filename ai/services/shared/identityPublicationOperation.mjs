@@ -128,14 +128,34 @@ function integer(value, field) {
     }
 }
 
+/** @summary Validates the stable namespace, optionally with the binding's separate mutable username. */
+function subject(value, field, withUsername = false) {
+    const identifiers = ['authProvider', 'providerUserId', ...(withUsername ? ['providerUsername'] : [])];
+    record(value, [...identifiers, 'providerBaseUrl'], field);
+    for (const key of identifiers) {
+        text(value[key], field + '.' + key);
+    }
+    text(value.providerBaseUrl, field + '.providerBaseUrl', LIMIT.providerBaseBytes);
+}
+
+/**
+ * @summary Checks a closed stable subject tuple without a mutable username or invented binding.
+ * @param {*} value Provider, API base and stable user ID; validation grants no source authority.
+ * @returns {Boolean} Whether the exact tuple obeys the publication grammar.
+ */
+export function isIdentityPublicationSubject(value) {
+    try {
+        subject(value, 'subject');
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 /** @summary Validates stable provider facts separately from the mutable display/alias username. */
 function binding(value, field) {
     record(value, ['subject', 'seatId', 'incarnation'], field);
-    record(value.subject, ['authProvider', 'providerBaseUrl', 'providerUserId', 'providerUsername'], field + '.subject');
-    for (const key of ['authProvider', 'providerUserId', 'providerUsername']) {
-        text(value.subject[key], field + '.subject.' + key);
-    }
-    text(value.subject.providerBaseUrl, field + '.subject.providerBaseUrl', LIMIT.providerBaseBytes);
+    subject(value.subject, field + '.subject', true);
     text(value.seatId, field + '.seatId');
     text(value.incarnation, field + '.incarnation');
 }
