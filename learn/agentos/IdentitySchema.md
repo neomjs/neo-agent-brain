@@ -86,14 +86,30 @@ for the same subject survive, including disagreement. Missing or duplicate mappi
 whole compilation. Human and sentinel entries contribute no family.
 
 This payload is input to the dedicated protected seed owner; compiling or hashing it grants no
-write authority. The protected writer, complete snapshot composition and founding-family reader
-remain pending in the current source checkpoint. The ordinary boot manifest is unchanged.
+write authority. `validateFoundingFamilySeed` checks every retained row and its canonical digest
+before subject selection. A matching digest is content consistency, not protected provenance.
+The protected writer and complete physical snapshot composition remain pending in the current
+source checkpoint. The ordinary boot manifest is unchanged.
 
 The [founding-cutoff disposition](https://github.com/neomjs/neo-agent-brain/issues/1296#issuecomment-6431146484)
 keeps roster precedence through baseline and matching confirmations. It ends at the first admitted
-different-family declaration, after which the complete seat-derived rule applies. Membership state
-and unconfirmed/conflicting seats remain visible throughout; source unavailability is never a
-successful empty roster. This policy still requires the pending reader integration.
+different-family declaration, after which the complete seat-derived rule applies. The
+[correction disposition](https://github.com/neomjs/neo-agent-brain/issues/1296#issuecomment-6431284778)
+derives this cutoff from corrected history at original admission times: corrections can move or
+remove it, but create no boundary at their own time. Retirement and later matching declarations
+do not erase an earlier different-family declaration.
+
+`buildSubjectFamilyProjection` applies that rule to an explicit provider subject, complete normalized
+history and complete retained founding payload. Effective `intervals` feed the existing point and
+window readers; `membership` preserves the unmodified seat-derived states and evidence. Founding
+spans all supported nonnegative query times before its cutoff; zero is the query-domain floor, not
+a claimed identity birth. All matching founders count, and conflicting families remain
+`ambiguous-founders`. A malformed or unavailable source never falls back to founding.
+
+The pure result carries the admitted revision and founding digest. The caller must still establish
+that both inputs came from the same protected physical observation and that the history belongs to
+the selected subject. Production source and consumer integration remain pending; this function does
+not establish the separate provider-subject → routing-identity relation.
 
 ### Signed manual carrier
 

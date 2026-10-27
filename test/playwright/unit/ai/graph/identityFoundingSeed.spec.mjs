@@ -1,7 +1,9 @@
 import {test, expect} from '@playwright/test';
-import {compileFoundingFamilySeed} from '../../../../../ai/graph/identityFoundingSeed.mjs';
+import {createHash} from 'node:crypto';
+import {compileFoundingFamilySeed, validateFoundingFamilySeed} from '../../../../../ai/graph/identityFoundingSeed.mjs';
 import {FOUNDING_FAMILY_SUBJECTS, IDENTITIES} from '../../../../../ai/graph/identityRoots.mjs';
 import {isIdentityPublicationSubject} from '../../../../../ai/services/shared/identityPublicationOperation.mjs';
+import {stringifyCanonicalJson} from '../../../../../ai/services/shared/canonicalJson.mjs';
 
 const identity = (id = '@agent-a', family = 'gpt') =>
     ({id, type: 'AgentIdentity', properties: {accountType: 'agent', modelFamily: family}});
@@ -137,6 +139,68 @@ test.describe('founding-family seed input', () => {
         expect(() => compileFoundingFamilySeed(value)).toThrow();
         expect(calls).toBe(0);
         expect(isIdentityPublicationSubject(value.subjects[0].subject)).toBe(false);
+        expect(calls).toBe(0);
+    });
+
+    test('the compiler also refuses accessors on its top-level options without executing them', () => {
+        let calls = 0;
+        const options = {subjects: [], get identities() { calls++; return []; }};
+        expect(() => compileFoundingFamilySeed(options)).toThrow();
+        expect(calls).toBe(0);
+    });
+});
+
+test.describe('retained founding payload validation', () => {
+    const seed = () => structuredClone(compileFoundingFamilySeed(input()));
+    const reseal = value => {
+        value.digest = 'sha256:' + createHash('sha256').update('neo.identity-family.founding-seed.v1\0')
+            .update(stringifyCanonicalJson({version: value.version, entries: value.entries}), 'utf8').digest('hex');
+        return value;
+    };
+
+    test('accepts the complete compiler payload after JSON transport, without freezing the input', () => {
+        const value = seed();
+        expect(validateFoundingFamilySeed(JSON.parse(JSON.stringify(value)))).toBe(true);
+        expect(Object.isFrozen(value.entries[0].subject)).toBe(false);
+        expect(validateFoundingFamilySeed(compileFoundingFamilySeed({identities: [], subjects: []}))).toBe(true);
+    });
+
+    test('refuses changed facts under the old digest', () => {
+        const value = seed();
+        value.entries[0].family = 'claude';
+        expect(validateFoundingFamilySeed(value)).toBe(false);
+        expect(validateFoundingFamilySeed(reseal(value))).toBe(true);
+    });
+
+    const invalid = {
+        'unsupported version': value => { value.version = 2; },
+        'missing family'     : value => { delete value.entries[0].family; },
+        'invalid family'     : value => { value.entries[0].family = null; },
+        'numeric subject ID' : value => { value.entries[0].subject.providerUserId = 101; },
+        'extra subject name' : value => { value.entries[0].subject.providerUsername = 'agent-a'; },
+        'duplicate entry'    : value => { value.entries.push(structuredClone(value.entries[0])); },
+        'unsorted entries'   : value => { value.entries.push({...structuredClone(value.entries[0]), identityKey: '@a'}); },
+        'extra entry fact'   : value => { value.entries[0].extra = 'not-in-the-contract'; }
+    };
+    for (const [name, mutate] of Object.entries(invalid)) {
+        test('a matching digest does not repair malformed data: ' + name, () => {
+            const value = seed();
+            mutate(value);
+            expect(validateFoundingFamilySeed(reseal(value))).toBe(false);
+        });
+    }
+
+    test('refuses missing source, sparse rows, top-level decoration and accessors', () => {
+        for (const value of [null, undefined, {}, {...seed(), extra: true}]) {
+            expect(validateFoundingFamilySeed(value)).toBe(false);
+        }
+        const sparse = seed();
+        sparse.entries.length = 2;
+        expect(validateFoundingFamilySeed(sparse)).toBe(false);
+        let calls = 0;
+        const accessor = seed();
+        Object.defineProperty(accessor.entries[0], 'family', {enumerable: true, get() { calls++; return 'gpt'; }});
+        expect(validateFoundingFamilySeed(accessor)).toBe(false);
         expect(calls).toBe(0);
     });
 });

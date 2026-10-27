@@ -17,6 +17,42 @@ function requireSource(condition, reason) {
     if (!condition) throw new TypeError('Founding family seed: ' + reason);
 }
 
+/** @summary Requires closed plain-JSON records after canonical validation has rejected accessors. */
+function fields(value, keys) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+        Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+}
+
+/** @summary Binds the full ordered payload under the founding-seed domain, without granting authority. */
+function digest(payload) {
+    return 'sha256:' + createHash('sha256').update('neo.identity-family.founding-seed.v1\0')
+        .update(stringifyCanonicalJson(payload), 'utf8').digest('hex');
+}
+
+/**
+ * @summary Checks every retained founding row and its canonical digest before any subject selection.
+ * A valid digest proves content consistency only; protected provenance and physical snapshot
+ * coherence must be established by the source owner, never inferred from this boolean result.
+ * @param {*} value Complete retained {version, entries, digest} payload.
+ * @returns {Boolean} Whether the complete payload matches the compiler's closed canonical shape.
+ */
+export function validateFoundingFamilySeed(value) {
+    try {
+        stringifyCanonicalJson(value);
+        if (!fields(value, ['version', 'entries', 'digest']) || value.version !== 1 || !Array.isArray(value.entries)) return false;
+        let previous = null;
+        for (const entry of value.entries) {
+            if (!fields(entry, ['identityKey', 'family', 'subject']) ||
+                !isIdentityPublicationIdentifier(entry.identityKey) || !isIdentityPublicationFamily(entry.family) ||
+                !isIdentityPublicationSubject(entry.subject) || previous !== null && entry.identityKey <= previous) return false;
+            previous = entry.identityKey;
+        }
+        return value.digest === digest({version: value.version, entries: value.entries});
+    } catch {
+        return false;
+    }
+}
+
 /**
  * @summary Binds every agent roster entry to its explicit stable subject and exact family value.
  * Multiple roster entries may share a subject; all survive for the reader's agreement check.
@@ -27,8 +63,10 @@ function requireSource(condition, reason) {
  * @returns {Object} Frozen {version, entries, digest}; digest binds the complete canonical payload.
  * @throws {TypeError} On an incomplete, duplicate or malformed mapping; no partial result is returned.
  */
-export function compileFoundingFamilySeed({identities, subjects} = {}) {
-    stringifyCanonicalJson({identities, subjects});
+export function compileFoundingFamilySeed(options) {
+    stringifyCanonicalJson(options);
+    requireSource(fields(options, ['identities', 'subjects']), 'explicit identities and subjects are required.');
+    const {identities, subjects} = options;
     requireSource(Array.isArray(identities) && Array.isArray(subjects), 'complete source arrays are required.');
     const roster = new Map(), seen = new Set();
     for (const identity of identities) {
@@ -66,7 +104,5 @@ export function compileFoundingFamilySeed({identities, subjects} = {}) {
     requireSource(missing.length === 0, 'missing provider subjects for ' + missing.join(', ') + '.');
     entries.sort((a, b) => a.identityKey < b.identityKey ? -1 : a.identityKey > b.identityKey ? 1 : 0);
     const payload = {version: 1, entries: Object.freeze(entries)};
-    const digest = 'sha256:' + createHash('sha256').update('neo.identity-family.founding-seed.v1\0')
-        .update(stringifyCanonicalJson(payload), 'utf8').digest('hex');
-    return Object.freeze({...payload, digest});
+    return Object.freeze({...payload, digest: digest(payload)});
 }

@@ -1,5 +1,7 @@
 import {test, expect}                                    from '@playwright/test';
-import {buildFamilyProjection, familyAt, familiesDuring} from '../../../../../ai/graph/identityFamilyProjection.mjs';
+import {buildFamilyProjection, buildSubjectFamilyProjection, familyAt, familiesDuring}
+    from '../../../../../ai/graph/identityFamilyProjection.mjs';
+import {compileFoundingFamilySeed} from '../../../../../ai/graph/identityFoundingSeed.mjs';
 
 const member      = (bindingId = 'A', since = 10, until = null) => ({bindingId, since, until});
 const declaration = (admissionId = 'a', bindingId = 'A', since = 10, family = 'gpt', revision = 2,
@@ -205,5 +207,171 @@ test.describe('admitted family temporal projection', () => {
             expect(familiesDuring(projection, since, until)).toEqual({state: 'unavailable', families: []});
         }
         expect(familyAt(projection, -1)).toEqual({state: 'unavailable', family: null});
+    });
+});
+
+test.describe('provider-bound founding and admitted family composition', () => {
+    const subject = () => ({authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '101'});
+    const founding = (families = ['gpt'], providerSubject = subject()) => compileFoundingFamilySeed({
+        identities: families.map((family, index) => ({id: '@founder-' + index, type: 'AgentIdentity',
+            properties: {accountType: 'agent', modelFamily: family}})),
+        subjects: families.map((_, index) => ({identityKey: '@founder-' + index, subject: providerSubject}))
+    });
+    const compose = (history = source(), seed = founding(), target = subject()) =>
+        buildSubjectFamilyProjection({subject: target, source: history, founding: seed});
+
+    test('baseline and matching declarations preserve founding with unchanged membership evidence', () => {
+        const history = source({memberships: [member(), member('B')], declarations: [declaration('a', 'A', 20)]});
+        const result = compose(history);
+        expect(result.valid).toBe(true);
+        for (const at of [0, 9, 10, 19, 20, 100]) expect(familyAt(result, at)).toEqual(classified('gpt'));
+        expect(result.founding.cutoff).toBeNull();
+        expect(result.membership).toEqual(buildFamilyProjection(history));
+        expect(familyAt(result.membership, 10).state).toBe('unconfirmed-seat');
+        expect(result.membership.intervals.at(-1).members).toHaveLength(2);
+        expect(familiesDuring(result, 0, 100)).toEqual({state: 'classified', families: ['gpt']});
+    });
+
+    test('an explicit pre-baseline source is distinct from an unavailable source', () => {
+        const result = compose(source({baselineSince: null, revision: 0, memberships: [], declarations: []}));
+        expect(familyAt(result, 0)).toEqual(classified('gpt'));
+        expect(familyAt(result.membership, 0).state).toBe('membership-unknown');
+        expect(compose(null).valid).toBe(false);
+        expect(compose(source(), null).valid).toBe(false);
+    });
+
+    test('different declaration cuts while the aggregate is unconfirmed, not only when classified', () => {
+        const result = compose(source({memberships: [member(), member('B')],
+            declarations: [declaration('a', 'A', 30, 'claude')]}));
+        expect(result.founding.cutoff).toBe(30);
+        expect(familyAt(result, 29)).toEqual(classified('gpt'));
+        expect(familyAt(result, 30)).toEqual({state: 'unconfirmed-seat', family: null});
+        expect(familiesDuring(result, 0, 30)).toEqual({state: 'unconfirmed-seat', families: []});
+    });
+
+    test('retirement, an empty gap and a later matching declaration cannot resurrect founding', () => {
+        const result = compose(source({memberships: [member('A', 10, 30), member('B', 40)],
+            declarations: [declaration('a', 'A', 20, 'claude'), declaration('b', 'B', 50, 'gpt', 3)]}));
+        expect(result.founding.cutoff).toBe(20);
+        expect(familyAt(result, 20)).toEqual(classified('claude'));
+        expect(familyAt(result, 35).state).toBe('empty-membership');
+        expect(familyAt(result, 45).state).toBe('unconfirmed-seat');
+        expect(familyAt(result, 50)).toEqual(classified('gpt'));
+        expect(result.intervals.at(-1).origin).toBe('admitted');
+        expect(familiesDuring(result, 10, 60)).toEqual({state: 'empty-membership', families: []});
+    });
+
+    test('correcting a matching declaration to different moves cutoff to original admission', () => {
+        const history = source({declarations: [declaration('a', 'A', 20)],
+            corrections: [correction('fix', 'a', 'claude', 9)]});
+        const result = compose(history);
+        expect(result.founding.cutoff).toBe(20);
+        expect(familyAt(result, 19)).toEqual(classified('gpt'));
+        expect(familyAt(result, 20)).toEqual(classified('claude'));
+        expect(result.intervals.map(row => row.since)).toEqual([0, 10, 20]);
+    });
+
+    test('correcting the only differing declaration back removes cutoff despite an unconfirmed seat', () => {
+        const history = source({memberships: [member(), member('B')],
+            declarations: [declaration('a', 'A', 20, 'claude')]});
+        expect(familyAt(compose(history), 20).state).toBe('unconfirmed-seat');
+        history.corrections = [correction('fix', 'a', 'gpt', 9)];
+        const result = compose(history);
+        expect(result.founding.cutoff).toBeNull();
+        expect(familyAt(result, 100)).toEqual(classified('gpt'));
+        expect(familyAt(result.membership, 100).state).toBe('unconfirmed-seat');
+    });
+
+    test('correcting the first differing declaration preserves the later differing cutoff', () => {
+        const history = source({declarations: [declaration('a', 'A', 20, 'claude'),
+            declaration('b', 'A', 60, 'gemini', 3)], corrections: [correction('fix', 'a', 'gpt', 9)]});
+        const result = compose(history);
+        expect(result.founding.cutoff).toBe(60);
+        expect(familyAt(result, 59)).toEqual(classified('gpt'));
+        expect(familyAt(result, 60)).toEqual(classified('gemini'));
+        expect(result.intervals.map(row => row.since)).toEqual([0, 10, 20, 60]);
+    });
+
+    test('latest correction wins regardless of array order, and model-only corrections do not cut', () => {
+        const history = source({declarations: [declaration('a', 'A', 20)],
+            corrections: [correction('new', 'a', 'gpt', 9, 'operator-a', 'new-model'),
+                correction('old', 'a', 'claude', 7)]});
+        const result = compose(history);
+        expect(result.founding.cutoff).toBeNull();
+        expect(result.membership.intervals.at(-1).members[0].model).toBe('new-model');
+        history.corrections.reverse();
+        expect(compose(history)).toEqual(result);
+    });
+
+    test('author unions include the cutoff endpoint and intermediate return swaps', () => {
+        const result = compose(swaps());
+        expect(familiesDuring(result, 19, 20)).toEqual({state: 'classified', families: ['claude', 'gpt']});
+        expect(familiesDuring(result, 20, 20)).toEqual({state: 'classified', families: ['claude']});
+        expect(familiesDuring(result, 0, 40)).toEqual({state: 'classified', families: ['claude', 'gpt']});
+        expect(familyAt(result, 30)).toEqual(classified('gpt'));
+        expect(result.founding.cutoff).toBe(20);
+    });
+
+    test('all agreeing founders count, while conflicting founders stay ambiguous even after C7', () => {
+        const agrees = compose(source(), founding(['gpt', 'gpt']));
+        expect(agrees.founding.identityKeys).toHaveLength(2);
+        expect(familyAt(agrees, 0)).toEqual(classified('gpt'));
+        const conflict = compose(source(), founding(['gpt', 'claude']));
+        expect(conflict.founding.families).toEqual(['claude', 'gpt']);
+        for (const at of [0, 20, 100]) expect(familyAt(conflict, at).state).toBe('ambiguous-founders');
+        expect(familyAt(conflict.membership, 20)).toEqual(classified('gpt'));
+        expect(familiesDuring(conflict, 0, 100)).toEqual({state: 'ambiguous-founders', families: []});
+    });
+
+    test('missing founding entries preserve C8 rather than classifying an unconfirmed account', () => {
+        const history = source({declarations: []}), result = compose(history, founding([]));
+        expect(result.founding.identityKeys).toEqual([]);
+        for (const at of [0, 10, 100]) expect(familyAt(result, at)).toEqual(familyAt(result.membership, at));
+    });
+
+    for (const [key, value] of [['authProvider', 'gitlab'], ['providerBaseUrl', 'https://other.example'], ['providerUserId', '202']]) {
+        test('does not inherit founding when only ' + key + ' changes', () => {
+            const target = {...subject(), [key]: value};
+            const result = compose(source({declarations: []}), founding(), target);
+            expect(result.founding.identityKeys).toEqual([]);
+            expect(familyAt(result, 10).state).toBe('unconfirmed-seat');
+        });
+    }
+
+    test('literal unknown and prototype-looking family names remain exact classified families', () => {
+        for (const family of ['unknown', '__proto__', 'constructor']) {
+            const result = compose(source({declarations: []}), founding([family]));
+            expect(familyAt(result, 10)).toEqual(classified(family));
+        }
+    });
+
+    test('a malformed unrelated founder, bad digest or malformed history invalidates the whole view', () => {
+        const broken = structuredClone(founding(['gpt', 'gpt']));
+        broken.entries[1].subject.providerUserId = 'unrelated';
+        broken.entries[1].family = null;
+        const badHistory = source();
+        delete badHistory.corrections;
+        for (const result of [compose(source(), broken), compose(source(), {...founding(), digest: 'bad'}), compose(badHistory)]) {
+            expect(result.valid).toBe(false);
+            expect(familyAt(result, 10)).toEqual({state: 'unavailable', family: null});
+            expect(familiesDuring(result, 0, 100)).toEqual({state: 'unavailable', families: []});
+        }
+    });
+
+    test('detaches both source revisions and refuses decorated/accessor-bearing options', () => {
+        const history = source(), seed = structuredClone(founding()), target = subject();
+        const options = {subject: target, source: history, founding: seed};
+        const result = buildSubjectFamilyProjection(options);
+        expect(result.revision).toBe(history.revision);
+        expect(result.founding.digest).toBe(seed.digest);
+        expect(Object.isFrozen(result.membership.intervals[0].members[0])).toBe(true);
+        target.providerUserId = '202'; seed.entries[0].family = 'changed'; history.declarations[0].family = 'changed';
+        expect(result.subject.providerUserId).toBe('101');
+        expect(familyAt(result, 10)).toEqual(classified('gpt'));
+        expect(buildSubjectFamilyProjection({...options, currentSeatId: '@founder-0'}).valid).toBe(false);
+        let calls = 0;
+        expect(buildSubjectFamilyProjection({get subject() { calls++; return subject(); },
+            source: source(), founding: founding()}).valid).toBe(false);
+        expect(calls).toBe(0);
     });
 });

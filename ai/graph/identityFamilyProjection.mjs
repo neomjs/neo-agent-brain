@@ -1,5 +1,6 @@
 import {stringifyCanonicalJson} from '../services/shared/canonicalJson.mjs';
-import {isIdentityPublicationFamily, isIdentityPublicationIdentifier, isIdentityPublicationModel}
+import {validateFoundingFamilySeed} from './identityFoundingSeed.mjs';
+import {isIdentityPublicationFamily, isIdentityPublicationIdentifier, isIdentityPublicationModel, isIdentityPublicationSubject}
     from '../services/shared/identityPublicationOperation.mjs';
 
 /**
@@ -133,6 +134,19 @@ function interval(bindings, since, until) {
     return {since, until, state, family: state === 'classified' ? members[0].family : null, members};
 }
 
+/** @summary Derives membership intervals once from already validated and corrected binding histories. */
+function membershipProjection(source, bindings) {
+    const times = new Set(source.baselineSince === null ? [] : [source.baselineSince]);
+    for (const binding of bindings.values()) {
+        times.add(binding.since);
+        if (binding.until !== null) times.add(binding.until);
+        binding.declarations.forEach(value => times.add(value.since));
+    }
+    const ordered = [...times].sort((a, b) => a - b);
+    return {valid: true, revision: source.revision, baselineSince: source.baselineSince,
+        intervals: ordered.map((since, index) => interval(bindings, since, ordered[index + 1] ?? null))};
+}
+
 /**
  * @summary Rebuilds a detached immutable view of all account-family intervals at one owner revision.
  * Membership rows are {bindingId,since,until}; until means admitted completed retirement, never a
@@ -147,16 +161,58 @@ export function buildFamilyProjection(source) {
     try {
         // Validate before copying: JSON conversion must not invoke getters or erase sparse entries.
         stringifyCanonicalJson(source);
-        const bindings = histories(source);
-        const times    = new Set(source.baselineSince === null ? [] : [source.baselineSince]);
-        for (const binding of bindings.values()) {
-            times.add(binding.since);
-            if (binding.until !== null) times.add(binding.until);
-            binding.declarations.forEach(value => times.add(value.since));
+        return freeze(membershipProjection(source, histories(source)));
+    } catch (error) {
+        return freeze({valid: false, state: 'unavailable', reason: error.message});
+    }
+}
+
+/**
+ * @summary Composes founding precedence with corrected admitted history for one stable subject.
+ * The source owner must select this subject's complete history and founding payload from one
+ * protected physical observation. This pure function proves neither that join nor source authority.
+ * Founding spans the supported nonnegative query-time domain until the first corrected different
+ * declaration; zero is the domain floor, not an invented identity-birth or seed-admission timestamp.
+ * Conflicting founders remain ambiguous. Membership diagnostics stay unchanged in `membership`.
+ * @param {Object} options Closed {subject, source, founding}; all three are required.
+ * @param {Object} options.subject Exact provider/base/stable-ID tuple, never a login or seat key.
+ * @param {Object} options.source Complete normalized admitted history for that subject.
+ * @param {Object} options.founding Complete retained founding payload; an unavailable source is not [].
+ * @returns {Object} Detached immutable effective intervals plus membership and both source revisions.
+ */
+export function buildSubjectFamilyProjection(options) {
+    try {
+        stringifyCanonicalJson(options);
+        row(options, ['subject', 'source', 'founding']);
+        const {subject, source, founding} = options;
+        requireFact(isIdentityPublicationSubject(subject), 'A stable provider subject is required.');
+        requireFact(validateFoundingFamilySeed(founding), 'Complete founding source is unavailable or malformed.');
+        const bindings = histories(source), membership = membershipProjection(source, bindings);
+        const key = stringifyCanonicalJson(subject);
+        const entries = founding.entries.filter(entry => stringifyCanonicalJson(entry.subject) === key);
+        const families = [...new Set(entries.map(entry => entry.family))].sort();
+        let cutoff = null;
+        if (families.length === 1) {
+            for (const binding of bindings.values()) {
+                for (const declaration of binding.declarations) {
+                    if (declaration.family !== families[0] && (cutoff === null || declaration.since < cutoff)) {
+                        cutoff = declaration.since;
+                    }
+                }
+            }
         }
-        const ordered = [...times].sort((a, b) => a - b);
-        return freeze({valid: true, revision: source.revision, baselineSince: source.baselineSince,
-            intervals: ordered.map((since, index) => interval(bindings, since, ordered[index + 1] ?? null))});
+        const times = [...new Set([0, ...membership.intervals.map(value => value.since)])].sort((a, b) => a - b);
+        const intervals = times.map((since, index) => {
+            const fromFounding = families.length > 1 || families.length === 1 && (cutoff === null || since < cutoff);
+            const resolved = fromFounding
+                ? {state: families.length === 1 ? 'classified' : 'ambiguous-founders',
+                    family: families.length === 1 ? families[0] : null}
+                : familyAt(membership, since);
+            return {since, until: times[index + 1] ?? null, ...resolved, origin: fromFounding ? 'founding' : 'admitted'};
+        });
+        return freeze({valid: true, subject: {...subject}, revision: source.revision,
+            founding: {digest: founding.digest, identityKeys: entries.map(entry => entry.identityKey), families, cutoff},
+            membership, intervals});
     } catch (error) {
         return freeze({valid: false, state: 'unavailable', reason: error.message});
     }

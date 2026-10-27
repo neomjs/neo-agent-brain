@@ -6,7 +6,9 @@ import fs                                                                from 'n
 import os                                                                from 'node:os';
 import path                                                              from 'node:path';
 import {admitIdentityPublication, readIdentityPublicationSnapshot}       from '../../../../../../../ai/services/memory-core/helpers/identityPublicationAdmission.mjs';
-import {buildFamilyProjection, familyAt, familiesDuring}                 from '../../../../../../../ai/graph/identityFamilyProjection.mjs';
+import {buildFamilyProjection, buildSubjectFamilyProjection, familyAt, familiesDuring}
+    from '../../../../../../../ai/graph/identityFamilyProjection.mjs';
+import {compileFoundingFamilySeed} from '../../../../../../../ai/graph/identityFoundingSeed.mjs';
 import {validateIdentityPublicationSnapshot}                             from '../../../../../../../ai/services/shared/identityPublicationClient.mjs';
 import {consumeIdentityPublicationBoot}                                  from '../../../../../../../ai/services/memory-core/helpers/identityPublicationLineage.mjs';
 import {fenceIdentityPublication}                                        from '../../../../../../../ai/services/memory-core/helpers/identityPublicationFence.mjs';
@@ -86,6 +88,50 @@ test('missing baseline is unavailable, but an explicitly admitted empty census i
     expect(publication()).toMatchObject({state: 'available', snapshot: {revision: 1, baselineSince: 100, subjects: []}});
     expect(properties(familyPlaneStateKey(target)).memberCount).toBe(0);
     expect(submit(operation('bind', 'first', binding(), 0), 110).state).toBe('accepted');
+});
+
+test('actual admitted snapshots drive both founding correction directions and the later remaining cutoff', () => {
+    const a = binding(), b = binding('seat-b', 'inc-b');
+    const subject = {authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '1'};
+    const founding = compileFoundingFamilySeed({
+        identities: [{id: '@fixture', type: 'AgentIdentity', properties: {accountType: 'agent', modelFamily: 'gpt'}}],
+        subjects: [{identityKey: '@fixture', subject}]
+    });
+    const view = () => {
+        const read = publication();
+        expect(read.state).toBe('available');
+        expect(validateIdentityPublicationSnapshot(read.snapshot, target).valid).toBe(true);
+        const entry = read.snapshot.subjects.find(value => value.subject.providerUserId === subject.providerUserId);
+        return buildSubjectFamilyProjection({subject: entry.subject, source: entry.source, founding});
+    };
+    expect(submit(baseline([a, b])).state).toBe('accepted');
+    expect(familyAt(view(), 100)).toEqual({state: 'classified', family: 'gpt'});
+    expect(familyAt(view().membership, 100).state).toBe('unconfirmed-seat');
+    const first = submit(declaration('same-a', a), 110);
+    expect(first.state).toBe('accepted');
+    expect(view().founding.cutoff).toBeNull();
+    const later = submit(declaration('different-b', b, 1, 1, {family: 'claude'}), 120);
+    expect(later.state).toBe('accepted');
+    expect(view().founding.cutoff).toBe(120);
+    expect(familyAt(view(), 120).state).toBe('ambiguous-seats');
+    expect(submit(declaration('repair-a-different', a, 1, 2, {kind: 'correct', family: 'claude',
+        targetAdmissionId: first.receipt.admissionId, reason: 'Repair the original family'}), 130).state).toBe('accepted');
+    expect(view().founding.cutoff).toBe(110);
+    expect(familyAt(view(), 115).state).toBe('unconfirmed-seat');
+    expect(familyAt(view(), 120)).toEqual({state: 'classified', family: 'claude'});
+    expect(submit(declaration('repair-a-matching', a, 1, 3, {kind: 'correct', family: 'gpt',
+        targetAdmissionId: first.receipt.admissionId, reason: 'Restore the original classification'}), 140).state).toBe('accepted');
+    expect(view().founding.cutoff).toBe(120);
+    expect(submit(declaration('repair-b-matching', b, 1, 4, {kind: 'correct', family: 'gpt',
+        targetAdmissionId: later.receipt.admissionId, reason: 'Repair the later declaration'}), 150).state).toBe('accepted');
+    const final = view();
+    expect(final.revision).toBe(6);
+    expect(final.founding.cutoff).toBeNull();
+    expect(final.intervals.map(row => row.since)).toEqual([0, 100, 110, 120]);
+    expect(familiesDuring(final, 0, 160)).toEqual({state: 'classified', families: ['gpt']});
+    expect(properties(first.receipt.admissionId).family).toBe('gpt');
+    expect(properties(later.receipt.admissionId).family).toBe('claude');
+    expect(publication().snapshot.subjects[0].source.corrections).toHaveLength(3);
 });
 
 test('identical re-signed retries return the original receipt before stale state and clock checks', () => {
