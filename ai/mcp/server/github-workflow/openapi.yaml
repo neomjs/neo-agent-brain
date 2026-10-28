@@ -426,7 +426,7 @@ paths:
           Incremental review cycles: track last-seen commentId, fetch only what's new.
         - `last_n`: fetch the last N comments. Coarse-grained catch-up when IDs aren't tracked.
 
-        Omitting all selectors returns the full conversation (backward-compatible default, capped at the latest 25 comments).
+        Omitting all selectors returns the full conversation (backward-compatible default, capped at the latest 25 comments). Selectors match within the latest 25 comments, so on a thread whose `comments.totalCount` is larger, an older `comment_id` or `since_comment_id` returns an empty list; compare `comments.totalCount` before concluding that a comment is absent.
       tags: [Pull Requests]
       requestBody:
         required: true
@@ -1573,7 +1573,7 @@ paths:
           (exclusive). If the ID is not found, returns an empty comments list.
         - `last_n`: fetch the last N top-level discussion comments.
 
-        Omitting all selectors returns the full bounded Discussion conversation shape (capped at the latest 25 top-level comments and 25 replies per comment).
+        Omitting all selectors returns the full bounded Discussion conversation shape (capped at the latest 25 top-level comments and 25 replies per comment). Selectors match within the latest 25 top-level comments, so on a thread whose `comments.totalCount` is larger, an older `comment_id` or `since_comment_id` returns an empty list; compare `comments.totalCount` before concluding that a comment is absent.
       tags: [Discussions]
       requestBody:
         required: true

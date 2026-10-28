@@ -312,7 +312,12 @@ class ConfigBase extends ConfigProvider {
                  * Maximum number of comments to fetch and allow per issue, pull request, or discussion in GraphQL queries.
                  * @type {number}
                  */
-                maxCommentsPerPullRequest: leaf(25)
+                maxCommentsPerPullRequest: leaf(25),
+                /**
+                 * Maximum number of comments to fetch per pull request during corpus synchronization.
+                 * @type {number}
+                 */
+                syncMaxComments: leaf(100)
             }
         },
         /**

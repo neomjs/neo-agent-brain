@@ -1110,6 +1110,37 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
             .rejects.toThrow('Named pull requests were not refetched: #9878');
     });
 
+    test('syncPullRequests reads pullRequest.syncMaxComments (100) decoupled from the 25-comment interactive window (#1325)', async () => {
+        expect(aiConfig.pullRequest.maxCommentsPerPullRequest).toBe(25);
+        expect(aiConfig.pullRequest.syncMaxComments).toBe(100);
+
+        const observedVariables = [];
+
+        GraphqlService.query = async (query, variables) => {
+            observedVariables.push({query, variables});
+
+            if (query.includes('FetchSinglePullForSync')) {
+                return {repository: {pullRequest: buildPullRequest(variables.prNumber)}};
+            }
+
+            return {
+                repository: {
+                    pullRequests: {
+                        nodes   : [],
+                        pageInfo: {hasNextPage: false, endCursor: null}
+                    }
+                }
+            };
+        };
+
+        await PullRequestSyncer.syncPullRequests({pulls: {}}, {refetchPulls: [9878]});
+
+        expect(observedVariables.length).toBeGreaterThanOrEqual(2);
+        for (const call of observedVariables) {
+            expect(call.variables.maxComments).toBe(100);
+        }
+    });
+
     test('PullRequestSyncer spec uses snapshotAiConfig instead of shared-config writes', async () => {
         const source = await fs.readFile(fileURLToPath(import.meta.url), 'utf8');
 

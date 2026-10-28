@@ -144,5 +144,7 @@ test.describe('github-workflow manage_issue_comment — BODY-vs-COMMENT guidance
         expect(operation.description, 'the handbook tier is sourced from operation.description').toContain('BODY = state');
         expect(operation.description, 'create action documents the 25-comment ceiling (#1325)').toContain('COMMENT_CAP_EXCEEDED');
         expect(openApiDoc.paths['/discussions/comments/manage'].post.description, 'discussion create action documents the 25-comment ceiling (#1325)').toContain('COMMENT_CAP_EXCEEDED');
+        expect(openApiDoc.paths['/pull-requests/{pr_number}/conversation'].get.description, 'get_conversation documents selector window and comments.totalCount (#1325)').toContain('comments.totalCount');
+        expect(openApiDoc.paths['/discussions/conversation'].get.description, 'get_discussion_conversation documents selector window and comments.totalCount (#1325)').toContain('comments.totalCount');
     });
 });

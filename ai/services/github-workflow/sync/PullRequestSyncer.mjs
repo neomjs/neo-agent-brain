@@ -603,7 +603,7 @@ class PullRequestSyncer extends Base {
                 limit      : pullRequestConfig.defaults.limit || 30,
                 cursor,
                 states     : ['OPEN', 'CLOSED', 'MERGED'],
-                maxComments: pullRequestConfig.maxCommentsPerPullRequest || 50,
+                maxComments: pullRequestConfig.syncMaxComments,
                 maxReviews : 20
             });
 
@@ -809,7 +809,7 @@ class PullRequestSyncer extends Base {
                         owner      : aiConfig.owner,
                         repo       : aiConfig.repo,
                         prNumber   : id,
-                        maxComments: pullRequestConfig.maxCommentsPerPullRequest || 50,
+                        maxComments: pullRequestConfig.syncMaxComments,
                         maxReviews : 20
                     },
                     true
@@ -1073,7 +1073,7 @@ class PullRequestSyncer extends Base {
                         owner      : aiConfig.owner,
                         repo       : aiConfig.repo,
                         prNumber,
-                        maxComments: pullRequestConfig.maxCommentsPerPullRequest || 50,
+                        maxComments: pullRequestConfig.syncMaxComments,
                         maxReviews : 20
                     },
                     true
