@@ -7,6 +7,11 @@ import {classifyBootFreshness}                                 from '../services
 import {listActiveWaitersSync}                                 from '../services/heavyMaintenanceWaiterLedger.mjs';
 import {inspectHeavyMaintenanceLeaseSync}                      from '../services/heavyMaintenanceLeasePrimitives.mjs';
 import {WAITER_ENTRY_STALE_AFTER_MS}                           from '../services/MaintenanceBackpressureService.mjs';
+import {
+    CLOUD_PLANE_HOST_EDGE_ABSENT_REASON,
+    createFocusV1HostEdgeReader,
+    makeRefusingFocusV1Reader
+} from '../../../services/graph/focusV1Section.mjs';
 
 /**
  * Tasks that win the per-poll pick unconditionally when due. `backup` is data-safety:
@@ -702,7 +707,22 @@ async function runGoldenPathTask({taskName, reason, services, repoEnrichmentEnab
     services.taskStateService.markStarted(taskName, reason);
     services.healthService?.recordTaskOutcome?.(taskName, 'running', { reason, startedAt: new Date().toISOString() });
     try {
-        const outcome = await services.goldenPathSynthesizer.synthesizeGoldenPath({repoEnrichmentEnabled});
+        const refusing = repoEnrichmentEnabled === false
+            ? makeRefusingFocusV1Reader(CLOUD_PLANE_HOST_EDGE_ABSENT_REASON)
+            : null;
+        const focusV1Reader = repoEnrichmentEnabled === false
+            ? createFocusV1HostEdgeReader({
+                readV1Rows       : refusing,
+                readViewsReceipts: refusing,
+                readReachTraffic : refusing,
+                readOperatorWord : refusing,
+                absentReason     : CLOUD_PLANE_HOST_EDGE_ABSENT_REASON
+            })
+            : createFocusV1HostEdgeReader({useDefaultHostReaders: true});
+        const outcome = await services.goldenPathSynthesizer.synthesizeGoldenPath({
+            repoEnrichmentEnabled,
+            focusV1Reader
+        });
 
         if (outcome?.status === 'failed' || outcome?.wroteHandoff !== true) {
             const writeProofMissing = outcome?.wroteHandoff !== true,

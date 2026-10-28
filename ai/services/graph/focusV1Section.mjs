@@ -1,16 +1,30 @@
 import {Buffer}               from 'node:buffer';
+import {execFile}             from 'node:child_process';
+import {promisify}            from 'node:util';
+import {validateMergeReady}   from '../../scripts/lifecycle/validateMergeReady.mjs';
+import {
+    mergeHoldToken,
+    resolveMergeHold
+} from '../github-workflow/shared/mergeHoldTokens.mjs';
+import {
+    resolveCrossFamilyVerdict
+} from './agentFamilyResolution.mjs';
 import {
     formatGoldenPathCapturedAt
 } from './goldenPathTimestamp.mjs';
 
+const execFileAsync = promisify(execFile);
+
 /**
  * @module ai/services/graph/focusV1Section
- * @summary Pure builder, host-edge reader seam, private-to-public projection guard, and Markdown
- * renderer for the Sandman handoff's `## Focus (v1)` section.
+ * @summary Pure builder, host-edge reader seam and default `gh` block readers, private-to-public
+ * projection guard, and Markdown renderer for the Sandman handoff's `## Focus (v1)` section.
  *
- * The section answers two session-start questions in one bounded read (`<= 2,000` UTF-8 bytes):
- * *where are we for v1, what is missing* and *which views still need love*, alongside *reach and
- * outbound* and *what waits for the operator's word*.
+ * When supplied by the host-edge reader or a dated projection, the section answers two
+ * session-start questions in one bounded read (`<= 2,000` UTF-8 bytes): *where are we for v1, what
+ * is missing* and *which views still need love*, alongside *reach and outbound* and *what waits
+ * for the operator's word*. When a pass supplies neither a reader nor inputs (or runs on the cloud
+ * plane without the host edge), each block renders `unknown` with its explicit reason.
  *
  * Load-bearing invariants:
  * 1. **Steward-owned words raw (no second status authority):** `Row state:` lines on the Fleet
@@ -25,9 +39,9 @@ import {
  *    client specifics never cross into the public projection. Any row lacking strict boolean
  *    `publicFlag: true` (or any `BUSINESS_GOAL` node) is excluded before rendering.
  * 4. **Host-edge boundary:** GitHub inputs (`ROADMAP.md` rows, views epic
- *    receipts, traffic/stars/forks, approved open PRs) arrive only through an injected
- *    host-edge reader or dated projection; on the cloud plane without the host edge, each block
- *    renders `unknown` with its explicit boundary reason rather than fabricating empty state.
+ *    receipts, traffic/stars/forks, approved open PRs) arrive through the host-edge reader or an
+ *    admitted dated projection; on the cloud plane without the host edge, each block renders
+ *    `unknown` with its explicit boundary reason rather than fabricating empty state.
  */
 
 /**
@@ -88,8 +102,16 @@ export const FOCUS_V1_VIEW_KEYS = Object.freeze([
 ]);
 
 /**
- * Default reason emitted when GitHub-sourced blocks are evaluated without a host-edge reader or
- * admitted dated projection (matching the `laneLandscapeCensusSource` cloud-plane boundary).
+ * Plane-neutral default reason emitted when a Focus (v1) block has neither a host-edge reader nor
+ * an admitted dated projection supplied for the current pass.
+ * @type {String}
+ */
+export const FOCUS_V1_READER_ABSENT_REASON =
+    'no Focus (v1) host-edge reader or admitted dated projection supplied for this pass';
+
+/**
+ * Cloud-plane boundary reason emitted when GitHub-sourced blocks are evaluated on a cloud-plane
+ * pass without a host-edge reader or admitted dated projection.
  * @type {String}
  */
 export const CLOUD_PLANE_HOST_EDGE_ABSENT_REASON =
@@ -304,7 +326,7 @@ export function isCleanNeedsLove(needsLove) {
  * @returns {'installed'|'source'}
  */
 function normalizeBuildClass(buildClass) {
-    const raw = String(buildClass ?? '').trim().toLowerCase();
+    const raw = String(buildClass ?? '').trim().replace(/^`+|`+$/g, '').trim().toLowerCase();
     return raw.startsWith('installed') ? 'installed' : 'source';
 }
 
@@ -534,14 +556,24 @@ export function formatOperatorCandidateLine(candidate = {}) {
     const refLabel   = repoPrefix ? `${repoPrefix}${number}` : number;
     const link       = candidate.url ? `[${refLabel}](${candidate.url})` : refLabel;
     const projection = candidate.projection ?? {};
-    const verdict    = projection.verdict ?? (projection.ready === true ? 'ready' : projection.ready === false ? 'not_ready' : 'unavailable');
+    const rawVerdict = projection.verdict;
+    const verdict    = rawVerdict === 'ready' || rawVerdict === 'merge-ready-observed' || projection.ready === true || projection.predicate?.strictMergeReady === true
+        ? 'ready'
+        : rawVerdict === 'not_ready' || rawVerdict === 'not-merge-ready' || projection.ready === false || projection.predicate?.strictMergeReady === false
+            ? 'not_ready'
+            : 'unavailable';
 
     let statusLabel;
     if (verdict === 'ready') {
         statusLabel = '`ready for the operator` (projection: ready)';
     } else if (verdict === 'not_ready') {
-        const reasons = Array.isArray(projection.reasons) && projection.reasons.length > 0
-            ? projection.reasons.join(', ')
+        const blockerList = Array.isArray(projection.reasons) && projection.reasons.length > 0
+            ? projection.reasons
+            : Array.isArray(projection.blockers) && projection.blockers.length > 0
+                ? projection.blockers.map(item => typeof item === 'string' ? item : (item?.code || item?.message)).filter(Boolean)
+                : [];
+        const reasons = blockerList.length > 0
+            ? blockerList.join(', ')
             : (projection.reason || 'checks or review requirements');
         statusLabel = `\`approved · not ready: ${reasons}\``;
     } else {
@@ -555,10 +587,421 @@ export function formatOperatorCandidateLine(candidate = {}) {
 }
 
 /**
+ * @summary Executes a read-only `gh` CLI command on the host edge, falling back to
+ * `/opt/homebrew/bin/gh` and `/usr/local/bin/gh` when `gh` is not on the daemon `PATH`.
+ * @param {String[]} [args=[]] CLI argument vector passed to `gh`.
+ * @returns {Promise<String>} Trimmed stdout string.
+ */
+export async function defaultExecGh(args = []) {
+    const candidates = ['gh', '/opt/homebrew/bin/gh', '/usr/local/bin/gh'];
+    let   lastError  = null;
+
+    for (const bin of candidates) {
+        try {
+            const {stdout} = await execFileAsync(bin, args, {
+                encoding : 'utf8',
+                maxBuffer: 10 * 1024 * 1024,
+                timeout  : 20_000
+            });
+            return String(stdout ?? '').trim();
+        } catch (error) {
+            lastError = error;
+            if (error?.code === 'ENOENT') {
+                continue;
+            }
+            throw error;
+        }
+    }
+
+    throw lastError || new Error('gh CLI binary not found on host PATH');
+}
+
+/**
+ * @summary Parses the Fleet Manager v1 journey rows and their owning Epic references from
+ * `neomjs/neo-agent-institution`'s `ROADMAP.md` table without hardcoding Epic issue numbers.
+ * @param {String} [roadmapMarkdown=''] Raw `ROADMAP.md` Markdown text.
+ * @returns {Array<{row: Number, repo: String, number: Number, epic: String}>}
+ */
+export function parseRoadmapV1RowEpics(roadmapMarkdown = '') {
+    if (typeof roadmapMarkdown !== 'string' || roadmapMarkdown.trim().length === 0) {
+        return [];
+    }
+
+    const rows  = [];
+    const lines = roadmapMarkdown.split(/\r?\n/);
+
+    for (const line of lines) {
+        const tableMatch = /^\|\s*(\d+)\s*\|(.*)\|\s*$/.exec(line.trim());
+        if (!tableMatch) continue;
+
+        const rowNum  = Number(tableMatch[1]);
+        const columns = tableMatch[2].split('|').map(col => col.trim());
+        const stateCol = columns[columns.length - 1] || '';
+
+        const urlMatch  = /https:\/\/github\.com\/([^/\s)]+\/[^/\s)]+)\/issues\/(\d+)/i.exec(stateCol)
+            || /https:\/\/github\.com\/([^/\s)]+\/[^/\s)]+)\/issues\/(\d+)/i.exec(line);
+        const hashMatch = /#(\d+)/.exec(stateCol);
+
+        if (urlMatch) {
+            const repo   = urlMatch[1];
+            const number = Number(urlMatch[2]);
+            rows.push({
+                row : rowNum,
+                repo,
+                number,
+                epic: repo === 'neomjs/neo-agent-institution' ? `#${number}` : `${repo}#${number}`
+            });
+        } else if (hashMatch) {
+            const number = Number(hashMatch[1]);
+            rows.push({
+                row : rowNum,
+                repo: 'neomjs/neo-agent-institution',
+                number,
+                epic: `#${number}`
+            });
+        }
+    }
+
+    return rows.sort((a, b) => a.row - b.row);
+}
+
+/**
+ * @summary Parses `view: <key> · needs love: <text>` design-sweep receipt lines and Binding table
+ * metadata (`build`, `profile`) from issue comments on `neomjs/neo-agent-institution#505`.
+ * @param {Object[]} [comments=[]] Issue comment objects (`{body, createdAt, author, url}`).
+ * @returns {Object[]} Parsed receipt objects ready for `evaluateViewReceipts`.
+ */
+export function parseViewsReceiptComments(comments = []) {
+    if (!Array.isArray(comments)) return [];
+
+    const receipts = [];
+
+    for (const comment of comments) {
+        const body = typeof comment?.body === 'string' ? comment.body : '';
+        if (!body) continue;
+
+        const buildMatch   = /\|\s*build\s*\|\s*([^|\r\n]+)\|/i.exec(body);
+        const profileMatch = /\|\s*profile(?:\s*\/\s*(?:data|scope))?\s*\|\s*([^|\r\n]+)\|/i.exec(body);
+
+        const rawBuild = buildMatch
+            ? buildMatch[1].trim().replace(/^`+|`+$/g, '').trim()
+            : 'installed';
+        const buildLabel = rawBuild.split(/[.;—]/)[0].trim().slice(0, 36) || normalizeBuildClass(rawBuild);
+
+        const rawProfile = profileMatch
+            ? profileMatch[1].trim().replace(/^`+|`+$/g, '').trim()
+            : 'default';
+        const profileLabel = rawProfile.split(/[.;—]/)[0].trim().slice(0, 32) || 'default';
+
+        const observedAt = comment.createdAt || comment.updatedAt || 'unknown';
+        const login      = comment.author?.login ? String(comment.author.login).replace(/^@/, '') : null;
+        const seat       = login ? `@${login}` : null;
+        const sourceUrl  = comment.url || null;
+
+        const pattern = /(?:^|\n)\s*`?view:\s*`?([a-zA-Z0-9_-]+)`?\s*·\s*needs love:\s*([^\r\n`]+)`?/gi;
+        let   match;
+
+        while ((match = pattern.exec(body)) !== null) {
+            const viewKey   = match[1].trim();
+            const needsLove = match[2].trim();
+
+            if (!viewKey || !needsLove) continue;
+
+            receipts.push({
+                viewKey,
+                needsLove,
+                buildClass: buildLabel,
+                profile   : profileLabel,
+                observedAt,
+                seat,
+                sourceUrl
+            });
+        }
+    }
+
+    return receipts;
+}
+
+/**
+ * @summary Evaluates a GitHub pull request snapshot using the source-owned `validateMergeReady`,
+ * `resolveCrossFamilyVerdict`, and `resolveMergeHold` predicates.
+ * @param {Object} [pr={}] Pull request JSON payload from `gh pr view`.
+ * @returns {{verdict: ('ready'|'not_ready'|'unavailable'), ready?: Boolean, reasons?: String[], missingInput?: String, approvedAt?: (String|null)}}
+ */
+export function evaluateCandidateMergeReadiness(pr = {}) {
+    if (!pr || typeof pr !== 'object') {
+        return {verdict: 'unavailable', missingInput: 'PR snapshot absent'};
+    }
+
+    if (pr.projection && typeof pr.projection === 'object') {
+        return pr.projection;
+    }
+
+    const rollup = Array.isArray(pr.statusCheckRollup) ? pr.statusCheckRollup : null;
+
+    if (
+        !rollup ||
+        typeof pr.state !== 'string' ||
+        typeof pr.mergeStateStatus !== 'string' ||
+        !Array.isArray(pr.reviewRequests) ||
+        !Array.isArray(pr.reviews) ||
+        !Array.isArray(pr.comments)
+    ) {
+        return {verdict: 'unavailable', missingInput: 'merge-readiness fields incomplete'};
+    }
+
+    const checksGreen = rollup.length > 0 && rollup.every(item => {
+        const state = String(item?.conclusion || item?.state || '').toUpperCase();
+        return state === 'SUCCESS' || state === 'NEUTRAL' || state === 'SKIPPED';
+    });
+
+    const nonRequiredFailures = rollup
+        .filter(item => {
+            const state = String(item?.conclusion || item?.state || '').toUpperCase();
+            return ['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'ERROR', 'STARTUP_FAILURE'].includes(state);
+        })
+        .map(item => String(item?.name || item?.context || 'check'));
+
+    const reviewRequests     = pr.reviewRequests.map(req => req?.login || req?.name).filter(Boolean);
+    const crossFamilyVerdict = resolveCrossFamilyVerdict(pr, undefined, {warn: () => {}});
+    const classifiedComments = pr.comments.map(comment => ({
+        login    : comment?.author?.login,
+        createdAt: comment?.createdAt,
+        token    : mergeHoldToken(comment?.body || ''),
+        commentId: comment?.id
+    }));
+    const normalizedReviews = pr.reviews.map(review => ({
+        login      : review?.author?.login,
+        submittedAt: review?.submittedAt,
+        state      : review?.state
+    }));
+    const holdVerdict   = resolveMergeHold({
+        comments : classifiedComments,
+        reviews  : normalizedReviews,
+        truncated: false
+    });
+    const approvals     = pr.reviews.filter(review => review?.state === 'APPROVED');
+    const lastApproval  = approvals.length > 0 ? approvals[approvals.length - 1] : null;
+    const approvedAtOid = lastApproval?.commit?.oid;
+    const approvedAt    = lastApproval?.submittedAt || pr.updatedAt || null;
+
+    const predicate = validateMergeReady({
+        state           : pr.state,
+        mergedAt        : pr.mergedAt ?? null,
+        reviewDecision  : pr.reviewDecision,
+        checksGreen,
+        mergeStateStatus: pr.mergeStateStatus,
+        reviewRequests,
+        crossFamilyVerdict,
+        holdVerdict,
+        approvedAtOid,
+        headRefOid      : pr.headRefOid,
+        nonRequiredFailures
+    });
+
+    return {
+        verdict: predicate.strictMergeReady ? 'ready' : 'not_ready',
+        ready  : predicate.strictMergeReady,
+        reasons: predicate.blockers,
+        approvedAt
+    };
+}
+
+/**
+ * @summary Builds the four default host-edge GitHub block readers (`readV1Rows`,
+ * `readViewsReceipts`, `readReachTraffic`, `readOperatorWord`) over an injectable `execGh`
+ * runner so the host plane populates `## Focus (v1)` from live GitHub state while unit tests
+ * can exercise every reader deterministically without network access.
+ *
+ * @param {Object} [options={}]
+ * @param {Function} [options.execGh=defaultExecGh] Async `gh` CLI runner taking `args: String[]`.
+ * @param {Function} [options.evaluateMergeReadiness=evaluateCandidateMergeReadiness] Merge-readiness evaluator.
+ * @returns {{readV1Rows: Function, readViewsReceipts: Function, readReachTraffic: Function, readOperatorWord: Function}}
+ */
+export function createDefaultFocusV1HostEdgeReaders({
+    execGh                 = defaultExecGh,
+    evaluateMergeReadiness = evaluateCandidateMergeReadiness
+} = {}) {
+    const readV1Rows = async () => {
+        const rawRoadmap = await execGh([
+            'api',
+            'repos/neomjs/neo-agent-institution/contents/ROADMAP.md',
+            '--jq',
+            '.content'
+        ]);
+
+        const trimmed = String(rawRoadmap ?? '').trim();
+        const markdown = trimmed.startsWith('#') || trimmed.includes('| # |')
+            ? trimmed
+            : Buffer.from(trimmed.replace(/\s+/g, ''), 'base64').toString('utf8');
+
+        const epicSpecs = parseRoadmapV1RowEpics(markdown);
+        if (epicSpecs.length === 0) {
+            return {
+                status: 'unknown',
+                reason: 'no v1 row epics parsed from neomjs/neo-agent-institution/ROADMAP.md'
+            };
+        }
+
+        const rows = await Promise.all(epicSpecs.map(async spec => {
+            try {
+                const rawIssue = await execGh([
+                    'issue',
+                    'view',
+                    String(spec.number),
+                    '--repo',
+                    spec.repo,
+                    '--json',
+                    'number,body,updatedAt,url'
+                ]);
+                const issue = JSON.parse(rawIssue);
+                return {
+                    row : spec.row,
+                    epic: spec.epic,
+                    body: issue?.body || ''
+                };
+            } catch (error) {
+                return {
+                    row   : spec.row,
+                    epic  : spec.epic,
+                    reason: sanitizeReaderReason(error)
+                };
+            }
+        }));
+
+        return {
+            candidate: 'host-edge',
+            sourceUrl: 'https://github.com/neomjs/neo-agent-institution/blob/dev/ROADMAP.md',
+            rows
+        };
+    };
+
+    const readViewsReceipts = async () => {
+        const rawIssue = await execGh([
+            'issue',
+            'view',
+            '505',
+            '--repo',
+            'neomjs/neo-agent-institution',
+            '--json',
+            'number,comments,url,updatedAt'
+        ]);
+        const issue    = JSON.parse(rawIssue);
+        const receipts = parseViewsReceiptComments(issue?.comments || []);
+
+        return {
+            candidate: 'host-edge',
+            sourceUrl: issue?.url || 'https://github.com/neomjs/neo-agent-institution/issues/505',
+            receipts
+        };
+    };
+
+    const readReachTraffic = async () => {
+        const [trafficResult, repoResult] = await Promise.allSettled([
+            execGh(['api', 'repos/neomjs/neo/traffic/views']),
+            execGh(['api', 'repos/neomjs/neo'])
+        ]);
+
+        if (trafficResult.status === 'rejected' && repoResult.status === 'rejected') {
+            throw trafficResult.reason || repoResult.reason || new Error('GitHub reach query failed');
+        }
+
+        const trafficJson = trafficResult.status === 'fulfilled' && trafficResult.value
+            ? JSON.parse(trafficResult.value)
+            : null;
+        const repoJson    = repoResult.status === 'fulfilled' && repoResult.value
+            ? JSON.parse(repoResult.value)
+            : null;
+
+        return {
+            candidate      : 'host-edge',
+            sourceUrl      : 'https://github.com/neomjs/neo/graphs/traffic',
+            falsifyingQuery: 'gh api repos/neomjs/neo/traffic/views',
+            traffic        : trafficJson
+                ? {views: trafficJson.count, uniques: trafficJson.uniques}
+                : null,
+            stars: repoJson?.stargazers_count ?? null,
+            forks: repoJson?.forks_count ?? null
+        };
+    };
+
+    const readOperatorWord = async () => {
+        const rawSearch = await execGh([
+            'search',
+            'prs',
+            '--owner',
+            'neomjs',
+            '--state',
+            'open',
+            '--review',
+            'approved',
+            '--json',
+            'number,repository,url,updatedAt'
+        ]);
+        const items      = JSON.parse(rawSearch || '[]');
+        const list       = Array.isArray(items) ? items.slice(0, 5) : [];
+        const candidates = await Promise.all(list.map(async item => {
+            const repoName = item?.repository?.nameWithOwner
+                || (item?.repository?.name ? `neomjs/${item.repository.name}` : 'neomjs/neo');
+            const prNumber = item?.number;
+
+            try {
+                const rawView = await execGh([
+                    'pr',
+                    'view',
+                    String(prNumber),
+                    '--repo',
+                    repoName,
+                    '--json',
+                    'number,url,state,mergedAt,isDraft,mergeStateStatus,headRefOid,author,body,reviewDecision,reviewRequests,reviews,comments,statusCheckRollup,updatedAt'
+                ]);
+                const prSnapshot = JSON.parse(rawView);
+                const projection = await evaluateMergeReadiness(prSnapshot);
+
+                return {
+                    repo      : repoName,
+                    number    : prNumber,
+                    url       : prSnapshot?.url || item?.url || null,
+                    approvedAt: projection?.approvedAt || item?.updatedAt || null,
+                    projection
+                };
+            } catch (error) {
+                return {
+                    repo      : repoName,
+                    number    : prNumber,
+                    url       : item?.url || null,
+                    approvedAt: item?.updatedAt || null,
+                    projection: {
+                        verdict     : 'unavailable',
+                        missingInput: sanitizeReaderReason(error)
+                    }
+                };
+            }
+        }));
+
+        return {
+            candidate      : 'host-edge',
+            sourceUrl      : 'https://github.com/pulls?q=is%3Aopen+is%3Apr+org%3Aneomjs+review%3Aapproved',
+            falsifyingQuery: 'gh search prs --owner neomjs --state open --review approved',
+            candidates
+        };
+    };
+
+    return {
+        readV1Rows,
+        readViewsReceipts,
+        readReachTraffic,
+        readOperatorWord
+    };
+}
+
+/**
  * @summary Creates the host-edge reader seam that supplies the GitHub-sourced Focus (v1) blocks
  * (`v1`, `views`, `reach`, `operatorWord`) to the synthesizer without ever passing credentials into
  * the cloud plane (Contract Ledger row 2, AC-5).
  *
+ * When `useDefaultHostReaders: true` (or `execGh` is supplied), any omitted GitHub block reader
+ * defaults to its host-edge `gh` implementation from `createDefaultFocusV1HostEdgeReaders`.
  * Each block reader runs independently; if a reader throws `FocusSourceUnavailable` or is omitted,
  * that block resolves to `{status: 'unknown', reason}` so the producer always writes a truthful
  * `## Focus (v1)` section.
@@ -569,7 +1012,10 @@ export function formatOperatorCandidateLine(candidate = {}) {
  * @param {Function} [readers.readReachTraffic] Async reader returning `{traffic?, stars?, forks?, asOf?, candidate?, sourceUrl?, falsifyingQuery?}`.
  * @param {Function} [readers.readOperatorWord] Async reader returning `{candidates, asOf?, candidate?, sourceUrl?, falsifyingQuery?}`.
  * @param {Function} [readers.readPrivateLedger] Async reader returning raw ledger rows to be filtered by `projectPublicBusinessRows`.
- * @param {String}   [readers.absentReason=CLOUD_PLANE_HOST_EDGE_ABSENT_REASON] Reason recorded when a GitHub reader is absent.
+ * @param {Boolean}  [readers.useDefaultHostReaders=false] When `true`, fills omitted GitHub block readers with `createDefaultFocusV1HostEdgeReaders`.
+ * @param {Function} [readers.execGh] Optional `gh` CLI runner forwarded to `createDefaultFocusV1HostEdgeReaders`.
+ * @param {Function} [readers.evaluateMergeReadiness] Optional merge-readiness evaluator forwarded to `createDefaultFocusV1HostEdgeReaders`.
+ * @param {String}   [readers.absentReason=FOCUS_V1_READER_ABSENT_REASON] Reason recorded when a GitHub reader is absent.
  * @returns {{readFocusV1Inputs: Function}}
  */
 export function createFocusV1HostEdgeReader({
@@ -578,8 +1024,20 @@ export function createFocusV1HostEdgeReader({
     readReachTraffic,
     readOperatorWord,
     readPrivateLedger,
-    absentReason = CLOUD_PLANE_HOST_EDGE_ABSENT_REASON
+    useDefaultHostReaders = false,
+    execGh,
+    evaluateMergeReadiness,
+    absentReason = FOCUS_V1_READER_ABSENT_REASON
 } = {}) {
+    const defaultReaders = (useDefaultHostReaders || typeof execGh === 'function')
+        ? createDefaultFocusV1HostEdgeReaders({execGh, evaluateMergeReadiness})
+        : null;
+
+    const resolvedReadV1Rows        = readV1Rows        ?? defaultReaders?.readV1Rows;
+    const resolvedReadViewsReceipts = readViewsReceipts ?? defaultReaders?.readViewsReceipts;
+    const resolvedReadReachTraffic  = readReachTraffic  ?? defaultReaders?.readReachTraffic;
+    const resolvedReadOperatorWord  = readOperatorWord  ?? defaultReaders?.readOperatorWord;
+
     const runBlockReader = async (fn, fallbackReason) => {
         if (typeof fn !== 'function') {
             return {status: 'unknown', reason: fallbackReason};
@@ -610,10 +1068,10 @@ export function createFocusV1HostEdgeReader({
     const readFocusV1Inputs = async ({now = new Date(), allowlist} = {}) => {
         const asOf                                            = formatGoldenPathCapturedAt(now);
         const [v1, views, reachTraffic, operatorWord, ledger] = await Promise.all([
-            runBlockReader(readV1Rows, absentReason),
-            runBlockReader(readViewsReceipts, absentReason),
-            runBlockReader(readReachTraffic, absentReason),
-            runBlockReader(readOperatorWord, absentReason),
+            runBlockReader(resolvedReadV1Rows, absentReason),
+            runBlockReader(resolvedReadViewsReceipts, absentReason),
+            runBlockReader(resolvedReadReachTraffic, absentReason),
+            runBlockReader(resolvedReadOperatorWord, absentReason),
             runBlockReader(readPrivateLedger, PRIVATE_LEDGER_ABSENT_REASON)
         ]);
 
@@ -655,7 +1113,7 @@ export function createFocusV1HostEdgeReader({
  *
  * @param {Object} [options={}]
  * @param {Date|String|Number} [options.capturedAt=new Date()] Section capture timestamp.
- * @param {String} [options.candidate='cloud-plane'] Default candidate or profile label.
+ * @param {String} [options.candidate='unscoped'] Default candidate or profile label.
  * @param {Object} [options.v1] Block 1 input (`{status?, reason?, rows?, moduleLines?, asOf?, candidate?, sourceUrl?}`).
  * @param {Object} [options.views] Block 2 input (`{status?, reason?, receipts?, viewKeys?, asOf?, candidate?, profile?, sourceUrl?}`).
  * @param {Object} [options.reach] Block 3 input (`{status?, reason?, traffic?, stars?, forks?, ledgerRows?, publicRows?, allowlist?, asOf?, candidate?, sourceUrl?, falsifyingQuery?}`).
@@ -665,7 +1123,7 @@ export function createFocusV1HostEdgeReader({
  */
 export function renderFocusV1Section({
     capturedAt = new Date(),
-    candidate  = 'cloud-plane',
+    candidate  = 'unscoped',
     v1,
     views,
     reach,
@@ -679,7 +1137,7 @@ export function renderFocusV1Section({
     const v1Summary   = v1Available
         ? summarizeV1Rows(v1.rows)
         : null;
-    const v1Reason    = sanitizeReaderReason(v1?.reason || CLOUD_PLANE_HOST_EDGE_ABSENT_REASON);
+    const v1Reason    = sanitizeReaderReason(v1?.reason || FOCUS_V1_READER_ABSENT_REASON);
     const v1AsOf      = v1?.asOf || defaultAsOf;
     const v1Candidate = v1?.candidate || candidate;
     const v1Source    = v1?.sourceUrl || 'neomjs/neo-agent-institution/ROADMAP.md';
@@ -689,7 +1147,7 @@ export function renderFocusV1Section({
     const viewsEval      = viewsAvailable
         ? evaluateViewReceipts(views.receipts, {viewKeys: views.viewKeys || FOCUS_V1_VIEW_KEYS})
         : null;
-    const viewsReason    = sanitizeReaderReason(views?.reason || CLOUD_PLANE_HOST_EDGE_ABSENT_REASON);
+    const viewsReason    = sanitizeReaderReason(views?.reason || FOCUS_V1_READER_ABSENT_REASON);
     const viewsAsOf      = views?.asOf || defaultAsOf;
     const viewsCandidate = views?.candidate || views?.profile || candidate;
     const viewsSource    = views?.sourceUrl || 'neomjs/neo-agent-institution#505';
@@ -796,7 +1254,7 @@ export function renderFocusV1Section({
         }
         reachLines.push(`- ${parts.join(' · ')} · falsifyingQuery: \`${reachQuery}\``);
     } else {
-        const reachReason = sanitizeReaderReason(reach?.reason || CLOUD_PLANE_HOST_EDGE_ABSENT_REASON);
+        const reachReason = sanitizeReaderReason(reach?.reason || FOCUS_V1_READER_ABSENT_REASON);
         reachLines.push(`- github reach: unknown (${reachReason}) · falsifyingQuery: \`${reachQuery}\``);
     }
 
@@ -838,7 +1296,7 @@ export function renderFocusV1Section({
             opLines.push(formatOperatorCandidateLine(item));
         }
     } else {
-        const opReason = sanitizeReaderReason(operatorWord?.reason || CLOUD_PLANE_HOST_EDGE_ABSENT_REASON);
+        const opReason = sanitizeReaderReason(operatorWord?.reason || FOCUS_V1_READER_ABSENT_REASON);
         opLines.push(`- status: unknown (${opReason}) · falsifyingQuery: \`${opQuery}\``);
     }
     opLines.push(`- decisions outside pull requests: not covered by this read`);

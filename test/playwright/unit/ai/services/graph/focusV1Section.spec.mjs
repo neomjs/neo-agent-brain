@@ -22,14 +22,18 @@ import {
     FOCUS_V1_HEADING,
     FOCUS_V1_MARKER,
     FOCUS_V1_MAX_BYTES,
+    FOCUS_V1_READER_ABSENT_REASON,
     FOCUS_V1_VIEW_KEYS,
     FocusSourceUnavailable,
     createFocusV1HostEdgeReader,
+    evaluateCandidateMergeReadiness,
     evaluateViewReceipts,
     formatOperatorCandidateLine,
     isCleanNeedsLove,
     makeRefusingFocusV1Reader,
+    parseRoadmapV1RowEpics,
     parseRowStateLine,
+    parseViewsReceiptComments,
     projectPublicBusinessRows,
     renderFocusV1Section,
     summarizeV1Rows
@@ -135,18 +139,19 @@ test.describe('focusV1Section — Sandman handoff ## Focus (v1) producer contrac
         expect(split.sectionsBySlug.gaps.content).toContain('### 🧪 Critical Test Constraints');
     });
 
-    test('AC-1 (absent-inputs arm): with every input absent, ## Focus (v1) still renders with unknown and explicit boundary reasons', () => {
+    test('AC-1 (absent-inputs arm): with every input absent, ## Focus (v1) still renders with unknown and a plane-neutral reason', () => {
         const section = renderFocusV1Section({capturedAt: CAPTURED_AT});
 
         expect(section).toContain(FOCUS_V1_HEADING);
         expect(section).toContain(`<!-- ${FOCUS_V1_MARKER} · captured: ${CAPTURED_AT_LABEL} -->`);
-        expect(section).toContain(`v1: 0 of 5 rows passed · ready 0 · unknown 5 · failed 0 · missing: all (${CLOUD_PLANE_HOST_EDGE_ABSENT_REASON})`);
-        expect(section).toContain(`views: swept 0 · needing love unknown · unassessed: ${FOCUS_V1_VIEW_KEYS.join(', ')} (${CLOUD_PLANE_HOST_EDGE_ABSENT_REASON})`);
-        expect(section).toContain(`### v1\nas of ${CAPTURED_AT_LABEL} · candidate: cloud-plane`);
-        expect(section).toContain(`- status: unknown (${CLOUD_PLANE_HOST_EDGE_ABSENT_REASON})`);
-        expect(section).toContain(`- github reach: unknown (${CLOUD_PLANE_HOST_EDGE_ABSENT_REASON})`);
+        expect(section).toContain(`v1: 0 of 5 rows passed · ready 0 · unknown 5 · failed 0 · missing: all (${FOCUS_V1_READER_ABSENT_REASON})`);
+        expect(section).toContain(`views: swept 0 · needing love unknown · unassessed: ${FOCUS_V1_VIEW_KEYS.join(', ')} (${FOCUS_V1_READER_ABSENT_REASON})`);
+        expect(section).toContain(`### v1\nas of ${CAPTURED_AT_LABEL} · candidate: unscoped`);
+        expect(section).toContain(`- status: unknown (${FOCUS_V1_READER_ABSENT_REASON})`);
+        expect(section).toContain(`- github reach: unknown (${FOCUS_V1_READER_ABSENT_REASON})`);
         expect(section).toContain('- outbound ledger: unknown (no public-flagged reach or outbound ledger rows supplied)');
         expect(section).toContain('- decisions outside pull requests: not covered by this read');
+        expect(section).not.toContain('cloud-plane');
         expect(Buffer.byteLength(section, 'utf8')).toBeLessThanOrEqual(FOCUS_V1_MAX_BYTES);
     });
 
@@ -430,5 +435,168 @@ test.describe('focusV1Section — Sandman handoff ## Focus (v1) producer contrac
         expect(hostSection).toContain('- outbound `social_Posts`: count: 5');
         expect(hostSection).not.toContain('business-goal-1');
         expect(hostSection).toContain('- neomjs/neo-agent-brain#957 · `ready for the operator` (projection: ready)');
+    });
+
+    test('AC-5 (default host-edge block readers arm): createFocusV1HostEdgeReader({useDefaultHostReaders: true, execGh}) parses ROADMAP rows, #505 receipts, traffic, and open approved PRs', async () => {
+        const roadmapMarkdown = [
+            '| # | Journey | Anchors | Steward | Done signal | State |',
+            '|---|---|---|---|---|---|',
+            '| 1 | First run | #351 | Clio | cold run | the `Row state:` line on [#351](https://github.com/neomjs/neo-agent-institution/issues/351) |',
+            '| 2 | Truthful state | #477 | Clio | provoked | the `Row state:` line on [#477](https://github.com/neomjs/neo-agent-institution/issues/477) |',
+            '| 3 | Observatory | #312 | Vega | walk | the `Row state:` line on [#312](https://github.com/neomjs/neo-agent-institution/issues/312) |',
+            '| 4 | Workflow | #414 | Grace | end-to-end | the `Row state:` line on [#414](https://github.com/neomjs/neo-agent-institution/issues/414) |',
+            '| 5 | Recovery | #424 | Ada | recovered | the `Row state:` line on [#424](https://github.com/neomjs/neo-agent-institution/issues/424) |'
+        ].join('\n');
+
+        expect(parseRoadmapV1RowEpics(roadmapMarkdown)).toEqual([
+            {row: 1, repo: 'neomjs/neo-agent-institution', number: 351, epic: '#351'},
+            {row: 2, repo: 'neomjs/neo-agent-institution', number: 477, epic: '#477'},
+            {row: 3, repo: 'neomjs/neo-agent-institution', number: 312, epic: '#312'},
+            {row: 4, repo: 'neomjs/neo-agent-institution', number: 414, epic: '#414'},
+            {row: 5, repo: 'neomjs/neo-agent-institution', number: 424, epic: '#424'}
+        ]);
+
+        const epicBodies = {
+            351: 'Row state: passed · 2026-10-20 · plan: done',
+            477: 'Row state: ready · 2026-10-21 · plan: run smoke',
+            312: 'Row state: passed · 2026-10-22',
+            414: 'Row state: failed · 2026-10-23',
+            424: 'No row state line yet'
+        };
+
+        const comments505 = [
+            {
+                createdAt: '2026-10-14T10:00:00Z',
+                author   : {login: 'neo-fable-clio'},
+                url      : 'https://github.com/neomjs/neo-agent-institution/issues/505#issuecomment-1',
+                body     : [
+                    '## Design sweep · `detail`',
+                    '| Field | Value |',
+                    '|---|---|',
+                    '| build | `installed candidate 20261013 · e5aa4238` |',
+                    '| profile | team instance |',
+                    '',
+                    '`view: detail · needs love: column comes back empty after restore`'
+                ].join('\n')
+            },
+            {
+                createdAt: '2026-10-15T14:00:00Z',
+                author   : {login: 'neo-gpt-emmy'},
+                url      : 'https://github.com/neomjs/neo-agent-institution/issues/505#issuecomment-2',
+                body     : [
+                    '## Design sweep · `detail`',
+                    '| Field | Value |',
+                    '|---|---|',
+                    '| build | Source preview. Clean dev head |',
+                    '| profile | Disposable source fixture |',
+                    '',
+                    '`view: detail · needs love: none observed`'
+                ].join('\n')
+            },
+            {
+                createdAt: '2026-10-16T14:00:00Z',
+                author   : {login: 'neo-fable-mnemosyne'},
+                url      : 'https://github.com/neomjs/neo-agent-institution/issues/505#issuecomment-3',
+                body     : [
+                    '## Design sweep · `fleet`',
+                    '| Field | Value |',
+                    '|---|---|',
+                    '| build | installed candidate 2026-10-14 |',
+                    '| profile | operator team profile |',
+                    '',
+                    'view: fleet · needs love: none observed'
+                ].join('\n')
+            }
+        ];
+
+        const parsedReceipts = parseViewsReceiptComments(comments505);
+        expect(parsedReceipts).toHaveLength(3);
+
+        const execGh = async args => {
+            const key = args.join(' ');
+            if (key.includes('contents/ROADMAP.md')) {
+                return Buffer.from(roadmapMarkdown, 'utf8').toString('base64');
+            }
+            if (args[0] === 'issue' && args[1] === 'view' && args[2] === '505') {
+                return JSON.stringify({
+                    number  : 505,
+                    url     : 'https://github.com/neomjs/neo-agent-institution/issues/505',
+                    comments: comments505
+                });
+            }
+            if (args[0] === 'issue' && args[1] === 'view') {
+                const num = Number(args[2]);
+                return JSON.stringify({
+                    number: num,
+                    body  : epicBodies[num] || ''
+                });
+            }
+            if (key === 'api repos/neomjs/neo/traffic/views') {
+                return JSON.stringify({count: 2450, uniques: 410});
+            }
+            if (key === 'api repos/neomjs/neo') {
+                return JSON.stringify({stargazers_count: 1512, forks_count: 218});
+            }
+            if (args[0] === 'search' && args[1] === 'prs') {
+                return JSON.stringify([
+                    {
+                        number    : 228,
+                        repository: {nameWithOwner: 'neomjs/neo-agent-skills'},
+                        url       : 'https://github.com/neomjs/neo-agent-skills/pull/228',
+                        updatedAt : '2026-10-28T03:00:00Z'
+                    }
+                ]);
+            }
+            if (args[0] === 'pr' && args[1] === 'view' && args[2] === '228') {
+                return JSON.stringify({
+                    number           : 228,
+                    url              : 'https://github.com/neomjs/neo-agent-skills/pull/228',
+                    state            : 'OPEN',
+                    mergedAt         : null,
+                    isDraft          : false,
+                    mergeStateStatus : 'CLEAN',
+                    headRefOid       : '6c41b1d',
+                    author           : {login: 'neo-gemini-pro'},
+                    body             : 'Authored by Julia (`@neo-gemini-pro`, Gemini 4 Argon, Antigravity).',
+                    reviewDecision   : 'APPROVED',
+                    reviewRequests   : [],
+                    reviews          : [
+                        {
+                            author     : {login: 'neo-opus-grace'},
+                            state      : 'APPROVED',
+                            submittedAt: '2026-10-28T02:55:00Z',
+                            commit     : {oid: '6c41b1d'}
+                        }
+                    ],
+                    comments         : [],
+                    statusCheckRollup: [{name: 'skills-lint', conclusion: 'SUCCESS'}],
+                    updatedAt        : '2026-10-28T03:00:00Z'
+                });
+            }
+            throw new Error(`Unexpected gh invocation: ${key}`);
+        };
+
+        const reader  = createFocusV1HostEdgeReader({useDefaultHostReaders: true, execGh});
+        const inputs  = await reader.readFocusV1Inputs({now: new Date(CAPTURED_AT)});
+        const section = renderFocusV1Section(inputs);
+
+        expect(inputs.v1.status).toBe('ok');
+        expect(inputs.views.status).toBe('ok');
+        expect(inputs.reach.status).toBe('ok');
+        expect(inputs.operatorWord.status).toBe('ok');
+
+        expect(section).toContain('v1: 2 of 5 rows passed · ready 1 · unknown 1 · failed 1 · missing: r2:ready, r4:failed, r5:unknown');
+        expect(section).toContain('views: swept 2 · needing love 1');
+        expect(section).toContain('- `detail`: needs love: column comes back empty after restore');
+        expect(section).toContain('↳ source 2026-10-15T14:00:00Z · needs love: none observed (does not resolve installed line)');
+        expect(section).toContain('traffic 14d: 2450 views, 410 uniques · stars: 1512 · forks: 218');
+        expect(section).toContain('[neomjs/neo-agent-skills#228](https://github.com/neomjs/neo-agent-skills/pull/228) · approved 2026-10-28T02:55:00Z · `ready for the operator` (projection: ready)');
+        expect(Buffer.byteLength(section, 'utf8')).toBeLessThanOrEqual(FOCUS_V1_MAX_BYTES);
+
+        // Verify evaluateCandidateMergeReadiness fails closed when fields are missing
+        expect(evaluateCandidateMergeReadiness({number: 999})).toEqual({
+            verdict     : 'unavailable',
+            missingInput: 'merge-readiness fields incomplete'
+        });
     });
 });

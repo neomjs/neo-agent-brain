@@ -1049,6 +1049,56 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
         ]);
     });
 
+    test('Golden Path runner supplies a Focus (v1) host-edge reader on the host plane and a refusing boundary reader on the cloud plane (#957)', async () => {
+        const synthesizerCalls = [];
+
+        for (const goldenPathRepoEnrichmentEnabled of [true, false]) {
+            runSchedulingPipeline({
+                registry: [
+                    makeCandidateDescriptor({
+                        taskName        : 'golden-path',
+                        executionKind   : 'in-process-async',
+                        maintenanceClass: 'graph-dependent'
+                    })
+                ],
+                context : makeContext(),
+                services: makeServices({
+                    goldenPathSynthesizer: {
+                        synthesizeGoldenPath(options) {
+                            synthesizerCalls.push(options);
+                            return Promise.resolve({
+                                status      : 'completed',
+                                wroteHandoff: true
+                            });
+                        }
+                    }
+                }),
+                runtime: makeRuntime({goldenPathRepoEnrichmentEnabled})
+            });
+
+            await Promise.resolve();
+        }
+
+        expect(synthesizerCalls).toHaveLength(2);
+        expect(synthesizerCalls[0].repoEnrichmentEnabled).toBe(true);
+        expect(typeof synthesizerCalls[0].focusV1Reader?.readFocusV1Inputs).toBe('function');
+
+        expect(synthesizerCalls[1].repoEnrichmentEnabled).toBe(false);
+        expect(typeof synthesizerCalls[1].focusV1Reader?.readFocusV1Inputs).toBe('function');
+
+        const cloudFocusInputs = await synthesizerCalls[1].focusV1Reader.readFocusV1Inputs({
+            now: new Date('2026-10-28T03:00:00.000Z')
+        });
+
+        expect(cloudFocusInputs.v1).toEqual({
+            status     : 'unknown',
+            unavailable: true,
+            reason     : 'GitHub focus inputs require a host-edge reader or admitted dated projection; this cloud-plane pass has neither'
+        });
+        expect(cloudFocusInputs.views.status).toBe('unknown');
+        expect(cloudFocusInputs.operatorWord.status).toBe('unknown');
+    });
+
     test('records Golden Path missing handoff write proof as failure (#13985)', async () => {
         const calls    = [];
         const outcomes = [];

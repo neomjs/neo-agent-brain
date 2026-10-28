@@ -3314,7 +3314,9 @@ class MemoryService extends Base {
 
             // Trigger event-driven Golden Path Synthesis
             import('../../services/graph/GoldenPathSynthesizer.mjs').then(mod => {
-                mod.default.synthesizeGoldenPath().catch(err => {
+                const Synthesizer   = mod.default?.constructor;
+                const focusV1Reader = Synthesizer?.createFocusV1HostEdgeReader?.({useDefaultHostReaders: true});
+                mod.default.synthesizeGoldenPath(focusV1Reader ? {focusV1Reader} : undefined).catch(err => {
                     logger.error('[MemoryService] Event-driven Golden Path Synthesis failed:', err);
                 });
             }).catch(err => {
