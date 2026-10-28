@@ -166,7 +166,7 @@ test.describe('Neo.ai.services.github-workflow.IssueService — listIssues proje
 
         const result = await IssueService.listIssues({limit: 10, state: 'open'});
 
-        // Measured live 2026-07-22 (#15603; ticket-ref-ok: measured-quirk evidence ledger): `filterBy: {assignee: null}` is served from a stale,
+        // Measured live 2026-07-22: `filterBy: {assignee: null}` is served from a stale,
         // hours-lagged read path — a controlled assignment stayed invisible on the unfiltered first
         // page 10+ minutes (1.5h+ in the original incident) while the connection without `filterBy`
         // returned the live page. The old null pass-through was complete but stale; the unfiltered
@@ -183,7 +183,7 @@ test.describe('Neo.ai.services.github-workflow.IssueService — listIssues proje
 
         const result = await IssueService.listIssues({limit: 10, state: 'open', sort: 'created'});
 
-        // Measured live 2026-07-22 (#15603; ticket-ref-ok: measured-quirk evidence ledger): an updated-descending page buries an untouched fresh
+        // Measured live 2026-07-22: an updated-descending page buries an untouched fresh
         // filing below older issues with mere recent activity (4 of the latest-20 filings
         // displaced). The duplicate sweep's evidence bar is creation order; the default stays
         // UPDATED_AT, so the created path must build its query per call.
@@ -1083,13 +1083,13 @@ test.describe('Neo.ai.services.github-workflow.IssueService — manageIssueProje
                 callCount++;
                 // 1: GET_ISSUE_ID
                 if (callCount === 1) return {repository: {issue: {id: ISSUE_NODE_ID}}};
-                // 2: GET_PROJECT_V2_METADATA for #12 → exists
+                // 2: GET_PROJECT_V2_METADATA for project 12 → exists
                 if (callCount === 2) {
                     return {organization: {projectV2: {id: VALID_PROJECT, title: 'v13 Release', fields: {nodes: []}}}};
                 }
-                // 3: ADD_PROJECT_V2_ITEM for #12 → succeeds
+                // 3: ADD_PROJECT_V2_ITEM for project 12 → succeeds
                 if (callCount === 3) return {addProjectV2ItemById: {item: {id: NEW_ITEM_ID}}};
-                // 4: GET_PROJECT_V2_METADATA for #999 → not found
+                // 4: GET_PROJECT_V2_METADATA for project 999 → not found
                 if (callCount === 4) return {organization: {projectV2: null}};
                 throw new Error(`Unexpected additional GraphqlService.query call: ${callCount}`);
             };

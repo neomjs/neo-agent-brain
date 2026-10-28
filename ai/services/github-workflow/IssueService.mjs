@@ -1521,7 +1521,7 @@ class IssueService extends Base {
         }
 
         // `filterBy: {assignee: null}` routes GitHub's issues connection to a stale, hours-lagged
-        // read path (measured live 2026-07-22, #15603; ticket-ref-ok: measured-quirk evidence ledger): a controlled assignment stayed invisible on
+        // read path (measured live 2026-07-22): a controlled assignment stayed invisible on
         // the unfiltered first page 10+ minutes — 1.5h+ in the original incident — while the same
         // connection without `filterBy` returned the live page). An unfiltered list must omit the
         // argument AND the variable entirely, so the query constant is selected by assignee
