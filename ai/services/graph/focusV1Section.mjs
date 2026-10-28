@@ -667,7 +667,7 @@ export function parseRoadmapV1RowEpics(roadmapMarkdown = '') {
 
 /**
  * @summary Parses `view: <key> · needs love: <text>` design-sweep receipt lines and Binding table
- * metadata (`build`, `profile`) from issue comments on `neomjs/neo-agent-institution#505`.
+ * metadata (`build`, `profile`) from issue comments on the views epic.
  * @param {Object[]} [comments=[]] Issue comment objects (`{body, createdAt, author, url}`).
  * @returns {Object[]} Parsed receipt objects ready for `evaluateViewReceipts`.
  */
