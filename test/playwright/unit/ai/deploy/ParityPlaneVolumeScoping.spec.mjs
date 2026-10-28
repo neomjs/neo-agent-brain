@@ -539,7 +539,7 @@ test.describe('data-plane profile election — base and integration-fixture disp
         expect(hostEdgePosture.NEO_AI_DEPLOYMENT_MODE).toBe('local');
         expect(hostEdgePosture.NEO_FOCUS_V1_PROJECTION_PATH).toBe('/probe/host-edge/focus-v1-projection.json');
         expect(hostEdgePosture.NEO_ORCHESTRATOR_LMS_ENABLED).toBe('true');
-        // #481: the second elected lane — the loopback Neural Link bridge the seats and the cockpit
+        // The second elected lane — the loopback Neural Link bridge the seats and the cockpit
         // share. Elected in the posture module only; the plist must not restate it either.
         expect(hostEdgePosture.NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED).toBe('true');
         expect(hostEdgePlistSource).not.toContain('<key>NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED</key>');

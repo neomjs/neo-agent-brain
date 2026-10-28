@@ -13,8 +13,7 @@
  * `NEO_AI_DEPLOYMENT_MODE`, `NEO_AI_ORCHESTRATOR_DIR`). Producing those inputs is exactly what a
  * Compose `environment:` block or a plist `EnvironmentVariables` dict does; this module is the
  * third producer of the same shape, not a second resolver. Nothing here re-derives a leaf, holds a
- * shadow default, or mutates `AiConfig` (ticket-ref-ok: ADR 0019 §3/§5 is the mandated read-gate for
- * any AiConfig-adjacent authoring, and the sanctioned-pattern list a reviewer checks this against).
+ * shadow default, or mutates `AiConfig`.
  *
  * @see src/composition/orchestrator/hostEdgeProfile.mjs
  * @see ai/daemons/orchestrator/daemon.mjs
