@@ -177,6 +177,37 @@ test.describe('dispatchFleetRequest — the app↔fleet wire allowlist + routing
         expect(calls).toEqual([['resolveViewerIdentity']])
     });
 
+    test('fleetGoldenPath routes over the wire and carries the focus section alongside route, admission, rem, and handoff (#957)', async () => {
+        const focusEnvelope = {
+            capability: {state: 'wired', capturedAt: '2026-10-28T03:00:00.000Z'},
+            admission : {admitted: true, fallback: 'current', reasonCode: 'projection-gate-disabled'},
+            route     : {schemaVersion: 'computed-route.v1', status: 'fresh', kind: 'computed-ranked', items: []},
+            rem       : {undigested: 0, digested: 100, recentCycles: 1},
+            handoff   : {markdown: '## Computed Golden Path (Strategic Recommendation)\n', mtimeMs: 1000, ageMs: 10, staleAfterMs: 3600000, stale: false, reason: null},
+            focus     : {markdown: '## Focus (v1)\n\n<!-- focus.v1 · captured: 2026-10-28T03:00:00.000Z -->\n', mtimeMs: 1000, ageMs: 10, staleAfterMs: 3600000, stale: false, reason: null},
+            sources   : {
+                route    : {state: 'wired', reason: null},
+                admission: {state: 'current', reason: 'projection-gate-disabled'},
+                rem      : {state: 'wired', reason: null},
+                handoff  : {state: 'available', reason: null},
+                focus    : {state: 'available', reason: null}
+            }
+        };
+
+        bridge.fleetGoldenPath = async params => {
+            calls.push(['fleetGoldenPath', params]);
+            return focusEnvelope;
+        };
+
+        const res = await dispatchFleetRequest(wireRequest('fleetGoldenPath', {}), bridge);
+
+        expect(res.ok).toBe(true);
+        expect(res.state).toBe(FLEET_WIRE_RESPONSE_STATES.ok);
+        expect(res.result.focus).toEqual(focusEnvelope.focus);
+        expect(res.result.sources.focus).toEqual({state: 'available', reason: null});
+        expect(calls).toEqual([['fleetGoldenPath', {}]])
+    });
+
     test('the wire allowlist is exactly the pane operations (+ bounded reads and explicit writes) — no resolver seams', () => {
         expect([...FLEET_WIRE_METHODS].sort()).toEqual(
             // fleet-agent operations (incl. the configureAgent scoped-config patch — never identity,

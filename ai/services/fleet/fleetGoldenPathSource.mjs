@@ -98,16 +98,17 @@ export function reduceComputedRouteAnswer(payload, nowMs) {
 }
 
 /**
- * @summary Extract the producer's complete strategic Golden Path section, preserving its exact
+ * @summary Extract a producer-owned level-two Markdown section, preserving its exact
  * heading and Markdown through (but not including) the next level-two heading.
  * @param {*} markdown
+ * @param {RegExp} headingPattern
  * @returns {String|null}
  * @private
  */
-function extractGoldenPathHandoffSection(markdown) {
+function extractLevelTwoHandoffSection(markdown, headingPattern) {
     if (typeof markdown !== 'string') return null;
 
-    const heading = /^## Computed Golden Path \(Strategic Recommendation\)[ \t]*\r?$/m.exec(markdown);
+    const heading = headingPattern.exec(markdown);
 
     if (!heading) return null;
 
@@ -121,15 +122,44 @@ function extractGoldenPathHandoffSection(markdown) {
 }
 
 /**
- * @summary Project the Memory Core handoff read onto its independent FM axis. Content without
- * the producer-owned section is degraded explicitly; file absence, operation failure and missing
- * wiring remain distinguishable, with no effect on the computed route or REM axes.
+ * @summary Extract the producer's complete strategic Golden Path section, preserving its exact
+ * heading and Markdown through (but not including) the next level-two heading.
+ * @param {*} markdown
+ * @returns {String|null}
+ * @private
+ */
+function extractGoldenPathHandoffSection(markdown) {
+    return extractLevelTwoHandoffSection(
+        markdown,
+        /^## Computed Golden Path \(Strategic Recommendation\)[ \t]*\r?$/m
+    )
+}
+
+/**
+ * @summary Extract the producer's `## Focus (v1)` handoff section, preserving its exact
+ * heading and Markdown through (but not including) the next level-two heading.
+ * @param {*} markdown
+ * @returns {String|null}
+ */
+export function extractFocusHandoffSection(markdown) {
+    return extractLevelTwoHandoffSection(
+        markdown,
+        /^## Focus \(v1\)[ \t]*\r?$/m
+    )
+}
+
+/**
+ * @summary Project one Memory Core handoff section read onto its independent FM axis. Content
+ * without the producer-owned section is degraded explicitly (`handoff-section-not-found`); file
+ * absence, operation failure and missing wiring remain distinguishable, with no effect on the
+ * computed route or REM axes.
  * @param {*} payload The `get_sandman_handoff` result.
+ * @param {Function} extractSection Section extractor function.
  * @returns {{markdown: (String|null), mtimeMs: (Number|null), ageMs: (Number|null), staleAfterMs: (Number|null), stale: (Boolean|null), reason: (String|null), state: String}}
  * @private
  */
-function projectSandmanHandoff(payload) {
-    const markdown = extractGoldenPathHandoffSection(payload?.content);
+function projectHandoffSection(payload, extractSection) {
+    const markdown = extractSection(payload?.content);
     let   reason   = null;
 
     if (!markdown) {
@@ -158,6 +188,26 @@ function projectSandmanHandoff(payload) {
         reason,
         state
     }
+}
+
+/**
+ * @summary Project the Memory Core strategic Golden Path handoff section onto its FM axis.
+ * @param {*} payload The `get_sandman_handoff` result.
+ * @returns {{markdown: (String|null), mtimeMs: (Number|null), ageMs: (Number|null), staleAfterMs: (Number|null), stale: (Boolean|null), reason: (String|null), state: String}}
+ * @private
+ */
+function projectSandmanHandoff(payload) {
+    return projectHandoffSection(payload, extractGoldenPathHandoffSection)
+}
+
+/**
+ * @summary Project the Memory Core `## Focus (v1)` handoff section onto its independent `focus`
+ * FM axis.
+ * @param {*} payload The `get_sandman_handoff` result.
+ * @returns {{markdown: (String|null), mtimeMs: (Number|null), ageMs: (Number|null), staleAfterMs: (Number|null), stale: (Boolean|null), reason: (String|null), state: String}}
+ */
+export function projectFocusHandoff(payload) {
+    return projectHandoffSection(payload, extractFocusHandoffSection)
 }
 
 /**
@@ -212,19 +262,34 @@ export function createFleetGoldenPathSource({getComputedRoute, getRemPipelineSta
         }
     };
 
-    const readHandoffAxis = async () => {
+    const readHandoffAxes = async () => {
         if (typeof getSandmanHandoff !== 'function') {
-            return projectSandmanHandoff({reason: 'handoff-source-unwired'})
+            const unwired = {reason: 'handoff-source-unwired'};
+
+            return {
+                handoff: projectSandmanHandoff(unwired),
+                focus  : projectFocusHandoff(unwired)
+            }
         }
 
         try {
-            return projectSandmanHandoff(await getSandmanHandoff({sections: 'all'}))
+            const payload = await getSandmanHandoff({sections: 'all'});
+
+            return {
+                handoff: projectSandmanHandoff(payload),
+                focus  : projectFocusHandoff(payload)
+            }
         } catch (error) {
-            const detail = redactReadFailure(error);
+            const
+                detail = redactReadFailure(error),
+                failed = {reason: 'handoff-read-failed'};
 
             console.warn(`[fleet] golden path handoff read failed: ${detail ?? 'no legible error'}`);
 
-            return projectSandmanHandoff({reason: 'handoff-read-failed'})
+            return {
+                handoff: projectSandmanHandoff(failed),
+                focus  : projectFocusHandoff(failed)
+            }
         }
     };
 
@@ -234,9 +299,10 @@ export function createFleetGoldenPathSource({getComputedRoute, getRemPipelineSta
          * `capability` (`wired` when the operation served a validated route, `degraded` when it
          * answered with a typed reason, `unavailable` when the read itself failed); the admission
          * and the REM counts ride beside it so the pane can say current / last known good /
-         * withheld with the producer's own timestamps. The independent `handoff` field carries
-         * the complete human-readable Golden Path section plus the handoff file's update/freshness
-         * metadata; its staleness never changes the route capability.
+         * withheld with the producer's own timestamps. The independent `handoff` and `focus`
+         * fields carry the producer-owned `## Computed Golden Path (Strategic Recommendation)` and
+         * `## Focus (v1)` sections plus the handoff file's update/freshness metadata; their
+         * staleness never changes the route capability.
          * @param {Object} [params] Reserved; the verb takes no caller input today.
          * @returns {Promise<Object>}
          */
@@ -248,9 +314,9 @@ export function createFleetGoldenPathSource({getComputedRoute, getRemPipelineSta
             }
 
             const
-                capturedAt                = new Date(nowMs).toISOString(),
-                [routeAxis, rem, handoff] = await Promise.all([readRouteAxis(nowMs), readRemAxis(), readHandoffAxis()]),
-                admission                 = routeAxis.admission;
+                capturedAt                         = new Date(nowMs).toISOString(),
+                [routeAxis, rem, {handoff, focus}] = await Promise.all([readRouteAxis(nowMs), readRemAxis(), readHandoffAxes()]),
+                admission                          = routeAxis.admission;
 
             return {
                 capability: {
@@ -269,13 +335,22 @@ export function createFleetGoldenPathSource({getComputedRoute, getRemPipelineSta
                     stale       : handoff.stale,
                     reason      : handoff.reason
                 },
+                focus: {
+                    markdown    : focus.markdown,
+                    mtimeMs     : focus.mtimeMs,
+                    ageMs       : focus.ageMs,
+                    staleAfterMs: focus.staleAfterMs,
+                    stale       : focus.stale,
+                    reason      : focus.reason
+                },
                 sources: {
                     route    : {state: routeAxis.state, reason: routeAxis.reason, ...(routeAxis.detail ? {detail: routeAxis.detail} : {})},
                     admission: admission
                         ? {state: admission.admitted ? 'current' : 'withheld', reason: admission.reasonCode ?? null}
                         : {state: 'unavailable', reason: routeAxis.reason},
                     rem    : {state: rem.state, reason: rem.reason, ...(rem.detail ? {detail: rem.detail} : {})},
-                    handoff: {state: handoff.state, reason: handoff.reason}
+                    handoff: {state: handoff.state, reason: handoff.reason},
+                    focus  : {state: focus.state, reason: focus.reason}
                 }
             }
         }

@@ -284,9 +284,65 @@ test.describe('fleet golden path source — the envelope', () => {
             reason      : 'handoff-section-not-found'
         });
         expect(envelope.sources.handoff).toEqual({state: 'degraded', reason: 'handoff-section-not-found'});
+        expect(envelope.focus).toEqual({
+            markdown    : null,
+            mtimeMs     : NOW_MS - 120_000,
+            ageMs       : 120_000,
+            staleAfterMs: 3_600_000,
+            stale       : false,
+            reason      : 'handoff-section-not-found'
+        });
+        expect(envelope.sources.focus).toEqual({state: 'degraded', reason: 'handoff-section-not-found'});
         expect(envelope.capability.state).toBe('wired');
         expect(envelope.route.items).toHaveLength(2);
         expect(envelope.rem.undigested).toBe(990)
+    });
+
+    test('the ## Focus (v1) section is extracted up to the next ## heading and carried on envelope.focus (#957)', async () => {
+        const focusSection = [
+            '## Focus (v1)',
+            '',
+            '<!-- focus.v1 · captured: 2026-09-25T14:30:00.000Z -->',
+            '',
+            'v1: 1 of 5 rows passed · ready 1 · unknown 3 · failed 0 · missing: r2:ready, r3:unknown, r4:unknown, r5:unknown',
+            'views: swept 1 · needing love 0 · unassessed: stream, memories',
+            '',
+            '### v1',
+            '- row 1 (#364): Row state: passed — packaged smoke green',
+            '- row 2 (#501): Row state: ready — 6/6 leaves closed',
+            '',
+            '### what waits for the operator\'s word',
+            '- decisions outside pull requests: not covered by this read',
+            ''
+        ].join('\n');
+
+        const contentWithFocus = [
+            '# Sandman handoff',
+            '',
+            focusSection.trimEnd(),
+            '## Computed Golden Path (Strategic Recommendation)',
+            '',
+            'Captured at: 2026-09-25 14:30 UTC',
+            '',
+            '1. **issue:19220**: Score 8.06'
+        ].join('\n');
+
+        const input    = handoffResult({content: contentWithFocus}),
+              envelope = await createSource({getSandmanHandoff: async () => input}).readGoldenPath();
+
+        expect(envelope.focus).toEqual({
+            markdown    : focusSection,
+            mtimeMs     : input.mtimeMs,
+            ageMs       : input.ageMs,
+            staleAfterMs: input.staleAfterMs,
+            stale       : false,
+            reason      : null
+        });
+        expect(envelope.focus.markdown).toContain('## Focus (v1)');
+        expect(envelope.focus.markdown).toContain('### v1');
+        expect(envelope.focus.markdown).not.toContain('Computed Golden Path');
+        expect(envelope.sources.focus).toEqual({state: 'available', reason: null});
+        expect(envelope.sources.handoff).toEqual({state: 'available', reason: null})
     });
 
     test('unavailable and throwing handoff reads are explicit, and an older caller without the operation keeps route and REM alive', async () => {

@@ -3429,6 +3429,46 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect('configSnapshot' in GoldenPathSynthesizer).toBe(false);
         expect('createConfigSnapshot' in GoldenPathSynthesizer).toBe(false);
     });
+
+    test('synthesizeGoldenPath writes ## Focus (v1) both when inputs are absent and when a host-edge reader is supplied (#957)', async () => {
+        const originalGetGraphCollection   = StorageRouter.getGraphCollection;
+        const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
+        const originalEmbedText            = TextEmbeddingService.embedText;
+        const now                          = new Date('2026-10-28T03:00:00.000Z');
+
+        StorageRouter.getGraphCollection   = async () => ({query: async () => ({ids: [[]], distances: [[]]})});
+        StorageRouter.getSummaryCollection = async () => ({get: async () => ({documents: ['mock document']})});
+        TextEmbeddingService.embedText     = async () => buildConfiguredEmbedding();
+
+        try {
+            await GoldenPathSynthesizer.synthesizeGoldenPath({repoEnrichmentEnabled: false, now});
+            const cloudHandoff = fs.readFileSync(tmpHandoffFile, 'utf-8');
+
+            expect(cloudHandoff).toContain('## Focus (v1)');
+            expect(cloudHandoff).toContain('<!-- focus.v1 · captured: 2026-10-28 03:00 UTC -->');
+            expect(cloudHandoff).toContain('v1: 0 of 5 rows passed · ready 0 · unknown 5 · failed 0');
+
+            const focusV1Reader = Synthesizer.createFocusV1HostEdgeReader({
+                readV1Rows: async () => ({
+                    rows: [{row: 1, epic: '#501', rawLine: 'Row state: ready — 6/6 leaves closed · plan: smoke'}]
+                })
+            });
+
+            await GoldenPathSynthesizer.synthesizeGoldenPath({
+                repoEnrichmentEnabled: false,
+                focusV1Reader,
+                now
+            });
+            const hostHandoff = fs.readFileSync(tmpHandoffFile, 'utf-8');
+
+            expect(hostHandoff).toContain('v1: 0 of 5 rows passed · ready 1 · unknown 4 · failed 0');
+            expect(hostHandoff).toContain('- row 1 (#501): Row state: ready — 6/6 leaves closed');
+        } finally {
+            StorageRouter.getGraphCollection   = originalGetGraphCollection;
+            StorageRouter.getSummaryCollection = originalGetSummaryCollection;
+            TextEmbeddingService.embedText     = originalEmbedText;
+        }
+    });
 });
 
 test.describe('GoldenPathSynthesizer.hasCrossFamilyReview — author family from canonical @identity', () => {

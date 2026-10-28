@@ -97,6 +97,14 @@ import {
     renderWorkGraphStallFindingsSection as renderIssueFocusWorkGraphStallFindingsSection,
     scoreCurrentFocusIssue as scoreIssueFocusCurrentIssue
 } from './issueFocusSections.mjs';
+import {
+    createFocusV1HostEdgeReader,
+    evaluateViewReceipts      as evaluateFocusV1ViewReceipts,
+    makeRefusingFocusV1Reader,
+    parseRowStateLine         as parseFocusV1RowStateLine,
+    projectPublicBusinessRows as projectFocusV1PublicBusinessRows,
+    renderFocusV1Section      as renderFocusV1HandoffSection
+} from './focusV1Section.mjs';
 
 // Candidate admission widens complete prefixes, but an unhealthy proxy must never drive
 // exponentially large ANN requests or SQLite placeholder lists. The collection count narrows the
@@ -1003,6 +1011,62 @@ class GoldenPathSynthesizer extends Base {
     }
 
     /**
+     * @summary Delegates Focus (v1) host-edge reader construction to `focusV1Section.mjs`.
+     * @param {Object} [options={}] See `focusV1Section.createFocusV1HostEdgeReader`.
+     * @returns {{readFocusV1Inputs: Function}}
+     */
+    static createFocusV1HostEdgeReader(options = {}) {
+        return createFocusV1HostEdgeReader(options)
+    }
+
+    /**
+     * @summary Delegates Focus (v1) refusing cloud-plane reader construction to `focusV1Section.mjs`.
+     * @param {String} [reason] Deployment boundary explanation.
+     * @returns {Function}
+     */
+    static makeRefusingFocusV1Reader(reason) {
+        return makeRefusingFocusV1Reader(reason)
+    }
+
+    /**
+     * @summary Delegates raw `Row state:` line parsing to `focusV1Section.mjs`.
+     * @param {String} text Raw Epic body or `Row state:` line.
+     * @returns {{found: Boolean, rawLine: (String|null), stateWord: String}}
+     */
+    static parseRowStateLine(text) {
+        return parseFocusV1RowStateLine(text)
+    }
+
+    /**
+     * @summary Delegates installed-over-source view receipt evaluation to `focusV1Section.mjs`.
+     * @param {Object[]} [receipts=[]] View receipts on the views epic.
+     * @param {Object} [options={}]
+     * @returns {{swept: Number, needingLove: Number, unassessed: String[], byKey: Object<String, Object>}}
+     */
+    static evaluateViewReceipts(receipts = [], options = {}) {
+        return evaluateFocusV1ViewReceipts(receipts, options)
+    }
+
+    /**
+     * @summary Delegates `publicFlag` business-row projection to `focusV1Section.mjs`.
+     * @param {Object[]} [rows=[]] Candidate metric or outbound ledger rows.
+     * @param {Object} [options={}]
+     * @returns {Object[]}
+     */
+    static projectPublicBusinessRows(rows = [], options = {}) {
+        return projectFocusV1PublicBusinessRows(rows, options)
+    }
+
+    /**
+     * @summary Delegates `## Focus (v1)` handoff section rendering to `focusV1Section.mjs`.
+     * @param {Object} [options={}] See `focusV1Section.renderFocusV1Section`.
+     * @returns {String}
+     */
+    static renderFocusV1Section(options = {}) {
+        return renderFocusV1HandoffSection(options)
+    }
+
+    /**
      * Resolves the issue corpus directory from an explicit argument or the materialized
      * corpus projection when enabled, refusing when neither is configured.
      * @param {String} [issuesDir] Explicit issue corpus directory override.
@@ -1034,6 +1098,8 @@ class GoldenPathSynthesizer extends Base {
      * @param {Boolean} [options.repoEnrichmentEnabled=true] `false` skips the repository-backed handoff
      * sections: current focus, stale assignments, silent threads, open-PR cycle state, stall findings and the backlog.
      * @param {String}  [options.issuesDir] The issue corpus; the materialized projection when it is enabled.
+     * @param {Object}  [options.focusV1Inputs] Optional pre-read Focus (v1) block inputs.
+     * @param {Function|{readFocusV1Inputs: Function}} [options.focusV1Reader] Optional host-edge reader supplying Focus (v1) inputs.
      * @param {Date}    [options.now=new Date()] Pass capture time (injected).
      * @param {String}  [options.runId=randomUUID()] The pass's run id (injected).
      * @returns {Promise<Object>} A `withheld` outcome, a failure outcome, or the completed pass with its `computedRoute`.
@@ -1041,6 +1107,8 @@ class GoldenPathSynthesizer extends Base {
     async synthesizeGoldenPath({
         repoEnrichmentEnabled = true,
         issuesDir,
+        focusV1Inputs,
+        focusV1Reader,
         now   = new Date(),
         runId = randomUUID()
     } = {}) {
@@ -1793,6 +1861,29 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
             logger.warn(`[GoldenPathSynthesizer] Consolidation Gaps section render failed: ${e.message}`);
         }
 
+        // --- Focus (v1): v1 rows, views, reach and outbound, what waits for the operator's word ---
+        let focusV1Append = '';
+        try {
+            const capturedAt    = now instanceof Date ? now : new Date(now);
+            let   resolvedFocus = focusV1Inputs && typeof focusV1Inputs === 'object' ? focusV1Inputs : null;
+
+            if (!resolvedFocus && typeof focusV1Reader === 'function') {
+                resolvedFocus = await focusV1Reader({now: capturedAt});
+            } else if (!resolvedFocus && typeof focusV1Reader?.readFocusV1Inputs === 'function') {
+                resolvedFocus = await focusV1Reader.readFocusV1Inputs({now: capturedAt});
+            }
+
+            focusV1Append = '\n' + this.constructor.renderFocusV1Section({
+                ...(resolvedFocus && typeof resolvedFocus === 'object' ? resolvedFocus : {}),
+                capturedAt
+            });
+        } catch (e) {
+            logger.warn(`[GoldenPathSynthesizer] Focus (v1) section render failed: ${e.message}`);
+            focusV1Append = '\n' + this.constructor.renderFocusV1Section({
+                capturedAt: now instanceof Date ? now : new Date(now)
+            });
+        }
+
         // --- Current Release / Incident Focus ---
         let currentFocusAppend = '';
         if (repoEnrichmentEnabled) {
@@ -1923,7 +2014,7 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
             }
         }
 
-        handoffContent += `${currentFocusAppend}${staleAssignmentAppend}${silentThreadsAppend}${prStateAppend}${stallFindingsAppend}${backlogAppend}${markdownAppend}`;
+        handoffContent += `${focusV1Append}${currentFocusAppend}${staleAssignmentAppend}${silentThreadsAppend}${prStateAppend}${stallFindingsAppend}${backlogAppend}${markdownAppend}`;
 
         // Close the pre-read admission TOCTOU window at the publish boundary. The writer stamps its
         // projecting receipt before touching either live store; if that fingerprint moved during
