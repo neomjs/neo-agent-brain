@@ -1049,7 +1049,7 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
         ]);
     });
 
-    test('Golden Path runner supplies a Focus (v1) host-edge reader on the host plane and a refusing boundary reader on the cloud plane (#957)', async () => {
+    test('Golden Path runner omits in-plane gh readers by default and supplies a refusing boundary reader when repoEnrichmentEnabled is false (#957)', async () => {
         const synthesizerCalls = [];
 
         for (const goldenPathRepoEnrichmentEnabled of [true, false]) {
@@ -1081,7 +1081,7 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
 
         expect(synthesizerCalls).toHaveLength(2);
         expect(synthesizerCalls[0].repoEnrichmentEnabled).toBe(true);
-        expect(typeof synthesizerCalls[0].focusV1Reader?.readFocusV1Inputs).toBe('function');
+        expect(synthesizerCalls[0].focusV1Reader).toBeUndefined();
 
         expect(synthesizerCalls[1].repoEnrichmentEnabled).toBe(false);
         expect(typeof synthesizerCalls[1].focusV1Reader?.readFocusV1Inputs).toBe('function');

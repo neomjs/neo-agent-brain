@@ -710,7 +710,7 @@ async function runGoldenPathTask({taskName, reason, services, repoEnrichmentEnab
         const refusing = repoEnrichmentEnabled === false
             ? makeRefusingFocusV1Reader(CLOUD_PLANE_HOST_EDGE_ABSENT_REASON)
             : null;
-        const focusV1Reader = repoEnrichmentEnabled === false
+        const focusV1Reader = refusing
             ? createFocusV1HostEdgeReader({
                 readV1Rows       : refusing,
                 readViewsReceipts: refusing,
@@ -718,10 +718,10 @@ async function runGoldenPathTask({taskName, reason, services, repoEnrichmentEnab
                 readOperatorWord : refusing,
                 absentReason     : CLOUD_PLANE_HOST_EDGE_ABSENT_REASON
             })
-            : createFocusV1HostEdgeReader({useDefaultHostReaders: true});
+            : undefined;
         const outcome = await services.goldenPathSynthesizer.synthesizeGoldenPath({
             repoEnrichmentEnabled,
-            focusV1Reader
+            ...(focusV1Reader ? {focusV1Reader} : {})
         });
 
         if (outcome?.status === 'failed' || outcome?.wroteHandoff !== true) {
