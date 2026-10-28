@@ -14,6 +14,9 @@ setup({
 });
 
 import {Buffer}       from 'node:buffer';
+import fs             from 'node:fs';
+import os             from 'node:os';
+import path           from 'node:path';
 import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
@@ -22,10 +25,14 @@ import {
     FOCUS_V1_HEADING,
     FOCUS_V1_MARKER,
     FOCUS_V1_MAX_BYTES,
+    FOCUS_V1_PROJECTION_SCHEMA,
     FOCUS_V1_READER_ABSENT_REASON,
     FOCUS_V1_VIEW_KEYS,
     FocusSourceUnavailable,
+    collectAndWriteFocusV1Projection,
+    collectFocusV1Projection,
     createFocusV1HostEdgeReader,
+    createFocusV1ProjectionReader,
     evaluateCandidateMergeReadiness,
     evaluateViewReceipts,
     formatOperatorCandidateLine,
@@ -36,7 +43,8 @@ import {
     parseViewsReceiptComments,
     projectPublicBusinessRows,
     renderFocusV1Section,
-    summarizeV1Rows
+    summarizeV1Rows,
+    writeFocusV1Projection
 } from '../../../../../../ai/services/graph/focusV1Section.mjs';
 import {
     headingToSectionSlug,
@@ -549,18 +557,18 @@ test.describe('focusV1Section — Sandman handoff ## Focus (v1) producer contrac
             }
             if (args[0] === 'pr' && args[1] === 'view' && args[2] === '228') {
                 return JSON.stringify({
-                    number           : 228,
-                    url              : 'https://github.com/neomjs/neo-agent-skills/pull/228',
-                    state            : 'OPEN',
-                    mergedAt         : null,
-                    isDraft          : false,
-                    mergeStateStatus : 'CLEAN',
-                    headRefOid       : '6c41b1d',
-                    author           : {login: 'neo-gemini-pro'},
-                    body             : 'Authored by Julia (`@neo-gemini-pro`, Gemini 4 Argon, Antigravity).',
-                    reviewDecision   : 'APPROVED',
-                    reviewRequests   : [],
-                    reviews          : [
+                    number          : 228,
+                    url             : 'https://github.com/neomjs/neo-agent-skills/pull/228',
+                    state           : 'OPEN',
+                    mergedAt        : null,
+                    isDraft         : false,
+                    mergeStateStatus: 'CLEAN',
+                    headRefOid      : '6c41b1d',
+                    author          : {login: 'neo-gemini-pro'},
+                    body            : 'Authored by Julia (`@neo-gemini-pro`, Gemini 4 Argon, Antigravity).',
+                    reviewDecision  : 'APPROVED',
+                    reviewRequests  : [],
+                    reviews         : [
                         {
                             author     : {login: 'neo-opus-grace'},
                             state      : 'APPROVED',
@@ -598,5 +606,96 @@ test.describe('focusV1Section — Sandman handoff ## Focus (v1) producer contrac
             verdict     : 'unavailable',
             missingInput: 'merge-readiness fields incomplete'
         });
+    });
+
+    test('host-edge collectAndWriteFocusV1Projection writes a dated focus-v1-projection.v1 file and createFocusV1ProjectionReader consumes it in-plane without spawning gh (#1333)', async () => {
+        const tmpDir         = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-v1-projection-'));
+        const projectionPath = path.join(tmpDir, 'focus-v1-projection.json');
+
+        try {
+            // 1. Missing projection file degrades all 4 blocks to unknown with the absent reason
+            const missingReader = createFocusV1ProjectionReader({projectionPath});
+            const missingInputs = await missingReader.readFocusV1Inputs({now: new Date(CAPTURED_AT)});
+
+            expect(missingInputs.v1).toEqual({
+                status     : 'unknown',
+                unavailable: true,
+                reason     : FOCUS_V1_READER_ABSENT_REASON
+            });
+            expect(missingInputs.views.status).toBe('unknown');
+            expect(missingInputs.reach.status).toBe('unknown');
+            expect(missingInputs.operatorWord.status).toBe('unknown');
+
+            // 2. Host-edge collector writes the dated projection (including a partial-block failure + private ledger filtering)
+            const {projection} = await collectAndWriteFocusV1Projection({
+                projectionPath,
+                now       : new Date(CAPTURED_AT),
+                readV1Rows: async () => ({
+                    asOf     : CAPTURED_AT,
+                    candidate: '0.2.0+host-edge',
+                    rows     : [
+                        {row: 1, epic: '#351', rawLine: 'Row state: passed · 2026-10-20'},
+                        {row: 2, epic: '#477', rawLine: 'Row state: ready · 2026-10-21'}
+                    ]
+                }),
+                readViewsReceipts: async () => ({
+                    asOf     : CAPTURED_AT,
+                    candidate: '0.2.0+host-edge',
+                    receipts : [
+                        {viewKey: 'fleet', needsLove: 'none observed', buildClass: 'installed 0.2.0', observedAt: CAPTURED_AT}
+                    ]
+                }),
+                readReachTraffic: async () => {
+                    throw new Error('traffic API 403 with token ghp_secretHostEdgeToken999');
+                },
+                readOperatorWord: async () => ({
+                    asOf      : CAPTURED_AT,
+                    candidates: [
+                        {repo: 'neomjs/neo-agent-brain', number: 1332, approvedAt: CAPTURED_AT, projection: {verdict: 'ready'}}
+                    ]
+                }),
+                readPrivateLedger: async () => ({
+                    rows: [
+                        {id: 'business-goal-9', type: 'BUSINESS_GOAL', publicFlag: true, category: 'secret_goal', value: 100},
+                        {id: 'metric-2', type: 'BUSINESS_METRIC', publicFlag: true, category: 'blog_Articles', count: 4, target: 'secret'}
+                    ]
+                })
+            });
+
+            expect(projection.schemaVersion).toBe(FOCUS_V1_PROJECTION_SCHEMA);
+            expect(fs.existsSync(projectionPath)).toBe(true);
+
+            // 3. Container-plane projection reader consumes the written projection without spawning gh
+            const inPlaneReader = createFocusV1ProjectionReader({projectionPath});
+            const inPlaneInputs = await inPlaneReader.readFocusV1Inputs({now: new Date('2026-10-28T06:00:00Z')});
+            const rendered      = renderFocusV1Section(inPlaneInputs);
+
+            expect(inPlaneInputs.capturedAt).toBe('2026-10-28 03:00 UTC');
+            expect(inPlaneInputs.v1.status).toBe('ok');
+            expect(inPlaneInputs.views.status).toBe('ok');
+            // Traffic failed on the host edge, so github reach degrades with sanitized reason while publicRows survive
+            expect(inPlaneInputs.reach.status).toBe('ok');
+            expect(inPlaneInputs.reach.reason).toContain('[REDACTED]');
+            expect(inPlaneInputs.reach.reason).not.toContain('ghp_secretHostEdgeToken999');
+            expect(inPlaneInputs.reach.publicRows).toEqual([{category: 'blog_Articles', publicFlag: true, count: 4}]);
+            expect(inPlaneInputs.operatorWord.status).toBe('ok');
+
+            expect(rendered).toContain('v1: 1 of 5 rows passed · ready 1 · unknown 3 · failed 0');
+            expect(rendered).toContain('views: swept 1 · needing love 0');
+            expect(rendered).toContain('- outbound `blog_Articles`: count: 4');
+            expect(rendered).not.toContain('secret_goal');
+            expect(rendered).toContain('- neomjs/neo-agent-brain#1332 · approved 2026-10-28T03:00:00.000Z · `ready for the operator` (projection: ready)');
+
+            // 4. Corrupt or wrong-schema projection file degrades cleanly to unknown
+            fs.writeFileSync(projectionPath, JSON.stringify({schemaVersion: 'wrong.v0'}), 'utf8');
+            const badSchemaInputs = await inPlaneReader.readFocusV1Inputs({now: new Date(CAPTURED_AT)});
+            expect(badSchemaInputs.v1).toEqual({
+                status     : 'unknown',
+                unavailable: true,
+                reason     : 'unsupported Focus (v1) projection schema: wrong.v0'
+            });
+        } finally {
+            fs.rmSync(tmpDir, {recursive: true, force: true});
+        }
     });
 });

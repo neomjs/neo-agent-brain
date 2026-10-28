@@ -3103,3 +3103,69 @@ test.describe('observeProviderLaneShapeBeforeFirstPoll — boot-boundary gate an
         orchestrator.destroy()
     });
 });
+
+test.describe('#1333 — Focus (v1) host-edge projection refresh is gated to host-edge authority and goldenPathMs cadence', () => {
+    test('refreshFocusV1ProjectionIfDue runs on host-edge, writes focus-v1-projection.v1, respects cadence, and refuses on container-plane', async () => {
+        const tmpDir         = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-focus-v1-'));
+        const projectionPath = path.join(tmpDir, 'focus-v1-projection.json');
+        let   collectedCount = 0;
+
+        try {
+            const containerOrchestrator = createTestOrchestrator({
+                authorityProfile    : ORCHESTRATOR_AUTHORITY_PROFILE.containerPlane,
+                goldenPathIntervalMs: 1_000
+            });
+            containerOrchestrator.initFocusV1ProjectionCollector();
+            expect(containerOrchestrator.focusV1ProjectionCollector).toBeNull();
+            expect(await containerOrchestrator.refreshFocusV1ProjectionIfDue(10_000)).toBeNull();
+            containerOrchestrator.destroy();
+
+            const hostOrchestrator = createTestOrchestrator({
+                authorityProfile    : ORCHESTRATOR_AUTHORITY_PROFILE.hostEdge,
+                goldenPathIntervalMs: 1_000
+            });
+            Object.defineProperty(hostOrchestrator, 'focusV1ProjectionPath', {
+                get         : () => projectionPath,
+                configurable: true
+            });
+            hostOrchestrator.initFocusV1ProjectionCollector();
+            expect(typeof hostOrchestrator.focusV1ProjectionCollector).toBe('function');
+
+            hostOrchestrator.focusV1ProjectionCollector = async () => {
+                collectedCount++;
+                return {
+                    schemaVersion: 'focus-v1-projection.v1',
+                    capturedAt   : '2026-10-28T05:00:00Z',
+                    candidate    : 'host-edge',
+                    v1           : {status: 'ok', rows: []},
+                    views        : {status: 'ok', receipts: []},
+                    reach        : {status: 'ok', publicRows: []},
+                    operatorWord : {status: 'ok', candidates: []}
+                };
+            };
+
+            const first = await hostOrchestrator.refreshFocusV1ProjectionIfDue(10_000);
+            expect(first?.projectionPath).toBe(projectionPath);
+            expect(collectedCount).toBe(1);
+            expect(JSON.parse(fs.readFileSync(projectionPath, 'utf8')).schemaVersion).toBe('focus-v1-projection.v1');
+
+            // Within cadence -> no-op
+            expect(await hostOrchestrator.refreshFocusV1ProjectionIfDue(10_500)).toBeNull();
+            expect(collectedCount).toBe(1);
+
+            // Elapsed cadence -> refreshes again
+            const second = await hostOrchestrator.refreshFocusV1ProjectionIfDue(11_500);
+            expect(second?.projectionPath).toBe(projectionPath);
+            expect(collectedCount).toBe(2);
+
+            // Authority lease lost -> fenced
+            hostOrchestrator.authorityLeaseLost = true;
+            expect(await hostOrchestrator.refreshFocusV1ProjectionIfDue(20_000)).toBeNull();
+            expect(collectedCount).toBe(2);
+
+            hostOrchestrator.destroy();
+        } finally {
+            fs.removeSync(tmpDir);
+        }
+    });
+});

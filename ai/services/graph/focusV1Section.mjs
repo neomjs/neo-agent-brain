@@ -1,5 +1,7 @@
 import {Buffer}             from 'node:buffer';
 import {execFile}           from 'node:child_process';
+import fs                   from 'node:fs';
+import path                 from 'node:path';
 import {promisify}          from 'node:util';
 import {validateMergeReady} from '../../scripts/lifecycle/validateMergeReady.mjs';
 import {
@@ -56,6 +58,26 @@ export const FOCUS_V1_HEADING = '## Focus (v1)';
  * @type {String}
  */
 export const FOCUS_V1_MARKER = 'focus.v1';
+
+/**
+ * Schema version identifier for the host-edge dated Focus (v1) JSON projection.
+ * @type {String}
+ */
+export const FOCUS_V1_PROJECTION_SCHEMA = 'focus-v1-projection.v1';
+
+/**
+ * Default filename for the admitted host-edge Focus (v1) projection written beside the handoff file.
+ * @type {String}
+ */
+export const FOCUS_V1_PROJECTION_FILENAME = 'focus-v1-projection.json';
+
+/**
+ * Default reason emitted when the in-plane projection reader finds no projection file at the
+ * configured `focusV1ProjectionPath`.
+ * @type {String}
+ */
+export const FOCUS_V1_PROJECTION_ABSENT_REASON =
+    'no Focus (v1) host-edge projection file found at the configured projection path';
 
 /**
  * Hard UTF-8 byte ceiling on the rendered `## Focus (v1)` section so session-start handoff reads
@@ -1094,6 +1116,234 @@ export function createFocusV1HostEdgeReader({
                 traffic        : reachTraffic.status === 'ok' ? reachTraffic.traffic ?? null : null,
                 stars          : reachTraffic.status === 'ok' ? reachTraffic.stars ?? null : null,
                 forks          : reachTraffic.status === 'ok' ? reachTraffic.forks ?? null : null,
+                publicRows
+            },
+            operatorWord
+        };
+    };
+
+    return {readFocusV1Inputs};
+}
+
+/**
+ * @summary Executes the host-edge Focus (v1) block readers (`createDefaultFocusV1HostEdgeReaders`
+ * unless custom block readers are injected) and returns a dated, schema-versioned
+ * `focus-v1-projection.v1` payload suitable for crossing into the container plane without any
+ * GitHub credential.
+ * @param {Object} [options={}]
+ * @param {Date|String|Number} [options.now=new Date()] Capture timestamp.
+ * @param {String} [options.candidate='host-edge'] Candidate label stamped on the projection envelope.
+ * @param {String|String[]} [options.allowlist] Optional public business-row category allowlist.
+ * @returns {Promise<Object>} Dated `focus-v1-projection.v1` object.
+ */
+export async function collectFocusV1Projection({
+    now       = new Date(),
+    candidate = 'host-edge',
+    allowlist,
+    ...readerOptions
+} = {}) {
+    const reader = createFocusV1HostEdgeReader({
+        useDefaultHostReaders: true,
+        ...readerOptions
+    });
+    const inputs = await reader.readFocusV1Inputs({now, allowlist});
+
+    return {
+        schemaVersion: FOCUS_V1_PROJECTION_SCHEMA,
+        capturedAt   : inputs.capturedAt,
+        candidate,
+        v1           : inputs.v1,
+        views        : inputs.views,
+        reach        : inputs.reach,
+        operatorWord : inputs.operatorWord
+    };
+}
+
+/**
+ * @summary Atomically writes a validated `focus-v1-projection.v1` payload to `projectionPath` so
+ * container-plane consumers never observe a partially written file.
+ * @param {Object} options
+ * @param {String} options.projectionPath Destination file path.
+ * @param {Object} options.projection Dated `focus-v1-projection.v1` object.
+ * @returns {{projectionPath: String, projection: Object}}
+ */
+export function writeFocusV1Projection({projectionPath, projection} = {}) {
+    if (typeof projectionPath !== 'string' || !projectionPath.trim()) {
+        throw new Error('writeFocusV1Projection requires a non-empty projectionPath');
+    }
+    if (!projection || typeof projection !== 'object' || projection.schemaVersion !== FOCUS_V1_PROJECTION_SCHEMA) {
+        throw new Error(`writeFocusV1Projection requires a ${FOCUS_V1_PROJECTION_SCHEMA} payload`);
+    }
+
+    const resolvedPath = path.resolve(projectionPath);
+    const parentDir    = path.dirname(resolvedPath);
+    const tmpPath      = `${resolvedPath}.${process.pid}.${Date.now()}.tmp`;
+
+    fs.mkdirSync(parentDir, {recursive: true});
+    fs.writeFileSync(tmpPath, `${JSON.stringify(projection, null, 2)}\n`, 'utf8');
+    fs.renameSync(tmpPath, resolvedPath);
+
+    return {
+        projectionPath: resolvedPath,
+        projection
+    };
+}
+
+/**
+ * @summary Host-edge convenience runner that collects the Focus (v1) dated projection via `gh` and
+ * writes it atomically to `projectionPath`.
+ * @param {Object} [options={}]
+ * @param {String} options.projectionPath Destination file path for the dated projection JSON.
+ * @returns {Promise<{projectionPath: String, projection: Object}>}
+ */
+export async function collectAndWriteFocusV1Projection({projectionPath, ...options} = {}) {
+    const projection = await collectFocusV1Projection(options);
+    return writeFocusV1Projection({projectionPath, projection});
+}
+
+/**
+ * @summary Normalizes a single projected block from an admitted `focus-v1-projection.v1` file,
+ * preserving per-block `status: 'unknown'` and `reason` when an upstream host-edge block failed.
+ * @param {Object} block Raw block from the parsed projection file.
+ * @param {String} fallbackReason Fallback reason when the block is absent or unknown.
+ * @returns {Object}
+ */
+function normalizeProjectedBlock(block, fallbackReason) {
+    if (!block || typeof block !== 'object' || Array.isArray(block)) {
+        return {
+            status     : 'unknown',
+            unavailable: true,
+            reason     : sanitizeReaderReason(fallbackReason)
+        };
+    }
+
+    if (block.status === 'unknown') {
+        return {
+            ...block,
+            status: 'unknown',
+            reason: sanitizeReaderReason(block.reason || fallbackReason)
+        };
+    }
+
+    return {
+        ...block,
+        status: 'ok'
+    };
+}
+
+/**
+ * @summary Creates the container-plane Focus (v1) projection reader that consumes the admitted
+ * `focus-v1-projection.v1` JSON file written by the host edge without spawning `gh` or holding any
+ * GitHub credential inside the container plane.
+ *
+ * When `projectionPath` is unconfigured, missing on disk, unreadable JSON, or carries an
+ * unsupported `schemaVersion`, all four blocks degrade cleanly to `status: 'unknown'` with an
+ * explicit single-line `reason`.
+ *
+ * @param {Object} [options={}]
+ * @param {String} [options.projectionPath] Path to the admitted `focus-v1-projection.v1` JSON file.
+ * @param {String} [options.absentReason=FOCUS_V1_PROJECTION_ABSENT_REASON] Reason recorded when the projection file is absent.
+ * @returns {{readFocusV1Inputs: Function}}
+ */
+export function createFocusV1ProjectionReader({
+    projectionPath,
+    absentReason = FOCUS_V1_READER_ABSENT_REASON
+} = {}) {
+    const buildUnavailableInputs = (asOf, reason) => {
+        const cleanReason = sanitizeReaderReason(reason || absentReason);
+        return {
+            capturedAt: asOf,
+            v1        : {status: 'unknown', unavailable: true, reason: cleanReason},
+            views     : {status: 'unknown', unavailable: true, reason: cleanReason},
+            reach     : {
+                status         : 'unknown',
+                unavailable    : true,
+                reason         : cleanReason,
+                asOf,
+                candidate      : 'host-edge',
+                sourceUrl      : 'https://github.com/neomjs/neo/graphs/traffic',
+                falsifyingQuery: 'gh api repos/neomjs/neo/traffic/views',
+                traffic        : null,
+                stars          : null,
+                forks          : null,
+                publicRows     : []
+            },
+            operatorWord: {status: 'unknown', unavailable: true, reason: cleanReason}
+        };
+    };
+
+    const readFocusV1Inputs = async ({now = new Date(), allowlist} = {}) => {
+        const fallbackAsOf = formatGoldenPathCapturedAt(now);
+
+        if (typeof projectionPath !== 'string' || !projectionPath.trim()) {
+            return buildUnavailableInputs(fallbackAsOf, absentReason);
+        }
+
+        let rawText;
+        try {
+            rawText = fs.readFileSync(projectionPath, 'utf8');
+        } catch (error) {
+            if (error?.code === 'ENOENT') {
+                return buildUnavailableInputs(fallbackAsOf, absentReason);
+            }
+            return buildUnavailableInputs(fallbackAsOf, sanitizeReaderReason(error));
+        }
+
+        let parsed;
+        try {
+            parsed = JSON.parse(rawText);
+        } catch (error) {
+            return buildUnavailableInputs(
+                fallbackAsOf,
+                `invalid Focus (v1) projection JSON (${sanitizeReaderReason(error)})`
+            );
+        }
+
+        if (!parsed || typeof parsed !== 'object' || parsed.schemaVersion !== FOCUS_V1_PROJECTION_SCHEMA) {
+            const foundSchema = parsed && typeof parsed === 'object' && parsed.schemaVersion
+                ? String(parsed.schemaVersion)
+                : 'missing';
+            return buildUnavailableInputs(
+                fallbackAsOf,
+                `unsupported Focus (v1) projection schema: ${foundSchema}`
+            );
+        }
+
+        const capturedAt   = typeof parsed.capturedAt === 'string' && parsed.capturedAt.trim()
+            ? formatGoldenPathCapturedAt(parsed.capturedAt)
+            : fallbackAsOf;
+        const v1           = normalizeProjectedBlock(parsed.v1, absentReason);
+        const views        = normalizeProjectedBlock(parsed.views, absentReason);
+        const operatorWord = normalizeProjectedBlock(parsed.operatorWord, absentReason);
+        const rawReach     = parsed.reach && typeof parsed.reach === 'object' ? parsed.reach : {};
+        const publicRows   = projectPublicBusinessRows(
+            Array.isArray(rawReach.publicRows)
+                ? rawReach.publicRows
+                : Array.isArray(rawReach.ledgerRows)
+                    ? rawReach.ledgerRows
+                    : [],
+            {allowlist: allowlist ?? rawReach.allowlist}
+        );
+        const hasTraffic   = rawReach.status !== 'unknown' && (
+            rawReach.traffic != null || rawReach.stars != null || rawReach.forks != null
+        );
+        const reachStatus  = hasTraffic || publicRows.length > 0 ? 'ok' : 'unknown';
+
+        return {
+            capturedAt,
+            v1,
+            views,
+            reach: {
+                status         : reachStatus,
+                reason         : hasTraffic ? null : sanitizeReaderReason(rawReach.reason || absentReason),
+                asOf           : rawReach.asOf || capturedAt,
+                candidate      : rawReach.candidate || parsed.candidate || 'host-edge',
+                sourceUrl      : rawReach.sourceUrl || 'https://github.com/neomjs/neo/graphs/traffic',
+                falsifyingQuery: rawReach.falsifyingQuery || 'gh api repos/neomjs/neo/traffic/views',
+                traffic        : hasTraffic ? rawReach.traffic ?? null : null,
+                stars          : hasTraffic ? rawReach.stars ?? null : null,
+                forks          : hasTraffic ? rawReach.forks ?? null : null,
+                ...(rawReach.outboundReason ? {outboundReason: sanitizeReaderReason(rawReach.outboundReason)} : {}),
                 publicRows
             },
             operatorWord

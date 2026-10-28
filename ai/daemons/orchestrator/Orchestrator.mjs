@@ -66,13 +66,17 @@ import {
     appendRestoreTargetSetTransition,
     readRestoreTargetSetTransitions
 } from '../../services/memory-core/helpers/restoreTargetSetStateStore.mjs';
-import {buildDataIntegrityCoverageDiagnosis}          from './services/dataIntegrityCoverageDiagnosis.mjs';
-import {assembleDataIntegrityEvidence}                from './services/dataIntegrityEvidenceAssembler.mjs';
-import {createLiveDimensionConsistencyGatherer}       from './services/dimensionConsistencyGatherer.mjs';
-import {createRemDigestion}                           from '../../../src/evolution/createRemDigestion.mjs';
-import ConceptDiscoveryService                        from '../../services/ingestion/ConceptDiscoveryService.mjs';
-import SwarmHeartbeatService                          from './services/SwarmHeartbeatService.mjs';
-import GoldenPathSynthesizer                          from '../../services/graph/GoldenPathSynthesizer.mjs';
+import {buildDataIntegrityCoverageDiagnosis}    from './services/dataIntegrityCoverageDiagnosis.mjs';
+import {assembleDataIntegrityEvidence}          from './services/dataIntegrityEvidenceAssembler.mjs';
+import {createLiveDimensionConsistencyGatherer} from './services/dimensionConsistencyGatherer.mjs';
+import {createRemDigestion}                     from '../../../src/evolution/createRemDigestion.mjs';
+import ConceptDiscoveryService                  from '../../services/ingestion/ConceptDiscoveryService.mjs';
+import SwarmHeartbeatService                    from './services/SwarmHeartbeatService.mjs';
+import GoldenPathSynthesizer                    from '../../services/graph/GoldenPathSynthesizer.mjs';
+import {
+    collectFocusV1Projection,
+    writeFocusV1Projection
+} from '../../services/graph/focusV1Section.mjs';
 import {getDueTask as tenantRepoSyncGetDueTaskImport} from './scheduling/tenantRepoSync.mjs';
 import {TASK_REGISTRY}                                from './scheduling/registry.mjs';
 import {
@@ -308,6 +312,9 @@ export class Orchestrator extends Base {
     primaryDevSyncRootsConfig     = null
     maintenanceDeferralLogKeys    = null
     embeddingAuthorizationFlight  = null
+    focusV1ProjectionCollector    = null
+    focusV1ProjectionFlight       = null
+    lastFocusV1ProjectionAt       = 0
     heavyMaintenanceTaskNames     = DEFAULT_HEAVY_MAINTENANCE_TASK_NAMES
     goldenPathDependencyTaskNames = DEFAULT_GOLDEN_PATH_DEPENDENCY_TASK_NAMES
 
@@ -1402,6 +1409,7 @@ export class Orchestrator extends Base {
     }
     get swarmHeartbeatEnabled()          { return resolveDeploymentEnabled('swarmHeartbeatEnabled');          }
     get goldenPathRepoEnrichmentEnabled(){ return resolveDeploymentEnabled('goldenPathRepoEnrichmentEnabled');}
+    get focusV1ProjectionPath()          { return memoryCoreConfig.focusV1ProjectionPath;                     }
     get graphLogCompactionEnabled()      { return AiConfig.orchestrator.graphLogCompaction.enabled;      }
     // local-only lane: the aggregation reads checkout-bound sources (resources/content, git log origin/dev,
     // learn/agentos/decisions), so it is disabled in a cloud profile. Runs only when the deployment allows it
@@ -1704,6 +1712,7 @@ export class Orchestrator extends Base {
         });
 
         this.initBootIdentitySource();
+        this.initFocusV1ProjectionCollector();
 
         this.processSupervisorService = {};
         this.deploymentRuntimeAccessService = {};
@@ -1853,6 +1862,71 @@ export class Orchestrator extends Base {
             freshnessConfig: {designedCadenceMs: this.remConsolidationWatchdogThresholdMs, marginMs: 0},
             bootAt         : Date.now() - Math.round(process.uptime() * 1000)
         });
+    }
+
+    /**
+     * @summary Initializes the host-edge Focus (v1) projection collector once at daemon start when
+     * this role owns host-edge work (`primary-dev-sync` authority class). Kept null until `start()`
+     * so un-started prototype or test instances never spawn `gh` during generic `poll()` probes.
+     * @returns {void}
+     */
+    initFocusV1ProjectionCollector() {
+        if (!this.isTaskAuthorityOwned('primary-dev-sync')) {
+            return;
+        }
+        this.focusV1ProjectionCollector = collectFocusV1Projection;
+    }
+
+    /**
+     * @summary Collects the GitHub-sourced Focus (v1) blocks on the host edge and writes the
+     * admitted `focus-v1-projection.v1` JSON artifact for the container plane to consume without
+     * holding GitHub credentials.
+     *
+     * Gated to the host-edge role (`isTaskAuthorityOwned('primary-dev-sync')`), single-flight,
+     * cadence-bounded by `goldenPathMs`, and write-fenced by `!this.authorityLeaseLost`.
+     * @param {Number} [now=Date.now()] Current epoch milliseconds.
+     * @returns {Promise<Object|null>}
+     */
+    async refreshFocusV1ProjectionIfDue(now = Date.now()) {
+        if (
+            !this.isTaskAuthorityOwned('primary-dev-sync') ||
+            !this.goldenPathRepoEnrichmentEnabled ||
+            this.authorityLeaseLost ||
+            this.focusV1ProjectionFlight ||
+            typeof this.focusV1ProjectionCollector !== 'function'
+        ) {
+            return null;
+        }
+
+        const intervalMs = AiConfig.orchestrator.intervals.goldenPathMs;
+        if (!(intervalMs > 0)) {
+            return null;
+        }
+
+        if (this.lastFocusV1ProjectionAt > 0 && (now - this.lastFocusV1ProjectionAt) < intervalMs) {
+            return null;
+        }
+
+        const projectionPath = this.focusV1ProjectionPath;
+        if (typeof projectionPath !== 'string' || !projectionPath.trim()) {
+            return null;
+        }
+
+        this.focusV1ProjectionFlight = (async () => {
+            const projection = await this.focusV1ProjectionCollector({now: new Date(now)});
+            if (this.authorityLeaseLost) {
+                return null;
+            }
+            const written = writeFocusV1Projection({projectionPath, projection});
+            this.lastFocusV1ProjectionAt = now;
+            return written;
+        })();
+
+        try {
+            return await this.focusV1ProjectionFlight;
+        } finally {
+            this.focusV1ProjectionFlight = null;
+        }
     }
 
     /**
@@ -2129,6 +2203,11 @@ export class Orchestrator extends Base {
         if (this.isTaskAuthorityOwned('tenant-repo-sync') && this.tenantRepoSyncEnabled && !this.authorityLeaseLost) {
             this.runEmbeddingAuthorizationProofIfNeeded()
                 .catch(error => this.writeLog('ERROR', `[Orchestrator] Embedding authorization proof failed: ${error.message}`));
+        }
+
+        if (this.isTaskAuthorityOwned('primary-dev-sync') && this.goldenPathRepoEnrichmentEnabled && !this.authorityLeaseLost) {
+            this.refreshFocusV1ProjectionIfDue(now)
+                .catch(error => this.writeLog('ERROR', `[Orchestrator] Focus (v1) host-edge projection failed: ${error.message}`));
         }
 
         if (this.isPolling) {

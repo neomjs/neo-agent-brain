@@ -1,10 +1,10 @@
-import {test, expect}  from '@playwright/test';
-import fs              from 'fs-extra';
-import os              from 'node:os';
-import path            from 'node:path';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
-import {TASK_REGISTRY} from '../../../../../../../ai/daemons/orchestrator/scheduling/registry.mjs';
+import {test, expect}                   from '@playwright/test';
+import fs                               from 'fs-extra';
+import os                               from 'node:os';
+import path                             from 'node:path';
+import Neo                              from 'neo.mjs/src/Neo.mjs';
+import * as core                        from 'neo.mjs/src/core/_export.mjs';
+import {TASK_REGISTRY}                  from '../../../../../../../ai/daemons/orchestrator/scheduling/registry.mjs';
 import {MaintenanceBackpressureService} from '../../../../../../../ai/daemons/orchestrator/services/MaintenanceBackpressureService.mjs';
 import {registerWaiterSync}             from '../../../../../../../ai/daemons/orchestrator/services/heavyMaintenanceWaiterLedger.mjs';
 import {
@@ -1049,54 +1049,102 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
         ]);
     });
 
-    test('Golden Path runner omits in-plane gh readers by default and supplies a refusing boundary reader when repoEnrichmentEnabled is false (#957)', async () => {
+    test('Golden Path runner wires the dated projection reader when repoEnrichmentEnabled is true and supplies a refusing boundary reader when repoEnrichmentEnabled is false (#957 / #1333)', async () => {
+        const tmpDir           = fs.mkdtempSync(path.join(os.tmpdir(), 'gp-focus-proj-'));
+        const projectionPath   = path.join(tmpDir, 'focus-v1-projection.json');
         const synthesizerCalls = [];
 
-        for (const goldenPathRepoEnrichmentEnabled of [true, false]) {
-            runSchedulingPipeline({
-                registry: [
-                    makeCandidateDescriptor({
-                        taskName        : 'golden-path',
-                        executionKind   : 'in-process-async',
-                        maintenanceClass: 'graph-dependent'
-                    })
-                ],
-                context : makeContext(),
-                services: makeServices({
-                    goldenPathSynthesizer: {
-                        synthesizeGoldenPath(options) {
-                            synthesizerCalls.push(options);
-                            return Promise.resolve({
-                                status      : 'completed',
-                                wroteHandoff: true
-                            });
+        try {
+            fs.writeFileSync(projectionPath, JSON.stringify({
+                schemaVersion: 'focus-v1-projection.v1',
+                capturedAt   : '2026-10-28T03:00:00Z',
+                candidate    : 'host-edge',
+                v1           : {
+                    status: 'ok',
+                    asOf  : '2026-10-28T03:00:00Z',
+                    rows  : [{row: 1, epic: '#351', rawLine: 'Row state: passed · 2026-10-20'}]
+                },
+                views: {
+                    status  : 'ok',
+                    asOf    : '2026-10-28T03:00:00Z',
+                    receipts: [{viewKey: 'fleet', needsLove: 'none observed', buildClass: 'installed 0.2.0', observedAt: '2026-10-28T03:00:00Z'}]
+                },
+                reach: {
+                    status    : 'ok',
+                    asOf      : '2026-10-28T03:00:00Z',
+                    traffic   : {views: 500, uniques: 80},
+                    stars     : 1510,
+                    forks     : 215,
+                    publicRows: []
+                },
+                operatorWord: {
+                    status    : 'ok',
+                    asOf      : '2026-10-28T03:00:00Z',
+                    candidates: [{repo: 'neomjs/neo-agent-brain', number: 1332, projection: {verdict: 'ready'}}]
+                }
+            }), 'utf8');
+
+            for (const goldenPathRepoEnrichmentEnabled of [true, false]) {
+                runSchedulingPipeline({
+                    registry: [
+                        makeCandidateDescriptor({
+                            taskName        : 'golden-path',
+                            executionKind   : 'in-process-async',
+                            maintenanceClass: 'graph-dependent'
+                        })
+                    ],
+                    context : makeContext(),
+                    services: makeServices({
+                        goldenPathSynthesizer: {
+                            synthesizeGoldenPath(options) {
+                                synthesizerCalls.push(options);
+                                return Promise.resolve({
+                                    status      : 'completed',
+                                    wroteHandoff: true
+                                });
+                            }
                         }
-                    }
-                }),
-                runtime: makeRuntime({goldenPathRepoEnrichmentEnabled})
+                    }),
+                    runtime: makeRuntime({
+                        goldenPathRepoEnrichmentEnabled,
+                        focusV1ProjectionPath: projectionPath
+                    })
+                });
+
+                await Promise.resolve();
+            }
+
+            expect(synthesizerCalls).toHaveLength(2);
+            expect(synthesizerCalls[0].repoEnrichmentEnabled).toBe(true);
+            expect(typeof synthesizerCalls[0].focusV1Reader?.readFocusV1Inputs).toBe('function');
+
+            const hostProjectedInputs = await synthesizerCalls[0].focusV1Reader.readFocusV1Inputs({
+                now: new Date('2026-10-28T03:05:00.000Z')
             });
 
-            await Promise.resolve();
+            expect(hostProjectedInputs.v1.status).toBe('ok');
+            expect(hostProjectedInputs.v1.rows).toHaveLength(1);
+            expect(hostProjectedInputs.views.status).toBe('ok');
+            expect(hostProjectedInputs.reach.status).toBe('ok');
+            expect(hostProjectedInputs.operatorWord.status).toBe('ok');
+
+            expect(synthesizerCalls[1].repoEnrichmentEnabled).toBe(false);
+            expect(typeof synthesizerCalls[1].focusV1Reader?.readFocusV1Inputs).toBe('function');
+
+            const cloudFocusInputs = await synthesizerCalls[1].focusV1Reader.readFocusV1Inputs({
+                now: new Date('2026-10-28T03:00:00.000Z')
+            });
+
+            expect(cloudFocusInputs.v1).toEqual({
+                status     : 'unknown',
+                unavailable: true,
+                reason     : 'GitHub focus inputs require a host-edge reader or admitted dated projection; this cloud-plane pass has neither'
+            });
+            expect(cloudFocusInputs.views.status).toBe('unknown');
+            expect(cloudFocusInputs.operatorWord.status).toBe('unknown');
+        } finally {
+            fs.removeSync(tmpDir);
         }
-
-        expect(synthesizerCalls).toHaveLength(2);
-        expect(synthesizerCalls[0].repoEnrichmentEnabled).toBe(true);
-        expect(synthesizerCalls[0].focusV1Reader).toBeUndefined();
-
-        expect(synthesizerCalls[1].repoEnrichmentEnabled).toBe(false);
-        expect(typeof synthesizerCalls[1].focusV1Reader?.readFocusV1Inputs).toBe('function');
-
-        const cloudFocusInputs = await synthesizerCalls[1].focusV1Reader.readFocusV1Inputs({
-            now: new Date('2026-10-28T03:00:00.000Z')
-        });
-
-        expect(cloudFocusInputs.v1).toEqual({
-            status     : 'unknown',
-            unavailable: true,
-            reason     : 'GitHub focus inputs require a host-edge reader or admitted dated projection; this cloud-plane pass has neither'
-        });
-        expect(cloudFocusInputs.views.status).toBe('unknown');
-        expect(cloudFocusInputs.operatorWord.status).toBe('unknown');
     });
 
     test('records Golden Path missing handoff write proof as failure (#13985)', async () => {

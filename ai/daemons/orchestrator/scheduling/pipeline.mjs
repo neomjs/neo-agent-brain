@@ -10,6 +10,7 @@ import {WAITER_ENTRY_STALE_AFTER_MS}                           from '../services
 import {
     CLOUD_PLANE_HOST_EDGE_ABSENT_REASON,
     createFocusV1HostEdgeReader,
+    createFocusV1ProjectionReader,
     makeRefusingFocusV1Reader
 } from '../../../services/graph/focusV1Section.mjs';
 
@@ -199,6 +200,7 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
         },
         runtime: {
             goldenPathRepoEnrichmentEnabled: orchestrator.goldenPathRepoEnrichmentEnabled,
+            focusV1ProjectionPath          : orchestrator.focusV1ProjectionPath,
             primaryDevSyncRootsConfig      : orchestrator.primaryDevSyncRootsConfig,
             // Same resolution that feeds `enables.kbSync` above. The scheduled task and the
             // `primary-dev-sync` cascade are two convergent routes to one destructive-by-default
@@ -546,7 +548,8 @@ function executeInProcessCandidate({candidate, activeHeavyTask, services, runtim
             taskName,
             reason,
             services,
-            repoEnrichmentEnabled: runtime.goldenPathRepoEnrichmentEnabled
+            repoEnrichmentEnabled: runtime.goldenPathRepoEnrichmentEnabled,
+            focusV1ProjectionPath: runtime.focusV1ProjectionPath
         }),
         'swarm-heartbeat': (taskName, reason) => runSwarmHeartbeatTask({taskName, reason, services})
     };
@@ -703,7 +706,7 @@ async function runMessageConceptHarvestTask({taskName, reason, services}) {
     }
 }
 
-async function runGoldenPathTask({taskName, reason, services, repoEnrichmentEnabled}) {
+async function runGoldenPathTask({taskName, reason, services, repoEnrichmentEnabled, focusV1ProjectionPath}) {
     services.taskStateService.markStarted(taskName, reason);
     services.healthService?.recordTaskOutcome?.(taskName, 'running', { reason, startedAt: new Date().toISOString() });
     try {
@@ -718,10 +721,12 @@ async function runGoldenPathTask({taskName, reason, services, repoEnrichmentEnab
                 readOperatorWord : refusing,
                 absentReason     : CLOUD_PLANE_HOST_EDGE_ABSENT_REASON
             })
-            : undefined;
+            : createFocusV1ProjectionReader({
+                projectionPath: focusV1ProjectionPath
+            });
         const outcome = await services.goldenPathSynthesizer.synthesizeGoldenPath({
             repoEnrichmentEnabled,
-            ...(focusV1Reader ? {focusV1Reader} : {})
+            focusV1Reader
         });
 
         if (outcome?.status === 'failed' || outcome?.wroteHandoff !== true) {
