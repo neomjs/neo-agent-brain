@@ -19,6 +19,7 @@ import * as core              from 'neo.mjs/src/core/_export.mjs';
 import fs                     from 'fs';
 import path                   from 'path';
 import {BATCH_SCHEMA_VERSION} from '../../../../../../ai/services/memory-core/communityBatchContract.mjs';
+import {bindCommunityCoverage} from '../../../../../../ai/services/memory-core/communityCoverageContract.mjs';
 import RequestContextService  from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 
 /**
@@ -620,6 +621,48 @@ test.describe('Neo.ai.services.memory-core.CommunityBatchAdmissionService', () =
         expect(remote.digest).toBe(local.digest);
         expect(remote.health).toMatchObject({ready: true, code: 'COMMUNITY_SOURCE_READY'});
         expect(remote.health.lastReceipt.receiptId).toBe(local.receipt.receiptId);
+    });
+
+    test('hosted bound coverage preserves retained replay before validating changed and fresh declarations', async () => {
+        const id = activeSource(), envelope = hostedEnvelope();
+        envelope.batch.providerStateSchemaVersion = 'github-issue-state.v1';
+        envelope.batch.coverage = bindCommunityCoverage('issues', {fromBasis: 'genesis', toBasis: 'end', complete: true});
+        SourceRegistryService.localSubjectId = null;
+        const push = value => RequestContextService.run({userId: SUBJECT}, () => AdmissionService.admitHostedBatch(value));
+        const readCheckpoint = () => RequestContextService.run({userId: SUBJECT}, () => AdmissionService.getCheckpoint(id, 'issues'));
+        const accepted = await push(envelope);
+        expect(accepted.status).toBe('accepted');
+        expect(accepted.receipt.coverage).toEqual(envelope.batch.coverage);
+        const checkpoint = await readCheckpoint();
+        const stored = admissionDb.prepare('SELECT receipt_id, digest, coverage FROM mc_community_batch_receipt WHERE receipt_id = ?');
+        const before = stored.get(accepted.receipt.receiptId);
+        expect(checkpoint.checkpointVersion).toBe(1);
+
+        const exact = await push(envelope);
+        expect(exact).toMatchObject({status: 'idempotent', digest: accepted.digest});
+        expect(exact.receipt).toEqual(accepted.receipt);
+        expect(await readCheckpoint()).toEqual(checkpoint);
+        expect(receiptCount()).toBe(1);
+
+        const changedKnown = structuredClone(envelope);
+        changedKnown.batch.coverage.providerLimitations.pop();
+        const changed = await push(changedKnown);
+        expect(changed).toMatchObject({status: 'conflict', reason: 'DIGEST_MISMATCH'});
+        expect(changed.digest).not.toBe(accepted.digest);
+        expect(changed.receipt).toEqual(accepted.receipt);
+        expect(await readCheckpoint()).toEqual(checkpoint);
+        expect(stored.get(accepted.receipt.receiptId)).toEqual(before);
+        expect(receiptCount()).toBe(1);
+
+        const freshInvalid = structuredClone(changedKnown);
+        freshInvalid.batch.batchId = 'fresh-invalid-hosted-declarations';
+        freshInvalid.batch.baseCheckpointVersion = checkpoint.checkpointVersion;
+        freshInvalid.batch.baseInventoryHash = checkpoint.inventoryHash;
+        expect(await push(freshInvalid)).toMatchObject({status: 'conflict', reason: 'COVERAGE_INVALID',
+            errors: expect.arrayContaining(['COVERAGE_LIMITATIONS_MISMATCH'])});
+        expect(await readCheckpoint()).toEqual(checkpoint);
+        expect(stored.get(accepted.receipt.receiptId)).toEqual(before);
+        expect(receiptCount()).toBe(1);
     });
 
     test('hosted callers cannot stamp authority fields and a refusal writes nothing', async () => {

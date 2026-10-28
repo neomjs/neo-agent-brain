@@ -14,6 +14,7 @@ import {
 import {resolveTemporalWindow}            from './helpers/temporalWindowResolver.mjs';
 import {buildTemporalBirdViewEnvelope}    from './helpers/temporalBirdViewEnvelope.mjs';
 import {SUPPORTED_GITHUB_COMMUNITY_KINDS} from '../github-workflow/community/communityContentKinds.mjs';
+import {COMMUNITY_RESOURCE_FAMILIES, validateCommunityCoverage} from './communityCoverageContract.mjs';
 import {
     acquireStewardWakeLease,
     ensureStewardWakeLeaseSchema,
@@ -83,8 +84,8 @@ function collectResolvedByEntity(obsRows) {
     return {parentByEntity, stateByEntity}
 }
 
-/** @summary True when an observation or any ancestor in its thread was resolved by a later or contemporaneous terminal close/merge/dismiss without a subsequent reopen. */
-function isObservationResolved(obs, parsedTime, {parentByEntity, stateByEntity}) {
+/** @summary Walks each admitted parent identity once, stopping when a source-owned predicate matches. */
+function matchesAncestor(obs, parentByEntity, predicate) {
     const visited = new Set(),
           queue   = [obs.provider_entity_id, obs.parent_provider_entity_id].filter(Boolean);
 
@@ -93,8 +94,7 @@ function isObservationResolved(obs, parsedTime, {parentByEntity, stateByEntity})
         if (!entityId || visited.has(entityId)) continue;
         visited.add(entityId);
 
-        const state = stateByEntity.get(entityId);
-        if (state?.resolved && state.time >= parsedTime) return true;
+        if (predicate(entityId)) return true;
 
         const parentId = parentByEntity.get(entityId);
         if (parentId && !visited.has(parentId)) {
@@ -103,6 +103,14 @@ function isObservationResolved(obs, parsedTime, {parentByEntity, stateByEntity})
     }
 
     return false
+}
+
+/** @summary True when an observation or ancestor was resolved by a later internal/rostered terminal without a subsequent reopen. */
+function isObservationResolved(obs, parsedTime, {parentByEntity, stateByEntity}) {
+    return matchesAncestor(obs, parentByEntity, entityId => {
+        const state = stateByEntity.get(entityId);
+        return state?.resolved && state.time >= parsedTime
+    })
 }
 
 /** @summary Formats a fixed-width zero-padded monotonic watermark component. */
@@ -372,23 +380,36 @@ class CommunityActivityService extends Base {
         }
     }
 
-    /** @summary Projects source lifecycle and receipt coverage without exposing provider state or arbitrary payloads. */
+    /** @summary Projects lifecycle and snapshot-bound three-family qualification separately from raw receipt completeness. */
     readCoverage({tenantId, ids, snapshot}) {
         const rows = this.db.prepare('SELECT * FROM mc_source_registration WHERE tenant_id = ? ORDER BY source_instance_id').all(tenantId);
 
         return rows.filter(row => !ids || ids.includes(row.source_instance_id)).map(row => {
             const degradedReasons = [],
                   supported       = row.provider === 'github' && row.canonical_provider_host === 'github.com' && row.resource_kind === 'repository',
-                  families        = supported ? ['issues', 'pulls', 'discussions'].map(resourceFamily => {
-                      const receipt  = this.db.prepare(`SELECT receipt_id, coverage FROM mc_community_batch_receipt WHERE tenant_id = ? AND source_instance_id = ? AND resource_family = ? AND admitted_sequence <= ? ORDER BY admitted_sequence DESC LIMIT 1`).get(tenantId, row.source_instance_id, resourceFamily, snapshot),
+                  families        = supported ? COMMUNITY_RESOURCE_FAMILIES.map(resourceFamily => {
+                      const receipt  = this.db.prepare(`SELECT receipt_id, registration_epoch, coverage FROM mc_community_batch_receipt WHERE tenant_id = ? AND source_instance_id = ? AND resource_family = ? AND admitted_sequence <= ? ORDER BY admitted_sequence DESC LIMIT 1`).get(tenantId, row.source_instance_id, resourceFamily, snapshot),
                             evidence = parseEvidence(receipt?.coverage),
-                            complete = evidence?.complete === true && (!evidence.gaps || Array.isArray(evidence.gaps) && evidence.gaps.length === 0);
+                            complete = evidence?.complete === true && (!evidence.gaps || Array.isArray(evidence.gaps) && evidence.gaps.length === 0),
+                            validation = validateCommunityCoverage(evidence, {resourceFamily}),
+                            currentEpoch = receipt?.registration_epoch === row.registration_epoch,
+                            qualified = validation.qualified && currentEpoch;
 
                       if (!complete) degradedReasons.push(receipt ? 'source-coverage-incomplete' : 'source-coverage-unknown');
+                      if (receipt && !validation.qualified) degradedReasons.push(validation.reason);
+                      if (receipt && !currentEpoch) degradedReasons.push('source-coverage-epoch-stale');
 
                       return {resourceFamily, receiptId: receipt?.receipt_id || null, complete,
-                          gapCount: Array.isArray(evidence?.gaps) ? evidence.gaps.length : null}
+                          gapCount: Array.isArray(evidence?.gaps) ? evidence.gaps.length : validation.valid ? 0 : null,
+                          qualified, qualificationReason: qualified ? null : !receipt ? 'source-coverage-unknown'
+                              : !currentEpoch ? 'source-coverage-epoch-stale' : validation.reason,
+                          contract: validation.valid ? {...evidence.contract} : null,
+                          providerLimitations: validation.valid ? evidence.providerLimitations.map(value => ({...value})) : null}
                   }) : [];
+
+            if (new Set(families.filter(family => family.qualified).map(family => family.contract.schemaVersion)).size > 1) {
+                degradedReasons.push('source-coverage-generation-mixed')
+            }
 
             if (!supported) degradedReasons.push('source-unsupported');
             if (row.lifecycle_state !== 'ACTIVE') degradedReasons.push('source-inactive');
@@ -876,6 +897,9 @@ class CommunityActivityService extends Base {
             invalidTimes            = 0,
             claimedExcludedCount    = 0,
             ineligibleExcludedCount = 0,
+            unreviewedActorExcludedCount = 0,
+            historicalSliceCount    = 0,
+            invalidClosureTimes     = 0,
             totalAdmitted           = 0,
             maxClaimRowId           = 0,
             totalClaimCount         = 0,
@@ -908,7 +932,25 @@ class CommunityActivityService extends Base {
                 sourceOldest       = null,
                 sourceInvalidTimes = 0;
 
+            // This is a historical coordinate, not resolution. An unattributed Discussion close
+            // never suppresses attention, and an open snapshot cannot establish a reopen event.
+            const unattributedClosures = new Map();
             for (const obs of obsRows) {
+                if (obs.occurrence_kind !== 'discussion.closed' || isInternalOrRosteredCloser(obs) ||
+                    obs.actor_id && obs.actor_kind !== 'unknown') continue;
+                const time = Date.parse(obs.occurred_at);
+                if (!Number.isFinite(time) || checkJulian.get(obs.occurred_at)?.jd === null) {
+                    invalidClosureTimes++;
+                    continue
+                }
+                const id = obs.provider_entity_id;
+                if (!unattributedClosures.has(id) || time > unattributedClosures.get(id)) unattributedClosures.set(id, time)
+            }
+
+            for (const obs of obsRows) {
+                if (obs.attention_disposition === 'ineligible' && obs.attention_reason === 'actor-kind-not-reviewed-fail-closed') {
+                    unreviewedActorExcludedCount++
+                }
                 const eligibleKind = obs.attention_disposition === 'eligible' && SUPPORTED_GITHUB_COMMUNITY_KINDS.includes(obs.occurrence_kind),
                       deleted      = (obs.absence === 'deleted' && Boolean(parseEvidence(obs.deletion_evidence))) || tombstones.has(obs.provider_entity_id);
 
@@ -939,6 +981,8 @@ class CommunityActivityService extends Base {
 
                 sourceCount++;
                 totalCount++;
+                if (obs.occurrence_kind.startsWith('discussion.') && matchesAncestor(obs, resolvedByEntity.parentByEntity, id =>
+                    unattributedClosures.has(id) && parsedTime <= unattributedClosures.get(id))) historicalSliceCount++;
 
                 const candidate = {occurredAt: obs.occurred_at, parsedTime, id: obs.occurrence_identity};
 
@@ -1007,9 +1051,18 @@ class CommunityActivityService extends Base {
             },
             sources,
             measurement: {
+                population               : 'eligible-admitted',
                 eligibleUnclaimedCount   : totalCount,
                 claimedExcludedCount,
                 ineligibleExcludedCount,
+                unreviewedActorExcludedCount,
+                responseBearingUnreviewedActorExcludedCount: null,
+                historicalSlice: {
+                    basis: 'eligible-unclaimed-discussion-items-at-latest-unattributed-closure',
+                    label: 'latest admitted closure; reopen not observable',
+                    count: invalidClosureTimes > 0 ? null : historicalSliceCount,
+                    invalidClosureTimes
+                },
                 totalAdmittedObservations: totalAdmitted,
                 payloadBytes             : 0,
                 attentionAmplification   : {
@@ -1020,7 +1073,12 @@ class CommunityActivityService extends Base {
             }
         };
 
-        baseEnvelope.measurement.payloadBytes = Buffer.byteLength(JSON.stringify(baseEnvelope), 'utf8');
+        // Include the measurement's own decimal width in the retained JSON-envelope byte count.
+        let bytes = Buffer.byteLength(JSON.stringify(baseEnvelope), 'utf8');
+        while (baseEnvelope.measurement.payloadBytes !== bytes) {
+            baseEnvelope.measurement.payloadBytes = bytes;
+            bytes = Buffer.byteLength(JSON.stringify(baseEnvelope), 'utf8')
+        }
 
         return baseEnvelope
     }

@@ -1,5 +1,6 @@
 import {test, expect}                from '@playwright/test';
 import {reconcileDiscussionActivity} from '../../../../../../../ai/services/github-workflow/community/githubDiscussionReconciliation.mjs';
+import {validateCommunityCoverage} from '../../../../../../../ai/services/memory-core/communityCoverageContract.mjs';
 
 const createdAt = '2026-07-01T10:00:00Z', updatedAt = '2026-07-02T10:00:00Z';
 
@@ -63,9 +64,31 @@ test.describe('Discussion community reconciliation',()=>{
         expect(result.currentEntityInventory).toHaveLength(206);
         expect(f.calls.filter(x=>x[0]==='comments'&&x[1]==='D0').map(x=>x[2])).toEqual([null,'20','40']);
         expect(f.calls.filter(x=>x[0]==='replies'&&x[1]==='D0C0').map(x=>x[2])).toEqual([null,'20','40']);
-        expect(result.coverage.gaps.map(x=>x.axis)).toEqual([
-            'discussion-state-history','discussion-deletions','discussion-child-deletions'
+        expect(result.coverage.complete).toBe(true);
+        expect(result.coverage.gaps).toEqual([]);
+        expect(result.coverage.contract).toEqual({
+            schemaVersion: 'community-coverage.v1', batchSchemaVersion: 'community-activity-batch.v1',
+            resourceFamily: 'discussions', adapterSchemaVersion: 'github-discussion.v1',
+            providerStateSchemaVersion: 'github-discussion-state.v1'
+        });
+        expect(result.coverage.providerLimitations).toEqual([
+            {axis: 'discussion-child-deletions', reason: 'only-visible-deletedAt-or-explicit-provider-evidence'},
+            {axis: 'discussion-deletions', reason: 'github-has-no-exhaustive-discussion-deletion-tombstones'},
+            {axis: 'discussion-state-history', reason: 'github-has-no-discussion-lifecycle-connection'}
         ]);
+        expect(validateCommunityCoverage(result.coverage)).toMatchObject({valid: true, qualified: true});
+    });
+
+    test('obsolete caller suppression cannot erase fixed provider limitations',async()=>{
+        const f = fixture({rootCount:1,commentCount:0,replyCount:0});
+        const result = await reconcileDiscussionActivity(f.seams,{unsupportedHistoryGaps:[]});
+
+        expect(result.coverage.complete).toBe(true);
+        expect(result.coverage.gaps).toEqual([]);
+        expect(result.coverage.providerLimitations.map(item=>item.axis)).toEqual([
+            'discussion-child-deletions','discussion-deletions','discussion-state-history'
+        ]);
+        expect(validateCommunityCoverage(result.coverage)).toMatchObject({valid:true,qualified:true});
     });
 
     test('finds a later reply edit while its closed root updatedAt remains unchanged',async()=>{
@@ -110,6 +133,7 @@ test.describe('Discussion community reconciliation',()=>{
             expect(result.observations).toEqual([]);
             expect(result.coverage.complete).toBe(false);
             expect(result.coverage.gaps.some(g=>g.reason.includes(expected))).toBe(true);
+            expect(validateCommunityCoverage(result.coverage)).toMatchObject({valid:true,qualified:false});
             expect(result.currentInventory).toEqual(['D0']);
         });
     }
@@ -118,7 +142,8 @@ test.describe('Discussion community reconciliation',()=>{
         const f      = fixture({commentCount:0,replyCount:0});
         const result = await reconcileDiscussionActivity(f.seams,{maxRootPages:1});
         expect(result.currentInventory).toEqual(['D0']);
-        expect(result.coverage.gaps).toContainEqual({axis:'discussions',reason:'page-cap'});
+        expect(result.coverage.gaps).toEqual([{axis:'discussions',reason:'page-cap'}]);
+        expect(validateCommunityCoverage(result.coverage)).toMatchObject({valid:true,qualified:false});
         expect(result.observations.some(x=>x.providerEntityId==='D1')).toBe(false);
     });
 

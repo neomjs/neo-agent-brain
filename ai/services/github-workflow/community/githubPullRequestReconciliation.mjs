@@ -1,25 +1,6 @@
 import {GENESIS_BASIS}             from './githubIssueReconciliation.mjs';
 import {pullRequestToObservations} from './githubPullRequestObservations.mjs';
-
-/**
- * @summary Provider-history gaps GitHub cannot currently prove exhaustively. These stay explicit
- * on every production run rather than being mistaken for deletion-free history.
- * @member {Object[]}
- */
-export const UNSUPPORTED_PULL_REQUEST_HISTORY_GAPS = Object.freeze([
-    Object.freeze({
-        axis  : 'comment-deletion-correlation',
-        reason: 'github-comment-deleted-event-omits-deleted-comment-id'
-    }),
-    Object.freeze({
-        axis  : 'review-deletions',
-        reason: 'github-does-not-expose-exhaustive-review-deletion-tombstones'
-    }),
-    Object.freeze({
-        axis  : 'inline-review-comment-deletions',
-        reason: 'github-does-not-expose-exhaustive-inline-review-comment-deletion-tombstones'
-    })
-]);
+import {bindCommunityCoverage} from '../../memory-core/communityCoverageContract.mjs';
 
 /**
  * @summary Normalizes a thrown value without losing non-Error seam failures.
@@ -585,8 +566,8 @@ async function enumerateVerificationCensus(fetchCensusPage) {
  * reviews, inline review comments, their independent revision connections, and provider timeline
  * events. GraphQL comment/review exhaustion and REST two-pass verification are injected from the
  * existing PullRequestHistoryService gold standard; the runner adds all-state root re-enumeration,
- * revision-token verification, root-census verification, metadata-only normalization, and honest
- * unsupported-history gaps.
+ * revision-token verification, root-census verification and metadata-only normalization. Actual
+ * acquisition gaps remain distinct from fixed provider limitations in the persisted coverage contract.
  * @param {Object} seams
  * @param {Function} seams.fetchPullRequestsPage
  * @param {Function} seams.exhaustConversation
@@ -623,9 +604,8 @@ export async function reconcilePullRequestActivity(seams, options={}) {
         maxEditPagesPerEntity          = Infinity
     } = options;
 
-    // Provider-capability gaps are adapter-owned. Callers may cap work honestly, but cannot erase a
-    // permanent unsupported family and manufacture `coverage.complete:true`.
-    const gaps = UNSUPPORTED_PULL_REQUEST_HISTORY_GAPS.map(gap => ({...gap}));
+    // Only actual acquisition failures belong here; the bound contract carries fixed limitations.
+    const gaps = [];
 
     const rootResult   = await enumerateRoots(fetchPullRequestsPage, maxRootPages, gaps),
           candidates   = [],
@@ -824,12 +804,12 @@ export async function reconcilePullRequestActivity(seams, options={}) {
         }
     }
 
-    const coverage = {
+    const coverage = bindCommunityCoverage('pulls', {
         fromBasis: GENESIS_BASIS,
         toBasis  : rootResult.cursor ?? GENESIS_BASIS,
         complete : gaps.length === 0,
         ...(gaps.length ? {gaps} : {})
-    };
+    });
 
     return {
         observations,

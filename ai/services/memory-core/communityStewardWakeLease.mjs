@@ -495,6 +495,8 @@ export function assertCountOnlyWakePayload(
  * @summary Evaluates a tenant/source count projection in shadow mode (`shouldWake: false`, recording
  * vacancy and would-be coalesced count-only wakes) or live mode (`shouldWake: true` when
  * `stewardActivation` and all threshold leaves are configured in `AiConfig`).
+ * Qualified empty demand observes lease vacancy without a wake payload; unavailable counts keep
+ * vacancy, would-wake and payload measurements unknown.
  * @param {Object} params
  * @returns {Object}
  */
@@ -566,9 +568,10 @@ export function evaluateStewardWake({
             }
         }
 
-        if (attentionCounts.status !== 'fresh') {
+        if (!['fresh', 'empty'].includes(attentionCounts.status) ||
+            attentionCounts.status === 'empty' && attentionCounts.count !== 0) {
             return {
-                coverageStatus: attentionCounts.status,
+                coverageStatus: attentionCounts.status === 'empty' ? 'degraded' : attentionCounts.status,
                 leaseScopeKey,
                 mode          : validatedPolicy.mode,
                 notAuthority  : true,
@@ -585,10 +588,17 @@ export function evaluateStewardWake({
                 mode           : validatedPolicy.mode,
                 notAuthority   : true,
                 reason         : 'degraded-unclaimed-count',
-                shadowWouldWake: false,
                 shouldWake     : false
             }
         }
+
+        const leaseActive = Boolean(
+            leaseRow &&
+            leaseRow.state === STEWARD_LEASE_STATES.held &&
+            Number(leaseRow.expires_at) > now &&
+            leaseRow.holder_principal_id
+        );
+        const stewardVacant = !leaseActive;
 
         const minRequiredCount = isPositiveSafeInteger(validatedPolicy.minUnclaimedEligibleCount)
             ? validatedPolicy.minUnclaimedEligibleCount
@@ -602,17 +612,10 @@ export function evaluateStewardWake({
                 notAuthority   : true,
                 reason         : 'below-min-unclaimed-count',
                 shadowWouldWake: false,
+                stewardVacant,
                 shouldWake     : false
             }
         }
-
-        const leaseActive = Boolean(
-            leaseRow &&
-            leaseRow.state === STEWARD_LEASE_STATES.held &&
-            Number(leaseRow.expires_at) > now &&
-            leaseRow.holder_principal_id
-        );
-        const stewardVacant = !leaseActive;
 
         const wakeState = db.prepare(
             'SELECT * FROM mc_community_steward_wake_state WHERE lease_scope_key = ? AND tenant_id = ?'

@@ -14,8 +14,15 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
+import fs             from 'node:fs';
+import * as yaml      from 'js-yaml';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {buildZodSchema} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
+import {
+    COMMUNITY_COVERAGE_BINDING_SCHEMA, COMMUNITY_GAP_ITEM_SCHEMA,
+    bindCommunityCoverage, validateCommunityCoverage, validateCommunityGap
+} from '../../../../../../ai/services/memory-core/communityCoverageContract.mjs';
 import {
     BATCH_SCHEMA_VERSION, MAX_HOSTED_BATCH_BYTES, MAX_HOSTED_OBSERVATIONS, MAX_PROVIDER_STATE_BYTES,
     canonicalBatchDigest, carriesCredentialMaterial, validateBatch, validateHostedEnvelope,
@@ -65,6 +72,21 @@ test.describe('community-activity-batch.v1 contract', () => {
             batch: authorityFreeBatch,
             ...over
         }
+    };
+
+    const openApiDocument = yaml.load(fs.readFileSync(
+        new URL('../../../../../../ai/mcp/server/memory-core/openapi.yaml', import.meta.url), 'utf8'
+    ));
+    const hostedOperation = Object.values(openApiDocument.paths).flatMap(Object.values)
+        .find(operation => operation.operationId === 'admit_community_batch');
+    const hostedSchema = buildZodSchema(openApiDocument, hostedOperation);
+
+    const envelopeWithGap = gap => {
+        const envelope = hostedEnvelope();
+
+        envelope.batch.coverage = {fromBasis: 'c1', toBasis: 'c9', complete: false, gaps: [gap]};
+
+        return envelope
     };
 
     // ------------------------------------------------------------------ the batch digest ordering
@@ -194,6 +216,149 @@ test.describe('community-activity-batch.v1 contract', () => {
     });
 
     // ------------------------------------------------------------------ hosted authority + volume boundary
+
+    test('hosted gap items use the complete shared closed definition without schema drift', () => {
+        expect(openApiDocument.components.schemas.CommunityCoverageGap).toEqual(COMMUNITY_GAP_ITEM_SCHEMA);
+        expect(openApiDocument.components.schemas.HostedCommunityCoverage.properties.gaps.items)
+            .toEqual({$ref: '#/components/schemas/CommunityCoverageGap'});
+    });
+
+    test('hosted and public coverage bindings preserve the full catalogue-derived schema', () => {
+        expect(openApiDocument.components.schemas.CommunityCoverageContract).toEqual(COMMUNITY_COVERAGE_BINDING_SCHEMA);
+
+        const {nullable, ...publicBinding} = openApiDocument.components.schemas.CommunityFamilyCoverage.properties.contract;
+        expect(nullable).toBe(true);
+        expect(publicBinding).toEqual(COMMUNITY_COVERAGE_BINDING_SCHEMA);
+    });
+
+    test('prototype property names are unrecognized coverage families without throwing', () => {
+        for (const resourceFamily of ['constructor', '__proto__']) {
+            const coverage = bindCommunityCoverage('issues', {fromBasis: 'genesis', toBasis: 'end', complete: true});
+            coverage.contract.resourceFamily = resourceFamily;
+            let result;
+
+            expect(() => { result = validateCommunityCoverage(coverage) }).not.toThrow();
+            expect(result).toMatchObject({valid: false, qualified: false, errors: ['COVERAGE_CONTRACT_UNRECOGNIZED']});
+        }
+    });
+
+    test('null gaps and contradictory acquisition claims cannot qualify a bound declaration', () => {
+        const complete = bindCommunityCoverage('issues', {fromBasis: 'genesis', toBasis: 'end', complete: true});
+        expect(validateCommunityCoverage(complete)).toMatchObject({valid: true, qualified: true});
+
+        for (const [coverage, error] of [
+            [{...complete, gaps: null}, 'COVERAGE_GAPS_NOT_AN_ARRAY'],
+            [{...complete, gaps: [{axis: 'comments', issueId: 'I_1'}]}, 'COVERAGE_ACQUISITION_CONTRADICTION'],
+            [{...complete, fromBasis: 'resume-cursor'}, 'COVERAGE_WINDOW_NOT_EXHAUSTIVE']
+        ]) {
+            expect(validateCommunityCoverage(coverage)).toMatchObject({
+                valid: false, qualified: false, errors: expect.arrayContaining([error])
+            });
+        }
+
+        const suffix = bindCommunityCoverage('issues', {fromBasis: 'resume-cursor', toBasis: 'end', complete: true});
+        expect(suffix).toMatchObject({complete: false, gaps: [{axis: 'root-traversal', reason: 'not-from-beginning'}]});
+        expect(validateCommunityCoverage(suffix)).toMatchObject({valid: true, qualified: false});
+    });
+
+    test('a provider declaration must retain the exact required limitation set', () => {
+        const complete = bindCommunityCoverage('issues', {fromBasis: 'genesis', toBasis: 'end', complete: true}),
+              declarations = complete.providerLimitations;
+
+        for (const providerLimitations of [
+            declarations.slice(0, -1),
+            [declarations[0], declarations[0], declarations[2]],
+            [...declarations, {axis: 'unrecognized-history', reason: 'not-in-contract'}]
+        ]) {
+            expect(validateCommunityCoverage({...complete, providerLimitations})).toMatchObject({
+                valid: false, qualified: false, errors: expect.arrayContaining(['COVERAGE_LIMITATIONS_MISMATCH'])
+            });
+        }
+    });
+
+    test('producer gap evidence survives neutral validation and compiled hosted parsing unchanged', () => {
+        const gaps = [
+            {axis: 'issues', afterCursor: null},
+            {axis: 'issues', afterCursor: 'ISSUES_1'},
+            {axis: 'comments', issueId: 'I_1'},
+            {axis: 'timeline', issueId: 'I_1'},
+            {axis: 'inventory-access', providerEntityId: 'I_hidden'},
+            {axis: 'pull-requests', afterCursor: null, reason: 'page-cap'},
+            {axis: 'pull-requests', afterCursor: 'ROOT_1', reason: 'page-cap'},
+            {axis: 'pull-request-census', reason: 'root-count-mismatch', expected: 2, fetched: 1},
+            {axis: 'pull-request-census', reason: 'root-count-mismatch', expected: 2.5, fetched: 0},
+            {axis: 'content-edits', pullRequestId: 'PR_1', providerEntityId: 'C_1', reason: 'page-cap'},
+            {axis: 'discussion-conversation', discussionId: 'D_1', reason: 'page-cap'},
+            {axis: 'review-deletions', reason: 'github-does-not-expose-exhaustive-review-deletion-tombstones'},
+            {axis: 'discussion-state-history', reason: 'github-has-no-discussion-lifecycle-connection'}
+        ];
+
+        for (const gap of gaps) {
+            const envelope = envelopeWithGap(gap), label = JSON.stringify(gap);
+
+            expect(validateCommunityGap(gap), label).toEqual({valid: true, errors: []});
+            expect(validateHostedEnvelope(envelope), label).toMatchObject({valid: true, errors: []});
+            expect(hostedSchema.parse(envelope).batch.coverage.gaps, label).toEqual([gap]);
+        }
+    });
+
+    test('legacy optional range items remain valid through the hosted boundary', () => {
+        for (const gap of [{fromBasis: 'c4', toBasis: 'c5'}, {fromBasis: 'c4'}, {toBasis: 'c5'}, {}]) {
+            const envelope = envelopeWithGap(gap);
+
+            expect(validateCommunityGap(gap)).toEqual({valid: true, errors: []});
+            expect(validateHostedEnvelope(envelope)).toMatchObject({valid: true, errors: []});
+            expect(hostedSchema.parse(envelope).batch.coverage.gaps).toEqual([gap]);
+        }
+    });
+
+    test('malformed, unknown and prose gap metadata is refused rather than stripped', () => {
+        const gaps = [
+            null, [], 'not-an-object',
+            {axis: 42}, {reason: null}, {afterCursor: 5},
+            {issueId: 1}, {pullRequestId: 1}, {providerEntityId: 1}, {discussionId: 1},
+            {fromBasis: null}, {toBasis: []},
+            {expected: '2'}, {expected: Number.POSITIVE_INFINITY}, {expected: Number.NaN},
+            {fetched: -1}, {fetched: 0.5},
+            {axis: 'issues', extra: 1},
+            {axis: 'issues', body: 'provider prose must not disappear'},
+            {axis: 'issues', title: 'provider prose must not disappear'}
+        ];
+
+        for (const gap of gaps) {
+            const envelope = envelopeWithGap(gap), label = JSON.stringify(gap);
+
+            expect(validateCommunityGap(gap).valid, label).toBe(false);
+            expect(validateHostedEnvelope(envelope).valid, label).toBe(false);
+            expect(hostedSchema.safeParse(envelope).success, label).toBe(false);
+        }
+    });
+
+    test('hosted gap validation leaves the fixed legacy digest and local replay path intact', () => {
+        const legacy = {
+            ...hostedEnvelope().batch,
+            adapterSchemaVersion      : 'github-pull-request.v1',
+            baseCheckpointVersion     : 0,
+            batchId                   : 'fixture-gap',
+            coverage                  : {fromBasis: 'genesis', toBasis: 'c1', complete: true},
+            nextInventoryHash         : null,
+            nextProviderState         : null,
+            observations              : [],
+            providerStateSchemaVersion: 'github-pull-request-state.v1',
+            registrationEpoch         : 1,
+            resourceFamily            : 'pulls',
+            sourceInstanceId          : 'legacy-source'
+        };
+
+        expect(canonicalBatchDigest(legacy))
+            .toBe('sha256:e587a8ae9728064aa1a829051b0719be64092df480943e01990d611da2092db3');
+
+        const legacyGap = {legacyUnknown: 'preserve-replay-structural-path'},
+              replay = {...legacy, coverage: {fromBasis: 'genesis', toBasis: 'c1', complete: false, gaps: [legacyGap]}};
+
+        expect(validateBatch(replay)).toEqual({valid: true, errors: []});
+        expect(validateHostedEnvelope(envelopeWithGap(legacyGap)).valid).toBe(false);
+    });
 
     test('a hosted envelope carries neutral source identity but no tenant, source id, or epoch', () => {
         expect(validateHostedEnvelope(hostedEnvelope())).toMatchObject({valid: true, errors: []});

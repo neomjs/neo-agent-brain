@@ -4,6 +4,7 @@ import {execFileSync}       from 'node:child_process';
 import {createHash}         from 'node:crypto';
 import {performance}        from 'node:perf_hooks';
 import {fileURLToPath, pathToFileURL} from 'node:url';
+import {COMMUNITY_RESOURCE_FAMILIES} from '../../services/memory-core/communityCoverageContract.mjs';
 
 /**
  * @module ai/scripts/maintenance/observeCommunitySteward
@@ -136,7 +137,7 @@ function callerProvenance() {
         platform: process.platform, architecture: process.arch, sourceRevision, sourceDirty, packagedRevision, sourceFiles}
 }
 
-/** @summary Requires exactly the selected ACTIVE source generations and complete admitted-ledger coverage. */
+/** @summary Requires exactly the selected ACTIVE source generations and qualified three-family admitted-ledger coverage. */
 function completeSources(counts, selected) {
     const sources = counts?.sources, coverage = counts?.coverage;
     if (!Array.isArray(sources) || sources.length !== selected.length || new Set(selected).size !== selected.length ||
@@ -144,7 +145,10 @@ function completeSources(counts, selected) {
     return coverage?.basis === 'admitted-ledger' && coverage.degraded === false &&
         coverage.sourceCount === selected.length && coverage.activeSourceCount === selected.length &&
         coverage.completeSourceCount === selected.length && sources.every(source => selected.includes(source.sourceInstanceId) &&
-            Number.isSafeInteger(source.registrationEpoch) && source.registrationEpoch > 0 && source.lifecycleState === 'ACTIVE')
+            Number.isSafeInteger(source.registrationEpoch) && source.registrationEpoch > 0 && source.lifecycleState === 'ACTIVE' &&
+            Array.isArray(source.families) && source.families.length === COMMUNITY_RESOURCE_FAMILIES.length &&
+            new Set(source.families.map(family => family.resourceFamily)).size === COMMUNITY_RESOURCE_FAMILIES.length &&
+            source.families.every(family => COMMUNITY_RESOURCE_FAMILIES.includes(family.resourceFamily) && family.qualified === true))
 }
 
 /**

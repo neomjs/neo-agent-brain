@@ -1,16 +1,6 @@
 import {GENESIS_BASIS}            from './githubIssueReconciliation.mjs';
 import {discussionToObservations} from './githubDiscussionObservations.mjs';
-
-/**
- * @summary GitHub has no exhaustive Discussion lifecycle or deletion-event history. Visible
- * creations/revisions remain useful, but their absence cannot certify complete provider history.
- * @type {Object[]}
- */
-export const UNSUPPORTED_DISCUSSION_HISTORY_GAPS = Object.freeze([
-    Object.freeze({axis: 'discussion-state-history', reason: 'github-has-no-discussion-lifecycle-connection'}),
-    Object.freeze({axis: 'discussion-deletions', reason: 'github-has-no-exhaustive-discussion-deletion-tombstones'}),
-    Object.freeze({axis: 'discussion-child-deletions', reason: 'only-visible-deletedAt-or-explicit-provider-evidence'})
-]);
+import {bindCommunityCoverage} from '../../memory-core/communityCoverageContract.mjs';
 
 /** @summary Normalizes provider and injected failures without losing non-Error values. */
 const reasonOf = error => error instanceof Error ? error.message : String(error);
@@ -133,7 +123,7 @@ export async function reconcileDiscussionActivity(seams, caps={}) {
             throw new Error('DISCUSSION_RECONCILIATION_PAGE_CAP_INVALID')
         }
     }
-    const gaps  = UNSUPPORTED_DISCUSSION_HISTORY_GAPS.map(gap => ({...gap})),
+    const gaps  = [],
           roots = [], entitiesSeen = new Set(), candidates = [], observations = [],
           seen  = node => entitiesSeen.add(node.id),
           gap   = (axis, error, discussionId) => gaps.push({axis, reason: reasonOf(error),
@@ -233,7 +223,7 @@ export async function reconcileDiscussionActivity(seams, caps={}) {
         observations,
         currentInventory      : roots.map(root => root.id),
         currentEntityInventory: [...entitiesSeen],
-        coverage              : {fromBasis: GENESIS_BASIS, toBasis: rootCursor ?? GENESIS_BASIS, complete: gaps.length === 0, gaps},
+        coverage              : bindCommunityCoverage('discussions', {fromBasis: GENESIS_BASIS, toBasis: rootCursor ?? GENESIS_BASIS, complete: gaps.length === 0, gaps}),
         nextProviderState     : {discussionsCursor: rootCursor, rootCount: roots.length}
     }
 }

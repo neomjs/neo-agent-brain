@@ -5706,6 +5706,154 @@ components:
           nullable: true
           additionalProperties: true
 
+    CommunityCoverageGap:
+      type: object
+      additionalProperties: false
+      properties:
+        axis:
+          type: string
+        reason:
+          type: string
+        afterCursor:
+          type: string
+          nullable: true
+        issueId:
+          type: string
+        pullRequestId:
+          type: string
+        providerEntityId:
+          type: string
+        discussionId:
+          type: string
+        expected:
+          type: number
+        fetched:
+          type: integer
+          minimum: 0
+        fromBasis:
+          type: string
+        toBasis:
+          type: string
+
+    CommunityCoverageContract:
+      type: object
+      additionalProperties: false
+      required:
+        - schemaVersion
+        - batchSchemaVersion
+        - resourceFamily
+        - adapterSchemaVersion
+        - providerStateSchemaVersion
+      properties:
+        schemaVersion:
+          type: string
+          enum:
+            - community-coverage.v1
+        batchSchemaVersion:
+          type: string
+          enum:
+            - community-activity-batch.v1
+        resourceFamily:
+          type: string
+          enum:
+            - discussions
+            - issues
+            - pulls
+        adapterSchemaVersion:
+          type: string
+          enum:
+            - github-discussion.v1
+            - github-issue.v1
+            - github-pull-request.v1
+        providerStateSchemaVersion:
+          type: string
+          enum:
+            - github-discussion-state.v1
+            - github-issue-state.v1
+            - github-pull-request-state.v1
+    CommunityProviderLimitation:
+      type: object
+      additionalProperties: false
+      required:
+        - axis
+        - reason
+      properties:
+        axis:
+          type: string
+        reason:
+          type: string
+    CommunityFamilyCoverage:
+      type: object
+      additionalProperties: false
+      required:
+        - resourceFamily
+        - receiptId
+        - complete
+        - gapCount
+        - qualified
+        - qualificationReason
+        - contract
+        - providerLimitations
+      properties:
+        resourceFamily:
+          type: string
+        receiptId:
+          type: string
+          nullable: true
+        complete:
+          type: boolean
+        gapCount:
+          type: integer
+          minimum: 0
+          nullable: true
+        qualified:
+          type: boolean
+        qualificationReason:
+          type: string
+          nullable: true
+        contract:
+          type: object
+          additionalProperties: false
+          required:
+            - schemaVersion
+            - batchSchemaVersion
+            - resourceFamily
+            - adapterSchemaVersion
+            - providerStateSchemaVersion
+          properties:
+            schemaVersion:
+              type: string
+              enum:
+                - community-coverage.v1
+            batchSchemaVersion:
+              type: string
+              enum:
+                - community-activity-batch.v1
+            resourceFamily:
+              type: string
+              enum:
+                - discussions
+                - issues
+                - pulls
+            adapterSchemaVersion:
+              type: string
+              enum:
+                - github-discussion.v1
+                - github-issue.v1
+                - github-pull-request.v1
+            providerStateSchemaVersion:
+              type: string
+              enum:
+                - github-discussion-state.v1
+                - github-issue-state.v1
+                - github-pull-request-state.v1
+          nullable: true
+        providerLimitations:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/CommunityProviderLimitation'
+
     HostedCommunityCoverage:
       type: object
       additionalProperties: false
@@ -5717,16 +5865,16 @@ components:
           type: string
         complete:
           type: boolean
+        contract:
+          $ref: '#/components/schemas/CommunityCoverageContract'
+        providerLimitations:
+          type: array
+          items:
+            $ref: '#/components/schemas/CommunityProviderLimitation'
         gaps:
           type: array
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              fromBasis:
-                type: string
-              toBasis:
-                type: string
+            $ref: '#/components/schemas/CommunityCoverageGap'
 
     HostedCommunityAuthorityFreeBatch:
       type: object
@@ -6012,21 +6160,7 @@ components:
               families:
                 type: array
                 items:
-                  type: object
-                  additionalProperties: false
-                  required: [resourceFamily, receiptId, complete, gapCount]
-                  properties:
-                    resourceFamily:
-                      type: string
-                    receiptId:
-                      type: string
-                      nullable: true
-                    complete:
-                      type: boolean
-                    gapCount:
-                      type: integer
-                      minimum: 0
-                      nullable: true
+                  $ref: '#/components/schemas/CommunityFamilyCoverage'
               degradedReasons:
                 type: array
                 items:
@@ -6387,21 +6521,7 @@ components:
                   families:
                     type: array
                     items:
-                      type: object
-                      additionalProperties: false
-                      required: [resourceFamily, receiptId, complete, gapCount]
-                      properties:
-                        resourceFamily:
-                          type: string
-                        receiptId:
-                          type: string
-                          nullable: true
-                        complete:
-                          type: boolean
-                        gapCount:
-                          type: integer
-                          minimum: 0
-                          nullable: true
+                      $ref: '#/components/schemas/CommunityFamilyCoverage'
                   degradedReasons:
                     type: array
                     items:
@@ -6440,26 +6560,40 @@ components:
               families:
                 type: array
                 items:
-                  type: object
-                  additionalProperties: false
-                  required: [resourceFamily, receiptId, complete, gapCount]
-                  properties:
-                    resourceFamily:
-                      type: string
-                    receiptId:
-                      type: string
-                      nullable: true
-                    complete:
-                      type: boolean
-                    gapCount:
-                      type: integer
-                      minimum: 0
-                      nullable: true
+                  $ref: '#/components/schemas/CommunityFamilyCoverage'
         measurement:
           type: object
           additionalProperties: false
-          required: [eligibleUnclaimedCount, claimedExcludedCount, ineligibleExcludedCount, totalAdmittedObservations, payloadBytes, attentionAmplification]
+          required: [population, eligibleUnclaimedCount, claimedExcludedCount, ineligibleExcludedCount, unreviewedActorExcludedCount, responseBearingUnreviewedActorExcludedCount, historicalSlice, totalAdmittedObservations, payloadBytes, attentionAmplification]
           properties:
+            population:
+              type: string
+              enum: [eligible-admitted]
+            unreviewedActorExcludedCount:
+              type: integer
+              minimum: 0
+            responseBearingUnreviewedActorExcludedCount:
+              type: integer
+              minimum: 0
+              nullable: true
+            historicalSlice:
+              type: object
+              additionalProperties: false
+              required: [basis, label, count, invalidClosureTimes]
+              properties:
+                basis:
+                  type: string
+                  enum: [eligible-unclaimed-discussion-items-at-latest-unattributed-closure]
+                label:
+                  type: string
+                  enum: ['latest admitted closure; reopen not observable']
+                count:
+                  type: integer
+                  minimum: 0
+                  nullable: true
+                invalidClosureTimes:
+                  type: integer
+                  minimum: 0
             eligibleUnclaimedCount:
               type: integer
               minimum: 0

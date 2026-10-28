@@ -71,9 +71,9 @@ Coverage distinguishes two kinds of evidence:
   cannot reconstruct. They remain explicit machine-readable declarations even after a successful
   supported traversal; they do not become invented events or disappear from the evidence.
 
-A recognized contract binds the exact required limitation set to its resource family, adapter
-version and provider-state version. Missing, duplicate, extra, wrong-family or unknown declarations
-fail closed. A list of allowed limitations alone is insufficient: omission must not manufacture
+A recognized contract binds the exact required limitation set to its batch contract version,
+resource family, adapter version and provider-state version. Missing, duplicate, extra, wrong-family
+or unknown declarations fail closed. A list of allowed limitations alone is insufficient: omission must not manufacture
 completeness. Issue-family loss/attribution caveats are declared as explicitly as PR/Discussion
 limitations. Neither a caller nor an attention policy may relabel a runtime acquisition failure as a
 fixed provider limitation.

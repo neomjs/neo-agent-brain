@@ -1,5 +1,6 @@
 import crypto        from 'crypto';
 import {ACTOR_KINDS} from './communityAttentionClassifier.mjs';
+import {BATCH_SCHEMA_VERSION, validateCommunityGap} from './communityCoverageContract.mjs';
 
 /**
  * @summary The versioned canonical batch contract for community-activity admission.
@@ -8,7 +9,7 @@ import {ACTOR_KINDS} from './communityAttentionClassifier.mjs';
  * so an older connector fails loudly at the boundary instead of half-admitting an unknown shape.
  * @member {String}
  */
-export const BATCH_SCHEMA_VERSION = 'community-activity-batch.v1';
+export {BATCH_SCHEMA_VERSION};
 
 /**
  * @summary Bound on the opaque `nextProviderState` blob. It is opaque to Memory Core but not
@@ -197,6 +198,13 @@ export function validateHostedEnvelope(envelope, {
         });
 
         errors.push(...contract.errors)
+
+        if (Array.isArray(batch.coverage?.gaps)) {
+            batch.coverage.gaps.forEach((gap, index) => {
+                const result = validateCommunityGap(gap);
+                errors.push(...result.errors.map(error => `${error}_AT_${index}`))
+            })
+        }
     }
 
     const volume = measureHostedEnvelope(envelope);

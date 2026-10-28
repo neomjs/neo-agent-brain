@@ -19,8 +19,15 @@ import Ajv            from 'ajv';
 import * as yaml      from 'js-yaml';
 
 import RequestContextService                     from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import {buildOutputZodSchema}                   from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
 import {admitClaimedTask, collectLifecycleItems} from '../../../../../../ai/services/graph/lifecycleAdmission.mjs';
 import {isActionableComputedRecommendation}      from '../../../../../../ai/services/graph/computedGoldenPathRouting.mjs';
+import {bindCommunityCoverage, COMMUNITY_COVERAGE_CONTRACTS, validateCommunityCoverage} from '../../../../../../ai/services/memory-core/communityCoverageContract.mjs';
+import {assembleIssueBatch}                      from '../../../../../../ai/services/github-workflow/community/assembleIssueBatch.mjs';
+import {reconcileIssueActivity}                  from '../../../../../../ai/services/github-workflow/community/githubIssueReconciliation.mjs';
+import {reconcilePullRequestActivity}            from '../../../../../../ai/services/github-workflow/community/githubPullRequestReconciliation.mjs';
+import {reconcileDiscussionActivity}             from '../../../../../../ai/services/github-workflow/community/githubDiscussionReconciliation.mjs';
+import {discussionToObservations}                from '../../../../../../ai/services/github-workflow/community/githubDiscussionObservations.mjs';
 
 test.describe('Neo.ai.services.memory-core.CommunityActivityService', () => {
     let ActivityService, AdmissionService, GraphService, MailboxService, SourceRegistryService;
@@ -62,19 +69,19 @@ test.describe('Neo.ai.services.memory-core.CommunityActivityService', () => {
             baseInventoryHash     = null,
             batchId               = `batch-${Date.now()}-${Math.random()}`,
             nextInventoryHash     = `inventory-${batchId}`,
-            coverage              = {complete: true, fromBasis: 'from', toBasis: 'to'},
+            coverage,
             registrationEpoch     = 2,
             resourceFamily        = 'issues'
         } = {}) => ({
-            adapterSchemaVersion      : 'github-issue.v1',
+            adapterSchemaVersion      : COMMUNITY_COVERAGE_CONTRACTS[resourceFamily].contract.adapterSchemaVersion,
             baseCheckpointVersion,
             baseInventoryHash,
             batchId,
-            coverage,
+            coverage                  : coverage ?? bindCommunityCoverage(resourceFamily, {complete: true, fromBasis: 'genesis', toBasis: 'to'}),
             nextInventoryHash,
             nextProviderState         : {cursor: batchId},
             observations,
-            providerStateSchemaVersion: 'github-issue-state.v1',
+            providerStateSchemaVersion: COMMUNITY_COVERAGE_CONTRACTS[resourceFamily].contract.providerStateSchemaVersion,
             registrationEpoch,
             resourceFamily,
             schemaVersion             : 'community-activity-batch.v1',
@@ -408,6 +415,334 @@ test.describe('Neo.ai.services.memory-core.CommunityActivityService', () => {
             sourceEventId: refreshEvent.sourceEventId,
             status       : 'inaccessible'
         });
+    });
+
+    test('qualifies empty public counts only after all three actual producers exhaust and their batches are admitted', async () => {
+        const sourceId = activeSource(), calls = [], pageInfo = {hasNextPage: false, endCursor: null};
+        const page = (name, nodes) => async ({cursor}) => {
+            expect(cursor).toBeNull();
+            calls.push(name);
+            return {...nodes, pageInfo, totalCount: 0}
+        };
+        const unexpectedChild = async () => { throw new Error('An empty family must not request a child connection') };
+        const results = {
+            issues: await reconcileIssueActivity({
+                fetchIssuesPage: page('issues', {issues: []}),
+                fetchCommentsPage: unexpectedChild, fetchTimelinePage: unexpectedChild
+            }),
+            pulls: await reconcilePullRequestActivity({
+                fetchPullRequestsPage: page('pulls', {pullRequests: []}),
+                fetchCensusPage: page('pulls-census', {pullRequests: []}),
+                fetchReviewCommentSnapshot: async () => {
+                    calls.push('pulls-inline-census');
+                    return {reviewCommentsByPullRequestNumber: new Map(), failuresByPullRequestNumber: new Map()}
+                },
+                exhaustConversation: unexpectedChild, fetchTimelinePage: unexpectedChild,
+                fetchContentEditHeads: unexpectedChild, fetchContentEditsPage: unexpectedChild,
+                verifyContentEntities: unexpectedChild
+            }),
+            discussions: await reconcileDiscussionActivity({
+                fetchDiscussionsPage: page('discussions', {discussions: []}),
+                fetchCensusPage: page('discussions-census', {discussions: []}),
+                fetchCommentsPage: unexpectedChild, fetchRepliesPage: unexpectedChild,
+                fetchContentEditHeads: unexpectedChild, fetchContentEditsPage: unexpectedChild,
+                verifyContentEntities: unexpectedChild
+            })
+        };
+        expect(calls).toEqual(['issues', 'pulls', 'pulls-inline-census', 'pulls-census', 'discussions', 'discussions-census']);
+
+        for (const [resourceFamily, runnerResult] of Object.entries(results)) {
+            expect(runnerResult.observations).toEqual([]);
+            expect(validateCommunityCoverage(runnerResult.coverage, {resourceFamily}).qualified).toBe(true);
+            const {adapterSchemaVersion, providerStateSchemaVersion} = COMMUNITY_COVERAGE_CONTRACTS[resourceFamily].contract;
+            const batch = assembleIssueBatch({sourceInstanceId: sourceId, resourceFamily, registrationEpoch: 2,
+                baseCheckpointVersion: 0, baseInventoryHash: null, runnerResult, currentInventory: [],
+                batchId: `empty-producer-${resourceFamily}`, observedAt: WINDOW.windowStart,
+                adapterSchemaVersion, providerStateSchemaVersion});
+            expect(batch.coverage).toEqual(runnerResult.coverage);
+            const admitted = await inTenant(() => AdmissionService.admitBatch(batch));
+            expect(admitted.status).toBe('accepted');
+            expect(admitted.receipt.coverage).toEqual(runnerResult.coverage);
+            const counts = await inTenant(() => ActivityService.projectAttentionCounts({sourceInstanceIds: [sourceId]}));
+            expect(counts.count).toBe(0);
+            expect(counts.status).toBe(resourceFamily === 'discussions' ? 'empty' : 'degraded');
+        }
+
+        const counts = await inTenant(() => ActivityService.projectAttentionCounts({sourceInstanceIds: [sourceId]}));
+        expect(counts.coverage).toMatchObject({degraded: false, sourceCount: 1, completeSourceCount: 1});
+        for (const family of counts.sources[0].families) {
+            expect(family).toMatchObject({complete: true, qualified: true, qualificationReason: null, gapCount: 0});
+            expect(family.contract).toEqual(COMMUNITY_COVERAGE_CONTRACTS[family.resourceFamily].contract);
+            expect(family.providerLimitations).toEqual(COMMUNITY_COVERAGE_CONTRACTS[family.resourceFamily].providerLimitations);
+        }
+        const document = yaml.load(fs.readFileSync('ai/mcp/server/memory-core/openapi.yaml', 'utf8'));
+        const ajv = new Ajv({allErrors: true, strict: false, validateFormats: false});
+        ajv.addSchema({components: document.components}, 'producer-empty-community-api');
+        const validate = ajv.compile({$ref: 'producer-empty-community-api#/components/schemas/CommunityActivityAttentionCountsResponse'});
+        expect(validate(counts), JSON.stringify(validate.errors)).toBe(true);
+        const outputSchema = buildOutputZodSchema(document, document.paths['/community/activity/attention-counts'].post);
+        expect(outputSchema.parse(counts)).toEqual(counts);
+
+        const observed = await inTenant(() => ActivityService.observeStewardWake({sourceInstanceIds: [sourceId]}));
+        expect(observed.attentionCounts).toMatchObject({status: 'empty', count: 0, coverage: {degraded: false}});
+        expect(observed.evaluation).toMatchObject({stewardVacant: true, shadowWouldWake: false, shouldWake: false});
+        expect(activityDb.prepare('SELECT COUNT(*) AS n FROM mc_community_task_binding').get().n).toBe(0);
+    });
+
+    test('legacy complete receipts remain unqualified and later bound admissions do not strengthen an older public snapshot', async () => {
+        const sourceId = activeSource(), legacyReceipts = [], legacyPayloads = [], boundPayloads = [];
+        const storedReceipt = receiptId => admissionDb.prepare(
+            'SELECT receipt_id, digest, coverage FROM mc_community_batch_receipt WHERE receipt_id = ?'
+        ).get(receiptId);
+        for (const resourceFamily of Object.keys(COMMUNITY_COVERAGE_CONTRACTS)) {
+            const rows = resourceFamily === 'issues' ? [
+                observation('legacy-first', '2026-09-19T10:00:00Z'),
+                observation('legacy-second', '2026-09-19T11:00:00Z')
+            ] : [];
+            const batch = batchAt(sourceId, rows, {resourceFamily, batchId: `retained-legacy-${resourceFamily}`,
+                coverage: {fromBasis: 'genesis', toBasis: 'legacy-end', complete: true}});
+            const admitted = await inTenant(() => AdmissionService.admitBatch(batch));
+            expect(admitted.status).toBe('accepted');
+            legacyReceipts.push(admitted.receipt.receiptId);
+            legacyPayloads.push({batch, receipt: admitted.receipt, stored: storedReceipt(admitted.receipt.receiptId)});
+        }
+        const before = await inTenant(() => ActivityService.projectAttentionCounts({sourceInstanceIds: [sourceId]}));
+        expect(before).toMatchObject({status: 'degraded', count: 2});
+        expect(before.coverage.degradedReasons).toContain('legacy-coverage-unqualified');
+        expect(before.sources[0].families.every(family => family.complete && !family.qualified &&
+            family.qualificationReason === 'legacy-coverage-unqualified' && family.contract === null)).toBe(true);
+        const query = { ...WINDOW, limit: 1, sourceInstanceIds: [sourceId] };
+        const first = await inTenant(() => ActivityService.query(query));
+        expect(first.items).toHaveLength(1);
+        expect(first.nextCursor).toBeTruthy();
+
+        for (const resourceFamily of Object.keys(COMMUNITY_COVERAGE_CONTRACTS)) {
+            const checkpoint = AdmissionService.getCheckpoint(sourceId, resourceFamily);
+            const batch = batchAt(sourceId, [], {resourceFamily, batchId: `retained-bound-${resourceFamily}`,
+                baseCheckpointVersion: checkpoint.checkpointVersion, baseInventoryHash: checkpoint.inventoryHash});
+            const admitted = await inTenant(() => AdmissionService.admitBatch(batch));
+            expect(admitted.status).toBe('accepted');
+            boundPayloads.push({batch, receipt: admitted.receipt, stored: storedReceipt(admitted.receipt.receiptId)});
+        }
+        const after = await inTenant(() => ActivityService.projectAttentionCounts({sourceInstanceIds: [sourceId]}));
+        expect(after).toMatchObject({status: 'fresh', count: 2});
+        expect(after.sources[0].families.every(family => family.qualified)).toBe(true);
+
+        const continued = await inTenant(() => ActivityService.query({...query, cursor: first.nextCursor}));
+        expect(continued.snapshot).toBe(first.snapshot);
+        expect(continued.items).toHaveLength(1);
+        expect(continued.items[0].sourceEventId).not.toBe(first.items[0].sourceEventId);
+        expect(continued.coverage.sources[0].families.every(family => !family.qualified &&
+            family.qualificationReason === 'legacy-coverage-unqualified' && legacyReceipts.includes(family.receiptId))).toBe(true);
+
+        const checkpoints = () => Object.fromEntries(Object.keys(COMMUNITY_COVERAGE_CONTRACTS)
+            .map(resourceFamily => [resourceFamily, AdmissionService.getCheckpoint(sourceId, resourceFamily)]));
+        const advancedCheckpoints = checkpoints();
+        expect(Object.values(advancedCheckpoints).every(checkpoint => checkpoint.checkpointVersion === 2)).toBe(true);
+        for (const retained of legacyPayloads) {
+            const replay = await inTenant(() => AdmissionService.admitBatch(retained.batch));
+            expect(replay).toMatchObject({status: 'idempotent', digest: retained.stored.digest});
+            expect(replay.receipt).toEqual(retained.receipt);
+            expect(storedReceipt(retained.receipt.receiptId)).toEqual(retained.stored);
+            expect(checkpoints()).toEqual(advancedCheckpoints);
+        }
+
+        const bound = boundPayloads[0], changedKnownBatch = structuredClone(bound.batch);
+        changedKnownBatch.coverage.providerLimitations.pop();
+        const changedReplay = await inTenant(() => AdmissionService.admitBatch(changedKnownBatch));
+        expect(changedReplay).toMatchObject({status: 'conflict', reason: 'DIGEST_MISMATCH'});
+        expect(changedReplay.digest).not.toBe(bound.stored.digest);
+        expect(changedReplay.receipt).toEqual(bound.receipt);
+        expect(storedReceipt(bound.receipt.receiptId)).toEqual(bound.stored);
+
+        const freshInvalidTuple = batchAt(sourceId, [], {batchId: 'fresh-invalid-coverage-tuple',
+            baseCheckpointVersion: advancedCheckpoints.issues.checkpointVersion,
+            baseInventoryHash: advancedCheckpoints.issues.inventoryHash});
+        freshInvalidTuple.adapterSchemaVersion = 'github-issue.unknown';
+        expect(await inTenant(() => AdmissionService.admitBatch(freshInvalidTuple))).toMatchObject({
+            status: 'conflict', reason: 'COVERAGE_INVALID', errors: expect.arrayContaining(['COVERAGE_CONTRACT_MISMATCH'])
+        });
+        expect(checkpoints()).toEqual(advancedCheckpoints);
+        for (const retained of [...legacyPayloads, ...boundPayloads]) {
+            expect(storedReceipt(retained.receipt.receiptId)).toEqual(retained.stored);
+        }
+        expect(admissionDb.prepare('SELECT COUNT(*) AS count FROM mc_community_batch_receipt').get().count).toBe(6);
+    });
+
+    test('refuses incomplete, extra, duplicate, wrong-family and unknown declarations before storing coverage', async () => {
+        const sourceId = activeSource();
+        const cases = [
+            ['missing binding', coverage => { delete coverage.contract }, 'COVERAGE_CONTRACT_REQUIRED'],
+            ['missing binding field', coverage => { delete coverage.contract.adapterSchemaVersion }, 'COVERAGE_CONTRACT_MISMATCH'],
+            ['extra binding field', coverage => { coverage.contract.extra = 'unsupported' }, 'COVERAGE_CONTRACT_MISMATCH'],
+            ['wrong family', coverage => { coverage.contract.resourceFamily = 'pulls' }, 'COVERAGE_CONTRACT_MISMATCH'],
+            ['unknown generation', coverage => { coverage.contract.schemaVersion = 'community-coverage.unknown' }, 'COVERAGE_CONTRACT_MISMATCH'],
+            ['unknown family', coverage => { coverage.contract.resourceFamily = 'unknown' }, 'COVERAGE_CONTRACT_UNRECOGNIZED'],
+            ['missing limitation', coverage => { coverage.providerLimitations.pop() }, 'COVERAGE_LIMITATIONS_MISMATCH'],
+            ['extra limitation', coverage => { coverage.providerLimitations.push({axis: 'extra', reason: 'unsupported'}) }, 'COVERAGE_LIMITATIONS_MISMATCH'],
+            ['duplicate limitation', coverage => { coverage.providerLimitations[1] = {...coverage.providerLimitations[0]} }, 'COVERAGE_LIMITATIONS_MISMATCH']
+        ];
+        for (const [label, mutate, error] of cases) {
+            const coverage = bindCommunityCoverage('issues', {fromBasis: 'genesis', toBasis: 'end', complete: true});
+            mutate(coverage);
+            expect(validateCommunityCoverage(coverage, {resourceFamily: 'issues'}), label).toMatchObject({
+                valid: false, qualified: false, errors: expect.arrayContaining([error])
+            });
+            const result = await inTenant(() => admit(sourceId, [], {coverage}));
+            expect(result, label).toMatchObject({status: 'conflict', reason: 'COVERAGE_INVALID', errors: expect.arrayContaining([error])});
+            expect(AdmissionService.getCheckpoint(sourceId, 'issues'), label).toBeNull();
+        }
+        expect(admissionDb.prepare('SELECT COUNT(*) AS count FROM mc_community_batch_receipt').get().count).toBe(0);
+    });
+
+    test('requires current-epoch evidence in every family after an actual source reprovision', async () => {
+        const sourceId = activeSource();
+        for (const resourceFamily of Object.keys(COMMUNITY_COVERAGE_CONTRACTS)) {
+            expect((await inTenant(() => admit(sourceId, [], {resourceFamily}))).status).toBe('accepted');
+        }
+        const before = await inTenant(() => ActivityService.projectAttentionCounts({sourceInstanceIds: [sourceId]}));
+        expect(before.status).toBe('empty');
+        const snapshot = before.coverage.snapshot;
+        SourceRegistryService.transitionLifecycle(sourceId, 'REVOKED', {expectedState: 'ACTIVE', expectedEpoch: 2});
+        SourceRegistryService.transitionLifecycle(sourceId, 'PROVISIONED', {expectedState: 'REVOKED', expectedEpoch: 2});
+        SourceRegistryService.transitionLifecycle(sourceId, 'ACTIVE', {expectedState: 'PROVISIONED', expectedEpoch: 3});
+        const stale = await inTenant(() => ActivityService.projectAttentionCounts({sourceInstanceIds: [sourceId]}));
+        expect(stale).toMatchObject({status: 'degraded', count: 0});
+        expect(stale.sources[0].families.every(family => family.complete && !family.qualified &&
+            family.qualificationReason === 'source-coverage-epoch-stale')).toBe(true);
+
+        for (const resourceFamily of Object.keys(COMMUNITY_COVERAGE_CONTRACTS)) {
+            const checkpoint = AdmissionService.getCheckpoint(sourceId, resourceFamily);
+            const result = await inTenant(() => admit(sourceId, [], {resourceFamily, registrationEpoch: 3,
+                baseCheckpointVersion: checkpoint.checkpointVersion, baseInventoryHash: checkpoint.inventoryHash}));
+            expect(result.status).toBe('accepted');
+            const current = await inTenant(() => ActivityService.projectAttentionCounts({sourceInstanceIds: [sourceId]}));
+            expect(current.status).toBe(resourceFamily === 'discussions' ? 'empty' : 'degraded');
+        }
+        const historical = ActivityService.readCoverage({tenantId: SUBJECT, ids: [sourceId], snapshot});
+        expect(historical[0].families.every(family => !family.qualified && family.qualificationReason === 'source-coverage-epoch-stale')).toBe(true);
+    });
+
+    test('labels the eligible admitted historical slice without resolving unknown closes or reclassifying stored actors', async () => {
+        const sourceId = activeSource();
+        AdmissionService.attentionPolicy = {...ATTENTION_POLICY,
+            responseBearingKinds: [...ATTENTION_POLICY.responseBearingKinds, 'discussion.reply'],
+            recordedActorDispositions: {'reviewed-unknown': 'eligible'}};
+        const author = {login: 'external-discussion-human', __typename: 'User'};
+        const reply = (id, time) => ({id, createdAt: `2026-09-19T${time}:00Z`, author, authorAssociation: 'NONE'});
+        const comment = (id, time, replies = []) => ({...reply(id, time), replies});
+        const discussion = {id: 'metric-discussion', createdAt: '2026-09-19T09:00:00Z',
+            updatedAt: '2026-09-19T12:05:00Z', author, authorAssociation: 'NONE', closed: false,
+            comments: [
+                comment('metric-pre', '10:00', [reply('metric-pre-reply', '10:05'), reply('metric-late-reply', '12:05')]),
+                comment('metric-claimed', '10:10'), comment('metric-middle', '10:45'), comment('metric-late', '12:00')
+            ]};
+        const publish = (resourceFamily, rows) => {
+            const checkpoint = AdmissionService.getCheckpoint(sourceId, resourceFamily);
+            const result = admit(sourceId, rows, {resourceFamily,
+                baseCheckpointVersion: checkpoint?.checkpointVersion ?? 0, baseInventoryHash: checkpoint?.inventoryHash ?? null});
+            expect(result.status).toBe('accepted');
+            return result
+        };
+        await inTenant(() => {
+            publish('issues', [
+                observation('metric-unknown-response', '2026-09-19T09:00:00Z', {actorId: 'unreviewed-response', actorKind: 'unknown'}),
+                observation('metric-unknown-label', '2026-09-19T09:05:00Z', {actorId: 'unreviewed-label', actorKind: 'unknown', occurrenceKind: 'issue.labeled'}),
+                observation('metric-bot', '2026-09-19T09:10:00Z', {actorKind: 'bot'}),
+                observation('metric-reviewed', '2026-09-19T09:15:00Z', {actorId: 'reviewed-unknown', actorKind: 'unknown'})
+            ]);
+            publish('pulls', []);
+            publish('discussions', discussionToObservations(discussion));
+        });
+        const page = await inTenant(() => ActivityService.query({...WINDOW, limit: 30, sourceInstanceIds: [sourceId]}));
+        const toClaim = page.items.find(item => item.providerEntityId === 'metric-claimed');
+        expect(toClaim).toBeDefined();
+        const claimed = await RequestContextService.run({userId: SUBJECT, agentIdentityNodeId: '@community-metric-reader'}, () =>
+            ActivityService.claimTask({sourceEventId: toClaim.sourceEventId}));
+        expect(claimed.created).toBe(true);
+        const read = () => inTenant(() => ActivityService.projectAttentionCounts({sourceInstanceIds: [sourceId]}));
+        const before = await read();
+        expect(before).toMatchObject({count: 6, measurement: {
+            population: 'eligible-admitted', claimedExcludedCount: 1, unreviewedActorExcludedCount: 2,
+            responseBearingUnreviewedActorExcludedCount: null,
+            historicalSlice: {basis: 'eligible-unclaimed-discussion-items-at-latest-unattributed-closure',
+                label: 'latest admitted closure; reopen not observable', count: 0, invalidClosureTimes: 0}
+        }});
+
+        await inTenant(() => publish('discussions', discussionToObservations({...discussion,
+            closed: true, closedAt: '2026-09-19T11:00:00Z'})));
+        const after = await read();
+        expect(after).toMatchObject({count: before.count, status: 'fresh', measurement: {
+            population: 'eligible-admitted', unreviewedActorExcludedCount: 3,
+            responseBearingUnreviewedActorExcludedCount: null,
+            historicalSlice: {count: 3, invalidClosureTimes: 0}
+        }});
+        const afterPage = await inTenant(() => ActivityService.query({...WINDOW, limit: 30, sourceInstanceIds: [sourceId]}));
+        expect(afterPage.items.some(item => item.providerEntityId === 'metric-late-reply')).toBe(true);
+
+        await inTenant(() => publish('discussions', discussionToObservations({...discussion,
+            closed: true, closedAt: '2026-09-19T10:30:00Z'})));
+        expect((await read()).measurement.historicalSlice.count).toBe(3);
+        await inTenant(() => publish('discussions', discussionToObservations({...discussion,
+            updatedAt: '2026-09-19T13:00:00Z', closed: false})));
+        const reopened = await read();
+        expect(reopened).toMatchObject({count: before.count, measurement: {
+            unreviewedActorExcludedCount: 5, responseBearingUnreviewedActorExcludedCount: null,
+            historicalSlice: {count: 3, invalidClosureTimes: 0}
+        }});
+        const retained = activityDb.prepare(`SELECT occurrence_kind, attention_disposition, attention_reason
+            FROM mc_community_observation WHERE tenant_id = ? AND source_instance_id = ? AND provider_entity_id = ?`)
+            .get(SUBJECT, sourceId, 'metric-unknown-label');
+        expect(retained).toEqual({occurrence_kind: 'issue.labeled', attention_disposition: 'ineligible',
+            attention_reason: 'actor-kind-not-reviewed-fail-closed'});
+        AdmissionService.attentionPolicy = {...ATTENTION_POLICY, responseBearingKinds: [],
+            recordedActorDispositions: {'unreviewed-response': 'eligible', 'unreviewed-label': 'eligible'}};
+        const changedPolicy = await read();
+        expect(changedPolicy.count).toBe(reopened.count);
+        expect(changedPolicy.measurement).toEqual(reopened.measurement);
+    });
+
+    test('keeps invalid unattributed-closure metrics unknown and isolated by source and tenant', async () => {
+        const sourceA = activeSource({displayLocator: 'metrics/a', providerResourceId: 'metrics/a'});
+        const sourceB = activeSource({displayLocator: 'metrics/b', providerResourceId: 'metrics/b'});
+        const rows = invalid => [
+            observation('shared-comment-id', '2026-09-19T10:00:00Z', {occurrenceKind: 'discussion.comment', parentProviderEntityId: 'shared-root-id'}),
+            observation('shared-root-id', '2026-09-19T11:00:00Z', {occurrenceKind: 'discussion.closed',
+                occurrenceCoordinate: 'shared-root-id:closed:valid', actorKind: 'unknown', actorId: null}),
+            ...(invalid ? [observation('shared-root-id', 'not-a-time', {occurrenceKind: 'discussion.closed',
+                occurrenceCoordinate: 'shared-root-id:closed:invalid', actorKind: 'unknown', actorId: null})] : [])
+        ];
+        const populate = (sourceId, invalid) => {
+            for (const resourceFamily of Object.keys(COMMUNITY_COVERAGE_CONTRACTS)) {
+                const admitted = admit(sourceId, resourceFamily === 'discussions' ? rows(invalid) : [], {resourceFamily});
+                expect(admitted.status).toBe('accepted');
+            }
+        };
+        await inTenant(() => { populate(sourceA, false); populate(sourceB, true) });
+        const foreignTenant = 'community-metric-foreign';
+        const previousSubject = SourceRegistryService.localSubjectId;
+        let foreignSource;
+        try {
+            SourceRegistryService.localSubjectId = foreignTenant;
+            foreignSource = activeSource({displayLocator: 'metrics/foreign', providerResourceId: 'metrics/foreign'});
+            await RequestContextService.run({userId: foreignTenant}, () => populate(foreignSource, true));
+        } finally {
+            SourceRegistryService.localSubjectId = previousSubject;
+        }
+        const a = await inTenant(() => ActivityService.projectAttentionCounts({sourceInstanceIds: [sourceA]}));
+        expect(a).toMatchObject({count: 1, measurement: {unreviewedActorExcludedCount: 1,
+            historicalSlice: {count: 1, invalidClosureTimes: 0}}});
+        const b = await inTenant(() => ActivityService.projectAttentionCounts({sourceInstanceIds: [sourceB]}));
+        expect(b).toMatchObject({count: 1, measurement: {unreviewedActorExcludedCount: 2,
+            historicalSlice: {count: null, invalidClosureTimes: 1}}});
+        const own = await inTenant(() => ActivityService.projectAttentionCounts());
+        expect(own.coverage.sourceCount).toBe(2);
+        expect(own).toMatchObject({count: 2, measurement: {historicalSlice: {count: null, invalidClosureTimes: 1}}});
+        const foreign = await RequestContextService.run({userId: foreignTenant}, () => ActivityService.projectAttentionCounts());
+        expect(foreign.coverage.sourceCount).toBe(1);
+        expect(foreign).toMatchObject({count: 1, measurement: {historicalSlice: {count: null, invalidClosureTimes: 1}}});
+        await expect(inTenant(() => ActivityService.projectAttentionCounts({sourceInstanceIds: [foreignSource]})))
+            .rejects.toThrow('COMMUNITY_SOURCE_NOT_OWNED');
     });
 
     test('keeps real coverage gaps and unsupported source families degraded', async () => {
@@ -994,6 +1329,9 @@ test.describe('Neo.ai.services.memory-core.CommunityActivityService', () => {
         });
         expect(freshSourceA.measurement.payloadBytes).toBeGreaterThan(100);
         expect(freshSourceA.measurement.payloadBytes).toBeLessThan(8192);
+        for (const counts of [freshSourceA, noSourceCounts, emptySourceB, degradedMissingFamilies]) {
+            expect(counts.measurement.payloadBytes).toBe(Buffer.byteLength(JSON.stringify(counts), 'utf8'));
+        }
 
         const serialized = JSON.stringify(freshSourceA);
         expect(serialized).not.toContain('external-first-timer');

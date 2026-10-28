@@ -27,6 +27,7 @@ import {discussionToObservations}                from '../../../../../../ai/serv
 import {admitClaimedTask, collectLifecycleItems} from '../../../../../../ai/services/graph/lifecycleAdmission.mjs';
 import {isActionableComputedRecommendation}      from '../../../../../../ai/services/graph/computedGoldenPathRouting.mjs';
 import {BATCH_SCHEMA_VERSION, validateBatch}     from '../../../../../../ai/services/memory-core/communityBatchContract.mjs';
+import {bindCommunityCoverage, COMMUNITY_COVERAGE_CONTRACTS} from '../../../../../../ai/services/memory-core/communityCoverageContract.mjs';
 import {snapshotAiConfig}                        from './util.mjs';
 
 const TEST_NAMES = [
@@ -85,26 +86,26 @@ test.describe('Community-activity end-to-end authority chain', () => {
             ...over
         }),
         batchAt = (sourceInstanceId, observations, {
-            adapterSchemaVersion      = 'github-issue.v1',
+            adapterSchemaVersion,
             baseCheckpointVersion     = 0,
             baseInventoryHash         = null,
             batchId                   = `batch-${Date.now()}-${Math.random()}`,
-            coverage                  = {complete: true, fromBasis: 'c0', toBasis: 'c1'},
+            coverage,
             nextInventoryHash         = `inv-${batchId}`,
             nextProviderState         = {cursor: batchId},
-            providerStateSchemaVersion = 'github-state.v1',
+            providerStateSchemaVersion,
             registrationEpoch         = 2,
             resourceFamily            = 'issues'
         } = {}) => ({
-            adapterSchemaVersion,
+            adapterSchemaVersion: adapterSchemaVersion ?? COMMUNITY_COVERAGE_CONTRACTS[resourceFamily].contract.adapterSchemaVersion,
             baseCheckpointVersion,
             baseInventoryHash,
             batchId,
-            coverage,
+            coverage: coverage ?? bindCommunityCoverage(resourceFamily, {complete: true, fromBasis: 'genesis', toBasis: 'c1'}),
             nextInventoryHash,
             nextProviderState,
             observations,
-            providerStateSchemaVersion,
+            providerStateSchemaVersion: providerStateSchemaVersion ?? COMMUNITY_COVERAGE_CONTRACTS[resourceFamily].contract.providerStateSchemaVersion,
             registrationEpoch,
             resourceFamily,
             schemaVersion: BATCH_SCHEMA_VERSION,

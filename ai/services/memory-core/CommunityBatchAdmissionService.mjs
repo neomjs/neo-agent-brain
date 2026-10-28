@@ -6,6 +6,7 @@ import config                from '../../mcp/server/memory-core/config.mjs';
 import logger                from '../../mcp/server/memory-core/logger.mjs';
 import SourceRegistryService from './SourceRegistryService.mjs';
 import {classifyAttention}   from './communityAttentionClassifier.mjs';
+import {validateCommunityCoverage} from './communityCoverageContract.mjs';
 import {
     MAX_HOSTED_BATCH_BYTES,
     MAX_HOSTED_OBSERVATIONS,
@@ -328,6 +329,19 @@ class CommunityBatchAdmissionService extends Base {
                     }
 
                     return {status: ADMISSION_STATUS.CONFLICT, reason: 'DIGEST_MISMATCH', receipt: this.#toReceipt(existing)}
+                }
+
+                // New declarations are checked only after exact retained replay. Legacy coverage
+                // remains admissible history, but no reader may promote it to qualified evidence.
+                if (coverage.contract !== undefined || coverage.providerLimitations !== undefined) {
+                    const validation = validateCommunityCoverage(coverage, {
+                        batchSchemaVersion: batch.schemaVersion, resourceFamily,
+                        adapterSchemaVersion: batch.adapterSchemaVersion,
+                        providerStateSchemaVersion: batch.providerStateSchemaVersion
+                    });
+                    if (!validation.valid) {
+                        return {status: ADMISSION_STATUS.CONFLICT, reason: 'COVERAGE_INVALID', errors: validation.errors}
+                    }
                 }
 
                 // Step 5 — the checkpoint CAS: the batch's declared base must equal current server state.

@@ -68,8 +68,7 @@ export function assembleIssueBatch({
     const gaps       = [...priorGaps, ...accessGaps];
 
     const coverage = {
-        fromBasis: runnerResult.coverage.fromBasis,
-        toBasis  : runnerResult.coverage.toBasis,
+        ...runnerResult.coverage,
         complete : runnerResult.coverage.complete && accessIndeterminate.length === 0,
         ...(gaps.length ? {gaps} : {})
     };

@@ -34,9 +34,11 @@ function sample(status = 'fresh', overrides = {}) {
         oldestOccurredAt: status === 'fresh' ? '2026-10-27T00:00:00Z' : null,
         coverage: {basis: 'admitted-ledger', sourceCount: 1, activeSourceCount: 1,
             completeSourceCount: status === 'degraded' ? 0 : 1, degraded: status === 'degraded'},
-        sources: [{sourceInstanceId: 'source-alpha', registrationEpoch: 2, lifecycleState: 'ACTIVE'}], ...overrides},
+        sources: [{sourceInstanceId: 'source-alpha', registrationEpoch: 2, lifecycleState: 'ACTIVE',
+            families: ['issues', 'pulls', 'discussions'].map(resourceFamily => ({resourceFamily,
+                complete: status !== 'degraded', qualified: status !== 'degraded'}))}], ...overrides},
     evaluation: {mode: 'shadow', shouldWake: false,
-        ...(status === 'fresh' ? {stewardVacant: true, shadowWouldWake: false} : {}),
+        ...(['fresh', 'empty'].includes(status) ? {stewardVacant: true, shadowWouldWake: false} : {}),
         reason: status === 'fresh' ? 'steward-vacant-no-fallback-target' : `coverage-${status}`, notAuthority: true}}
 }
 
@@ -200,6 +202,11 @@ test.describe('finite community-steward observation CLI', () => {
             report => { report.observations[1].attentionCounts.status = 'degraded' },
             report => { report.observations[1].attentionCounts.coverage.completeSourceCount = 0 },
             report => { report.observations[1].attentionCounts.coverage.activeSourceCount = 0 },
+            report => { delete report.observations[1].attentionCounts.sources[0].families },
+            report => { report.observations[1].attentionCounts.sources[0].families[0].qualified = false },
+            report => { report.observations[1].attentionCounts.sources[0].families.forEach(family => { delete family.qualified }) },
+            report => { report.observations[1].attentionCounts.sources[0].families.pop() },
+            report => { report.observations[1].attentionCounts.sources[0].families[2].resourceFamily = 'issues' },
             report => { report.observations[1].attentionCounts.sources[0].registrationEpoch++ },
             report => { report.observations[1].policyStable = false },
             report => { report.observations[1].policyAfter = {...policy, stewardActivation: true} },

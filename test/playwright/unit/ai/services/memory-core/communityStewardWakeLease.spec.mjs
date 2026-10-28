@@ -31,6 +31,7 @@ import SourceRegistryService          from '../../../../../../ai/services/memory
 import RequestContextService          from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 import {snapshotAiConfig}             from './util.mjs';
 import {runOperatorWindow}            from '../../../../../../ai/scripts/maintenance/observeCommunitySteward.mjs';
+import {bindCommunityCoverage, COMMUNITY_COVERAGE_CONTRACTS} from '../../../../../../ai/services/memory-core/communityCoverageContract.mjs';
 import {
     COMMUNITY_STEWARD_WAKE_SCHEMA_VERSION,
     REQUIRED_LIVE_STEWARD_THRESHOLD_KEYS,
@@ -75,21 +76,25 @@ function batchAt(sourceInstanceId, observations, {
     baseCheckpointVersion = 0,
     baseInventoryHash     = null,
     batchId               = `batch-${Date.now()}-${Math.random()}`,
-    coverage              = {complete: true, fromBasis: 'from', toBasis: 'to'},
+    coverage,
     nextInventoryHash     = `inventory-${batchId}`,
     registrationEpoch     = 2,
     resourceFamily        = 'issues'
 } = {}) {
+    const contract = COMMUNITY_COVERAGE_CONTRACTS[resourceFamily].contract;
+
     return {
-        adapterSchemaVersion      : 'github-issue.v1',
+        adapterSchemaVersion      : contract.adapterSchemaVersion,
         baseCheckpointVersion,
         baseInventoryHash,
         batchId,
-        coverage,
+        coverage                  : coverage ?? bindCommunityCoverage(resourceFamily, {
+            complete: true, fromBasis: 'genesis', toBasis: 'to'
+        }),
         nextInventoryHash,
         nextProviderState         : {cursor: batchId},
         observations,
-        providerStateSchemaVersion: 'github-issue-state.v1',
+        providerStateSchemaVersion: contract.providerStateSchemaVersion,
         registrationEpoch,
         resourceFamily,
         schemaVersion             : 'community-activity-batch.v1',
@@ -130,18 +135,18 @@ function admitCompleteBaseline(tenantId, sourceInstanceId, issueObservations) {
 
     try {
         return RequestContextService.run({userId: tenantId}, () => {
-            CommunityBatchAdmissionService.admitBatch(batchAt(sourceInstanceId, issueObservations, {
+            expect(CommunityBatchAdmissionService.admitBatch(batchAt(sourceInstanceId, issueObservations, {
                 batchId       : `${sourceInstanceId}-issues-1`,
                 resourceFamily: 'issues'
-            }));
-            CommunityBatchAdmissionService.admitBatch(batchAt(sourceInstanceId, [], {
+            })).status).toBe('accepted');
+            expect(CommunityBatchAdmissionService.admitBatch(batchAt(sourceInstanceId, [], {
                 batchId       : `${sourceInstanceId}-pulls-1`,
                 resourceFamily: 'pulls'
-            }));
-            CommunityBatchAdmissionService.admitBatch(batchAt(sourceInstanceId, [], {
+            })).status).toBe('accepted');
+            expect(CommunityBatchAdmissionService.admitBatch(batchAt(sourceInstanceId, [], {
                 batchId       : `${sourceInstanceId}-discussions-1`,
                 resourceFamily: 'discussions'
-            }))
+            })).status).toBe('accepted')
         })
     } finally {
         SourceRegistryService.localSubjectId = prevSubject
@@ -441,7 +446,7 @@ test.describe('communityStewardWakeLease', () => {
     test('reports non-integer or negative attentionCounts.count as degraded-unclaimed-count with count: null and leaves shadow tallies untouched', () => {
         const t0 = Date.parse('2026-10-26T22:00:00.000Z');
 
-        for (const badCount of [null, undefined, Number.NaN, -1, 1.5, '2']) {
+        for (const badCount of [null, undefined, Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1]) {
             const verdict = evaluateStewardWake({
                 attentionCounts: {
                     count          : badCount,
@@ -462,15 +467,32 @@ test.describe('communityStewardWakeLease', () => {
                 mode           : 'shadow',
                 notAuthority   : true,
                 reason         : 'degraded-unclaimed-count',
-                shadowWouldWake: false,
                 shouldWake     : false
             });
+            for (const key of ['stewardVacant', 'shadowWouldWake', 'wakePayload', 'payloadBytes']) {
+                expect(verdict).not.toHaveProperty(key)
+            }
         }
 
         const stateRow = db.prepare(
             'SELECT vacancy_count, shadow_would_wake_count FROM mc_community_steward_wake_state WHERE tenant_id = ?'
         ).get('tenant-alpha');
         expect(stateRow).toBeUndefined();
+    });
+
+    test('an inconsistent empty projection leaves vacancy and would-wake observations unknown', () => {
+        for (const count of [1, -1, null, '0']) {
+            const verdict = evaluateStewardWake({
+                attentionCounts: {status: 'empty', count, notAuthority: true},
+                db, now: Date.parse('2026-10-26T22:00:00.000Z'), tenantId: 'tenant-empty-invalid'
+            });
+
+            expect(verdict).toMatchObject({coverageStatus: 'degraded', shouldWake: false});
+            for (const key of ['stewardVacant', 'shadowWouldWake', 'wakePayload', 'payloadBytes']) {
+                expect(verdict).not.toHaveProperty(key)
+            }
+        }
+        expect(db.prepare('SELECT COUNT(*) AS count FROM mc_community_steward_wake_state').get().count).toBe(0);
     });
 
     test('manages lease acquisition, contention, expiry reclaim, release, and stale-holder rejection', async () => {
@@ -745,8 +767,8 @@ test.describe('communityStewardWakeLease', () => {
                     now: t0 + 900_000
                 });
                 expect(emptyAfterAllClaimed).toMatchObject({
-                    coverageStatus: 'empty',
-                    reason        : 'coverage-empty',
+                    count         : 0,
+                    shadowWouldWake: false,
                     shouldWake    : false
                 });
             });
@@ -824,6 +846,82 @@ test.describe('communityStewardWakeLease', () => {
         expect(db.prepare('SELECT COUNT(*) AS count FROM mc_community_task_binding').get().count).toBe(0);
     });
 
+    test('qualified empty demand observes both absent and held SQLite leases without a wake', async () => {
+        const tenantId = 'tenant-qualified-empty',
+              source = registerActiveGitHubSource(tenantId, 'org-qualified-empty', 'repo'),
+              sourceInstanceIds = [source.sourceInstanceId],
+              t0 = Date.parse('2026-10-26T22:00:00.000Z');
+        admitCompleteBaseline(tenantId, source.sourceInstanceId, []);
+
+        await inTenant(tenantId, async () => {
+            const vacant = await CommunityActivityService.observeStewardWake({now: t0, sourceInstanceIds});
+
+            expect(vacant.attentionCounts).toMatchObject({status: 'empty', count: 0});
+            expect(vacant.attentionCounts.sources[0].families.map(family => [family.resourceFamily, family.qualified]))
+                .toEqual([['issues', true], ['pulls', true], ['discussions', true]]);
+            expect(db.prepare('SELECT COUNT(*) AS count FROM mc_community_steward_lease').get().count).toBe(0);
+            expect(vacant.evaluation).toMatchObject({
+                count: 0, mode: 'shadow', stewardVacant: true,
+                shadowWouldWake: false, shouldWake: false
+            });
+
+            const restoreTtl = snapshotAiConfig(memoryCoreConfig, {
+                'communityStewardWake.stewardLeaseTtlMs': TEST_MEASURED_LIVE_LEAVES['communityStewardWake.stewardLeaseTtlMs']
+            });
+            try {
+                const lease = await CommunityActivityService.acquireStewardLease({
+                    holderPrincipal: `steward:${tenantId}:holder`, now: t0, sourceInstanceIds
+                });
+                expect(lease.acquired).toBe(true);
+                expect(db.prepare('SELECT state FROM mc_community_steward_lease WHERE lease_scope_key = ?')
+                    .get(lease.leaseScopeKey).state).toBe('held');
+
+                const held = await CommunityActivityService.observeStewardWake({now: t0 + 1, sourceInstanceIds});
+                expect(held.attentionCounts).toMatchObject({status: 'empty', count: 0});
+                expect(held.evaluation).toMatchObject({
+                    count: 0, mode: 'shadow', stewardVacant: false,
+                    shadowWouldWake: false, shouldWake: false
+                });
+                for (const evaluation of [vacant.evaluation, held.evaluation]) {
+                    expect(evaluation).not.toHaveProperty('wakePayload');
+                    expect(evaluation).not.toHaveProperty('payloadBytes');
+                }
+            } finally {
+                restoreTtl()
+            }
+        });
+        expect(db.prepare('SELECT COUNT(*) AS count FROM mc_community_task_binding').get().count).toBe(0);
+    });
+
+    test('retains qualified empty observations as measured vacancy and zero would-wake demand', async () => {
+        const tenantId = 'tenant-empty-window', source = registerActiveGitHubSource(tenantId, 'org-empty-window', 'repo');
+        admitCompleteBaseline(tenantId, source.sourceInstanceId, []);
+        const output = path.join(fs.realpathSync(tmpDir), 'empty-window.json'),
+              report = await runOperatorWindow({
+                  args: {tenantId, sourceInstanceIds: [source.sourceInstanceId], samples: 2, intervalMs: 0, output,
+                      vacancyFallbackPrincipal: `steward:${tenantId}:observer`},
+                  runtimeLoader: async () => ({activity: CommunityActivityService, context: RequestContextService,
+                      readPolicy: resolveValidatedStewardWakePolicy, testStore: true, unitTestStore: true})
+              });
+
+        expect(report).toMatchObject({status: 'completed', windowEvidence: 'fixture-only'});
+        expect(report.denominator).toMatchObject({recorded: 2, freshDemand: 0, empty: 2});
+        for (const row of report.observations) {
+            expect(row.attentionCounts).toMatchObject({status: 'empty', count: 0});
+            expect(row.attentionCounts.sources[0].families).toHaveLength(3);
+            expect(row.attentionCounts.sources[0].families.every(family => family.qualified === true)).toBe(true);
+            expect(row.sourceGenerationComplete).toBe(true);
+            expect(row.evaluation).toMatchObject({
+                stewardVacant: true, shadowWouldWake: false, shouldWake: false
+            });
+        }
+        expect(report.summary.vacancy).toEqual({observedDenominator: 2, unknownObservations: 0, numerator: 2, fraction: 1});
+        expect(report.summary.wouldWake).toEqual({observedDenominator: 2, unknownObservations: 0, numerator: 0, fraction: 0});
+        expect(report.summary.payloadBytes).toMatchObject({observedDenominator: 0, unknownObservations: 2, total: null});
+        expect(JSON.parse(fs.readFileSync(output, 'utf8')).observations).toEqual(report.observations);
+        expect(db.prepare('SELECT COUNT(*) AS count FROM mc_community_task_binding').get().count).toBe(0);
+    });
+
     test('the observation surface refuses a live policy without recording a wake', async () => {
         const source = registerActiveGitHubSource('tenant-live-window', 'org-live-window', 'repo');
         admitCompleteBaseline('tenant-live-window', source.sourceInstanceId, [
@@ -874,6 +972,9 @@ test.describe('communityStewardWakeLease', () => {
                     reason        : 'coverage-degraded',
                     shouldWake    : false
                 });
+                for (const key of ['stewardVacant', 'shadowWouldWake', 'wakePayload', 'payloadBytes']) {
+                    expect(degradedVerdict).not.toHaveProperty(key)
+                }
             });
 
             await inTenant('tenant-missing', async () => {
@@ -885,6 +986,9 @@ test.describe('communityStewardWakeLease', () => {
                     reason        : 'coverage-missing',
                     shouldWake    : false
                 });
+                for (const key of ['stewardVacant', 'shadowWouldWake', 'wakePayload', 'payloadBytes']) {
+                    expect(missingVerdict).not.toHaveProperty(key)
+                }
             });
         } finally {
             restoreLeaseTtl()

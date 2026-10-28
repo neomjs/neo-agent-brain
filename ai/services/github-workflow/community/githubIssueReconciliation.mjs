@@ -1,4 +1,5 @@
 import {issueToObservations} from './githubIssueObservations.mjs';
+import {bindCommunityCoverage} from '../../memory-core/communityCoverageContract.mjs';
 
 /**
  * @summary The basis marker for the beginning of history — the `fromBasis` of a first run that
@@ -23,19 +24,41 @@ export const GENESIS_BASIS = 'genesis';
  * @returns {Promise<{items: Object[], truncated: Boolean}>}
  */
 async function exhaustConnection({firstPage, fetchNext, maxPages}) {
-    const items = [...(firstPage?.nodes ?? [])];
+    if (!Array.isArray(firstPage?.nodes) || typeof firstPage.pageInfo?.hasNextPage !== 'boolean') {
+        throw new Error('ISSUE_RECONCILIATION_CHILD_PAGE_INVALID')
+    }
+    const items = [], ids = new Set(), cursors = new Set();
+    const append = values => {
+        if (!Array.isArray(values)) throw new Error('ISSUE_RECONCILIATION_CHILD_PAGE_INVALID');
+        for (const value of values) {
+            if (typeof value?.id !== 'string' || !value.id || ids.has(value.id)) {
+                throw new Error('ISSUE_RECONCILIATION_CHILD_ID_INVALID')
+            }
+            ids.add(value.id);
+            items.push(value)
+        }
+    };
+    append(firstPage.nodes);
 
     let pageInfo = firstPage?.pageInfo,
         pages    = 1;
 
-    while (pageInfo?.hasNextPage) {
+    while (pageInfo.hasNextPage) {
         if (pages >= maxPages) {
             return {items, truncated: true}
         }
 
-        const next = await fetchNext(pageInfo.endCursor);
+        const cursor = pageInfo.endCursor;
+        if (typeof cursor !== 'string' || !cursor || cursors.has(cursor)) {
+            throw new Error('ISSUE_RECONCILIATION_CHILD_CURSOR_STALLED')
+        }
+        cursors.add(cursor);
+        const next = await fetchNext(cursor);
+        if (typeof next?.pageInfo?.hasNextPage !== 'boolean') {
+            throw new Error('ISSUE_RECONCILIATION_CHILD_PAGE_INVALID')
+        }
 
-        items.push(...(next.items ?? []));
+        append(next.items);
         pageInfo = next.pageInfo;
         pages++
     }
@@ -53,17 +76,16 @@ async function exhaustConnection({firstPage, fetchNext, maxPages}) {
  * never double-counted against a timeline event. Closed and open issues are enumerated identically
  * — reconciliation reflects the provider, it does not filter by state.
  *
- * Completeness is earned, not assumed. With no caps every axis runs to `hasNextPage === false` and
- * the run reports `coverage.complete === true`. The moment any caller cap truncates any axis, the
- * run reports `complete === false` with an explicit `gaps` entry naming the axis (and issue), so a
- * bounded sweep is always distinguishable from a whole one. All I/O is injected, keeping the
- * exhaustion witness-testable without a browser or a live GitHub.
+ * Completeness requires a traversal from the beginning with valid, exhausted connections. Caps,
+ * suffix starts, malformed pages and failed reads retain explicit acquisition gaps. Fixed provider
+ * history limitations are separate declarations under the persisted coverage contract. All I/O is
+ * injected, keeping the exhaustion witness-testable without a browser or a live GitHub.
  * @param {Object}   seams
  * @param {Function} seams.fetchIssuesPage    async ({cursor}) => `{issues:[node], pageInfo}`; each node carries id, createdAt, author, and inline first pages of `comments` and `timeline`.
  * @param {Function} seams.fetchCommentsPage  async ({issueId, cursor}) => `{comments:[c], pageInfo}`.
  * @param {Function} seams.fetchTimelinePage  async ({issueId, cursor}) => `{events:[e], pageInfo}`.
  * @param {Object}   [options]
- * @param {String}   [options.fromBasis]                 Prior checkpoint cursor this run resumes after.
+ * @param {String}   [options.fromBasis]                 Diagnostic suffix cursor; a suffix cannot qualify whole-history coverage.
  * @param {Number}   [options.maxIssuePages]             Cap on issue-list pages (default: unbounded).
  * @param {Number}   [options.maxCommentPagesPerIssue]   Cap on per-issue comment pages (default: unbounded).
  * @param {Number}   [options.maxTimelinePagesPerIssue]  Cap on per-issue timeline pages (default: unbounded).
@@ -81,12 +103,18 @@ export async function reconcileIssueActivity(seams, options = {}) {
         maxCommentPagesPerIssue = Infinity, maxTimelinePagesPerIssue = Infinity
     } = options;
 
+    for (const cap of [maxIssuePages, maxCommentPagesPerIssue, maxTimelinePagesPerIssue]) {
+        if (cap !== Infinity && (!Number.isInteger(cap) || cap < 0)) throw new Error('ISSUE_RECONCILIATION_PAGE_CAP_INVALID')
+    }
+
     const observations = [],
-          gaps         = [];
+          rootIds      = new Set(),
+          rootCursors  = new Set(),
+          gaps         = fromBasis === null ? [] : [{axis: 'root-traversal', reason: 'not-from-beginning'}];
 
     let issuesCursor = fromBasis,
         issuePages   = 0,
-        complete     = true;
+        complete     = gaps.length === 0;
 
     for (;;) {
         if (issuePages >= maxIssuePages) {
@@ -95,59 +123,86 @@ export async function reconcileIssueActivity(seams, options = {}) {
             break
         }
 
-        const {issues, pageInfo} = await fetchIssuesPage({cursor: issuesCursor});
+        let issues, pageInfo;
+        try {
+            ({issues, pageInfo} = await fetchIssuesPage({cursor: issuesCursor}));
+            if (!Array.isArray(issues) || typeof pageInfo?.hasNextPage !== 'boolean' ||
+                pageInfo.endCursor != null && typeof pageInfo.endCursor !== 'string' ||
+                issues.some(issue => typeof issue?.id !== 'string' || !issue.id || rootIds.has(issue.id)) ||
+                new Set(issues.map(issue => issue.id)).size !== issues.length) {
+                throw new Error('ISSUE_RECONCILIATION_ROOT_PAGE_INVALID')
+            }
+        } catch (error) {
+            complete = false;
+            gaps.push({axis: 'issues', reason: error instanceof Error ? error.message : String(error)});
+            break
+        }
 
         issuePages++;
 
         for (const issue of issues ?? []) {
-            const comments = await exhaustConnection({
-                firstPage: issue.comments,
-                fetchNext: async cursor => {
-                    const page = await fetchCommentsPage({issueId: issue.id, cursor});
-                    return {items: page.comments, pageInfo: page.pageInfo}
-                },
-                maxPages : maxCommentPagesPerIssue
-            });
+            rootIds.add(issue.id);
+            try {
+                const comments = await exhaustConnection({
+                    firstPage: issue.comments,
+                    fetchNext: async cursor => {
+                        const page = await fetchCommentsPage({issueId: issue.id, cursor});
+                        return {items: page.comments, pageInfo: page.pageInfo}
+                    },
+                    maxPages : maxCommentPagesPerIssue
+                });
 
-            const timeline = await exhaustConnection({
-                firstPage: issue.timeline,
-                fetchNext: async cursor => {
-                    const page = await fetchTimelinePage({issueId: issue.id, cursor});
-                    return {items: page.events, pageInfo: page.pageInfo}
-                },
-                maxPages : maxTimelinePagesPerIssue
-            });
+                const timeline = await exhaustConnection({
+                    firstPage: issue.timeline,
+                    fetchNext: async cursor => {
+                        const page = await fetchTimelinePage({issueId: issue.id, cursor});
+                        return {items: page.events, pageInfo: page.pageInfo}
+                    },
+                    maxPages : maxTimelinePagesPerIssue
+                });
 
-            if (comments.truncated) {
+                if (comments.truncated) {
+                    complete = false;
+                    gaps.push({axis: 'comments', issueId: issue.id})
+                }
+
+                if (timeline.truncated) {
+                    complete = false;
+                    gaps.push({axis: 'timeline', issueId: issue.id})
+                }
+
+                observations.push(...issueToObservations({...issue, comments: comments.items, timeline: timeline.items}));
+            } catch (error) {
                 complete = false;
-                gaps.push({axis: 'comments', issueId: issue.id})
+                gaps.push({axis: 'issue-conversation', issueId: issue.id,
+                    reason: error instanceof Error ? error.message : String(error)})
             }
-
-            if (timeline.truncated) {
-                complete = false;
-                gaps.push({axis: 'timeline', issueId: issue.id})
-            }
-
-            observations.push(...issueToObservations({...issue, comments: comments.items, timeline: timeline.items}))
         }
 
         // Capture the reached cursor on EVERY page, including the last — the endpoint of a complete
         // walk is the final page's endCursor, not just the boundary before a continuation.
-        if (pageInfo?.endCursor) {
+        const previous = issuesCursor;
+        if (pageInfo.endCursor) {
             issuesCursor = pageInfo.endCursor
         }
 
-        if (!pageInfo?.hasNextPage) {
+        if (!pageInfo.hasNextPage) {
             break
         }
+        if (typeof issuesCursor !== 'string' || !issuesCursor || previous === issuesCursor || rootCursors.has(issuesCursor)) {
+            complete = false;
+            gaps.push({axis: 'issues', afterCursor: issuesCursor, reason: 'cursor-stalled'});
+            break
+        }
+        rootCursors.add(issuesCursor)
     }
 
-    const coverage = {
+    const coverage = bindCommunityCoverage('issues', {
         fromBasis: fromBasis ?? GENESIS_BASIS,
         toBasis  : issuesCursor ?? GENESIS_BASIS,
         complete,
         ...(gaps.length ? {gaps} : {})
-    };
+    });
 
     return {observations, coverage, nextProviderState: {issuesCursor}}
 }

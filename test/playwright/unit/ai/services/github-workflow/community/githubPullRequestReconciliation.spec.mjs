@@ -9,10 +9,11 @@ import {test, expect}                 from '@playwright/test';
 import Neo                            from 'neo.mjs/src/Neo.mjs';
 import * as core                      from 'neo.mjs/src/core/_export.mjs';
 import {reconcilePullRequestActivity} from '../../../../../../../ai/services/github-workflow/community/githubPullRequestReconciliation.mjs';
+import {validateCommunityCoverage} from '../../../../../../../ai/services/memory-core/communityCoverageContract.mjs';
 
 /**
  * @summary Witnesses all-state root enumeration, independent child/edit-axis completion, timeline
- * mutation/count evidence, content revision verification, and adapter-owned unsupported gaps.
+ * mutation/count evidence, content revision verification, and adapter-owned provider limitations.
  */
 test.describe('reconcilePullRequestActivity runner', () => {
     const editConnection = (nodes=[], overrides={}) => ({
@@ -131,7 +132,19 @@ test.describe('reconcilePullRequestActivity runner', () => {
         expect(countKind(result.observations, 'pull_request.review-comment')).toBe(1);
         expect(countKind(result.observations, 'pull_request.closed')).toBe(1);
         expect(countKind(result.observations, 'pull_request.merged')).toBe(1);
-        expect(result.coverage).toMatchObject({fromBasis: 'genesis', toBasis: 'ROOT_2', complete: false});
+        expect(result.coverage).toMatchObject({fromBasis: 'genesis', toBasis: 'ROOT_2', complete: true});
+        expect(result.coverage.gaps).toBeUndefined();
+        expect(result.coverage.contract).toEqual({
+            schemaVersion: 'community-coverage.v1', batchSchemaVersion: 'community-activity-batch.v1',
+            resourceFamily: 'pulls', adapterSchemaVersion: 'github-pull-request.v1',
+            providerStateSchemaVersion: 'github-pull-request-state.v1'
+        });
+        expect(result.coverage.providerLimitations).toEqual([
+            {axis: 'comment-deletion-correlation', reason: 'github-comment-deleted-event-omits-deleted-comment-id'},
+            {axis: 'inline-review-comment-deletions', reason: 'github-does-not-expose-exhaustive-inline-review-comment-deletion-tombstones'},
+            {axis: 'review-deletions', reason: 'github-does-not-expose-exhaustive-review-deletion-tombstones'}
+        ]);
+        expect(validateCommunityCoverage(result.coverage)).toMatchObject({valid: true, qualified: true});
         expect(result.nextProviderState).toEqual({pullRequestsCursor: 'ROOT_2', rootCount: 2})
     });
 
@@ -143,7 +156,8 @@ test.describe('reconcilePullRequestActivity runner', () => {
         expect(result.observations.some(observation => observation.providerEntityId === 'PR_1')).toBe(false);
         expect(countKind(result.observations, 'pull_request.merged')).toBe(0);
         expect(result.coverage.complete).toBe(false);
-        expect(result.coverage.gaps).toContainEqual({axis: 'timeline', pullRequestId: 'PR_1', reason: 'page-cap'})
+        expect(result.coverage.gaps).toEqual([{axis: 'timeline', pullRequestId: 'PR_1', reason: 'page-cap'}]);
+        expect(validateCommunityCoverage(result.coverage)).toMatchObject({valid: true, qualified: false})
     });
 
     test('a child verification failure admits no mixed snapshot but retains the live root inventory', async () => {
@@ -363,14 +377,16 @@ test.describe('reconcilePullRequestActivity runner', () => {
         })
     });
 
-    test('unsupported deletion histories are adapter-owned and cannot be caller-suppressed', async () => {
+    test('provider limitations remain declared when an obsolete caller option tries to suppress them', async () => {
         const result = await reconcilePullRequestActivity(buildSeams(), {unsupportedHistoryGaps: []});
 
-        expect(result.coverage.complete).toBe(false);
-        expect(result.coverage.gaps.map(gap => gap.axis)).toEqual(expect.arrayContaining([
-            'comment-deletion-correlation',
-            'review-deletions', 'inline-review-comment-deletions'
-        ]))
+        expect(result.coverage.complete).toBe(true);
+        expect(result.coverage.gaps).toBeUndefined();
+        expect(result.coverage.providerLimitations).toHaveLength(3);
+        expect(result.coverage.providerLimitations.map(gap => gap.axis)).toEqual([
+            'comment-deletion-correlation', 'inline-review-comment-deletions', 'review-deletions'
+        ]);
+        expect(validateCommunityCoverage(result.coverage)).toMatchObject({valid: true, qualified: true})
     });
 
     test('duplicate provider root ids fail loud', async () => {
