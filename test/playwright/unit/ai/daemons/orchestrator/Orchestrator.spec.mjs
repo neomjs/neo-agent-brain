@@ -1213,7 +1213,14 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
         orchestrator.poll();
         await Promise.resolve();
 
-        expect(calls).toEqual([{repoEnrichmentEnabled: false}]);
+        expect(calls).toEqual([
+            expect.objectContaining({
+                repoEnrichmentEnabled: false,
+                focusV1Reader        : expect.objectContaining({
+                    readFocusV1Inputs: expect.any(Function)
+                })
+            })
+        ]);
     });
 
     test('keeps continuous daemon supervision outside heavy maintenance backpressure', () => {
