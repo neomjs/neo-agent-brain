@@ -202,7 +202,7 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
             primaryDevSyncRootsConfig      : orchestrator.primaryDevSyncRootsConfig,
             // Same resolution that feeds `enables.kbSync` above. The scheduled task and the
             // `primary-dev-sync` cascade are two convergent routes to one destructive-by-default
-            // rebuild; before #251 only the scheduled one was gated. Note this is deliberately
+            // rebuild; both routes are gated by the same enable. Note this is deliberately
             // `kbSyncEnabled` (resolveCloudOnlyEnabled) and NOT `primaryDevSyncEnabled`
             // (resolveDeploymentEnabled) — the latter is the ergonomic reach here, type-checks,
             // and would re-open the hole while looking gated.
@@ -241,7 +241,7 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
  */
 export function runSchedulingPipeline({registry, context, services, runtime}) {
     // The bootstrap rank's coverage snapshot outlives its TTL whenever the lane is not evaluated: a
-    // running slice, and the polls after it yields (#504). Warmed on every poll of a profile that owns
+    // running slice, and the polls after it yields. Warmed on every poll of a profile that owns
     // the lane (it is in this registry) and enables it — the boot prewarm's own boundary — so a host
     // edge or a disabled lane never reaches the resolver.
     if (context.enables?.tenantRepoSync && registry.some(descriptor => descriptor?.taskName === 'tenant-repo-sync')) {
@@ -284,7 +284,7 @@ export function runSchedulingPipeline({registry, context, services, runtime}) {
             isBootstrapCriticalTask: services.maintenanceBackpressureService.isBootstrapCriticalTask?.bind(
                 services.maintenanceBackpressureService
             ),
-            // Selection-time fairness (#504): the same reasoning as the bootstrap rank. The admission
+            // Selection-time fairness: the same reasoning as the bootstrap rank. The admission
             // gate's yield to a starving waiter only makes the winner abstain, so the waiter is
             // promoted here, where dispatch is decided.
             findStarvingWaiter: services.maintenanceBackpressureService.findStarvingWaiterToPromote?.bind(

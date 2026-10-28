@@ -321,7 +321,7 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
                 runtime: makeRuntime()
             });
 
-            // The whole point of RA-1: the bootstrap lane RUNS. A veto-only fix would leave `started`
+            // The bootstrap lane RUNS. A veto-only fix would leave `started`
             // empty and the winner unexecuted, which is indistinguishable from progress on a dashboard.
             expect(result.winner.taskName).toBe('tenant-repo-sync');
             expect(started).toEqual(['tenant-repo-sync']);
@@ -432,7 +432,7 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
                 backpressure.destroy()
             });
 
-            // The snapshot also goes cold in the polls after the lane YIELDS (#504): the lane is idle,
+            // The snapshot also goes cold in the polls after the lane YIELDS: the lane is idle,
             // not running, and the expired snapshot's fail-safe re-granted rank 1b within a minute.
             test('an owned and enabled tenant lane warms the snapshot every poll; an unowned or disabled one never resolves coverage', () => {
                 const warmed   = [];
@@ -457,7 +457,7 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
             });
         });
 
-        // A yield at admission only makes the picked winner abstain (#504): the pipeline dispatches one
+        // A yield at admission only makes the picked winner abstain: the pipeline dispatches one
         // candidate per poll, so the waiter it stepped aside for was never dispatched and the next poll
         // re-picked the same winner. Promotion at selection is what runs it. The ledger keeps real
         // time, so these arms do too.
@@ -1508,8 +1508,8 @@ test.describe('orchestrator/scheduling/pipeline — heavy-maintenance starvation
         const os   = (await import('os')).default;
         const path = (await import('path')).default;
 
-        // Real production classes — the first review cycle stubbed an invented collaborator method
-        // (resolveLeasePath) that exists only as a module-import alias in production; this arm
+        // Real production classes — stubbing an invented collaborator method
+        // (resolveLeasePath) that exists only as a module-import alias in production misses drift; this arm
         // crosses the REAL API surface so a symbol drift fails here, not on a deployed plane.
         await import('neo.mjs/src/Neo.mjs');
         await import('neo.mjs/src/core/_export.mjs');
@@ -1645,7 +1645,7 @@ test.describe('orchestrator/scheduling/pipeline — heavy-maintenance starvation
             expect(afterStale.leaseHolder, 'and it still reports no holder — which is exactly why the status is needed').toBe(null);
             // The holder's yield facts travel on the persisted verdict with every field PRESENT: with
             // no active holder there is nothing to read, and the receipt says so as four nulls rather
-            // than by omission (#415) — a consumer never has to tell "not carried" from "not observed".
+            // than by omission — a consumer never has to tell "not carried" from "not observed".
             expect(afterStale.holderYield).toEqual({taskName: null, leaseYielded: null, observedYieldCause: null, cycleAt: null});
 
             // The positive arm the four nulls above cannot exercise: an ACTIVE holder whose task
@@ -2075,11 +2075,11 @@ test.describe('recognized deferral codes stay in lockstep with their emitters (#
 
 test.describe('orchestrator/scheduling/pipeline — kbSync cascade authorization (#251)', () => {
     // -------------------------------------------------------------------------------------------
-    // #251 — composition seam.
+    // Composition seam.
     //
     // The scheduled `kbSync` task and the `primary-dev-sync` cascade are two convergent routes to
-    // one destructive-by-default corpus rebuild. Before #251 only the scheduled route consulted an
-    // enable, so `kbSync = false` suppressed one door and left the other open.
+    // one destructive-by-default corpus rebuild. Both routes consult the same
+    // enable, so `kbSync = false` suppresses both doors.
     //
     // These live at the composition seam ON PURPOSE. The service units inject explicit
     // authorization values — correct, because that is dependency injection and it keeps the four
