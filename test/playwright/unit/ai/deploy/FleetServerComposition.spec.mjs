@@ -94,10 +94,11 @@ test.describe('optional Fleet server composition', () => {
             cwd     : repoRoot,
             encoding: 'utf8',
             env     : {
-                PATH                      : process.env.PATH,
-                NEO_MCP_AUTH_TOKEN_FILE   : '/dev/null',
-                NEO_FLEET_PLANE_TOKEN_FILE: '/dev/null',
-                NEO_DEPLOY_PROJECT_NAME   : 'neo-fleet-host-allowlist-spec'
+                PATH                              : process.env.PATH,
+                NEO_MCP_AUTH_TOKEN_FILE           : '/dev/null',
+                NEO_FLEET_PLANE_TOKEN_FILE        : '/dev/null',
+                NEO_WAKE_RECEIVER_RECORDS_HOST_DIR: '/dev/null',
+                NEO_DEPLOY_PROJECT_NAME           : 'neo-fleet-host-allowlist-spec'
             }
         }));
 
