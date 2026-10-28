@@ -976,8 +976,12 @@ class ConfigBase extends ConfigProvider {
             // The active handoff path follows the effective unit-or-Playwright storage selector.
             'handoffFilePath': data => data.storagePaths.useTestDatabase ? data.handoffFilePathTest : data.handoffFilePathProd,
             // Admitted host-edge Focus (v1) projection JSON path: explicit override leaf when set,
-            // else sibling `focus-v1-projection.json` next to the resolved `handoffFilePath`.
-            'focusV1ProjectionPath': data => data.focusV1ProjectionPathOverride ?? path.join(path.dirname(data.handoffFilePath), 'focus-v1-projection.json'),
+            // else sibling `focus-v1-projection.json` next to the resolved `handoffFilePath` (or null when unset).
+            'focusV1ProjectionPath': data => data.focusV1ProjectionPathOverride ?? (
+                typeof data.handoffFilePath === 'string' && data.handoffFilePath.length > 0
+                    ? path.join(path.dirname(data.handoffFilePath), 'focus-v1-projection.json')
+                    : null
+            ),
             // The active route-attribution ledger dir follows the same test-storage selector.
             'goldenPathRouteAttributionLedgerDir': data => data.storagePaths.useTestDatabase ? data.goldenPathRouteAttributionLedgerDirTest : data.goldenPathRouteAttributionLedgerDirProd,
             // Wake-daemon watermark paths: explicit override leaf when set, else derived from the
