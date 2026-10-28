@@ -23,6 +23,7 @@ import Neo                       from 'neo.mjs/src/Neo.mjs';
 import * as core                 from 'neo.mjs/src/core/_export.mjs';
 import {
     ENGINE_CLASS_KEYS,
+    README_ROSTER_HEADER,
     SURFACE_STATES,
     SOCIAL_NAME_CLASS_KEYS,
     SURFACE_PATHS,
@@ -101,10 +102,10 @@ export const IDENTITIES = [
 
 const README_FIXTURE = `# Fixture
 
-| Name | Maintainer | Role | Identity |
-|---|---|---|---|
-| Tobias | [@tobiu](https://github.com/tobiu) | Gardener | Human |
-| Euclid | [@neo-gpt](https://github.com/neo-gpt) | AI maintainer | Machine Account |
+| Name | Maintainer | Identity |
+|---|---|---|
+| Tobias | [@tobiu](https://github.com/tobiu) | Human gardener |
+| Euclid | [@neo-gpt](https://github.com/neo-gpt) | AI maintainer |
 
 Trailing prose.
 `;
@@ -191,9 +192,9 @@ const ROTATION_FILES = Object.freeze({
 `,
     readme: `# Fixture
 
-| Name | Maintainer | Role | Identity |
-|---|---|---|---|
-| Euclid | [@neo-gpt](https://github.com/neo-gpt) | AI maintainer (OpenAI GPT-5.5 / Codex) | Machine Account |
+| Name | Maintainer | Identity |
+|---|---|---|
+| Euclid | [@neo-gpt](https://github.com/neo-gpt) | AI maintainer |
 `,
     spec: `test.describe('identity continuity', () => {
     test('pins @neo-gpt', () => {
@@ -338,13 +339,11 @@ test.describe('generateRosterOnboarding — surface emitters (pure half)', () =>
         expect(gptEntry).toContain(`reactivationTrigger: 'Operator confirms participation activation after first boot'`);
     });
 
-    test('the README row keeps the Name cell bare and the Role cell family-only (engine designation pending)', () => {
-        expect(renderReadmeRow(buildPlan())).toBe(
-            '| - | [@neo-unit-probe](https://github.com/neo-unit-probe) | AI maintainer (Anthropic Claude family — engine designation pending first boot) | Machine Account |'
-        );
+    test('the README row keeps the Name cell bare and carries no model facts', () => {
+        expect(renderReadmeRow(buildPlan())).toBe('| - | [@neo-unit-probe](https://github.com/neo-unit-probe) | AI maintainer |');
 
-        // unknown family: bare token, no invented vendor
-        expect(renderReadmeRow(buildPlan({family: 'newfamily'}))).toContain('AI maintainer (newfamily family — engine designation pending first boot)');
+        // the family stays in identityRoots and ModelStats
+        expect(renderReadmeRow(buildPlan({family: 'gpt'}))).toBe(renderReadmeRow(buildPlan()));
     });
 
     test('the ModelStats skeleton carries source-citation placeholders, never invented capability facts', () => {
@@ -517,7 +516,7 @@ test.describe('generateRosterOnboarding — surface planning (anchors + converge
     test('ambiguous legacy content fails the whole plan before any partial write is applicable', () => {
         const duplicate = README_FIXTURE.replace(
                   '\nTrailing prose.',
-                  '\n| - | [@neo-unit-probe](https://github.com/neo-unit-probe) | legacy | Machine Account |\n| - | [@neo-unit-probe](https://github.com/neo-unit-probe) | duplicate | Machine Account |\n\nTrailing prose.'
+                  '\n| - | [@neo-unit-probe](https://github.com/neo-unit-probe) | legacy |\n| - | [@neo-unit-probe](https://github.com/neo-unit-probe) | duplicate |\n\nTrailing prose.'
               ),
               planned = planOnboardingSurfaces(buildPlan(), {...FIXTURE_FILES, readme: duplicate});
 
@@ -593,7 +592,7 @@ test.describe('generateRosterOnboarding — surface planning (anchors + converge
 
 test.describe('generateRosterOnboarding — rotation hindcast (#14901 / PR #14902)', () => {
 
-    test('rotates only README + ModelStats while roots, spec, and migration epoch stay byte-stable', () => {
+    test('rotates only ModelStats while roots, README, spec, and migration epoch stay byte-stable', () => {
         const plan = buildPlan({
                   designation: 'GPT-5.6 Sol',
                   family     : 'gpt',
@@ -605,24 +604,23 @@ test.describe('generateRosterOnboarding — rotation hindcast (#14901 / PR #1490
         expect(planned.valid).toBe(true);
         expect(planned.surfaces.map(surface => surface.status)).toEqual([
             SURFACE_STATES.MATCH,
-            SURFACE_STATES.DIVERGENT,
+            SURFACE_STATES.MATCH,
             SURFACE_STATES.DIVERGENT,
             SURFACE_STATES.MATCH,
             SURFACE_STATES.MATCH
         ]);
         expect(planned.surfaces.filter(surface => surface.updated !== null).map(surface => surface.path)).toEqual([
-            'README.md',
             'learn/agentos/ModelStats.md'
         ]);
-        expect(planned.surfaces.find(surface => surface.surface === 'readme').updated).toContain('OpenAI GPT-5.6 Sol / Codex');
         expect(planned.surfaces.find(surface => surface.surface === 'modelStats').updated).toContain('| `name` | GPT-5.6 Sol |');
+        expect(planned.surfaces.find(surface => surface.surface === 'readme').updated).toBeNull();
         expect(planned.surfaces.find(surface => surface.surface === 'identityRoots').updated).toBeNull();
         expect(planned.surfaces.find(surface => surface.surface === 'migration').updated).toBeNull();
         expect(ROTATION_FILES.migration).toContain("'@neo-gpt': 'GPT-5.5'");
 
         const draft = renderPrBodyDraft(plan, planned).join('\n');
 
-        expect(draft).toContain('`README.md`');
+        expect(draft).not.toContain('`README.md` —');
         expect(draft).toContain('`learn/agentos/ModelStats.md`');
         expect(draft).not.toContain('`ai/graph/identityRoots.mjs` —');
         expect(draft).not.toContain('`ai/graph/identityRootsMigration.mjs` —');
@@ -630,13 +628,9 @@ test.describe('generateRosterOnboarding — rotation hindcast (#14901 / PR #1490
     });
 
     test('rerunning the repaired rotation is a five-surface MATCH', () => {
-        const plan  = buildPlan({designation: 'GPT-5.6 Sol', family: 'gpt', handle: '@neo-gpt', mode: 'rotation'}),
-              first = planRotationSurfaces(plan, ROTATION_FILES),
-              files = {
-                  ...ROTATION_FILES,
-                  modelStats: first.surfaces.find(surface => surface.surface === 'modelStats').updated,
-                  readme    : first.surfaces.find(surface => surface.surface === 'readme').updated
-              },
+        const plan   = buildPlan({designation: 'GPT-5.6 Sol', family: 'gpt', handle: '@neo-gpt', mode: 'rotation'}),
+              first  = planRotationSurfaces(plan, ROTATION_FILES),
+              files  = {...ROTATION_FILES, modelStats: first.surfaces.find(surface => surface.surface === 'modelStats').updated},
               second = planRotationSurfaces(plan, files);
 
         expect(second.valid).toBe(true);
@@ -644,20 +638,27 @@ test.describe('generateRosterOnboarding — rotation hindcast (#14901 / PR #1490
         expect(second.surfaces.every(surface => surface.updated === null)).toBe(true);
     });
 
-    test('a desired designation that is only a substring of the prior designation still rotates both mirrors', () => {
-        const plan  = buildPlan({designation: 'GPT-5.5', family: 'gpt', handle: '@neo-gpt', mode: 'rotation'}),
-              files = {
-                  ...ROTATION_FILES,
-                  modelStats: ROTATION_FILES.modelStats.replace('| `name` | GPT-5.5 |', '| `name` | GPT-5.5 Preview |'),
-                  readme    : ROTATION_FILES.readme.replace('OpenAI GPT-5.5 / Codex', 'OpenAI GPT-5.5 Preview / Codex')
-              },
+    test('a desired designation that is only a substring of the prior designation still rotates ModelStats', () => {
+        const plan       = buildPlan({designation: 'GPT-5.5', family: 'gpt', handle: '@neo-gpt', mode: 'rotation'}),
+              files      = {...ROTATION_FILES, modelStats: ROTATION_FILES.modelStats.replace('| `name` | GPT-5.5 |', '| `name` | GPT-5.5 Preview |')},
+              planned    = planRotationSurfaces(plan, files),
+              modelStats = planned.surfaces.find(surface => surface.surface === 'modelStats');
+
+        expect(planned.valid).toBe(true);
+        expect(modelStats.status).toBe(SURFACE_STATES.DIVERGENT);
+        expect(modelStats.updated).toContain('| `name` | GPT-5.5 |');
+        expect(modelStats.updated).not.toContain('GPT-5.5 Preview');
+    });
+
+    test('a README row that still mirrors the prior designation is refused, never rewritten', () => {
+        const plan    = buildPlan({designation: 'GPT-5.6 Sol', family: 'gpt', handle: '@neo-gpt', mode: 'rotation'}),
+              files   = {...ROTATION_FILES, readme: ROTATION_FILES.readme.replace('| AI maintainer |', '| AI maintainer (OpenAI GPT-5.5 / Codex) |')},
               planned = planRotationSurfaces(plan, files),
               readme  = planned.surfaces.find(surface => surface.surface === 'readme');
 
-        expect(planned.valid).toBe(true);
-        expect(readme.status).toBe(SURFACE_STATES.DIVERGENT);
-        expect(readme.updated).toContain('OpenAI GPT-5.5 / Codex');
-        expect(readme.updated).not.toContain('GPT-5.5 Preview');
+        expect(planned.valid).toBe(false);
+        expect(readme).toMatchObject({status: SURFACE_STATES.DIVERGENT, repairable: false, updated: null});
+        expect(readme.reason).toContain('the README holds no model facts');
     });
 });
 
@@ -673,6 +674,27 @@ test.describe('generateRosterOnboarding — live-file anchoring (the anchors mus
             SURFACE_STATES.MISSING,
             SURFACE_STATES.MISSING
         ]);
+    });
+
+    test('the generated row lands inside the REAL roster table with its column count, then reruns as MATCH', () => {
+        const plan   = buildPlan(),
+              first  = planReadmeSurface(readRealFiles().readme, plan),
+              lines  = first.updated.split('\n'),
+              row    = renderReadmeRow(plan),
+              rowIdx = lines.indexOf(row);
+
+        expect(first.status).toBe(SURFACE_STATES.MISSING);
+        expect(row.split('|')).toHaveLength(README_ROSTER_HEADER.split('|').length);
+        expect(lines[rowIdx - 1].startsWith('| ')).toBe(true);
+        expect(lines[rowIdx + 1].startsWith('|')).toBe(false);
+        expect(planReadmeSurface(first.updated, plan).status).toBe(SURFACE_STATES.MATCH);
+    });
+
+    test('a rotation of a real resident leaves the REAL README byte-stable', () => {
+        const plan   = buildPlan({designation: 'Unit Probe Designation', family: 'gpt', handle: '@neo-gpt-emmy', mode: 'rotation'}),
+              readme = planRotationSurfaces(plan, readRealFiles()).surfaces.find(surface => surface.surface === 'readme');
+
+        expect(readme).toMatchObject({status: SURFACE_STATES.MATCH, updated: null});
     });
 
     test('an activated resident (@neo-fable-mnemosyne) is DIVERGENT and refuses onboarding overwrite', () => {
@@ -814,7 +836,7 @@ test.describe('generateRosterOnboarding — fresh-process CLI convergence', () =
               beforeRoot = fs.readFileSync(path.join(root, SURFACE_PATHS.identityRoots), 'utf8'),
               duplicate  = FIXTURE_FILES.readme.replace(
                   '\nTrailing prose.',
-                  '\n| - | [@neo-unit-probe](https://github.com/neo-unit-probe) | legacy | Machine Account |\n| - | [@neo-unit-probe](https://github.com/neo-unit-probe) | duplicate | Machine Account |\n\nTrailing prose.'
+                  '\n| - | [@neo-unit-probe](https://github.com/neo-unit-probe) | legacy |\n| - | [@neo-unit-probe](https://github.com/neo-unit-probe) | duplicate |\n\nTrailing prose.'
               );
 
         fs.writeFileSync(path.join(root, SURFACE_PATHS.readme), duplicate, 'utf8');
@@ -826,20 +848,21 @@ test.describe('generateRosterOnboarding — fresh-process CLI convergence', () =
         expect(fs.readFileSync(path.join(root, SURFACE_PATHS.identityRoots), 'utf8')).toBe(beforeRoot);
     });
 
-    test('rotation changes public/stat mirrors only and preserves the July-4 seed snapshot', () => {
+    test('rotation changes the ModelStats mirror only and preserves the July-4 seed snapshot', () => {
         const root            = createFixtureRepo(ROTATION_FILES),
               identityBefore  = fs.readFileSync(path.join(root, SURFACE_PATHS.identityRoots), 'utf8'),
               migrationBefore = fs.readFileSync(path.join(root, SURFACE_PATHS.migration), 'utf8'),
+              readmeBefore    = fs.readFileSync(path.join(root, SURFACE_PATHS.readme), 'utf8'),
               specBefore      = fs.readFileSync(path.join(root, SURFACE_PATHS.spec), 'utf8'),
               args            = ['--mode', 'rotation', '--handle', '@neo-gpt', '--family', 'gpt', '--designation', 'GPT-5.6 Sol', '--write'],
               result          = runFreshCli(root, args);
 
         expect(result.status).toBe(0);
-        expect((result.stdout.match(/\[WROTE\]/g) || [])).toHaveLength(2);
+        expect((result.stdout.match(/\[WROTE\]/g) || [])).toHaveLength(1);
         expect(fs.readFileSync(path.join(root, SURFACE_PATHS.identityRoots), 'utf8')).toBe(identityBefore);
         expect(fs.readFileSync(path.join(root, SURFACE_PATHS.migration), 'utf8')).toBe(migrationBefore);
+        expect(fs.readFileSync(path.join(root, SURFACE_PATHS.readme), 'utf8')).toBe(readmeBefore);
         expect(fs.readFileSync(path.join(root, SURFACE_PATHS.spec), 'utf8')).toBe(specBefore);
-        expect(fs.readFileSync(path.join(root, SURFACE_PATHS.readme), 'utf8')).toContain('OpenAI GPT-5.6 Sol / Codex');
         expect(fs.readFileSync(path.join(root, SURFACE_PATHS.modelStats), 'utf8')).toContain('| `name` | GPT-5.6 Sol |');
     });
 
