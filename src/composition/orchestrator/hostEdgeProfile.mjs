@@ -97,6 +97,7 @@ export function buildHostEdgeEnv({stateDir = resolveHostEdgeStateDir()} = {}) {
         NEO_AI_DEPLOYMENT_MODE               : 'local',
         NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE: 'host-edge',
         [HOST_EDGE_STATE_DIR_ENV]            : stateDir,
+        NEO_FOCUS_V1_PROJECTION_PATH         : path.join(stateDir, 'focus-v1-projection.json'),
 
         // 3. Lane closure — the two elected host-edge lanes: LM Studio supervision, and the Neural
         // Link bridge (`taskDefinitions.mjs` `neuralLinkBridge`, on the Neural Link provider's port).
@@ -104,8 +105,8 @@ export function buildHostEdgeEnv({stateDir = resolveHostEdgeStateDir()} = {}) {
         // and the cockpit dial; a seat cannot spawn it (its MCP server runs from an engine checkout,
         // which carries no bridge script), and the container orchestrator's bridge would be
         // unreachable from the host.
-        NEO_ORCHESTRATOR_LMS_ENABLED            : 'true',
-        NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED      : 'true',
+        NEO_ORCHESTRATOR_LMS_ENABLED      : 'true',
+        NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED: 'true',
 
         // …and everything else off. Container-plane + shared-primitive lanes (Docker owns them).
         //

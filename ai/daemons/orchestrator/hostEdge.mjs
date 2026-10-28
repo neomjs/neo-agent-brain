@@ -24,7 +24,10 @@
 // again at the daemon entrypoint is idempotent.
 import 'dotenv/config';
 
-import {buildHostEdgeEnv} from '../../../src/composition/orchestrator/hostEdgeProfile.mjs';
+import {
+    buildHostEdgeEnv,
+    HOST_EDGE_STATE_DIR_ENV
+} from '../../../src/composition/orchestrator/hostEdgeProfile.mjs';
 
 /**
  * @summary Env key whose value IS the declaration this entrypoint makes.
@@ -44,11 +47,14 @@ const ROLE_ENV = 'NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE';
  *
  * @param {Object} [options]
  * @param {Object} [options.env=process.env] Environment to mutate.
- * @param {Object} [options.posture=buildHostEdgeEnv()] Posture fragment to apply.
+ * @param {Object} [options.posture] Posture fragment to apply; defaults to `buildHostEdgeEnv` anchored at `env.NEO_AI_ORCHESTRATOR_DIR` when present.
  * @returns {Object} The same environment object, for chaining in tests.
  * @throws {Error} When the environment explicitly declares a different role.
  */
-export function applyHostEdgePosture({env = process.env, posture = buildHostEdgeEnv()} = {}) {
+export function applyHostEdgePosture({
+    env     = process.env,
+    posture = buildHostEdgeEnv(env?.[HOST_EDGE_STATE_DIR_ENV] ? {stateDir: env[HOST_EDGE_STATE_DIR_ENV]} : undefined)
+} = {}) {
     const declaredRole = env[ROLE_ENV];
 
     if (declaredRole && declaredRole !== posture[ROLE_ENV]) {

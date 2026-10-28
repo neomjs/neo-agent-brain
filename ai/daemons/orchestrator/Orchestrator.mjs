@@ -1409,7 +1409,6 @@ export class Orchestrator extends Base {
     }
     get swarmHeartbeatEnabled()          { return resolveDeploymentEnabled('swarmHeartbeatEnabled');          }
     get goldenPathRepoEnrichmentEnabled(){ return resolveDeploymentEnabled('goldenPathRepoEnrichmentEnabled');}
-    get focusV1ProjectionPath()          { return memoryCoreConfig.focusV1ProjectionPath;                     }
     get graphLogCompactionEnabled()      { return AiConfig.orchestrator.graphLogCompaction.enabled;      }
     // local-only lane: the aggregation reads checkout-bound sources (resources/content, git log origin/dev,
     // learn/agentos/decisions), so it is disabled in a cloud profile. Runs only when the deployment allows it
@@ -1885,9 +1884,11 @@ export class Orchestrator extends Base {
      * Gated to the host-edge role (`isTaskAuthorityOwned('primary-dev-sync')`), single-flight,
      * cadence-bounded by `goldenPathMs`, and write-fenced by `!this.authorityLeaseLost`.
      * @param {Number} [now=Date.now()] Current epoch milliseconds.
+     * @param {Object} [options={}]
+     * @param {String} [options.projectionPath=memoryCoreConfig.focusV1ProjectionPath] Destination projection file path.
      * @returns {Promise<Object|null>}
      */
-    async refreshFocusV1ProjectionIfDue(now = Date.now()) {
+    async refreshFocusV1ProjectionIfDue(now = Date.now(), {projectionPath = memoryCoreConfig.focusV1ProjectionPath} = {}) {
         if (
             !this.isTaskAuthorityOwned('primary-dev-sync') ||
             !this.goldenPathRepoEnrichmentEnabled ||
@@ -1907,7 +1908,6 @@ export class Orchestrator extends Base {
             return null;
         }
 
-        const projectionPath = this.focusV1ProjectionPath;
         if (typeof projectionPath !== 'string' || !projectionPath.trim()) {
             return null;
         }

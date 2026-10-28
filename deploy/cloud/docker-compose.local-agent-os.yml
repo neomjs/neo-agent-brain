@@ -82,6 +82,11 @@ services:
       # read-only bind below; the reader falls back to a home-directory convention this container
       # does not have, which is why the path is stated.
       NEO_WAKE_RECEIVER_RECORDS_DIR: /app/wake-receiver-records
+      # The graphless host-edge Orchestrator collects the GitHub-sourced Focus (v1) blocks on the
+      # host and writes `<host-edge stateDir>/focus-v1-projection.json`; `mc-server` and
+      # `orchestrator` bind that host-edge state directory read-only and read the admitted
+      # projection file without holding GitHub credentials inside Docker.
+      NEO_FOCUS_V1_PROJECTION_PATH: &host-edge-focus-v1-projection-path /app/host-edge/focus-v1-projection.json
     secrets:
       - mcp-auth-token
       - gemini-api-key
@@ -97,6 +102,11 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - &host-edge-state-bind
+        type: bind
+        source: "${NEO_HOST_EDGE_STATE_DIR:-${HOME}/Library/Application Support/Neo/AgentOS/host-edge}"
+        target: /app/host-edge
+        read_only: true
     # `healthcheck.test` is a LIST, so this override REPLACES the base command rather than extending
     # it — every argument the base carries must be restated here or it is silently dropped from the
     # rendered plane. `--expected-status healthy,degraded` is one of them: without it a Memory Core
@@ -123,6 +133,7 @@ services:
       # Docker plane) resolves it to required, and `backup.mjs` exits 1 after every restorable
       # bundle, which opens a failure streak the health surface reports as an incident.
       NEO_ORCHESTRATOR_OFF_HOST_BACKUP_REQUIRED: "false"
+      NEO_FOCUS_V1_PROJECTION_PATH: *host-edge-focus-v1-projection-path
     secrets:
       - gemini-api-key
     # N=1 tenant bootstrap: the pull-mode sync's tiered resolver reads
@@ -131,6 +142,7 @@ services:
     # base compose comment names). Appends to the base service's volume list.
     volumes:
       - ./kb-config.yaml:/app/kb-config.yaml:ro
+      - *host-edge-state-bind
 
   fleet-server:
     restart: unless-stopped

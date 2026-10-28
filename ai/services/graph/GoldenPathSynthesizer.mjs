@@ -102,7 +102,6 @@ import {
     createFocusV1HostEdgeReader,
     createFocusV1ProjectionReader,
     evaluateViewReceipts      as evaluateFocusV1ViewReceipts,
-    makeRefusingFocusV1Reader,
     parseRowStateLine         as parseFocusV1RowStateLine,
     projectPublicBusinessRows as projectFocusV1PublicBusinessRows,
     renderFocusV1Section      as renderFocusV1HandoffSection
@@ -1868,19 +1867,10 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
         try {
             const capturedAt      = now instanceof Date ? now : new Date(now);
             let   resolvedFocus   = focusV1Inputs && typeof focusV1Inputs === 'object' ? focusV1Inputs : null;
-            const effectiveReader = focusV1Reader ?? (
-                repoEnrichmentEnabled === false
-                    ? createFocusV1HostEdgeReader({
-                        readV1Rows       : makeRefusingFocusV1Reader(CLOUD_PLANE_HOST_EDGE_ABSENT_REASON),
-                        readViewsReceipts: makeRefusingFocusV1Reader(CLOUD_PLANE_HOST_EDGE_ABSENT_REASON),
-                        readReachTraffic : makeRefusingFocusV1Reader(CLOUD_PLANE_HOST_EDGE_ABSENT_REASON),
-                        readOperatorWord : makeRefusingFocusV1Reader(CLOUD_PLANE_HOST_EDGE_ABSENT_REASON),
-                        absentReason     : CLOUD_PLANE_HOST_EDGE_ABSENT_REASON
-                    })
-                    : createFocusV1ProjectionReader({
-                        projectionPath: aiConfig.focusV1ProjectionPath
-                    })
-            );
+            const effectiveReader = focusV1Reader ?? createFocusV1ProjectionReader({
+                projectionPath: aiConfig.focusV1ProjectionPath,
+                ...(repoEnrichmentEnabled === false ? {absentReason: CLOUD_PLANE_HOST_EDGE_ABSENT_REASON} : {})
+            });
 
             if (!resolvedFocus && typeof effectiveReader === 'function') {
                 resolvedFocus = await effectiveReader({now: capturedAt});

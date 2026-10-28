@@ -604,12 +604,18 @@ class ConfigBase extends ConfigProvider {
              */
             handoffFilePathTest: leaf(testHandoffFile, 'NEO_HANDOFF_FILE_PATH_TEST', 'string'),
             /**
-             * Optional override for the admitted host-edge `## Focus (v1)` dated projection JSON path.
-             * Null means derive by formula alongside the resolved `handoffFilePath` (`focus-v1-projection.json`),
-             * so test-mode and relocated handoff roots stay isolated by construction.
-             * @type {string|null}
+             * File path of the admitted host-edge `## Focus (v1)` dated projection JSON
+             * (`focus-v1-projection.v1`), as this process sees it. The host-edge posture sets this to
+             * `<host-edge stateDir>/focus-v1-projection.json`; the local container-plane overlay binds
+             * that host-edge state directory read-only into `orchestrator` and `mc-server` and points
+             * this leaf at the mounted file. Empty means the deployment declares no host-edge
+             * projection source, which degrades the four GitHub blocks cleanly to `unknown` — never a
+             * plane-anchored default, because a Docker named volume and a host process do not share a
+             * filesystem namespace. Not a plane member — host-edge consumer config, like
+             * `fleet.wakeReceiverRecordsDir`.
+             * @type {string}
              */
-            focusV1ProjectionPathOverride: leaf(null, 'NEO_FOCUS_V1_PROJECTION_PATH', 'string'),
+            focusV1ProjectionPath: leaf('', 'NEO_FOCUS_V1_PROJECTION_PATH', 'string'),
             /**
              * Stale-assignment idle threshold used by `GoldenPathSynthesizer` when rendering
              * Sandman handoff candidates. Defaults to the ticket-intake 7-day reassignment rule.
@@ -975,13 +981,6 @@ class ConfigBase extends ConfigProvider {
             },
             // The active handoff path follows the effective unit-or-Playwright storage selector.
             'handoffFilePath': data => data.storagePaths.useTestDatabase ? data.handoffFilePathTest : data.handoffFilePathProd,
-            // Admitted host-edge Focus (v1) projection JSON path: explicit override leaf when set,
-            // else sibling `focus-v1-projection.json` next to the resolved `handoffFilePath` (or null when unset).
-            'focusV1ProjectionPath': data => data.focusV1ProjectionPathOverride ?? (
-                typeof data.handoffFilePath === 'string' && data.handoffFilePath.length > 0
-                    ? path.join(path.dirname(data.handoffFilePath), 'focus-v1-projection.json')
-                    : null
-            ),
             // The active route-attribution ledger dir follows the same test-storage selector.
             'goldenPathRouteAttributionLedgerDir': data => data.storagePaths.useTestDatabase ? data.goldenPathRouteAttributionLedgerDirTest : data.goldenPathRouteAttributionLedgerDirProd,
             // Wake-daemon watermark paths: explicit override leaf when set, else derived from the

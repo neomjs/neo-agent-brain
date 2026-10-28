@@ -3,6 +3,7 @@ import fs                 from 'node:fs';
 import path               from 'node:path';
 import process            from 'node:process';
 import {load as yamlLoad} from 'js-yaml';
+import {parseDocument}    from 'yaml';
 import {buildHostEdgeEnv} from '../../../../../src/composition/orchestrator/hostEdgeProfile.mjs';
 
 /**
@@ -536,11 +537,26 @@ test.describe('data-plane profile election — base and integration-fixture disp
 
         expect(hostEdgePosture.NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE).toBe('host-edge');
         expect(hostEdgePosture.NEO_AI_DEPLOYMENT_MODE).toBe('local');
+        expect(hostEdgePosture.NEO_FOCUS_V1_PROJECTION_PATH).toBe('/probe/host-edge/focus-v1-projection.json');
         expect(hostEdgePosture.NEO_ORCHESTRATOR_LMS_ENABLED).toBe('true');
         // #481: the second elected lane — the loopback Neural Link bridge the seats and the cockpit
         // share. Elected in the posture module only; the plist must not restate it either.
         expect(hostEdgePosture.NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED).toBe('true');
         expect(hostEdgePlistSource).not.toContain('<key>NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED</key>');
+        expect(hostEdgePlistSource).not.toContain('<key>NEO_FOCUS_V1_PROJECTION_PATH</key>');
+
+        const localOverlay = parseDocument(overlaySource).toJS();
+        for (const serviceName of ['mc-server', 'orchestrator']) {
+            const service = localOverlay.services?.[serviceName];
+            expect(service?.environment?.NEO_FOCUS_V1_PROJECTION_PATH, `${serviceName} must declare NEO_FOCUS_V1_PROJECTION_PATH`)
+                .toBe('/app/host-edge/focus-v1-projection.json');
+            expect(service?.volumes, `${serviceName} must bind the host-edge state directory read-only`).toContainEqual({
+                type     : 'bind',
+                source   : '${NEO_HOST_EDGE_STATE_DIR:-${HOME}/Library/Application Support/Neo/AgentOS/host-edge}',
+                target   : '/app/host-edge',
+                read_only: true
+            });
+        }
 
         expect(hostEdgePlistSource).toMatch(
             /<key>NEO_MODEL_PROVIDER<\/key>\s*<string>openAiCompatible<\/string>/

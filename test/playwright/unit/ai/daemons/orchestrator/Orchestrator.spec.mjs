@@ -1214,12 +1214,9 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
         await Promise.resolve();
 
         expect(calls).toEqual([
-            expect.objectContaining({
-                repoEnrichmentEnabled: false,
-                focusV1Reader        : expect.objectContaining({
-                    readFocusV1Inputs: expect.any(Function)
-                })
-            })
+            {
+                repoEnrichmentEnabled: false
+            }
         ]);
     });
 
@@ -3124,10 +3121,6 @@ test.describe('#1333 — Focus (v1) host-edge projection refresh is gated to hos
                 authorityProfile    : ORCHESTRATOR_AUTHORITY_PROFILE.hostEdge,
                 goldenPathIntervalMs: 1_000
             });
-            Object.defineProperty(hostOrchestrator, 'focusV1ProjectionPath', {
-                get         : () => projectionPath,
-                configurable: true
-            });
             hostOrchestrator.initFocusV1ProjectionCollector();
             expect(typeof hostOrchestrator.focusV1ProjectionCollector).toBe('function');
 
@@ -3144,23 +3137,27 @@ test.describe('#1333 — Focus (v1) host-edge projection refresh is gated to hos
                 };
             };
 
-            const first = await hostOrchestrator.refreshFocusV1ProjectionIfDue(10_000);
+            // Default empty leaf (`NEO_FOCUS_V1_PROJECTION_PATH` unset) -> no-op
+            expect(await hostOrchestrator.refreshFocusV1ProjectionIfDue(10_000, {projectionPath: ''})).toBeNull();
+            expect(collectedCount).toBe(0);
+
+            const first = await hostOrchestrator.refreshFocusV1ProjectionIfDue(10_000, {projectionPath});
             expect(first?.projectionPath).toBe(projectionPath);
             expect(collectedCount).toBe(1);
             expect(JSON.parse(fs.readFileSync(projectionPath, 'utf8')).schemaVersion).toBe('focus-v1-projection.v1');
 
             // Within cadence -> no-op
-            expect(await hostOrchestrator.refreshFocusV1ProjectionIfDue(10_500)).toBeNull();
+            expect(await hostOrchestrator.refreshFocusV1ProjectionIfDue(10_500, {projectionPath})).toBeNull();
             expect(collectedCount).toBe(1);
 
             // Elapsed cadence -> refreshes again
-            const second = await hostOrchestrator.refreshFocusV1ProjectionIfDue(11_500);
+            const second = await hostOrchestrator.refreshFocusV1ProjectionIfDue(11_500, {projectionPath});
             expect(second?.projectionPath).toBe(projectionPath);
             expect(collectedCount).toBe(2);
 
             // Authority lease lost -> fenced
             hostOrchestrator.authorityLeaseLost = true;
-            expect(await hostOrchestrator.refreshFocusV1ProjectionIfDue(20_000)).toBeNull();
+            expect(await hostOrchestrator.refreshFocusV1ProjectionIfDue(20_000, {projectionPath})).toBeNull();
             expect(collectedCount).toBe(2);
 
             hostOrchestrator.destroy();

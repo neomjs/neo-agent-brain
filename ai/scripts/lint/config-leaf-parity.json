@@ -731,7 +731,7 @@
         "debug",
         "decayFactor",
         "engine",
-        "focusV1ProjectionPathOverride",
+        "focusV1ProjectionPath",
         "goldenPathActivePrStateFreshnessMs",
         "goldenPathRecentOpenPrRenderLimit",
         "goldenPathRouteAttributionLedgerDirProd",

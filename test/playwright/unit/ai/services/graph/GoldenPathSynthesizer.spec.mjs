@@ -3430,11 +3430,14 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect('createConfigSnapshot' in GoldenPathSynthesizer).toBe(false);
     });
 
-    test('synthesizeGoldenPath writes ## Focus (v1) both when inputs are absent and when a host-edge reader is supplied (#957)', async () => {
-        const originalGetGraphCollection   = StorageRouter.getGraphCollection;
-        const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
-        const originalEmbedText            = TextEmbeddingService.embedText;
-        const now                          = new Date('2026-10-28T03:00:00.000Z');
+    test('synthesizeGoldenPath writes ## Focus (v1) when inputs are absent, when a host-edge reader is supplied, and when aiConfig.focusV1ProjectionPath points to a dated projection (#957 / #1333)', async () => {
+        const originalGetGraphCollection         = StorageRouter.getGraphCollection;
+        const originalGetSummaryCollection       = StorageRouter.getSummaryCollection;
+        const originalEmbedText                  = TextEmbeddingService.embedText;
+        const now                                = new Date('2026-10-28T03:00:00.000Z');
+        const projectionDir                      = fs.mkdtempSync(path.join(os.tmpdir(), 'gp-focus-v1-proj-'));
+        const projectionPath                     = path.join(projectionDir, 'focus-v1-projection.json');
+        const {collectAndWriteFocusV1Projection} = await import('../../../../../../ai/services/graph/focusV1Section.mjs');
 
         StorageRouter.getGraphCollection   = async () => ({query: async () => ({ids: [[]], distances: [[]]})});
         StorageRouter.getSummaryCollection = async () => ({get: async () => ({documents: ['mock document']})});
@@ -3447,6 +3450,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             expect(cloudHandoff).toContain('## Focus (v1)');
             expect(cloudHandoff).toContain('<!-- focus.v1 · captured: 2026-10-28 03:00 UTC -->');
             expect(cloudHandoff).toContain('v1: 0 of 5 rows passed · ready 0 · unknown 5 · failed 0');
+            expect(cloudHandoff).toContain('GitHub focus inputs require a host-edge reader or admitted dated projection; this cloud-plane pass has neither');
 
             const focusV1Reader = Synthesizer.createFocusV1HostEdgeReader({
                 readV1Rows: async () => ({
@@ -3463,10 +3467,34 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
 
             expect(hostHandoff).toContain('v1: 0 of 5 rows passed · ready 1 · unknown 4 · failed 0');
             expect(hostHandoff).toContain('- row 1 (#501): Row state: ready — 6/6 leaves closed');
+
+            await collectAndWriteFocusV1Projection({
+                projectionPath,
+                now,
+                readV1Rows       : async () => ({asOf: '2026-10-28T03:00:00.000Z', rows: [{row: 1, epic: '#351', rawLine: 'Row state: passed — verified'}]}),
+                readViewsReceipts: async () => ({asOf: '2026-10-28T03:00:00.000Z', receipts: [{viewKey: 'fleet', needsLove: 'none observed', buildClass: 'installed 0.2.0', observedAt: '2026-10-28T03:00:00.000Z'}]}),
+                readReachTraffic : async () => ({asOf: '2026-10-28T03:00:00.000Z', traffic: {views: 900, uniques: 140}, stars: 1510, forks: 215}),
+                readOperatorWord : async () => ({asOf: '2026-10-28T03:00:00.000Z', candidates: [{repo: 'neomjs/neo-agent-brain', number: 1332, approvedAt: '2026-10-28T03:00:00.000Z', projection: {verdict: 'ready'}}]}),
+                readPrivateLedger: async () => ({rows: []})
+            });
+
+            snapshotAiConfig(aiConfig, {focusV1ProjectionPath: projectionPath});
+
+            await GoldenPathSynthesizer.synthesizeGoldenPath({
+                repoEnrichmentEnabled: false,
+                now
+            });
+            const projectedHandoff = fs.readFileSync(tmpHandoffFile, 'utf-8');
+
+            expect(projectedHandoff).toContain('v1: 1 of 5 rows passed · ready 0 · unknown 4 · failed 0');
+            expect(projectedHandoff).toContain('views: swept 1 · needing love 0');
+            expect(projectedHandoff).toContain('traffic 14d: 900 views, 140 uniques · stars: 1510 · forks: 215');
+            expect(projectedHandoff).toContain('- neomjs/neo-agent-brain#1332 · approved 2026-10-28T03:00:00.000Z · `ready for the operator` (projection: ready)');
         } finally {
             StorageRouter.getGraphCollection   = originalGetGraphCollection;
             StorageRouter.getSummaryCollection = originalGetSummaryCollection;
             TextEmbeddingService.embedText     = originalEmbedText;
+            fs.rmSync(projectionDir, {recursive: true, force: true});
         }
     });
 });

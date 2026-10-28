@@ -13,13 +13,19 @@ setup({
     }
 });
 
-import {Buffer}       from 'node:buffer';
-import fs             from 'node:fs';
-import os             from 'node:os';
-import path           from 'node:path';
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {Buffer}               from 'node:buffer';
+import fs                     from 'node:fs';
+import os                     from 'node:os';
+import path                   from 'node:path';
+import {parseDocument}        from 'yaml';
+import {test, expect}         from '@playwright/test';
+import Neo                    from 'neo.mjs/src/Neo.mjs';
+import * as core              from 'neo.mjs/src/core/_export.mjs';
+import {applyHostEdgePosture} from '../../../../../../ai/daemons/orchestrator/hostEdge.mjs';
+import McConfigBase           from '../../../../../../ai/mcp/server/memory-core/configBase.mjs';
+import {
+    HOST_EDGE_STATE_DIR_ENV
+} from '../../../../../../src/composition/orchestrator/hostEdgeProfile.mjs';
 import {
     CLOUD_PLANE_HOST_EDGE_ABSENT_REASON,
     FOCUS_V1_HEADING,
@@ -696,6 +702,91 @@ test.describe('focusV1Section — Sandman handoff ## Focus (v1) producer contrac
             });
         } finally {
             fs.rmSync(tmpDir, {recursive: true, force: true});
+        }
+    });
+
+    test('deployed local-agent-os topology resolves host-edge writer and container-plane readers to the same physical file (#1333)', async () => {
+        const hostEdgeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-v1-host-edge-state-'));
+        const leafSpec    = McConfigBase.config.data.focusV1ProjectionPath;
+
+        expect(leafSpec).toMatchObject({
+            default: '',
+            env    : 'NEO_FOCUS_V1_PROJECTION_PATH',
+            type   : 'string'
+        });
+        expect(typeof leafSpec.parse).toBe('function');
+        expect('focusV1ProjectionPathOverride' in McConfigBase.config.data).toBe(false);
+        expect('focusV1ProjectionPath' in (McConfigBase.config.formulas ?? {})).toBe(false);
+
+        try {
+            // 1. Writer side: resolve the host-edge process environment the way `ai/daemons/orchestrator/hostEdge.mjs`
+            //    does when supervised by launchd with `NEO_AI_ORCHESTRATOR_DIR` set to the host-edge state directory,
+            //    then decode the `focusV1ProjectionPath` leaf through its own `parse` hook.
+            const hostEdgeEnv = applyHostEdgePosture({
+                env: {[HOST_EDGE_STATE_DIR_ENV]: hostEdgeDir}
+            });
+            const writerProjectionPath = leafSpec.parse(leafSpec.env, {env: hostEdgeEnv}) ?? leafSpec.default;
+
+            expect(writerProjectionPath).toBe(path.join(hostEdgeDir, 'focus-v1-projection.json'));
+
+            // 2. Reader side: parse `deploy/cloud/docker-compose.local-agent-os.yml`, decode each container reader's
+            //    `focusV1ProjectionPath` leaf from its declared service environment, and map that container path
+            //    through its declared read-only bind mount back to the host filesystem.
+            const overlayPath = path.resolve(process.cwd(), 'deploy/cloud/docker-compose.local-agent-os.yml');
+            const overlay     = parseDocument(fs.readFileSync(overlayPath, 'utf8')).toJS();
+
+            function resolveContainerProjectionOnHost(serviceName) {
+                const service                 = overlay.services?.[serviceName];
+                const containerProjectionPath = leafSpec.parse(leafSpec.env, {env: service?.environment ?? {}}) ?? leafSpec.default;
+                const bindMount               = (service?.volumes ?? []).find(
+                    volume => typeof volume === 'object' &&
+                        volume.type === 'bind' &&
+                        volume.read_only === true &&
+                        typeof volume.target === 'string' &&
+                        containerProjectionPath?.startsWith(`${volume.target}/`)
+                );
+
+                expect(containerProjectionPath, `${serviceName} must declare ${leafSpec.env}`).toBe('/app/host-edge/focus-v1-projection.json');
+                expect(bindMount, `${serviceName} must bind-mount /app/host-edge read-only`).toBeDefined();
+                expect(bindMount.source).toBe('${NEO_HOST_EDGE_STATE_DIR:-${HOME}/Library/Application Support/Neo/AgentOS/host-edge}');
+
+                // Substitute `NEO_HOST_EDGE_STATE_DIR` with `hostEdgeDir` the way Compose interpolation does:
+                const resolvedHostBindSource = hostEdgeDir;
+                const relativeInsideMount    = path.posix.relative(bindMount.target, containerProjectionPath);
+
+                return path.join(resolvedHostBindSource, relativeInsideMount);
+            }
+
+            const orchestratorPhysicalPath = resolveContainerProjectionOnHost('orchestrator');
+            const mcServerPhysicalPath     = resolveContainerProjectionOnHost('mc-server');
+
+            expect(orchestratorPhysicalPath).toBe(writerProjectionPath);
+            expect(mcServerPhysicalPath).toBe(writerProjectionPath);
+
+            // 3. Write through the host-edge writer path and read through the container-plane mapped path
+            //    (with `absentReason: CLOUD_PLANE_HOST_EDGE_ABSENT_REASON`, matching `orchestrator` where `repoEnrichmentEnabled === false`).
+            await collectAndWriteFocusV1Projection({
+                projectionPath   : writerProjectionPath,
+                now              : new Date(CAPTURED_AT),
+                readV1Rows       : async () => ({asOf: CAPTURED_AT, rows: [{row: 1, epic: '#351', rawLine: 'Row state: passed · 2026-10-20'}]}),
+                readViewsReceipts: async () => ({asOf: CAPTURED_AT, receipts: [{viewKey: 'fleet', needsLove: 'none observed', buildClass: 'installed 0.2.0', observedAt: CAPTURED_AT}]}),
+                readReachTraffic : async () => ({asOf: CAPTURED_AT, traffic: {views: 900, uniques: 140}, stars: 1510, forks: 215}),
+                readOperatorWord : async () => ({asOf: CAPTURED_AT, candidates: [{repo: 'neomjs/neo-agent-brain', number: 1332, approvedAt: CAPTURED_AT, projection: {verdict: 'ready'}}]}),
+                readPrivateLedger: async () => ({rows: []})
+            });
+
+            const containerOrchestratorReader = createFocusV1ProjectionReader({
+                projectionPath: orchestratorPhysicalPath,
+                absentReason  : CLOUD_PLANE_HOST_EDGE_ABSENT_REASON
+            });
+            const containerInputs = await containerOrchestratorReader.readFocusV1Inputs({now: new Date(CAPTURED_AT)});
+
+            expect(containerInputs.v1.status).toBe('ok');
+            expect(containerInputs.views.status).toBe('ok');
+            expect(containerInputs.reach.status).toBe('ok');
+            expect(containerInputs.operatorWord.status).toBe('ok');
+        } finally {
+            fs.rmSync(hostEdgeDir, {recursive: true, force: true});
         }
     });
 });
