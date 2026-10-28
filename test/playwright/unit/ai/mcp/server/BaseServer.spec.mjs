@@ -25,8 +25,7 @@ import Tier1ConfigBase, {PLANE_MEMBER_PATHS as TIER1_MEMBER_PATHS} from '../../.
 import {derivePlaneMemberPaths}                                    from '../../../../../../ai/planeConfig.mjs';
 import BaseServer                                                  from '../../../../../../ai/mcp/server/BaseServer.mjs';
 // The committed template, never `ai/config.mjs` — tests resolve committed config templates and never a
-// repo-local ignored overlay. ticket-ref-ok: ADR-0019 B1/C3 is the authority lint-config-template-ssot
-// enforces this import against, so a reader reverting it needs the citation, not just the rule.
+// repo-local ignored overlay, as enforced by lint-config-template-ssot.
 // Imported after the core export so it resolves against a fully initialised `Neo`.
 import AiConfig                                                    from '../../../../../../ai/config.template.mjs';
 
@@ -239,6 +238,60 @@ test.describe('Neo.ai.mcp.server.BaseServer — exhaustive server transport sele
                 resourceName: 'neo-transport-test MCP'
             });
             expect(server.transport).toBeNull();
+            expect(setupOptions.identityPublication).toBeNull();
+        } finally {
+            TransportService.setup = originalSetup;
+            server.destroy();
+        }
+    });
+
+    test('builds the identity-publication boot boundary once and forwards it unchanged', async () => {
+        const server = createTransportServer('streamable-http');
+        const TransportService = (await import('../../../../../../ai/mcp/server/shared/services/TransportService.mjs')).default;
+        const originalSetup = TransportService.setup;
+        const boundary = {admit: async () => ({statusCode: 503, body: {status: 'unavailable'}})};
+        let built = 0, received;
+
+        server.createIdentityPublicationBoundary = () => {built++; return boundary;};
+        TransportService.setup = async options => {received = options.identityPublication;};
+
+        try {
+            await server.connectTransport();
+            expect(built).toBe(1);
+            expect(received).toBe(boundary);
+        } finally {
+            TransportService.setup = originalSetup;
+            server.destroy();
+        }
+    });
+
+    test('a configured identity-publication boundary cannot disappear on stdio', async () => {
+        const server = createTransportServer('stdio');
+        let connected = false;
+
+        server.createIdentityPublicationBoundary = () => ({admit() {}});
+        server.mcpServer = {connect: async () => {connected = true;}};
+
+        try {
+            await expect(server.connectTransport()).rejects.toThrow('identity publication requires streamable-http');
+            expect(connected).toBe(false);
+        } finally {
+            server.destroy();
+        }
+    });
+
+    test('an undefined boot-boundary result is not silently treated as unprovisioned', async () => {
+        const server = createTransportServer('streamable-http');
+        const TransportService = (await import('../../../../../../ai/mcp/server/shared/services/TransportService.mjs')).default;
+        const originalSetup = TransportService.setup;
+        let reached = false;
+
+        server.createIdentityPublicationBoundary = () => undefined;
+        TransportService.setup = async () => {reached = true;};
+
+        try {
+            await expect(server.connectTransport()).rejects.toThrow('identity publication boundary must be null or an object');
+            expect(reached).toBe(false);
         } finally {
             TransportService.setup = originalSetup;
             server.destroy();
@@ -879,7 +932,10 @@ test.describe('Neo.ai.mcp.server.BaseServer — plane-member boundary (#15799)',
         // The re-review falsifier: a member server asserting only its LOCAL list would pass
         // while the inherited Tier-1 members it consumes stay on the old anchor. The
         // composition makes that bypass impossible.
+        const previousRoot = process.env.NEO_PLANE_DATA_ROOT,
+            previousHeartbeat = process.env.NEO_HEARTBEAT_ALIVE_PATH;
         process.env.NEO_PLANE_DATA_ROOT = path.join(os.tmpdir(), 'neo-relocated-composed-spec');
+        process.env.NEO_HEARTBEAT_ALIVE_PATH = Tier1ConfigBase.config.data.wakeDaemonHeartbeatAlivePath.default;
 
         try {
             const isolated = createConfigProxy(Neo.create(ConfigProvider, {
@@ -891,15 +947,18 @@ test.describe('Neo.ai.mcp.server.BaseServer — plane-member boundary (#15799)',
                 const server = Neo.create(makeBoundaryServerClass({member: true, composed: true}));
                 server.aiConfig = isolated;
 
-                // The witness is any inherited Tier-1 member: `backupPath` is now an explicit
-                // non-member and therefore no longer a stray this walk can name. The point of
-                // the test is that the LOCAL list alone cannot satisfy the assertion.
+                // Pin one inherited member to its build-time default despite launcher env overrides.
+                expect(isolated.plane.dataRoot).toBe(path.join(os.tmpdir(), 'neo-relocated-composed-spec'));
+                expect(isolated.wakeDaemonHeartbeatAlivePath).toBe(Tier1ConfigBase.config.data.wakeDaemonHeartbeatAlivePath.default);
                 expect(() => server.assertPlaneIdentity()).toThrow('wakeDaemonHeartbeatAlivePath');
             } finally {
                 isolated.destroy()
             }
         } finally {
-            delete process.env.NEO_PLANE_DATA_ROOT
+            if (previousRoot === undefined) delete process.env.NEO_PLANE_DATA_ROOT;
+            else process.env.NEO_PLANE_DATA_ROOT = previousRoot;
+            if (previousHeartbeat === undefined) delete process.env.NEO_HEARTBEAT_ALIVE_PATH;
+            else process.env.NEO_HEARTBEAT_ALIVE_PATH = previousHeartbeat;
         }
     });
 
@@ -918,9 +977,6 @@ test.describe('Neo.ai.mcp.server.BaseServer — plane-member boundary (#15799)',
             // an anchored leaf with no planeMember decision fails the derivation itself, so the
             // forget-to-edit class fails here rather than shipping green. No literal to bump on
             // legitimate membership changes.
-            // ticket-ref-ok: #15932 is the completeness mechanism this line enforces; #15872's
-            // graph-SQLite omission is its first confirmed instance — named because the
-            // regression's shape is the point.
             expect(new Set(TIER1_MEMBER_PATHS))
                 .toEqual(new Set(derivePlaneMemberPaths({descriptorData: Tier1ConfigBase.config.data, anchor: Tier1ConfigBase.config.data.plane.dataRoot.default})));
             expect(server.getPlaneMembers().length).toBe(TIER1_MEMBER_PATHS.length);

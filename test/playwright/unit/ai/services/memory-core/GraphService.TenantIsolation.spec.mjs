@@ -433,7 +433,7 @@ function makeWritableDb() {
 
 /**
  * Writable fake `GraphService.db` that ALSO supports the edge-write path (`linkNodes` →
- * `storage.db.prepare` FK-verify + existing-edge check + `addEdge`) and the topology read
+ * persisted-row protection reads + FK-verify + existing-edge check + `addEdge`) and the topology read
  * (`edges.getByIndex` consumed by `getContextFrontier`). Lets a spec provision + link global
  * sentinels end-to-end, then read them back as a different tenant — the path the global-edge gap lived in.
  */
@@ -441,13 +441,23 @@ function makeTopologyDb() {
     const nodeMap = new Map(),
           edges   = [];
     const sqliteDb = {
+        transaction(fn) {
+            const run = (...args) => fn(...args);
+            run.immediate = run;
+            return run;
+        },
         prepare(sql) {
             return {
                 get(...args) {
                     // linkNodes FK pre-check: both endpoints must exist in Nodes.
-                    if (sql.includes('FROM Nodes')) {
+                    if (sql.includes('FROM Nodes') && sql.includes('count(*)')) {
                         const [a, b] = args;
                         return {count: (nodeMap.has(a) ? 1 : 0) + (a === b ? 0 : (nodeMap.has(b) ? 1 : 0))};
+                    }
+                    // Protection reads inspect the same persisted node bytes, including cold endpoints.
+                    if (sql.includes('FROM Nodes')) {
+                        const value = nodeMap.get(args[0]);
+                        return value ? {id: value.id, user_id: value.properties.userId ?? null, data: JSON.stringify(value)} : undefined;
                     }
                     // linkNodes existing-edge lookup: none → a fresh edge is written.
                     return undefined;

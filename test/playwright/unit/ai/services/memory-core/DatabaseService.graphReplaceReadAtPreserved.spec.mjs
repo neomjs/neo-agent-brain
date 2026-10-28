@@ -86,6 +86,7 @@ test.describe('Memory_DatabaseService — graph.import.replace preserves committ
             const exactRestoreReadAt = readAtOf(selectEdge());
 
             console.log('READAT_RESEED_RESULT:' + JSON.stringify({
+                publicationFence: JSON.parse(db.prepare('SELECT data FROM IdentityPublicationFence').get().data),
                 beforeReadAt,
                 committedReadAt,
                 afterReadAt        : readAtOf(edgeAfter),
@@ -116,6 +117,8 @@ test.describe('Memory_DatabaseService — graph.import.replace preserves committ
             expect(output, result.stdout).toBeTruthy();
 
             const proof = JSON.parse(output[1]);
+            expect(proof.publicationFence.state).toBe('fenced');
+            expect(proof.publicationFence.cause.operation).toBe('graph-truncate');
 
             // Preconditions: the mark committed, and the edge survived the re-seed (it exists in the snapshot).
             expect(proof.beforeReadAt).toBe(proof.committedReadAt);

@@ -231,10 +231,11 @@ class TransportService extends Base {
      * @param {Object} options.aiConfig The server configuration object
      * @param {Object} options.logger The logger instance
      * @param {String} options.resourceName The name of the server resource
+     * @param {Object|null} [options.identityPublication=null] Fixed-purpose boot boundary; AuthService owns its policy.
      * @returns {Promise<void>}
      */
     async setup(options) {
-        const { server, aiConfig, logger, resourceName } = options;
+        const { server, aiConfig, logger, resourceName, identityPublication = null } = options;
 
         const { createMcpExpressApp }           = await import('@modelcontextprotocol/sdk/server/express.js');
         const { StreamableHTTPServerTransport } = await import('@modelcontextprotocol/sdk/server/streamableHttp.js');
@@ -279,7 +280,8 @@ class TransportService extends Base {
             aiConfig,
             mcpServerUrl,
             logger,
-            resourceName
+            resourceName,
+            identityPublication
         });
 
         app.all('/mcp', async (req, res) => {

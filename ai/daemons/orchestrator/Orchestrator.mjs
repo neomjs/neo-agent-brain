@@ -848,6 +848,7 @@ export class Orchestrator extends Base {
                         chromaClient          : ChromaManager.client,
                         dummyEmbeddingFunction: AiConfig.dummyEmbeddingFunction,
                         graphDb,
+                        beforeGraphMutation: info => GraphService.fenceIdentityPublication(info),
                         expectedDestinations  : {
                             memories : memoryCoreConfig.collections.memory,
                             summaries: memoryCoreConfig.collections.session,

@@ -26,6 +26,7 @@ import {
 import {
     createRestoreTargetSetStorage
 } from '../../ai/services/memory-core/helpers/restoreTargetSetStorage.mjs';
+import {fenceIdentityPublication} from '../../ai/services/memory-core/helpers/identityPublicationFence.mjs';
 import {
     registerNeoChromaEmbeddingFunctions
 } from '../../ai/services/shared/vector/chromaClientPrimitives.mjs';
@@ -275,6 +276,9 @@ export async function runTargetSetMeasurementAdapter({
                 chromaClient        : client,
                 dummyEmbeddingFunction,
                 graphDb,
+                beforeGraphMutation: info => fenceIdentityPublication(info.db, {
+                    planeId: 'restore-measurement', dataRoot: fixture.paths.productionRoot, ...info
+                }),
                 expectedDestinations: destinations,
                 stagingRoot         : fixture.paths.stagingRoot,
                 invalidateCollectionCache() {},

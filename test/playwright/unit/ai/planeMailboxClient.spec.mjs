@@ -1,6 +1,6 @@
 import {test, expect} from '@playwright/test';
 
-import {createPlaneMailboxClient, MAILBOX_OBSERVER_UNAVAILABLE} from '../../../../ai/services/fleet/planeMailboxClient.mjs';
+import {createPlaneMailboxClient, MAILBOX_OBSERVER_UNAVAILABLE, PLANE_BINDING_UNAVAILABLE} from '../../../../ai/services/fleet/planeMailboxClient.mjs';
 
 /**
  * @summary Unit coverage for the plane mailbox client — the SDK-backed streamable-HTTP MCP client
@@ -15,6 +15,7 @@ import {createPlaneMailboxClient, MAILBOX_OBSERVER_UNAVAILABLE} from '../../../.
 
 const LOOPBACK_URL = 'http://127.0.0.1:3102/mc/mcp';
 const IDENTITY     = '@neo-fable-clio';
+const TARGET       = {planeId: 'fixture-plane', dataRoot: '/fixture/remote-root'};
 
 function mailboxTools(observerScopes = null) {
     const observer = observerScopes
@@ -132,7 +133,7 @@ function scriptedPlane({identityBySession = [IDENTITY], toolResponder = null, to
 
         if (body?.method === 'tools/list') {
             const sessionOrdinal = Math.max(0, sessions - 1),
-                listed = toolListResponder
+                listed           = toolListResponder
                     ? await toolListResponder({cursor: call.toolCursor, call, sessionOrdinal})
                     : {tools: toolsBySession?.[Math.min(sessionOrdinal, toolsBySession.length - 1)] ?? [
                         {name: 'list_messages', inputSchema: {type: 'object', properties: {limit: {type: 'integer'}}}},
@@ -328,10 +329,10 @@ test.describe('planeMailboxClient: tool calls (error shape mirrors the in-proces
     });
 
     test('a 404 recovery rechecks observer scope on the replacement session before replay', async () => {
-        let first = true;
+        let   first           = true;
         const {client, plane} = await initializedClient({
             toolsBySession: [mailboxTools(['all']), mailboxTools(['own'])],
-            toolResponder: ({name}) => {
+            toolResponder : ({name}) => {
                 if (name === 'list_messages' && first) {
                     first = false;
                     return {status: 404}
@@ -778,4 +779,95 @@ test.describe('planeMailboxClient: teardown', () => {
 
         await expect(client.callTool('list_messages')).rejects.toThrow('client not initialized')
     })
+});
+
+test.describe('planeMailboxClient: independently declared remote plane target', () => {
+    test('proves remote identity and target before the first content call', async () => {
+        const plane = scriptedPlane({toolResponder: ({name, args}) => {
+            if (name === 'healthcheck') {
+                expect(args).toEqual({scope: 'plane'});
+                return {payload: {plane: {id: TARGET.planeId, dataRoot: TARGET.dataRoot}}};
+            }
+            return {payload: {count: 0}};
+        }});
+        const client = createPlaneMailboxClient({baseUrl: LOOPBACK_URL, credential: 'seat-token', fetchImpl: plane.fetchImpl});
+        try {
+            expect(await client.init({expectedIdentity: IDENTITY, expectedTarget: TARGET})).toEqual({ok: true, identity: IDENTITY});
+            expect(await client.listMessages()).toEqual({count: 0});
+            expect(plane.calls.filter(call => call.toolName).map(call => call.toolName))
+                .toEqual(['list_permissions', 'healthcheck', 'list_messages']);
+        } finally { await client.close(); }
+    });
+
+    for (const planeAnswer of [
+        {id: 'other-plane', dataRoot: TARGET.dataRoot}, {id: TARGET.planeId, dataRoot: '/other-root'}, {},
+        null
+    ]) test('same identity cannot authorize a mismatched or absent target: ' + JSON.stringify(planeAnswer), async () => {
+        const plane  = scriptedPlane({toolResponder: () => ({payload: {plane: planeAnswer}})});
+        const client = createPlaneMailboxClient({baseUrl: LOOPBACK_URL, fetchImpl: plane.fetchImpl});
+        try {
+            expect(await client.init({expectedIdentity: IDENTITY, expectedTarget: TARGET}))
+                .toMatchObject({ok: false, blockerCode: PLANE_BINDING_UNAVAILABLE});
+            expect(plane.calls.some(call => call.toolName === 'list_messages')).toBe(false);
+            expect(plane.calls.filter(call => call.method === 'DELETE')).toHaveLength(1);
+        } finally { await client.close(); }
+    });
+
+    test('malformed expected targets refuse without contacting or learning from the remote plane', async () => {
+        const plane = scriptedPlane(), client = createPlaneMailboxClient({baseUrl: LOOPBACK_URL, fetchImpl: plane.fetchImpl});
+        try {
+            for (const expectedTarget of [null, {}, [], {planeId: 'x', dataRoot: 'relative'},
+                {planeId: '', dataRoot: '/root'}, {...TARGET, extra: true}]) {
+                expect(await client.init({expectedIdentity: IDENTITY, expectedTarget}))
+                    .toMatchObject({ok: false, blockerCode: PLANE_BINDING_UNAVAILABLE});
+            }
+            expect(plane.calls).toEqual([]);
+        } finally { await client.close(); }
+    });
+
+    test('reconnect re-proves target and refuses same-identity replacement before replay', async () => {
+        const plane = scriptedPlane({toolResponder: ({name, sessionOrdinal}) => name === 'healthcheck'
+            ? {payload: {plane: {id: TARGET.planeId, dataRoot: sessionOrdinal ? '/replacement-root' : TARGET.dataRoot}}}
+            : {status: 404}});
+        const client = createPlaneMailboxClient({baseUrl: LOOPBACK_URL, fetchImpl: plane.fetchImpl});
+        try {
+            expect((await client.init({expectedIdentity: IDENTITY, expectedTarget: TARGET})).ok).toBe(true);
+            await expect(client.listMessages()).rejects.toMatchObject({planeBlockerCode: PLANE_BINDING_UNAVAILABLE});
+            expect(plane.calls.filter(call => call.toolName === 'healthcheck')).toHaveLength(2);
+            expect(plane.calls.filter(call => call.toolName === 'list_messages')).toHaveLength(1);
+        } finally { await client.close(); }
+    });
+
+    test('the held target is detached from the bootstrap object across reconnect', async () => {
+        const expectedTarget = {...TARGET};
+        const plane          = scriptedPlane({toolResponder: ({name, sessionOrdinal}) => name === 'healthcheck'
+            ? {payload: {plane: {id: TARGET.planeId, dataRoot: TARGET.dataRoot}}}
+            : sessionOrdinal ? {payload: {count: 0}} : {status: 404}});
+        const client = createPlaneMailboxClient({baseUrl: LOOPBACK_URL, fetchImpl: plane.fetchImpl});
+        try {
+            await client.init({expectedIdentity: IDENTITY, expectedTarget});
+            expectedTarget.dataRoot = '/changed-after-init';
+            expect(await client.listMessages()).toEqual({count: 0});
+            expect(plane.calls.filter(call => call.toolName === 'healthcheck')).toHaveLength(2);
+        } finally { await client.close(); }
+    });
+
+    test('a terminal close while target proof awaits cannot publish the candidate', async () => {
+        let release, started;
+        const gate    = new Promise(resolve => { release = resolve; });
+        const entered = new Promise(resolve => { started = resolve; });
+        const plane   = scriptedPlane({toolResponder: async ({name}) => {
+            if (name === 'healthcheck') { started(); await gate; }
+            return {payload: {plane: {id: TARGET.planeId, dataRoot: TARGET.dataRoot}}};
+        }});
+        const client         = createPlaneMailboxClient({baseUrl: LOOPBACK_URL, fetchImpl: plane.fetchImpl});
+        const initialization = client.init({expectedIdentity: IDENTITY, expectedTarget: TARGET});
+        await entered;
+        const closing = client.close();
+        release();
+        expect((await initialization).ok).toBe(false);
+        await closing;
+        await expect(client.listMessages()).rejects.toThrow('not initialized');
+        expect(plane.calls.filter(call => call.method === 'DELETE')).toHaveLength(1);
+    });
 });

@@ -760,6 +760,7 @@
         "healthcheck.remAxisTimeoutMs",
         "hookProjectionLeaseTtlMs",
         "hookProjectionRoot",
+        "identityPublicationBoot",
         "laneLandscapeCensusMaxPages",
         "laneLandscapeCensusPageLimit",
         "laneLandscapeRelationEdgeLimit",

@@ -166,6 +166,17 @@ class BaseServer extends Base {
     }
 
     /**
+     * @summary Composes the optional fixed-purpose identity-publication boundary at transport boot.
+     * MC may override after its custom config is loaded to supply a public-trust generation and
+     * its admission callback. This is a narrow bootstrap value object, not a config accessor;
+     * construction must not await graph readiness or read durable admission state.
+     * @returns {Object|null} {audience, issuer, publicKeys: Map, admit: Function}, or null when unprovisioned.
+     */
+    createIdentityPublicationBoundary() {
+        return null;
+    }
+
+    /**
      * @summary Override: tool names exempt from the healthcheck gate (always allowed).
      * Default `['healthcheck']`.
      * @returns {Array<String>}
@@ -787,6 +798,12 @@ class BaseServer extends Base {
             );
         }
 
+        const identityPublication = this.createIdentityPublicationBoundary();
+
+        if (identityPublication !== null && (typeof identityPublication !== 'object' || Array.isArray(identityPublication))) {
+            throw new Error(`[${metadata.name}] identity publication boundary must be null or an object.`);
+        }
+
         if (transport === 'streamable-http') {
             const {default: TransportService} = await import('./shared/services/TransportService.mjs');
 
@@ -794,9 +811,14 @@ class BaseServer extends Base {
                 server      : this,
                 aiConfig    : this.aiConfig,
                 logger      : this.logger,
-                resourceName: `${metadata.name} MCP`
+                resourceName: `${metadata.name} MCP`,
+                identityPublication
             });
         } else {
+            if (identityPublication !== null) {
+                throw new Error(`[${metadata.name}] identity publication requires streamable-http transport.`);
+            }
+
             const {StdioServerTransport} = await import('@modelcontextprotocol/sdk/server/stdio.js');
 
             this.transport = new StdioServerTransport();

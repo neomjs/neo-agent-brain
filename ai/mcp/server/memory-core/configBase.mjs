@@ -3,6 +3,28 @@ import path                   from 'path';
 import ConfigProvider, {leaf} from '../../../ConfigProvider.mjs';
 import {fileURLToPath}        from 'url';
 import {resolvePlaneDataRoot} from '../../../planeConfig.mjs';
+import {decodeIdentityPublicationBootJson} from '../../../services/memory-core/helpers/identityPublicationBoot.mjs';
+
+/**
+ * @summary Decodes the provisioner's canonical JSON leaf without echoing malformed input.
+ * Canonical encoding rejects duplicate keys before they can silently overwrite authority fields.
+ * Shape and served-target validation must run at MC composition after custom config loading.
+ * @param {String} envVarName Declared environment binding.
+ * @param {Object} [options]
+ * @param {Object} [options.env=process.env] Environment source for the leaf decoder.
+ * @returns {String|undefined} Validated atomic text, or undefined only when the binding is absent.
+ */
+function parseIdentityPublicationBootEnv(envVarName, {env = process.env} = {}) {
+    const rawValue = env[envVarName];
+    if (rawValue === undefined) return;
+
+    try {
+        decodeIdentityPublicationBootJson(rawValue);
+        return rawValue;
+    } catch {
+        throw new Error(`[Config] Invalid ${envVarName}: expected canonical identity-publication boot JSON.`);
+    }
+}
 
 /**
  * @summary Parses a liveness-window override, refusing values a window cannot have.
@@ -104,6 +126,16 @@ class ConfigBase extends ConfigProvider {
              * @type {boolean}
              */
             debug: leaf(false, 'NEO_DEBUG', 'boolean'),
+            /**
+             * Trusted provisioner input for the class-9 reservation and public-trust generation.
+             * Null is unprovisioned. The canonical JSON descriptor contains no private material;
+             * MC must validate it against its served target after custom config loads. This leaf is
+             * not a request-writable capability, and parsing does not establish durable admission.
+             * Canonical JSON text stays atomic in Provider; an object would be recursively merged.
+             * @type {String|null}
+             * @see ai/services/memory-core/helpers/identityPublicationBoot.mjs
+             */
+            identityPublicationBoot: leaf(null, 'NEO_IDENTITY_PUBLICATION_BOOT', 'string', {parse: parseIdentityPublicationBootEnv}),
             /**
              * Server transport protocol. Supported values are exactly `stdio` and `streamable-http`.
              * @type {string}

@@ -73,6 +73,180 @@ records—not the person node.
 
 **Update discipline:** Capability values that change post-provisioning (e.g., Anthropic releases a context-window upgrade for an existing identity) update via `ModelStats.md` first; the graph node is reseeded via `ai/scripts/setup/seedAgentIdentities.mjs` to reflect.
 
+## Manual family-publication v1 limits and carrier
+
+### Founding-family source input
+
+The roster module's `FOUNDING_FAMILY_SUBJECTS` export carries literal provider/base/user-ID tuples
+separately from ordinary `IDENTITIES` nodes. Changes require source review against the provider's
+stable account ID; neither current nor former logins are a runtime lookup key for these facts.
+[The pure compiler](../../ai/graph/identityFoundingSeed.mjs) binds every agent roster entry's exact
+family and identity key to its tuple in one detached, content-addressed payload. Multiple entries
+for the same subject survive, including disagreement. Missing or duplicate mappings refuse the
+whole compilation. Human and sentinel entries contribute no family.
+
+This payload is input to the dedicated protected seed owner; compiling or hashing it grants no
+write authority. `validateFoundingFamilySeed` checks every retained row and its canonical digest
+before subject selection. A matching digest is content consistency, not protected provenance.
+The protected writer and complete physical snapshot composition remain pending in the current
+source checkpoint. The ordinary boot manifest is unchanged.
+
+The [founding-cutoff disposition](https://github.com/neomjs/neo-agent-brain/issues/1296#issuecomment-6431146484)
+keeps roster precedence through baseline and matching confirmations. It ends at the first admitted
+different-family declaration, after which the complete seat-derived rule applies. The
+[correction disposition](https://github.com/neomjs/neo-agent-brain/issues/1296#issuecomment-6431284778)
+derives this cutoff from corrected history at original admission times: corrections can move or
+remove it, but create no boundary at their own time. Retirement and later matching declarations
+do not erase an earlier different-family declaration.
+
+`buildSubjectFamilyProjection` applies that rule to an explicit provider subject, complete normalized
+history and complete retained founding payload. Effective `intervals` feed the existing point and
+window readers; `membership` preserves the unmodified seat-derived states and evidence. Founding
+spans all supported nonnegative query times before its cutoff; zero is the query-domain floor, not
+a claimed identity birth. All matching founders count, and conflicting families remain
+`ambiguous-founders`. A malformed or unavailable source never falls back to founding.
+
+The pure result carries the admitted revision and founding digest. The caller must still establish
+that both inputs came from the same protected physical observation and that the history belongs to
+the selected subject. Production source and consumer integration remain pending; this function does
+not establish the separate provider-subject → routing-identity relation.
+
+### Signed manual carrier
+
+The supported v1 plane size is **128 managed bindings**, counting every binding across all forge
+subjects, including multiple seats for one subject. This is the complete-plane capacity, not a page
+size or a permission to select the first 128 entries. A capture over the limit refuses as a whole
+and names the first excess entry, total count, limit and correct-or-retire remedy. The Fleet capture
+owner must retain the complete census; a malformed or unreadable registry is not an empty baseline.
+
+The fixed profile bounds JSON-encoded strings, including quotes and escaping:
+
+| Field class | Maximum encoded bytes |
+|---|---:|
+| Identifiers, usernames, seat/incarnation keys, family, operator principal; envelope audience/issuer/kid | 256 |
+| Provider API base and reasons | 2,048 |
+| Model, when attested | 512 |
+
+An explicit `model: null` requires an admission-level unattested reason. Family strings remain exact;
+their spelling is not normalized by these bounds. Stable provider IDs, not mutable usernames, select
+the membership. The [operation grammar](../../ai/services/shared/identityPublicationOperation.mjs)
+owns the limits and derives the largest logical shape across all six variants.
+
+The dedicated `POST /identity/family-publications` consumes
+`Content-Type: application/vnd.neo.identity-family-publication`. Its uncompressed body is the compact
+`<payload>.<signature>` token itself, using canonical unpadded base64url. It does not accept an outer
+JSON wrapper. This lets the dedicated parser enforce the complete-baseline bound without changing
+the SDK's smaller ordinary JSON limit.
+
+The [signature profile](../../ai/services/shared/identityPublicationSignature.mjs) derives the request
+limit from the operation grammar, capped envelope identifiers, fixed claims, base64url expansion
+and the 64-byte Ed25519 signature. The current maxima are 440,680 logical JSON bytes, 441,600 signed
+payload bytes and **588,887 compact request-body bytes**. HTTP headers are outside that body bound.
+A larger body refuses before admission; a 129th binding is a distinct capture-capacity refusal.
+
+The route remains after the common Host and Origin/CORS guards and before ordinary bearer auth.
+Neither this capacity nor passing a schema/signature check grants graph-write authority. Provisioning,
+physical membership/declaration admission, complete temporal snapshots and the joined installed
+workflow have separate acceptance requirements; these source limits do not certify that rollout.
+
+### Temporal projection of admitted family history
+
+[`identityFamilyProjection.mjs`](../../ai/graph/identityFamilyProjection.mjs) derives a view for one
+stable provider subject from a complete owner-revision snapshot. Its normalized input contains the
+complete baseline boundary, binding lifetimes, forward declarations and targeted corrections. These
+are canonical admitted intervals; the projector does not choose an admission timestamp from a signed
+act or delivery clock. Physical admission must establish authority and the read owner must establish
+completeness, identity and plane binding before this view can serve a decision.
+
+Every active binding counts. Missing declarations produce `unconfirmed-seat`; disagreement produces
+`ambiguous-seats`; an admitted empty set produces `empty-membership`. Before the complete baseline,
+the result is `membership-unknown`. Malformed history produces `unavailable`. Each is distinct from
+the valid, exact family string `"unknown"`. Model evidence stays per binding, including literal null.
+
+A correction replaces only its original declaration's family/model within that declaration's original
+interval. It cannot target a correction or another principal's declaration. Admission still owns the
+additional check that the principal operates the incarnation. Re-key retains the binding identity;
+remove/recreate needs a fresh binding and declaration. A retirement boundary represents completed,
+admitted removal; a pending stop leaves the binding active.
+
+Point reads use half-open era intervals. The author-family union includes every interval overlapping
+the inclusive creation-through-evaluation window and refuses a partial answer if any span is
+unclassified. Historical correction changes the supplied owner revision even when the current head
+and interval count stay unchanged. This derived view is regenerable, not another persisted ledger.
+
+Forward boundaries use MC admission time. The signed act's effective time remains provenance, so
+late delivery cannot move the boundary over an already-classified review. The admission owner's
+[`identityPublicationTiming.mjs`](../../ai/services/memory-core/helpers/identityPublicationTiming.mjs)
+requires a strictly later actual clock sample: equal time and a backwards clock produce distinct,
+retryable causes with the blocking boundary. The owner must perform accepted-receipt lookup before
+this check and write neither state nor receipt on refusal. It never bumps or backdates the clock.
+The physical owner below exercises that ordering; service composition remains unfinished. Its clock
+must be a non-negative safe millisecond value representable by the episode schema's ISO timestamps.
+A correction inherits its exact target interval; fenced read-back activation remains a separate post-v1 path.
+
+Family introduction compares labels after NFKC, removing JavaScript whitespace, applying
+`toLowerCase().toUpperCase().toLowerCase()`, then NFKC again. Control/format characters (`Cc`/`Cf`)
+and empty keys refuse. This conservative runtime-Unicode comparison intentionally over-matches;
+it is not normative full case folding or cross-script confusable detection. The exact label stays
+unchanged. The owner supplies the complete authoritative roster plus admitted declaration/correction
+vocabulary. Novel labels require explicit introduction intent and no comparison-key collision;
+known exact labels require ordinary confirmation intent. Accepted-receipt lookup precedes this check.
+If the known catalog already has distinct labels sharing a key, admissions into that key refuse and
+name the conflicting labels for authorized catalog reconciliation by the separate recovery authority,
+outside ordinary typed operations. A roster conflict is repaired through review. Unrelated keys remain usable;
+old exact labels and historical classifications are not automatically merged or rewritten.
+
+### Physical admission source checkpoint
+
+[`identityPublicationAdmission.mjs`](../../ai/services/memory-core/helpers/identityPublicationAdmission.mjs)
+implements the six typed variants on an explicitly supplied SQLite connection.
+It owns an immediate transaction, checks consumed lineage/fence and signed delivery inside it, then
+looks up the logical receipt before reading current revisions. Baseline, bind, re-key and completed
+retirement, explicit confirmation and targeted correction commit history, counters and receipt together; rollback also
+rolls back SQLite-triggered invalidation rows. Membership uses provider-stable incarnations, with
+rename and retirement provenance retained. Active capacity remains 128 after the initial census.
+
+Each forward declaration is a protected `EmbodiedEpisode` scoped to its immutable binding. Forward
+confirmation or retirement closes only that binding's preceding episode. Corrections are retained
+overlays naming the original episode and principal; they never rewrite its facts or interval. Fleet
+attests a fresh ownership check at issuance, while MC checks the active incarnation, original target
+and principal. Neither a graph flag nor MC's own lookup of a remote Fleet can substitute.
+
+`readIdentityPublicationSnapshot` reads current consumed trust/fence and all protected populations in
+one physical read transaction. It returns frozen, detached per-subject histories and counters at one
+plane revision. Those normalized histories feed `identityFamilyProjection`; legacy single-head
+hydration is not an aggregate reader for simultaneous seats or fully retired incarnations.
+Admitted family facts are read only through this snapshot, never by the `EmbodiedEpisode` label:
+ordinary legacy episodes may share that label without possessing admitted-source authority.
+
+This helper opens no database, reads no configuration and is not wired to a service route or startup.
+Cache synchronization, the declared read client, roster composition and consumer integration remain
+unfinished. In-memory fixtures prove transaction behavior, not installed ownership,
+host cleanup or installed durability. Separate disposable WAL-file controls cover competing processes
+and process loss after commit before reply, plus a commit between a snapshot's authority and population
+reads; they do not simulate a power failure or the live service.
+The eventual owner must carry the original signed
+bytes to the transaction-local verifier and consume committed cache invalidations afterward.
+
+### Declared remote read client
+
+[`identityPublicationClient.mjs`](../../ai/services/shared/identityPublicationClient.mjs) reuses the
+existing direct-to-MC plane client. It requires an explicit credential, authenticated expected viewer,
+and independently declared remote `{planeId,dataRoot}`. Initialization and every reconnect prove the
+viewer through `list_permissions` and the target through the same session's `healthcheck(scope:plane)`;
+every returned version-1 snapshot is also checked against that target, the physical population counts,
+subject/global revision accounting and the complete history shape. Revision 1 is baseline-only, and
+the 128-active-binding limit is checked across retained time intervals without capping retired history.
+It exposes only `readSnapshot` and `close`, caches no family history, and preserves named source
+refusals instead of turning failure into an empty map. Existing mailbox callers need not opt into the
+new target proof; this admitted-history reader always requires it.
+
+This is an unwired client contract. The existing seat bootstrap declares endpoint and credential but
+does not yet declare the expected remote plane/root. Local `plane.dataRoot` is not that remote
+expectation, and learning the expectation from the response being checked would be circular. Target
+serialization, the registered snapshot endpoint, roster composition and consumer migration remain
+delivery work; absence of their declared inputs refuses rather than using an ambient credential.
+
 ## Ingestion Mechanism
 
 Identity projection has two deliberately separate write authorities:

@@ -70,6 +70,30 @@ export const TRUST_TIER_ORDER = Object.freeze([
     TRUST_TIERS.UNCLASSIFIED
 ]);
 
+/**
+ * @summary Literal provider subjects for the founding-family seed, separate from ordinary boot nodes.
+ * Verified against GitHub's User.id on 2026-10-27; changes require source review. Neither the seed
+ * nor runtime readers resolve these values from current/former logins. identityKey addresses the
+ * exact checked-in roster entry; only the complete protected seed can later supply family authority.
+ * @type {Object[]}
+ */
+export const FOUNDING_FAMILY_SUBJECTS = Object.freeze([
+    {identityKey: '@neo-opus-ada',       providerUserId: '278228561'},
+    {identityKey: '@neo-opus-grace',     providerUserId: '290164619'},
+    {identityKey: '@neo-opus-vega',      providerUserId: '290777852'},
+    {identityKey: '@neo-fable-mnemosyne', providerUserId: '292401317'},
+    {identityKey: '@neo-fable-clio',     providerUserId: '292899928'},
+    {identityKey: '@neo-gemini-julia',   providerUserId: '278226569'},
+    {identityKey: '@neo-gpt-euclid',     providerUserId: '280105177'},
+    {identityKey: '@neo-gpt-emmy',       providerUserId: '302592265'},
+    {identityKey: '@neo-gpt-sophie',     providerUserId: '336021083'},
+    {identityKey: '@neo-kimi-phoebe',    providerUserId: '306316406'},
+    {identityKey: '@neo-kimi-iris',      providerUserId: '306736890'},
+    {identityKey: '@neo-preview',       providerUserId: '319961410'}
+].map(({identityKey, providerUserId}) => Object.freeze({identityKey, subject: Object.freeze({
+    authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId
+})})));
+
 export const IDENTITIES = [
     {
         id         : '@system',

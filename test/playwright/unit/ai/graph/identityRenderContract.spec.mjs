@@ -18,7 +18,7 @@ import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 test.describe('identityRenderContract — the render-model consumer read-contract (ADR-0032 §2.3)', () => {
-    let schema, contract;
+    let schema, contract, hydration;
 
     const REAL_ANCHOR = '@render-fixture';
 
@@ -50,6 +50,7 @@ test.describe('identityRenderContract — the render-model consumer read-contrac
     test.beforeAll(async () => {
         schema   = await import('../../../../../ai/graph/identitySchema.mjs');
         contract = await import('../../../../../ai/graph/identityRenderContract.mjs');
+        hydration = await import('../../../../../ai/graph/identityHydration.mjs');
     });
 
     test('resolves a resident into the render-view: anchor selfKey + display + current era + timeline', () => {
@@ -95,6 +96,43 @@ test.describe('identityRenderContract — the render-model consumer read-contrac
         expect(() => { view.selfKey = '@hijack' }).toThrow();    // frozen — a consumer cannot rewrite the self
         expect(view.type).not.toBe(schema.IDENTITY_NODE_TYPES.IDENTITY_STATE);
         expect(schema.validateEraChain(view, episodes).valid).toBe(false); // the schema rejects the view as an anchor
+    });
+
+    test('observed to null to observed preserves unattested history through both readers', () => {
+        const {identity, episodes} = buildResident();
+        const unattested = schema.migrateEra({
+            identityNode: identity, episodes,
+            newEra: {model: null, family: 'gpt', since: '2026-10-01T00:00:00Z'}
+        });
+        const input = {identityNode: identity, episodes: unattested.episodes};
+        const index = hydration.buildHydrationIndex(input);
+        const rendered = contract.readResidentForRender(input);
+
+        expect(index.valid).toBe(true);
+        expect(rendered.valid).toBe(true);
+        expect(Object.hasOwn(index.index.currentEra, 'model')).toBe(true);
+        expect(index.index.currentEra.model).toBeNull();
+        expect(rendered.view.selfKey).toBe(identity.identityKey);
+        expect(rendered.view.current.family).toBe('gpt');
+        expect(rendered.view.current.model).toBeNull();
+        expect(rendered.view.timeline.map(era => era.model)).toEqual(['claude-opus-4-8', 'claude-fable-5', null]);
+        const json = JSON.parse(JSON.stringify(rendered.view));
+        expect(Object.hasOwn(json.current, 'model')).toBe(true);
+        expect(json.current.model).toBeNull();
+
+        const observed = schema.migrateEra({
+            identityNode: identity, episodes: unattested.episodes,
+            newEra: {model: 'observed-model', family: 'gpt', since: '2026-10-26T00:00:00Z'}
+        });
+        const later = contract.readResidentForRender({identityNode: identity, episodes: observed.episodes});
+
+        expect(later.valid).toBe(true);
+        expect(later.view.current.model).toBe('observed-model');
+        expect(later.view.timeline[2].model).toBeNull();
+        expect(hydration.isIndexCurrent(index.index, observed.episodes)).toBe(false);
+        expect(index.index.currentEra.model).toBeNull();
+        expect(rendered.view.current.model).toBeNull();
+        expect(contract.sameResident(rendered.view, later.view)).toBe(true);
     });
 
     test('selfKey is the identity, not the era: identical current facts on different anchors are NOT the same self', () => {

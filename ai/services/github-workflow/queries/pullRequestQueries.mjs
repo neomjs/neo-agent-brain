@@ -80,9 +80,15 @@ export const GET_CONVERSATION = `
  */
 export const GET_MERGE_READINESS = `
   query GetMergeReadiness($owner: String!, $repo: String!, $prNumber: Int!) {
+    viewer {
+      __typename
+      login
+      databaseId
+    }
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $prNumber) {
         number
+        createdAt
         state
         mergedAt
         baseRefName
@@ -91,7 +97,11 @@ export const GET_MERGE_READINESS = `
         reviewDecision
         body
         author {
+          __typename
           login
+          ... on User {
+            databaseId
+          }
         }
         reviewRequests(first: 100) {
           pageInfo {
@@ -121,7 +131,11 @@ export const GET_MERGE_READINESS = `
             state
             submittedAt
             author {
+              __typename
               login
+              ... on User {
+                databaseId
+              }
             }
             commit {
               oid

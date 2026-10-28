@@ -389,6 +389,7 @@ class DatabaseService extends Base {
             db,
             filePath,
             mode,
+            beforeMutation: info => GraphService.fenceIdentityPublication(info),
             warn: message => logger.warn(message)
         });
 
@@ -837,6 +838,9 @@ class DatabaseService extends Base {
                     // class this preservation exists to prevent, reintroduced inside the operation.
                     // better-sqlite3 transactions are synchronous and serialized, so nothing interleaves.
                     preservedDeliveryState = graphDb.transaction(() => {
+                        GraphService.fenceIdentityPublication({
+                            db: graphDb, operation: 'graph-truncate', source: 'DatabaseService.truncateDatabase'
+                        });
                         const captured = preserveDeliveryReadState
                             ? graphDb.prepare(
                                 `SELECT source,
@@ -854,7 +858,7 @@ class DatabaseService extends Base {
                         graphDb.prepare('DELETE FROM Edges').run();
 
                         return captured
-                    })();
+                    }).immediate();
 
                     truncated.push('graph');
                 }

@@ -36,6 +36,8 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — transient retr
     let originalRetryBaseDelayMs;
     let originalRetryMaxDelayMs;
     let originalRetryJitterRatio;
+    let originalApiUrl;
+    let originalRestApiUrl;
 
     const QUERY = 'query TestQuery { viewer { login } }';
 
@@ -50,6 +52,8 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — transient retr
         originalRetryBaseDelayMs   = GraphqlService.retryBaseDelayMs;
         originalRetryMaxDelayMs    = GraphqlService.retryMaxDelayMs;
         originalRetryJitterRatio   = GraphqlService.retryJitterRatio;
+        originalApiUrl             = GraphqlService.apiUrl;
+        originalRestApiUrl         = GraphqlService.restApiUrl;
 
         GraphqlService.authTokenOverride  = 'unit-test-token';
         GraphqlService.maxRetryAttempts = 2;
@@ -66,6 +70,198 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — transient retr
         GraphqlService.retryBaseDelayMs = originalRetryBaseDelayMs;
         GraphqlService.retryMaxDelayMs  = originalRetryMaxDelayMs;
         GraphqlService.retryJitterRatio = originalRetryJitterRatio;
+        GraphqlService.apiUrl      = originalApiUrl;
+        GraphqlService.restApiUrl  = originalRestApiUrl;
+    });
+
+    test('#1296: a retry keeps its acquisition endpoint when the service is rebound', async () => {
+        const urls = [];
+        GraphqlService.apiUrl = 'https://forge-a.test/api/graphql';
+        globalThis.fetch = async url => {
+            urls.push(url);
+            if (urls.length === 1) {
+                GraphqlService.apiUrl = 'https://forge-b.test/api/graphql';
+                return new Response('', {status: 504});
+            }
+            return Response.json({data: {viewer: {login: 'a'}}});
+        };
+
+        await GraphqlService.query(QUERY);
+        expect(urls).toEqual(['https://forge-a.test/api/graphql', 'https://forge-a.test/api/graphql']);
+    });
+
+    test('#1296: one operation pins its credential and both endpoints through the final mutation', async () => {
+        const calls = [];
+        GraphqlService.apiUrl = 'https://forge-a.test/api/graphql';
+        GraphqlService.restApiUrl = 'https://forge-a.test/api/v3/';
+        GraphqlService.authTokenOverride = 'fabricated-token-a';
+        globalThis.fetch = async (url, options) => {
+            calls.push({url, method: options.method, authorization: new Headers(options.headers).get('authorization'),
+                body: options.body === undefined ? null : JSON.parse(options.body)});
+            return Response.json(url.endsWith('/graphql') ? {data: {ok: true}} : {rules: []});
+        };
+        const operation = await GraphqlService.createOperationClient();
+        expect(calls).toEqual([]);
+
+        GraphqlService.apiUrl = 'https://forge-b.test/graphql';
+        GraphqlService.restApiUrl = 'https://forge-b.test';
+        GraphqlService.authTokenOverride = 'fabricated-token-b';
+        await operation.query(QUERY, {number: 42});
+        await operation.rest('GET', '/repos/o/r/rules/branches/dev');
+        await operation.query('mutation FixtureReview { submitReview }', {body: 'fixture review'});
+
+        expect(calls).toEqual([
+            {url: 'https://forge-a.test/api/graphql', method: 'POST', authorization: 'bearer fabricated-token-a',
+                body: {query: QUERY, variables: {number: 42}}},
+            {url: 'https://forge-a.test/api/v3/repos/o/r/rules/branches/dev', method: 'GET',
+                authorization: 'bearer fabricated-token-a', body: null},
+            {url: 'https://forge-a.test/api/graphql', method: 'POST', authorization: 'bearer fabricated-token-a',
+                body: {query: 'mutation FixtureReview { submitReview }', variables: {body: 'fixture review'}}}
+        ]);
+        expect(operation.source).toEqual({authProvider: 'github', providerBaseUrl: 'https://forge-a.test/api/v3'});
+    });
+
+    test('#1296: concurrent operation bindings cannot contaminate each other after a third rebind', async () => {
+        const calls = [];
+        let releaseA;
+        const waitingA = new Promise(resolve => { releaseA = resolve; });
+        GraphqlService.apiUrl = 'https://forge-a.test/api/graphql';
+        GraphqlService.restApiUrl = 'https://forge-a.test/api/v3';
+        GraphqlService.authTokenOverride = 'fabricated-token-a';
+        const a = await GraphqlService.createOperationClient();
+        GraphqlService.apiUrl = 'https://forge-b.test/graphql';
+        GraphqlService.restApiUrl = 'https://forge-b.test';
+        GraphqlService.authTokenOverride = 'fabricated-token-b';
+        const b = await GraphqlService.createOperationClient();
+        GraphqlService.apiUrl = 'https://forge-c.test/graphql';
+        GraphqlService.restApiUrl = 'https://forge-c.test';
+        GraphqlService.authTokenOverride = 'fabricated-token-c';
+        globalThis.fetch = async (url, options) => {
+            const host = new URL(url).hostname;
+            calls.push({url, authorization: new Headers(options.headers).get('authorization')});
+            if (host === 'forge-a.test' && url.endsWith('/graphql')) await waitingA;
+            return Response.json(url.endsWith('/graphql') ? {data: {host}} : {host});
+        };
+        const pendingA = a.query(QUERY);
+        try {
+            expect(await b.query(QUERY)).toEqual({host: 'forge-b.test'});
+            expect(await b.rest('GET', '/repos/o/r')).toEqual({host: 'forge-b.test'});
+        } finally {
+            releaseA();
+        }
+        expect(await pendingA).toEqual({host: 'forge-a.test'});
+        expect(await a.rest('GET', '/repos/o/r')).toEqual({host: 'forge-a.test'});
+        expect(calls).toEqual([
+            {url: 'https://forge-a.test/api/graphql', authorization: 'bearer fabricated-token-a'},
+            {url: 'https://forge-b.test/graphql', authorization: 'bearer fabricated-token-b'},
+            {url: 'https://forge-b.test/repos/o/r', authorization: 'bearer fabricated-token-b'},
+            {url: 'https://forge-a.test/api/v3/repos/o/r', authorization: 'bearer fabricated-token-a'}
+        ]);
+        expect(a.source.providerBaseUrl).toBe('https://forge-a.test/api/v3');
+        expect(b.source.providerBaseUrl).toBe('https://forge-b.test');
+    });
+
+    test('#1296: operation metadata is frozen and contains no credential or caller-controlled headers', async () => {
+        let fetches = 0;
+        GraphqlService.apiUrl = 'https://api.github.com/graphql';
+        GraphqlService.restApiUrl = 'https://api.github.com';
+        GraphqlService.authTokenOverride = 'fabricated-private-token';
+        globalThis.fetch = async () => { fetches++; throw new Error('No request was expected'); };
+        const operation = await GraphqlService.createOperationClient();
+
+        expect(Reflect.ownKeys(operation).sort()).toEqual(['query', 'rest', 'source']);
+        expect(operation.source).toEqual({authProvider: 'github', providerBaseUrl: 'https://api.github.com'});
+        expect(Object.isFrozen(operation)).toBe(true);
+        expect(Object.isFrozen(operation.source)).toBe(true);
+        expect(() => { operation.source.providerBaseUrl = 'https://foreign.test'; }).toThrow(TypeError);
+        expect(() => { operation.query = () => {}; }).toThrow(TypeError);
+        expect(JSON.stringify(operation)).toBe('{"source":{"authProvider":"github","providerBaseUrl":"https://api.github.com"}}');
+        expect(JSON.stringify(operation)).not.toContain('fabricated-private-token');
+        expect(fetches).toBe(0);
+    });
+
+    test('#1296: unsupported or mismatched endpoint pairs refuse before any fetch', async () => {
+        let fetches = 0;
+        globalThis.fetch = async () => { fetches++; throw new Error('Invalid source reached fetch'); };
+        for (const [apiUrl, restApiUrl] of [
+            ['not-a-url', 'https://forge-a.test'],
+            ['https://forge-a.test/graphql', 'https://forge-b.test'],
+            ['http://forge-a.test/graphql', 'http://forge-a.test'],
+            ['https://forge-a.test/graphql', 'https://forge-a.test/api/v3'],
+            ['https://forge-a.test/api/graphql', 'https://forge-a.test'],
+            ['https://forge-a.test:444/graphql', 'https://forge-a.test'],
+            ['https://user:fixture-secret@forge-a.test/graphql', 'https://forge-a.test'],
+            ['https://forge-a.test/graphql', 'https://user:fixture-secret@forge-a.test'],
+            ['https://forge-a.test/graphql?other=1', 'https://forge-a.test'],
+            ['https://forge-a.test/graphql', 'https://forge-a.test#other'],
+            ['https://forge-a.test/unsupported', 'https://forge-a.test']
+        ]) {
+            GraphqlService.apiUrl = apiUrl;
+            GraphqlService.restApiUrl = restApiUrl;
+            await expect(GraphqlService.createOperationClient()).rejects.toMatchObject({code: 'GITHUB_SOURCE_UNBOUND'});
+        }
+        expect(fetches).toBe(0);
+    });
+
+    test('#1296: revoked captured credentials refuse without acquiring a working replacement', async () => {
+        const calls = [];
+        GraphqlService.apiUrl = 'https://forge-a.test/graphql';
+        GraphqlService.restApiUrl = 'https://forge-a.test';
+        GraphqlService.authTokenOverride = 'fabricated-revoked-a';
+        const operation = await GraphqlService.createOperationClient();
+        GraphqlService.authTokenOverride = 'fabricated-working-b';
+        globalThis.fetch = async (url, options) => {
+            const authorization = new Headers(options.headers).get('authorization');
+            calls.push({url, authorization});
+            return authorization === 'bearer fabricated-revoked-a'
+                ? Response.json({message: 'Bad credentials'}, {status: 401, statusText: 'Unauthorized'})
+                : Response.json({data: {accepted: true}, accepted: true});
+        };
+
+        await expect(operation.query('mutation FixtureReview { submitReview }')).rejects.toThrow('401 Unauthorized');
+        await expect(operation.rest('POST', '/repos/o/r/issues', {title: 'fixture'})).rejects.toThrow('401 Unauthorized');
+        expect(calls).toEqual([
+            {url: 'https://forge-a.test/graphql', authorization: 'bearer fabricated-revoked-a'},
+            {url: 'https://forge-a.test/repos/o/r/issues', authorization: 'bearer fabricated-revoked-a'}
+        ]);
+    });
+
+    test('#1296: bound REST paths cannot escape the captured API namespace', async () => {
+        let fetches = 0;
+        GraphqlService.apiUrl = 'https://forge-a.test/api/graphql';
+        GraphqlService.restApiUrl = 'https://forge-a.test/api/v3';
+        const operation = await GraphqlService.createOperationClient();
+        globalThis.fetch = async () => { fetches++; throw new Error('Invalid path reached fetch'); };
+        for (const requestPath of ['@foreign.test', '//foreign.test', '/../outside', '/%2e%2e/outside', '/repos#fragment', '/\\outside', null]) {
+            await expect(operation.rest('GET', requestPath)).rejects.toMatchObject({code: 'GITHUB_SOURCE_UNBOUND'});
+        }
+        expect(fetches).toBe(0);
+    });
+
+    test('#1296: bound GraphQL and REST requests refuse redirect traversal without changing ordinary callers', async () => {
+        const calls = [];
+        let followed = 0;
+        GraphqlService.apiUrl = 'https://forge-a.test/graphql';
+        GraphqlService.restApiUrl = 'https://forge-a.test';
+        const operation = await GraphqlService.createOperationClient();
+        globalThis.fetch = async (url, options) => {
+            calls.push({url, redirect: options.redirect});
+            // Model fetch's redirect:error contract; no real network or redirect destination is contacted.
+            if (options.redirect === 'error') throw new TypeError('Fixture redirect refused');
+            followed++;
+            return Response.json({data: {redirected: true}, redirected: true});
+        };
+
+        await expect(operation.query(QUERY)).rejects.toThrow('Fixture redirect refused');
+        await expect(operation.rest('GET', '/repos/o/r')).rejects.toThrow('Fixture redirect refused');
+        expect(followed).toBe(0);
+        expect(calls).toEqual([
+            {url: 'https://forge-a.test/graphql', redirect: 'error'},
+            {url: 'https://forge-a.test/repos/o/r', redirect: 'error'}
+        ]);
+        await GraphqlService.query(QUERY);
+        await GraphqlService.rest('GET', '/repos/o/r');
+        expect(calls.slice(2).map(call => call.redirect)).toEqual([undefined, undefined]);
     });
 
     test('retries a transient 504 response and returns the eventual data', async () => {

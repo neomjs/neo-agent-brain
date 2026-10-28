@@ -2,6 +2,7 @@ import {Client}                        from '@modelcontextprotocol/sdk/client/in
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
     normalizeAgentIdentity,
+    normalizeExpectedPlaneTarget,
     normalizeSecureMcpEndpoint,
     readMcpToolResultPayload
 } from './mcpWireParsing.mjs';
@@ -77,6 +78,9 @@ import {
  */
 export const VIEWER_BINDING_UNAVAILABLE = 'viewer-binding-unavailable'
 
+/** Refusal code when a session cannot prove its independently declared plane and durable root. */
+export const PLANE_BINDING_UNAVAILABLE = 'plane-binding-unavailable'
+
 /** Refusal code when the connected plane cannot prove it supports a requested observer scope. */
 export const MAILBOX_OBSERVER_UNAVAILABLE = 'MAILBOX_OBSERVER_UNAVAILABLE'
 
@@ -106,6 +110,7 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
 
     let session = null, // {client, transport, identity} once proven
         expected     = null,
+        expectedTarget = null,
         establishing = null, // the single-flight proof attempt every concurrent acquirer shares
         closing      = null; // the shared terminal close barrier every closer awaits
 
@@ -147,7 +152,7 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
      * @private
      */
     async function connectProven() {
-        const candidate = buildSession();
+        const candidate = buildSession(), target = expectedTarget;
 
         try {
             await candidate.client.connect(candidate.transport)
@@ -183,7 +188,25 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
             return {ok: false, reason: 'plane identity mismatch', blockerCode: VIEWER_BINDING_UNAVAILABLE}
         }
 
-        session = {...candidate, identity};
+        if (target) {
+            let plane;
+            try {
+                plane = readMcpToolResultPayload(await candidate.client.callTool({name: 'healthcheck', arguments: {scope: 'plane'}}))?.plane;
+            } catch {
+                await teardown(candidate);
+                return {ok: false, reason: 'plane target probe unreachable', blockerCode: PLANE_BINDING_UNAVAILABLE};
+            }
+            if (!plane || plane.id !== target.planeId || plane.dataRoot !== target.dataRoot) {
+                await teardown(candidate);
+                return {ok: false, reason: 'plane target mismatch or unavailable', blockerCode: PLANE_BINDING_UNAVAILABLE};
+            }
+        }
+        // The additional proof awaits remote work; a close or new epoch must win before publication.
+        if (expected !== identity || expectedTarget !== target) {
+            await teardown(candidate);
+            return {ok: false, reason: 'client closed or rebound during proof'};
+        }
+        session = {...candidate, identity, target};
 
         return {ok: true, identity}
     }
@@ -312,7 +335,7 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
         const schema = matches[0]?.inputSchema,
             observer = schema?.type === 'object' && schema.properties?.observer;
 
-        const scope   = request.scope,
+        const scope = request.scope,
             sharing = request.memorySharing;
 
         if (observer?.type !== 'object'
@@ -363,13 +386,19 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
          * @param {Object} options
          * @param {String} options.expectedIdentity Boot-resolved viewer the bearer's plane-side
          *     subject must equal (canonical `@login` form).
+         * @param {Object} [options.expectedTarget] Independently declared {planeId,dataRoot}; when supplied,
+         *     both fields are proven by this session's plane-only health read on init and every reconnect.
          * @returns {Promise<Object>} Bounded `{ok, identity?, reason?}`.
          */
-        async init({expectedIdentity}) {
+        async init({expectedIdentity, expectedTarget: requestedTarget}) {
             const next = normalizeAgentIdentity(expectedIdentity);
 
             if (!next) {
                 return {ok: false, reason: 'plane init requires a canonical expectedIdentity'}
+            }
+            const target = requestedTarget === undefined ? null : normalizeExpectedPlaneTarget(requestedTarget);
+            if (requestedTarget !== undefined && !target) {
+                return {ok: false, reason: 'plane init requires a complete expected target', blockerCode: PLANE_BINDING_UNAVAILABLE};
             }
 
             // Terminal-close any prior life FIRST — close() clears the expectation, so the new one
@@ -379,6 +408,7 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
 
             closing  = null;
             expected = next;
+            expectedTarget = target;
 
             return acquireProven()
         },
@@ -533,6 +563,7 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
 
                 session  = null;
                 expected = null;
+                expectedTarget = null;
 
                 if (establishing) {
                     try { await establishing } catch { /* refusal paths tear their own candidate */ }

@@ -18,6 +18,7 @@ import {closeBundlePayload, openBundlePayload} from '../../shared/bundlePayload.
  * @param {Object} options.db Open better-sqlite3 database with Nodes/Edges.
  * @param {String} options.filePath JSONL source, bare or compressed (`.jsonl`, `.jsonl.br`, `.jsonl.gz`).
  * @param {'merge'|'replace'} options.mode Import mode.
+ * @param {Function} options.beforeMutation Synchronous source-owned fence; staging explicitly supplies a no-op.
  * @param {Number} [options.batchSize=2000] Maximum transaction batch.
  * @param {Function} [options.warn=()=>{}] Bounded warning sink.
  * @returns {Promise<{imported: Number, counts: Object, mode: String, maxBatchSize: Number}>}
@@ -26,6 +27,7 @@ export async function importGraphJsonl({
     db,
     filePath,
     mode,
+    beforeMutation,
     batchSize = 2000,
     warn = () => {}
 } = {}) {
@@ -41,9 +43,21 @@ export async function importGraphJsonl({
     if (!Number.isInteger(batchSize) || batchSize <= 0) {
         throw new TypeError('importGraphJsonl: batchSize must be a positive integer')
     }
+    if (typeof beforeMutation !== 'function') {
+        throw new TypeError('importGraphJsonl: a synchronous source-owned mutation fence is required');
+    }
+
+    /** @summary Invokes the trusted owner's synchronous fence outside swallowed row errors. */
+    const admitMutation = () => {
+        const result = beforeMutation({db, operation: `graph-import-${mode}`, source: filePath});
+        if (result && typeof result.then === 'function') {
+            throw new TypeError('importGraphJsonl: mutation fence must be synchronous');
+        }
+    };
 
     if (mode === 'replace') {
         db.transaction(() => {
+            admitMutation();
             db.prepare('DELETE FROM Edges').run();
             db.prepare('DELETE FROM Nodes').run();
         }).immediate()
@@ -63,6 +77,7 @@ export async function importGraphJsonl({
 
     let imported    = 0;
     let maxObserved = 0;
+    let mergeFenced = false;
 
     const insertBatch = db.transaction(records => {
         for (const record of records) {
@@ -124,6 +139,15 @@ export async function importGraphJsonl({
         }
     });
 
+    /** @summary Commits a merge fence before its first insertion batch; replacement already fenced its delete. */
+    const writeBatch = records => {
+        if (mode === 'merge' && !mergeFenced) {
+            db.transaction(admitMutation).immediate();
+            mergeFenced = true;
+        }
+        insertBatch(records);
+    };
+
     const
         lines = openBundlePayload(filePath),
         batch = [];
@@ -138,14 +162,14 @@ export async function importGraphJsonl({
 
             if (batch.length === batchSize) {
                 maxObserved = Math.max(maxObserved, batch.length);
-                insertBatch(batch);
+                writeBatch(batch);
                 batch.length = 0
             }
         }
 
         if (batch.length > 0) {
             maxObserved = Math.max(maxObserved, batch.length);
-            insertBatch(batch)
+            writeBatch(batch)
         }
     } finally {
         closeBundlePayload(lines)
