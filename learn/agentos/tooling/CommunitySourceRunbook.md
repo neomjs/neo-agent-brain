@@ -286,7 +286,7 @@ Authorized as a shadow-only steward experiment by the calibration report (`repor
 
 - **Shadow-first default & `AiConfig` threshold leaves (`ai/mcp/server/memory-core/configBase.mjs`):** `communityStewardWake.stewardActivation` defaults to `false`, and `stewardLeaseTtlMs`, `wakeCoalesceWindowMs`, `vacancyFallbackCooldownMs`, `minUnclaimedEligibleCount`, `wakeAmplificationCap`, and `maxWakePayloadBytes` default to `null` (`unset`). Leaves are read directly at the use site (`ADR-0019 §5.1, B5`) with no caller override parameters on the service or helper surfaces. When `stewardActivation` is `false`, `evaluateStewardWake` runs in shadow mode (`mode: 'shadow'`, `shouldWake: false`): eligible evaluations can record steward vacancy (`vacancy_count`), would-be coalesced count-only wakes (`shadow_would_wake_count`), and observed payload bytes (`max_shadow_payload_bytes`) in `mc_community_steward_wake_state`, and sends no live wake. Live activation (`stewardActivation: true`) fails closed (`COMMUNITY_STEWARD_POLICY_THRESHOLD_UNSET:*`) unless every numeric threshold leaf is set in `AiConfig` to a measured positive integer; selecting production thresholds and enabling live activation remain gated on the retained shadow observation window under parent Epic `#106`.
 - **Tenant/source-scoped SQLite-fenced lease (`mc_community_steward_lease`):** `acquireStewardWakeLease` binds a deterministic `leaseScopeKey` (`tenant:<tenantId>:sources:<ALL|hash>`), stores only the SHA-256 hash of the minted holder token (`holder_token_hash`), increments a monotonic `fencing_epoch`, and requires a positive integer `stewardLeaseTtlMs` leaf. Competing callers while `expires_at > now` receive explicit contention (`acquired: false`, `contention: true`, `retryAfterMs`); expired leases are reclaimed (`reclaimed: true`, `fencingEpoch + 1`), and stale holders are rejected (`superseded-epoch` / `stale-lease-holder`).
-- **Count-only bounded wake envelope & degraded-demand honesty (`community-steward-wake.v1`):** `evaluateStewardWake` consumes `projectAttentionCounts` (`notAuthority: true`) and builds a count-only payload containing `count`, `sourceCount`, `oldestOccurredAt`, `sourceWatermark`, `coverageStatus`, `routingMode`, and `targetPrincipalId` — never titles, bodies, excerpts, URLs, actor handles, ranking scores, or task assignments (`assertCountOnlyWakePayload`). If `attentionCounts.count` is not a non-negative safe integer, `evaluateStewardWake` returns `{reason: 'degraded-unclaimed-count', count: null, coverageStatus: 'degraded', shadowWouldWake: false, shouldWake: false}` without incrementing `vacancy_count` or `shadow_would_wake_count`.
+- **Count-only bounded wake envelope & degraded-demand honesty (`community-steward-wake.v1`):** `evaluateStewardWake` consumes `projectAttentionCounts` (`notAuthority: true`) and builds a count-only payload containing `count`, `sourceCount`, `oldestOccurredAt`, `sourceWatermark`, `coverageStatus`, `routingMode`, and `targetPrincipalId` — never titles, bodies, excerpts, URLs, actor handles, ranking scores, or task assignments (`assertCountOnlyWakePayload`). Invalid counts or missing/degraded coverage retain unknown vacancy, would-wake and payload measurements; `shouldWake` remains false. Qualified empty demand observes actual lease vacancy and reports `shadowWouldWake:false`, without constructing a wake payload.
 - **Attention routing vs. ownership (`AC4`):** Acquiring a lease or evaluating/observing a wake never creates or assigns a Task; `claim_community_activity_task` (`CommunityActivityService.claimTask`) remains the sole ownership transition, and claiming an item immediately decrements the unclaimed `count` and advances `sourceWatermark`.
 - **Vacancy fallback & positive server-derived tenant isolation (`AC5`, `AC6`):** When no active lease is held, `evaluateStewardWake` routes only to a single explicit same-tenant `vacancyFallbackTarget` subject to `vacancyFallbackCooldownMs` and `wakeAmplificationCap` per `(sourceWatermark, wakeCoalesceWindowMs)`. `validateTenantScopedPrincipal` verifies the server-derived `expectedTenantId` (`CommunityActivityService.scope()` + active `RequestContextService` userId) and requires the canonical tenant-qualified namespace `steward:<tenantId>:<seatId>`, rejecting wildcard/all-resident broadcasts (`'*'`, `'AGENT:*'`), unscoped global handles (`@*` / `scope: 'global-roster'`), and cross-tenant targets.
 
@@ -338,16 +338,22 @@ slots remain explicitly unavailable because this caller does not measure those i
 
 Exit 0 means the requested collection completed; partial or failed collection exits 1, and invalid
 arguments exit 2. Completed samples and a typed failure are retained after a later service error.
-Read `status`, `denominator` and `windowEvidence` together. A stable, ACTIVE, fully covered source
-with zero eligible demand is an observed empty sample; missing/degraded coverage is different.
-The current GitHub PR and Discussion collectors always retain unsupported-history gaps, including
-deletion histories the provider cannot enumerate. `readCoverage` requires complete, zero-gap
-receipts for all three resource families, so even an exhaustive acquisition currently leaves the
-source degraded. The steward returns `coverage-degraded` before vacancy or payload calculation;
-this caller preserves the resulting unknown metrics and `insufficient-evidence` classification.
-Source registration, acquisition cost or a successful command exit cannot remove that ceiling.
-Resolve its measurement disposition before expecting a qualified vacancy/wake window; keep every
-provider gap visible.
+Read `status`, `denominator` and `windowEvidence` together. Qualification requires current-epoch,
+snapshot-bound receipts for issues, pulls and discussions, each with a recognized exact coverage
+contract and provider-limitation set, exhaustive supported acquisition and zero acquisition gaps.
+The collectors preserve fixed provider limitations separately from actual acquisition failures;
+those declarations bound the measured population rather than claiming universal provider history.
+Public family fields expose raw `complete` separately from `qualified` and its reason. Legacy
+complete-looking receipts have no binding and cannot qualify; they are not rewritten or promoted.
+
+A qualified source with zero eligible admitted demand is an observed empty sample: the shared
+evaluator records actual lease vacancy and `shadowWouldWake:false`, with payload bytes unavailable
+because no wake payload was constructed. Missing, malformed, stale-epoch or incomplete coverage
+instead retains unknown metrics and `insufficient-evidence`. Source registration, acquisition cost
+or a successful command exit cannot substitute for qualified evidence. The historical slice is
+labelled `latest admitted closure; reopen not observable`; stored unknown-actor exclusions do not
+invent a response-bearing denominator. These remain admitted-population measurements, not estimates
+of every human request the provider may have lost or failed to attribute.
 
 Injected runtimes and resolved test stores remain `fixture-only`. Even a
 `source-bound-window-observed` result attests only the selected ledger window: bind the actual
