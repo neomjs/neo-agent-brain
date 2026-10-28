@@ -22,7 +22,10 @@ import path           from 'node:path';
  * point it at a disposable file rather than a developer's real graph.
  */
 test.describe('NL relocation — admission and digest meet in the container graph', () => {
-    const rootDir = path.resolve(import.meta.dirname, '../../../../../../../');
+    const rootDir = path.resolve(import.meta.dirname, '../../../../../../../'),
+          // The engine is a dependency, not part of this tree: the child imports it by URL
+          neoUrl  = JSON.stringify(import.meta.resolve('neo.mjs/src/Neo.mjs')),
+          coreUrl = JSON.stringify(import.meta.resolve('neo.mjs/src/core/_export.mjs'));
 
     /**
      * Admits telemetry and an archive into a throwaway graph, then reads both back.
@@ -33,8 +36,8 @@ test.describe('NL relocation — admission and digest meet in the container grap
             dir    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-nl-composition-')),
             rel    = file => JSON.stringify(path.join(rootDir, file)),
             script = `
-                import Neo       from ${rel('src/Neo.mjs')};
-                import * as core from ${rel('src/core/_export.mjs')};
+                import Neo       from ${neoUrl};
+                import * as core from ${coreUrl};
 
                 const {
                     NL_ACTION_TELEMETRY_NODE_TYPE, admitNlActions, pruneNlActionTelemetry
@@ -449,7 +452,7 @@ test.describe('NL relocation — admission and digest meet in the container grap
     });
 
     test('a caller cannot mint its own custody, but its DECLARATION still survives for replay', () => {
-        // The two halves of RA-4's custody requirement, separated on purpose. `originWriter` names a
+        // The two halves of the custody requirement, separated on purpose. `originWriter` names a
         // browser-plane agent the container cannot authenticate, so it stays a declaration and replay keeps
         // consuming it. `custodian` is derived from the request context and is absent from the request
         // schema, so the dispatcher's Zod facade strips a caller's attempt before the store ever sees it.
