@@ -1,7 +1,7 @@
-import {Buffer}               from 'node:buffer';
-import {execFile}             from 'node:child_process';
-import {promisify}            from 'node:util';
-import {validateMergeReady}   from '../../scripts/lifecycle/validateMergeReady.mjs';
+import {Buffer}             from 'node:buffer';
+import {execFile}           from 'node:child_process';
+import {promisify}          from 'node:util';
+import {validateMergeReady} from '../../scripts/lifecycle/validateMergeReady.mjs';
 import {
     mergeHoldToken,
     resolveMergeHold
@@ -634,11 +634,11 @@ export function parseRoadmapV1RowEpics(roadmapMarkdown = '') {
         const tableMatch = /^\|\s*(\d+)\s*\|(.*)\|\s*$/.exec(line.trim());
         if (!tableMatch) continue;
 
-        const rowNum  = Number(tableMatch[1]);
-        const columns = tableMatch[2].split('|').map(col => col.trim());
+        const rowNum   = Number(tableMatch[1]);
+        const columns  = tableMatch[2].split('|').map(col => col.trim());
         const stateCol = columns[columns.length - 1] || '';
 
-        const urlMatch  = /https:\/\/github\.com\/([^/\s)]+\/[^/\s)]+)\/issues\/(\d+)/i.exec(stateCol)
+        const urlMatch = /https:\/\/github\.com\/([^/\s)]+\/[^/\s)]+)\/issues\/(\d+)/i.exec(stateCol)
             || /https:\/\/github\.com\/([^/\s)]+\/[^/\s)]+)\/issues\/(\d+)/i.exec(line);
         const hashMatch = /#(\d+)/.exec(stateCol);
 
