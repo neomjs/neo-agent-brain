@@ -434,12 +434,26 @@ class IssueService extends Base {
 
         try {
             // Divergent ID Lookup
-            const query  = isPR ? GET_PULL_REQUEST_ID : GET_ISSUE_ID;
-            const idData = await GraphqlService.query(query, idVariables);
+            const query      = isPR ? GET_PULL_REQUEST_ID : GET_ISSUE_ID;
+            const idData     = await GraphqlService.query(query, idVariables);
+            const targetNode = isPR
+                ? idData.repository.pullRequest
+                : idData.repository.issue;
 
-            const subjectId = isPR
-                ? idData.repository.pullRequest.id
-                : idData.repository.issue.id;
+            const maxComments  = aiConfig.pullRequest.maxCommentsPerPullRequest;
+            const commentCount = targetNode.comments?.totalCount ?? 0;
+
+            if (commentCount >= maxComments) {
+                return {
+                    error  : 'Comment Cap Exceeded',
+                    code   : 'COMMENT_CAP_EXCEEDED',
+                    commentCount,
+                    maxComments,
+                    message: `${isPR ? 'Pull request' : 'Issue'} #${number} already has ${commentCount} comments (hard ceiling: ${maxComments}). Update an existing comment in place via action: 'update' + comment_id, fold state into the ticket/PR body, or open a narrowly scoped follow-up ticket.`
+                };
+            }
+
+            const subjectId = targetNode.id;
 
             // Shared Mutation — capture response so we can surface the canonical comment
             // identifier. Enables the A2A propagation pattern: posting

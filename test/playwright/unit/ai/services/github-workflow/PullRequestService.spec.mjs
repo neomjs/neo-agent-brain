@@ -1425,8 +1425,18 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — getConvers
     });
 
     test('returns full conversation when no selector is passed (backward-compat default)', async () => {
+        let capturedQuery, capturedVars;
+        GraphqlService.query = async (query, vars) => {
+            capturedQuery = query;
+            capturedVars  = vars;
+            return {repository: {pullRequest: PR_FIXTURE}};
+        };
+
         const result = await PullRequestService.getConversation({pr_number: 10272});
 
+        expect(capturedVars.maxComments).toBe(25);
+        expect(capturedQuery).toContain('comments(last: $maxComments)');
+        expect(capturedQuery).toContain('totalCount');
         expect(result.title).toBe('Test PR');
         expect(result.comments.nodes).toHaveLength(4);
         expect(result.comments.nodes[0].id).toBe('IC_a1111');

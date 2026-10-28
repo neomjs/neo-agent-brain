@@ -23,7 +23,8 @@ export const GET_CONVERSATION = `
           login
         }
         authorAssociation
-        comments(first: $maxComments) {
+        comments(last: $maxComments) {
+          totalCount
           nodes {
             id
             databaseId
@@ -662,6 +663,9 @@ export const GET_PULL_REQUEST_ID = `
     repository(owner: $owner, name: $repo) {
       pullRequest(number: $prNumber) {
         id
+        comments {
+          totalCount
+        }
       }
     }
   }

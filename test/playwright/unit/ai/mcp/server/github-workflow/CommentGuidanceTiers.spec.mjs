@@ -142,5 +142,7 @@ test.describe('github-workflow manage_issue_comment — BODY-vs-COMMENT guidance
         // The handbook resolves `operation.description`, so a guard that passed while the YAML lost
         // the text would mean the tiers had drifted apart.
         expect(operation.description, 'the handbook tier is sourced from operation.description').toContain('BODY = state');
+        expect(operation.description, 'create action documents the 25-comment ceiling (#1325)').toContain('COMMENT_CAP_EXCEEDED');
+        expect(openApiDoc.paths['/discussions/comments/manage'].post.description, 'discussion create action documents the 25-comment ceiling (#1325)').toContain('COMMENT_CAP_EXCEEDED');
     });
 });

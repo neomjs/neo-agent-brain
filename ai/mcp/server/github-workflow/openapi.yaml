@@ -426,7 +426,7 @@ paths:
           Incremental review cycles: track last-seen commentId, fetch only what's new.
         - `last_n`: fetch the last N comments. Coarse-grained catch-up when IDs aren't tracked.
 
-        Omitting all selectors returns the full conversation (backward-compatible default).
+        Omitting all selectors returns the full conversation (backward-compatible default, capped at the latest 25 comments).
       tags: [Pull Requests]
       requestBody:
         required: true
@@ -575,6 +575,7 @@ paths:
         **Action: 'create'**
         - Creates a new comment on an issue or PR.
         - Requires `body` and either `issue_number` or `pr_number`.
+        - Refuses with `COMMENT_CAP_EXCEEDED` when the target issue or PR already has 25 or more comments; use `action: 'update'` on an existing comment, fold state into the body, or open a follow-up ticket.
         - Posts `body` as-authored; GitHub's authenticated author is the attribution.
         - **When to use:** To provide feedback, approve PRs (with "LGTM"), or ask questions.
 
@@ -1572,7 +1573,7 @@ paths:
           (exclusive). If the ID is not found, returns an empty comments list.
         - `last_n`: fetch the last N top-level discussion comments.
 
-        Omitting all selectors returns the full bounded Discussion conversation shape.
+        Omitting all selectors returns the full bounded Discussion conversation shape (capped at the latest 25 top-level comments and 25 replies per comment).
       tags: [Discussions]
       requestBody:
         required: true
@@ -1743,6 +1744,7 @@ paths:
         **Action: 'create'**
         - Creates a new comment on a discussion.
         - Requires `body` and `discussion_number`.
+        - Refuses with `COMMENT_CAP_EXCEEDED` when the discussion already has 25 or more top-level comments; use `action: 'update'` on your existing comment or graduate to a ticket.
         - Posts `body` as-authored; GitHub's authenticated author is the attribution.
         - Returns `commentId` for scoped hand-off via `get_discussion_conversation`.
 

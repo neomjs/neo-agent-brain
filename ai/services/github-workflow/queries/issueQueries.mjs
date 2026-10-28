@@ -951,7 +951,8 @@ export const GET_ISSUE_CONVERSATION = `
           login
         }
         authorAssociation
-        comments(first: $maxComments) {
+        comments(last: $maxComments) {
+          totalCount
           nodes {
             id
             databaseId

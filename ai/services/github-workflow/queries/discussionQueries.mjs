@@ -39,6 +39,9 @@ export const GET_DISCUSSION_ID = `
     repository(owner: $owner, name: $repo) {
       discussion(number: $number) {
         id
+        comments {
+          totalCount
+        }
       }
     }
   }
@@ -81,7 +84,8 @@ export const GET_DISCUSSION_CONVERSATION = `
           name
         }
 
-        comments(first: $maxComments) {
+        comments(last: $maxComments) {
+          totalCount
           nodes {
             id
             databaseId
@@ -95,7 +99,8 @@ export const GET_DISCUSSION_CONVERSATION = `
             url
             isAnswer
 
-            replies(first: $maxReplies) {
+            replies(last: $maxReplies) {
+              totalCount
               nodes {
                 id
                 author {

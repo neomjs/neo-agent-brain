@@ -162,6 +162,9 @@ export const GET_ISSUE_ID = `
     repository(owner: $owner, name: $repo) {
       issue(number: $number) {
         id
+        comments {
+          totalCount
+        }
       }
     }
   }

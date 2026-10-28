@@ -258,6 +258,19 @@ class DiscussionService extends Base {
                 };
             }
 
+            const maxComments  = aiConfig.pullRequest.maxCommentsPerPullRequest;
+            const commentCount = idData.repository.discussion.comments?.totalCount ?? 0;
+
+            if (commentCount >= maxComments) {
+                return {
+                    error  : 'Comment Cap Exceeded',
+                    code   : 'COMMENT_CAP_EXCEEDED',
+                    commentCount,
+                    maxComments,
+                    message: `Discussion #${discussion_number} already has ${commentCount} top-level comments (hard ceiling: ${maxComments}). Update your existing comment in place via action: 'update' + comment_id, or graduate the converged outcome into an issue/epic.`
+                };
+            }
+
             const discussionId = idData.repository.discussion.id;
 
             // Use ADD_DISCUSSION_COMMENT mutation

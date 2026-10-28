@@ -511,6 +511,110 @@ test.describe('Neo.ai.services.github-workflow.IssueService — manageIssueComme
             expect(result.code).toBe('GRAPHQL_API_ERROR');
             expect(result.message).toContain('rate limit');
         });
+
+        test('refuses issue-comment creation with COMMENT_CAP_EXCEEDED when comments.totalCount >= 25 (#1325)', async () => {
+            let callCount = 0;
+
+            GraphqlService.query = async (query) => {
+                callCount++;
+                expect(query).toContain('comments');
+                expect(query).toContain('totalCount');
+                return {
+                    repository: {
+                        issue: {
+                            id      : 'I_kwDOABcD1234567890',
+                            comments: {totalCount: 25}
+                        }
+                    }
+                };
+            };
+
+            const result = await IssueService.manageIssueComment({
+                issue_number: 10272,
+                body        : 'Comment #26 that would exceed the 25-comment ceiling',
+                action      : 'create'
+            });
+
+            expect(result).toMatchObject({
+                error       : 'Comment Cap Exceeded',
+                code        : 'COMMENT_CAP_EXCEEDED',
+                commentCount: 25,
+                maxComments : 25
+            });
+            expect(result.message).toContain('Issue #10272 already has 25 comments (hard ceiling: 25)');
+            expect(callCount).toBe(1);
+        });
+
+        test('refuses PR-comment creation with COMMENT_CAP_EXCEEDED when comments.totalCount >= 25 (#1325)', async () => {
+            let callCount = 0;
+
+            GraphqlService.query = async (query) => {
+                callCount++;
+                expect(query).toContain('comments');
+                expect(query).toContain('totalCount');
+                return {
+                    repository: {
+                        pullRequest: {
+                            id      : 'PR_kwDOABcD1234567890',
+                            comments: {totalCount: 70}
+                        }
+                    }
+                };
+            };
+
+            const result = await IssueService.manageIssueComment({
+                pr_number: 10268,
+                body     : 'Comment #71 on an overloaded PR thread',
+                action   : 'create'
+            });
+
+            expect(result).toMatchObject({
+                error       : 'Comment Cap Exceeded',
+                code        : 'COMMENT_CAP_EXCEEDED',
+                commentCount: 70,
+                maxComments : 25
+            });
+            expect(result.message).toContain('Pull request #10268 already has 70 comments (hard ceiling: 25)');
+            expect(callCount).toBe(1);
+        });
+
+        test('admits comment creation at the 24-comment boundary (#1325)', async () => {
+            let callCount = 0;
+
+            GraphqlService.query = async () => {
+                callCount++;
+                if (callCount === 1) {
+                    return {
+                        repository: {
+                            issue: {
+                                id      : 'I_kwDOABcD_boundary24',
+                                comments: {totalCount: 24}
+                            }
+                        }
+                    };
+                }
+                return {
+                    addComment: {
+                        commentEdge: {
+                            node: {
+                                id       : 'IC_25th',
+                                url      : 'https://github.com/neomjs/neo/issues/10272#issuecomment-25',
+                                createdAt: '2026-10-28T00:00:00Z'
+                            }
+                        }
+                    }
+                };
+            };
+
+            const result = await IssueService.manageIssueComment({
+                issue_number: 10272,
+                body        : '25th comment (index 24 -> 25)',
+                action      : 'create'
+            });
+
+            expect(result.commentId).toBe('IC_25th');
+            expect(callCount).toBe(2);
+        });
     });
 
     test.describe('update action (existing contract — regression lock)', () => {
@@ -1502,8 +1606,18 @@ test.describe('Neo.ai.services.github-workflow.IssueService — getConversation 
     });
 
     test('returns full conversation when no selector is passed (backward-compat default)', async () => {
+        let capturedQuery, capturedVars;
+        GraphqlService.query = async (query, vars) => {
+            capturedQuery = query;
+            capturedVars  = vars;
+            return {repository: {issue: ISSUE_FIXTURE}};
+        };
+
         const result = await IssueService.getConversation({issue_number: 10702});
 
+        expect(capturedVars.maxComments).toBe(25);
+        expect(capturedQuery).toContain('comments(last: $maxComments)');
+        expect(capturedQuery).toContain('totalCount');
         expect(result.title).toBe('Test Issue');
         expect(result.comments.nodes).toHaveLength(4);
         expect(result.comments.nodes[0].id).toBe('IC_a1111');

@@ -102,6 +102,75 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — manageDiscu
             expect(result.code).toBe('GRAPHQL_API_ERROR');
             expect(result.message).toContain('rate limit');
         });
+
+        test('refuses discussion-comment creation with COMMENT_CAP_EXCEEDED when comments.totalCount >= 25 (#1325)', async () => {
+            let callCount = 0;
+
+            GraphqlService.query = async (query) => {
+                callCount++;
+                expect(query).toContain('comments');
+                expect(query).toContain('totalCount');
+                return {
+                    repository: {
+                        discussion: {
+                            id      : 'D_kwDOABcD1234567890',
+                            comments: {totalCount: 25}
+                        }
+                    }
+                };
+            };
+
+            const result = await DiscussionService.manageDiscussionComment({
+                discussion_number: 10841,
+                body             : 'Comment #26 that would exceed the 25-comment ceiling',
+                action           : 'create'
+            });
+
+            expect(result).toMatchObject({
+                error       : 'Comment Cap Exceeded',
+                code        : 'COMMENT_CAP_EXCEEDED',
+                commentCount: 25,
+                maxComments : 25
+            });
+            expect(result.message).toContain('Discussion #10841 already has 25 top-level comments (hard ceiling: 25)');
+            expect(callCount).toBe(1);
+        });
+
+        test('admits discussion-comment creation at the 24-comment boundary (#1325)', async () => {
+            let callCount = 0;
+
+            GraphqlService.query = async () => {
+                callCount++;
+                if (callCount === 1) {
+                    return {
+                        repository: {
+                            discussion: {
+                                id      : 'D_kwDOABcD_boundary24',
+                                comments: {totalCount: 24}
+                            }
+                        }
+                    };
+                }
+                return {
+                    addDiscussionComment: {
+                        comment: {
+                            id       : 'DC_25th',
+                            url      : 'https://github.com/orgs/neomjs/discussions/10841#discussioncomment-25',
+                            createdAt: '2026-10-28T00:00:00Z'
+                        }
+                    }
+                };
+            };
+
+            const result = await DiscussionService.manageDiscussionComment({
+                discussion_number: 10841,
+                body             : '25th comment (index 24 -> 25)',
+                action           : 'create'
+            });
+
+            expect(result.commentId).toBe('DC_25th');
+            expect(callCount).toBe(2);
+        });
     });
 
     test.describe('update action', () => {
@@ -285,8 +354,11 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — getConversa
         GraphqlService.query = async (query, variables) => {
             callCount++;
             expect(variables.discussionNumber).toBe(10137);
-            expect(variables.maxComments).toBeGreaterThan(0);
-            expect(variables.maxReplies).toBeGreaterThan(0);
+            expect(variables.maxComments).toBe(25);
+            expect(variables.maxReplies).toBe(25);
+            expect(query).toContain('comments(last: $maxComments)');
+            expect(query).toContain('replies(last: $maxReplies)');
+            expect(query).toContain('totalCount');
 
             return {repository: {discussion: buildDiscussion()}};
         };
