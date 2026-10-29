@@ -464,8 +464,10 @@ export async function buildIngestEnvelope({
 
             // A linear Git history is not automatically a delta-safe extraction. Parser-backed,
             // hierarchy-aware, and arbitrary custom extractors can depend on unchanged files, so
-            // their linear advance is a proof-bearing full materialization.
-            fullMaterialization = !profileDeltaSafe;
+            // their linear advance is a proof-bearing full materialization. An advance that changed
+            // no file gives them nothing new to depend on, so it stays a zero-delta incremental.
+            fullMaterialization = !profileDeltaSafe
+                && (diff.addedOrChanged.length > 0 || diff.deleted.length > 0);
         }
     }
 
