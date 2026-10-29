@@ -34,7 +34,7 @@ test.describe.configure({mode: 'serial'});
 
 test.describe('KB_DatabaseService — manageDatabaseBackup (#10129 Phase 1)', () => {
     let SDK, KB_DatabaseService, KB_ChromaManager;
-    let originalGetCollection, tmpBackupDir;
+    let originalGetCollection, originalCollectionBootstrapped, tmpBackupDir;
 
     test.beforeAll(async () => {
         SDK                = await import('../../../../../../ai/services.mjs');
@@ -44,11 +44,19 @@ test.describe('KB_DatabaseService — manageDatabaseBackup (#10129 Phase 1)', ()
         tmpBackupDir = path.resolve(process.cwd(), 'tmp', `kb-backup-test-${process.pid}-${Date.now()}`);
         fs.mkdirSync(tmpBackupDir, {recursive: true});
 
-        originalGetCollection = KB_ChromaManager.getKnowledgeBaseCollection.bind(KB_ChromaManager);
+        originalGetCollection          = KB_ChromaManager.getKnowledgeBaseCollection.bind(KB_ChromaManager);
+        originalCollectionBootstrapped = KB_ChromaManager.knowledgeBaseCollectionBootstrapped;
+    });
+
+    // Every arm stubs the resolver with a collection it FOUND. The export reads that provenance from
+    // the singleton, which another spec in this worker may have left set, so each arm pins it.
+    test.beforeEach(() => {
+        KB_ChromaManager.knowledgeBaseCollectionBootstrapped = false;
     });
 
     test.afterAll(async () => {
-        KB_ChromaManager.getKnowledgeBaseCollection = originalGetCollection;
+        KB_ChromaManager.getKnowledgeBaseCollection          = originalGetCollection;
+        KB_ChromaManager.knowledgeBaseCollectionBootstrapped = originalCollectionBootstrapped;
 
         if (tmpBackupDir && fs.existsSync(tmpBackupDir)) {
             fs.rmSync(tmpBackupDir, {recursive: true, force: true});
