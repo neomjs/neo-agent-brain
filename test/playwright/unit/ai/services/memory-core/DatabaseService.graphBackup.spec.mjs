@@ -157,14 +157,21 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
             const db         = GraphService.db.storage.db;
             const insertNode = db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)');
 
-            insertNode.run('graph-backup-corrupt-source', null, '{invalid-source-json');
-            insertNode.run('graph-backup-corrupt-target', null, '{invalid-target-json');
+            let nodeRefusal = null;
+            try {
+                insertNode.run('graph-backup-malformed-node', null, '{invalid-node-json');
+            } catch (error) {
+                nodeRefusal = error.message
+            }
+
+            insertNode.run('graph-backup-source', null, '{"label":"BackupFixture"}');
+            insertNode.run('graph-backup-target', null, '{"label":"BackupFixture"}');
             db.prepare('INSERT INTO Edges (id, user_id, source, target, type, data) VALUES (?, ?, ?, ?, ?, ?)')
                 .run(
                     'graph-backup-corrupt-edge',
                     null,
-                    'graph-backup-corrupt-source',
-                    'graph-backup-corrupt-target',
+                    'graph-backup-source',
+                    'graph-backup-target',
                     'CORRUPT_BACKUP_EDGE',
                     '{invalid-edge-json'
                 );
@@ -203,7 +210,7 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
                 }
             }
 
-            console.log('GRAPH_BACKUP_COMPLETENESS_RESULT:' + JSON.stringify({countRead, shortfall}));
+            console.log('GRAPH_BACKUP_COMPLETENESS_RESULT:' + JSON.stringify({countRead, nodeRefusal, shortfall}));
         `;
 
         try {
@@ -225,22 +232,22 @@ test.describe('Memory_DatabaseService — graph backup import (#10949)', () => {
 
             expect(output, result.stdout).toBeTruthy();
 
-            const {countRead, shortfall} = JSON.parse(output[1]);
+            const {countRead, nodeRefusal, shortfall} = JSON.parse(output[1]);
+
+            // The Nodes expression indexes parse every row at write time, so no store can hold an
+            // unreadable node; an unreadable edge is the reachable loss this arm plants.
+            expect(nodeRefusal).toContain('malformed JSON');
 
             expect(shortfall.ok).toBe(false);
             expect(shortfall.code).toBe('DATABASE_EXPORT_ERROR');
-            expect(shortfall.message).toContain('PARTIAL_COLLECTION_EXPORT: native-graph exported 0/3');
+            expect(shortfall.message).toContain('PARTIAL_COLLECTION_EXPORT: native-graph exported 2/3');
             expect(shortfall.details).toMatchObject({
                 collection: 'native-graph',
                 expected  : 3,
-                exported  : 0,
-                skipped   : 3
+                exported  : 2,
+                skipped   : 1
             });
-            expect(shortfall.details.skippedIds).toEqual(expect.arrayContaining([
-                'node:graph-backup-corrupt-source',
-                'node:graph-backup-corrupt-target',
-                'edge:graph-backup-corrupt-edge'
-            ]));
+            expect(shortfall.details.skippedIds).toEqual(['edge:graph-backup-corrupt-edge']);
 
             expect(countRead.ok).toBe(false);
             expect(countRead.code).toBe('DATABASE_EXPORT_ERROR');
