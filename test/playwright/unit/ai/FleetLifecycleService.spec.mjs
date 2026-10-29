@@ -3738,7 +3738,16 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
 
             expect(placement).toMatchObject({state: 'restored', requested: RECT, observed: RECT, reason: null});
             expect(Date.parse(placement.at)).not.toBeNaN();
-            expect(log.filter(row => row[0] === 'place')).toEqual([['place', record.pid, RECT, {instanceHome: home, harnessType: 'claude-desktop'}]]);
+            expect(log.filter(row => row[0] === 'place')).toEqual([[
+                'place',
+                record.pid,
+                RECT,
+                {
+                    instanceHome   : home,
+                    harnessType    : 'claude-desktop',
+                    expectedProcess: {pid: record.pid, startedAt: record.pidStartedAt}
+                }
+            ]]);
             expect(FleetLifecycleService.status('seat').windowPlacement).toMatchObject({state: 'restored', observed: RECT});
 
             await FleetLifecycleService.stop('seat')

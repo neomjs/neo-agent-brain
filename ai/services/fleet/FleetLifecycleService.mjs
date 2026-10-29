@@ -2780,7 +2780,11 @@ class FleetLifecycleService extends Base {
 
             if (sameWindowRect(observed, saved.rect)) return Object.assign(placement, {state: 'kept', at: new Date().toISOString()});
 
-            const after = await place(record.pid, saved.rect, {instanceHome: record.instanceHome, harnessType: record.harnessType});
+            const after = await place(record.pid, saved.rect, {
+                instanceHome   : record.instanceHome,
+                harnessType    : record.harnessType,
+                expectedProcess: {pid: record.pid, startedAt: record.pidStartedAt}
+            });
 
             placement.at = new Date().toISOString();
 

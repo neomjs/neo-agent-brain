@@ -101,34 +101,16 @@ export async function bindAntigravityProject({
         throw preserveRefusal(error, 'project-registry-unproven')
     });
 
-    const activePortPath            = path.join(profile, ACTIVE_PORT_FILE);
-    const {endpoint, listenerProof} = await waitForOwnedProfileEndpoint({
-        profile,
-        activePortPath,
-        fileSystem,
+    return withOwnedAntigravityCdp({
+        profileDirectory     : profile,
+        expectedProcess      : owner,
         verifyProfileListener,
-        owner,
-        deadline,
+        fileSystem,
+        WebSocketCtor,
+        now,
         signal,
-        now
-    });
-
-    checkAbort(signal);
-
-    const socketUrl = `ws://127.0.0.1:${endpoint.port}${endpoint.browserPath}`;
-    let socket;
-
-    try {
-        socket = new WebSocketCtor(socketUrl, {maxPayload: MAX_WS_MESSAGE});
-    } catch {
-        throw refuse('browser-unavailable')
-    }
-
-    const cdp = createCdpConnection(socket, now);
-
-    try {
-        await waitForSocketOpen(socket, deadline, signal, now);
-
+        deadline
+    }, async ({cdp, listenerProof}) => {
         const version = await cdp.call('Browser.getVersion', {}, null, deadline, signal)
             .catch(error => { throw preserveRefusal(error, 'browser-unavailable') });
 
@@ -190,6 +172,78 @@ export async function bindAntigravityProject({
             registeredProjectProof,
             rendererUrl      : observedUrl
         }
+    })
+}
+
+/**
+ * @summary Waits for a profile-local `DevToolsActivePort` proved to belong to `expectedProcess`
+ * (`{pid, startedAt}`), opens a bounded `ws` (`maxPayload: MAX_WS_MESSAGE`) CDP session, and
+ * disposes/terminates the socket when `run` settles.
+ * @param {Object} options
+ * @param {String} options.profileDirectory
+ * @param {{pid: Number, startedAt: String}} options.expectedProcess
+ * @param {Function} options.verifyProfileListener
+ * @param {Object} [options.fileSystem=fs]
+ * @param {Function} [options.WebSocketCtor=WebSocket]
+ * @param {Function} [options.now=Date.now]
+ * @param {AbortSignal} [options.signal]
+ * @param {Number} [options.timeoutMs=DEFAULT_TIMEOUT]
+ * @param {Number} [options.deadline]
+ * @param {Function} run `({cdp, endpoint, listenerProof, profile, owner, deadline, signal}) => Promise<*>`
+ * @returns {Promise<*>}
+ */
+export async function withOwnedAntigravityCdp({
+    profileDirectory,
+    expectedProcess,
+    verifyProfileListener,
+    fileSystem    = fs,
+    WebSocketCtor = WebSocket,
+    now           = Date.now,
+    signal,
+    timeoutMs     = DEFAULT_TIMEOUT,
+    deadline
+} = {}, run) {
+    const profile    = absoluteDirectory(profileDirectory),
+          owner      = validExpectedProcess(expectedProcess),
+          opDeadline = deadline ?? (now() + boundedTimeout(timeoutMs));
+
+    if (typeof verifyProfileListener !== 'function') throw refuse('verifier-required');
+    if (typeof fileSystem?.lstat !== 'function' || typeof fileSystem?.readFile !== 'function') {
+        throw refuse('filesystem-unavailable')
+    }
+    if (typeof WebSocketCtor !== 'function') throw refuse('websocket-unavailable');
+
+    checkAbort(signal);
+
+    const activePortPath            = path.join(profile, ACTIVE_PORT_FILE),
+          {endpoint, listenerProof} = await waitForOwnedProfileEndpoint({
+              profile,
+              activePortPath,
+              fileSystem,
+              verifyProfileListener,
+              owner,
+              deadline: opDeadline,
+              signal,
+              now
+          });
+
+    checkAbort(signal);
+
+    const socketUrl = `ws://127.0.0.1:${endpoint.port}${endpoint.browserPath}`;
+    let socket;
+
+    try {
+        socket = new WebSocketCtor(socketUrl, {maxPayload: MAX_WS_MESSAGE});
+    } catch {
+        throw refuse('browser-unavailable')
+    }
+
+    const cdp = createCdpConnection(socket, now);
+
+    try {
+        await waitForSocketOpen(socket, opDeadline, signal, now);
+
+        return await run({cdp, endpoint, listenerProof, profile, owner, deadline: opDeadline, signal})
     } finally {
         cdp.dispose();
         terminateSocket(socket)

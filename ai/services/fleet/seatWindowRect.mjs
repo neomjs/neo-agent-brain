@@ -1,8 +1,10 @@
-import {execFile}            from 'node:child_process';
-import fs                    from 'node:fs';
-import path                  from 'node:path';
-import {promisify}           from 'node:util';
-import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
+import {execFile}                         from 'node:child_process';
+import fs                                 from 'node:fs';
+import path                               from 'node:path';
+import {promisify}                        from 'node:util';
+import { writeFileAtomicSync }            from '../shared/atomicFileWrite.mjs';
+import { withOwnedAntigravityCdp }        from './antigravityProjectBinding.mjs';
+import {verifyAntigravityProfileListener} from './probeAntigravityRuntime.mjs';
 
 /**
  * @module ai/services/fleet/seatWindowRect
@@ -11,18 +13,19 @@ import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
  * (Codex Desktop writes its bounds only at a quit the SIGTERM→SIGKILL stop never completes; Antigravity
  * writes none), so the lifecycle captures the rectangle by pid before it signals a stop and puts it back
  * once the next start has a window. Window bounds are read without macOS TCC via CoreGraphics
- * (`CGWindowListCopyWindowInfo`), and placed first via the seat profile's loopback `DevToolsActivePort`
- * CDP endpoint (`Browser.grantPermissions` `windowManagement` + `Runtime.evaluate`) before falling back
- * to `System Events`. When macOS TCC or System Events denies fallback access (`-25211`, `-1743`, `-10004`),
- * `readSeatWindowRect`, `placeSeatWindow`, and `waitForSeatWindowRect` return `{refused: true, reason}`
+ * (`CGWindowListCopyWindowInfo(1 | 16, 0)`, which lists on-screen layer-0 windows only so a minimized or
+ * other-Space seat reads as `""` at Stop and preserves its previous recorded frame). For Antigravity seats,
+ * after `verifyAntigravityProfileListener` proves the profile-local `DevToolsActivePort` endpoint belongs
+ * to the seat's Start process (`{pid, startedAt}`), a fixed integer-only `window.moveTo`/`window.resizeTo`
+ * expression runs in the seat's own renderer with `windowManagement` granted to that page origin for the
+ * browser session, and no vendor state file is written. Non-Antigravity harnesses and failed CDP placements
+ * fall back to `System Events`; when macOS TCC or System Events denies fallback access (`-25211`, `-1743`,
+ * `-10004`), `readSeatWindowRect`, `placeSeatWindow`, and `waitForSeatWindowRect` return `{refused: true, reason}`
  * immediately without polling. Every host effect is injectable for hermetic unit specs.
  */
 
 /** @summary The Fleet-owned record beside the seat lease in the harness home. */
 export const SEAT_WINDOW_FILE = '.neo-fleet-window.json';
-
-/** @summary Chrome/Electron profile file announcing the loopback DevTools WebSocket endpoint. */
-export const DEVTOOLS_ACTIVE_PORT_FILE = 'DevToolsActivePort';
 
 /** @summary The record's schema version. */
 export const SEAT_WINDOW_RECORD_VERSION = 1;
@@ -133,152 +136,85 @@ export function readWindowRectArgs(pid) {
 }
 
 /**
- * @summary Reads `<instanceHome>/DevToolsActivePort` when present and valid.
- * @param {String} instanceHome
- * @param {Object} [options]
- * @param {Object} [options.fileSystem=fs]
- * @returns {{port: Number, browserPath: String, wsUrl: String}|null}
- */
-export function readDevToolsActivePort(instanceHome, {fileSystem = fs} = {}) {
-    if (typeof instanceHome !== 'string' || !instanceHome) return null;
-
-    try {
-        const
-            raw    = fileSystem.readFileSync(path.join(instanceHome, DEVTOOLS_ACTIVE_PORT_FILE), 'utf8'),
-            lines  = String(raw ?? '').trim().split(/\r?\n/),
-            port   = Number(lines[0]?.trim()),
-            wsPath = lines[1]?.trim() ?? '';
-
-        if (!Number.isInteger(port) || port <= 0 || port > 65535 || !wsPath.startsWith('/devtools/')) return null;
-
-        return {port, browserPath: wsPath, wsUrl: `ws://127.0.0.1:${port}${wsPath}`}
-    } catch {
-        return null
-    }
-}
-
-/**
- * @summary Moves and sizes an Electron/Chromium seat window via its profile-local `DevToolsActivePort`
- * loopback WebSocket (`Browser.grantPermissions` for `windowManagement` + `Runtime.evaluate` with
- * `userGesture: true`), requiring zero macOS Accessibility / AppleEvents TCC grants.
+ * @summary Moves and sizes an Antigravity seat window via its ownership-proven profile `DevToolsActivePort`
+ * loopback WebSocket (`withOwnedAntigravityCdp` + `Browser.grantPermissions` for `windowManagement` +
+ * `Runtime.evaluate` with `userGesture: true`), requiring zero macOS Accessibility / AppleEvents TCC grants.
  * @param {Object} rect
  * @param {Object} [options]
  * @param {String} [options.instanceHome]
+ * @param {{pid: Number, startedAt: String}} [options.expectedProcess]
+ * @param {Function} [options.verifyProfileListener=verifyAntigravityProfileListener]
  * @param {Number} [options.timeoutMs=3000]
  * @param {Number} [options.pollMs=100]
- * @param {Object} [options.fileSystem=fs]
- * @param {Function} [options.WebSocketCtor=globalThis.WebSocket]
+ * @param {Object} [options.fileSystem=fs.promises]
+ * @param {Function} [options.WebSocketCtor]
  * @param {Function} [options.now=Date.now]
  * @param {Function} [options.sleep]
- * @returns {Promise<Boolean>} `true` when the CDP window move/resize executed on a page target.
+ * @param {AbortSignal} [options.signal]
+ * @returns {Promise<Boolean>} `true` when the CDP window move/resize executed without `exceptionDetails`.
  */
 export async function placeDevToolsWindowRect(rect, {
     instanceHome,
-    timeoutMs     = 3000,
-    pollMs        = 100,
-    fileSystem    = fs,
-    WebSocketCtor = globalThis.WebSocket,
-    now           = Date.now,
-    sleep         = ms => new Promise(resolve => setTimeout(resolve, ms))
+    expectedProcess,
+    verifyProfileListener = verifyAntigravityProfileListener,
+    timeoutMs             = 3000,
+    pollMs                = 100,
+    fileSystem            = fs.promises,
+    WebSocketCtor,
+    now                   = Date.now,
+    sleep                 = ms => new Promise(resolve => setTimeout(resolve, ms)),
+    signal
 } = {}) {
-    if (!isWindowRect(rect) || typeof WebSocketCtor !== 'function') return false;
-
-    const endpoint = readDevToolsActivePort(instanceHome, {fileSystem});
-
-    if (!endpoint) return false;
+    if (!isWindowRect(rect)) return false;
 
     const
         {x, y, width, height} = roundRect(rect),
-        deadline              = now() + timeoutMs,
-        pending               = new Map();
-    let ws, nextId = 1;
-
-    const settleAll = error => {
-        for (const entry of pending.values()) entry.reject(error);
-        pending.clear()
-    };
+        deadline              = now() + Math.max(1, Math.trunc(timeoutMs));
 
     try {
-        ws = new WebSocketCtor(endpoint.wsUrl);
+        return await withOwnedAntigravityCdp({
+            profileDirectory: instanceHome,
+            expectedProcess,
+            verifyProfileListener,
+            fileSystem,
+            ...(WebSocketCtor !== undefined ? {WebSocketCtor} : {}),
+            now,
+            signal,
+            deadline
+        }, async ({cdp, deadline: opDeadline, signal: opSignal}) => {
+            for (;;) {
+                const
+                    targets    = (await cdp.call('Target.getTargets', {}, null, opDeadline, opSignal))?.targetInfos ?? [],
+                    pageTarget = targets.find(t => t?.type === 'page' && /^https?:\/\//i.test(t.url ?? ''));
 
-        await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('DevTools WebSocket open timeout')), Math.max(1, deadline - now()));
+                if (pageTarget) {
+                    const origin = new URL(pageTarget.url).origin;
 
-            ws.onopen  = () => { clearTimeout(timer); resolve() };
-            ws.onerror = err => { clearTimeout(timer); reject(err instanceof Error ? err : new Error('DevTools WebSocket error')) };
-            ws.onclose = () => { clearTimeout(timer); reject(new Error('DevTools WebSocket closed')) };
-        });
+                    try {
+                        await cdp.call('Browser.grantPermissions', {permissions: ['windowManagement'], origin}, null, opDeadline, opSignal)
+                    } catch {}
 
-        ws.onmessage = event => {
-            try {
-                const msg = JSON.parse(typeof event?.data === 'string' ? event.data : String(event?.data ?? ''));
+                    const {sessionId} = await cdp.call('Target.attachToTarget', {targetId: pageTarget.targetId, flatten: true}, null, opDeadline, opSignal) ?? {};
 
-                if (msg?.id && pending.has(msg.id)) {
-                    const entry = pending.get(msg.id);
-                    pending.delete(msg.id);
-                    msg.error ? entry.reject(new Error(msg.error.message || 'CDP error')) : entry.resolve(msg.result)
+                    if (!sessionId) return false;
+
+                    const evalResult = await cdp.call('Runtime.evaluate', {
+                        expression   : `window.moveTo(${x}, ${y}); window.resizeTo(${width}, ${height}); window.moveTo(${x}, ${y});`,
+                        userGesture  : true,
+                        returnByValue: true
+                    }, sessionId, opDeadline, opSignal);
+
+                    return !evalResult?.exceptionDetails
                 }
-            } catch {}
-        };
-        ws.onerror = () => settleAll(new Error('DevTools WebSocket error'));
-        ws.onclose = () => settleAll(new Error('DevTools WebSocket closed'));
 
-        const call = (method, params = {}, sessionId = undefined) => new Promise((resolve, reject) => {
-            const remaining = deadline - now();
+                const remainingMs = opDeadline - now();
+                if (remainingMs <= 0) return false;
 
-            if (remaining <= 0) return reject(new Error('DevTools RPC timeout'));
-
-            const
-                id    = nextId++,
-                timer = setTimeout(() => {
-                    pending.delete(id);
-                    reject(new Error(`DevTools RPC timeout: ${method}`))
-                }, remaining);
-
-            pending.set(id, {
-                resolve: value => { clearTimeout(timer); resolve(value) },
-                reject : error => { clearTimeout(timer); reject(error) }
-            });
-
-            const payload = {id, method, params};
-            if (sessionId) payload.sessionId = sessionId;
-            ws.send(JSON.stringify(payload))
-        });
-
-        for (;;) {
-            const
-                targets    = (await call('Target.getTargets'))?.targetInfos ?? [],
-                pageTarget = targets.find(t => t?.type === 'page' && /^https?:\/\//i.test(t.url ?? ''));
-
-            if (pageTarget) {
-                const origin = new URL(pageTarget.url).origin;
-
-                try {
-                    await call('Browser.grantPermissions', {permissions: ['windowManagement'], origin})
-                } catch {}
-
-                const {sessionId} = await call('Target.attachToTarget', {targetId: pageTarget.targetId, flatten: true}) ?? {};
-
-                if (!sessionId) return false;
-
-                await call('Runtime.evaluate', {
-                    expression   : `window.moveTo(${x}, ${y}); window.resizeTo(${width}, ${height}); window.moveTo(${x}, ${y});`,
-                    userGesture  : true,
-                    returnByValue: true
-                }, sessionId);
-
-                return true
+                await sleep(Math.min(pollMs, remainingMs))
             }
-
-            if (now() >= deadline) return false;
-
-            await sleep(pollMs)
-        }
+        })
     } catch {
         return false
-    } finally {
-        settleAll(new Error('DevTools WebSocket closed'));
-        try { ws?.close() } catch {}
     }
 }
 
@@ -340,34 +276,61 @@ export async function readSeatWindowRect(pid, {execFileFn = execFileAsync, platf
 }
 
 /**
- * @summary Places a seat window by pid and reads the frame back. When `instanceHome` exposes a profile-local
- * `DevToolsActivePort`, placement runs over loopback CDP first (`placeDevToolsWindowRect`) before falling
- * back to `System Events`. The read-back is the proof: the OS may clamp or refuse the frame (a display no
- * longer attached), and only the observed rectangle or TCC refusal is reported.
+ * @summary Places a seat window by pid and reads the settled frame back. For `antigravity` seats with an
+ * `instanceHome`, placement runs over the ownership-proven loopback CDP seam first (`placeDevToolsWindowRect`)
+ * and polls `readSeatWindowRect` until the requested frame settles or the settle budget expires, falling back
+ * to `System Events` when CDP placement fails or does not reach the requested rectangle. The read-back is the
+ * proof: the OS may clamp or refuse the frame (a display no longer attached), and only the observed rectangle
+ * or TCC refusal is reported.
  * @param {Number} pid
  * @param {Object} rect
- * @param {Object} [options] As {@link readSeatWindowRect}, plus optional `instanceHome` / `placeDevToolsFn`.
+ * @param {Object} [options] As {@link readSeatWindowRect}, plus optional Antigravity CDP seams.
  * @returns {Promise<Object|null>} The observed rectangle after the move, `{refused: true, reason}`, or `null`.
  */
 export async function placeSeatWindow(pid, rect, {
-    execFileFn      = execFileAsync,
-    platform        = process.platform,
-    timeoutMs       = 3000,
-    instanceHome    = null,
-    placeDevToolsFn = placeDevToolsWindowRect
+    execFileFn            = execFileAsync,
+    platform              = process.platform,
+    timeoutMs             = 3000,
+    pollMs                = 100,
+    instanceHome          = null,
+    harnessType           = null,
+    expectedProcess       = null,
+    verifyProfileListener = verifyAntigravityProfileListener,
+    placeDevToolsFn       = placeDevToolsWindowRect,
+    now                   = Date.now,
+    sleep                 = ms => new Promise(resolve => setTimeout(resolve, ms))
 } = {}) {
     if (platform !== 'darwin' || !isWindowRect(rect)) return null;
 
-    const placedByDevTools = instanceHome
-        ? await placeDevToolsFn(rect, {instanceHome, timeoutMs})
+    const placedByDevTools = harnessType === 'antigravity' && Boolean(instanceHome)
+        ? await placeDevToolsFn(rect, {
+            instanceHome,
+            expectedProcess,
+            verifyProfileListener,
+            timeoutMs,
+            pollMs,
+            now,
+            sleep
+        })
         : false;
 
-    if (!placedByDevTools) {
-        try {
-            await execFileFn('osascript', placeWindowRectArgs(pid, rect), {timeout: timeoutMs})
-        } catch (error) {
-            return assistiveAccessRefusal(error)
+    if (placedByDevTools) {
+        const settleDeadline = now() + Math.min(timeoutMs, 1000);
+
+        for (;;) {
+            const observed = await readSeatWindowRect(pid, {execFileFn, platform, timeoutMs});
+
+            if (isWindowRefusal(observed) || sameWindowRect(observed, rect)) return observed;
+            if (now() >= settleDeadline) break;
+
+            await sleep(Math.min(pollMs, Math.max(1, settleDeadline - now())))
         }
+    }
+
+    try {
+        await execFileFn('osascript', placeWindowRectArgs(pid, rect), {timeout: timeoutMs})
+    } catch (error) {
+        return assistiveAccessRefusal(error)
     }
 
     return readSeatWindowRect(pid, {execFileFn, platform, timeoutMs})

@@ -1,3 +1,4 @@
+import {EventEmitter} from 'node:events';
 import {test, expect} from '@playwright/test';
 import fs             from 'node:fs';
 import os             from 'node:os';
@@ -5,7 +6,6 @@ import path           from 'node:path';
 import {
     ASSISTIVE_ACCESS_REFUSAL_REASON,
     AUTOMATION_ACCESS_REFUSAL_REASON,
-    DEVTOOLS_ACTIVE_PORT_FILE,
     PRIVILEGE_VIOLATION_REFUSAL_REASON,
     SEAT_WINDOW_FILE,
     assistiveAccessRefusal,
@@ -16,7 +16,6 @@ import {
     placeDevToolsWindowRect,
     placeSeatWindow,
     placeWindowRectArgs,
-    readDevToolsActivePort,
     readSeatWindowRecord,
     readSeatWindowRect,
     readWindowRectArgs,
@@ -26,7 +25,10 @@ import {
     writeSeatWindowRecord
 } from '../../../../../../ai/services/fleet/seatWindowRect.mjs';
 
-const RECT = {x: 2056, y: 30, width: 892, height: 1055};
+const
+    RECT  = {x: 2056, y: 30, width: 892, height: 1055},
+    OTHER = {x: 79, y: 39, width: 1280, height: 820},
+    OWNER = {pid: 4242, startedAt: '2026-10-29T10:00:00.000Z'};
 
 test.describe('seatWindowRect — a GUI seat\'s window rectangle across stop and start', () => {
     test('a rectangle is four finite numbers with a positive size; sameness is to the point', () => {
@@ -63,30 +65,35 @@ test.describe('seatWindowRect — a GUI seat\'s window rectangle across stop and
         expect(parseWindowRect('')).toBeNull();
     });
 
-    test('DevToolsActivePort CDP placement grants windowManagement, moves/resizes with userGesture, and skips System Events when available (#1351)', async () => {
-        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-window-devtools-'));
+    test('Antigravity CDP placement proves profile listener ownership via withOwnedAntigravityCdp, grants windowManagement, polls until the frame settles, and falls back to System Events on failure (#1351)', async () => {
+        const
+            home        = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'seat-window-devtools-'))),
+            browserPath = '/devtools/browser/7db79dc6-dd64-4a12-9abc-0123456789ab';
 
-        expect(readDevToolsActivePort(home)).toBeNull();
-        expect(readDevToolsActivePort('')).toBeNull();
+        fs.writeFileSync(path.join(home, 'DevToolsActivePort'), `54648\n${browserPath}\n`);
 
-        fs.writeFileSync(path.join(home, DEVTOOLS_ACTIVE_PORT_FILE), 'not-a-port\n/devtools/browser/abc\n');
-        expect(readDevToolsActivePort(home)).toBeNull();
+        const
+            rpcLog          = [],
+            listenerCalls   = [],
+            socketOptions   = [];
+        let
+            polls           = 0,
+            evalException   = null;
 
-        fs.writeFileSync(path.join(home, DEVTOOLS_ACTIVE_PORT_FILE), '54648\n/devtools/browser/7db79dc6-dd64\n');
-        expect(readDevToolsActivePort(home)).toEqual({
-            port       : 54648,
-            browserPath: '/devtools/browser/7db79dc6-dd64',
-            wsUrl      : 'ws://127.0.0.1:54648/devtools/browser/7db79dc6-dd64'
-        });
+        class FakeWebSocket extends EventEmitter {
+            static OPEN = 1;
 
-        const rpcLog = [];
-        let   polls  = 0;
-
-        class FakeWebSocket {
-            constructor(url) {
-                this.url = url;
-                queueMicrotask(() => this.onopen?.());
+            constructor(url, options) {
+                super();
+                this.url        = url;
+                this.readyState = 0;
+                socketOptions.push({url, options});
+                queueMicrotask(() => {
+                    this.readyState = FakeWebSocket.OPEN;
+                    this.emit('open')
+                })
             }
+
             send(raw) {
                 const msg = JSON.parse(raw);
                 rpcLog.push(msg);
@@ -96,31 +103,96 @@ test.describe('seatWindowRect — a GUI seat\'s window rectangle across stop and
                         const targetInfos = polls === 1
                             ? [{targetId: 't0', type: 'page', url: 'about:blank'}]
                             : [{targetId: 't1', type: 'page', url: 'https://127.0.0.1:49939/c/abc'}];
-                        this.onmessage?.({data: JSON.stringify({id: msg.id, result: {targetInfos}})});
-                        return;
+                        this.emit('message', Buffer.from(JSON.stringify({id: msg.id, result: {targetInfos}})));
+                        return
                     }
                     if (msg.method === 'Browser.grantPermissions') {
-                        this.onmessage?.({data: JSON.stringify({id: msg.id, result: {}})});
-                        return;
+                        this.emit('message', Buffer.from(JSON.stringify({id: msg.id, result: {}})));
+                        return
                     }
                     if (msg.method === 'Target.attachToTarget') {
-                        this.onmessage?.({data: JSON.stringify({id: msg.id, result: {sessionId: 'sess-1'}})});
-                        return;
+                        this.emit('message', Buffer.from(JSON.stringify({id: msg.id, result: {sessionId: 'sess-1'}})));
+                        return
                     }
                     if (msg.method === 'Runtime.evaluate') {
-                        this.onmessage?.({data: JSON.stringify({id: msg.id, result: {result: {value: RECT}}})});
+                        const result = evalException
+                            ? {result: {type: 'object'}, exceptionDetails: evalException}
+                            : {result: {value: RECT}};
+                        this.emit('message', Buffer.from(JSON.stringify({id: msg.id, sessionId: msg.sessionId, result})))
                     }
-                });
+                })
             }
-            close() {}
+
+            close() {
+                this.readyState = 3;
+                this.emit('close')
+            }
+
+            terminate() {
+                this.readyState = 3;
+                this.emit('close')
+            }
         }
 
+        const verifyProfileListener = async input => {
+            listenerCalls.push(input);
+            return {
+                verified           : true,
+                processTreeVerified: true,
+                profileDirectory   : input.profileDirectory,
+                port               : input.port,
+                browserPath        : input.browserPath,
+                pid                : input.expectedProcess.pid,
+                startedAt          : input.expectedProcess.startedAt
+            }
+        };
+
+        // 1. Unverified listener (pid mismatch) refuses before opening any socket
+        const mismatchPlaced = await placeDevToolsWindowRect(RECT, {
+            instanceHome         : home,
+            expectedProcess      : OWNER,
+            verifyProfileListener: async input => ({
+                verified           : true,
+                processTreeVerified: true,
+                profileDirectory   : input.profileDirectory,
+                port               : input.port,
+                browserPath        : input.browserPath,
+                pid                : 9999,
+                startedAt          : input.expectedProcess.startedAt
+            }),
+            WebSocketCtor: FakeWebSocket,
+            pollMs       : 1,
+            timeoutMs    : 200
+        });
+
+        expect(mismatchPlaced).toBe(false);
+        expect(socketOptions).toHaveLength(0);
+
+        // 2. Verified listener connects with maxPayload, grants windowManagement, and evaluates moveTo/resizeTo
         const placed = await placeDevToolsWindowRect(
             {...RECT, x: 2056.4},
-            {instanceHome: home, WebSocketCtor: FakeWebSocket, pollMs: 1, timeoutMs: 500}
+            {
+                instanceHome         : home,
+                expectedProcess      : OWNER,
+                verifyProfileListener,
+                WebSocketCtor        : FakeWebSocket,
+                pollMs               : 1,
+                timeoutMs            : 500
+            }
         );
 
         expect(placed).toBe(true);
+        expect(listenerCalls).toHaveLength(1);
+        expect(listenerCalls[0]).toMatchObject({
+            profileDirectory: home,
+            port            : 54648,
+            browserPath,
+            expectedProcess : OWNER
+        });
+        expect(socketOptions[0]).toEqual({
+            url    : `ws://127.0.0.1:54648${browserPath}`,
+            options: {maxPayload: 4 * 1024 * 1024}
+        });
         expect(rpcLog.map(m => m.method)).toEqual([
             'Target.getTargets',
             'Target.getTargets',
@@ -140,21 +212,84 @@ test.describe('seatWindowRect — a GUI seat\'s window rectangle across stop and
             }
         });
 
-        // placeSeatWindow uses DevTools placement when instanceHome succeeds and reads back via CoreGraphics without calling System Events placeWindowRectArgs
-        const osascriptCalls = [];
-        const execFileFn     = async (file, args) => { osascriptCalls.push([file, args]); return {stdout: '2056, 30, 892, 1055'} };
+        // 3. Runtime.evaluate exceptionDetails is treated as not placed (false)
+        evalException = {text: 'TypeError: window.moveTo failed'};
+        expect(await placeDevToolsWindowRect(RECT, {
+            instanceHome         : home,
+            expectedProcess      : OWNER,
+            verifyProfileListener,
+            WebSocketCtor        : FakeWebSocket,
+            pollMs               : 1,
+            timeoutMs            : 500
+        })).toBe(false);
+        evalException = null;
 
-        const observed = await placeSeatWindow(4242, RECT, {
+        // 4. placeSeatWindow for antigravity polls readSeatWindowRect until the frame settles, without calling System Events
+        const
+            osascriptCalls = [],
+            readAnswers    = ['79, 39, 1280, 820', '2056, 30, 892, 1055'],
+            execFileFn     = async (file, args) => {
+                osascriptCalls.push([file, args]);
+                return {stdout: readAnswers.shift() ?? '2056, 30, 892, 1055'}
+            };
+
+        const observed = await placeSeatWindow(OWNER.pid, RECT, {
             execFileFn,
             platform       : 'darwin',
             instanceHome   : home,
-            placeDevToolsFn: async (rect, opts) => placeDevToolsWindowRect(rect, {...opts, WebSocketCtor: FakeWebSocket, pollMs: 1})
+            harnessType    : 'antigravity',
+            expectedProcess: OWNER,
+            pollMs         : 1,
+            placeDevToolsFn: async (rect, opts) => placeDevToolsWindowRect(rect, {
+                ...opts,
+                verifyProfileListener,
+                WebSocketCtor: FakeWebSocket
+            })
         });
 
         expect(observed).toEqual(RECT);
-        expect(osascriptCalls).toHaveLength(1);
-        expect(osascriptCalls[0][1].join('\n')).toContain('CGWindowListCopyWindowInfo');
-        expect(osascriptCalls[0][1].join('\n')).not.toContain('set position');
+        expect(osascriptCalls).toHaveLength(2);
+        expect(osascriptCalls.every(([, args]) => args.join('\n').includes('CGWindowListCopyWindowInfo'))).toBe(true);
+        expect(osascriptCalls.some(([, args]) => args.join('\n').includes('set position'))).toBe(false);
+
+        // 5. Non-antigravity harnessType ignores instanceHome CDP and goes straight to System Events
+        const nonAgCalls = [];
+        let   cdpCalled  = false;
+        const nonAgObserved = await placeSeatWindow(OWNER.pid, RECT, {
+            execFileFn     : async (file, args) => { nonAgCalls.push([file, args]); return {stdout: '2056, 30, 892, 1055'} },
+            platform       : 'darwin',
+            instanceHome   : home,
+            harnessType    : 'claude-desktop',
+            expectedProcess: OWNER,
+            placeDevToolsFn: async () => { cdpCalled = true; return true }
+        });
+
+        expect(nonAgObserved).toEqual(RECT);
+        expect(cdpCalled).toBe(false);
+        expect(nonAgCalls).toHaveLength(2);
+        expect(nonAgCalls[0][1].join('\n')).toContain('set position of window 1 to {2056, 30}');
+
+        // 6. Antigravity seat where CDP fails falls back to System Events placement and succeeds
+        const fallbackCalls = [];
+        evalException = {text: 'CDP move failed'};
+        const fallbackObserved = await placeSeatWindow(OWNER.pid, RECT, {
+            execFileFn     : async (file, args) => { fallbackCalls.push([file, args]); return {stdout: '2056, 30, 892, 1055'} },
+            platform       : 'darwin',
+            instanceHome   : home,
+            harnessType    : 'antigravity',
+            expectedProcess: OWNER,
+            pollMs         : 1,
+            placeDevToolsFn: async (rect, opts) => placeDevToolsWindowRect(rect, {
+                ...opts,
+                verifyProfileListener,
+                WebSocketCtor: FakeWebSocket
+            })
+        });
+
+        expect(fallbackObserved).toEqual(RECT);
+        expect(fallbackCalls).toHaveLength(2);
+        expect(fallbackCalls[0][1].join('\n')).toContain('set position of window 1 to {2056, 30}');
+        expect(fallbackCalls[1][1].join('\n')).toContain('CGWindowListCopyWindowInfo');
     });
 
     test('read and place run osascript on darwin only, never throw, and the placement reports the read-back', async () => {
