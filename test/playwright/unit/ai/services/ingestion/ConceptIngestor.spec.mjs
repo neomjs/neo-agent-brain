@@ -923,13 +923,9 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
         // The repository ontology stayed in the Engine at the split; the Brain reads it through its Engine dependency.
         ConceptService.defaultConceptsDir = path.join(path.dirname(createRequire(import.meta.url).resolve('neo.mjs/package.json')), '.neo-ai-data/concepts');
 
-        // One declared row names a file that no longer exists in either root: the REM digestion
-        // it points at moved to `src/evolution/RemDigestion.mjs`. Every other file reference
-        // resolves in this checkout or in the Engine package.
-        const
-            declared = 182,
-            stale    = ['MISSING_FILE file:ai/daemons/orchestrator/services/DreamService.mjs'],
-            live     = declared - stale.length;
+        // Every declared file reference resolves in this checkout or in the Engine package, so all
+        // 182 project; the fixture arms above prove that a missing one is reported instead.
+        const declared = 182;
 
         const first      = await ConceptIngestor.syncConceptsToGraph();
         const firstEdges = GraphService.db.edges.items
@@ -940,9 +936,9 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
         ]));
 
         expect(first.conceptsProcessed).toBe(65);
-        expect(first.integrityFindings.map(finding => `${finding.code} ${finding.target}`)).toEqual(stale);
+        expect(first.integrityFindings.map(finding => `${finding.code} ${finding.target}`)).toEqual([]);
         expect(first.errors).toHaveLength(0);
-        expect(firstEdges).toHaveLength(live);
+        expect(firstEdges).toHaveLength(declared);
         expect(firstEdges.filter(edge => edge.type === 'REQUIRES')).toHaveLength(14);
         expect(GraphService.db.nodes.items.some(node => node.id.startsWith('file:'))).toBe(false);
 
@@ -952,8 +948,8 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
 
         expect(second.conceptsSkipped).toBe(65);
         expect(second.edgesReplaced).toBe(0);
-        expect(second.edgesUnchanged).toBe(live);
-        expect(secondEdges).toHaveLength(live);
+        expect(second.edgesUnchanged).toBe(declared);
+        expect(secondEdges).toHaveLength(declared);
 
         secondEdges.forEach(edge => {
             expect({id: edge.id, weight: edge.properties.weight}).toEqual(firstState.get(`${edge.source}|${edge.target}|${edge.type}`))
