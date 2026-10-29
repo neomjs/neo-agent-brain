@@ -15,7 +15,8 @@ import {
     discoverGuideSeries,
     extractMermaidBlocks,
     lintGuide,
-    parseArgs
+    parseArgs,
+    runLint
 } from '../../../../../../ai/scripts/lint/lint-guides.mjs';
 
 /**
@@ -52,6 +53,41 @@ test.describe('ai/scripts/lint-guides (#14354 — mechanical guide-quality lint)
 
     test('parseArgs: rejects unknown flags', () => {
         expect(() => parseArgs(['--bogus'])).toThrow(/Unknown argument/);
+    });
+
+    test('parseArgs: --root takes the next argument and refuses a missing one', () => {
+        expect(parseArgs(['--root', 'consumer', 'a.md'])).toEqual({files: ['a.md'], warnAsError: false, root: 'consumer'});
+        expect(() => parseArgs(['--root'])).toThrow(/--root needs a directory/);
+        expect(() => parseArgs(['--root', '--warn-as-error'])).toThrow(/--root needs a directory/);
+    });
+
+    test('runLint --root lints another repository\'s guides, its scripts joining the Brain\'s', () => {
+        // The Engine's CI lints its own guides with this Brain-held script
+        const rootDir = mkdtempSync(path.join(os.tmpdir(), 'lint-guides-root-'));
+        const write   = (file, content) => {
+            mkdirSync(path.dirname(path.join(rootDir, file)), {recursive: true});
+            writeFileSync(path.join(rootDir, file), content);
+        };
+
+        try {
+            write('package.json', JSON.stringify({scripts: {'ai:root-only': 'node x.mjs'}}));
+            write('learn/agentos/Concept.md', [
+                '# Concept', '', '```mermaid', 'flowchart TD', '    A --> B', '```', '',
+                'Run `npm run ai:root-only`, then `npm run ai:pin-drift`, then `npm run ai:nowhere`.', '',
+                'See [the missing page](./Missing.md).'
+            ].join('\n'));
+            write('learn/guides/series/Step.md', '# Step\n\nThe fix landed in #12345.\n');
+
+            const result = runLint({root: rootDir});
+
+            expect(result.fullGuideCount).toBe(1);
+            expect(result.ticketIdGuideCount).toBe(1);
+            // The script in neither manifest, the dead link and the planted ticket id; both real scripts resolve
+            expect(result.hard).toBe(3);
+            expect(result.exitCode).toBe(1);
+        } finally {
+            rmSync(rootDir, {recursive: true, force: true});
+        }
     });
 
     test('extractMermaidBlocks: finds blocks with 1-based start line', () => {
