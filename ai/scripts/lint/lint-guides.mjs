@@ -435,13 +435,14 @@ function discoverGuides() {
 /**
  * Recursively discovers the narrative guide-series tree for the ticket-reference rule. Symlinks
  * are not followed; only real directories and Markdown files participate.
+ * @param {string} [rootDir=ROOT_DIR] repository root whose `learn/guides` tree is walked
  * @returns {string[]} repo-relative file paths
  */
-function discoverGuideSeries() {
+function discoverGuideSeries(rootDir = ROOT_DIR) {
     const files = [];
 
     function visit(dir) {
-        const absDir = path.join(ROOT_DIR, dir);
+        const absDir = path.join(rootDir, dir);
         if (!existsSync(absDir)) return;
 
         for (const entry of readdirSync(absDir, {withFileTypes: true})) {
