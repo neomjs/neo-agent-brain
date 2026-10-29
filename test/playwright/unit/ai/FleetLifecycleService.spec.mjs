@@ -3673,7 +3673,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             FleetLifecycleService.windowRestorePollMs    = 1;
             FleetLifecycleService.windowRestoreTimeoutMs = 200;
             FleetLifecycleService.windowRectReadFn       = async pid => { log.push(['read', pid]); return queue.length > 1 ? queue.shift() : queue[0] ?? null };
-            FleetLifecycleService.windowRectPlaceFn      = async (pid, rect) => { log.push(['place', pid, {...rect}]); return place ? place(rect) : null };
+            FleetLifecycleService.windowRectPlaceFn      = async (pid, rect, options) => { log.push(['place', pid, {...rect}, options]); return place ? place(rect, options) : null };
 
             return log
         }
@@ -3738,7 +3738,16 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
 
             expect(placement).toMatchObject({state: 'restored', requested: RECT, observed: RECT, reason: null});
             expect(Date.parse(placement.at)).not.toBeNaN();
-            expect(log.filter(row => row[0] === 'place')).toEqual([['place', record.pid, RECT]]);
+            expect(log.filter(row => row[0] === 'place')).toEqual([[
+                'place',
+                record.pid,
+                RECT,
+                {
+                    instanceHome   : home,
+                    harnessType    : 'claude-desktop',
+                    expectedProcess: {pid: record.pid, startedAt: record.pidStartedAt}
+                }
+            ]]);
             expect(FleetLifecycleService.status('seat').windowPlacement).toMatchObject({state: 'restored', observed: RECT});
 
             await FleetLifecycleService.stop('seat')
