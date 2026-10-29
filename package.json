@@ -108,7 +108,7 @@
         "js-yaml": "^5.5.0",
         "micromatch": "4.0.8",
         "neo-agent-skills": "^0.1.70",
-        "neo.mjs": "https://github.com/neomjs/neo/archive/7f16355a9bf6bc7cdf7cbf94873b649711298f28.tar.gz",
+        "neo.mjs": "https://github.com/neomjs/neo/archive/cc24c59e0d2470b75cfccaaa62b52cfd053bddb2.tar.gz",
         "playwright": "1.64.1",
         "semver": "^7.8.5",
         "smol-toml": "1.9.1",

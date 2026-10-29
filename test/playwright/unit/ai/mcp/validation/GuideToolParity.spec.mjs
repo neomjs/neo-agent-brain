@@ -8,13 +8,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 const repoRoot   = path.resolve(__dirname, '../../../../../..');
 
-// Agent-consumed tool guides paired with their OpenAPI SSOT. Conceptual guides should not copy the
-// generated operation catalog; duplicating it creates the same drift class as stale tables. This guard
-// asserts the guide delegates the exact contract to OpenAPI and the lazy tool handbook, while any
-// explicit operation-count claim stays anchored to the generated operationId set.
+// Agent-consumed tool guides paired with their OpenAPI SSOT. The guide is the Engine's, read from the
+// installed engine; the OpenAPI is this repo's. Conceptual guides should not copy the generated
+// operation catalog; duplicating it creates the same drift class as stale tables. This guard asserts the
+// guide delegates the exact contract to OpenAPI and the lazy tool handbook, while any explicit
+// operation-count claim stays anchored to the generated operationId set.
 const guidePairs = [
     {label: 'neural-link', guide: 'learn/agentos/NeuralLink.md', openapi: 'ai/mcp/server/neural-link/openapi.yaml'}
 ];
+
+/** @summary Read one file from the installed engine, which owns the guides. */
+function readEngineFile(relativePath) {
+    return fs.readFileSync(new URL(import.meta.resolve(`neo.mjs/${relativePath}`)), 'utf8')
+}
 
 /**
  * Extracts the documented tool names from a guide's markdown tool-tables — rows shaped ``| `tool_name` | … |``.
@@ -56,11 +62,30 @@ function openapiOperationIds(doc) {
     return ids
 }
 
+/**
+ * Returns each operation count the guide states (`<N> operation IDs`, wrapped or not) that differs from
+ * the generated set. A guide that states no count returns none: only an explicit claim is checked.
+ * @param {String} markdown
+ * @param {Number} exposedCount
+ * @returns {Number[]}
+ */
+function staleOperationCounts(markdown, exposedCount) {
+    return [...markdown.matchAll(/\b(\d+)\s+operation\s+IDs\b/g)]
+        .map(match => Number(match[1]))
+        .filter(count => count !== exposedCount)
+}
+
 test.describe('Agent-guide ↔ OpenAPI tool-contract references', () => {
+    test('an operation-count claim is checked only when the guide states one', () => {
+        expect(staleOperationCounts('the OpenAPI surface exposes\n59 operation IDs.', 60)).toEqual([59]);
+        expect(staleOperationCounts('the OpenAPI surface exposes 60 operation IDs.', 60)).toEqual([]);
+        expect(staleOperationCounts('The exact surface lives in openapi.yaml.', 60)).toEqual([])
+    });
+
     for (const {label, guide, openapi} of guidePairs) {
         test(`${label}: ${guide} delegates the exact tool surface to OpenAPI`, () => {
             const
-                markdown       = fs.readFileSync(path.join(repoRoot, guide), 'utf8'),
+                markdown       = readEngineFile(guide),
                 documentedRows = [...documentedToolNames(markdown)].sort(),
                 exposed        = openapiOperationIds(yaml.load(fs.readFileSync(path.join(repoRoot, openapi), 'utf8')));
 
@@ -78,9 +103,9 @@ test.describe('Agent-guide ↔ OpenAPI tool-contract references', () => {
                 `${guide} should point agents to the lazy handbook for operation-level usage detail`
             ).toContain('get_mcp_tool_handbook');
 
-            expect(markdown,
-                `${guide} claims a Neural Link operation count; keep it anchored to ${openapi}`
-            ).toContain(`${exposed.size} operation IDs`)
+            expect(staleOperationCounts(markdown, exposed.size),
+                `${guide} states an operation count that ${openapi} does not expose (${exposed.size})`
+            ).toEqual([])
         })
     }
 });
