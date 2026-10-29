@@ -46,7 +46,6 @@ const KB_RELEVANT_PATH_PREFIXES = Object.freeze([
     'docs/app/',
     'examples/',
     'learn/',
-    'resources/content/concepts/',
     'src/',
     'test/playwright/'
 ]);

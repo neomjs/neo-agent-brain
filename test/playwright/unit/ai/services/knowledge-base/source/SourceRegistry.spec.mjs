@@ -36,13 +36,12 @@ test.describe('Neo.ai.services.knowledge-base.source.SourceRegistry (#11658)', (
     });
 
     test('exposes the default Source classes in stable insertion order, without the conversation facets (#402)', () => {
-        expect(DEFAULT_SOURCES).toHaveLength(7);
+        expect(DEFAULT_SOURCES).toHaveLength(6);
 
         const names = DEFAULT_SOURCES.map(s => s.className.split('.').pop());
         expect(names).toEqual([
             'AdrSource',
             'ApiSource',
-            'ConceptSource',
             'LearningSource',
             'ReleaseNotesSource',
             'SkillSource',
@@ -58,7 +57,7 @@ test.describe('Neo.ai.services.knowledge-base.source.SourceRegistry (#11658)', (
 
         const names = SourceRegistry.getSourceNames();
         expect(names).toEqual([
-            'AdrSource', 'ApiSource', 'ConceptSource', 'LearningSource',
+            'AdrSource', 'ApiSource', 'LearningSource',
             'ReleaseNotesSource', 'SkillSource', 'TestSource'
         ]);
     });
@@ -139,7 +138,7 @@ test.describe('SourceRegistry auto-registration via _export.mjs (#11658)', () =>
         }
 
         const names = SourceRegistry.getSourceNames();
-        expect(names).toHaveLength(7);
+        expect(names).toHaveLength(6);
         expect(names[0]).toBe('AdrSource');
         expect(names[names.length - 1]).toBe('TestSource');
     });
@@ -158,7 +157,6 @@ test.describe('SourceRegistry auto-registration via _export.mjs (#11658)', () =>
         expect(names).toEqual([
             'AdrSource',
             'ApiSource',
-            'ConceptSource',
             'LearningSource',
             'ReleaseNotesSource',
             'SkillSource',
@@ -199,16 +197,16 @@ test.describe('applyConfigToRegistry — config-driven registration path (#11658
         expect(SourceRegistry.getSourceNames()).toEqual([]);
     });
 
-    test('useDefaultSources:true (or undefined) registers all 7 default Neo sources', () => {
+    test('useDefaultSources:true (or undefined) registers all 6 default Neo sources', () => {
         const stats = applyConfigToRegistry(SourceRegistry, {});  // omitted toggle = truthy default
 
-        expect(stats.defaultSourcesRegistered).toBe(7);
+        expect(stats.defaultSourcesRegistered).toBe(6);
         expect(stats.rawRepoSourceRegistered).toBe(0);
-        expect(SourceRegistry.getSources()).toHaveLength(7);
+        expect(SourceRegistry.getSources()).toHaveLength(6);
         // First + last sentinel checks reaffirm insertion order without re-asserting the full sequence
         // (the byte-equivalence test in the prior describe block holds the order invariant).
         expect(SourceRegistry.getSourceNames()[0]).toBe('AdrSource');
-        expect(SourceRegistry.getSourceNames()[6]).toBe('TestSource');
+        expect(SourceRegistry.getSourceNames().at(-1)).toBe('TestSource');
     });
 
     test('rawRepoSource:true registers RawRepoSource explicitly without widening DEFAULT_SOURCES', () => {
