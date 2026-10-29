@@ -701,9 +701,10 @@ class Server extends BaseServer {
     /**
      * @summary Streamable-HTTP-only hook fired by `TransportService` on session disconnect. Removes the
      * per-session McpServer from `CoalescingEngineService`'s broadcast set (counterpart to
-     * `createMcpServer`'s `addMcpServer` registration) and writes a cheap idempotent
-     * `SummarizationJobs.pending` marker. The orchestrator `summary` task drains that marker;
-     * this hook never summarizes inline.
+     * `createMcpServer`'s `addMcpServer` registration) and, when the session wrote a memory, writes a
+     * cheap idempotent `SummarizationJobs.pending` marker. A session that wrote nothing has nothing to
+     * summarize; its marker would only start a summary pass. The orchestrator `summary` task drains the
+     * marker; this hook never summarizes inline.
      * @param {String} sessionId
      * @param {Object} mcpServerInstance
      */
@@ -712,7 +713,9 @@ class Server extends BaseServer {
             CoalescingEngineService.removeMcpServer(mcpServerInstance);
         }
 
-        SessionService.queueSummarizationJob(sessionId);
+        if (SessionService.takeSessionWrite(sessionId)) {
+            SessionService.queueSummarizationJob(sessionId);
+        }
     }
 
     /**
