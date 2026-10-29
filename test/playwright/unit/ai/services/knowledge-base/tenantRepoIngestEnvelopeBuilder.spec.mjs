@@ -215,6 +215,31 @@ export default Neo.setupClass(Child);
         return options;
     }
 
+    // A parser-backed profile, which the catalogue declares non-delta-safe. `parsed` records each
+    // file the parser was handed.
+    function rawTextParserProfile(parsed = []) {
+        return {
+            parserId      : 'raw-text',
+            parserVersion : 'test-parser-v1',
+            parserResolver: {
+                async resolve() {
+                    return {
+                        async parseIngestionFile(file) {
+                            parsed.push(file.sourcePath);
+
+                            return [{
+                                kind   : 'raw',
+                                name   : file.sourcePath,
+                                content: file.content,
+                                source : file.sourcePath
+                            }]
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     test('builds a manifest-carrying full envelope when no baseline exists', async () => {
         const source   = await createSourceRepo();
         const options  = await createMirror(source);
@@ -361,24 +386,9 @@ exec ${JSON.stringify(realGitPath)} "$@"
         const headRevision = await resolveHead({...options, ref: 'main'});
         const envelope     = await TenantRepoIngestEnvelopeBuilder.buildIngestEnvelope({
             ...options,
+            ...rawTextParserProfile(),
             lastIngestedRev: baseRevision,
-            newHead        : headRevision,
-            parserId       : 'raw-text',
-            parserVersion  : 'test-parser-v1',
-            parserResolver : {
-                async resolve() {
-                    return {
-                        async parseIngestionFile(file) {
-                            return [{
-                                kind   : 'raw',
-                                name   : file.sourcePath,
-                                content: file.content,
-                                source : file.sourcePath
-                            }]
-                        }
-                    }
-                }
-            }
+            newHead        : headRevision
         });
 
         expect(envelope).toMatchObject({
@@ -412,6 +422,35 @@ exec ${JSON.stringify(realGitPath)} "$@"
             parserId     : 'raw-text',
             parserVersion: 'test-parser-v1'
         });
+    });
+
+    test('a non-delta-safe profile builds a zero-delta incremental envelope when no file changed (#1350)', async () => {
+        const source       = await createSourceRepo();
+        const options      = await createMirror(source);
+        const baseRevision = await resolveHead({...options, ref: 'main'});
+
+        await git(['-c', 'user.name=Neo Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-m', 'empty'], source);
+        await fetch(options);
+
+        const emptyAdvance = await resolveHead({...options, ref: 'main'});
+        const parsed       = [];
+
+        // The unmoved head, and a new commit that changed no file.
+        for (const newHead of [baseRevision, emptyAdvance]) {
+            const envelope = await buildIngestEnvelope({
+                ...options,
+                ...rawTextParserProfile(parsed),
+                lastIngestedRev: baseRevision,
+                newHead
+            });
+
+            expect(envelope.headRevision).toBe(newHead);
+            expect(envelope.manifestSnapshot).toBeUndefined();
+            expect(envelope.files).toEqual([]);
+            expect(envelope.deleted).toEqual([]);
+        }
+
+        expect(parsed).toEqual([]);
     });
 
     test('delta-safe incremental extraction tombstones a changed path that stops yielding', async () => {
@@ -484,7 +523,7 @@ exec ${JSON.stringify(realGitPath)} "$@"
         })).rejects.toMatchObject({code: 'KB_INGEST_ENVELOPE_REF_NOT_FOUND'});
     });
 
-    // #237/#238. The asymmetry the terminal-stop classifier depends on, witnessed at the layer that
+    // The asymmetry the terminal-stop classifier depends on, witnessed at the layer that
     // creates it rather than asserted from a caller.
     //
     // The two refs are resolved differently ON PURPOSE: the CHECKPOINT ref carries `fallbackToFull`,
@@ -590,7 +629,7 @@ exec ${JSON.stringify(realGitPath)} "$@"
             // and it must cover exactly what the loop is about to read, not a guess
             expect([...prefetches[0].paths].sort()).toEqual(reads.map(read => read.sourcePath).sort());
             expect(envelope.files.length).toBe(reads.length);
-            // One process answers the whole revision (#432), and it is closed after the last read.
+            // One process answers the whole revision, and it is closed after the last read.
             expect(calls.filter(call => call.kind === 'open')).toHaveLength(1);
             expect(reads.every(read => read.via === 'batch')).toBe(true);
             expect(calls.at(-1).kind).toBe('close')
