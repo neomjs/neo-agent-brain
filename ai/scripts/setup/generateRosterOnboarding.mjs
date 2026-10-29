@@ -16,7 +16,7 @@ import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNo
  *
  * 1. `ai/graph/identityRoots.mjs` — the resident's `IDENTITIES` roster entry (Layer-1
  *    operational fields only; pending-first-boot lifecycle state)
- * 2. `README.md` — the maintainer roster row (Name / Maintainer / Role / Identity table)
+ * 2. `README.md` — the maintainer roster row (Name / Maintainer / Identity table; no model facts)
  * 3. `learn/agentos/ModelStats.md` — the capability section skeleton under the pending
  *    identities heading, with source-citation placeholders
  * 4. `test/playwright/unit/ai/graph/identityRoots.spec.mjs` — the roster pin
@@ -113,7 +113,7 @@ export const SURFACE_STATES = Object.freeze({
 });
 
 /**
- * @summary Vendor + display token per known model family, for README/ModelStats prose.
+ * @summary Vendor + display token per known model family, for roster-entry/ModelStats prose.
  * Unknown families render with the bare family token — never a guessed vendor.
  * @type {Object}
  */
@@ -149,6 +149,9 @@ export const ONBOARDING_SURFACE_KEYS = Object.freeze(['identityRoots', 'readme',
 
 /** @type {ReadonlyArray<String>} */
 export const ROTATION_SURFACE_KEYS = Object.freeze(['identityRoots', 'readme', 'modelStats', 'spec', 'migration']);
+
+/** @summary The README maintainer roster header: names and account bindings, no model facts. */
+export const README_ROSTER_HEADER = '| Name | Maintainer | Identity |';
 
 /**
  * @summary Escapes a literal value for safe embedding inside a RegExp source.
@@ -354,15 +357,13 @@ export function renderRosterEntry(plan) {
 
 /**
  * @summary Renders the resident's README maintainer roster row. The Name cell stays `-` (no
- * Social Name at onboarding); the Role cell carries the family only — the engine designation
- * is observation-owned and lands post-boot.
+ * Social Name at onboarding); family and designation stay out, because the README holds no
+ * model facts.
  * @param {Object} plan A valid plan from {@link buildOnboardingPlan}
  * @returns {String} The single table row
  */
 export function renderReadmeRow(plan) {
-    const familyPhrase = plan.familyVendor ? `${plan.familyVendor} ${plan.familyDisplay}` : plan.familyDisplay;
-
-    return `| - | [@${plan.githubBody}](https://github.com/${plan.githubBody}) | AI maintainer (${familyPhrase} family — engine designation pending first boot) | Machine Account |`;
+    return `| - | [@${plan.githubBody}](https://github.com/${plan.githubBody}) | AI maintainer |`;
 }
 
 /**
@@ -757,7 +758,7 @@ export function planReadmeSurface(source, plan, aliases = []) {
             return surfaceResult(base, SURFACE_STATES.MATCH, `${plan.handle} maintainer row exactly matches generated content`);
         }
 
-        if (!located.row.includes('engine designation pending first boot') || !located.row.endsWith('| Machine Account |')) {
+        if (!/^\| - \| \[@([^\]]+)\]\(https:\/\/github\.com\/\1\) \| AI maintainer \|$/.test(located.row)) {
             return surfaceResult(base, SURFACE_STATES.DIVERGENT, `${plan.handle} maintainer row is human-edited or activated; refusing to replace it as generated onboarding content`);
         }
 
@@ -770,10 +771,10 @@ export function planReadmeSurface(source, plan, aliases = []) {
     }
 
     const lines     = source.split('\n'),
-          headerIdx = lines.indexOf('| Name | Maintainer | Role | Identity |');
+          headerIdx = lines.indexOf(README_ROSTER_HEADER);
 
     if (headerIdx === -1) {
-        return surfaceResult(base, SURFACE_STATES.DIVERGENT, `insertion anchor not found: the '| Name | Maintainer | Role | Identity |' table header is missing from ${SURFACE_PATHS.readme}`);
+        return surfaceResult(base, SURFACE_STATES.DIVERGENT, `insertion anchor not found: the '${README_ROSTER_HEADER}' table header is missing from ${SURFACE_PATHS.readme}`);
     }
 
     let end = headerIdx + 1;
@@ -1025,15 +1026,16 @@ export function planRotationModelStatsSurface(source, plan) {
 }
 
 /**
- * @summary Plans the README half of a rotation by replacing the exact prior ModelStats
- * designation inside the one resident row. Vendor/harness suffixes remain byte-stable.
+ * @summary Rotation boundary for the README: the resident's one roster row names the seat and
+ * its account, never its model, so rotation leaves it byte-stable. A row that still carries the
+ * prior ModelStats designation is refused, never rewritten.
  * @param {String} source README source
  * @param {Object} plan Rotation plan
  * @param {String} previousDesignation Exact current ModelStats designation
  * @returns {Object}
  */
-export function planRotationReadmeSurface(source, plan, previousDesignation) {
-    const base = {surface: 'readme', path: SURFACE_PATHS.readme, anchor: `${plan.handle} exact maintainer row`, snippet: plan.designation};
+export function planRotationReadmeBoundary(source, plan, previousDesignation) {
+    const base = {surface: 'readme', path: SURFACE_PATHS.readme, anchor: 'maintainer row boundary (verified, never written by rotation)', snippet: ''};
 
     if (typeof source !== 'string' || source === '') {
         return surfaceResult(base, SURFACE_STATES.DIVERGENT, 'README source must be a non-empty string');
@@ -1045,26 +1047,11 @@ export function planRotationReadmeSurface(source, plan, previousDesignation) {
         return surfaceResult(base, SURFACE_STATES.DIVERGENT, located.reason || `${plan.handle} has no unique maintainer row; rotation refuses to create one`);
     }
 
-    const occurrences = previousDesignation ? located.row.split(previousDesignation).length - 1 : 0;
-
-    if (occurrences !== 1) {
-        return surfaceResult(base, SURFACE_STATES.DIVERGENT, `${plan.handle} README row does not contain the prior ModelStats designation '${previousDesignation}' exactly once; refusing a broad prose rewrite`);
+    if (previousDesignation && located.row.includes(previousDesignation)) {
+        return surfaceResult(base, SURFACE_STATES.DIVERGENT, `${plan.handle} README row still carries the ModelStats designation '${previousDesignation}'; the README holds no model facts, so rotation refuses to rewrite it`);
     }
 
-    if (previousDesignation === plan.designation) {
-        return surfaceResult(base, SURFACE_STATES.MATCH, `${plan.handle} README row exactly records '${plan.designation}'`);
-    }
-
-    const desiredRow = located.row.replace(previousDesignation, plan.designation);
-
-    base.snippet = desiredRow;
-
-    return surfaceResult(
-        base,
-        SURFACE_STATES.DIVERGENT,
-        `${plan.handle} README designation '${previousDesignation}' differs from '${plan.designation}'; exact row rotation planned`,
-        replaceExactRange(source, located.range, desiredRow)
-    );
+    return surfaceResult(base, SURFACE_STATES.MATCH, `${plan.handle} README row carries no model designation; byte-stable by construction`);
 }
 
 /**
@@ -1101,8 +1088,8 @@ export function planRotationMigrationBoundary(source) {
 }
 
 /**
- * @summary Plans the corrected rotation ceremony. Only README + ModelStats can be writable;
- * roots, focused spec, and migration snapshot are explicit byte-stable boundaries.
+ * @summary Plans the corrected rotation ceremony. Only ModelStats can be writable; roots,
+ * README, focused spec, and migration snapshot are explicit byte-stable boundaries.
  * @param {Object} plan Valid rotation plan
  * @param {Object} files Current five surface contents
  * @returns {{valid: Boolean, reason: String|null, surfaces: Object[]}}
@@ -1122,7 +1109,7 @@ export function planRotationSurfaces(plan, files = {}) {
           previous   = modelStats.previousDesignation;
     const surfaces = [
         planRotationIdentityBoundary(files.identityRoots, plan),
-        planRotationReadmeSurface(files.readme, plan, previous),
+        planRotationReadmeBoundary(files.readme, plan, previous),
         modelStats,
         planRotationSpecBoundary(files.spec, plan),
         planRotationMigrationBoundary(files.migration)
@@ -1197,7 +1184,6 @@ export function renderAdvisoryNotes(plan) {
     return [
         '[generateRosterOnboarding] advisory (printed, never written):',
         '  - ModelStats §update_history: add a row citing the onboarding PR number once the PR exists.',
-        '  - README credits: the co-developed-by sentence near the end of the README lists maintainer handles; extending it is an editorial call at review time.',
         '  - Activation flip: participationStatus \'active\' and source-cited capability facts land after first boot; never infer a peer role from model family or staffing utility.'
     ];
 }
