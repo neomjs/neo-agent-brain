@@ -725,15 +725,16 @@ test.describe('CoalescingEngineService', () => {
      * stayed green because they all hand `configure` a plain object literal — and a plain object
      * spreads perfectly. Production does not pass a plain object. It passes an `AiConfig` node, whose
      * `get` trap resolves override-else-inherit up the parent chain while its `ownKeys` trap
-     * (`Provider#getTopLevelDataKeys`) enumerates **local `#dataConfigs` only**. The wake-dispatch
-     * leaves are declared on the Tier-1 root, so the spread produced `{}` — measured, not inferred —
-     * and mc-server died at boot on a validation error naming a leaf that was plainly set. Thirty-plus
+     * (`Provider#getTopLevelDataKeys`) then enumerated **local `#dataConfigs` only**. The
+     * wake-dispatch leaves are declared on the Tier-1 root, so the spread produced `{}` — measured,
+     * not inferred — and mc-server died at boot on a validation error naming a leaf that was
+     * plainly set. Thirty-plus
      * integration specs then failed with `ECONNREFUSED`, every one of them downstream of that.
      *
      * **Why a real two-Provider hierarchy and not a mock.** A hand-rolled proxy asserting
      * "ownKeys returns []" would test my model of the trap rather than the trap. This builds the
-     * actual primitive — a parent holding the data, a child resolving through it — so the arm fails if
-     * `Provider`'s enumeration semantics ever diverge from what this repair assumes. The one
+     * actual primitive — a parent holding the data, a child resolving through it — so `configure` reads
+     * through the real resolution path. The one
      * substitution against production is the leaf VALUES (30/120/300 rather than the shipped
      * 150/120/300); the parent/child resolution path, the proxy, and both traps are the real ones.
      */
@@ -748,11 +749,9 @@ test.describe('CoalescingEngineService', () => {
 
         const node = child.data.wakeDispatch;
 
-        // The trap itself, pinned first: this is WHY the spread failed, and if these two ever stop
-        // disagreeing the regression below would pass for the wrong reason.
+        // The node inherits its leaves. The engine now enumerates them too, so a spread is no longer
+        // lossy, but configure keeps reading the node by reference.
         expect(node.coalesceWindowSeconds, 'the named read must resolve up the parent chain').toBe(30);
-        expect(Object.keys(node), 'enumeration must NOT see inherited leaves — the trap under test').toEqual([]);
-        expect({...node}, 'spreading this node is measurably lossy').toEqual({});
 
         // The repair: configure must survive the node itself, by reference.
         expect(() => CoalescingEngineService.configure(node, {resolveDeliveryReadState: null})).not.toThrow();

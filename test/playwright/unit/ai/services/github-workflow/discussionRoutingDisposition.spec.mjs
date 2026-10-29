@@ -1,17 +1,14 @@
-import {test, expect}  from '@playwright/test';
-import fs              from 'node:fs';
-import path            from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {test, expect} from '@playwright/test';
+import fs             from 'node:fs';
 import {
     classifyDiscussionRoutingDisposition,
     findLifecycleMarkers,
     normalizeDiscussionRoutingProjection
 } from '../../../../../../ai/services/github-workflow/shared/discussionRoutingDisposition.mjs';
 
-const discussionCorpusRoot = path.resolve(
-    path.dirname(path.dirname(fileURLToPath(import.meta.resolve('neo.mjs/src/Neo.mjs')))),
-    'resources/content/discussions/chunk-1'
-);
+// Verbatim lines of four corpus discussions, kept because each excerpt classifies exactly as its
+// whole body does. The corpus left the engine, so the Brain no longer installs it.
+const corpusExcerpts = JSON.parse(fs.readFileSync(new URL('./discussion-corpus-excerpts.json', import.meta.url), 'utf8')).discussions;
 
 test.describe('discussionRoutingDisposition', () => {
     test('classifies explicit trusted convergence and evergreen signals as active', () => {
@@ -188,12 +185,9 @@ test.describe('discussionRoutingDisposition', () => {
             .toContain('GRADUATED_TO_TICKET')
     });
 
-    test('preserves canonical legacy graduation callouts from the live corpus', () => {
+    test('preserves canonical legacy graduation callouts from corpus excerpts', () => {
         for (const number of [10289, 14456]) {
-            const content = fs.readFileSync(path.resolve(discussionCorpusRoot, `discussion-${number}.md`), 'utf8');
-            const author  = content.match(/^author:\s*([^\n]+)$/m)?.[1]?.trim();
-            const body    = content.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n## Comments\s*\n/)[0];
-            const result  = classifyDiscussionRoutingDisposition({author, body});
+            const result = classifyDiscussionRoutingDisposition(corpusExcerpts[number]);
 
             expect(result, `discussion-${number}`).toMatchObject({
                 disposition: 'terminal',
@@ -206,10 +200,7 @@ test.describe('discussionRoutingDisposition', () => {
 
     test('preserves the canonical partially-open corpus shapes', () => {
         for (const number of [13378, 11690]) {
-            const content = fs.readFileSync(path.resolve(discussionCorpusRoot, `discussion-${number}.md`), 'utf8');
-            const author  = content.match(/^author:\s*([^\n]+)$/m)?.[1]?.trim();
-            const body    = content.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n## Comments\s*\n/)[0];
-            const result  = classifyDiscussionRoutingDisposition({author, body});
+            const result = classifyDiscussionRoutingDisposition(corpusExcerpts[number]);
 
             expect(result.disposition, `discussion-${number}`).toBe('active')
         }
