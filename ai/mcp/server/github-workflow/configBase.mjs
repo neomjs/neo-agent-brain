@@ -152,10 +152,10 @@ class ConfigBase extends ConfigProvider {
                  * from sync — never written to `resources/content/**` or downstream KB chunks. Cached
                  * copies are quarantined (file + content-index entry removed) by `number` even when
                  * GitHub no longer lists them; `author` matching is fetch-time exclusion only (the sync
-                 * cache persists `number`, not author). Policy-free; the empty default is a no-op.
+                 * cache persists `number`, not author). Deleted-number entries also clear retained copies.
                  * @type {{numbers: Number[], authors: String[]}}
                  */
-                discussionDenylist: leaf({numbers: [], authors: []}),
+                discussionDenylist: leaf({numbers: [20175], authors: []}),
                 /**
                  * Containment denylist for issues — the `discussionDenylist` sibling, on the surface we
                  * actually get attacked on. Issues whose `number` or `author.login` match are excluded
