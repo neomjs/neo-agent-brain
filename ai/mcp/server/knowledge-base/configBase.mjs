@@ -610,7 +610,6 @@ class ConfigBase extends ConfigProvider {
              */
             sourcePaths: leaf({
                 AdrSource         : 'learn/agentos/decisions',
-                ConceptSource     : 'resources/content/concepts',
                 ReleaseNotesSource: '.github/RELEASE_NOTES',
                 SkillSource       : '.agents/skills',
                 TestSource        : 'test/playwright',

@@ -131,8 +131,8 @@ test.describe('PrimaryRepoSyncService (#11017)', () => {
         expect(isKbRelevantChangePath('src/button/Base.mjs')).toBe(true);
         expect(isKbRelevantChangePath('ai/services/knowledge-base/source/ApiSource.mjs')).toBe(true);
         expect(isKbRelevantChangePath('docs/output/class-hierarchy.json')).toBe(true);
-        // Concepts are a KB source root; the retired conversation mirror and its metadata are not.
-        expect(isKbRelevantChangePath('resources/content/concepts/component-model.md')).toBe(true);
+        // The retired content mirror is no KB source root, its concept pages included.
+        expect(isKbRelevantChangePath('resources/content/concepts/component-model.md')).toBe(false);
         expect(isKbRelevantChangePath('resources/content/issues/chunk-13/issue-11783.md')).toBe(false);
         expect(isKbRelevantChangePath('resources/content/.sync-metadata.json')).toBe(false);
         expect(isKbRelevantChangePath('.codex/config.template.toml')).toBe(false);

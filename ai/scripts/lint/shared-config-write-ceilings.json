@@ -32,7 +32,6 @@
         "test/playwright/unit/ai/services/knowledge-base/SearchService.spec.mjs": 3,
         "test/playwright/unit/ai/services/knowledge-base/source/AdrSource.spec.mjs": 2,
         "test/playwright/unit/ai/services/knowledge-base/source/ApiSource.spec.mjs": 12,
-        "test/playwright/unit/ai/services/knowledge-base/source/ConceptSource.spec.mjs": 2,
         "test/playwright/unit/ai/services/knowledge-base/source/RawRepoSource.spec.mjs": 5,
         "test/playwright/unit/ai/services/knowledge-base/source/SkillSource.spec.mjs": 10,
         "test/playwright/unit/ai/services/memory-core/MailboxService.spec.mjs": 6,

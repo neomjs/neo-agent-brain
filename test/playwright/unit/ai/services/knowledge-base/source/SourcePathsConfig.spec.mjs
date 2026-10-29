@@ -115,7 +115,6 @@ test.describe('aiConfig.sourcePaths config-driven path resolution (#11660)', () 
     test.describe('Single-path Source classes', () => {
         const singlePathSources = [
             {name: 'AdrSource',          fallback: 'learn/agentos/decisions'},
-            {name: 'ConceptSource',      fallback: 'resources/content/concepts'},
             {name: 'ReleaseNotesSource', fallback: '.github/RELEASE_NOTES'},
             {name: 'SkillSource',        fallback: '.agents/skills'},
             {name: 'TestSource',         fallback: 'test/playwright'},
@@ -204,7 +203,6 @@ test.describe('aiConfig.sourcePaths config-driven path resolution (#11660)', () 
             try {
                 // Verify each Source class's resolution path still works via the `??` fallback.
                 expect(config.sourcePaths?.AdrSource          ?? 'learn/agentos/decisions').toBe('learn/agentos/decisions');
-                expect(config.sourcePaths?.ConceptSource      ?? 'resources/content/concepts').toBe('resources/content/concepts');
                 expect(config.sourcePaths?.ReleaseNotesSource ?? '.github/RELEASE_NOTES').toBe('.github/RELEASE_NOTES');
                 expect(config.sourcePaths?.SkillSource        ?? '.agents/skills').toBe('.agents/skills');
                 expect(config.sourcePaths?.TestSource         ?? 'test/playwright').toBe('test/playwright');

@@ -2,7 +2,6 @@ import aiConfig           from '../../../mcp/server/knowledge-base/config.mjs';
 import SourceRegistry     from './SourceRegistry.mjs';
 import AdrSource          from './AdrSource.mjs';
 import ApiSource          from './ApiSource.mjs';
-import ConceptSource      from './ConceptSource.mjs';
 import LearningSource     from './LearningSource.mjs';
 import RawRepoSource      from './RawRepoSource.mjs';
 import ReleaseNotesSource from './ReleaseNotesSource.mjs';
@@ -16,14 +15,14 @@ import TestSource         from './TestSource.mjs';
  *
  * **Auto-registration contract:**
  *
- * - When `aiConfig.useDefaultSources !== false`, the seven surviving default Source classes
+ * - When `aiConfig.useDefaultSources !== false`, the six surviving default Source classes
  *   register in deterministic insertion order for legacy registry consumers. The shared
  *   Engine/Brain `kbSync` no longer reads this registry; it uses revision-bound repository
  *   profiles, so the old single-JSONL byte-equivalence claim no longer applies. GitHub
  *   conversations are not a default Source: the Knowledge Base ingests the org corpus published by
- *   `github-content-sync` as its own tenant through the `ConversationCorpusSource` extractor
- *   (neo-agent-brain#402), so the three per-facet Sources that walked the Engine's tracked
- *   conversation mirror retired.
+ *   `github-content-sync` as its own tenant through the `ConversationCorpusSource` extractor,
+ *   so the three per-facet Sources that walked the Engine's tracked conversation mirror retired.
+ *   Concept pages left with the Engine's content tree; the plane store is their source.
  * - When `aiConfig.useDefaultSources === false` (cloud deployments opting out of Neo's
  *   curated content), no default registration occurs. The registry only contains whatever
  *   tenant-supplied sources register via `aiConfig.customSources`, explicit `rawRepoSource`,
@@ -57,8 +56,8 @@ import TestSource         from './TestSource.mjs';
  * **Order discipline:**
  *
  * The default sources MUST appear in the registry in the same relative order as the original
- * hardcoded array — `AdrSource`, `ApiSource`, `ConceptSource`, `LearningSource`,
- * `ReleaseNotesSource`, `SkillSource`, `TestSource`.
+ * hardcoded array — `AdrSource`, `ApiSource`, `LearningSource`, `ReleaseNotesSource`,
+ * `SkillSource`, `TestSource`.
  *
  * **Testability:**
  *
@@ -76,7 +75,6 @@ import TestSource         from './TestSource.mjs';
 const DEFAULT_SOURCES = [
     AdrSource,
     ApiSource,
-    ConceptSource,
     LearningSource,
     ReleaseNotesSource,
     SkillSource,
@@ -151,7 +149,6 @@ export default SourceRegistry;
 export {
     AdrSource,
     ApiSource,
-    ConceptSource,
     DEFAULT_SOURCES,
     LearningSource,
     RawRepoSource,
