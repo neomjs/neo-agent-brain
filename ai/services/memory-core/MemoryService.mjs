@@ -723,6 +723,7 @@ class MemoryService extends Base {
             );
 
             stageTimings.walMs = Date.now() - walStartedAt;
+            SessionService.noteSessionWrite(sessionId);
             const postWalStartedAt = Date.now();
 
             this._scheduleMemoryGraphProjection({

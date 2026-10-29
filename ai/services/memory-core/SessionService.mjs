@@ -97,7 +97,13 @@ class SessionService extends Base {
          * @member {Boolean} singleton=true
          * @protected
          */
-        singleton: true
+        singleton: true,
+        /**
+         * Session ids under which this process wrote a memory, until their transport closes.
+         * @member {Set<String>|null} writtenSessionIds=null
+         * @protected
+         */
+        writtenSessionIds: null
     }
 
     static identityTrustTiers = new Map(IDENTITIES.map(identity => [identity.id, identity.properties?.trustTier || TRUST_TIERS.UNCLASSIFIED]))
@@ -165,6 +171,8 @@ class SessionService extends Base {
      */
     construct(config) {
         super.construct(config);
+
+        this.writtenSessionIds = new Set();
 
         logger.info(`[SessionService] Initialized new fallback session: ${this._legacySessionId}`);
 
@@ -1224,6 +1232,24 @@ ${sessionContent}
             lastActivityAt,
             summarizationStatus
         };
+    }
+
+    /**
+     * @summary Records a durable memory write under `sessionId` for {@link takeSessionWrite}.
+     * @param {String} sessionId
+     */
+    noteSessionWrite(sessionId) {
+        sessionId && this.writtenSessionIds.add(sessionId)
+    }
+
+    /**
+     * @summary Whether this process wrote a memory under `sessionId`, forgetting the record. In-process
+     * only: after a restart, the periodic drift sweep still finds the session.
+     * @param {String} sessionId
+     * @returns {Boolean}
+     */
+    takeSessionWrite(sessionId) {
+        return this.writtenSessionIds.delete(sessionId)
     }
 
     /**

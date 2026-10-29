@@ -975,10 +975,49 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
         };
 
         try {
+            SDK.Memory_SessionService.noteSessionWrite('closed-session-1');
             serverInstance.onSessionClosed('closed-session-1', mcpServerInstance);
 
             expect(removed).toEqual([mcpServerInstance]);
             expect(calls).toEqual(['closed-session-1']);
+        } finally {
+            SDK.Memory_SessionService.queueSummarizationJob = originalQueue;
+            SDK.Memory_CoalescingEngineService.removeMcpServer = originalRemove;
+            serverInstance.destroy();
+        }
+    });
+
+    test('#1349: a transport session that wrote no memory closes without a summarization marker', async () => {
+        const SDK               = await import('../../../../../../../ai/services.mjs');
+        const serverInstance    = await createServerWithoutBoot();
+        const mcpServerInstance = {id: 'mcp-session-server-1349'};
+        const calls             = [];
+        const removed           = [];
+
+        const originalQueue  = SDK.Memory_SessionService.queueSummarizationJob;
+        const originalRemove = SDK.Memory_CoalescingEngineService.removeMcpServer;
+
+        SDK.Memory_SessionService.queueSummarizationJob = (sessionId) => {
+            calls.push(sessionId);
+            return true;
+        };
+        SDK.Memory_CoalescingEngineService.removeMcpServer = (instance) => {
+            removed.push(instance);
+        };
+
+        try {
+            serverInstance.onSessionClosed('transport-without-writes', mcpServerInstance);
+
+            // The broadcast registration is still released; only the marker depends on a write.
+            expect(removed).toEqual([mcpServerInstance]);
+            expect(calls).toEqual([]);
+
+            SDK.Memory_SessionService.noteSessionWrite('transport-with-a-write');
+            serverInstance.onSessionClosed('transport-with-a-write', mcpServerInstance);
+            serverInstance.onSessionClosed('transport-with-a-write', mcpServerInstance);
+
+            // One marker per recorded write: the close consumes the record.
+            expect(calls).toEqual(['transport-with-a-write']);
         } finally {
             SDK.Memory_SessionService.queueSummarizationJob = originalQueue;
             SDK.Memory_CoalescingEngineService.removeMcpServer = originalRemove;
