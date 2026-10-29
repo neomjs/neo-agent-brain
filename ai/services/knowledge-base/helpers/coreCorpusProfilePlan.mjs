@@ -85,7 +85,7 @@ export function createCoreCorpusProfilePlan(repoSlug) {
     if (repoSlug === ENGINE_REPO_SLUG) {
         return {
             repoSlug,
-            roots  : ['src', 'apps', 'examples', 'docs/app', 'learn', 'resources/content/concepts', 'test/playwright'],
+            roots  : ['src', 'apps', 'examples', 'docs/app', 'learn', 'test/playwright'],
             profile: {
                 profileSchemaVersion: 1,
                 routes              : [
@@ -94,7 +94,6 @@ export function createCoreCorpusProfilePlan(repoSlug) {
                     route('ApiSource', 'examples', ['**/*.mjs'], {type: 'example', hierarchyScope: 'source-path'}),
                     route('ApiSource', 'docs/app', ['**/*.mjs'], {type: 'app',     hierarchyScope: 'source-path'}),
                     createAdrTerritoryRoute({requiredRoots: ['learn/agentos/decisions']}),
-                    route('ConceptSource', 'resources/content/concepts', ['*.md']),
                     route('LearningSource', 'learn', ['tree.json', '**/*.md'],
                         {treePath: 'learn/tree.json'}, [...LEARNING_ADR_EXCLUDES]),
                     route('TestSource', 'test/playwright', ['**/*.mjs'])

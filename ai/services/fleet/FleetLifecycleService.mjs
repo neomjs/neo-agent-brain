@@ -2673,7 +2673,7 @@ class FleetLifecycleService extends Base {
 
     /** @returns {Function|null} the window placement behind the restore, or `null` where no adapter exists. @private */
     getWindowRectPlaceFn() {
-        return this.windowRectPlaceFn || (this.windowPlatform === 'darwin' ? (pid, rect) => placeSeatWindow(pid, rect) : null);
+        return this.windowRectPlaceFn || (this.windowPlatform === 'darwin' ? (pid, rect, options) => placeSeatWindow(pid, rect, options) : null);
     }
 
     /**
@@ -2780,7 +2780,11 @@ class FleetLifecycleService extends Base {
 
             if (sameWindowRect(observed, saved.rect)) return Object.assign(placement, {state: 'kept', at: new Date().toISOString()});
 
-            const after = await place(record.pid, saved.rect);
+            const after = await place(record.pid, saved.rect, {
+                instanceHome   : record.instanceHome,
+                harnessType    : record.harnessType,
+                expectedProcess: {pid: record.pid, startedAt: record.pidStartedAt}
+            });
 
             placement.at = new Date().toISOString();
 

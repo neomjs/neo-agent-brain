@@ -1,6 +1,7 @@
 import {test, expect}                                  from '@playwright/test';
 import {spawnSync}                                     from 'node:child_process';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import os                                              from 'node:os';
 import path                                            from 'node:path';
 
 import {
@@ -196,11 +197,27 @@ test.describe('ai/scripts/lint-guides (#14354 — mechanical guide-quality lint)
     });
 
     test('discoverGuideSeries: recursively reaches nested guides without widening the full-guide surface', () => {
-        const files = discoverGuideSeries();
+        // The guides this lint serves live in the Engine, so the tree is a fixture
+        const rootDir = mkdtempSync(path.join(os.tmpdir(), 'lint-guides-series-'));
 
-        expect(files).toContain('learn/guides/testing/ComponentTesting.md');
-        expect(files).toContain('learn/guides/userinteraction/events/CustomEvents.md');
-        expect(files.some(file => file.startsWith('learn/agentos/'))).toBe(false);
+        try {
+            for (const file of [
+                'learn/guides/testing/ComponentTesting.md',
+                'learn/guides/userinteraction/events/CustomEvents.md',
+                'learn/agentos/Concept.md'
+            ]) {
+                mkdirSync(path.dirname(path.join(rootDir, file)), {recursive: true});
+                writeFileSync(path.join(rootDir, file), '# Guide\n');
+            }
+
+            const files = discoverGuideSeries(rootDir);
+
+            expect(files).toContain('learn/guides/testing/ComponentTesting.md');
+            expect(files).toContain('learn/guides/userinteraction/events/CustomEvents.md');
+            expect(files.some(file => file.startsWith('learn/agentos/'))).toBe(false);
+        } finally {
+            rmSync(rootDir, {recursive: true, force: true});
+        }
     });
 
     test('CLI: the default discovery path makes one nested scratch guide red, then green', () => {

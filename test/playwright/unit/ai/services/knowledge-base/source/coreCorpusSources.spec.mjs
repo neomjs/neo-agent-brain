@@ -106,7 +106,7 @@ test.describe('shared core semantic Sources (#282)', () => {
         ]);
     });
 
-    test('Engine profile uses its assigned learning tree and retains ADR, concept and test semantics', async () => {
+    test('Engine profile uses its assigned learning tree, retains ADR and test semantics, and routes no concept pages', async () => {
         const {result, chunks} = await extract('neo', {
             'learn/agentos/decisions/0001-example.md': '# Decision\n\nAn accepted rule.',
             'learn/tree.json'                        : JSON.stringify({data: [
@@ -122,15 +122,16 @@ test.describe('shared core semantic Sources (#282)', () => {
         expect(result.yieldedSourcePaths).toEqual(expect.arrayContaining([
             'learn/agentos/decisions/0001-example.md',
             'learn/guides/One.md',
-            'resources/content/concepts/Some.md',
             'test/playwright/one.spec.mjs'
         ]));
+        // The engine deleted its concept pages; the plane store is their source now
+        expect(result.yieldedSourcePaths).not.toContain('resources/content/concepts/Some.md');
         expect(result.extractorSkippedPaths).toEqual(expect.arrayContaining([
             {sourcePath: 'learn/tree.json', reason: 'tree-manifest'},
             {sourcePath: 'learn/comparisons/Skip.md', reason: 'not-in-tree'}
         ]));
-        expect(chunks.map(chunk => chunk.type)).toEqual(expect.arrayContaining(['adr', 'concept', 'test']));
-        expect(chunks.find(chunk => chunk.type === 'concept')).toMatchObject({name: 'Some', tier: 2});
+        expect(chunks.map(chunk => chunk.type)).toEqual(expect.arrayContaining(['adr', 'test']));
+        expect(chunks.some(chunk => chunk.type === 'concept')).toBe(false);
         expect(chunks.some(chunk => chunk.source === 'learn/guides/One.md')).toBe(true);
     });
 

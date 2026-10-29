@@ -256,7 +256,7 @@ export function createExtractorCatalogue(descriptors = []) {
  * on repository hierarchy, trigger pointers, a learning-tree manifest, or arbitrary parser code. ConversationCorpusSource is
  * non-delta-safe for a narrower reason: every chunk's identity comes from the corpus root index, a
  * file that does not change when a conversation file does. ReleaseNotesCorpusSource is the same, with
- * each origin's release-notes index in the root index's place. AdrSource, ConceptSource, TestSource, and
+ * each origin's release-notes index in the root index's place. AdrSource, TestSource, and
  * RawRepoSource are file-local; each output derives from its own file and declared route identity.
  */
 export const ExtractorCatalogue = createExtractorCatalogue([{
@@ -280,17 +280,6 @@ export const ExtractorCatalogue = createExtractorCatalogue([{
         const {default: ApiSource} = await import('./ApiSource.mjs');
 
         return await ApiSource.extractFromRepository(options)
-    }
-}, {
-    extractorId      : 'ConceptSource',
-    version          : '1.0.0',
-    deltaSafe        : true,
-    requiresHierarchy: false,
-    normalizeOptions : normalizeFileSourceOptions,
-    extract          : async options => {
-        const {default: ConceptSource} = await import('./ConceptSource.mjs');
-
-        return await ConceptSource.extractFromRepository(options)
     }
 }, {
     extractorId      : 'ConversationCorpusSource',
