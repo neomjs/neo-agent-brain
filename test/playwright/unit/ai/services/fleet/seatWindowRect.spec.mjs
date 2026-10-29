@@ -5,6 +5,7 @@ import path           from 'node:path';
 import {
     ASSISTIVE_ACCESS_REFUSAL_REASON,
     AUTOMATION_ACCESS_REFUSAL_REASON,
+    DEVTOOLS_ACTIVE_PORT_FILE,
     PRIVILEGE_VIOLATION_REFUSAL_REASON,
     SEAT_WINDOW_FILE,
     assistiveAccessRefusal,
@@ -12,8 +13,10 @@ import {
     isWindowRect,
     isWindowRefusal,
     parseWindowRect,
+    placeDevToolsWindowRect,
     placeSeatWindow,
     placeWindowRectArgs,
+    readDevToolsActivePort,
     readSeatWindowRecord,
     readSeatWindowRect,
     readWindowRectArgs,
@@ -35,12 +38,15 @@ test.describe('seatWindowRect — a GUI seat\'s window rectangle across stop and
         expect(sameWindowRect(RECT, {...RECT, x: 2057})).toBe(false);
     });
 
-    test('the System Events argv addresses the process by unix id, and the answer parses as four integers', () => {
+    test('the CoreGraphics read argv and System Events fallback place argv address the process by unix id, and the answer parses as four integers', () => {
         const read = readWindowRectArgs(71976).join('\n');
 
-        expect(read).toContain('first process whose unix id is 71976');
-        expect(read).toContain('position of window 1');
-        expect(read).toContain('size of window 1');
+        expect(read).toContain('JavaScript');
+        expect(read).toContain('CoreGraphics');
+        expect(read).toContain('CGWindowListCopyWindowInfo');
+        expect(read).toContain('w.kCGWindowOwnerPID === 71976');
+        expect(read).toContain('w.kCGWindowLayer === 0');
+        expect(read).not.toContain('System Events');
         expect(read).not.toContain('set position');
 
         const place = placeWindowRectArgs(71976, {x: 2056.4, y: 30, width: 892, height: 1055}).join('\n');
@@ -55,6 +61,100 @@ test.describe('seatWindowRect — a GUI seat\'s window rectangle across stop and
         expect(parseWindowRect('a, b, c, d')).toBeNull();
         expect(parseWindowRect('2056, 30, 0, 1055')).toBeNull();
         expect(parseWindowRect('')).toBeNull();
+    });
+
+    test('DevToolsActivePort CDP placement grants windowManagement, moves/resizes with userGesture, and skips System Events when available (#1351)', async () => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-window-devtools-'));
+
+        expect(readDevToolsActivePort(home)).toBeNull();
+        expect(readDevToolsActivePort('')).toBeNull();
+
+        fs.writeFileSync(path.join(home, DEVTOOLS_ACTIVE_PORT_FILE), 'not-a-port\n/devtools/browser/abc\n');
+        expect(readDevToolsActivePort(home)).toBeNull();
+
+        fs.writeFileSync(path.join(home, DEVTOOLS_ACTIVE_PORT_FILE), '54648\n/devtools/browser/7db79dc6-dd64\n');
+        expect(readDevToolsActivePort(home)).toEqual({
+            port       : 54648,
+            browserPath: '/devtools/browser/7db79dc6-dd64',
+            wsUrl      : 'ws://127.0.0.1:54648/devtools/browser/7db79dc6-dd64'
+        });
+
+        const rpcLog = [];
+        let   polls  = 0;
+
+        class FakeWebSocket {
+            constructor(url) {
+                this.url = url;
+                queueMicrotask(() => this.onopen?.());
+            }
+            send(raw) {
+                const msg = JSON.parse(raw);
+                rpcLog.push(msg);
+                queueMicrotask(() => {
+                    if (msg.method === 'Target.getTargets') {
+                        polls += 1;
+                        const targetInfos = polls === 1
+                            ? [{targetId: 't0', type: 'page', url: 'about:blank'}]
+                            : [{targetId: 't1', type: 'page', url: 'https://127.0.0.1:49939/c/abc'}];
+                        this.onmessage?.({data: JSON.stringify({id: msg.id, result: {targetInfos}})});
+                        return;
+                    }
+                    if (msg.method === 'Browser.grantPermissions') {
+                        this.onmessage?.({data: JSON.stringify({id: msg.id, result: {}})});
+                        return;
+                    }
+                    if (msg.method === 'Target.attachToTarget') {
+                        this.onmessage?.({data: JSON.stringify({id: msg.id, result: {sessionId: 'sess-1'}})});
+                        return;
+                    }
+                    if (msg.method === 'Runtime.evaluate') {
+                        this.onmessage?.({data: JSON.stringify({id: msg.id, result: {result: {value: RECT}}})});
+                    }
+                });
+            }
+            close() {}
+        }
+
+        const placed = await placeDevToolsWindowRect(
+            {...RECT, x: 2056.4},
+            {instanceHome: home, WebSocketCtor: FakeWebSocket, pollMs: 1, timeoutMs: 500}
+        );
+
+        expect(placed).toBe(true);
+        expect(rpcLog.map(m => m.method)).toEqual([
+            'Target.getTargets',
+            'Target.getTargets',
+            'Browser.grantPermissions',
+            'Target.attachToTarget',
+            'Runtime.evaluate'
+        ]);
+        expect(rpcLog[2].params).toEqual({
+            permissions: ['windowManagement'],
+            origin     : 'https://127.0.0.1:49939'
+        });
+        expect(rpcLog[4]).toMatchObject({
+            sessionId: 'sess-1',
+            params   : {
+                expression : 'window.moveTo(2056, 30); window.resizeTo(892, 1055); window.moveTo(2056, 30);',
+                userGesture: true
+            }
+        });
+
+        // placeSeatWindow uses DevTools placement when instanceHome succeeds and reads back via CoreGraphics without calling System Events placeWindowRectArgs
+        const osascriptCalls = [];
+        const execFileFn     = async (file, args) => { osascriptCalls.push([file, args]); return {stdout: '2056, 30, 892, 1055'} };
+
+        const observed = await placeSeatWindow(4242, RECT, {
+            execFileFn,
+            platform       : 'darwin',
+            instanceHome   : home,
+            placeDevToolsFn: async (rect, opts) => placeDevToolsWindowRect(rect, {...opts, WebSocketCtor: FakeWebSocket, pollMs: 1})
+        });
+
+        expect(observed).toEqual(RECT);
+        expect(osascriptCalls).toHaveLength(1);
+        expect(osascriptCalls[0][1].join('\n')).toContain('CGWindowListCopyWindowInfo');
+        expect(osascriptCalls[0][1].join('\n')).not.toContain('set position');
     });
 
     test('read and place run osascript on darwin only, never throw, and the placement reports the read-back', async () => {

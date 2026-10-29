@@ -10,16 +10,19 @@ import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
  * three GUI harness families do not persist their own main window where the Fleet's stop lets them
  * (Codex Desktop writes its bounds only at a quit the SIGTERM→SIGKILL stop never completes; Antigravity
  * writes none), so the lifecycle captures the rectangle by pid before it signals a stop and puts it back
- * once the next start has a window. The host reads and sets a window through one System Events query
- * each, addressed by unix id — the address and grant the wake adapter's dialog gate already uses;
- * nothing is written into a vendor's own state files. When macOS TCC or System Events denies access
- * (`-25211` Accessibility, `-1743` Automation of System Events, or `-10004` AppleEvents privilege violation),
+ * once the next start has a window. Window bounds are read without macOS TCC via CoreGraphics
+ * (`CGWindowListCopyWindowInfo`), and placed first via the seat profile's loopback `DevToolsActivePort`
+ * CDP endpoint (`Browser.grantPermissions` `windowManagement` + `Runtime.evaluate`) before falling back
+ * to `System Events`. When macOS TCC or System Events denies fallback access (`-25211`, `-1743`, `-10004`),
  * `readSeatWindowRect`, `placeSeatWindow`, and `waitForSeatWindowRect` return `{refused: true, reason}`
  * immediately without polling. Every host effect is injectable for hermetic unit specs.
  */
 
 /** @summary The Fleet-owned record beside the seat lease in the harness home. */
 export const SEAT_WINDOW_FILE = '.neo-fleet-window.json';
+
+/** @summary Chrome/Electron profile file announcing the loopback DevTools WebSocket endpoint. */
+export const DEVTOOLS_ACTIVE_PORT_FILE = 'DevToolsActivePort';
 
 /** @summary The record's schema version. */
 export const SEAT_WINDOW_RECORD_VERSION = 1;
@@ -110,21 +113,173 @@ export function sameWindowRect(a, b) {
 }
 
 /**
- * @summary The `osascript` argv that reads the front window's position and size of the process with the
- * unix id: one read-only System Events query, answered as four comma-separated integers.
+ * @summary The `osascript` argv that reads the main on-screen layer-0 window's position and size of the
+ * process with the unix id via CoreGraphics (`CGWindowListCopyWindowInfo`), requiring no macOS Accessibility
+ * or Automation TCC grant and answered as four comma-separated integers.
  * @param {Number} pid
  * @returns {String[]}
  */
 export function readWindowRectArgs(pid) {
+    const id = assertPid(pid);
+
     return [
-        '-e', 'tell application "System Events"',
-        '-e', `  tell (first process whose unix id is ${assertPid(pid)})`,
-        '-e', '    set {x, y} to position of window 1',
-        '-e', '    set {w, h} to size of window 1',
-        '-e', '  end tell',
-        '-e', 'end tell',
-        '-e', 'return (x as text) & "," & (y as text) & "," & (w as text) & "," & (h as text)'
+        '-l', 'JavaScript',
+        '-e', 'ObjC.import("CoreGraphics");',
+        '-e', 'const list = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1 | 16, 0))) || [];',
+        '-e', `const win = list.filter(w => w.kCGWindowOwnerPID === ${id} && w.kCGWindowLayer === 0 && w.kCGWindowBounds && w.kCGWindowBounds.Width > 0 && w.kCGWindowBounds.Height > 0).sort((a, b) => (b.kCGWindowBounds.Width * b.kCGWindowBounds.Height) - (a.kCGWindowBounds.Width * a.kCGWindowBounds.Height))[0];`,
+        '-e', 'const b = win && win.kCGWindowBounds;',
+        '-e', 'b ? `${Math.round(b.X)},${Math.round(b.Y)},${Math.round(b.Width)},${Math.round(b.Height)}` : "";'
     ]
+}
+
+/**
+ * @summary Reads `<instanceHome>/DevToolsActivePort` when present and valid.
+ * @param {String} instanceHome
+ * @param {Object} [options]
+ * @param {Object} [options.fileSystem=fs]
+ * @returns {{port: Number, browserPath: String, wsUrl: String}|null}
+ */
+export function readDevToolsActivePort(instanceHome, {fileSystem = fs} = {}) {
+    if (typeof instanceHome !== 'string' || !instanceHome) return null;
+
+    try {
+        const
+            raw    = fileSystem.readFileSync(path.join(instanceHome, DEVTOOLS_ACTIVE_PORT_FILE), 'utf8'),
+            lines  = String(raw ?? '').trim().split(/\r?\n/),
+            port   = Number(lines[0]?.trim()),
+            wsPath = lines[1]?.trim() ?? '';
+
+        if (!Number.isInteger(port) || port <= 0 || port > 65535 || !wsPath.startsWith('/devtools/')) return null;
+
+        return {port, browserPath: wsPath, wsUrl: `ws://127.0.0.1:${port}${wsPath}`}
+    } catch {
+        return null
+    }
+}
+
+/**
+ * @summary Moves and sizes an Electron/Chromium seat window via its profile-local `DevToolsActivePort`
+ * loopback WebSocket (`Browser.grantPermissions` for `windowManagement` + `Runtime.evaluate` with
+ * `userGesture: true`), requiring zero macOS Accessibility / AppleEvents TCC grants.
+ * @param {Object} rect
+ * @param {Object} [options]
+ * @param {String} [options.instanceHome]
+ * @param {Number} [options.timeoutMs=3000]
+ * @param {Number} [options.pollMs=100]
+ * @param {Object} [options.fileSystem=fs]
+ * @param {Function} [options.WebSocketCtor=globalThis.WebSocket]
+ * @param {Function} [options.now=Date.now]
+ * @param {Function} [options.sleep]
+ * @returns {Promise<Boolean>} `true` when the CDP window move/resize executed on a page target.
+ */
+export async function placeDevToolsWindowRect(rect, {
+    instanceHome,
+    timeoutMs     = 3000,
+    pollMs        = 100,
+    fileSystem    = fs,
+    WebSocketCtor = globalThis.WebSocket,
+    now           = Date.now,
+    sleep         = ms => new Promise(resolve => setTimeout(resolve, ms))
+} = {}) {
+    if (!isWindowRect(rect) || typeof WebSocketCtor !== 'function') return false;
+
+    const endpoint = readDevToolsActivePort(instanceHome, {fileSystem});
+
+    if (!endpoint) return false;
+
+    const
+        {x, y, width, height} = roundRect(rect),
+        deadline              = now() + timeoutMs,
+        pending               = new Map();
+    let ws, nextId = 1;
+
+    const settleAll = error => {
+        for (const entry of pending.values()) entry.reject(error);
+        pending.clear()
+    };
+
+    try {
+        ws = new WebSocketCtor(endpoint.wsUrl);
+
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('DevTools WebSocket open timeout')), Math.max(1, deadline - now()));
+
+            ws.onopen  = () => { clearTimeout(timer); resolve() };
+            ws.onerror = err => { clearTimeout(timer); reject(err instanceof Error ? err : new Error('DevTools WebSocket error')) };
+            ws.onclose = () => { clearTimeout(timer); reject(new Error('DevTools WebSocket closed')) };
+        });
+
+        ws.onmessage = event => {
+            try {
+                const msg = JSON.parse(typeof event?.data === 'string' ? event.data : String(event?.data ?? ''));
+
+                if (msg?.id && pending.has(msg.id)) {
+                    const entry = pending.get(msg.id);
+                    pending.delete(msg.id);
+                    msg.error ? entry.reject(new Error(msg.error.message || 'CDP error')) : entry.resolve(msg.result)
+                }
+            } catch {}
+        };
+        ws.onerror = () => settleAll(new Error('DevTools WebSocket error'));
+        ws.onclose = () => settleAll(new Error('DevTools WebSocket closed'));
+
+        const call = (method, params = {}, sessionId = undefined) => new Promise((resolve, reject) => {
+            const remaining = deadline - now();
+
+            if (remaining <= 0) return reject(new Error('DevTools RPC timeout'));
+
+            const
+                id    = nextId++,
+                timer = setTimeout(() => {
+                    pending.delete(id);
+                    reject(new Error(`DevTools RPC timeout: ${method}`))
+                }, remaining);
+
+            pending.set(id, {
+                resolve: value => { clearTimeout(timer); resolve(value) },
+                reject : error => { clearTimeout(timer); reject(error) }
+            });
+
+            const payload = {id, method, params};
+            if (sessionId) payload.sessionId = sessionId;
+            ws.send(JSON.stringify(payload))
+        });
+
+        for (;;) {
+            const
+                targets    = (await call('Target.getTargets'))?.targetInfos ?? [],
+                pageTarget = targets.find(t => t?.type === 'page' && /^https?:\/\//i.test(t.url ?? ''));
+
+            if (pageTarget) {
+                const origin = new URL(pageTarget.url).origin;
+
+                try {
+                    await call('Browser.grantPermissions', {permissions: ['windowManagement'], origin})
+                } catch {}
+
+                const {sessionId} = await call('Target.attachToTarget', {targetId: pageTarget.targetId, flatten: true}) ?? {};
+
+                if (!sessionId) return false;
+
+                await call('Runtime.evaluate', {
+                    expression   : `window.moveTo(${x}, ${y}); window.resizeTo(${width}, ${height}); window.moveTo(${x}, ${y});`,
+                    userGesture  : true,
+                    returnByValue: true
+                }, sessionId);
+
+                return true
+            }
+
+            if (now() >= deadline) return false;
+
+            await sleep(pollMs)
+        }
+    } catch {
+        return false
+    } finally {
+        settleAll(new Error('DevTools WebSocket closed'));
+        try { ws?.close() } catch {}
+    }
 }
 
 /**
@@ -185,20 +340,34 @@ export async function readSeatWindowRect(pid, {execFileFn = execFileAsync, platf
 }
 
 /**
- * @summary Places a seat window by pid and reads the frame back. The read-back is the proof: the OS may clamp
- * or refuse the frame (a display no longer attached), and only the observed rectangle or TCC refusal is reported.
+ * @summary Places a seat window by pid and reads the frame back. When `instanceHome` exposes a profile-local
+ * `DevToolsActivePort`, placement runs over loopback CDP first (`placeDevToolsWindowRect`) before falling
+ * back to `System Events`. The read-back is the proof: the OS may clamp or refuse the frame (a display no
+ * longer attached), and only the observed rectangle or TCC refusal is reported.
  * @param {Number} pid
  * @param {Object} rect
- * @param {Object} [options] As {@link readSeatWindowRect}.
+ * @param {Object} [options] As {@link readSeatWindowRect}, plus optional `instanceHome` / `placeDevToolsFn`.
  * @returns {Promise<Object|null>} The observed rectangle after the move, `{refused: true, reason}`, or `null`.
  */
-export async function placeSeatWindow(pid, rect, {execFileFn = execFileAsync, platform = process.platform, timeoutMs = 3000} = {}) {
+export async function placeSeatWindow(pid, rect, {
+    execFileFn      = execFileAsync,
+    platform        = process.platform,
+    timeoutMs       = 3000,
+    instanceHome    = null,
+    placeDevToolsFn = placeDevToolsWindowRect
+} = {}) {
     if (platform !== 'darwin' || !isWindowRect(rect)) return null;
 
-    try {
-        await execFileFn('osascript', placeWindowRectArgs(pid, rect), {timeout: timeoutMs})
-    } catch (error) {
-        return assistiveAccessRefusal(error)
+    const placedByDevTools = instanceHome
+        ? await placeDevToolsFn(rect, {instanceHome, timeoutMs})
+        : false;
+
+    if (!placedByDevTools) {
+        try {
+            await execFileFn('osascript', placeWindowRectArgs(pid, rect), {timeout: timeoutMs})
+        } catch (error) {
+            return assistiveAccessRefusal(error)
+        }
     }
 
     return readSeatWindowRect(pid, {execFileFn, platform, timeoutMs})
