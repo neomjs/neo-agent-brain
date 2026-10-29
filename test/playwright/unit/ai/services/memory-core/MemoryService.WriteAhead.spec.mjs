@@ -134,6 +134,26 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         expect((await readPendingWalRecords({dir: testWalDir})).length).toBe(before);
     });
 
+    test('#1349: a durable save records its session for the transport close; a rejected payload records none', async () => {
+        const SessionService = (await import('../../../../../../ai/services/memory-core/SessionService.mjs')).default;
+
+        const rejected = await asTenant(() => MemoryService.addMemory({
+            prompt: '', thought: '   ', response: 'real', sessionId: 'session-1349-rejected'
+        }));
+
+        expect(rejected.code).toBe('MEMORY_VALIDATION_ERROR');
+        expect(SessionService.takeSessionWrite('session-1349-rejected')).toBe(false);
+
+        const saved = await asTenant(() => MemoryService.addMemory({
+            prompt: 'marker prompt', thought: 'marker thought', response: 'marker response', sessionId: 'session-1349-saved'
+        }));
+
+        expect(saved.error).toBeUndefined();
+        expect(SessionService.takeSessionWrite('session-1349-saved')).toBe(true);
+        // Taking forgets: a second close of the same transport queues nothing.
+        expect(SessionService.takeSessionWrite('session-1349-saved')).toBe(false);
+    });
+
     test('the response distinguishes ACCEPTED from QUERYABLE, and reports a measured backlog', async () => {
         // The disclosure the write path previously omitted. `message: "Memory successfully added"` was
         // true about acceptance and read as queryability, so an immediate read-back returning nothing

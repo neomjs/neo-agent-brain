@@ -24,6 +24,7 @@ test.describe('Neo.ai.services.knowledge-base.ChromaManager', () => {
     let originalCollectionPromise;
     let originalKnowledgeBaseCollection;
     let originalCollectionResolveRetrySleepFn;
+    let originalCollectionBootstrapped;
 
     test.beforeAll(async () => {
         aiConfig      = (await import('../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
@@ -33,6 +34,7 @@ test.describe('Neo.ai.services.knowledge-base.ChromaManager', () => {
         originalCollectionPromise       = ChromaManager._knowledgeBaseCollectionPromise;
         originalKnowledgeBaseCollection = ChromaManager.knowledgeBaseCollection;
         originalCollectionResolveRetrySleepFn = ChromaManager.collectionResolveRetrySleepFn;
+        originalCollectionBootstrapped  = ChromaManager.knowledgeBaseCollectionBootstrapped;
     });
 
     test.beforeEach(() => {
@@ -46,6 +48,8 @@ test.describe('Neo.ai.services.knowledge-base.ChromaManager', () => {
         ChromaManager._knowledgeBaseCollectionPromise = originalCollectionPromise;
         ChromaManager.knowledgeBaseCollection        = originalKnowledgeBaseCollection;
         ChromaManager.collectionResolveRetrySleepFn  = originalCollectionResolveRetrySleepFn;
+        // The bootstrap arms below set this singleton flag, and the KB export reads it
+        ChromaManager.knowledgeBaseCollectionBootstrapped = originalCollectionBootstrapped;
     });
 
     test('connect marks the manager connected when heartbeat succeeds', async () => {
@@ -107,9 +111,9 @@ test.describe('Neo.ai.services.knowledge-base.ChromaManager', () => {
      * @summary `knowledgeBaseCollectionBootstrapped` is written by the RESOLVER, so it is tested there.
      *
      * The receipt specs set this field directly and assert the downstream classifier, which proves
-     * the classifier and nothing about the production writer. @neo-gpt-emmy demonstrated the gap on
-     * PR #275 with a mutant: flipping the real create-path assignment from `true` to `false` left
-     * those suites 22/22 green. These arms drive `#resolveKnowledgeBaseCollection` through each of
+     * the classifier and nothing about the production writer: a mutant flipping the real create-path
+     * assignment from `true` to `false` left those suites 22/22 green. These arms drive
+     * `#resolveKnowledgeBaseCollection` through each of
      * its exits, so a disconnected writer reds here.
      *
      * The flag records WHICH resolution path ran, never why — a created collection is
@@ -180,9 +184,8 @@ test.describe('Neo.ai.services.knowledge-base.ChromaManager', () => {
         });
 
         test('a FAILING resolution resets provenance to `null` through the catch path', async () => {
-            // The tail of @neo-gpt-emmy's RA-2: invalidation is reachable two ways, and the explicit
-            // call is the easy one. This drives the other — `getKnowledgeBaseCollection`'s catch
-            // (`:231-234`) invalidating before it rethrows.
+            // Invalidation is reachable two ways, and the explicit call is the easy one. This drives
+            // the other: `getKnowledgeBaseCollection`'s catch invalidating before it rethrows.
             //
             // Provenance is pre-seeded NON-NULL on purpose. The resolver sets `false` on entry, so a
             // failed resolution ends null either way if the catch never ran; seeding `true` makes the
