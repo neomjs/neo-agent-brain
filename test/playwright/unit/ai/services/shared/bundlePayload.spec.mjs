@@ -95,8 +95,8 @@ test.describe('ai/services/shared/bundlePayload — one encoding decision for ev
         });
     }
 
-    // JSON.stringify leaves U+2028 and U+2029 raw, and readline breaks a line at both: one record
-    // read as two, so the backup's row-count parity failed and a restore would split the row (#1377).
+    // JSON.stringify leaves U+2028 and U+2029 raw, and readline breaks a line at both: unescaped, one
+    // record reads as two, failing the backup's row-count parity and splitting the row on restore.
     // Built by code point so this file never holds the raw, invisible characters.
     const LS = String.fromCodePoint(0x2028),
           PS = String.fromCodePoint(0x2029);

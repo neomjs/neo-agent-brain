@@ -186,11 +186,10 @@ function decodeThrough(filePath, decompressor) {
  * @summary Hands readline a decoded payload in which U+2028 and U+2029 arrive as their JSON escapes.
  *
  * `JSON.stringify` leaves both characters raw, which is valid JSON, and readline breaks a line at
- * each of them, so a record holding one read as two: the backup's row-count parity failed on every
- * run while such a record existed, and a restore would have split it into unparseable halves
- * (#1377). In a JSONL line the characters can only sit inside a string, where the escape parses to
- * the same value, so no record changes. The streaming decoder keeps a character whose bytes
- * straddle two decompressor chunks whole. Errors and teardown follow {@link decodeThrough}.
+ * each of them: unescaped, a record holding one reads as two, its bundle fails row-count parity and
+ * a restore splits it into unparseable halves. In a JSONL line the characters can only sit inside
+ * a string, where the escape parses to the same value. The streaming decoder keeps a character
+ * whose bytes straddle two decompressor chunks whole; errors and teardown follow {@link decodeThrough}.
  * @param {import('stream').Readable} input A stream from {@link createBundlePayloadReadStream}.
  * @returns {import('stream').Transform}
  */
