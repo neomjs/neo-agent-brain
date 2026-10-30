@@ -150,7 +150,7 @@ test.describe('Antigravity profile MCP carrier', () => {
             const seats = ['alpha', 'beta'].map(identity => {
                 const generation = path.join(root, identity), profileHome = path.join(root, `${identity}-profile`);
                 for (const relative of ['ai/mcp/client/fleetMcpLauncher.mjs', 'ai/services/fleet/mcpLaunchAdmission.mjs',
-                    'src/fleet/contract/launchAdmission.mjs']) {
+                    'ai/services/shared/isEntryModule.mjs', 'src/fleet/contract/launchAdmission.mjs']) {
                     const target = path.join(generation, relative);
                     fs.mkdirSync(path.dirname(target), {recursive: true});
                     fs.copyFileSync(fileURLToPath(new URL(`../../../../../../${relative}`, import.meta.url)), target);
