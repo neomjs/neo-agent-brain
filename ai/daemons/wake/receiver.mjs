@@ -15,11 +15,11 @@ import net     from 'node:net';
 import path    from 'node:path';
 import {watch} from 'node:fs';
 
-import {WakeReceiverState}                      from './receiverState.mjs';
-import {createReceiverLiveness}                 from './receiverLiveness.mjs';
-import {evaluateContextGate}                    from './contextGatePolicy.mjs';
-import {dispatchLocalWake, probeSessionContext} from './localWakeAdapters.mjs';
-import {isEntryModule}                          from '../../services/shared/isEntryModule.mjs';
+import {WakeReceiverState}                            from './receiverState.mjs';
+import {createReceiverLiveness}                       from './receiverLiveness.mjs';
+import {evaluateContextGate, isHeartbeatOnlyEnvelope} from './contextGatePolicy.mjs';
+import {dispatchLocalWake, probeSessionContext}       from './localWakeAdapters.mjs';
+import {isEntryModule}                                from '../../services/shared/isEntryModule.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
 
@@ -138,6 +138,12 @@ export async function loadWakeReceiverManifest(manifestPath) {
                 throw new Error(
                     `Wake receiver route '${subscriptionId}' has an invalid adapterConfig.contextGate ` +
                     `(requires positive integers with warnContextTokens <= maxContextTokens)`
+                );
+            }
+            if (gate.activeWithinMs !== undefined && (!Number.isInteger(gate.activeWithinMs) || gate.activeWithinMs <= 0)) {
+                throw new Error(
+                    `Wake receiver route '${subscriptionId}' has an invalid adapterConfig.contextGate.activeWithinMs ` +
+                    `(requires a positive integer when present)`
                 );
             }
         }
@@ -319,8 +325,28 @@ export function createWakeReceiver({
                     const gate  = evaluateContextGate({
                         probe,
                         maxContextTokens : gateConfig.maxContextTokens,
-                        warnContextTokens: gateConfig.warnContextTokens
+                        warnContextTokens: gateConfig.warnContextTokens,
+                        activeWithinMs   : gateConfig.activeWithinMs,
+                        heartbeatOnly    : isHeartbeatOnlyEnvelope(dispatching.envelope)
                     });
+
+                    // The active-session skip: a heartbeat-only wake exists to end an idle stretch, and
+                    // a probe that shows the session working says there is none to end. Terminal, not
+                    // deferred — a nudge parked until the seat goes quiet would land on a seat that
+                    // already moved; the detector raises a fresh one when the next stretch comes.
+                    if (gate.action === 'skip') {
+                        await watched.transition(record.recordKey, 'dispatching', 'skipped', {
+                            outcomeReason      : `context-gate:${gate.gateOutcome}`,
+                            lastGateOutcome    : gate.gateOutcome,
+                            probedContextTokens: gate.contextTokens,
+                            dispatchFinishedAt : new Date().toISOString()
+                        });
+                        logger.log?.(
+                            `[Wake Receiver] context gate SKIPPED ${record.subscriptionId}: heartbeat-only wake, ` +
+                            `session active ${gate.activeAgoMs} ms ago (within ${gateConfig.activeWithinMs} ms); no idle stretch to end`
+                        );
+                        continue;
+                    }
 
                     if (gate.action === 'defer') {
                         const deferCount = (dispatching.deferCount || 0) + 1;

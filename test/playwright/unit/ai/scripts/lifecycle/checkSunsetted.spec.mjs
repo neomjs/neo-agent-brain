@@ -289,7 +289,54 @@ test.describe('ai/scripts/checkSunsetted', () => {
             expect(parsed.evidence.subscription_active).toBe(true);
             expect(parsed.evidence.subscription_status).toBe('active');
             expect(parsed.evidence.last_memory_age_min).toBeGreaterThan(10);  // 24h >> 10min threshold
+            expect(parsed.evidence.last_activity_source).toBe('memory');
+            expect(parsed.evidence.last_activity_age_min).toBe(parsed.evidence.last_memory_age_min);
             expect(parsed.recommended_action).toBe('idle_out_nudge');
+        } finally {
+            scenario.cleanup();
+        }
+    });
+
+    test('detector contract: a turn-presence beacon younger than the threshold suppresses the candidate the memory age alone would raise', async () => {
+        test.skip(skipCiSubstrateData, 'CI-skip: substrate data not seeded - bucket C (#10903)');
+
+        // A seat deep in a long tool loop saves no memory until the turn ends; its presence hook
+        // stamps every tool call. The detector keys on the newest of memory, presence and outbound
+        // message, so the 24h-old memory is not the whole story.
+        const testIdentity = '@neo-presence-fresh-test';
+        const scenario     = await createGraphScenario();
+        const staleMemory  = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const turnStart    = new Date(Date.now() - 12 * 60 * 1000).toISOString();
+        const lastProgress = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+
+        const insertStmt = scenario.db.prepare(`INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`);
+        insertStmt.run('presence-fresh-memory', testIdentity, JSON.stringify({
+            id        : 'presence-fresh-memory', label: 'AGENT_MEMORY', type: 'AGENT_MEMORY',
+            properties: {userId: testIdentity, agentIdentity: testIdentity, timestamp: staleMemory, sessionId: '22222222-2222-2222-2222-222222222222', name: `Memory: ${staleMemory}`}
+        }));
+        insertStmt.run('presence-fresh-sub', testIdentity, JSON.stringify({
+            id        : 'presence-fresh-sub', label: 'WAKE_SUBSCRIPTION', type: 'WAKE_SUBSCRIPTION',
+            properties: {agentIdentity: testIdentity, harnessTarget: 'claude-desktop', status: 'active'}
+        }));
+        insertStmt.run('presence-fresh-turn', testIdentity, JSON.stringify({
+            id        : 'presence-fresh-turn', label: 'AGENT_TURN_PRESENCE', type: 'AGENT_TURN_PRESENCE',
+            properties: {agentIdentity: testIdentity, turnId: 'turn-fresh', startedAt: turnStart, lastProgressAt: lastProgress, status: 'active'}
+        }));
+
+        try {
+            const scriptPath = path.resolve(process.cwd(), 'ai/scripts/lifecycle/checkSunsetted.mjs');
+            const output     = execFileSync('node', [scriptPath, testIdentity], {encoding: 'utf-8', env: scenario.env});
+            const parsed     = JSON.parse(output);
+
+            expect(parsed.sunset).toBe(false);
+            expect(parsed.idle_out_candidate).toBe(false);
+            expect(parsed.recommended_action).toBe('no_action');
+            expect(parsed.evidence.last_memory_age_min).toBeGreaterThan(1000);
+            expect(parsed.evidence.last_activity_source).toBe('turn-presence');
+            expect(parsed.evidence.last_activity_at).toBe(lastProgress);
+            expect(parsed.evidence.last_activity_age_min).toBeLessThan(5);
+            // The origin session still comes from the memory half.
+            expect(parsed.originSessionId).toBe('22222222-2222-2222-2222-222222222222');
         } finally {
             scenario.cleanup();
         }

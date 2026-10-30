@@ -120,12 +120,12 @@ test.describe('ai/scripts/idleOutNudge', () => {
         // Per the dispatcher invariants (preserved across Sub-iii Shape A → Shape B refactor),
         // the dispatcher MUST communicate:
         // - Why the nudge fires (idle threshold from checkSunsetted.mjs)
-        // - That no action is needed if mid-turn / rate-limited (lock memory-resolved release)
+        // - That no action is needed if mid-turn / rate-limited (lock activity-resolved release)
         // - Bounded / non-spawning / no-inbox-surfacing framing
         const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
 
         expect(scriptContent).toContain('idle threshold');
-        expect(scriptContent).toContain('memory-resolved');
+        expect(scriptContent).toContain('activity-resolved');
         expect(scriptContent).toContain('non-spawning');
         // The dispatcher consumes the inflightLock primitive
         expect(scriptContent).toContain('writeInflightLock');
@@ -181,16 +181,18 @@ test.describe('ai/scripts/idleOutNudge', () => {
         expect(scriptContent).not.toContain('NUDGE_BODY_TEMPLATE');
     });
 
-    test('Static script: emits machine-readable idle-out cycle-state in the pulse id (#12612)', async () => {
-        // Shape B pulses carry no body; the cycle-state (reason + next-action) rides the pulse id
-        // as `idle-out-nudge.<base64url-JSON>` so the wake digest surfaces the next lifecycle step
-        // instead of an opaque "N heartbeat pulses". The encoded summary is passed as the pulseId.
+    test('Static script: the pulse id carries the seat-specific summary built from its last known activity and lane state (#12612 → #1380)', async () => {
+        // Shape B pulses carry no body; the content rides the pulse id as `idle-out-nudge.<base64url-JSON>`.
+        // The dispatcher reads the seat's last known activity and its newest lane-state line and hands
+        // both to the summary builder; the encoded summary is passed as the pulseId.
         const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
 
-        expect(scriptContent).toContain('idle-out-nudge.');
-        expect(scriptContent).toContain('nextAction');
-        expect(scriptContent).toContain("toString('base64url')");
+        expect(scriptContent).toContain('readLastKnownActivity(db, identity)');
+        expect(scriptContent).toContain('readLastLaneStateLine(db, identity)');
+        expect(scriptContent).toContain('buildIdleOutPulseId({');
         expect(scriptContent).toContain('emitHeartbeatPulse({targetIdentity: identity, pulseId})');
+        // The pulse content has one home; the script holds no inline encoding of its own.
+        expect(scriptContent).not.toContain("toString('base64url')");
     });
 
     // Note: the former `swarm-heartbeat.sh integration` test was removed with

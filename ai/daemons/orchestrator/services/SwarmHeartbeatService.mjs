@@ -336,7 +336,13 @@ class SwarmHeartbeatService extends Base {
      *   3. Sunset detection via `checkSunsetted.mjs` direct export.
      *      - sunset=true + gate-open → fresh-session-spawn via `resumeHarness.mjs` direct export.
      *      - sunset=true + gate-closed → log + skip (no spawn).
-     *      - recommended_action=idle_out_nudge + gate-open → `idleOutNudge.mjs`.
+     *      - recommended_action=idle_out_nudge + gate-open + ready → `idleOutNudge.mjs`. The
+     *        idle-out nudge IS the heartbeat: the detector flags a seat once per idle stretch,
+     *        thirty minutes after its last known activity, and `WakeDecisionService.decideReady`
+     *        holds it back while a `[wake-readiness]` sentinel or a backoff window blocks the seat
+     *        (no lock is written, so the next scan asks again). There is no cadence emitter: a
+     *        pulse on every tick to every A2A-quiet seat woke seats mid-work, which is the flood
+     *        that kept the lane off.
      *      - runs for the primary identity plus every active WAKE_SUBSCRIPTION
      *        identity, so Codex/Claude/Gemini routes are monitored by subscription
      *        reality rather than by the Orchestrator process owner's env var.
@@ -347,16 +353,6 @@ class SwarmHeartbeatService extends Base {
      *      are deduped by GitHub notification id and emitted once through the
      *      same Shape B heartbeat-pulse transport. Non-GitHub deployments log and
      *      no-op.
-     *   6. Per-identity 3-signal-decision-gated heartbeat-pulse emit. For each
-     *      identity in `pulseIdentities`, query A2A activity
-     *      timestamps + readiness sentinels + orchestrator-local backoff window,
-     *      compose via `WakeDecisionService.decideWake({active, idle, ready})`, and
-     *      emit a Shape B `WakeSubscriptionService.emitHeartbeatPulse({targetIdentity})`
-     *      iff the decision is `wake: true`. Bridge-daemon dispatches via its existing
-     *      adapter set (osascript / codex-app-server / antigravity-cli / claude-cli).
-     *      Replaces old steps 5/6/7 (push-capability bypass + token-economy gate +
-     *      tmux-inject) which conflated three concerns and silently no-op'd for
-     *      non-tmux harnesses.
      *
      * No try/finally: the Orchestrator lane executor wraps this call in its own
      * try/catch, so a single-pulse failure is isolated by the scheduler — it does not
@@ -417,6 +413,20 @@ class SwarmHeartbeatService extends Base {
                     logger.warn(`[SwarmHeartbeatService] Wake safety gate closed; skipping idle-out nudge for ${identity}. Gate reason: ${gateState.reason}`);
                     continue
                 }
+
+                // Readiness gates the nudge: a seat under a blocking `[wake-readiness]` sentinel or an
+                // active backoff window is not nudged, and no lock is written, so the next scan asks again.
+                const now       = Date.now();
+                const readiness = WakeDecisionService.decideReady({
+                    currentTimeMs          : now,
+                    activeReadinessSentinel: WakeDecisionService.parseActiveReadinessSentinels(await this.getReadinessSentinelMessages(identity), now),
+                    activeBackoffWindow    : this.getActiveBackoffWindow(identity, now)
+                });
+                if (!readiness.ready) {
+                    logger.info(`[SwarmHeartbeatService] Skip idle-out nudge for ${identity}: ${readiness.reason}`);
+                    continue
+                }
+
                 logger.info(`[SwarmHeartbeatService] Idle-out nudge triggered for ${identity}`);
                 await this.idleOutNudge(identity)
             }
@@ -439,36 +449,6 @@ class SwarmHeartbeatService extends Base {
         // source is gated by repo remote and deduped by GitHub notification id;
         // it never mutates GitHub's own notification read/unread state.
         await this.emitGitHubNotificationWakes(pulseIdentities);
-
-        // Step 6: Per-identity 3-signal-decision-gated heartbeat-pulse emit.
-        // Replaces old push-capability bypass + token-economy gate + tmux-inject
-        // with a unified Shape B emit path.
-        // Wake = active AND idle AND ready (per WakeDecisionService.decideWake).
-        const now = Date.now();
-        for (const identity of pulseIdentities) {
-            const recentActivityTimestamps = await this.getRecentActivityTimestamps(identity, now);
-            const sentinelMessages         = await this.getReadinessSentinelMessages(identity);
-            const activeReadinessSentinel  = WakeDecisionService.parseActiveReadinessSentinels(sentinelMessages, now);
-            const activeBackoffWindow      = this.getActiveBackoffWindow(identity, now);
-
-            const decision = WakeDecisionService.decideWake({
-                identity,
-                currentTimeMs: now,
-                recentActivityTimestamps,
-                activeReadinessSentinel,
-                activeBackoffWindow
-            });
-
-            if (decision.wake) {
-                try {
-                    await WakeSubscriptionService.emitHeartbeatPulse({targetIdentity: identity});
-                } catch (err) {
-                    logger.error(`[SwarmHeartbeatService] Failed to emit heartbeat pulse for ${identity}: ${err.message}`);
-                }
-            } else {
-                logger.debug(`[SwarmHeartbeatService] Skip pulse for ${identity}: ${decision.reason}`);
-            }
-        }
     }
 
     /**
@@ -717,8 +697,8 @@ class SwarmHeartbeatService extends Base {
      *
      * Per-MC-instance derived candidate-discovery — no team-registry coupling. External
      * workspaces only ever see their own MC's A2A activity, so default fan-out is
-     * tenant-safe. Implements the activity-derived discovery side of the 3-signal
-     * model — sibling to per-identity `getRecentActivityTimestamps`.
+     * tenant-safe. Candidate discovery only: whether a candidate is idle is the
+     * detector's verdict (`checkSunsetted.mjs` over the seat's last known activity).
      *
      * **3-branch UNION mirrors mailbox semantics:**
      * - `SENT_TO` → direct-message recipients (`AGENT:*` sentinel excluded — broadcasts don't
@@ -1144,53 +1124,12 @@ class SwarmHeartbeatService extends Base {
     }
 
     /**
-     * Query A2A graph for recent message-activity timestamps adjacent to the identity.
-     *
-     * Activity-signal input for `WakeDecisionService.decideWake`. Returns millisecond
-     * timestamps of any A2A activity (sent OR received) by this identity within the
-     * last 3h, archived-excluded.
-     *
-     * `MailboxService.listMessages()` is caller-identity-scoped: it reads
-     * `RequestContextService.getAgentIdentityNodeId()` at entry and throws if
-     * no identity is bound. The orchestrator daemon owns no implicit identity,
-     * so we explicitly bind to the polled identity (the box owner) for the
-     * duration of the query — semantically clean (it's their outbox + inbox)
-     * and matches the precedent in `idleOutNudge.mjs` + `KbAlertingService.mjs`.
-     *
-     * @param {String} identity Target agent identity.
-     * @param {Number} currentTimeMs Current time (cutoff anchor).
-     * @returns {Promise<Number[]>} Activity timestamps in milliseconds.
-     * @protected
-     */
-    async getRecentActivityTimestamps(identity, currentTimeMs) {
-        const cutoffMs = currentTimeMs - 3 * 60 * 60 * 1000;
-        try {
-            return await RequestContextService.run({agentIdentityNodeId: identity}, async () => {
-                const sentResult     = await MailboxService.listMessages({box: 'outbox', fromIdentity: identity, limit: 100, includeArchived: false});
-                const receivedResult = await MailboxService.listMessages({box: 'inbox',  to: identity,           limit: 100, includeArchived: false});
-
-                const messages = [
-                    ...(sentResult?.messages || []),
-                    ...(receivedResult?.messages || [])
-                ];
-
-                return messages
-                    .map(m => Date.parse(m.sentAt || ''))
-                    .filter(ts => Number.isFinite(ts) && ts >= cutoffMs);
-            });
-        } catch (err) {
-            logger.error(`[SwarmHeartbeatService] getRecentActivityTimestamps failed for ${identity}: ${err.message}`);
-            return [];
-        }
-    }
-
-    /**
      * Query for `[wake-readiness]` sentinel messages addressed to this identity.
      * Filtered server-side by `taggedConcepts: ['wake-readiness']` so the parser
      * runs over the narrow candidate set only.
      *
-     * Same `RequestContextService.run` binding rationale as
-     * `getRecentActivityTimestamps`. Returns `listMessages` summary objects
+     * `MailboxService.listMessages()` is caller-identity-scoped, so the polled identity
+     * (the box owner) is bound for the query. Returns `listMessages` summary objects
      * (shape: `{messageId, task, sentAt, ...}`) — `WakeDecisionService.parseReadinessSentinel`
      * accepts the summary shape directly (no per-message adapter needed).
      *

@@ -2088,14 +2088,18 @@ class ConfigBase extends ConfigProvider {
                      */
                     targets: leaf(null, 'NEO_ORCHESTRATOR_SWARM_HEARTBEAT_TARGETS', 'string'),
                     /**
-                     * Idle-out threshold (ms): a `WAKE_SUBSCRIPTION`-active agent whose latest
-                     * `AGENT_MEMORY` is older than this is an `idle_out_candidate` for the bounded
-                     * in-place heartbeat nudge. Read at the use site by the lifecycle detectors
+                     * Idle threshold (ms): a `WAKE_SUBSCRIPTION`-active agent whose last known
+                     * activity — the newest of its memory, its turn-presence beacon and its outbound
+                     * message (`lastKnownActivity.mjs`) — is older than this is an `idle_out_candidate`
+                     * for the once-per-stretch in-place heartbeat nudge. Thirty minutes is the provider
+                     * prompt-cache's half-life: with the twenty-minute scan the nudge lands between
+                     * thirty and fifty minutes after the last activity, inside the hour a cold cache
+                     * would otherwise end. Read at the use site by the lifecycle detectors
                      * (`checkSunsetted.mjs`, `checkAllAgentIdle.mjs`). Bound to the
                      * `NEO_IDLE_THRESHOLD_MS` env name (NEO_ prefix convention).
                      * @type {Number}
                      */
-                    idleThresholdMs: leaf(10 * 60 * 1000, 'NEO_IDLE_THRESHOLD_MS', 'number'),
+                    idleThresholdMs: leaf(30 * 60 * 1000, 'NEO_IDLE_THRESHOLD_MS', 'number'),
                     /**
                      * Swarm wake cooldown TTL (seconds): minimum gap between swarm-wide
                      * all-agent-idle WAKE dispatches, enforced by `swarmWakeCooldown.mjs` to keep
@@ -2216,13 +2220,14 @@ class ConfigBase extends ConfigProvider {
                     // messageWal.inProcessDrain host mode instead.
                     messageDaemonEnabled           : leaf(null, 'NEO_ORCHESTRATOR_MESSAGE_DAEMON_ENABLED', 'boolean'),
                     goldenPathRepoEnrichmentEnabled: leaf(null, 'NEO_ORCHESTRATOR_GOLDEN_PATH_REPO_ENRICHMENT_ENABLED', 'boolean'),
-                    // Swarm-heartbeat lane: emits wake-substrate pulses + heartbeat-driven idle/swarm
-                    // wakes (`WakeDecisionService.decideWake` runs INSIDE `SwarmHeartbeatService.pulse()`).
-                    // Defaults OFF: the lane-state Stop hook covers turn continuation, so these pulses
-                    // are redundant duplicate-flood at multi-peer scale. Substrate maintenance
-                    // (GraphLog compaction, integrity sweep, embed/message daemons) runs via its own
-                    // separate task toggles and is unaffected. Set `true` (or
-                    // `NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED=true`) to restore.
+                    // Swarm-heartbeat lane: the idle-out nudge (once per idle stretch, thirty minutes after
+                    // a seat's last known activity, carrying the seat's own last lane-state line) plus the
+                    // sunset / all-idle recovery dispatch and the GitHub-notification wake. Defaults OFF:
+                    // turning the lane on is a deployment input of the host-edge posture
+                    // (`src/composition/orchestrator/hostEdgeProfile.mjs`), not a code default. Substrate
+                    // maintenance (GraphLog compaction, integrity sweep, embed/message daemons) runs via
+                    // its own separate task toggles and is unaffected. Set `true` (or
+                    // `NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED=true`) to run it.
                     swarmHeartbeatEnabled          : leaf(false, 'NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED', 'boolean')
                 },
                 /**

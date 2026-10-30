@@ -55,6 +55,7 @@ import path   from 'node:path';
 import {loadWakeReceiverManifest} from './receiver.mjs';
 import {withOutboxLock}           from './outboxLock.mjs';
 import {
+    DEFAULT_CONTEXT_GATE_ACTIVE_WITHIN_MS,
     DEFAULT_CONTEXT_GATE_MAX_TOKENS,
     DEFAULT_CONTEXT_GATE_WARN_TOKENS
 } from './contextGatePolicy.mjs';
@@ -79,12 +80,14 @@ export const DEFAULT_ATTEMPT_TIMEOUT_MS = 10000;
  * declares no gate defaults of its own — every route states its policy, mirroring
  * `attemptTimeoutMs`; a legacy route carried forward without `contextGate` simply delivers
  * ungated until its identity's routes are rebuilt. Per-route overrides arrive through the
- * `--adapter-config` map's `contextGate` key and are merged over these defaults.
+ * `--adapter-config` map's `contextGate` key and are merged over these defaults. `activeWithinMs`
+ * is the heartbeat-only active-session skip's window (the idle threshold the detector nudges at).
  * @type {Object}
  */
 export const DEFAULT_CONTEXT_GATE = Object.freeze({
     maxContextTokens : DEFAULT_CONTEXT_GATE_MAX_TOKENS,
-    warnContextTokens: DEFAULT_CONTEXT_GATE_WARN_TOKENS
+    warnContextTokens: DEFAULT_CONTEXT_GATE_WARN_TOKENS,
+    activeWithinMs   : DEFAULT_CONTEXT_GATE_ACTIVE_WITHIN_MS
 });
 
 /**

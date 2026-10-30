@@ -208,7 +208,7 @@ export async function resolveTargets({
         case 'active-a2a-participants': {
             // Activity-derived candidate discovery:
             // pulse candidate set is auto-discovered from A2A graph activity within the
-            // 3h `active` window (`getRecentActivityTimestamps` per-identity sibling).
+            // 3h `active` window (`SwarmHeartbeatService.getActiveA2aParticipants`).
             // Per-MC-instance derived; no team-registry coupling (safe for external
             // workspaces — they only ever see their own activity).
             if (typeof activeA2aParticipantsProvider !== 'function') {

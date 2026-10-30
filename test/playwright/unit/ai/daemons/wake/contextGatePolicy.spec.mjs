@@ -1,8 +1,10 @@
 import {test, expect} from '@playwright/test';
 import {
+    DEFAULT_CONTEXT_GATE_ACTIVE_WITHIN_MS,
     DEFAULT_CONTEXT_GATE_MAX_TOKENS,
     DEFAULT_CONTEXT_GATE_WARN_TOKENS,
-    evaluateContextGate
+    evaluateContextGate,
+    isHeartbeatOnlyEnvelope
 } from '../../../../../../ai/daemons/wake/contextGatePolicy.mjs';
 
 test.describe('ai/daemons/wake/contextGatePolicy (#16682 budget-cliff guard)', () => {
@@ -63,6 +65,63 @@ test.describe('ai/daemons/wake/contextGatePolicy (#16682 budget-cliff guard)', (
             const ancient = {contextTokens: 700_000, lastActivityAt: 1, sessionId: 'ses_old'};
 
             expect(evaluateContextGate({probe: ancient, ...limits}).action).toBe('defer');
+        });
+    });
+
+    test.describe('the active-session skip (heartbeat-only wakes)', () => {
+        const NOW      = Date.parse('2026-10-30T20:00:00.000Z');
+        const MIN      = 60 * 1000;
+        const skipOpts = {...limits, heartbeatOnly: true, activeWithinMs: DEFAULT_CONTEXT_GATE_ACTIVE_WITHIN_MS, now: NOW};
+        const active   = agoMs => ({contextTokens: 80_000, lastActivityAt: NOW - agoMs, sessionId: 'ses_active'});
+
+        test('the default window equals the idle threshold the detector nudges at', () => {
+            expect(DEFAULT_CONTEXT_GATE_ACTIVE_WITHIN_MS).toBe(30 * MIN);
+        });
+
+        test('a heartbeat-only wake into a session active inside the window is skipped, not deferred', () => {
+            expect(evaluateContextGate({probe: active(5 * MIN), ...skipOpts})).toEqual({
+                action: 'skip', gateOutcome: 'active-session', contextTokens: 80_000, activeAgoMs: 5 * MIN
+            });
+        });
+
+        test('an active session over the gate is still skipped: there is no idle stretch to end later', () => {
+            const probe = {contextTokens: 700_000, lastActivityAt: NOW - 2 * MIN, sessionId: 'ses_busy'};
+
+            expect(evaluateContextGate({probe, ...skipOpts}).action).toBe('skip');
+        });
+
+        test('a session quiet for the whole window delivers (or defers by size) as before', () => {
+            expect(evaluateContextGate({probe: active(30 * MIN), ...skipOpts})).toMatchObject({action: 'deliver', gateOutcome: 'within'});
+            expect(evaluateContextGate({probe: active(45 * MIN), ...skipOpts})).toMatchObject({action: 'deliver', gateOutcome: 'within'});
+        });
+
+        test('a wake that carries content is never skipped, whatever the activity', () => {
+            expect(evaluateContextGate({probe: active(1 * MIN), ...skipOpts, heartbeatOnly: false})).toMatchObject({action: 'deliver'});
+        });
+
+        test('no window, an unknown probe, or a probe without an activity stamp disables the skip', () => {
+            expect(evaluateContextGate({probe: active(1 * MIN), ...skipOpts, activeWithinMs: null})).toMatchObject({action: 'deliver'});
+            expect(evaluateContextGate({probe: active(1 * MIN), ...skipOpts, activeWithinMs: 0})).toMatchObject({action: 'deliver'});
+            expect(evaluateContextGate({probe: null, ...skipOpts})).toEqual({action: 'deliver', gateOutcome: 'unknown', contextTokens: null});
+            expect(evaluateContextGate({probe: {contextTokens: 80_000, lastActivityAt: null}, ...skipOpts})).toMatchObject({action: 'deliver', gateOutcome: 'within'});
+        });
+    });
+
+    test.describe('isHeartbeatOnlyEnvelope', () => {
+        const envelope = breakdown => ({payload: {totalEvents: 1, breakdown}});
+
+        test('true for a digest of heartbeat pulses alone', () => {
+            expect(isHeartbeatOnlyEnvelope(envelope({heartbeat_pulse: {count: 2, latest: {pulseId: 'idle-out-nudge.x'}}}))).toBe(true);
+            expect(isHeartbeatOnlyEnvelope(envelope({heartbeat_pulse: {count: 1}, sent_to_me: {count: 0}, task_state_changed: {count: 0}, permission_granted: {count: 0}}))).toBe(true);
+        });
+
+        test('false once any content event rides along, and for envelopes without a breakdown', () => {
+            expect(isHeartbeatOnlyEnvelope(envelope({heartbeat_pulse: {count: 1}, sent_to_me: {count: 1}}))).toBe(false);
+            expect(isHeartbeatOnlyEnvelope(envelope({heartbeat_pulse: {count: 1}, task_state_changed: {count: 1}}))).toBe(false);
+            expect(isHeartbeatOnlyEnvelope(envelope({heartbeat_pulse: {count: 1}, permission_granted: {count: 1}}))).toBe(false);
+            expect(isHeartbeatOnlyEnvelope(envelope({sent_to_me: {count: 1}}))).toBe(false);
+            expect(isHeartbeatOnlyEnvelope({payload: {}})).toBe(false);
+            expect(isHeartbeatOnlyEnvelope(null)).toBe(false);
         });
     });
 });

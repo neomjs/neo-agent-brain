@@ -100,6 +100,33 @@ export class WakeDecisionService extends Base {
     }
 
     /**
+     * @summary The `ready` half of the wake decision on its own: a blocking `[wake-readiness]`
+     * sentinel or an active backoff window says the seat asked not to be woken, whatever the clock
+     * says. The idle-out nudge routing consults this directly — its idle verdict comes from the
+     * detector's activity read, not from message timestamps — and `decideWake` composes it.
+     *
+     * @param {Object} input
+     * @param {Number} input.currentTimeMs Current time (caller-supplied to keep pure-function determinism).
+     * @param {Object|null} [input.activeReadinessSentinel=null] Active `[wake-readiness]` sentinel: `{ready, reason, expiresAtMs}` or `null`.
+     * @param {Object|null} [input.activeBackoffWindow=null] Active backoff window: `{expiresAtMs, reason}` or `null`.
+     * @returns {{ready: Boolean, reason: String}}
+     */
+    static decideReady({currentTimeMs, activeReadinessSentinel = null, activeBackoffWindow = null} = {}) {
+        const sentinelBlocks = activeReadinessSentinel?.ready === false &&
+                               activeReadinessSentinel?.expiresAtMs > currentTimeMs;
+        const backoffBlocks = activeBackoffWindow?.expiresAtMs > currentTimeMs;
+
+        if (sentinelBlocks) {
+            return {ready: false, reason: `not-ready (readiness sentinel: ${activeReadinessSentinel.reason || 'no reason given'})`};
+        }
+        if (backoffBlocks) {
+            return {ready: false, reason: `not-ready (backoff window active: ${activeBackoffWindow.reason || 'no reason given'})`};
+        }
+
+        return {ready: true, reason: 'ready'};
+    }
+
+    /**
      * Pure decision function — `Wake = active AND idle AND ready`.
      *
      * Each signal is independently necessary; dropping any one yields a known
@@ -143,18 +170,12 @@ export class WakeDecisionService extends Base {
             };
         }
 
-        const sentinelBlocks = activeReadinessSentinel?.ready === false &&
-                               activeReadinessSentinel?.expiresAtMs > currentTimeMs;
-        const backoffBlocks = activeBackoffWindow?.expiresAtMs > currentTimeMs;
-        const ready         = !sentinelBlocks && !backoffBlocks;
+        const readiness = WakeDecisionService.decideReady({currentTimeMs, activeReadinessSentinel, activeBackoffWindow});
 
-        if (!ready) {
-            const reason = sentinelBlocks
-                ? `not-ready (readiness sentinel: ${activeReadinessSentinel.reason || 'no reason given'})`
-                : `not-ready (backoff window active: ${activeBackoffWindow.reason || 'no reason given'})`;
+        if (!readiness.ready) {
             return {
                 wake   : false,
-                reason,
+                reason : readiness.reason,
                 signals: {active: true, idle: true, ready: false}
             };
         }

@@ -12,17 +12,16 @@
  *
  * **Distinct from `swarmWakeCooldown.mjs`:** the swarm cooldown fires when ALL configured agents
  * idle simultaneously (swarm-wide signal); this dispatcher fires per-identity
- * when one specific agent's `AGENT_MEMORY` exceeds the idle threshold while
- * the swarm is otherwise active. Both reuse the `idle_out_nudge` lock mode from
- * `inflightLock.mjs` but operate independently — one identity going
- * idle is not a swarm-wide event.
+ * when one specific agent's last known activity (memory, turn-presence beacon or
+ * outbound message) exceeds the idle threshold while the swarm is otherwise active.
+ * Both reuse the `idle_out_nudge` lock mode from `inflightLock.mjs` but operate
+ * independently — one identity going idle is not a swarm-wide event.
  *
  * **Invariants:**
  *
- * - **Bounded:** the in-flight `idle_out_nudge` lock prevents re-fire within
- *   `BOOT_TIMEOUT_MS` (default 15 min, per `inflightLock.mjs`). One nudge per
- *   identity per window — no spam during long deep-thinking turns or rate-limit
- *   throttle.
+ * - **Bounded:** the in-flight `idle_out_nudge` lock holds until the seat shows
+ *   activity again, so one idle stretch gets one nudge — no spam during long
+ *   deep-thinking turns, rate-limit throttle, or a window nobody will reopen.
  * - **non-spawning:** uses the bridge-daemon dispatch path via Shape B pulse.
  *   The recipient sees the pulse as a `[WAKE]` block whose digest line reads
  *   "N heartbeat pulses". No durable mailbox message, no transcript pollution.
@@ -38,14 +37,18 @@
  *
  * **Lock release path:** the lock is NOT cleared on dispatcher success — it
  * stays held until `checkInflightLock` (called by `checkSunsetted.mjs` on the
- * next heartbeat cycle) detects a fresh `AGENT_MEMORY` post-lock-acquire and
- * clears it. This is the memory-resolved release path owned by
- * `inflightLock.mjs`. If the recipient never saves a memory (rejection,
- * sustained rate-limit), the lock ages out at `BOOT_TIMEOUT_MS` and is
- * cleared as "abandoned" — `MAX_ABANDONED_ACTIONS` triggers the wake safety
- * gate auto-trip.
+ * next heartbeat cycle) sees activity newer than the lock — a memory, a presence
+ * beacon or an outbound message — and clears it. This is the activity-resolved
+ * release path owned by `inflightLock.mjs`; an `idle_out_nudge` lock never ages
+ * out, so a seat that does not answer is not nudged again until it does something.
+ *
+ * **Content:** the pulse carries the seat's newest `lane-state:` line, its idle
+ * minutes since the last known activity, the drain pointer and the sunset rule
+ * (`idleOutPulseSummary.mjs`), so the woken seat reads where it stood.
  *
  * @see ai/scripts/lifecycle/checkSunsetted.mjs    — detector emitting `recommended_action: 'idle_out_nudge'`
+ * @see ai/scripts/lifecycle/lastKnownActivity.mjs — the activity read the content quotes
+ * @see ai/scripts/lifecycle/idleOutPulseSummary.mjs — the pulse content and its encoding
  * @see ai/scripts/lifecycle/inflightLock.mjs      — `idle_out_nudge` lock mode
  * @see ai/daemons/SwarmHeartbeatService.mjs       — caller; routes on `recommended_action`
  * @see ai/services/memory-core/WakeSubscriptionService.mjs — `emitHeartbeatPulse` Shape B primitive
@@ -63,6 +66,8 @@ import RequestContextService                                     from '../../mcp
 import memoryCoreConfig                                          from '../../mcp/server/memory-core/config.mjs';
 import {hasOverride, readGateState}                              from './wakeSafetyGate.mjs';
 import {writeInflightLock, clearInflightLock, checkInflightLock} from './inflightLock.mjs';
+import {readLastKnownActivity}                                   from './lastKnownActivity.mjs';
+import {buildIdleOutPulseId, readLastLaneStateLine}              from './idleOutPulseSummary.mjs';
 import {isEntryModule}                                           from '../../services/shared/isEntryModule.mjs';
 
 /**
@@ -106,10 +111,10 @@ export async function idleOutNudge(identity, {wakeDaemonDir}={}) {
     //    layer-2 against the narrow detector-dispatcher race window where a lock could
     //    be acquired between detector-emit and dispatcher-execute.
     //
-    //    `latestMemoryTimestampMs: 0` parameter forces the lock-state check (we can't
-    //    cheaply re-query the latest memory here; the detector already did that work
-    //    upstream and would have downgraded if memory-resolved). Edge case: if a memory
-    //    landed between detector-emit and this check, we'd send an unnecessary nudge —
+    //    `latestActivityTimestampMs: 0` parameter forces the lock-state check (the detector
+    //    already read the seat's activity upstream and would have downgraded if the lock was
+    //    activity-resolved). Edge case: if activity landed between detector-emit and this
+    //    check, we'd send an unnecessary nudge —
     //    bounded harm given the lock immediately blocks the next cycle.
     const lockCheck = await checkInflightLock(identity, 'idle_out_nudge', 0, {wakeDaemonDir});
     if (lockCheck.inFlight) {
@@ -122,14 +127,17 @@ export async function idleOutNudge(identity, {wakeDaemonDir}={}) {
 
     const sender = process.env.NEO_AGENT_IDENTITY || '@system';
 
-    // Machine-readable cycle-state carried in the pulse id (`<source>.<base64url-JSON>`) so the
-    // bridge-daemon wake digest surfaces the next lifecycle step instead of an opaque "N heartbeat
-    // pulses" — the receiver branches on the cycle without prose inference (the idle-holding fix).
-    const pulseId = `idle-out-nudge.${Buffer.from(JSON.stringify({
-        source    : 'idle-out-nudge',
-        reason    : 'idle: no recent AGENT_MEMORY while the swarm is active',
-        nextAction: 'drain the lifecycle queue (own-PR changes → designated reviews → own-PR green → request review), then take the accepted plan\'s next unresolved step'
-    })).toString('base64url')}`;
+    // The content rides the pulse id (`<source>.<base64url-JSON>`; the GraphLog row has no payload
+    // column): the seat's own last lane-state line, its idle minutes since the last known activity,
+    // the drain pointer and the sunset rule — the woken seat reads where it stood, not a generic nudge.
+    const db       = GraphService.db.storage.db;
+    const activity = readLastKnownActivity(db, identity);
+    const pulseId  = buildIdleOutPulseId({
+        identity,
+        lastActivityAtMs  : activity.lastActivityAtMs,
+        lastActivitySource: activity.lastActivitySource,
+        laneState         : readLastLaneStateLine(db, identity)
+    });
 
     // 5. Emit Shape B heartbeat pulse. Creates an ephemeral GraphLog entry tagged
     //    as `heartbeat_pulse`; bridge-daemon's resync() picks it up + dispatches
@@ -144,8 +152,8 @@ export async function idleOutNudge(identity, {wakeDaemonDir}={}) {
         console.error(`[idleOutNudge] Emitted heartbeat pulse to ${identity}`);
     } catch (err) {
         // 6. Emit-failure path: release the lock so the next interval can retry.
-        //    Without this, a transient WakeSubscriptionService error would block all
-        //    idle-out nudges for this identity for the full BOOT_TIMEOUT_MS window.
+        //    Without this, a transient WakeSubscriptionService error would block the
+        //    idle-out nudge for this identity for the rest of its idle stretch.
         console.error(`[idleOutNudge] Failed to emit heartbeat pulse to ${identity}: ${err.message}`);
         await clearInflightLock(identity, 'idle_out_nudge', {wakeDaemonDir}).catch(() => {});
         throw err;
