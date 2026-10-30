@@ -106,6 +106,7 @@ import {
     projectPublicBusinessRows as projectFocusV1PublicBusinessRows,
     renderFocusV1Section      as renderFocusV1HandoffSection
 } from './focusV1Section.mjs';
+import {BUSINESS_FOCUS_NODE_ID, resolveBusinessFocus} from './businessFocusSection.mjs';
 
 // Candidate admission widens complete prefixes, but an unhealthy proxy must never drive
 // exponentially large ANN requests or SQLite placeholder lists. The collection count narrows the
@@ -1850,6 +1851,34 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
             // Defensive: ConsumerFrictionHelper failure must not break handoff rendering.
             // Log + continue with the rest of the handoff content.
             logger.warn(`[GoldenPathSynthesizer] ConsumerFriction section render failed: ${err.message}`);
+        }
+
+        // --- Business focus: the dashboard's first screen as the first addressable `## ` section,
+        // when the deployment configures a source; an empty leaf writes nothing, with no error.
+        try {
+            const businessFocusSourcePath = aiConfig.businessFocusSourcePath;
+
+            if (businessFocusSourcePath) {
+                // The stored node, not a projection: `projectNode` exposes a type's public fact set only, and
+                // the previous in-cap block is private by design. Warm the cache the way `upsertNode` does.
+                GraphService.db.getAdjacentNodes(BUSINESS_FOCUS_NODE_ID, 'both');
+
+                const focus = resolveBusinessFocus({
+                    sourcePath  : businessFocusSourcePath,
+                    previousNode: GraphService.db.nodes.get(BUSINESS_FOCUS_NODE_ID) ?? null,
+                    now
+                });
+
+                if (focus.node) {
+                    GraphService.upsertNode(focus.node);
+                }
+
+                if (focus.section) {
+                    handoffContent += '\n' + focus.section;
+                }
+            }
+        } catch (e) {
+            logger.warn(`[GoldenPathSynthesizer] Business focus section render failed: ${e.message}`);
         }
 
         // --- Consolidation Gaps (consolidation-liveness: undigested sessions made visible) ---

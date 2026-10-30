@@ -702,6 +702,7 @@
     "ai/mcp/server/memory-core/config.template.mjs": [
         "allowedHosts",
         "authMiddleware",
+        "businessFocusSourcePath",
         "collections",
         "collections.graph",
         "collections.memoryProd",
