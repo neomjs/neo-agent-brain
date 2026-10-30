@@ -617,18 +617,20 @@ async function deliverWebhook({digest, effects, meta, signal}) {
 function buildDialogGateArgs({appName, instancePid}) {
     const escapedAppName = escapeAppleScript(appName);
     const targetPid      = instancePid ? String(instancePid) : '';
+    const addressedCodex = appName === 'Codex' && Boolean(instancePid);
 
     return [
         '-e', `  set targetAppName to "${escapedAppName}"`,
         '-e', '  set targetBundleId to ""',
-        '-e', '  try',
-        '-e', `    set targetBundleId to id of application "${escapedAppName}"`,
-        '-e', '  end try',
         '-e', `  set targetProcessId to "${targetPid}"`,
+        ...(addressedCodex ? codexAutomationIdLines('  ') : [
+            '-e', '  try',
+            '-e', `    set targetBundleId to id of application "${escapedAppName}"`,
+            '-e', '  end try'
+        ]),
         '-e', '  -- interactiveDialogProbe: readable non-text focus means a prompt owns the input path',
         '-e', '  tell application "System Events"',
-        ...resolveTargetProcessLines('    '),
-        '-e', '    tell targetProcess',
+        ...resolveTargetProcessLines('    ', addressedCodex),
         '-e', '      set focusedRole to missing value',
         '-e', '      try',
         '-e', '        set focusedRole to role of focused element of window 1',
@@ -735,7 +737,8 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record}) 
  * @returns {String[]} `osascript` argv fragments.
  * @private
  */
-function resolveTargetProcessLines(indent) {
+function resolveTargetProcessLines(indent, addressedCodex = false) {
+    if (addressedCodex) return ['-e', `${indent}tell application process id targetAutomationId`];
     return [
         '-e', `${indent}if targetProcessId is not "" then`,
         '-e', `${indent}  set targetProcess to first application process whose unix id is (targetProcessId as integer)`,
@@ -743,8 +746,31 @@ function resolveTargetProcessLines(indent) {
         '-e', `${indent}  set targetProcess to first application process whose bundle identifier is targetBundleId`,
         '-e', `${indent}else`,
         '-e', `${indent}  set targetProcess to first application process whose name is targetAppName`,
-        '-e', `${indent}end if`
+        '-e', `${indent}end if`,
+        '-e', `${indent}tell targetProcess`
     ]
+}
+
+/**
+ * @summary Resolve a Codex Unix PID to System Events' unique process id before any input mutation.
+ * A filtered process result can become a name-based reference and select a same-named sibling.
+ * Keep the numeric automation id instead, and recheck its Unix PID before using it.
+ * @private
+ */
+function codexAutomationIdLines(indent) {
+    return [
+        '-e', `${indent}set targetAutomationId to ""`,
+        '-e', `${indent}tell application "System Events"`,
+        '-e', `${indent}  repeat with candidate in application processes`,
+        '-e', `${indent}    if ((unix id of candidate) as string) is targetProcessId then`,
+        '-e', `${indent}      set targetAutomationId to id of candidate`,
+        '-e', `${indent}      exit repeat`,
+        '-e', `${indent}    end if`,
+        '-e', `${indent}  end repeat`,
+        '-e', `${indent}  if targetAutomationId is "" then error "Exact target process missing"`,
+        '-e', `${indent}  if ((unix id of application process id targetAutomationId) as string) is not targetProcessId then error "Exact target process changed"`,
+        '-e', `${indent}end tell`
+    ];
 }
 
 /**
@@ -754,13 +780,22 @@ function resolveTargetProcessLines(indent) {
 function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, instancePid, tabShortcut}) {
     const escapedAppName        = escapeAppleScript(appName);
     const targetPid             = instancePid ? String(instancePid) : '';
-    const appActivateLine       = `  tell application "${escapedAppName}" to activate`;
-    const instanceFrontmostLine = instancePid
+    const addressedCodex        = appName === 'Codex' && Boolean(instancePid);
+    const appActivateLine       = addressedCodex
+        ? '  tell application "System Events" to set frontmost of application process id targetAutomationId to true'
+        : `  tell application "${escapedAppName}" to activate`;
+    const instanceFrontmostLine = instancePid && !addressedCodex
         ? `  tell application "System Events" to set frontmost of (first process whose unix id is ${instancePid}) to true`
         : null;
     const args = [
-        '-e', 'on assertTargetFrontmost(appName, targetBundleId, targetProcessId, phase)',
+        '-e', 'on assertTargetFrontmost(appName, targetBundleId, targetProcessId, targetAutomationId, phase)',
         '-e', '  tell application "System Events"',
+        '-e', '    if targetAutomationId is not "" then',
+        '-e', '      if ((unix id of application process id targetAutomationId) as string) is not targetProcessId then error "Exact target process changed " & phase',
+        '-e', '      set currentPid to (unix id of (first application process whose frontmost is true)) as string',
+        '-e', '      if currentPid is not targetProcessId then error "Target app lost frontmost status " & phase',
+        '-e', '      return true',
+        '-e', '    end if',
         '-e', '    set frontmostProcess to first application process whose frontmost is true',
         '-e', '    if targetProcessId is not "" then',
         '-e', '      set currentPid to (unix id of frontmostProcess) as string',
@@ -786,10 +821,13 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         '-e', '  set wakePayload to (item 1 of argv)',
         '-e', `  set targetAppName to "${escapedAppName}"`,
         '-e', '  set targetBundleId to ""',
-        '-e', '  try',
-        '-e', `    set targetBundleId to id of application "${escapedAppName}"`,
-        '-e', '  end try',
         '-e', `  set targetProcessId to "${targetPid}"`,
+        '-e', '  set targetAutomationId to ""',
+        ...(addressedCodex ? codexAutomationIdLines('  ') : [
+            '-e', '  try',
+            '-e', `    set targetBundleId to id of application "${escapedAppName}"`,
+            '-e', '  end try'
+        ]),
         '-e', '  try',
         '-e', '    set savedClipboard to the clipboard as string',
         '-e', '  on error',
@@ -802,15 +840,14 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         ...(instanceFrontmostLine ? ['-e', instanceFrontmostLine] : []),
         '-e', '    delay 0.25',
         '-e', '    try',
-        '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "after activation")',
+        '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "after activation")',
         '-e', '      set targetRaised to true',
         '-e', '      exit repeat',
         '-e', '    end try',
         '-e', '  end repeat',
-        '-e', '  if not targetRaised then my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "after activation")',
+        '-e', '  if not targetRaised then my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "after activation")',
         '-e', '  tell application "System Events"',
-        ...resolveTargetProcessLines('    '),
-        '-e', '    tell targetProcess'
+        ...resolveTargetProcessLines('    ', addressedCodex)
     ];
 
     if (tabShortcut) {
@@ -834,7 +871,7 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
     }
 
     args.push(
-        '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before prompt clear")',
+        '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before prompt clear")',
         '-e', '      set the clipboard to ""',
         '-e', '      keystroke "a" using command down',
         '-e', '      delay 0.2',
@@ -847,13 +884,12 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         '-e', '  on error',
         '-e', '    set userInput to ""',
         '-e', '  end try',
-        '-e', '  my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before wake clipboard set")',
+        '-e', '  my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before wake clipboard set")',
         '-e', '  set the clipboard to wakePayload',
         '-e', '  delay 0.2',
-        '-e', '  my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before wake paste")',
+        '-e', '  my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before wake paste")',
         '-e', '  tell application "System Events"',
-        ...resolveTargetProcessLines('    '),
-        '-e', '    tell targetProcess',
+        ...resolveTargetProcessLines('    ', addressedCodex),
         '-e', '      keystroke "v" using command down',
         '-e', '      delay 0.5',
         ...(appName === 'Antigravity'
@@ -866,13 +902,12 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         '-e', '    end tell',
         '-e', '  end tell',
         '-e', '  if userInput is not "" then',
-        '-e', '    my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before user input restore clipboard set")',
+        '-e', '    my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before user input restore clipboard set")',
         '-e', '    set the clipboard to userInput',
         '-e', '    delay 0.2',
-        '-e', '    my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before user input restore paste")',
+        '-e', '    my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before user input restore paste")',
         '-e', '    tell application "System Events"',
-        ...resolveTargetProcessLines('      '),
-        '-e', '      tell targetProcess',
+        ...resolveTargetProcessLines('      ', addressedCodex),
         '-e', '        keystroke "v" using command down',
         '-e', '      end tell',
         '-e', '    end tell',

@@ -250,6 +250,62 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
     });
 
 
+    test('addressed Codex resolves one automation process and never falls back to a sibling', async () => {
+        const scripts = [], targetPid = 44567;
+        const addressed = record('osascript', {
+            route: {
+                agentIdentity,
+                harnessTargetMetadata: {
+                    adapter: 'osascript', appName: 'Codex', addressType: 'pid',
+                    instanceAddress: String(targetPid), focusSeedKey: 'r'
+                },
+                adapterConfig: {attemptTimeoutMs: 1000}
+            }
+        });
+
+        expect(await dispatchLocalWake(addressed, {
+            platform             : 'darwin',
+            resolveGuiInstancePid: async () => targetPid,
+            spawnAsync           : async (command, args) => {
+                expect(command).toBe('osascript');
+                scripts.push(args.join('\n'));
+            }
+        })).toBe('delivered');
+
+        expect(scripts).toHaveLength(2);
+        const [dialog, delivery] = scripts;
+        for (const script of scripts) {
+            expect(script).toContain(`set targetProcessId to "${targetPid}"`);
+            expect(script).toContain('repeat with candidate in application processes');
+            expect(script).toContain('if ((unix id of candidate) as string) is targetProcessId then');
+            expect(script).toContain('set targetAutomationId to id of candidate');
+            expect(script).toContain('if targetAutomationId is "" then error "Exact target process missing"');
+            expect(script).toContain('if ((unix id of application process id targetAutomationId) as string) is not targetProcessId then error "Exact target process changed"');
+            expect(script).toContain('tell application process id targetAutomationId');
+            expect(script).not.toContain('first application process whose unix id is');
+            expect(script).not.toContain('first process whose unix id is');
+            expect(script).not.toContain('tell application "Codex" to activate');
+            expect(script).not.toContain('id of application "Codex"');
+            expect(script).not.toContain('tell targetProcess');
+        }
+        expect(dialog).toContain('interactiveDialogProbe');
+        const guard = delivery.slice(delivery.indexOf('on assertTargetFrontmost'), delivery.indexOf('end assertTargetFrontmost'));
+        expect(guard).toContain('if ((unix id of application process id targetAutomationId) as string) is not targetProcessId then error "Exact target process changed " & phase');
+        expect(guard).toContain('set currentPid to (unix id of (first application process whose frontmost is true)) as string');
+        expect(guard).toContain('if currentPid is not targetProcessId then error "Target app lost frontmost status " & phase');
+        expect(guard.indexOf('return true')).toBeLessThan(guard.indexOf('set frontmostProcess'));
+        expect(delivery).toContain('set frontmost of application process id targetAutomationId to true');
+        expect((delivery.match(/tell application process id targetAutomationId/g) ?? [])).toHaveLength(3);
+        for (const phase of ['after activation', 'before prompt clear', 'before wake clipboard set',
+            'before wake paste', 'before user input restore clipboard set', 'before user input restore paste']) {
+            expect(delivery).toContain(`my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "${phase}")`);
+        }
+        expect(delivery).toContain('key code 36');
+        expect(delivery).toContain('set the clipboard to savedClipboard');
+        expect(delivery.indexOf('error "Exact target process missing"')).toBeLessThan(delivery.indexOf('set savedClipboard'));
+        expect(delivery.indexOf('error "Exact target process changed"')).toBeLessThan(delivery.indexOf('set savedClipboard'));
+    });
+
     test('OpenCode retries changed coordinates once without allowing authority retarget', async () => {
         const first = {
             agentIdentity,
