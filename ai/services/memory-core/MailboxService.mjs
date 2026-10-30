@@ -30,6 +30,7 @@ import {
     readWalMessagesByIds,
     readPendingMessageWalRecords
 } from './helpers/messageWalStore.mjs';
+import {readAgentIdentityNodes}       from '../../graph/agentIdentityParticipation.mjs';
 import {IDENTITIES}                   from '../../graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {SQLITE_IN_CLAUSE_BATCH_SIZE}  from '../../graph/storage/constants.mjs';
@@ -2499,35 +2500,22 @@ function messageWalRecordMatchesMailboxView(record, {box = 'all', target} = {}) 
  *
  * Broadcasts remain one semantic MESSAGE + SENT_TO->AGENT:* edge, while per-recipient
  * delivery state lives on `DELIVERED_TO` edges. The audience is a send-time snapshot of
- * registered peer agents, excluding the sender and sentinel/human identities.
+ * registered peer agents, excluding the sender and sentinel/human identities. It is read from
+ * the graph store, like wake delivery's identity set: the in-memory cache holds only the nodes
+ * loaded since boot, so a cold or evicted identity would otherwise get no delivery edge.
  *
  * @param {String} sentBy The canonical sender identity.
  * @returns {String[]} Sorted recipient identity node IDs.
  * @private
  */
 function getBroadcastAudience(sentBy) {
-    const nodes = GraphService.db?.nodes?.items || [];
-
-    return nodes
-        .map(node => {
-            const id        = getRecordField(node, 'id'),
-                label       = getRecordField(node, 'label'),
-                properties  = getRecordProperties(node),
-                accountType = properties.accountType;
-
-            if (!id || sameMailboxIdentity(id, sentBy) || id === 'AGENT:*' || !id.startsWith('@')) {
+    return readAgentIdentityNodes(GraphService.db.storage.db)
+        .map(({id, properties}) => {
+            if (typeof id !== 'string' || !id.startsWith('@') || sameMailboxIdentity(id, sentBy)) {
                 return null;
             }
 
-            if (accountType === 'human' || accountType === 'sentinel') {
-                return null;
-            }
-
-            if (label === 'AgentIdentity') {
-                return accountType === 'agent' ? id : null;
-            }
-
-            return label === 'AGENT' ? id : null;
+            return properties?.accountType === 'agent' ? id : null;
         })
         .filter(Boolean)
         .sort();
