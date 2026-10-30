@@ -413,13 +413,14 @@ function lintGuide(content, ctx) {
 
 /**
  * Discovers the in-scope guide files (top-level `*.md` under each {@link GUIDE_DIRS} entry).
+ * @param {string} [rootDir=ROOT_DIR] repository root whose guide directories are read
  * @returns {string[]} repo-relative file paths
  */
-function discoverGuides() {
+function discoverGuides(rootDir = ROOT_DIR) {
     const files = [];
 
     for (const dir of GUIDE_DIRS) {
-        const absDir = path.join(ROOT_DIR, dir);
+        const absDir = path.join(rootDir, dir);
         if (!existsSync(absDir)) continue;
 
         for (const entry of readdirSync(absDir, {withFileTypes: true})) {
@@ -462,11 +463,12 @@ function discoverGuideSeries(rootDir = ROOT_DIR) {
  * Returns whether an explicit CLI path resolves to a Markdown file inside the narrative guide
  * tree. Resolving first prevents `learn/guides/../agentos` from inheriting the recursive rule.
  * @param {string} file
+ * @param {string} [rootDir=ROOT_DIR] repository root a relative `file` resolves against
  * @returns {boolean}
  */
-function isGuideSeriesFile(file) {
-    const absolute   = path.isAbsolute(file) ? path.resolve(file) : path.resolve(ROOT_DIR, file);
-    const seriesRoot = path.join(ROOT_DIR, GUIDE_SERIES_DIR);
+function isGuideSeriesFile(file, rootDir = ROOT_DIR) {
+    const absolute   = path.isAbsolute(file) ? path.resolve(file) : path.resolve(rootDir, file);
+    const seriesRoot = path.join(rootDir, GUIDE_SERIES_DIR);
     const relative   = path.relative(seriesRoot, absolute);
 
     return Boolean(relative)
@@ -475,18 +477,24 @@ function isGuideSeriesFile(file) {
         && relative.endsWith('.md');
 }
 
-/** @returns {Set<string>} the scripts defined by the Host root and Container-Cloud package. */
-function loadScriptKeys() {
+/**
+ * @summary The scripts defined by each root's Host package and Container-Cloud package.
+ * @param {string[]} [roots=[ROOT_DIR]] repository roots whose manifests are read
+ * @returns {Set<string>}
+ */
+function loadScriptKeys(roots = [ROOT_DIR]) {
     const keys = new Set();
 
-    for (const relative of ['package.json', 'cloud/package.json']) {
-        const file = path.join(ROOT_DIR, relative);
+    for (const root of roots) {
+        for (const relative of ['package.json', 'cloud/package.json']) {
+            const file = path.join(root, relative);
 
-        if (!existsSync(file)) continue;
+            if (!existsSync(file)) continue;
 
-        const manifest = JSON.parse(readFileSync(file, 'utf8'));
+            const manifest = JSON.parse(readFileSync(file, 'utf8'));
 
-        for (const key of Object.keys(manifest.scripts || {})) keys.add(key)
+            for (const key of Object.keys(manifest.scripts || {})) keys.add(key)
+        }
     }
 
     return keys
@@ -520,16 +528,22 @@ function loadOperationIds() {
 }
 
 /**
- * Parses `--warn-as-error` / `--help` plus optional explicit file paths (default: discover all).
+ * Parses `--warn-as-error` / `--help` / `--root <dir>` plus optional explicit file paths (default: discover all).
  * @param {string[]} argv
- * @returns {{files: string[], warnAsError: boolean, help: boolean}}
+ * @returns {{files: string[], warnAsError: boolean, help: boolean, root: string|undefined}}
  */
 function parseArgs(argv = process.argv.slice(2)) {
     const options = {files: [], warnAsError: false};
 
-    for (const arg of argv) {
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+
         if (arg === '--warn-as-error')        options.warnAsError = true;
         else if (arg === '--help' || arg === '-h') options.help = true;
+        else if (arg === '--root') {
+            if (!argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('--root needs a directory');
+            options.root = argv[++i];
+        }
         else if (arg.startsWith('--'))        throw new Error(`Unknown argument: ${arg}`);
         else                                  options.files.push(arg);
     }
@@ -539,15 +553,20 @@ function parseArgs(argv = process.argv.slice(2)) {
 
 /**
  * CLI entry. Returns a numeric exit code (no `process.exit`) so tests can drive it directly.
- * @param {{files: string[], warnAsError: boolean}} [options] both keys optional (files defaults to discoverGuides())
+ *
+ * `root` lints another repository's guides with this script, the way the Engine's CI does: its
+ * guide directories and relative file paths resolve there, its `package.json` scripts join the
+ * Brain's for the `ai:*` check, and tool tables still resolve against this repository's OpenAPI.
+ * @param {{files: string[], warnAsError: boolean, root: string}} [options] every key optional (files defaults to discoverGuides())
  * @returns {{exitCode: number, hard: number, warn: number, fullGuideCount: number, ticketIdGuideCount: number}}
  */
 function runLint(options = {}) {
-    const scriptKeys   = loadScriptKeys();
+    const root         = options.root ? path.resolve(options.root) : ROOT_DIR;
+    const scriptKeys   = loadScriptKeys(root === ROOT_DIR ? [ROOT_DIR] : [ROOT_DIR, root]);
     const operationIds = loadOperationIds();
     const explicit     = Boolean(options.files?.length);
-    const fullFiles    = explicit ? options.files : discoverGuides();
-    const ticketFiles  = explicit ? options.files.filter(isGuideSeriesFile) : discoverGuideSeries();
+    const fullFiles    = explicit ? options.files : discoverGuides(root);
+    const ticketFiles  = explicit ? options.files.filter(file => isGuideSeriesFile(file, root)) : discoverGuideSeries(root);
     const files        = new Map();
 
     for (const file of fullFiles)   files.set(file, {...files.get(file), full: true});
@@ -556,7 +575,7 @@ function runLint(options = {}) {
     let hard = 0, warn = 0;
 
     for (const [file, scope] of [...files.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-        const abs      = path.isAbsolute(file) ? file : path.join(ROOT_DIR, file);
+        const abs      = path.isAbsolute(file) ? file : path.join(root, file);
         const content  = readFileSync(abs, 'utf8');
         const findings = [];
 
@@ -590,12 +609,13 @@ function main() {
     const options = parseArgs();
 
     if (options.help) {
-        console.log('Usage: node ai/scripts/lint/lint-guides.mjs [files...] [--warn-as-error]');
+        console.log('Usage: node ai/scripts/lint/lint-guides.mjs [files...] [--warn-as-error] [--root <dir>]');
         console.log('  Full guide-quality lint: learn/agentos/*.md + learn/benefits/*.md.');
         console.log('  Recursive ticket-id lint: learn/guides/**/*.md (CSS/Mermaid colors exempt).');
         console.log('  HARD (exit 1): mermaid reserved-word / self-loop, dead local links, dead ai:* script refs, openapi tool-parity, guide ticket ids.');
         console.log('  WARN:          no-mermaid, LR-squish, feature-list headings, "framework".');
         console.log('  --warn-as-error  treat warnings as failures too.');
+        console.log('  --root <dir>     lint the guides of the repository at <dir> (its scripts join this one\'s).');
         process.exit(0);
     }
 
