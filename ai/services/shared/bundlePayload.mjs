@@ -1,11 +1,11 @@
 // fs-extra, not node:fs, so the services' existing stream seams keep working: the KB import spec
 // swaps `fsExtra.createReadStream` for a gated fixture to prove a batch flushes before EOF.
-import fs         from 'fs-extra';
-import path       from 'path';
-import readline   from 'readline';
-import {compose}  from 'stream';
-import {finished} from 'stream/promises';
-import zlib       from 'zlib';
+import fs                   from 'fs-extra';
+import path                 from 'path';
+import readline             from 'readline';
+import {compose, Transform} from 'stream';
+import {finished}           from 'stream/promises';
+import zlib                 from 'zlib';
 
 /**
  * @summary The one encoding decision for every backup-bundle payload: written here, read here.
@@ -183,16 +183,48 @@ function decodeThrough(filePath, decompressor) {
 }
 
 /**
+ * @summary Hands readline a decoded payload in which U+2028 and U+2029 arrive as their JSON escapes.
+ *
+ * `JSON.stringify` leaves both characters raw, which is valid JSON, and readline breaks a line at
+ * each of them, so a record holding one read as two: the backup's row-count parity failed on every
+ * run while such a record existed, and a restore would have split it into unparseable halves
+ * (#1377). In a JSONL line the characters can only sit inside a string, where the escape parses to
+ * the same value, so no record changes. The streaming decoder keeps a character whose bytes
+ * straddle two decompressor chunks whole. Errors and teardown follow {@link decodeThrough}.
+ * @param {import('stream').Readable} input A stream from {@link createBundlePayloadReadStream}.
+ * @returns {import('stream').Transform}
+ */
+function escapeLineSeparators(input) {
+    const decoder = new TextDecoder('utf-8', {ignoreBOM: true});
+    // Zl and Zp hold exactly U+2028 and U+2029; the escape is written by code point.
+    const escape  = text => text.replace(/[\p{Zl}\p{Zp}]/gu, char => '\\u' + char.codePointAt(0).toString(16));
+    const output  = new Transform({
+        transform(chunk, encoding, callback) {
+            callback(null, escape(decoder.decode(chunk, {stream: true})))
+        },
+        flush(callback) {
+            callback(null, escape(decoder.decode()))
+        }
+    });
+
+    input.on('error', error => output.destroy(error));
+    output.on('close', () => input.destroy());
+
+    return input.pipe(output)
+}
+
+/**
  * @summary Opens a payload as a line stream: `for await (const line of openBundlePayload(p))`.
  * Each JSONL record is one line, so the non-empty line count is the row count whatever the
- * encoding. A torn or missing file rejects the loop; it never ends early with fewer lines.
+ * encoding; U+2028 and U+2029 arrive escaped ({@link escapeLineSeparators}). A torn or missing
+ * file rejects the loop; it never ends early with fewer lines.
  * @param {String} filePath Absolute path of a payload in any supported encoding.
  * @returns {readline.Interface}
  * @throws {Error} `BUNDLE_PAYLOAD_EXTENSION` when the name is not a payload.
  */
 export function openBundlePayload(filePath) {
     return readline.createInterface({
-        input    : createBundlePayloadReadStream(filePath),
+        input    : escapeLineSeparators(createBundlePayloadReadStream(filePath)),
         crlfDelay: Infinity
     })
 }
