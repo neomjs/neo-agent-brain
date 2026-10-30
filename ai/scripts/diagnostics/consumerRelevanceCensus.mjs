@@ -52,6 +52,7 @@ import {
     PATH_RULES,
     SUBSYSTEMS
 } from './consumerRelevanceMap.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -281,6 +282,6 @@ function main() {
     console.log(markdown);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryModule(import.meta.url)) {
     main()
 }

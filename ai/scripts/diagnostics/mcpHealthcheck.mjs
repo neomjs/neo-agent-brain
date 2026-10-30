@@ -4,7 +4,7 @@ import {Command}                       from 'commander';
 import {Client}                        from '@modelcontextprotocol/sdk/client/index.js';
 import {readFileSync}                  from 'fs';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import {pathToFileURL}                 from 'url';
+import {isEntryModule}                 from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/diagnostics/mcpHealthcheck
@@ -509,6 +509,6 @@ async function main() {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     await main();
 }

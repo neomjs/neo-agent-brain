@@ -7,11 +7,11 @@
  * outcome for the supervisor, and exits. It carries no poller and cannot become a second scheduler.
  */
 
-import {fileURLToPath, pathToFileURL} from 'node:url';
-import Neo                            from 'neo.mjs/src/Neo.mjs';
-import * as core                      from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager                from 'neo.mjs/src/manager/Instance.mjs';
-import AiConfig                       from '../../config.mjs';
+import {fileURLToPath} from 'node:url';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
+import AiConfig        from '../../config.mjs';
 import {
     runCoreCorpusProjectionCycle
 } from '../../daemons/orchestrator/services/coreCorpusProjection.mjs';
@@ -22,6 +22,7 @@ import {
 import logger                                from '../../mcp/server/memory-core/logger.mjs';
 import {Memory_GraphService as GraphService} from '../../services.mjs';
 import {assertConfigFresh}                   from '../setup/initServerConfigs.mjs';
+import {isEntryModule}                       from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Maps lease acquisition/completion into the supervisor's single structured outcome.
@@ -127,6 +128,6 @@ export async function runProjectCoreCorpus({
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     runProjectCoreCorpus()
 }

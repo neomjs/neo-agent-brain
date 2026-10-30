@@ -3,7 +3,7 @@ import os              from 'node:os';
 import path            from 'node:path';
 import process         from 'node:process';
 import {createRequire} from 'node:module';
-import {fileURLToPath} from 'node:url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * Pre-Flight (structural fast-path): authoring `ai/scripts/diagnostics/seatCostReport.mjs`
@@ -492,6 +492,6 @@ function main() {
     }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isEntryModule(import.meta.url)) {
     main();
 }

@@ -46,6 +46,7 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 
 import {parse}            from 'acorn';
 import {load as loadYaml} from 'js-yaml';
+import {isEntryModule}    from '../../services/shared/isEntryModule.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -2189,7 +2190,8 @@ export function collectDeclaredAiConfigEnvNames(rootDir = ROOT_DIR) {
 /**
  * @summary Classifies a source module as a thread entrypoint from executable ownership shape.
  *
- * A direct `process.argv[1]`/`import.meta.url` guard or an unguarded top-level `main()` call is a
+ * A direct entry guard (`isEntryModule(import.meta.url)`, or a hand-rolled `process.argv[1]` /
+ * `import.meta.url` comparison) or an unguarded top-level `main()` call is a
  * checkable execution boundary. File names are deliberately not authority: `Agent.mjs` and
  * `runAgent.mjs` differ by behaviour, not by a reader deciding that one name sounds entry-like.
  * @param {Object} options
@@ -2213,10 +2215,11 @@ export function isThreadEntrypoint({source, ast = parseModule(source)}) {
 
         if (statement.type === 'IfStatement') {
             const condition = source.slice(statement.test.start, statement.test.end),
+                  hasHelper = /\bisEntryModule\s*\(\s*import\s*\.\s*meta\s*\.\s*url\s*\)/.test(condition),
                   hasArgv   = /process\s*\.\s*argv\s*\[\s*1\s*]/.test(condition),
                   hasModule = /import\s*\.\s*meta\s*\.\s*url|fileURLToPath\s*\(\s*import\s*\.\s*meta\s*\.\s*url/.test(condition);
 
-            if (hasArgv && hasModule) return true;
+            if (hasHelper || (hasArgv && hasModule)) return true;
         }
     }
 
@@ -2986,6 +2989,6 @@ async function main() {
     process.exit(exitCode);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     main();
 }

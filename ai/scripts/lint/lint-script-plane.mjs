@@ -12,6 +12,7 @@ import {
     walkCapabilityClosure
 }                              from './scriptPlaneClosure.mjs';
 import {runExplicitGraphStoreOwnershipLint} from './explicitGraphStoreOwnership.mjs';
+import {isEntryModule}                      from '../../services/shared/isEntryModule.mjs';
 
 /**
  * Fails a build when an `ai/scripts` entrypoint's declared execution authority disagrees with what
@@ -145,7 +146,7 @@ export const UNRESOLVED_EDGE_LEDGER = Object.freeze([
  * silent-fallback shape this whole lane was built to remove.
  *
  * The one entry is a disagreement between two accepted things rather than a bug in either.
- * ADR-0014 — ticket-ref-ok: the ADR is the authority whose verdict this entry defers to — deliberately
+ * ADR-0014 [not-ticket-ref: the authority whose verdict this entry defers to] deliberately
  * classes `temporal-summary` container-plane, because the container IS the
  * checkout, carrying `.git` at the built revision, which is exactly what
  * `TemporalSummaryAggregationService.execCommand()` reads with `git log`. This lint's capability
@@ -155,8 +156,8 @@ export const UNRESOLVED_EDGE_LEDGER = Object.freeze([
  * @type {ReadonlyArray<String>}
  */
 export const KNOWN_AUTHORITY_CONFLICTS = Object.freeze([
-    // #17217 — `child_process` is a subprocess predicate, not a plane predicate. ticket-ref-ok: the
-    // ticket IS this entry's warrant, and an entry that outlives it fails the lint's own check above.
+    // #17217 [not-ticket-ref: this entry's warrant] — `child_process` is a subprocess predicate, not a
+    // plane predicate. An entry that outlives the ticket fails the lint's own check above.
     'ai/scripts/maintenance/aggregate-temporal-summary.mjs::temporal-summary::authority-conflict-in-plane'
 ]);
 
@@ -562,7 +563,7 @@ export function runLint({
 
 // Import-safe: the workflow scan-root parity spec imports SCAN_SURFACE from this module, and a bare
 // `process.exit()` at module scope would terminate the test process on import.
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     const
         planeResult = runLint(),
         storeResult = runExplicitGraphStoreOwnershipLint();

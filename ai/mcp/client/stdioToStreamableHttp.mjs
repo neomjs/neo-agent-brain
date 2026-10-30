@@ -5,7 +5,7 @@ import {StdioServerTransport}              from '@modelcontextprotocol/sdk/serve
 import {ErrorCode, InitializeResultSchema} from '@modelcontextprotocol/sdk/types.js';
 import {Command}                           from 'commander';
 import {isDeepStrictEqual}                 from 'node:util';
-import {pathToFileURL}                     from 'node:url';
+import {isEntryModule}                     from '../../services/shared/isEntryModule.mjs';
 
 const
     RECOVERED_MESSAGE       = 'Neo MCP bridge kept its session after a transport error.',
@@ -477,7 +477,7 @@ export async function main(argv=process.argv.slice(2), env=process.env) {
     return bridge
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => {
         if (error?.code !== 'commander.helpDisplayed') {
             process.stderr.write(`${getStartupFailureMessage(error)}\n`)

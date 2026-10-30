@@ -8,7 +8,7 @@ import {rateLimit}                                     from 'express-rate-limit'
 import cors                                            from 'cors';
 import path                                            from 'node:path';
 import {accessSync, constants, readFileSync, statSync} from 'node:fs';
-import {fileURLToPath, pathToFileURL}                  from 'node:url';
+import {fileURLToPath}                                 from 'node:url';
 import {hostHeaderValidation}                          from '@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js';
 import AiConfig                                        from '../../config.mjs';
 import ConfigBase, {PLANE_MEMBER_PATHS}                from '../../configBase.mjs';
@@ -18,19 +18,20 @@ import {
     collectPlaneMembers,
     resolvePlaneDataRoot
 }                                          from '../../planeConfig.mjs';
-import AuthService                     from '../../mcp/server/shared/services/AuthService.mjs';
-import RequestContextService           from '../../mcp/server/shared/services/RequestContextService.mjs';
-import TransportService                from '../../mcp/server/shared/services/TransportService.mjs';
-import FleetControlBridge              from './FleetControlBridge.mjs';
-import FleetManager                    from './FleetManager.mjs';
-import ForgeConnectionRegistryService  from './ForgeConnectionRegistryService.mjs';
-import {createFleetWakeFanout}         from './fleetWakeFanout.mjs';
-import {createFleetWakeReceiver}       from './fleetWakeReceiver.mjs';
-import {createPlaneMailboxClient}      from './planeMailboxClient.mjs';
-import {normalizeAgentIdentity}        from './mcpWireParsing.mjs';
-import {resolveFleetViewerClaim}       from './fleetLaunchContract.mjs';
+import AuthService                                          from '../../mcp/server/shared/services/AuthService.mjs';
+import RequestContextService                                from '../../mcp/server/shared/services/RequestContextService.mjs';
+import TransportService                                     from '../../mcp/server/shared/services/TransportService.mjs';
+import FleetControlBridge                                   from './FleetControlBridge.mjs';
+import FleetManager                                         from './FleetManager.mjs';
+import ForgeConnectionRegistryService                       from './ForgeConnectionRegistryService.mjs';
+import {createFleetWakeFanout}                              from './fleetWakeFanout.mjs';
+import {createFleetWakeReceiver}                            from './fleetWakeReceiver.mjs';
+import {createPlaneMailboxClient}                           from './planeMailboxClient.mjs';
+import {normalizeAgentIdentity}                             from './mcpWireParsing.mjs';
+import {isEntryModule}                                      from '../shared/isEntryModule.mjs';
+import {resolveFleetViewerClaim}                            from './fleetLaunchContract.mjs';
 import {dispatchFleetS1Request, FLEET_METHOD_SCOPE_CLASSES} from './fleetServerPolicy.mjs';
-import {wireDeploymentStateReadSource} from './wireDeploymentStateReadSource.mjs';
+import {wireDeploymentStateReadSource}                      from './wireDeploymentStateReadSource.mjs';
 import {
     createFleetWireResponse,
     FLEET_WIRE_RESPONSE_STATES,
@@ -1309,8 +1310,7 @@ async function boot() {
     process.once('SIGTERM', close)
 }
 
-const isMain = process.argv[1]
-    && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     boot().catch(error => {

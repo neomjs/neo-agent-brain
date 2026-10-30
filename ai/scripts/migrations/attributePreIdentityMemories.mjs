@@ -49,13 +49,13 @@
  */
 
 import path                           from 'node:path';
-import {fileURLToPath}                from 'node:url';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {
     LEGACY_RAW_MEMORY_NODE_LABEL,
     legacyRawMemoryGraphId,
     RAW_MEMORY_NODE_LABEL
 } from '../../services/memory-core/helpers/rawMemoryGraphIdentity.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const
     BATCH_SIZE     = 200,
@@ -739,7 +739,7 @@ async function main() {
     }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => {
         console.error(`attributePreIdentityMemories failed: ${error.message}`);
         process.exitCode = 1

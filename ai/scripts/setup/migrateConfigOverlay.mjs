@@ -28,6 +28,7 @@ import fs                             from 'fs';
 import path                           from 'path';
 import {fileURLToPath, pathToFileURL} from 'url';
 import {writeFileAtomicSync}          from '../../services/shared/atomicFileWrite.mjs';
+import {isEntryModule}                from '../../services/shared/isEntryModule.mjs';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const neoRootDir = path.resolve(__dirname, '../../../');
@@ -557,7 +558,7 @@ async function main() {
 }
 
 // Process-entry only: never run on import, so unit tests can import the pure helpers.
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => {
         console.error('[migrate-config-overlay] failed:', error.message);
         process.exit(1);

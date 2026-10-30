@@ -28,9 +28,8 @@
  * @see learn/agentos/cloud-deployment/TenantIngestionModel.md
  */
 
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
-import {pathToFileURL} from 'url';
+import Neo       from 'neo.mjs/src/Neo.mjs';
+import * as core from 'neo.mjs/src/core/_export.mjs';
 
 import AiConfig              from '../../config.mjs';
 import TenantRepoSyncService from '../../daemons/orchestrator/services/TenantRepoSyncService.mjs';
@@ -43,6 +42,7 @@ import {
     KB_TENANT_REPO_SYNC_LEASE_HELD,
     KB_TENANT_REPO_SYNC_REPO_NOT_CONFIGURED
 } from '../../daemons/orchestrator/services/TenantRepoSyncErrors.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Parses manual tenant-repo-sync selectors and scoped replay intent.
@@ -293,7 +293,7 @@ function resolveExitCode(result) {
     return 1;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     main().catch(err => {
         console.error('Fatal:', err.message);
         if (err.stack) console.error(err.stack);

@@ -7,6 +7,7 @@ import {promisify}     from 'node:util';
 import {fileURLToPath} from 'url';
 
 import {buildMigrationPlan, formatPlan, parseObservedEnv, resolveCensus} from './deploymentMigrationCore.mjs';
+import {isEntryModule}                                                   from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/migrateDeployment
@@ -817,10 +818,9 @@ async function main() {
     return 0
 }
 
-// Entrypoint guard (the `bootstrapWorktree.mjs:1502` form — `path.resolve` rather than a `file://`
-// string compare, so a relative or symlinked invocation still matches). Without it, a spec importing
-// `parseArgs` would execute a real migration driver as an import side effect.
-const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+// Entrypoint guard. Without it, a spec importing `parseArgs` would execute a real migration driver
+// as an import side effect.
+const isDirectRun = isEntryModule(import.meta.url);
 
 if (isDirectRun) {
     process.exitCode = await main()

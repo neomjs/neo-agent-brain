@@ -1,8 +1,9 @@
-import fs                             from 'node:fs';
-import path                           from 'node:path';
-import {fileURLToPath, pathToFileURL} from 'node:url';
+import fs              from 'node:fs';
+import path            from 'node:path';
+import {fileURLToPath} from 'node:url';
 
 import {isEmbeddingContextBelowSafeBand} from '../../embeddingSafeBand.mjs';
+import {isEntryModule}                   from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/diagnostics/providerLaneComposition
@@ -780,7 +781,7 @@ export async function main(argv = process.argv.slice(2)) {
     return receipt
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => {
         process.stderr.write(`providerLaneComposition: ${error.message}\n`);
         process.exitCode = 2;

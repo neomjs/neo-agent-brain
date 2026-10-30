@@ -23,7 +23,8 @@ import logger                                from '../../mcp/server/memory-core/
 import TemporalSummaryAggregationService     from '../../daemons/temporal-summary/TemporalSummaryAggregationService.mjs';
 import {Memory_GraphService as GraphService} from '../../services.mjs';
 import {assertConfigFresh}                   from '../setup/initServerConfigs.mjs';
-import {fileURLToPath, pathToFileURL}        from 'node:url';
+import {fileURLToPath}                       from 'node:url';
+import {isEntryModule}                       from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Runs one temporal-pyramid aggregation cycle and exits. Opt-in gated; runs the stale-overlay boot
@@ -74,6 +75,6 @@ export function reportAggregationFailure(error, {output = console, exit = code =
 
 // Process-entry only: run one cycle when this is the main module, never on import — preserves the
 // process-entry isolation invariant (mirrors the sibling maintenance one-shots).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => reportAggregationFailure(error))
 }

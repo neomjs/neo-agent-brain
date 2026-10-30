@@ -41,6 +41,7 @@ import {
     resolveSessionForIdentity,
     writeCourierReceipt
 } from './claudeCourierTransport.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * Per-entry plan states. `ready` is the only one a courier may send; every other value names a
@@ -344,6 +345,6 @@ export function runCourierCli(argv) {
     return 2
 }
 
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryModule(import.meta.url)) {
     process.exitCode = runCourierCli(process.argv.slice(2))
 }

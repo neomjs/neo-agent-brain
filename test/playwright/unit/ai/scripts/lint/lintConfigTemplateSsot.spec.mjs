@@ -134,6 +134,11 @@ test.describe('ai/scripts/lint-config-template-ssot (#12451 — declarative conf
         daemons.forEach(rel => expect(isThreadEntrypoint({source: read(rel)}), rel).toBe(true))
     });
 
+    test('an isEntryModule guard is an execution boundary; one that names another module is not', () => {
+        expect(isThreadEntrypoint({source: 'if (isEntryModule(import.meta.url)) {\n    run()\n}'})).toBe(true);
+        expect(isThreadEntrypoint({source: 'if (isEntryModule(otherModuleUrl)) {\n    run()\n}'})).toBe(false)
+    });
+
     test('ADR-0019 guard ownership is exact in both directions', () => {
         const adrSource = readFileSync(
                   path.join(process.cwd(), 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md'),

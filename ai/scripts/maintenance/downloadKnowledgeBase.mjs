@@ -25,6 +25,7 @@ import {
     assertCollectionScopedArtifact,
     rehydrateArtifactFromV2
 } from './knowledgeBaseArtifact.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -243,7 +244,7 @@ async function warnOnEmbeddingMismatch({extractDir, embeddingConfig, logger}) {
     }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryModule(import.meta.url)) {
     downloadKnowledgeBase()
         .then(() => process.exit(0))
         .catch(error => {

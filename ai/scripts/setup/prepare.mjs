@@ -2,7 +2,8 @@ import {spawnSync}                              from 'node:child_process';
 import {existsSync, readFileSync, realpathSync} from 'node:fs';
 import path                                     from 'node:path';
 import process                                  from 'node:process';
-import {fileURLToPath, pathToFileURL}           from 'node:url';
+import {fileURLToPath}                          from 'node:url';
+import {isEntryModule}                          from '../../services/shared/isEntryModule.mjs';
 
 const
     __filename = fileURLToPath(import.meta.url),
@@ -146,8 +147,6 @@ export function runPrepare({root=repoRoot, env=process.env, spawnFn=spawnSync}={
     return {skipped, stage: 'done', status: 0}
 }
 
-// Entry identity by realpath on both sides, the Brain's own sibling form: `import.meta.url` is already
-// resolved, so a symlinked invocation path would otherwise compare unequal and run nothing.
-if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+if (isEntryModule(import.meta.url)) {
     process.exitCode = runPrepare().status
 }

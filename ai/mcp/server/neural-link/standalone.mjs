@@ -22,10 +22,10 @@
  */
 
 import {spawn}         from 'node:child_process';
-import {realpathSync}  from 'node:fs';
 import os              from 'node:os';
 import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {isEntryModule} from '../../../services/shared/isEntryModule.mjs';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
@@ -157,8 +157,8 @@ export function superviseChild(child, {pollIntervalMs = 200, proc = process} = {
     return dispose
 }
 
-// `npx` runs a `bin` through a symlink, so both sides are realpathed: comparing the link path with
-// the module URL would never match, and the launcher would load, do nothing and exit 0.
-if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+// `npx` runs this `bin` through a symlink: compared unresolved, the launcher would load, do nothing
+// and exit 0.
+if (isEntryModule(import.meta.url)) {
     superviseChild(launch())
 }

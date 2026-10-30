@@ -64,12 +64,13 @@
  * exits 1 when the defect set (classes 2, 2M, 3) is non-empty — the mechanical-checkability proof
  * for the lint follow-up. Generated reports are derived data: regenerable, never committed.
  */
-import {execFileSync}                 from 'node:child_process';
-import fs                             from 'node:fs';
-import path                           from 'node:path';
-import {fileURLToPath, pathToFileURL} from 'node:url';
-import {parse}                        from 'acorn';
-import * as yaml                      from 'js-yaml';
+import {execFileSync}  from 'node:child_process';
+import fs              from 'node:fs';
+import path            from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {parse}         from 'acorn';
+import * as yaml       from 'js-yaml';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -826,6 +827,6 @@ function main() {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     main();
 }

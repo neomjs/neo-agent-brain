@@ -8,18 +8,18 @@
  * path. Container Memory Core owns matching/coalescing/retry; this process owns only the local
  * final mile.
  */
-import crypto          from 'node:crypto';
-import fs              from 'node:fs/promises';
-import http            from 'node:http';
-import net             from 'node:net';
-import path            from 'node:path';
-import {watch}         from 'node:fs';
-import {pathToFileURL} from 'node:url';
+import crypto  from 'node:crypto';
+import fs      from 'node:fs/promises';
+import http    from 'node:http';
+import net     from 'node:net';
+import path    from 'node:path';
+import {watch} from 'node:fs';
 
 import {WakeReceiverState}                      from './receiverState.mjs';
 import {createReceiverLiveness}                 from './receiverLiveness.mjs';
 import {evaluateContextGate}                    from './contextGatePolicy.mjs';
 import {dispatchLocalWake, probeSessionContext} from './localWakeAdapters.mjs';
+import {isEntryModule}                          from '../../services/shared/isEntryModule.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
 
@@ -869,7 +869,7 @@ export function parseWakeReceiverArgs(argv = process.argv.slice(2)) {
     };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     startWakeReceiver(parseWakeReceiverArgs()).catch(error => {
         console.error(`[Wake Receiver] fatal: ${error.message}`);
         process.exit(1);

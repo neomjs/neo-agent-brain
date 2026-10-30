@@ -1,9 +1,10 @@
 import {computeConvergenceSnapshots}                               from '../services/graph/convergenceCompute.mjs';
 import {buildConvergenceRenderLedger, renderConvergenceLedgerText} from '../services/graph/convergenceRenderLedger.mjs';
+import {isEntryModule}                                             from '../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/examples/convergenceTerrainDemo
- * @summary Convergence-weighted Golden Path — end-to-end demo + lane falsifier (ticket-ref-ok: #14648 owning-leaf anchor; demo leaf of #14581).
+ * @summary Convergence-weighted Golden Path — end-to-end demo + lane falsifier.
  *
  * Runs the full convergence chain — snapshot schema → weighting compute → render-ledger — on a realistic,
  * seeded goal→sub-goal lattice + N imagined futures, and proves the epic's lane-goal: convergence-weighting
@@ -107,6 +108,6 @@ function main() {
 }
 
 // Run only when executed directly (`node ai/examples/convergenceTerrainDemo.mjs`), not when imported by the spec.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryModule(import.meta.url)) {
     main();
 }

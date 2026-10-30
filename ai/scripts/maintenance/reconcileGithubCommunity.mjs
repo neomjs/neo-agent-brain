@@ -2,8 +2,8 @@ import 'dotenv/config';
 import Neo                 from 'neo.mjs/src/Neo.mjs';
 import * as core           from 'neo.mjs/src/core/_export.mjs';
 import fs                  from 'node:fs';
-import {pathToFileURL}     from 'node:url';
 import {classifyAttention} from '../../services/memory-core/communityAttentionClassifier.mjs';
+import {isEntryModule}     from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/reconcileGithubCommunity
@@ -139,4 +139,4 @@ async function main() {
     }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) main();
+if (isEntryModule(import.meta.url)) main();

@@ -1,5 +1,5 @@
 import {execFileSync}  from 'child_process';
-import {fileURLToPath} from 'url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const GH_PR_FIELDS = [
     'author',
@@ -574,7 +574,7 @@ export function runReviewCostMeter(argv = process.argv.slice(2)) {
     return reports
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === fileURLToPath(new URL(`file://${process.argv[1]}`))) {
+if (isEntryModule(import.meta.url)) {
     try {
         runReviewCostMeter()
     } catch (error) {

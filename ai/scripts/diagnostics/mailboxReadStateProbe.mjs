@@ -1,11 +1,11 @@
-import Database        from 'better-sqlite3';
-import path            from 'node:path';
-import {fileURLToPath} from 'node:url';
+import Database from 'better-sqlite3';
+import path     from 'node:path';
 import {
     classifyMailboxReadState,
     createMailboxReadStateFailure,
     validateMailboxReadStateRequest
 } from '../../services/memory-core/helpers/mailboxReadStateClassifier.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/diagnostics/mailboxReadStateProbe
@@ -206,7 +206,6 @@ export function runCli(
     return result.ok ? 0 : 1
 }
 
-const currentFile = fileURLToPath(import.meta.url);
-if (process.argv[1] && path.resolve(process.argv[1]) === currentFile) {
+if (isEntryModule(import.meta.url)) {
     process.exitCode = runCli();
 }

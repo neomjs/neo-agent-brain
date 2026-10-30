@@ -1,12 +1,11 @@
 import 'dotenv/config';
 import {Command}       from 'commander';
-import path            from 'path';
-import {fileURLToPath} from 'url';
 
 import {
     Memory_GraphService as GraphService,
     Memory_LifecycleService
 } from '../../services.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary On-demand Memory/Session graph lifecycle report (storage-growth observability).
@@ -136,7 +135,7 @@ async function main() {
     return {exitCode: census.available ? 0 : 1};
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isEntryModule(import.meta.url)) {
     main()
         .then(({exitCode}) => process.exit(exitCode))
         .catch(error => {

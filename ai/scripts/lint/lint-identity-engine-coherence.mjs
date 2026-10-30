@@ -76,6 +76,7 @@ import fs              from 'node:fs';
 import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {IDENTITIES}    from '../../graph/identityRoots.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /** Version-ish tokens: `4.8`, `5`, `3.1`, `k3`. Bare years are excluded — a date is not a version. */
 const VERSION_TOKEN = /\b(?:v?\d+\.\d+(?:\.\d+)?|k\d+)\b/gi;
@@ -242,6 +243,6 @@ would publish a value that is false half the time.`);
     return {exitCode: 1}
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     process.exit(runLint().exitCode)
 }

@@ -2,7 +2,7 @@
 import * as acorn      from 'acorn';
 import fs              from 'node:fs';
 import path            from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Proves every `ai:*` npm script entry pointing into `ai/scripts` resolves its static
@@ -190,7 +190,7 @@ export function collectUnresolved({entryFile, rootDir, okCache = new Set(), read
     return unresolved;
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     const args                      = process.argv.slice(2),

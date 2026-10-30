@@ -9,10 +9,9 @@
  * dialogue is present. Hook-internal failures still fail open and audit so a buggy hook never traps
  * every turn-end.
  */
-import fs              from 'node:fs';
-import path            from 'node:path';
-import os              from 'node:os';
-import {pathToFileURL} from 'node:url';
+import fs   from 'node:fs';
+import path from 'node:path';
+import os   from 'node:os';
 
 import {parseLaneState}            from '../../parseLaneState.mjs';
 import {classifyPromptingContext,
@@ -27,6 +26,7 @@ import {collectLaneStateToolEvidenceFromJsonl,
         validateLaneStateTerminal} from '../../validateLaneStateTerminal.mjs';
 import {appendHookProjection,
         readConfiguredHookProjection} from '../../hookProjectionReader.mjs';
+import {isEntryModule} from '../../../../services/shared/isEntryModule.mjs';
 
 export const CODEX_STOP_BLOCK_INJECTION_SUPPORTED = true;
 export const CODEX_PROMPT_CONTEXT_TTL_MS           = 10 * 60 * 1000;
@@ -510,12 +510,9 @@ export function summarizePayloadShape(payload = {}) {
  * @returns {{action: ('allow'|'block'|'would-block'), reason: String, source: String, promptSource: String, verdict: Object, phrase: (String|undefined)}}
  */
 export function classifyCodexStopPayload(input = {}, {enforcing = false, logDir, policy} = {}) {
-    // Two-axis turn-end policy, resolved through the same pure-defaults twin the Claude adapter uses
-    // (ticket-ref-ok: ADR 0019 §5.5 names this exact module shape — a non-entrypoint must not import
-    // Neo). INJECTABLE: the live
-    // hook lets it default to the env-resolved policy, while callers that need to pin a policy pass
-    // one explicitly rather than mutating `process.env` — a classifier that can only be exercised by
-    // global env mutation is untestable in-process and invites cross-spec bleed.
+    // Two-axis turn-end policy. INJECTABLE: `main()` passes the policy it resolved, and callers that
+    // need to pin one pass it explicitly rather than mutating `process.env` — a classifier that can
+    // only be exercised by global env mutation is untestable in-process and invites cross-spec bleed.
     // `policy` is REQUIRED and deliberately has no fallback: a hardcoded default here would be a
     // shadow copy of the `stopHook.*` leaves — a hidden default that drifts silently. `main()`
     // resolves it from the config SSOT and always passes it; a missing policy is a wiring bug, and
@@ -691,6 +688,6 @@ async function main() {
     process.exit(0);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     main();
 }

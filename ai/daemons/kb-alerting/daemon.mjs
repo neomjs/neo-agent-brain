@@ -25,11 +25,12 @@ import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
-import logger                         from '../../mcp/server/knowledge-base/logger.mjs';
-import KbAlertingService              from './KbAlertingService.mjs';
-import {fileURLToPath, pathToFileURL} from 'node:url';
-import {assertConfigFresh}            from '../../scripts/setup/initServerConfigs.mjs';
-import AiConfig                       from '../../config.mjs';
+import logger              from '../../mcp/server/knowledge-base/logger.mjs';
+import KbAlertingService   from './KbAlertingService.mjs';
+import {fileURLToPath}     from 'node:url';
+import {assertConfigFresh} from '../../scripts/setup/initServerConfigs.mjs';
+import AiConfig            from '../../config.mjs';
+import {isEntryModule}     from '../../services/shared/isEntryModule.mjs';
 
 const cleanShutdown = signal => {
     logger.info(`[KbAlertingService] Received ${signal}; stopping.`);
@@ -41,7 +42,7 @@ const cleanShutdown = signal => {
 // service ONLY when this daemon is the main module, never on import — preserves the process-entry
 // isolation invariant (mirrors the orchestrator daemon). The guard targets the memory-core overlay:
 // kb-* daemons read config via Memory_Config (that overlay) and own no overlay of their own.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     process.on('SIGTERM', () => cleanShutdown('SIGTERM'));
     process.on('SIGINT',  () => cleanShutdown('SIGINT'));
 

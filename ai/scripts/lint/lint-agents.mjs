@@ -23,10 +23,11 @@
  * @see learn/agentos/decisions/0011-substrate-numbering-convention.md (amendment in progress)
  * @see feedback_agents_md_24kib_hard_cap (review discipline anchor)
  */
-import {execFileSync}    from 'node:child_process';
-import path              from 'node:path';
-import process           from 'node:process';
-import {fileURLToPath}   from 'node:url';
+import {execFileSync}  from 'node:child_process';
+import path            from 'node:path';
+import process         from 'node:process';
+import {fileURLToPath} from 'node:url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -322,7 +323,7 @@ function main() {
     process.exit(exitCode);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     main();
 }
 

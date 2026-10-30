@@ -1,9 +1,8 @@
 // Bootstrap Neo namespace BEFORE importing Memory Core services; runtime config evaluates
 // through the Neo singleton namespace during service setup.
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
-import {Command}       from 'commander';
-import {pathToFileURL} from 'url';
+import Neo       from 'neo.mjs/src/Neo.mjs';
+import * as core from 'neo.mjs/src/core/_export.mjs';
+import {Command} from 'commander';
 
 import {getPendingSessionSummaryCount} from '../../daemons/orchestrator/scheduling/summary.mjs';
 import {
@@ -11,6 +10,7 @@ import {
     Memory_LifecycleService as LifecycleService,
     Memory_StorageRouter as StorageRouter
 } from '../../services.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai.scripts.maintenance.purgeNoContentGraphMemories
@@ -304,6 +304,6 @@ export async function runCli(argv = process.argv) {
     });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     await runCli();
 }

@@ -462,7 +462,7 @@ export default {
         });
 
         test('code behind the import-safe guard does NOT run for an importer', () => {
-            // 98 modules under `ai/` carry `if (process.argv[1] && … === __filename)`. Without this
+            // Every CLI module under `ai/` gates its `main()` on an entry check. Without this
             // test the walk concludes that importing a script runs its `main()`, which promoted
             // the former `lint-skill-manifest`'s git calls onto `backup.mjs`, convicting it against the
             // bundle-stamp decision of ADR-0014 [not-ticket-ref: the authority that was contradicted].
@@ -521,6 +521,23 @@ export default {};`
             const closure = walkCapabilityClosure({entrypoint: '/e.mjs', ...graphOf(files)});
 
             expect(closure.required, 'the guard is the same guard, hoisted').toHaveLength(0);
+        });
+
+        test('the isEntryModule spelling of the guard is recognised', () => {
+            const guarded = `import {spawn} from 'child_process';
+export function main() { return spawn('git', []) }
+if (isEntryModule(import.meta.url)) { main() }`;
+
+            const asImport = walkCapabilityClosure({
+                entrypoint: '/e.mjs',
+                ...graphOf({'/e.mjs': `import {main} from './s.mjs';\nconsole.log('no call');`, '/s.mjs': guarded})
+            });
+
+            expect(asImport.required, 'importing a script does not run it').toHaveLength(0);
+
+            const asEntry = walkCapabilityClosure({entrypoint: '/s.mjs', ...graphOf({'/s.mjs': guarded})});
+
+            expect(asEntry.required, 'running it as the script is the case the guard admits').toHaveLength(1);
         });
 
         test('a re-export barrel is followed to where the value LIVES', () => {

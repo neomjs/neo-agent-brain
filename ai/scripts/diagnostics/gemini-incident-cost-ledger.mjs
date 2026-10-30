@@ -1,8 +1,8 @@
 import fs              from 'node:fs';
 import path            from 'node:path';
 import process         from 'node:process';
-import {fileURLToPath} from 'node:url';
 import {Command}       from 'commander';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * Pre-Flight (structural fast-path): authoring
@@ -504,6 +504,6 @@ function main() {
     }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isEntryModule(import.meta.url)) {
     main();
 }

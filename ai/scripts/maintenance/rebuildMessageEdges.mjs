@@ -1,8 +1,8 @@
 import {resolveTicketReference} from '../../services/graph/ticketReferences.mjs';
-import {Command}       from 'commander';
-import Database        from 'better-sqlite3';
-import path            from 'node:path';
-import {pathToFileURL} from 'node:url';
+import {Command}                from 'commander';
+import Database                 from 'better-sqlite3';
+import path                     from 'node:path';
+import {isEntryModule}          from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/rebuildMessageEdges
@@ -204,7 +204,7 @@ export function runCli(argv = process.argv) {
     return runRebuildMessageEdges({dbPath: options.dbPath, apply: options.apply, types: options.types});
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     try {
         runCli();
     } catch (error) {

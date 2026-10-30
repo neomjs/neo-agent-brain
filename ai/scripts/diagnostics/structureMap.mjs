@@ -16,7 +16,7 @@ import {Command}       from 'commander';
 import fs              from 'node:fs';
 import path            from 'node:path';
 import process         from 'node:process';
-import {fileURLToPath} from 'node:url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const DEFAULT_ROOT = 'ai';
 
@@ -326,7 +326,7 @@ export async function main(argv=process.argv.slice(2), io={}) {
     return writeStructureMap(options, io);
 }
 
-const isDirectCli = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+const isDirectCli = isEntryModule(import.meta.url);
 
 if (isDirectCli) {
     // Routed through `main()` rather than calling `writeStructureMap` directly: `main` is where the

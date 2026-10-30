@@ -5,8 +5,8 @@ import Neo                   from 'neo.mjs/src/Neo.mjs';
 import * as core             from 'neo.mjs/src/core/_export.mjs';
 import fs                    from 'fs';
 import os                    from 'os';
-import {pathToFileURL}       from 'url';
 import SourceRegistryService from '../../services/memory-core/SourceRegistryService.mjs';
+import {isEntryModule}       from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/communitySourceOperator
@@ -143,7 +143,7 @@ async function communitySourceOperator() {
     }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     communitySourceOperator()
 }
 

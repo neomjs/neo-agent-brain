@@ -26,7 +26,7 @@ import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
-import {fileURLToPath, pathToFileURL}                                    from 'url';
+import {fileURLToPath}                                                   from 'url';
 import fs                                                                from 'fs-extra';
 import path                                                              from 'path';
 import {execSync}                                                        from 'child_process';
@@ -45,6 +45,7 @@ import {
     collectPlaneMembers,
     resolvePlaneDataRoot
 } from '../../planeConfig.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const ORCHESTRATOR_DAEMON_PATH_TAIL = 'ai/daemons/orchestrator/daemon.mjs';
 
@@ -515,7 +516,7 @@ export async function bootOrchestratorCli() {
     return startOrchestrator();
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     bootOrchestratorCli().catch(err => {
         console.error(`[Orchestrator] Failed to start: ${err && err.stack ? err.stack : err}`);
         process.exit(1);

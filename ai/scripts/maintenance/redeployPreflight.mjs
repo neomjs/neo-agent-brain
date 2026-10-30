@@ -12,6 +12,7 @@ import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import AiConfig        from '../../config.mjs';
 
 import {verifyLatestBackupRestorable} from './restore.mjs';
+import {isEntryModule}                from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/redeployPreflight
@@ -480,7 +481,7 @@ async function main() {
     }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename)) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => {
         // A preflight that cannot decide must REFUSE. Failing open here would make an unreadable
         // bundle root indistinguishable from a verified one, which is the whole defect inverted.

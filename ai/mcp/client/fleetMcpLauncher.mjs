@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-import {spawn}                        from 'node:child_process';
-import crypto                         from 'node:crypto';
-import fs                             from 'node:fs';
-import http                           from 'node:http';
-import path                           from 'node:path';
-import {fileURLToPath, pathToFileURL} from 'node:url';
+import {spawn}         from 'node:child_process';
+import crypto          from 'node:crypto';
+import fs              from 'node:fs';
+import http            from 'node:http';
+import path            from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {
     LAUNCH_ADMISSION_CREDENTIALS as CREDENTIALS,
     LAUNCH_ADMISSION_OUTCOMES    as OUTCOMES,
@@ -24,6 +24,7 @@ import {
     parseLaunchCapability,
     verifyLaunchResponse
 }                                               from '../../services/fleet/mcpLaunchAdmission.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 export const
     REFRESH_ENV_MESSAGE_TYPE        = 'neo-fleet-mcp-refresh-env',
@@ -403,7 +404,7 @@ export function postAdmission(origin, body, {timeoutMs}) {
     }).finally(() => clearTimeout(timer))
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     const launchArgs = process.argv.slice(2);
 
     admitLaunch({argv: launchArgs, env: process.env})

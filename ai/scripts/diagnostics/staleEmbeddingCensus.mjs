@@ -55,8 +55,9 @@ import {
     foldStaleEmbeddingCensus,
     mergeStaleEmbeddingCensus
 }                                    from '../../services/knowledge-base/helpers/staleEmbeddingCensus.mjs';
-import ChromaManager from '../../services/knowledge-base/ChromaManager.mjs';
-import fs            from 'fs-extra';
+import ChromaManager   from '../../services/knowledge-base/ChromaManager.mjs';
+import fs              from 'fs-extra';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 // `ChromaManager` rather than a raw `chromadb` client, deliberately. The migration scripts under
 // `ai/scripts/migrations/` construct their own client because they must target arbitrary hosts; this
@@ -237,7 +238,7 @@ async function main() {
 
 // Guarded so a spec can import `parseArgs` / `censusCollection` without the script connecting to
 // anything. An unguarded top-level call would make importing this module a live Chroma attempt.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => {
         console.error(`staleEmbeddingCensus failed: ${error.message}`);
         process.exitCode = 1;

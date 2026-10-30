@@ -20,8 +20,6 @@
 import Neo                                               from 'neo.mjs/src/Neo.mjs';
 import * as core                                         from 'neo.mjs/src/core/_export.mjs';
 import { createHash }                                    from 'crypto';
-import path                                              from 'path';
-import { fileURLToPath }                                 from 'url';
 import LifecycleService                                  from '../../services/memory-core/lifecycle/SystemLifecycleService.mjs';
 import GraphService                                      from '../../services/memory-core/GraphService.mjs';
 import AiConfig                                          from '../../config.mjs';
@@ -29,6 +27,7 @@ import memoryCoreConfig                                  from '../../mcp/server/
 import {resolveTargets}                                  from '../../daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
 import { checkInflightLock }                             from './inflightLock.mjs';
 import {participationByIdentity, readAgentIdentityNodes} from '../../graph/agentIdentityParticipation.mjs';
+import {isEntryModule}                                   from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Derive a logical all-agent-idle cycle id from the observed identity state.
@@ -159,7 +158,7 @@ async function main() {
     console.log(JSON.stringify(signal));
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     main().catch(err => {

@@ -26,6 +26,7 @@ import {
     isActiveWakeSubscriptionStatus,
     WAKE_SUBSCRIPTION_DEFAULT_STATUS
 } from '../../services/memory-core/wakeSubscriptionStatusPolicy.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 const neoRoot    = path.resolve(__dirname, '../..');
@@ -62,11 +63,11 @@ export function runMigration(db, applyOrOptions = false) {
           now     = options.now || new Date().toISOString();
 
     const stats = {
-        subscriptionsPatched       : 0,
-        subscriptionsSkipped       : 0,
-        genericDefaultMarked       : 0,
-        genericDuplicatesRetired   : 0,
-        genericNamedPeerUnresolved : 0
+        subscriptionsPatched      : 0,
+        subscriptionsSkipped      : 0,
+        genericDefaultMarked      : 0,
+        genericDuplicatesRetired  : 0,
+        genericNamedPeerUnresolved: 0
     };
 
     const work = () => {
@@ -249,9 +250,9 @@ function isDefaultInstanceRoute(meta = {}) {
 }
 
 function isUnresolvedGenericNamedPeer(record) {
-    const namedIds = new Set(IDENTITIES.map(identity => identity.id)),
-          props    = record.data.properties || {},
-          meta     = props.harnessTargetMetadata || {},
+    const namedIds      = new Set(IDENTITIES.map(identity => identity.id)),
+          props         = record.data.properties || {},
+          meta          = props.harnessTargetMetadata || {},
           {addressType} = resolveRouteAddress(meta);
 
     return !addressType && meta.appName && namedIds.has(props.agentIdentity) && !isDefaultInstanceRoute(meta);
@@ -293,10 +294,10 @@ function markDefaultInstance(record, {apply, db, now}) {
 
     props.harnessTargetMetadata = {
         ...meta,
-        defaultInstance : true,
-        routeResolution : 'default-instance',
-        routeResolvedAt : now,
-        routeResolvedBy : 'migrateWakeSubscriptions#genericNamedPeer'
+        defaultInstance: true,
+        routeResolution: 'default-instance',
+        routeResolvedAt: now,
+        routeResolvedBy: 'migrateWakeSubscriptions#genericNamedPeer'
     };
     props.updatedAt = now;
     record.data.properties = props;
@@ -370,7 +371,7 @@ export function auditWakeRoutes(db) {
         if (!isActiveSubscription(props)) continue;
         scanned++;
 
-        const meta = props.harnessTargetMetadata || {},
+        const meta                           = props.harnessTargetMetadata || {},
               {addressType, instanceAddress} = resolveRouteAddress(meta);
 
         if (addressType && !instanceAddress) {
@@ -440,7 +441,7 @@ async function main() {
     console.log();
 
     const Database = (await import('better-sqlite3')).default;
-    const db = new Database(dbPath, {verbose: null});
+    const db       = new Database(dbPath, {verbose: null});
 
     try {
         if (args.audit) {
@@ -474,7 +475,7 @@ async function main() {
     }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     main().catch(err => {
         console.error('[migrateWakeSubscriptions] FATAL:', err);
         process.exit(1);

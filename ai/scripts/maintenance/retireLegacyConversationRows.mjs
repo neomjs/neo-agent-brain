@@ -3,7 +3,7 @@
 import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 import {Command}       from 'commander';
-import {pathToFileURL} from 'url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai.scripts.maintenance.retireLegacyConversationRows
@@ -387,7 +387,7 @@ export async function runCli(argv = process.argv) {
     return outcome.result
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     try {
         await runCli()
     } catch (error) {

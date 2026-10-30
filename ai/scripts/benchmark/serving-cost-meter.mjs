@@ -8,6 +8,7 @@ import Neo                from 'neo.mjs/src/Neo.mjs';
 import 'neo.mjs/src/core/_export.mjs';
 import aiConfig                           from '../../mcp/server/memory-core/config.mjs';
 import {aggregateWindow, buildMetricBags} from './helpers/servingCostCore.mjs';
+import {isEntryModule}                    from '../../services/shared/isEntryModule.mjs';
 
 const run = promisify(execFile);
 
@@ -310,7 +311,7 @@ async function main() {
 // statement-initial `import.meta` (it is ambiguous with an import declaration until the `.`), and a
 // parse failure drops the WHOLE file from analysis — 312 unscanned lines reported as one warning on a
 // settings page, while the PR check still says `pass`. Node parses either form; only one gets scanned.
-const isDirectRun = import.meta.url === `file://${process.argv[1]}`;
+const isDirectRun = isEntryModule(import.meta.url);
 
 if (isDirectRun) {
     main().catch(error => {

@@ -4,9 +4,9 @@ import {Command}                   from 'commander';
 import Neo                         from 'neo.mjs/src/Neo.mjs';
 import * as core                   from 'neo.mjs/src/core/_export.mjs';
 import os                          from 'os';
-import {pathToFileURL}             from 'url';
 import FleetRegistryService        from '../../services/fleet/FleetRegistryService.mjs';
 import SeatOperatorRegistryService from '../../services/fleet/SeatOperatorRegistryService.mjs';
+import {isEntryModule}             from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/fleet/seatOperators
@@ -127,7 +127,7 @@ function seatOperators() {
     process.exit(result.ok ? 0 : 1)
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     seatOperators()
 }
 

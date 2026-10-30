@@ -87,6 +87,7 @@ import {
     resolveRef,
     SERVERS
 } from '../diagnostics/mcpHandlerSignatureCensus.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -886,7 +887,7 @@ export function describeViolation(violation) {
     return [`- ${violation.operationId} reads \`${violation.param}\` — not declared in ${violation.spec}`, where];
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryModule(import.meta.url)) {
     const result = lintParity();
 
     // Printed BEFORE the failing arm, so a run that exits 1 still surfaces both directions rather

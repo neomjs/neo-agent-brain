@@ -11,12 +11,12 @@
  *
  * **Why copies and not symlinks — measured, not assumed.** Symlinking is the transport the sibling
  * skills materializer uses, and for skills it is correct: those are data files, read and never run.
- * Hooks are executables, and every one of them gates `main()` on
+ * Hooks are executables, and when this transport was chosen every one of them gated `main()` on
  * `import.meta.url === pathToFileURL(process.argv[1]).href`. Through a symlink `argv[1]` keeps the
- * link path while `import.meta.url` resolves to the realpath, so the guard is false: the module
+ * link path while `import.meta.url` resolves to the realpath, so that guard is false: the module
  * loads, `main()` never runs, the process exits 0, and nothing anywhere reports a problem. A
  * silently dead hook is the exact failure this projection exists to end, so the transport that
- * produces one is unavailable regardless of how convenient it is.
+ * produced one was unavailable. The hooks now gate on `isEntryModule`, which resolves both sides.
  *
  * Two roots, never conflated: `agentosRuntimeRoot` is where the sources live and
  * what rewritten specifiers point at; `targetRepoRoot` is the destination only. Neither defaults to
@@ -27,6 +27,7 @@ import {execFileSync}                 from 'node:child_process';
 import fs                             from 'node:fs';
 import path                           from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
+import {isEntryModule}                from '../../../services/shared/isEntryModule.mjs';
 
 const
     dirname = path.dirname(fileURLToPath(import.meta.url)),
@@ -1430,10 +1431,9 @@ export function main(argv) {
     return 0
 }
 
-// Direct-execution guard. Deliberately compares against the realpath of argv[1]: through a symlink
-// the two disagree and main() would never run, which is the silent-no-op this projector exists to
-// prevent — so the hooks are copied rather than linked (see the module header).
-if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
+// Direct-execution guard. Through a symlink an unresolved check would be false and main() would never
+// run, the silent no-op this projector exists to prevent (see the module header).
+if (isEntryModule(import.meta.url)) {
     try {
         process.exit(main(process.argv.slice(2)))
     } catch (error) {

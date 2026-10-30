@@ -60,13 +60,13 @@
 import Neo                              from 'neo.mjs/src/Neo.mjs';
 import * as core                        from 'neo.mjs/src/core/_export.mjs';
 import path                             from 'path';
-import { fileURLToPath }                from 'url';
 import LifecycleService                 from '../../services/memory-core/lifecycle/SystemLifecycleService.mjs';
 import {isActiveWakeSubscriptionStatus} from '../../services/memory-core/wakeSubscriptionStatusPolicy.mjs';
 import GraphService                     from '../../services/memory-core/GraphService.mjs';
 import AiConfig                         from '../../config.mjs';
 import memoryCoreConfig                 from '../../mcp/server/memory-core/config.mjs';
 import { checkInflightLock }            from './inflightLock.mjs';
+import {isEntryModule}                  from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Compute the sunset / idle-out detector payload for one agent identity.
@@ -246,7 +246,7 @@ async function main() {
     console.log(JSON.stringify(result));
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     main().catch(err => {

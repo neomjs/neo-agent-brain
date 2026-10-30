@@ -23,6 +23,7 @@ import fs              from 'node:fs';
 import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
 import Database        from 'better-sqlite3';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -260,6 +261,6 @@ export function main({
     return 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     process.exitCode = main({projectRoot: resolveCliProjectRoot()});
 }

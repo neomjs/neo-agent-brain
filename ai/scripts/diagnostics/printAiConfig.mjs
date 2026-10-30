@@ -30,6 +30,7 @@
  */
 import path                           from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
+import {isEntryModule}                from '../../services/shared/isEntryModule.mjs';
 
 const neoRootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -129,7 +130,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isEntryModule(import.meta.url)) {
     main().catch(err => {
         console.error(`[ai:config-print] ${err.message}`);
         process.exit(1)

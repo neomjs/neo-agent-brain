@@ -25,7 +25,6 @@
  */
 
 import path            from 'node:path';
-import {fileURLToPath} from 'node:url';
 import {
     canonicalRawMemoryGraphId,
     LEGACY_RAW_MEMORY_NODE_LABEL,
@@ -34,6 +33,7 @@ import {
     normalizeRawMemoryUserId,
     RAW_MEMORY_NODE_LABEL
 } from '../../services/memory-core/helpers/rawMemoryGraphIdentity.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const
     PAGE_SIZE            = 2000,
@@ -622,7 +622,7 @@ async function main() {
     }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => {
         console.error(`reconcileRawMemoryGraphIdentities failed: ${error.message}`);
         process.exitCode = 1

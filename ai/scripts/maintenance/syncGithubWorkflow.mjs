@@ -32,8 +32,9 @@ import fs                from 'node:fs/promises';
 import path              from 'node:path';
 import {validateSegment} from '../../services/github-workflow/shared/contentPath.mjs';
 
-import {withHeavyMaintenanceLease}    from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
-import {fileURLToPath, pathToFileURL} from 'url';
+import {withHeavyMaintenanceLease} from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
+import {fileURLToPath}             from 'url';
+import {isEntryModule}             from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/syncGithubWorkflow
@@ -257,7 +258,7 @@ async function syncGithubWorkflow() {
     process.exit(0);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     syncGithubWorkflow();
 }
 

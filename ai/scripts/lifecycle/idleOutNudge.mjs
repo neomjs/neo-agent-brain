@@ -56,7 +56,6 @@
 import Neo                                                       from 'neo.mjs/src/Neo.mjs';
 import * as core                                                 from 'neo.mjs/src/core/_export.mjs';
 import path                                                      from 'path';
-import {fileURLToPath}                                           from 'url';
 import LifecycleService                                          from '../../services/memory-core/lifecycle/SystemLifecycleService.mjs';
 import GraphService                                              from '../../services/memory-core/GraphService.mjs';
 import WakeSubscriptionService                                   from '../../services/memory-core/WakeSubscriptionService.mjs';
@@ -64,6 +63,7 @@ import RequestContextService                                     from '../../mcp
 import memoryCoreConfig                                          from '../../mcp/server/memory-core/config.mjs';
 import {hasOverride, readGateState}                              from './wakeSafetyGate.mjs';
 import {writeInflightLock, clearInflightLock, checkInflightLock} from './inflightLock.mjs';
+import {isEntryModule}                                           from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Dispatch a single idle-out heartbeat pulse to the target identity.
@@ -163,7 +163,7 @@ async function main() {
     await idleOutNudge(identity, {wakeDaemonDir: memoryCoreConfig.wakeDaemon.dataDir});
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     main().catch(err => {

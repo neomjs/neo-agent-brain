@@ -48,10 +48,9 @@
  * unlocked fall-through: a live holder is never reclaimed, a dead one is reclaimed via liveness
  * probe, and a late release can never delete a successor's lock.
  */
-import crypto          from 'node:crypto';
-import fs              from 'node:fs/promises';
-import path            from 'node:path';
-import {pathToFileURL} from 'node:url';
+import crypto from 'node:crypto';
+import fs     from 'node:fs/promises';
+import path   from 'node:path';
 
 import {loadWakeReceiverManifest} from './receiver.mjs';
 import {withOutboxLock}           from './outboxLock.mjs';
@@ -64,6 +63,7 @@ import {
     isActiveWakeSubscriptionStatus,
     WAKE_SUBSCRIPTION_DEFAULT_STATUS
 } from '../../services/memory-core/wakeSubscriptionStatusPolicy.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * Default per-attempt dispatch budget, in milliseconds.
@@ -762,7 +762,7 @@ async function readStream(stream) {
     return Buffer.concat(chunks).toString('utf8')
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     runManifestBuilder(parseManifestBuilderArgs()).catch(error => {
         console.error(`[Wake Manifest] fatal: ${error.message}`);
         process.exit(1)

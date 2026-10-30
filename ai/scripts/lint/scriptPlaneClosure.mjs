@@ -13,8 +13,8 @@ import path            from 'node:path';
  * is entrypoint-owned authority × transitive capability closure, and this module is the closure half.
  *
  * **The load-bearing distinction is REQUIREMENT vs USE.** A script that *reaches* a host capability
- * on a path that degrades gracefully does not *require* a host. ADR-0014 settles this — ticket-ref-ok:
- * the ADR is the authority that defines the distinction, not background reading — on
+ * on a path that degrades gracefully does not *require* a host. ADR-0014 [not-ticket-ref: authority]
+ * settles this, as the authority that defines the distinction rather than background reading, on
  * `ai/scripts/maintenance/backup.mjs`, whose `git rev-parse HEAD` bundle-meta stamp is explicitly
  * ruled a non-dependency because it degrades to `null` without `.git`:
  *
@@ -138,7 +138,7 @@ export function walkWithAncestors(node, visit, ancestors = []) {
  * Rethrowing or exiting means the capability was REQUIRED after all — the guard only converts the
  * error's shape, it does not survive its absence. Anything else (logging, a fallback assignment, an
  * empty body) means the program continues without the capability — the graceful-degradation shape
- * ADR-0014 accepts. ticket-ref-ok: the ADR is the authority this predicate implements.
+ * ADR-0014 [not-ticket-ref: the authority this predicate implements] accepts.
  *
  * @param {Object} handler ESTree CatchClause.
  * @returns {Boolean} true when the handler rethrows or exits.
@@ -176,7 +176,7 @@ export function handlerAborts(handler) {
  * executor in `gitMirror` — none of which run because `backup.mjs` was imported.
  *
  * Attributing those to the entrypoint marks it host-required, which is precisely the false positive
- * ADR-0014 rules out — ticket-ref-ok: the ADR is the authority this predicate implements.
+ * ADR-0014 [not-ticket-ref: the authority this predicate implements] rules out.
  * Reachability is not invocation, and a closure that conflates them says
  * "everything is host-edge" with great confidence.
  *
@@ -253,13 +253,13 @@ function isMemberKeyNode(node) {
 /**
  * @summary Whether a node sits inside this repository's import-safe guard.
  *
- * `if (process.argv[1] && path.resolve(process.argv[1]) === __filename) { … }` is the house pattern —
- * 98 modules under `ai/` carry it — and it means exactly one thing: **this runs when I am the process
- * entry, and not when someone imports me.** A module-scope call is otherwise invoked by construction,
- * so without this test the walk concludes that importing `lint-skill-manifest.mjs` runs its `main()`,
- * and from there its `execFileSync` sites, and from there that `backup.mjs` requires a host shell —
- * convicting the one file ADR-0014 rules the other way. ticket-ref-ok: the ADR is the authority the
- * conclusion would have contradicted.
+ * `if (isEntryModule(import.meta.url)) { … }` is the house pattern, and it means exactly one thing:
+ * **this runs when I am the process entry, and not when someone imports me.** A hand-rolled test that
+ * compares `process.argv[1]` with the module means the same and reads the same here. A module-scope
+ * call is otherwise invoked by construction, so without this test the walk concludes that importing
+ * `lint-skill-manifest.mjs` runs its `main()`, and from there its `execFileSync` sites, and from there
+ * that `backup.mjs` requires a host shell, convicting the one file that
+ * ADR-0014 [not-ticket-ref: the authority the conclusion would contradict] rules the other way.
  *
  * This is requirement-vs-use again, one level up: the guard is the syntax that separates "this module's
  * top level ran" from "this module's top level ran AS THE SCRIPT".
@@ -491,10 +491,10 @@ export function collectModuleFacts(source) {
 
         // A capability rarely reaches its call site under its imported name. `backup.mjs` binds
         // `const execFileAsync = promisify(execFile)` — so a detector that only knows import bindings
-        // reports ZERO capability sites for the very file ADR-0014 uses as its fixture — ticket-ref-ok:
-        // the ADR names that file as the canonical case — which is a
-        // false negative dressed as a clean result. Derivation is therefore tracked through simple
-        // aliasing and single-argument wrappers (`promisify`, `util.promisify`) before calls are read.
+        // reports ZERO capability sites for the very file ADR-0014 [not-ticket-ref: authority] names
+        // as its canonical case, a false negative dressed as a clean result. Derivation is therefore
+        // tracked through simple aliasing and single-argument wrappers (`promisify`, `util.promisify`)
+        // before calls are read.
         if (node.type === 'VariableDeclarator' && node.id?.type === 'Identifier' && node.init) {
             const {init} = node,
                   alias  = init.type === 'Identifier' ? init.name
@@ -711,7 +711,7 @@ const MAX_SUPERCLASS_DEPTH = 12,
  *
  * What "required" can mean here, stated because neither pure answer is usable. A static graph cannot
  * decide invocation, and the two sound extremes are both wrong: counting every reachable call convicts
- * `backup.mjs` against ADR-0014 — ticket-ref-ok: the ADR is the authority being satisfied — because its
+ * `backup.mjs` against ADR-0014 [not-ticket-ref: the authority being satisfied], because its
  * closure reaches `spawn` inside methods nothing calls; counting only module-scope calls classifies the
  * ENTIRE tree as in-plane, because real code puts its shell calls inside functions.
  *

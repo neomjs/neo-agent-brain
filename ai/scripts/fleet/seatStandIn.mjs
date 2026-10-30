@@ -2,11 +2,11 @@
 import crypto                                        from 'node:crypto';
 import fs                                            from 'node:fs';
 import path                                          from 'node:path';
-import {fileURLToPath}                               from 'node:url';
 import {parse as parseToml}                          from 'smol-toml';
 import {Client}                                      from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport, getDefaultEnvironment} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {StreamableHTTPClientTransport}               from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {isEntryModule}                               from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/fleet/seatStandIn
@@ -243,7 +243,7 @@ export async function main({argv, env}) {
     setInterval(() => {}, 1 << 30)
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryModule(import.meta.url)) {
     main({argv: process.argv.slice(2), env: process.env}).catch(error => {
         process.stderr.write(`seatStandIn: ${error.message}\n`);
         process.exit(1)

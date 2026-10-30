@@ -1,4 +1,4 @@
-import {pathToFileURL} from 'node:url';
+import {isEntryModule} from '../../../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/lifecycle/hooks/claude/harnessIdGuardHook
@@ -104,6 +104,6 @@ async function main() {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     await main().catch(() => {});
 }

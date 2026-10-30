@@ -1,7 +1,7 @@
 import 'dotenv/config';
 
 import {Command, InvalidArgumentError} from 'commander';
-import {pathToFileURL}                 from 'node:url';
+import {isEntryModule}                 from '../../services/shared/isEntryModule.mjs';
 
 /**
  * Pre-Flight (structural fast-path): authoring
@@ -221,7 +221,7 @@ export function analyzeEmbeddingInstances(payload, {
  */
 export async function fetchModels({url, timeoutMs = DEFAULT_TIMEOUT_MS, fetchImpl = fetch}) {
     const abortController = new AbortController();
-    const timer = setTimeout(() => abortController.abort(), timeoutMs);
+    const timer           = setTimeout(() => abortController.abort(), timeoutMs);
 
     try {
         const response = await fetchImpl(url, {signal: abortController.signal});
@@ -315,6 +315,6 @@ async function main() {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     await main();
 }

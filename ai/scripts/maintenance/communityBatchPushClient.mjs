@@ -5,9 +5,9 @@ import Neo                      from 'neo.mjs/src/Neo.mjs';
 import * as core                from 'neo.mjs/src/core/_export.mjs';
 import crypto                   from 'crypto';
 import fs                       from 'fs';
-import {pathToFileURL}          from 'url';
 import Client                   from '../../mcp/client/Client.mjs';
 import {validateHostedEnvelope} from '../../services/memory-core/communityBatchContract.mjs';
+import {isEntryModule}          from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/communityBatchPushClient
@@ -239,7 +239,7 @@ async function communityBatchPushClient() {
     }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     communityBatchPushClient()
 }
 

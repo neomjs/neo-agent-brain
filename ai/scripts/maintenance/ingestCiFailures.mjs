@@ -6,7 +6,6 @@ import * as core                  from 'neo.mjs/src/core/_export.mjs';
 import {Command}                  from 'commander';
 import path                       from 'node:path';
 import {readFile}                 from 'node:fs/promises';
-import {pathToFileURL}            from 'node:url';
 import {createPlaneMailboxClient} from '../../services/fleet/planeMailboxClient.mjs';
 import {writeFileAtomic}          from '../../services/shared/atomicFileWrite.mjs';
 import {
@@ -20,8 +19,9 @@ import {
     parsePlaywrightReport,
     selectRecoveryCandidates
 } from '../../services/ingestion/CiFailureIngestor.mjs';
-import {createGithubActionsClient, resolveGithubToken}   from '../../services/ingestion/githubActions.mjs';
+import {createGithubActionsClient, resolveGithubToken} from '../../services/ingestion/githubActions.mjs';
 import {defectNoteFingerprint, foldDefectObservations} from '../../services/memory-core/helpers/defectObservationFold.mjs';
+import {isEntryModule}                                 from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/ingestCiFailures
@@ -83,7 +83,7 @@ const OVERLAP_MS           = 2 * 60 * 60 * 1000;
 const MAILBOX_PAGE_SIZE    = 100;
 const THREAD_READ_CAP      = 500;
 // The error codes of an absent input, as opposed to a failing one
-const UNCONFIGURED         = new Set(['github-token-unset', 'plane-base-unset']);
+const UNCONFIGURED = new Set(['github-token-unset', 'plane-base-unset']);
 
 /**
  * @summary Builds the Commander program; a fresh instance per call keeps parser tests isolated.
@@ -306,11 +306,11 @@ export async function runIngest({
     dryRun          = false,
     log             = message => console.error(message)
 }) {
-    const since                  = resolveSince({receipt, now, lookbackMs}),
-          {runs, continuations}  = await listTickRuns({github, receipt, since}),
-          seen                   = new Set(receipt.runIds),
-          pending                = new Set(receipt.pendingRunIds || []),
-          summary                = {
+    const since                 = resolveSince({receipt, now, lookbackMs}),
+          {runs, continuations} = await listTickRuns({github, receipt, since}),
+          seen                  = new Set(receipt.runIds),
+          pending               = new Set(receipt.pendingRunIds || []),
+          summary               = {
               since,
               runsRead           : 0,
               jobsRead           : 0,
@@ -635,7 +635,7 @@ export async function main(argv) {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isEntryModule(import.meta.url)) {
     main(process.argv.slice(2)).then(
         code => process.exit(code),
         error => {

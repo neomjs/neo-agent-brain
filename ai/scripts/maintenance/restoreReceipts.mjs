@@ -1,10 +1,10 @@
-import {Command}       from 'commander';
-import Database        from 'better-sqlite3';
-import fs              from 'node:fs';
-import path            from 'node:path';
-import {pathToFileURL} from 'node:url';
+import {Command} from 'commander';
+import Database  from 'better-sqlite3';
+import fs        from 'node:fs';
+import path      from 'node:path';
 
 import {isBundlePayload, openBundlePayload} from '../../services/shared/bundlePayload.mjs';
+import {isEntryModule}                      from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/restoreReceipts
@@ -343,7 +343,7 @@ export async function runCli(argv = process.argv) {
     return runRestoreReceipts({dbPath: options.dbPath, source: options.source, apply: options.apply, edgeTypes: options.edgeTypes});
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     runCli().catch(error => {
         console.error(`[restoreReceipts] ${error.message}`);
         process.exit(1);
