@@ -155,7 +155,8 @@ test.describe('Memory Core Config (#10010)', () => {
     });
 
     test('inherits the Tier-1 active-session idle threshold (#9959)', () => {
-        expect(config.orchestrator.swarmHeartbeat.idleThresholdMs).toBe(10 * 60 * 1000);
+        // The number itself is pinned once, in the Tier-1 template spec; this spec owns the inheritance.
+        expect(config.orchestrator.swarmHeartbeat.idleThresholdMs).toBe(tier1Config.orchestrator.swarmHeartbeat.idleThresholdMs);
     });
 
     test('inherits concrete graphProvider defaults from Tier-1 config', () => {
