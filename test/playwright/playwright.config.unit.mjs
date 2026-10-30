@@ -1,3 +1,5 @@
+// First, so nothing the starting shell carries reaches what the resolver binds next
+import './isolateUnitEnvironment.mjs';
 import './configTemplateResolver.mjs';
 
 import {defineConfig}                             from '@playwright/test';
