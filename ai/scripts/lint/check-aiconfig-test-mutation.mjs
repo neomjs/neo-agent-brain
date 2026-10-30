@@ -6,12 +6,13 @@
  * removed that copy. Brain owns both the Agent OS config contract and the tests this guard scans;
  * the Engine package is never a fallback distribution channel for this implementation.
  */
-import * as acorn                     from 'acorn';
-import {execSync, spawnSync}          from 'node:child_process';
-import {readFileSync, writeFileSync}  from 'node:fs';
-import path                           from 'node:path';
-import process                        from 'node:process';
-import {fileURLToPath}                from 'node:url';
+import * as acorn                    from 'acorn';
+import {execSync, spawnSync}         from 'node:child_process';
+import {readFileSync, writeFileSync} from 'node:fs';
+import path                          from 'node:path';
+import process                       from 'node:process';
+import {fileURLToPath}               from 'node:url';
+import {isEntryModule}               from '../../services/shared/isEntryModule.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -335,7 +336,7 @@ export const SHARED_CONFIG_ASSIGN_CALL = new RegExp(
     `\\s*,`
 );
 
-const SHARED_CONFIG_MUTATION_GLOBAL   = new RegExp(SHARED_CONFIG_MUTATION.source, 'g'),
+const SHARED_CONFIG_MUTATION_GLOBAL    = new RegExp(SHARED_CONFIG_MUTATION.source, 'g'),
       SHARED_CONFIG_ASSIGN_CALL_GLOBAL = new RegExp(SHARED_CONFIG_ASSIGN_CALL.source, 'g');
 
 /**
@@ -379,9 +380,9 @@ export function findSharedConfigMutations(content) {
             for (const match of line.matchAll(pattern)) {
                 if (mask[match.index]) {
                     hits.push({
-                        line : index + 1,
-                        text : line.trim(),
-                        leaf : form === 'assign-call'
+                        line: index + 1,
+                        text: line.trim(),
+                        leaf: form === 'assign-call'
                             // the call carries the config path, not the callee: `Object.assign(` is noise here
                             ? match[0].slice(match[0].indexOf('(') + 1).replace(/\s*,\s*$/, '')
                             : match[0].replace(/^[\w$]+/, '').replace(/\s*=(?![=>]).*$/, ''),
@@ -526,7 +527,7 @@ export const ADR_0019_RULES = Object.freeze([
     Object.freeze({id: 'B4', scope: 'full',           detect: findSharedConfigMutations, gating: false})
 ]);
 
-const GATING_RULE = ADR_0019_RULES.find(rule => rule.gating),
+const GATING_RULE      = ADR_0019_RULES.find(rule => rule.gating),
       REPORT_ONLY_RULE = ADR_0019_RULES.find(rule => !rule.gating);
 
 /**
@@ -558,7 +559,7 @@ export function scanFileContent(file, content, {allowlist = ALLOWLIST} = {}) {
         // that reasoning to an unrelated leaf is how a narrow exemption becomes a blanket bypass. An
         // allowlisted file still shows its shared-config writes, and still answers to its ceiling.
         sharedConfigHits: REPORT_ONLY_RULE.detect(content),
-        cloneHits        : findCloneCaptures(content)
+        cloneHits       : findCloneCaptures(content)
     }
 }
 
@@ -700,8 +701,8 @@ function main() {
         process.exit(0);
     }
 
-    const violations        = [],
-          cloneViolations   = [],
+    const violations         = [],
+          cloneViolations    = [],
           sharedConfigWrites = [];
 
     for (const file of files) {
@@ -811,7 +812,7 @@ function main() {
         `(DB-path + restore-capture + per-file ceiling). ${sharedConfigWrites.length} shared-config write(s) reported above.`);
 }
 
-const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === __filename;
+const invokedDirectly = isEntryModule(import.meta.url);
 if (invokedDirectly) {
     main()
 }

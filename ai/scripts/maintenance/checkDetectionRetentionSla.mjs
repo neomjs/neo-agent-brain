@@ -43,12 +43,12 @@
  * the required ceiling so the message carries the remedy rather than only the symptom.
  */
 
-import {pathToFileURL} from 'url';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import AiConfig        from '../../config.template.mjs';
+import Neo      from 'neo.mjs/src/Neo.mjs';
+import AiConfig from '../../config.template.mjs';
 
 import {evaluateDetectionRetentionSla}   from './detectionRetentionSla.mjs';
 import {resolveDetectionRetentionInputs} from './detectionRetentionSlaInputs.mjs';
+import {isEntryModule}                   from '../../services/shared/isEntryModule.mjs';
 
 /**
  * Milliseconds per day — for rendering durations the verdict reports in ms.
@@ -115,7 +115,7 @@ function main() {
 // Exit only when run as a CLI. Without this guard the module could not be imported at all — the
 // import itself would terminate the importing process, which would make the entrypoint untestable
 // and any future reuse impossible.
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     process.exit(main());
 }
 

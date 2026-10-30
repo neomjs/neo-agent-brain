@@ -1,4 +1,4 @@
-import {pathToFileURL} from 'url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 export const DEFAULT_BATCH_SIZE = 500;
 export const DEFAULT_LIMIT      = 50;
@@ -407,6 +407,6 @@ export async function runCli(argv = process.argv.slice(2), {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     runCli().then(code => process.exit(code));
 }

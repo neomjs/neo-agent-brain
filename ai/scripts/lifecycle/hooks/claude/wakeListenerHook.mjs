@@ -1,15 +1,15 @@
-import {execFile}      from 'node:child_process';
-import fsPromises      from 'node:fs/promises';
-import os              from 'node:os';
-import path            from 'node:path';
-import {pathToFileURL} from 'node:url';
-import {promisify}     from 'node:util';
+import {execFile}  from 'node:child_process';
+import fsPromises  from 'node:fs/promises';
+import os          from 'node:os';
+import path        from 'node:path';
+import {promisify} from 'node:util';
 
 import {connectSeatPlane, resolvePullRoute, seatPlaneGap} from '../../../../daemons/wake/armSeatWakePull.mjs';
 import {toBareIdentity}                                   from '../../../../daemons/wake/armSeatWakeRoute.mjs';
 import {withOutboxLock}                                   from '../../../../daemons/wake/outboxLock.mjs';
 import {readHookPayload}                                  from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
 import {readSeatConfig}                                   from '../seatConfig.mjs';
+import {isEntryModule}                                    from '../../../../services/shared/isEntryModule.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -320,6 +320,6 @@ async function main() {
     process.exit(0)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     await main();
 }

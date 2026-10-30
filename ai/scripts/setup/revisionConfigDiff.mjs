@@ -4,6 +4,7 @@ import path                                      from 'node:path';
 import {fileURLToPath}                           from 'node:url';
 import * as acorn                                from 'acorn';
 import {classifyRequirement, diffCohortLeafSets} from './cohortAdmissibility.mjs';
+import {isEntryModule}                           from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/setup/revisionConfigDiff
@@ -1601,7 +1602,7 @@ export function runRevisionConfigDiffCli({
     return receipt
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     try {
         runRevisionConfigDiffCli()
     } catch (error) {

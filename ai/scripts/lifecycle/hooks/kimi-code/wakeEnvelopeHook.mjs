@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import fs              from 'node:fs';
-import os              from 'node:os';
-import path            from 'node:path';
-import {spawnSync}     from 'node:child_process';
-import {pathToFileURL} from 'node:url';
+import fs          from 'node:fs';
+import os          from 'node:os';
+import path        from 'node:path';
+import {spawnSync} from 'node:child_process';
 
 import {normalizeAgentIdentityNodeId} from '../../../../graph/normalizeAgentIdentityNodeId.mjs';
+import {isEntryModule}                from '../../../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Normalizes a provisioned seat identity to the canonical `@handle` form the wake
@@ -134,6 +134,6 @@ function main() {
     });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     main();
 }

@@ -32,6 +32,7 @@ import {
     assertTenantScopedRows,
     packArtifactToV2
 } from './knowledgeBaseArtifact.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -255,7 +256,7 @@ export async function uploadKnowledgeBase({
     }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryModule(import.meta.url)) {
     uploadKnowledgeBase()
         .then(() => process.exit(0))
         .catch(error => {

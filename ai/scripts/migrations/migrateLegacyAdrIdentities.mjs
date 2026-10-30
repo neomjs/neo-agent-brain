@@ -35,6 +35,7 @@ import {
     OBSERVED_LIVE_ANOMALY_NUMBERS,
     REVIEWED_41_ADR_MIGRATION_MANIFEST
 } from './adrMigrationManifest.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/migrations/migrateLegacyAdrIdentities
@@ -1893,7 +1894,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
     return result;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+if (isEntryModule(import.meta.url)) {
     runCli().catch(err => {
         console.error(err);
         process.exitCode = 1;

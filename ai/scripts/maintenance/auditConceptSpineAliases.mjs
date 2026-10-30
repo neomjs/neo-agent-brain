@@ -8,6 +8,7 @@ import {
     getConceptAliasKeys,
     normalizeConceptKey
 } from '../../services/graph/conceptSpineCanonicalization.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 export {normalizeConceptKey};
 
@@ -477,7 +478,7 @@ async function main() {
     return runAudit(args);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isEntryModule(import.meta.url)) {
     main()
         .then(({exitCode}) => process.exit(exitCode))
         .catch(error => {

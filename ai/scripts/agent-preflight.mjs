@@ -8,6 +8,7 @@ import process                                               from 'node:process'
 import {fileURLToPath, pathToFileURL}                        from 'node:url';
 import {collectStaleOverlayFindings}
                                    from './setup/initServerConfigs.mjs';
+import {isEntryModule} from '../services/shared/isEntryModule.mjs';
 
 const
     __filename = fileURLToPath(import.meta.url),
@@ -1638,6 +1639,6 @@ export function runAgentPreflight({
     return 0
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     process.exitCode = runAgentPreflight()
 }

@@ -1,13 +1,14 @@
-import {program}                      from 'commander';
-import {ChromaClient}                 from 'chromadb';
-import fs                             from 'fs-extra';
-import path                           from 'path';
-import {fileURLToPath, pathToFileURL} from 'url';
-import Neo                            from 'neo.mjs/src/Neo.mjs'; // side-effect: defines globalThis.Neo so the memory-core config module evaluates
+import {program}       from 'commander';
+import {ChromaClient}  from 'chromadb';
+import fs              from 'fs-extra';
+import path            from 'path';
+import {fileURLToPath} from 'url';
+import Neo             from 'neo.mjs/src/Neo.mjs'; // side-effect: defines globalThis.Neo so the memory-core config module evaluates
 import {
     CHROMA_TEST_DATABASE,
     dropChromaTestDatabase
 }                                     from '../../services/shared/vector/chromaTestIsolation.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Purges leaked unit-test stores: orphaned `test-*` ChromaDB collections + leftover
@@ -296,6 +297,6 @@ async function purgeTestCollections() {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     purgeTestCollections().then(() => process.exit(0));
 }

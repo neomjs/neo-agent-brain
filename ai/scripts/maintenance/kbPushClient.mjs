@@ -7,9 +7,9 @@ import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import fs              from 'fs';
-import {pathToFileURL} from 'url';
 import Client          from '../../mcp/client/Client.mjs';
 import ClientConfig    from '../../mcp/client/config.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/kbPushClient
@@ -308,7 +308,7 @@ async function kbPushClient() {
     }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     kbPushClient();
 }
 

@@ -5,7 +5,6 @@ import * as fs                  from 'node:fs/promises';
 import os                       from 'node:os';
 import path                     from 'node:path';
 import {promisify}              from 'node:util';
-import {fileURLToPath}          from 'node:url';
 
 import {
     admitLedgerPrescriptions,
@@ -19,6 +18,7 @@ import {
     validateDeploymentPrescriptionLedger
 } from '../../services/memory-core/helpers/deploymentPrescriptionStore.mjs';
 import {knobEnvBindings, RECOVERY_KNOBS} from '../../services/memory-core/helpers/recoveryKnobRegistry.mjs';
+import {isEntryModule}                   from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/materializeDeploymentPrescriptions
@@ -906,7 +906,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
 }
 
-const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+const isDirectRun = isEntryModule(import.meta.url);
 
 if (isDirectRun) {
     process.exitCode = await main()

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import 'dotenv/config';
-import {Command}       from 'commander';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
-import os              from 'os';
-import {pathToFileURL} from 'url';
+import {Command}                                              from 'commander';
+import Neo                                                    from 'neo.mjs/src/Neo.mjs';
+import * as core                                              from 'neo.mjs/src/core/_export.mjs';
+import os                                                     from 'os';
 import ForgeConnectionRegistryService, {FORGE_AUTH_PROVIDERS} from '../../services/fleet/ForgeConnectionRegistryService.mjs';
+import {isEntryModule}                                        from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/fleet/forgeConnections
@@ -130,7 +130,7 @@ function forgeConnections() {
     process.exit(result.ok ? 0 : 1)
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     forgeConnections()
 }
 

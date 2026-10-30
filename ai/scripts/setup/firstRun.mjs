@@ -40,6 +40,7 @@ import {composeContextOf, performEffects, settlePending} from '../../services/fl
 import {VERIFY_EXITS}                                    from '../../services/fleet/verifyEffect.mjs';
 import {CANONICAL_PLANE_ID, resolvePlaneDataRoot}        from '../../planeConfig.mjs';
 import {runHealthcheck}                                  from '../diagnostics/mcpHealthcheck.mjs';
+import {isEntryModule}                                   from '../../services/shared/isEntryModule.mjs';
 
 const
     brainRoot       = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
@@ -549,7 +550,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     return exitCodeFor(evaluation);
 }
 
-const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+const isDirectRun = isEntryModule(import.meta.url);
 
 if (isDirectRun) {
     main().then(code => { process.exitCode = code }, error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1 });

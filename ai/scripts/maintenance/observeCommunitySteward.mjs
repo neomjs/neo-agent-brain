@@ -1,17 +1,18 @@
-import fs                  from 'node:fs';
-import path                from 'node:path';
-import {execFileSync}       from 'node:child_process';
-import {createHash}         from 'node:crypto';
-import {performance}        from 'node:perf_hooks';
-import {fileURLToPath, pathToFileURL} from 'node:url';
+import fs                            from 'node:fs';
+import path                          from 'node:path';
+import {execFileSync}                from 'node:child_process';
+import {createHash}                  from 'node:crypto';
+import {performance}                 from 'node:perf_hooks';
+import {fileURLToPath}               from 'node:url';
 import {COMMUNITY_RESOURCE_FAMILIES} from '../../services/memory-core/communityCoverageContract.mjs';
+import {isEntryModule}               from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/observeCommunitySteward
  * @summary Finite co-located steward observations with exact scoped input/result custody and no dispatch capability.
  */
 
-const PREFIX = 'COMMUNITY_STEWARD_WINDOW_',
+const PREFIX    = 'COMMUNITY_STEWARD_WINDOW_',
     POLICY_KEYS = ['stewardActivation', 'stewardLeaseTtlMs', 'wakeCoalesceWindowMs',
         'vacancyFallbackCooldownMs', 'minUnclaimedEligibleCount', 'wakeAmplificationCap', 'maxWakePayloadBytes'],
     entrypoint = fileURLToPath(import.meta.url),
@@ -71,7 +72,7 @@ export function validateArgs(args) {
 /** @summary Reserves one new regular file, refusing symlink ancestors and existing destinations before storage loads. */
 function reserveReport(output) {
     const absolute = path.resolve(output), parent = path.dirname(absolute), parsed = path.parse(parent);
-    let current = parsed.root;
+    let   current  = parsed.root;
     for (const segment of parent.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
         current = path.join(current, segment);
         const stat = fs.lstatSync(current);
@@ -131,7 +132,7 @@ function callerProvenance() {
         const bytes = fs.readFileSync(path.join(repoRoot, '.neo-revision')), revision = bytes.toString('utf8').trim();
         packagedRevision = {status: /^[a-f0-9]{40}$/.test(revision) ? 'measured' : 'invalid',
             revision: /^[a-f0-9]{40}$/.test(revision) ? revision : null,
-            bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex')};
+            bytes   : bytes.length, sha256: createHash('sha256').update(bytes).digest('hex')};
     } catch { /* A checkout need not carry a packaged runtime marker. */ }
     return {kind: 'co-located-process', entrypoint, nodeVersion: process.version, executable: process.execPath,
         platform: process.platform, architecture: process.arch, sourceRevision, sourceDirty, packagedRevision, sourceFiles}
@@ -183,7 +184,7 @@ export function classifyWindow(report) {
  * @returns {Object} Measurements with explicit observed denominators and unknowns.
  */
 export function summarizeObservations(observations) {
-    const values = key => observations.map(row => row.evaluation?.[key]),
+    const values      = key => observations.map(row => row.evaluation?.[key]),
         booleanMetric = key => {
             const known = values(key).filter(value => typeof value === 'boolean'), numerator = known.filter(value => value).length;
             return {observedDenominator: known.length, unknownObservations: observations.length - known.length,
@@ -192,10 +193,10 @@ export function summarizeObservations(observations) {
         bytes = values('payloadBytes').filter(value => Number.isSafeInteger(value) && value >= 0),
         total = bytes.reduce((sum, value) => sum + value, 0);
     return {basis: 'retained-evaluator-fields', recordedObservations: observations.length,
-        vacancy: booleanMetric('stewardVacant'), wouldWake: booleanMetric('shadowWouldWake'),
+        vacancy     : booleanMetric('stewardVacant'), wouldWake: booleanMetric('shadowWouldWake'),
         payloadBytes: {observedDenominator: bytes.length, unknownObservations: observations.length - bytes.length,
             total: bytes.length ? total : null, min: bytes.length ? bytes.reduce((min, value) => Math.min(min, value)) : null,
-            max: bytes.length ? bytes.reduce((max, value) => Math.max(max, value)) : null, mean: bytes.length ? total / bytes.length : null}}
+            max  : bytes.length ? bytes.reduce((max, value) => Math.max(max, value)) : null, mean: bytes.length ? total / bytes.length : null}}
 }
 
 /** @summary Rejects prose, credentials and lease proofs rather than silently retaining a filtered replacement input. */
@@ -227,8 +228,8 @@ function failureCode(error) {
 
 /** @summary Writes only the file reserved by this invocation; completed samples survive a later observation failure. */
 function retain(fd, report) {
-    const bytes = Buffer.from(JSON.stringify(report, null, 2) + '\n');
-    let offset = 0;
+    const bytes  = Buffer.from(JSON.stringify(report, null, 2) + '\n');
+    let   offset = 0;
     while (offset < bytes.length) offset += fs.writeSync(fd, bytes, offset, bytes.length - offset, offset);
     fs.ftruncateSync(fd, bytes.length);
     fs.fsyncSync(fd)
@@ -243,24 +244,24 @@ function retain(fd, report) {
 export async function runOperatorWindow({args, runtimeLoader = loadRuntime, now = () => Date.now(),
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms))}) {
     if (validateArgs(args).length) throw new Error(`${PREFIX}ARGUMENTS_INVALID`);
-    const output = reserveReport(args.output), startedMs = now(), monotonicStart = performance.now(),
+    const output          = reserveReport(args.output), startedMs = now(), monotonicStart = performance.now(),
         sourceInstanceIds = [...new Set(args.sourceInstanceIds)].sort(),
-        report = {schemaVersion: 'community-steward-shadow-window.v1', status: 'running',
+        report            = {schemaVersion: 'community-steward-shadow-window.v1', status: 'running',
             evidenceClass: runtimeLoader === loadRuntime ? 'runtime-unresolved' : 'injected-runtime-fixture',
-            testStore: null, unitTestStore: null, testStoreBasis: 'memoryCoreConfig.storagePaths.useTestDatabase',
-            caller: callerProvenance(), scope: {tenantId: args.tenantId, sourceInstanceIds},
-            controls: {samples: args.samples, intervalMs: args.intervalMs},
-            clockBasis: {timestamps: 'UTC epoch milliseconds', elapsed: 'performance.now monotonic milliseconds'},
-            startedAt: new Date(startedMs).toISOString(), finishedAt: null, elapsedMs: null,
-            observations: [], denominator: {requested: args.samples, attempted: 0, recorded: 0, freshDemand: 0,
+            testStore    : null, unitTestStore: null, testStoreBasis: 'memoryCoreConfig.storagePaths.useTestDatabase',
+            caller       : callerProvenance(), scope: {tenantId: args.tenantId, sourceInstanceIds},
+            controls     : {samples: args.samples, intervalMs: args.intervalMs},
+            clockBasis   : {timestamps: 'UTC epoch milliseconds', elapsed: 'performance.now monotonic milliseconds'},
+            startedAt    : new Date(startedMs).toISOString(), finishedAt: null, elapsedMs: null,
+            observations : [], denominator: {requested: args.samples, attempted: 0, recorded: 0, freshDemand: 0,
                 empty: 0, missing: 0, degraded: 0}, sourceGenerationChanges: 0,
             zeroDispatch: {kind: 'command-capability-invariant', scope: 'this-command',
                 forbiddenCapabilities: ['source-registration', 'source-admission', 'lease-acquisition', 'task-claim', 'message-dispatch'],
-                evidence: 'retained-shadow-evaluations-and-service-no-effect-tests',
+                evidence             : 'retained-shadow-evaluations-and-service-no-effect-tests',
                 hostWideDispatchCount: null, hostWideDispatchCountReason: 'not-measured'},
             unavailableMetrics: {leaseOccupancy: {value: null, reason: 'lease-occupancy-window-not-measured'},
                 timeToAcknowledgeMs: {value: null, reason: 'not-observed'},
-                timeToClaimMs: {value: null, reason: 'not-observed'}, timeToRespondMs: {value: null, reason: 'not-observed'}},
+                timeToClaimMs      : {value: null, reason: 'not-observed'}, timeToRespondMs: {value: null, reason: 'not-observed'}},
             windowEvidence: 'not-completed', summary: summarizeObservations([]), failure: null};
     let baselineGeneration = null;
     try {
@@ -280,7 +281,7 @@ export async function runOperatorWindow({args, runtimeLoader = loadRuntime, now 
                 sourceInstanceIds, now: observedMs,
                 vacancyFallbackTarget: args.vacancyFallbackPrincipal === null ? null : args.vacancyFallbackPrincipal
             }));
-            const policyAfter = policySnapshot(readPolicy), value = copyMetadata(observation),
+            const policyAfter                 = policySnapshot(readPolicy), value = copyMetadata(observation),
                 {attentionCounts, evaluation} = value;
             if (!attentionCounts || attentionCounts.notAuthority !== true || !evaluation ||
                 evaluation.mode !== 'shadow' || evaluation.shouldWake !== false) throw new Error(`${PREFIX}INVALID_SHADOW_RESULT`);
@@ -301,7 +302,7 @@ export async function runOperatorWindow({args, runtimeLoader = loadRuntime, now 
                 elapsedMs: observedMonotonic - monotonicStart, durationMs: performance.now() - observedMonotonic, policy, policyAfter,
                 policyStable, sourceGenerationChanged: generationChanged, sourceGenerationComplete: generationComplete,
                 bytes: {attentionCounts: Buffer.byteLength(JSON.stringify(attentionCounts), 'utf8'),
-                    evaluation: Buffer.byteLength(JSON.stringify(evaluation), 'utf8'),
+                    evaluation : Buffer.byteLength(JSON.stringify(evaluation), 'utf8'),
                     wakePayload: evaluation.payloadBytes ?? null}, attentionCounts, evaluation});
             report.denominator.recorded++;
             const status = attentionCounts.status;
@@ -362,6 +363,6 @@ Use existing source-control/reconciliation commands separately. Exit 0: collecte
     } catch { console.error(`${PREFIX}FAILED`); return 1 }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     main().then(code => { process.exitCode = code }).catch(() => { process.exitCode = 1 })
 }

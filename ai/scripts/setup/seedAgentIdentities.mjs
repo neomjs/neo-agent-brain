@@ -48,12 +48,10 @@
  * Usage: node ai/scripts/setup/seedAgentIdentities.mjs
  */
 
-import path                   from 'node:path';
-import {fileURLToPath}        from 'node:url';
 import {IDENTITIES}           from '../../graph/identityRoots.mjs';
 import {PARTICIPATION_FIELDS} from '../../services/memory-core/recordParticipation.mjs';
+import {isEntryModule}        from '../../services/shared/isEntryModule.mjs';
 
-const __filename = fileURLToPath(import.meta.url);
 
 /**
  * @summary Read one node's persisted `properties` straight from the raw SQLite `Nodes` row,
@@ -176,7 +174,7 @@ async function main() {
     process.exit(0);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     main().catch(err => {
         console.error('Failed to seed AgentIdentities:', err);
         process.exit(1);

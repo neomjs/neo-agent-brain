@@ -26,7 +26,6 @@
  * SQLite file, run with `--apply --offline`, then restart them.
  */
 
-import {pathToFileURL} from 'node:url';
 import {
     carriesRawMemoryRecencyKeys,
     LEGACY_RAW_MEMORY_NODE_LABEL,
@@ -34,6 +33,7 @@ import {
     rawMemoryRecencyKeys
 } from '../../services/memory-core/helpers/rawMemoryGraphIdentity.mjs';
 import {assertApplyPosture, scanChromaRows} from '../migrations/reconcileRawMemoryGraphIdentities.mjs';
+import {isEntryModule}                      from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @param {String[]} argv
@@ -263,6 +263,6 @@ export async function runCli(argv = process.argv.slice(2), {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     runCli().then(code => process.exit(code))
 }

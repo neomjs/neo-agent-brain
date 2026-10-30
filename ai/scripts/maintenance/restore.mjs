@@ -31,6 +31,7 @@ import {
     Memory_StorageRouter,
     Shared_DestructiveOperationGuard
 } from '../../services.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/restore
@@ -1920,7 +1921,7 @@ export function parseArgs(argv) {
     return {bundleRoot: positional[0], mode, force, forceTopologyMismatch, filterLabels, filterEdgeTypes, onlySubstrate, postRestoreHook, preserveReadState, operation, targetCollection}
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryModule(import.meta.url)) {
     try {
         const args = parseArgs(process.argv.slice(2));
         runRestore(args)

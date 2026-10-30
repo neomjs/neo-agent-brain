@@ -3,10 +3,10 @@ import 'dotenv/config';
 import {Command}            from 'commander';
 import Neo                  from 'neo.mjs/src/Neo.mjs';
 import * as core            from 'neo.mjs/src/core/_export.mjs';
-import {pathToFileURL}      from 'url';
 import FleetRegistryService from '../../services/fleet/FleetRegistryService.mjs';
 import FleetTenantService   from '../../services/fleet/FleetTenantService.mjs';
 import {renameSeat}         from '../../services/fleet/renameSeat.mjs';
+import {isEntryModule}      from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/fleet/renameSeat
@@ -97,7 +97,7 @@ async function main() {
     process.exit(result.state === 'refused' ? 1 : 0)
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     await main()
 }
 

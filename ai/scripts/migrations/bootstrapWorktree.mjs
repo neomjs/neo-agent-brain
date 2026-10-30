@@ -135,6 +135,7 @@ import {IDENTITIES}                                                             
 import {rosterEmailForLogin}                                                           from '../../graph/agentCoAuthorEmails.mjs';
 import {projectHooks}                                                                  from '../lifecycle/hooks/projectSeatHooks.mjs';
 import {initClaudeSettings, listServersWithTemplates, materializeServerConfigTemplate} from '../setup/initServerConfigs.mjs';
+import {isEntryModule}                                                                 from '../../services/shared/isEntryModule.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -1424,7 +1425,7 @@ function formatBytes(bytes) {
 // and not when imported by a test spec.
 // -------------------------------------------------------------------------------------
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     const __filename  = fileURLToPath(import.meta.url);

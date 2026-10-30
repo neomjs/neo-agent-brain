@@ -18,7 +18,7 @@ import {
 import {execFileSync}  from 'node:child_process';
 import {existsSync}    from 'node:fs';
 import path            from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/syncKnowledgeBase
@@ -193,7 +193,7 @@ async function syncKnowledgeBase() {
 
 // Auto-run only when invoked directly (CLI / orchestrator spawn-child) — NOT when imported by a boundary
 // test that exercises the exported `buildLeaseYieldPredicate` / `classifyKbSyncOutcome` units.
-const invokedDirectly = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+const invokedDirectly = isEntryModule(import.meta.url);
 if (invokedDirectly) {
     syncKnowledgeBase();
 }

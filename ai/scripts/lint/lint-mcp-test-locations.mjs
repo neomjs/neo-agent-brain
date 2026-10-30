@@ -11,6 +11,7 @@ import fs              from 'node:fs';
 import path            from 'node:path';
 import process         from 'node:process';
 import {fileURLToPath} from 'node:url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const __filename                    = fileURLToPath(import.meta.url);
 const __dirname                     = path.dirname(__filename);
@@ -122,7 +123,7 @@ function main() {
     process.exit(exitCode);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     main();
 }
 

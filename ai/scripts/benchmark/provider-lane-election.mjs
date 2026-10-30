@@ -5,7 +5,7 @@ import {createHash, randomBytes}         from 'node:crypto';
 import {mkdir, readFile, realpath, stat} from 'node:fs/promises';
 import path                              from 'node:path';
 import {promisify}                       from 'node:util';
-import {fileURLToPath, pathToFileURL}    from 'node:url';
+import {fileURLToPath}                   from 'node:url';
 
 import {
     PROVIDER_LANE_DEPLOYMENT_INPUT_ENVS,
@@ -17,6 +17,7 @@ import {
     evaluateProviderLaneElection
 } from './helpers/providerLaneElectionCore.mjs';
 import {writeFileAtomic} from '../../services/shared/atomicFileWrite.mjs';
+import {isEntryModule}   from '../../services/shared/isEntryModule.mjs';
 
 export const PROVIDER_LANE_ELECTION_REPORT_SCHEMA_VERSION = 'provider-lane-election-report.v2';
 
@@ -2768,7 +2769,7 @@ function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isDirectRun = isEntryModule(import.meta.url);
 
 if (isDirectRun) {
     main().catch(error => {

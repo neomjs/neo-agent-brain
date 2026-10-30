@@ -39,11 +39,12 @@ import {withOutboxLock}                          from './outboxLock.mjs';
 import {DAEMON_EXIT_CRASH, DAEMON_EXIT_OK}       from '../shared/daemonExit.mjs';
 import nodeCrypto                                from 'node:crypto';
 
-import fs                               from 'fs-extra';
-import os                               from 'os';
-import path                             from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
-import { spawn, execSync, spawnSync }   from 'child_process';
+import fs                             from 'fs-extra';
+import os                             from 'os';
+import path                           from 'path';
+import {fileURLToPath}                from 'url';
+import { spawn, execSync, spawnSync } from 'child_process';
+import {isEntryModule}                from '../../services/shared/isEntryModule.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -2893,7 +2894,7 @@ async function main() {
 // Process-entry only: run the boot guard + start the daemon ONLY when this file is the main module,
 // never on import — preserves the process-entry isolation invariant (mirrors the kb-* daemons). On a
 // stale overlay assertConfigFresh exits 1 with the actionable message; other startup errors → stderr + exit 1.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     main().catch(err => {
         process.stderr.write(`[Wake Daemon] Daemon start failed: ${err && err.stack ? err.stack : err}\n`);
         process.exit(1);

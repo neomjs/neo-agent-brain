@@ -33,8 +33,7 @@ import LifecycleService      from '../../services/memory-core/lifecycle/SystemLi
 import MemoryService         from '../../services/memory-core/MemoryService.mjs';
 import RequestContextService from '../../mcp/server/shared/services/RequestContextService.mjs';
 import {parseArgs}           from 'node:util';
-import {pathToFileURL}       from 'node:url';
-import path                  from 'node:path';
+import {isEntryModule}       from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Parses the operator's exact-id reconciliation request; no options retains normal backfill.
@@ -106,7 +105,7 @@ async function main() {
     process.exit(0)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => {
         console.error('backfill-memory-summaries failed:', error.message);
         process.exit(1)

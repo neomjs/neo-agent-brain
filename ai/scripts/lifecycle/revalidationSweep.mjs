@@ -28,6 +28,7 @@ import { execFileSync }              from 'child_process';
 import { Command }                   from 'commander';
 import { IDENTITIES }                from '../../graph/identityRoots.mjs';
 import { resolveResidentFamilyById } from '../../services/graph/agentFamilyResolution.mjs';
+import { isEntryModule }             from '../../services/shared/isEntryModule.mjs';
 
 export const SWEEP_VERSION = '1.0.0';
 
@@ -290,8 +291,7 @@ export async function revalidationSweep({
     };
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}` ||
-               (process.argv[1] && import.meta.url.endsWith(process.argv[1]));
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     // CLI mode: let commander handle --help / --version / unknown flags / missing

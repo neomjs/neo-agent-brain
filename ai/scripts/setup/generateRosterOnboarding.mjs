@@ -4,6 +4,7 @@ import path                           from 'node:path';
 import {execFileSync}                 from 'node:child_process';
 import {fileURLToPath}                from 'node:url';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {isEntryModule}                from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/setup/generateRosterOnboarding
@@ -1431,7 +1432,7 @@ async function main() {
     console.log(`[generateRosterOnboarding] applied ${written} of ${planned.surfaces.length} surfaces for ${plan.handle}. Review the diff, commit on this branch, and open the PR through the normal pull-request protocol.`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     main().catch(err => {
         console.error('[generateRosterOnboarding] FATAL:', err);
         process.exit(1);

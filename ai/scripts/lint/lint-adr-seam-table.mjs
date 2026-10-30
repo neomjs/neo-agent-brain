@@ -23,6 +23,7 @@ import {
     buildCanonicalAdrKey,
     parseCanonicalAdrKey
 } from '../../services/shared/adrIdentityCodec.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const
     __filename    = fileURLToPath(import.meta.url),
@@ -483,7 +484,7 @@ export function checkSeamTable(dirOrOptions) {
     };
 }
 
-if (process.argv[1] === __filename) {
+if (isEntryModule(import.meta.url)) {
     const result = checkSeamTable();
 
     if (!result.file) {

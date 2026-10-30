@@ -61,6 +61,7 @@ import {
     foldStaleEmbeddingCensus,
     mergeStaleEmbeddingCensus
 }                                  from '../../services/knowledge-base/helpers/staleEmbeddingCensus.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const
     PAGE_SIZE          = 2000,
@@ -462,7 +463,7 @@ async function main() {
 }
 
 // Guarded so a spec can import the helpers above without the script connecting to anything.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => {
         console.error(`repairStaleEmbeddings failed: ${error.message}`);
         process.exitCode = 1;

@@ -1,16 +1,16 @@
 // Bootstrap Neo namespace BEFORE importing runtime config; `ConfigProvider` consumes core utilities
 // through `Neo.gatekeep()` / `Neo.isObject()` once the config module is loaded.
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
-import {Command}       from 'commander';
-import Database        from 'better-sqlite3';
-import fs              from 'fs-extra';
-import path            from 'path';
-import {pathToFileURL} from 'url';
+import Neo       from 'neo.mjs/src/Neo.mjs';
+import * as core from 'neo.mjs/src/core/_export.mjs';
+import {Command} from 'commander';
+import Database  from 'better-sqlite3';
+import fs        from 'fs-extra';
+import path      from 'path';
 import {
     activeWakeSubscriptionStatusSql,
     WAKE_SUBSCRIPTION_DEFAULT_STATUS
 } from '../../services/memory-core/wakeSubscriptionStatusPolicy.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai.scripts.maintenance.compactGraphLog
@@ -592,6 +592,6 @@ export async function runCli(argv = process.argv, {aiConfig = null} = {}) {
     return result;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     await runCli();
 }

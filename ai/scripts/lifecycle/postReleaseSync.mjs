@@ -32,6 +32,7 @@ import {execFileSync, execSync} from 'child_process';
 import fs                       from 'fs-extra';
 import path                     from 'path';
 import {fileURLToPath}          from 'url';
+import {isEntryModule}          from '../../services/shared/isEntryModule.mjs';
 import {
     assertAdmissibleStartingState,
     assertOnDevBranch,
@@ -124,8 +125,7 @@ async function main() {
 // accidental import (a test, a lint walking the module graph, a REPL probe) must never start a
 // Knowledge Base upload. `main()` runs only when this file IS the process entrypoint — the same
 // checkable entrypoint predicate `runAgent.mjs` uses.
-const cliEntryPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (cliEntryPath && cliEntryPath === modulePath) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => {
         console.error('\n❌ Unhandled Error:', error);
         process.exit(1);

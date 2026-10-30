@@ -20,11 +20,8 @@
  * retire only after the applied migration reports a clean census.
  */
 
-import path                           from 'node:path';
-import {fileURLToPath}                from 'node:url';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
-
-const __filename = fileURLToPath(import.meta.url);
+import {isEntryModule}                from '../../services/shared/isEntryModule.mjs';
 
 export const MAILBOX_IDENTITY_EDGE_TYPES = new Set(['DELIVERED_TO', 'SENT_BY', 'SENT_TO']);
 export const PERMISSION_IDENTITY_EDGE_TYPES = new Set([
@@ -489,8 +486,7 @@ async function main() {
     }
 }
 
-const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (invokedPath === __filename) {
+if (isEntryModule(import.meta.url)) {
     main().catch(error => {
         console.error(`[canonicalizeStoredAgentIdentities] FATAL: ${error.message}`);
         process.exitCode = 1;

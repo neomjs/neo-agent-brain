@@ -1,10 +1,10 @@
-import {pathToFileURL} from 'node:url';
 import {
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
 import {normalizeAgentIdentityNodeId}                from '../../../../graph/normalizeAgentIdentityNodeId.mjs';
 import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
+import {isEntryModule}                               from '../../../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary The timeout the generated Kimi config gives every presence registration, in ms; all of them
@@ -151,6 +151,6 @@ async function main() {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     await main().catch(() => {})
 }

@@ -7,7 +7,6 @@
  */
 import fs                                       from 'fs-extra';
 import path                                     from 'path';
-import {fileURLToPath}                          from 'url';
 import Neo                                      from 'neo.mjs/src/Neo.mjs';
 import * as core                                from 'neo.mjs/src/core/_export.mjs';
 import { withHeartbeatLock }                    from './heartbeatLock.mjs';
@@ -18,6 +17,7 @@ import MailboxService                           from '../../services/memory-core
 import AiConfig                                 from '../../config.mjs';
 import memoryCoreConfig                         from '../../mcp/server/memory-core/config.mjs';
 import { writeInflightLock, clearInflightLock } from './inflightLock.mjs';
+import {isEntryModule}                          from '../../services/shared/isEntryModule.mjs';
 
 const COOLDOWN_STATE_FILE = 'swarm-wake-cooldown.json';
 const COOLDOWN_LOCK_FILE  = 'swarm-wake-cooldown.lock';
@@ -132,7 +132,7 @@ async function main() {
     await swarmWakeCooldown(signal, {wakeDaemonDir: memoryCoreConfig.wakeDaemon.dataDir});
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     main().catch(err => {

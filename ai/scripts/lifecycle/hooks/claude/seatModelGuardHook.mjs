@@ -1,6 +1,6 @@
 import fs              from 'node:fs';
 import path            from 'node:path';
-import {pathToFileURL} from 'node:url';
+import {isEntryModule} from '../../../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/lifecycle/hooks/claude/seatModelGuardHook
@@ -293,7 +293,7 @@ export function runSeatModelGuard(event, payload, env = process.env) {
     return 2
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     let code = 0;
 
     try {

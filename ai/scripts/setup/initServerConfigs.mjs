@@ -3,6 +3,7 @@ import fs              from 'fs-extra';
 import {createRequire} from 'node:module';
 import path            from 'path';
 import {fileURLToPath} from 'url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/setup/initServerConfigs
@@ -1274,7 +1275,7 @@ export function createConfigInitializationOutcome(migrationRequired = []) {
         : {status: 'completed'}
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryModule(import.meta.url)) {
     (async () => {
         await initTier1Config();
         const {migrationRequired} = await initConfigs();

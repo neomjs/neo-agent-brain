@@ -5,10 +5,10 @@ import path                                   from 'node:path';
 import process                                from 'node:process';
 import {execFile}                             from 'node:child_process';
 import {promisify}                            from 'node:util';
-import {fileURLToPath}                        from 'node:url';
 import {Command, InvalidArgumentError}        from 'commander';
 import githubWorkflowConfig                   from '../../mcp/server/github-workflow/config.mjs';
 import {classifyDiscussionRoutingDisposition} from '../../services/github-workflow/shared/discussionRoutingDisposition.mjs';
+import {isEntryModule}                        from '../../services/shared/isEntryModule.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -794,9 +794,8 @@ async function main() {
     console.log(report);
 }
 
-const currentFile = fileURLToPath(import.meta.url);
 
-if (process.argv[1] && path.resolve(process.argv[1]) === currentFile) {
+if (isEntryModule(import.meta.url)) {
     main().catch(err => {
         if (err.code?.startsWith('commander.')) {
             process.exit(1);

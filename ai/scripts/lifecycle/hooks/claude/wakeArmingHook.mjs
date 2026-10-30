@@ -1,7 +1,7 @@
-import {pathToFileURL} from 'node:url';
 
 import {armSeatWakePull, connectSeatPlane} from '../../../../daemons/wake/armSeatWakePull.mjs';
 import {readSeatConfig}                    from '../seatConfig.mjs';
+import {isEntryModule}                     from '../../../../services/shared/isEntryModule.mjs';
 
 /**
  * The `timeout` this hook is registered with on `SessionStart` in `hooks/claude/events.manifest.json`,
@@ -86,6 +86,6 @@ async function main() {
     process.exit(0)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     await main();
 }

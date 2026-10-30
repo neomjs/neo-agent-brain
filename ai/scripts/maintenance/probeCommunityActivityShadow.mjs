@@ -13,6 +13,7 @@ import GraphqlService                                  from '../../services/gith
 import {makeCommunityActivityShadowReader}             from '../../services/github-workflow/communityActivityShadowReader.mjs';
 import {classifyAuthorTrust}                           from '../../services/shared/contentTrust/authorTrustClassifier.mjs';
 import {formatHumanSummary, parseArgs, runShadowProbe} from './communityActivityShadowProbeCore.mjs';
+import {isEntryModule}                                 from '../../services/shared/isEntryModule.mjs';
 
 const __filename   = fileURLToPath(import.meta.url);
 const __dirname    = path.dirname(__filename);
@@ -103,7 +104,7 @@ export async function main(argv=process.argv.slice(2)) {
     return {...result, reportPath}
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isEntryModule(import.meta.url)) {
     main()
         .then(({exitCode=0}) => {
             process.exitCode = exitCode;

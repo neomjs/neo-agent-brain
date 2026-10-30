@@ -27,6 +27,7 @@ import {
     buildHostEdgeEnv,
     HOST_EDGE_STATE_DIR_ENV
 } from '../../../src/composition/orchestrator/hostEdgeProfile.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Env key whose value IS the declaration this entrypoint makes.
@@ -71,7 +72,7 @@ export function applyHostEdgePosture({
     return env
 }
 
-if (process.argv[1] && import.meta.url === (await import('url')).pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     try {
         applyHostEdgePosture();
     } catch (error) {

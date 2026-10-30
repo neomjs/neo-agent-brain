@@ -520,7 +520,9 @@ test.describe('owner boundary + overlay order (source contracts)', () => {
         expect(runBackupBody).not.toContain('writeBackupReceipt');
 
         // Overlay-load-first: the CLI footer loads the top-level overlay BEFORE the wrapper runs
-        const footer = source.slice(source.indexOf("if (import.meta.url === `file://"));
+        const footerStart = source.indexOf('if (isEntryModule(import.meta.url))');
+        expect(footerStart, 'backup.mjs gates its CLI footer on isEntryModule').toBeGreaterThan(-1);
+        const footer = source.slice(footerStart);
         expect(footer.indexOf('await loadTopLevelAiConfig()')).toBeLessThan(footer.indexOf('runBackupWithOffHostSync()'));
         expect(footer).toContain('.catch(error => {');
         expect(footer).toContain('reportBackupTerminalFailure(error);');

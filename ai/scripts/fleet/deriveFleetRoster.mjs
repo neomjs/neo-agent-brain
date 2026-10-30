@@ -1,7 +1,6 @@
-import path                    from 'node:path';
-import {fileURLToPath}         from 'node:url';
 import {IDENTITIES}            from '../../graph/identityRoots.mjs';
 import {FLEET_COCKPIT_SOURCES} from '../../../src/fleet/contract/cockpit.mjs';
+import {isEntryModule}         from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Derives a presentation-neutral Fleet roster snapshot from the authoritative identity
@@ -122,7 +121,7 @@ export function deriveFleetRoster() {
     };
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     process.stdout.write(JSON.stringify(deriveFleetRoster(), null, 4) + '\n')

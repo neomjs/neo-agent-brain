@@ -1,9 +1,9 @@
-import {pathToFileURL} from 'node:url';
 import {
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
 import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
+import {isEntryModule}                               from '../../../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary The actions `events.manifest.json` registers asynchronously. Progress runs in the background,
@@ -118,6 +118,6 @@ async function main() {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     await main();
 }

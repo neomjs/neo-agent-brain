@@ -56,10 +56,9 @@
  *
  * @see https://code.claude.com/docs/en/hooks — Stop hook contract (stdin payload, decision:block)
  */
-import fs              from 'node:fs';
-import path            from 'node:path';
-import os              from 'node:os';
-import {pathToFileURL} from 'node:url';
+import fs   from 'node:fs';
+import path from 'node:path';
+import os   from 'node:os';
 
 import {parseLaneState} from '../../parseLaneState.mjs';
 import {buildDeferenceStopHookDirective,
@@ -78,6 +77,7 @@ import {collectMaterialArtifactsFromJsonl,
         evaluateMaterialArtifactKey} from '../../materialArtifactKey.mjs';
 import {appendHookProjection,
         readConfiguredHookProjection} from '../../hookProjectionReader.mjs';
+import {isEntryModule} from '../../../../services/shared/isEntryModule.mjs';
 
 export {isOperatorInLoop, parseOutcomeToVerdict};
 
@@ -978,6 +978,6 @@ async function main() {
 
 // Process-entry only: run main() when invoked as the hook (never on import, so unit tests can import
 // the pure `parseOutcomeToVerdict` / `decideHookAction` without triggering the stdin read).
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     main();
 }

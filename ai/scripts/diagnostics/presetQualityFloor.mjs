@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 
-import {Command, InvalidArgumentError} from 'commander';
-import {execFile}                      from 'node:child_process';
-import {createHash}                    from 'node:crypto';
-import fs                              from 'node:fs/promises';
-import os                              from 'node:os';
-import path                            from 'node:path';
-import {fileURLToPath, pathToFileURL}  from 'node:url';
-import {promisify}                     from 'node:util';
+import {Command, InvalidArgumentError}         from 'commander';
+import {execFile}                              from 'node:child_process';
+import {createHash}                            from 'node:crypto';
+import fs                                      from 'node:fs/promises';
+import os                                      from 'node:os';
+import path                                    from 'node:path';
+import {fileURLToPath, pathToFileURL}          from 'node:url';
+import {promisify}                             from 'node:util';
 import {PLANE_PROFILE, presets, profileInputs} from '../../services/fleet/placementPresets.mjs';
+import {isEntryModule}                         from '../../services/shared/isEntryModule.mjs';
 
 /**
  * Pre-Flight (structural fast-path): `ai/scripts/diagnostics/presetQualityFloor.mjs` lifts the
@@ -195,8 +196,8 @@ export function measurePayload(payload, documentText) {
  */
 export function summarizeRuns(runs, {preset, chatModel, documentsDigest: digest, measuredAt = new Date().toISOString().slice(0, 10), reference = referenceFloor()}) {
     const
-        grounded   = runs.map(run => run.measure.groundedNodes),
-        result     = {
+        grounded = runs.map(run => run.measure.groundedNodes),
+        result   = {
             schemaValid             : runs.length > 0 && runs.every(run => run.measure.schemaValid),
             danglingEdges           : runs.reduce((sum, run) => sum + run.measure.danglingEdges, 0),
             groundedNodesPerDocument: runs.length ? (Math.min(...grounded) === Math.max(...grounded) ? String(grounded[0]) : `${Math.min(...grounded)}-${Math.max(...grounded)}`) : '0',
@@ -209,14 +210,14 @@ export function summarizeRuns(runs, {preset, chatModel, documentsDigest: digest,
 
     return {
         preset,
-        instrument: INSTRUMENT,
+        instrument     : INSTRUMENT,
         measuredAt,
         chatModel,
-        documents : runs.map(run => run.document),
+        documents      : runs.map(run => run.document),
         documentsDigest: digest,
         result,
         floor,
-        perDocument: runs.map(run => ({document: run.document, ...run.measure}))
+        perDocument    : runs.map(run => ({document: run.document, ...run.measure}))
     };
 }
 
@@ -277,10 +278,10 @@ export function childSource(root) {
  */
 export function isolationEnv(scratchRoot) {
     return {
-        UNIT_TEST_MODE          : 'true',
-        NEO_MEMORY_DB_PATH_TEST : ':memory:',
-        NEO_PLANE_DATA_ROOT     : scratchRoot,
-        NEO_REM_RUN_STATE_DIR   : path.join(scratchRoot, 'rem-runs')
+        UNIT_TEST_MODE         : 'true',
+        NEO_MEMORY_DB_PATH_TEST: ':memory:',
+        NEO_PLANE_DATA_ROOT    : scratchRoot,
+        NEO_REM_RUN_STATE_DIR  : path.join(scratchRoot, 'rem-runs')
     };
 }
 
@@ -395,8 +396,8 @@ export async function measurePreset({presetId, documentsDir = DEFAULT_DOCUMENTS_
     }
 
     const
-        contents    = new Map(await Promise.all(documents.map(async file => [file, await fs.readFile(file, 'utf8')]))),
-        digest      = documentsDigest(documents.map(file => ({name: path.basename(file), content: contents.get(file)}))),
+        contents = new Map(await Promise.all(documents.map(async file => [file, await fs.readFile(file, 'utf8')]))),
+        digest   = documentsDigest(documents.map(file => ({name: path.basename(file), content: contents.get(file)}))),
         // a real path: the child judges its destinations against process.cwd(), which the OS reports resolved
         scratchRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'preset-quality-floor-'))),
         runs        = [];
@@ -463,6 +464,6 @@ export async function main(argv = process.argv, {stdout = process.stdout, exec} 
     return summary.unmeasured ? 2 : 0;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryModule(import.meta.url)) {
     main().then(code => { process.exitCode = code }, error => { process.stderr.write(`${error.message}\n`); process.exitCode = 1 });
 }

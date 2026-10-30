@@ -61,6 +61,7 @@
 import fs              from 'fs';
 import path            from 'path';
 import {fileURLToPath} from 'url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const
     __filename   = fileURLToPath(import.meta.url),
@@ -694,6 +695,6 @@ function main() {
     process.exit(runLint().exitCode);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     main();
 }

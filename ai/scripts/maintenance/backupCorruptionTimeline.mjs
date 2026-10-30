@@ -1,9 +1,10 @@
-import {program}                      from 'commander';
-import fs                             from 'fs-extra';
-import path                           from 'path';
-import {fileURLToPath, pathToFileURL} from 'url';
-import Neo                            from 'neo.mjs/src/Neo.mjs';
-import {isBundlePayload}              from '../../services/shared/bundlePayload.mjs';
+import {program}         from 'commander';
+import fs                from 'fs-extra';
+import path              from 'path';
+import {fileURLToPath}   from 'url';
+import Neo               from 'neo.mjs/src/Neo.mjs';
+import {isBundlePayload} from '../../services/shared/bundlePayload.mjs';
+import {isEntryModule}   from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Read-only backup-corruption timeline diagnostic — artifact-verified, not manifest-trusted.
@@ -342,6 +343,6 @@ async function main() {
     process.stdout.write((opts.json ? JSON.stringify(report, null, 2) : formatReport(report)) + '\n')
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     main()
 }

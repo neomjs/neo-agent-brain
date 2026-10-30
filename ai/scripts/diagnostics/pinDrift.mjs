@@ -38,6 +38,7 @@ import fs                  from 'node:fs';
 import path                from 'node:path';
 import {fileURLToPath}     from 'node:url';
 import {git, readAtCommit} from './gitObjects.mjs';
+import {isEntryModule}     from '../../services/shared/isEntryModule.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -417,6 +418,6 @@ function main() {
     }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryModule(import.meta.url)) {
     main()
 }

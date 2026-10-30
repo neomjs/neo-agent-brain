@@ -39,6 +39,7 @@
 import fs              from 'fs';
 import path            from 'path';
 import {fileURLToPath} from 'url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const
     __filename    = fileURLToPath(import.meta.url),
@@ -230,7 +231,7 @@ export function checkAdrStatus(dir = DECISIONS_DIR) {
     }
 }
 
-if (process.argv[1] === __filename) {
+if (isEntryModule(import.meta.url)) {
     const result = checkAdrStatus();
 
     console.log(`ADR status compliance: ${result.accepted}/${result.total} Accepted (${result.percent}%)`);

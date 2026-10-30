@@ -33,6 +33,7 @@ import {
     resolveHarnessTargetForIdentity
 } from './harnessRouting.mjs';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {isEntryModule}                from '../../services/shared/isEntryModule.mjs';
 
 export {normalizeAgentIdentityNodeId};
 
@@ -597,7 +598,7 @@ async function main() {
     });
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === __filename;
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     main().catch(err => {

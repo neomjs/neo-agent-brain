@@ -17,7 +17,7 @@ import {
     resolveHeavyMaintenanceLeasePath,
     withHeavyMaintenanceLease
 } from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
-import {pathToFileURL} from 'url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/runners/runSandman
@@ -160,6 +160,6 @@ export async function runSandman({
     return exit(exitCode);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     runSandman();
 }

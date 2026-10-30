@@ -1,12 +1,12 @@
-import {program}                      from 'commander';
-import {ChromaClient}                 from 'chromadb';
-import {execSync}                     from 'child_process';
-import crypto                         from 'crypto';
-import fs                             from 'fs-extra';
-import path                           from 'path';
-import {fileURLToPath, pathToFileURL} from 'url';
-import Neo                            from 'neo.mjs/src/Neo.mjs';
-import AiConfig                       from '../../config.mjs';
+import {program}       from 'commander';
+import {ChromaClient}  from 'chromadb';
+import {execSync}      from 'child_process';
+import crypto          from 'crypto';
+import fs              from 'fs-extra';
+import path            from 'path';
+import {fileURLToPath} from 'url';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import AiConfig        from '../../config.mjs';
 import {
     resolveHeavyMaintenanceLeasePath,
     withHeavyMaintenanceLease
@@ -18,6 +18,7 @@ import {resolveAutonomousRepairExit}                                 from '../..
 import {appendAutoAcceptedLoss}                                      from '../../services/memory-core/helpers/acceptedLossAuditStore.mjs';
 import {getAcceptedLossAuditFilePath}                                from '../../services/memory-core/helpers/acceptedLossAuditStore.mjs';
 import {writeAutoAcceptedLossState}                                  from '../../services/memory-core/helpers/acceptedLossAuditStore.mjs';
+import {isEntryModule}                                               from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Defragments collection groups inside the unified ChromaDB store.
@@ -1874,6 +1875,6 @@ export async function runDefragChromaDBCli({
     return exit(0)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     runDefragChromaDBCli();
 }

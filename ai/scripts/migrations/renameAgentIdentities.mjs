@@ -39,6 +39,7 @@
 
 import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 import {
     createDynamicTextEmbeddingFunction,
     registerNeoChromaEmbeddingFunctions
@@ -950,8 +951,7 @@ async function main() {
     }
 }
 
-const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (invokedPath === __filename) {
+if (isEntryModule(import.meta.url)) {
     main().catch(err => {
         console.error('[renameAgentIdentities] FATAL:', err);
         process.exit(1);

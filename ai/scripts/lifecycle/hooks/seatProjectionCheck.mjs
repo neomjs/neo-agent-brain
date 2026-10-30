@@ -4,10 +4,10 @@
  * @summary Claude `SessionStart` hook — reports a stale or unprojected seat into the agent's own
  * transcript, so a hook fix that landed in the Brain cannot sit unreached in a checkout for days.
  *
- * The gap this closes (#317): `projectSeatHooks` has exactly one non-test caller, `bootstrapWorktree`
+ * The gap this closes: `projectSeatHooks` has exactly one non-test caller, `bootstrapWorktree`
  * — the NEW-checkout path. A seat that already exists is projected once and never revisited, so the
  * propagation rule is *a hook fix reaches a checkout only if the checkout is newer than the fix*.
- * Measured: #296 closed 2026-09-02T09:49Z; one seat's hooks were projected 08:35 earlier and failed
+ * Measured: a hook fix landed 2026-09-02T09:49Z; one seat's hooks were projected 08:35 earlier and failed
  * open 319 consecutive times before anyone looked at the hook's own audit log.
  *
  * **Nothing here is a new detector.** `checkProjection` already reports the exact conditions, already
@@ -19,10 +19,11 @@
  * level are not (`projectSeatHooks.mjs` is the standing precedent). That placement is load-bearing
  * rather than tidy: a checker living in the seat is subject to the staleness it detects, and — the
  * case that decided it — **a projected checker cannot detect its own absence.** A peer seat audited
- * during #317 came back `missing`, all nine hook files gone; a wrapper shipped as a tenth would have
- * been gone with them and reported nothing. Resolution direction is independently mandated by
- * ADR 0040 §2.5: seat hooks resolve Brain substrate only through `agentosRuntimeRoot`-provisioned
- * artifacts, never relatively from `targetRepoRoot`.
+ * while this checker was built came back `missing`, all nine hook files gone; a wrapper shipped as a
+ * tenth would have been gone with them and reported nothing. Resolution direction is independently
+ * mandated by ADR 0040 [not-ticket-ref: the authority for seat-hook resolution] §2.5: seat hooks
+ * resolve Brain substrate only through `agentosRuntimeRoot`-provisioned artifacts, never relatively
+ * from `targetRepoRoot`.
  *
  * **Report, never repair.** The seat is told what is wrong and given the command; it never writes a
  * REPAIR. It does make one diagnostic write — {@link recordTrace} appends a line to an untracked,
@@ -43,10 +44,11 @@
  * @see https://github.com/neomjs/neo-agent-brain/issues/317
  * @see https://github.com/neomjs/neo-agent-brain/issues/79 — the arming-parity sibling
  */
-import fs                              from 'node:fs';
-import path                            from 'node:path';
-import {fileURLToPath, pathToFileURL}  from 'node:url';
+import fs                                                                  from 'node:fs';
+import path                                                                from 'node:path';
+import {fileURLToPath}                                                     from 'node:url';
 import {checkProjection, PROVENANCE_TRACE, readRuntimeProvenance, tracked} from './projectSeatHooks.mjs';
+import {isEntryModule}                                                     from '../../../services/shared/isEntryModule.mjs';
 
 const
     __filename         = fileURLToPath(import.meta.url),
@@ -82,7 +84,8 @@ async function readPayload() {
 /**
  * @summary Binds the target checkout from the payload, never from ambient `process.cwd()`.
  *
- * ADR 0040 §2.5 forbids a cwd fallback for either root, and the reason is this hook's exact shape:
+ * ADR 0040 [not-ticket-ref: the authority for both roots] §2.5 forbids a cwd fallback for either
+ * root, and the reason is this hook's exact shape:
  * a cwd default is the convenience that survives every review until the hook runs from somewhere
  * else and silently audits the wrong tree. Reporting an unbound target is the honest answer.
  * @param {Object} payload Claude hook payload.
@@ -271,8 +274,8 @@ export function recordTrace(targetRepoRoot, context) {
 export async function main(payload, runtimeRoot = agentosRuntimeRoot) {
     // The payload is a parameter with a stdin default rather than a stdin read, so a spec can exercise
     // the real routing — which verdict reaches which sink — instead of asserting on formatters and
-    // hoping the wiring matches. @neo-gpt-emmy's RA-3 landed precisely in the gap a formatter-only
-    // arm cannot see: the exception path emitted and recorded nothing, and every arm still passed.
+    // hoping the wiring matches. A review finding landed precisely in the gap a formatter-only arm
+    // cannot see: the exception path emitted and recorded nothing, and every arm still passed.
     const targetRepoRoot = resolveTargetRepoRoot(payload ?? await readPayload());
 
     if (!targetRepoRoot) {
@@ -306,9 +309,9 @@ export async function main(payload, runtimeRoot = agentosRuntimeRoot) {
         recordTrace(targetRepoRoot, context);
         emit(context)
     } catch (error) {
-        // RA-3: this path emitted and recorded nothing, so "one line per non-green verdict" was false
+        // This path once emitted and recorded nothing, so "one line per non-green verdict" was false
         // for the case a later reader most needs — the checker itself failing. A verdict that exists
-        // only in a transcript is the gap AC-5 closes, and an exception is still a verdict.
+        // only in a transcript is no record, and an exception is still a verdict.
         const context = `Seat projection was NOT verified this session — the check itself failed: ${error.message}. ` +
                         'Unknown, not current.';
 
@@ -317,9 +320,8 @@ export async function main(payload, runtimeRoot = agentosRuntimeRoot) {
     }
 }
 
-// Direct-execution guard against the realpath, matching projectSeatHooks: through a symlink `argv[1]`
-// keeps the link path while `import.meta.url` resolves the target, the two disagree, and `main()`
-// never runs — a silent no-op in the one file whose job is to end silent no-ops.
-if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
+// Direct-execution guard, as in projectSeatHooks: an unresolved check would make `main()` a silent
+// no-op through a symlink, in the one file whose job is to end silent no-ops.
+if (isEntryModule(import.meta.url)) {
     await main()
 }

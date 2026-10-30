@@ -4,7 +4,7 @@ import InstanceManager   from 'neo.mjs/src/manager/Instance.mjs';
 import AgentOrchestrator from '../../agent/AgentOrchestrator.mjs';
 import AiConfig          from '../../config.mjs';
 import path              from 'node:path';
-import {fileURLToPath}   from 'node:url';
+import {isEntryModule}   from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/runners/runAgent
@@ -55,6 +55,6 @@ export async function startOrchestrator({
 }
 
 // CLI entrypoint guard; tests can import helpers without launching the orchestrator.
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isEntryModule(import.meta.url)) {
     startOrchestrator();
 }

@@ -14,6 +14,7 @@ import {fileURLToPath} from 'url';
 
 import {Memory_GraphService as GraphService} from '../../services.mjs';
 import {parseArgs, runProbe, runVerify}      from './businessMetricsProbeCore.mjs';
+import {isEntryModule}                       from '../../services/shared/isEntryModule.mjs';
 
 const __filename   = fileURLToPath(import.meta.url);
 const __dirname    = path.dirname(__filename);
@@ -90,7 +91,7 @@ async function main() {
     return result;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isEntryModule(import.meta.url)) {
     main()
         .then(({exitCode}) => process.exit(exitCode))
         .catch(error => {

@@ -34,7 +34,7 @@
 import {spawn}         from 'child_process';
 import fs              from 'fs-extra';
 import path            from 'path';
-import {fileURLToPath} from 'url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 export const DEFAULT_STALE_LOCK_MS = 10 * 60 * 1000;
 
@@ -220,7 +220,7 @@ async function resolveConfiguredLockPath() {
     return AiConfig.heartbeatConcurrencyLockPath
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     const separatorIndex     = process.argv.indexOf('--');

@@ -42,8 +42,8 @@
  */
 import fs                from 'fs/promises';
 import path              from 'path';
-import { fileURLToPath } from 'url';
 import {writeFileAtomic} from '../../services/shared/atomicFileWrite.mjs';
+import {isEntryModule}   from '../../services/shared/isEntryModule.mjs';
 
 /**
  * Resolve the state-file path under the injected, already-resolved wake-daemon data directory.
@@ -208,7 +208,7 @@ async function main({wakeDaemonDir}={}) {
 }
 
 // Only run CLI when invoked as a script, not when imported.
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isEntryModule(import.meta.url);
 if (isMain) {
     (async () => {
         // The module is also a Neo-free helper. Bootstrap config only on the direct CLI path, then

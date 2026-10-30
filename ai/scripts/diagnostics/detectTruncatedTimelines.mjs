@@ -32,11 +32,10 @@ import 'neo.mjs/src/Neo.mjs';
 import 'neo.mjs/src/core/_export.mjs';
 import fs                   from 'fs/promises';
 import path                 from 'path';
-import {fileURLToPath}      from 'url';
 import matter               from 'gray-matter';
 import githubWorkflowConfig from '../../mcp/server/github-workflow/config.mjs';
+import {isEntryModule}      from '../../services/shared/isEntryModule.mjs';
 
-const __filename = fileURLToPath(import.meta.url);
 
 /**
  * Resolves the active issues directory from CLI `--issues-dir` or the declared
@@ -197,7 +196,7 @@ async function main() {
     }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     main().catch(e => {
         console.error('Error:', e);
         process.exit(1);

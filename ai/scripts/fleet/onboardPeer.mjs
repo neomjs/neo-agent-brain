@@ -8,6 +8,7 @@ import {createFleetRegistryBridge} from '../../services/fleet/createFleetRegistr
 import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
 import {normalizeAgentIdentityNodeId}                 from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {normalizeMemoryImport}                        from '../../services/fleet/seatMemoryImport.mjs';
+import {isEntryModule}                                from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/fleet/onboardPeer
@@ -850,7 +851,7 @@ async function main() {
     }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+if (isEntryModule(import.meta.url)) {
     main().catch(err => {
         console.error('[onboardPeer] FATAL:', err);
         process.exit(1);

@@ -32,8 +32,8 @@
  */
 import {parse}             from 'acorn';
 import path                from 'node:path';
-import {fileURLToPath}     from 'node:url';
 import {git, readAtCommit} from './gitObjects.mjs';
+import {isEntryModule}     from '../../services/shared/isEntryModule.mjs';
 
 export const USAGE = 'Usage: npm run ai:delta-digest -- [--repo <path>] [--base <ref>] [--head <ref>] [--since <sha>] [--generated <glob>]... [--json]';
 
@@ -628,6 +628,6 @@ function main() {
     }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryModule(import.meta.url)) {
     main()
 }

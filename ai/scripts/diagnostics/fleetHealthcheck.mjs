@@ -2,7 +2,7 @@ import 'dotenv/config';
 
 import {Command}       from 'commander';
 import {readFileSync}  from 'node:fs';
-import {pathToFileURL} from 'node:url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 export const DEFAULT_FLEET_HEALTHCHECK_URL = 'http://127.0.0.1:8083/fleet/probe';
 export const DEFAULT_FLEET_HEALTHCHECK_TIMEOUT_MS = 8_000;
@@ -168,8 +168,7 @@ export async function runFleetHealthcheck(argv=process.argv.slice(2), env=proces
     return receipt
 }
 
-const isMain = process.argv[1]
-    && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isMain = isEntryModule(import.meta.url);
 
 if (isMain) {
     runFleetHealthcheck().catch(error => {

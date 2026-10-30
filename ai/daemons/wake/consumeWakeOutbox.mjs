@@ -36,6 +36,7 @@ import path        from 'node:path';
 import {spawnSync} from 'node:child_process';
 
 import {withOutboxLock} from './outboxLock.mjs';
+import {isEntryModule}  from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary Reads + validates the current seat owner from the wake envelope — all three
@@ -228,7 +229,7 @@ export async function consumeWakeOutbox({
     return {consumed, duplicates, deadLetters, keptCorrupt, remaining}
 }
 
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryModule(import.meta.url)) {
     const args       = process.argv.slice(2),
           outboxFlag = args.indexOf('--outbox'),
           outboxPath = outboxFlag >= 0

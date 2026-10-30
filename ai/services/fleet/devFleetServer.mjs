@@ -97,7 +97,8 @@ import {wireFleetWakeRoutesSource}                                       from '.
 import {wireOperatorComposeWriter}                                       from './wireOperatorComposeWriter.mjs';
 import {bindCurrentRuntime}                                              from './runtimeGeneration.mjs';
 import path                                                              from 'node:path';
-import {fileURLToPath, pathToFileURL}                                    from 'node:url';
+import {fileURLToPath}                                                   from 'node:url';
+import {isEntryModule}                                                   from '../shared/isEntryModule.mjs';
 
 export const FLEET_BOOT_PHASES = Object.freeze([
     'runtime bind',
@@ -821,7 +822,7 @@ async function boot() {
 
 // Process-entry only: start + register signal handlers ONLY when this file is the main module, never
 // on import — preserves the process-entry isolation invariant (mirrors the orchestrator/kb daemons).
-const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isDirectRun = isEntryModule(import.meta.url);
 
 if (isDirectRun) {
     boot().catch(error => {

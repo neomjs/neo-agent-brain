@@ -1,19 +1,19 @@
-import {program}       from 'commander';
-import {ChromaClient}  from 'chromadb';
-import {execFile}      from 'child_process';
-import fs              from 'fs-extra';
-import os              from 'os';
-import path            from 'path';
-import {pathToFileURL} from 'url';
-import {promisify}     from 'util';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import AiConfig        from '../../config.mjs';
-import kbConfig        from '../../mcp/server/knowledge-base/config.mjs';
-import mcConfig        from '../../mcp/server/memory-core/config.mjs';
+import {program}      from 'commander';
+import {ChromaClient} from 'chromadb';
+import {execFile}     from 'child_process';
+import fs             from 'fs-extra';
+import os             from 'os';
+import path           from 'path';
+import {promisify}    from 'util';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import AiConfig       from '../../config.mjs';
+import kbConfig       from '../../mcp/server/knowledge-base/config.mjs';
+import mcConfig       from '../../mcp/server/memory-core/config.mjs';
 import {
     createDynamicTextEmbeddingFunction,
     registerNeoChromaEmbeddingFunctions
 } from '../../services/shared/vector/chromaClientPrimitives.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary On-demand Chroma integrity diagnostic for unified-store SQLite and API read paths.
@@ -970,7 +970,7 @@ export async function run(argv = process.argv) {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     run().then(({exitCode}) => {
         process.exit(exitCode);
     }).catch(error => {

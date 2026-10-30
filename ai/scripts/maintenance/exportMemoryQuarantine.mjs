@@ -14,6 +14,7 @@ import {
     Memory_LifecycleService,
     Memory_StorageRouter
 } from '../../services.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const __filename   = fileURLToPath(import.meta.url);
 const __dirname    = path.dirname(__filename);
@@ -538,6 +539,6 @@ async function main() {
     }
 }
 
-if (process.argv[1] === __filename) {
+if (isEntryModule(import.meta.url)) {
     main();
 }

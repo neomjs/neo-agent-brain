@@ -37,7 +37,7 @@
 
 import fs              from 'node:fs';
 import path            from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const ROOT        = path.resolve(import.meta.dirname, '../../..'),
       SERVER_ROOT = path.join(ROOT, 'ai/mcp/server'),
@@ -153,6 +153,6 @@ function main() {
     console.log(`lint-identity-vocabulary: ${surfaces.length} agent-facing surface(s) scanned, 0 violations.`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryModule(import.meta.url)) {
     main();
 }

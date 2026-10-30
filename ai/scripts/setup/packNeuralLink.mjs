@@ -32,6 +32,7 @@ import {builtinModules}               from 'node:module';
 import path                           from 'node:path';
 import {fileURLToPath}                from 'node:url';
 import {initConfigs, initTier1Config} from './initServerConfigs.mjs';
+import {isEntryModule}                from '../../services/shared/isEntryModule.mjs';
 
 const
     brainRoot   = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
@@ -162,9 +163,9 @@ export async function packNeuralLink({out, root = brainRoot}) {
     if (!npm) throw new Error(`${SERVER_DIR}/server.json declares no npm package; it owns the package's name and version`);
 
     const
-        brain              = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')),
-        {files, packages}  = collectClosure({root}),
-        quiet              = {log() {}, warn() {}, error: console.error};
+        brain             = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')),
+        {files, packages} = collectClosure({root}),
+        quiet             = {log() {}, warn() {}, error: console.error};
 
     fs.rmSync(out, {force: true, recursive: true});
 
@@ -177,16 +178,16 @@ export async function packNeuralLink({out, root = brainRoot}) {
     await initConfigs({aiRoot: path.join(out, 'ai'), argv: [], logger: quiet, serversRoot: path.join(out, 'ai/mcp/server')});
 
     const manifest = {
-        name        : npm.identifier,
-        version     : npm.version,
-        description : server.description,
-        mcpName     : server.name,
-        type        : 'module',
-        license     : 'MIT',
-        homepage    : server.websiteUrl,
-        repository  : {type: 'git', url: `git+${server.repository.url}.git`, directory: server.repository.subfolder},
-        engines     : brain.engines,
-        bin         : {[npm.identifier]: `${SERVER_DIR}/standalone.mjs`},
+        name       : npm.identifier,
+        version    : npm.version,
+        description: server.description,
+        mcpName    : server.name,
+        type       : 'module',
+        license    : 'MIT',
+        homepage   : server.websiteUrl,
+        repository : {type: 'git', url: `git+${server.repository.url}.git`, directory: server.repository.subfolder},
+        engines    : brain.engines,
+        bin        : {[npm.identifier]: `${SERVER_DIR}/standalone.mjs`},
         // What `ConnectionService#spawnBridge` runs inside `--cwd`, which the launcher sets to this package.
         scripts     : {'ai:server-neural-link': `node ./${SERVER_DIR}/run-bridge.mjs`},
         files       : [...new Set(files.map(file => file.split('/')[0]))].sort(),
@@ -238,7 +239,7 @@ MIT licensed. Source: https://github.com/neomjs/neo-agent-brain/tree/dev/ai/mcp/
 `
 }
 
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) {
+if (isEntryModule(import.meta.url)) {
     const {out} = new Command()
         .requiredOption('-o, --out <dir>', 'directory the package is written into (replaced)')
         .parse(process.argv)

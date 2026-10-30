@@ -1,13 +1,13 @@
 import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import os                                       from 'node:os';
 import path                                     from 'node:path';
-import {fileURLToPath, pathToFileURL}           from 'node:url';
 import {
     extractWakeSubmitNonce,
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
 import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
+import {isEntryModule}                               from '../../../../services/shared/isEntryModule.mjs';
 
 /**
  * @summary The timeout `hooks.json` gives this hook's prompt registration, in ms. A spec holds it equal
@@ -295,7 +295,7 @@ async function main({sessionStart = false} = {}) {
     }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isEntryModule(import.meta.url)) {
     // An explicit flag rather than payload sniffing: the two registrations share one command string,
     // and the SessionStart payload shape is harness-owned, so a flag is the only self-evidencing
     // discriminator this module can assert about in a unit spec.

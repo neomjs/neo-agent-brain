@@ -36,7 +36,8 @@
  * @see ai/scripts/migrations/bootstrapWorktree.mjs        symlinkDataDir dryRun — axes 1-3
  */
 
-import {execFileSync} from 'child_process';
+import {execFileSync}  from 'child_process';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const UNKNOWN = 'unknown';
 
@@ -216,4 +217,4 @@ function main() {
     }
 }
 
-if (process.argv[1]?.endsWith('probePortClaims.mjs')) main();
+if (isEntryModule(import.meta.url)) main();

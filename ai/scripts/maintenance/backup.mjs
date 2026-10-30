@@ -29,11 +29,11 @@ import {
     resolveHeavyMaintenanceLeasePath,
     withHeavyMaintenanceLease
 } from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
-import {resolveCloudOnlyDefault}                   from '../../daemons/orchestrator/services/deploymentDurabilityPosture.mjs';
-import {cleanStagingResidue, createStagingRoot}    from './backupStagingResidueCore.mjs';
+import {resolveCloudOnlyDefault}                     from '../../daemons/orchestrator/services/deploymentDurabilityPosture.mjs';
+import {cleanStagingResidue, createStagingRoot}      from './backupStagingResidueCore.mjs';
 import {BundleContentError, validateIncidentLedgers} from './restore.mjs';
-import {HEAL_LEDGER_DIR_NAME}                      from '../../services/memory-core/helpers/healEventLedgerStore.mjs';
-import {INCIDENT_LEDGER_BUNDLE_MEMBERS}            from '../../services/memory-core/helpers/incidentLedgerBundle.mjs';
+import {HEAL_LEDGER_DIR_NAME}                        from '../../services/memory-core/helpers/healEventLedgerStore.mjs';
+import {INCIDENT_LEDGER_BUNDLE_MEMBERS}              from '../../services/memory-core/helpers/incidentLedgerBundle.mjs';
 import {
     buildBackupReceipt,
     buildSyncChildEnv,
@@ -42,6 +42,7 @@ import {
     validateOffHostSyncConfig,
     writeBackupReceipt
 } from './offHostSync.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -1789,7 +1790,7 @@ export async function runBackupWithOffHostSync({
 // `runBackup` function is left lease-free so test harnesses and other module-level
 // callers retain full control of their own concurrency context. The gitignored Tier-1
 // overlay loads BEFORE any backupPath read (bundle, retention, receipt, snapshot-root).
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryModule(import.meta.url)) {
     await loadTopLevelAiConfig();
 
     // Operator-facing courtesy, deliberately at the CLI layer rather than inside the lease-owning

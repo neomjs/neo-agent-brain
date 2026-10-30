@@ -7,7 +7,6 @@ import * as core           from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager     from 'neo.mjs/src/manager/Instance.mjs';
 import fs                  from 'fs';
 import readline            from 'readline';
-import {pathToFileURL}     from 'url';
 import KB_Config           from '../../mcp/server/knowledge-base/config.mjs';
 import KB_ChromaManager    from '../../services/knowledge-base/ChromaManager.mjs';
 import KB_IngestionService from '../../services/knowledge-base/IngestionService.mjs';
@@ -16,6 +15,7 @@ import {
     resolveHeavyMaintenanceLeasePath,
     withHeavyMaintenanceLease
 } from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/maintenance/ingestTenant
@@ -243,7 +243,7 @@ async function ingestTenant() {
 }
 
 // Auto-run only when invoked directly as the CLI — not when imported by unit tests.
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     ingestTenant();
 }
 

@@ -9,6 +9,7 @@ import {
     Memory_LifecycleService,
     Memory_StorageRouter as StorageRouter
 } from '../../services.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const __filename   = fileURLToPath(import.meta.url);
 const __dirname    = path.dirname(__filename);
@@ -97,7 +98,7 @@ export function parseArgs(argv, env = process.env) {
  */
 export async function collectMemorySessionCounts(collection, {pageSize = 1000} = {}) {
     const counts = new Map();
-    let offset   = 0;
+    let   offset = 0;
 
     while (true) {
         const page = await collection.get({
@@ -144,7 +145,7 @@ export async function collectMemorySessionCounts(collection, {pageSize = 1000} =
  */
 export async function collectSummarySessions(collection, {pageSize = 1000} = {}) {
     const sessions = new Map();
-    let offset     = 0;
+    let   offset   = 0;
 
     while (true) {
         const page = await collection.get({
@@ -246,12 +247,12 @@ export function createGraphIntegrityReport({
 
     const entries = [...sessionIds].sort().map(sessionId => {
         const
-            memory       = memorySessionCounts.get(sessionId) || {},
-            summary      = summarySessions.get(sessionId) || {},
-            graph        = graphSessions.get(sessionId) || {},
-            expected     = memory.expectedMemoryCount || 0,
-            actual       = Number(getActualMemoryCount(sessionId) || 0),
-            entityCount  = typeof getEntityRelationCount === 'function'
+            memory      = memorySessionCounts.get(sessionId) || {},
+            summary     = summarySessions.get(sessionId) || {},
+            graph       = graphSessions.get(sessionId) || {},
+            expected    = memory.expectedMemoryCount || 0,
+            actual      = Number(getActualMemoryCount(sessionId) || 0),
+            entityCount = typeof getEntityRelationCount === 'function'
                 ? Number(getEntityRelationCount(sessionId) || 0)
                 : null,
             divergence   = expected - actual,
@@ -469,7 +470,7 @@ async function main() {
     return runAudit(args);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+if (isEntryModule(import.meta.url)) {
     main()
         .then(({exitCode}) => process.exit(exitCode))
         .catch(error => {

@@ -1,7 +1,7 @@
 import fs              from 'node:fs';
 import path            from 'node:path';
-import {fileURLToPath} from 'node:url';
 import {parseArgs}     from 'node:util';
+import {isEntryModule} from '../../ai/services/shared/isEntryModule.mjs';
 
 const ANSI_PATTERN  = /\x1b\[[0-9;]*[A-Za-z]/g;
 const MESSAGE_LINES = 8;
@@ -254,6 +254,6 @@ function clean(text) {
     return String(text ?? '').replace(ANSI_PATTERN, '')
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntryModule(import.meta.url)) {
     process.exitCode = main()
 }

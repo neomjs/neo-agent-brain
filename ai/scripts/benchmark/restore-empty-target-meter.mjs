@@ -23,6 +23,7 @@ import {
     TargetSetMeasurementRecorder,
     resolveTargetSetProfile
 } from './helpers/targetSetMeasurementCore.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 const
     execFileAsync            = promisify(execFile),
@@ -877,7 +878,7 @@ async function main() {
     }
 }
 
-const isDirectRun = import.meta.url === `file://${process.argv[1]}`;
+const isDirectRun = isEntryModule(import.meta.url);
 
 if (isDirectRun) {
     main().catch(error => {

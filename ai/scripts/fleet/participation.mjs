@@ -4,10 +4,10 @@ import Neo                            from 'neo.mjs/src/Neo.mjs';
 import * as core                      from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager                from 'neo.mjs/src/manager/Instance.mjs';
 import os                             from 'os';
-import {pathToFileURL}                from 'url';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {readParticipation,
         recordParticipation}          from '../../services/memory-core/recordParticipation.mjs';
+import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
 
 /**
  * @module ai/scripts/fleet/participation
@@ -140,7 +140,7 @@ async function participation() {
     process.exit(result.ok ? 0 : 1)
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+if (isEntryModule(import.meta.url)) {
     participation()
 }
 
