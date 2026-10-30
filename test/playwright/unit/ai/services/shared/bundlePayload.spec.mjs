@@ -95,6 +95,46 @@ test.describe('ai/services/shared/bundlePayload — one encoding decision for ev
         });
     }
 
+    // JSON.stringify leaves U+2028 and U+2029 raw, and readline breaks a line at both: unescaped, one
+    // record reads as two, failing the backup's row-count parity and splitting the row on restore.
+    // Built by code point so this file never holds the raw, invisible characters.
+    const LS = String.fromCodePoint(0x2028),
+          PS = String.fromCodePoint(0x2029);
+
+    for (const extension of Object.keys(BUNDLE_PAYLOAD_ENCODINGS)) {
+        test(`a record holding U+2028 or U+2029 stays one line through ${extension} and parses back equal`, async () => {
+            const filePath = path.join(tmpRoot, `separators${extension}`);
+            const records  = [
+                {id: 'r-1', document: `before${LS}after`},
+                {id: 'r-2', metadata: {thought: `one${PS}two${LS}three`}},
+                {id: 'r-3', document: 'plain'}
+            ];
+
+            await writeRows(filePath, records.map(record => JSON.stringify(record)));
+
+            const lines = await readRows(filePath);
+
+            expect(lines).toHaveLength(records.length);
+            expect(lines.map(line => JSON.parse(line))).toEqual(records);
+        });
+    }
+
+    test('a run of U+2028 long enough to cross every decoded chunk boundary is still one line', async () => {
+        // 16 KiB chunks against a 3-byte character: two of any three consecutive boundaries split one.
+        const record = {id: 'many', document: LS.repeat(30000)};
+
+        for (const extension of ['.jsonl.br', '.jsonl.gz']) {
+            const filePath = path.join(tmpRoot, `straddle${extension}`);
+
+            await writeRows(filePath, [JSON.stringify(record)]);
+
+            const lines = await readRows(filePath);
+
+            expect(lines, extension).toHaveLength(1);
+            expect(JSON.parse(lines[0]), extension).toEqual(record);
+        }
+    });
+
     test('a plain .jsonl written through the helper is the bare text — old readers keep working', async () => {
         const filePath = path.join(tmpRoot, 'rows.jsonl');
 
