@@ -77,11 +77,14 @@ import {isEntryModule}                                           from '../../ser
  *   1. Wake safety gate check (with `WAKE_GATE_OVERRIDE` operator bypass)
  *   2. Initialize Memory Core services
  *   3. Defensive in-flight lock check (handles detector-dispatcher race window)
- *   4. Acquire in-flight `idle_out_nudge` lock
- *   5. Emit Shape B heartbeat pulse via `WakeSubscriptionService.emitHeartbeatPulse`
- *   6. On emit error: clear lock + fail loudly (so retry isn't blocked for the
- *      full `BOOT_TIMEOUT_MS` window)
+ *   4. Build the pulse content from the seat's last known activity and lane state
+ *   5. Acquire the in-flight `idle_out_nudge` lock, then emit the Shape B heartbeat pulse via
+ *      `WakeSubscriptionService.emitHeartbeatPulse` — nothing runs between the two but the emit
+ *   6. On emit error: clear lock + fail loudly
  *
+ * The lock is written last because it never ages out: a lock taken before the content reads
+ * survived a failing read as an unsent, permanent lock, and the seat's whole quiet stretch
+ * passed without a nudge. A read that fails now writes nothing, so the next scan tries again.
  * Lock is NOT cleared on success; release is memory-resolved.
  *
  * @param {string} identity Target agent identity (e.g., '@neo-opus-ada').
@@ -122,14 +125,12 @@ export async function idleOutNudge(identity, {wakeDaemonDir}={}) {
         return;
     }
 
-    // 4. Acquire the in-flight lock BEFORE emitting — secures the nudge bounded window.
-    await writeInflightLock(identity, 'idle_out_nudge', 0, {wakeDaemonDir});
-
     const sender = process.env.NEO_AGENT_IDENTITY || '@system';
 
-    // The content rides the pulse id (`<source>.<base64url-JSON>`; the GraphLog row has no payload
-    // column): the seat's own last lane-state line, its idle minutes since the last known activity,
-    // the drain pointer and the sunset rule — the woken seat reads where it stood, not a generic nudge.
+    // 4. The content rides the pulse id (`<source>.<base64url-JSON>`; the GraphLog row has no payload
+    //    column): the seat's own last lane-state line, its idle minutes since the last known activity,
+    //    the drain pointer and the sunset rule — the woken seat reads where it stood, not a generic nudge.
+    //    These reads run BEFORE the lock exists: a failure here leaves nothing behind.
     const db       = GraphService.db.storage.db;
     const activity = readLastKnownActivity(db, identity);
     const pulseId  = buildIdleOutPulseId({
@@ -139,12 +140,14 @@ export async function idleOutNudge(identity, {wakeDaemonDir}={}) {
         laneState         : readLastLaneStateLine(db, identity)
     });
 
-    // 5. Emit Shape B heartbeat pulse. Creates an ephemeral GraphLog entry tagged
-    //    as `heartbeat_pulse`; bridge-daemon's resync() picks it up + dispatches
-    //    via the existing adapter set (osascript / codex-app-server / etc.).
-    //    NO MESSAGE node persisted, NO SENT_TO edge, NO inbox surfacing.
-    //    Idempotent: if no active bridge-daemon subscription for the identity,
-    //    the emit no-ops (logged, not throws).
+    // 5. Acquire the in-flight lock immediately before emitting, then emit the Shape B heartbeat
+    //    pulse. The emit creates an ephemeral GraphLog entry tagged as `heartbeat_pulse`;
+    //    bridge-daemon's resync() picks it up + dispatches via the existing adapter set
+    //    (osascript / codex-app-server / etc.). NO MESSAGE node persisted, NO SENT_TO edge,
+    //    NO inbox surfacing. Idempotent: if no active bridge-daemon subscription for the
+    //    identity, the emit no-ops (logged, not throws).
+    await writeInflightLock(identity, 'idle_out_nudge', 0, {wakeDaemonDir});
+
     try {
         await RequestContextService.run({agentIdentityNodeId: sender}, async () => {
             await WakeSubscriptionService.emitHeartbeatPulse({targetIdentity: identity, pulseId});

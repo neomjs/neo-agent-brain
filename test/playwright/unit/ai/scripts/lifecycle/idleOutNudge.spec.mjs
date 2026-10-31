@@ -116,6 +116,57 @@ test.describe('ai/scripts/idleOutNudge', () => {
         expect(lockAfter).toBe(lockBefore);
     });
 
+    test('A content read that fails after the gate and the lock check leaves no lock behind, and the next attempt emits', async () => {
+        // The lock never ages out, so a lock written before the content reads survived a failing
+        // read as an unsent, permanent lock for the whole quiet stretch. The reads now run first and
+        // the lock is written immediately before the emit; this injects the failure in-process on
+        // the real dispatcher, with the graph handle it reads replaced by one whose every statement
+        // throws, and the pulse emit replaced by a recorder.
+        const {idleOutNudge}          = await import('../../../../../../ai/scripts/lifecycle/idleOutNudge.mjs');
+        const LifecycleService        = (await import('../../../../../../ai/services/memory-core/lifecycle/SystemLifecycleService.mjs')).default;
+        const GraphService            = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        const WakeSubscriptionService = (await import('../../../../../../ai/services/memory-core/WakeSubscriptionService.mjs')).default;
+
+        await LifecycleService.ready();
+        await GraphService.ready();
+
+        const identity      = '@neo-idle-out-inprocess';
+        const inProcessDir  = path.join(os.tmpdir(), `wake-state-idleout-inprocess-${randomUUID()}`);
+        const inProcessLock = getLockPath('idle_out_nudge', identity, {wakeDaemonDir: inProcessDir});
+        const emits         = [];
+        const savedOverride = process.env.WAKE_GATE_OVERRIDE;
+        const savedDb       = Object.getOwnPropertyDescriptor(GraphService, 'db');
+        const savedEmit     = WakeSubscriptionService.emitHeartbeatPulse;
+
+        process.env.WAKE_GATE_OVERRIDE             = '1';
+        WakeSubscriptionService.emitHeartbeatPulse = async opts => { emits.push(opts); return {status: 'emitted'} };
+
+        try {
+            Object.defineProperty(GraphService, 'db', {
+                configurable: true,
+                get         : () => ({storage: {db: {prepare() { throw new Error('injected graph read failure') }}}})
+            });
+
+            await expect(idleOutNudge(identity, {wakeDaemonDir: inProcessDir})).rejects.toThrow('injected graph read failure');
+            expect(fs.existsSync(inProcessLock)).toBe(false);
+            expect(emits).toEqual([]);
+
+            // The graph answers again (no seat activity in between): the next scan's attempt emits.
+            if (savedDb) Object.defineProperty(GraphService, 'db', savedDb); else delete GraphService.db;
+
+            await idleOutNudge(identity, {wakeDaemonDir: inProcessDir});
+            expect(fs.existsSync(inProcessLock)).toBe(true);
+            expect(emits).toEqual([{targetIdentity: identity, pulseId: expect.stringMatching(/^idle-out-nudge\./)}]);
+        } finally {
+            if (Object.getOwnPropertyDescriptor(GraphService, 'db')?.get) {
+                if (savedDb) Object.defineProperty(GraphService, 'db', savedDb); else delete GraphService.db;
+            }
+            WakeSubscriptionService.emitHeartbeatPulse = savedEmit;
+            if (savedOverride === undefined) delete process.env.WAKE_GATE_OVERRIDE; else process.env.WAKE_GATE_OVERRIDE = savedOverride;
+            await fsp.rm(inProcessDir, {recursive: true, force: true});
+        }
+    });
+
     test('Static script: dispatcher invariants framing intact post-Shape-B refactor (#10675 / #11996)', async () => {
         // Per the dispatcher invariants (preserved across Sub-iii Shape A → Shape B refactor),
         // the dispatcher MUST communicate:

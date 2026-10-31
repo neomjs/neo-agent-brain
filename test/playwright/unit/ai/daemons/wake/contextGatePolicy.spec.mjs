@@ -4,7 +4,7 @@ import {
     DEFAULT_CONTEXT_GATE_MAX_TOKENS,
     DEFAULT_CONTEXT_GATE_WARN_TOKENS,
     evaluateContextGate,
-    isHeartbeatOnlyEnvelope
+    isIdleOnlyEnvelope
 } from '../../../../../../ai/daemons/wake/contextGatePolicy.mjs';
 
 test.describe('ai/daemons/wake/contextGatePolicy (#16682 budget-cliff guard)', () => {
@@ -68,17 +68,17 @@ test.describe('ai/daemons/wake/contextGatePolicy (#16682 budget-cliff guard)', (
         });
     });
 
-    test.describe('the active-session skip (heartbeat-only wakes)', () => {
+    test.describe('the active-session skip (idle-only wakes)', () => {
         const NOW      = Date.parse('2026-10-30T20:00:00.000Z');
         const MIN      = 60 * 1000;
-        const skipOpts = {...limits, heartbeatOnly: true, activeWithinMs: DEFAULT_CONTEXT_GATE_ACTIVE_WITHIN_MS, now: NOW};
+        const skipOpts = {...limits, idleOnly: true, activeWithinMs: DEFAULT_CONTEXT_GATE_ACTIVE_WITHIN_MS, now: NOW};
         const active   = agoMs => ({contextTokens: 80_000, lastActivityAt: NOW - agoMs, sessionId: 'ses_active'});
 
         test('the default window equals the idle threshold the detector nudges at', () => {
             expect(DEFAULT_CONTEXT_GATE_ACTIVE_WITHIN_MS).toBe(30 * MIN);
         });
 
-        test('a heartbeat-only wake into a session active inside the window is skipped, not deferred', () => {
+        test('an idle-only wake into a session active inside the window is skipped, not deferred', () => {
             expect(evaluateContextGate({probe: active(5 * MIN), ...skipOpts})).toEqual({
                 action: 'skip', gateOutcome: 'active-session', contextTokens: 80_000, activeAgoMs: 5 * MIN
             });
@@ -96,7 +96,7 @@ test.describe('ai/daemons/wake/contextGatePolicy (#16682 budget-cliff guard)', (
         });
 
         test('a wake that carries content is never skipped, whatever the activity', () => {
-            expect(evaluateContextGate({probe: active(1 * MIN), ...skipOpts, heartbeatOnly: false})).toMatchObject({action: 'deliver'});
+            expect(evaluateContextGate({probe: active(1 * MIN), ...skipOpts, idleOnly: false})).toMatchObject({action: 'deliver'});
         });
 
         test('no window, an unknown probe, or a probe without an activity stamp disables the skip', () => {
@@ -107,21 +107,36 @@ test.describe('ai/daemons/wake/contextGatePolicy (#16682 budget-cliff guard)', (
         });
     });
 
-    test.describe('isHeartbeatOnlyEnvelope', () => {
+    test.describe('isIdleOnlyEnvelope', () => {
         const envelope = breakdown => ({payload: {totalEvents: 1, breakdown}});
+        const idle     = (count, extra = {}) => ({count, latest: {pulseId: 'idle-out-nudge.x'}, sources: {'idle-out-nudge': count}, ...extra});
 
-        test('true for a digest of heartbeat pulses alone', () => {
-            expect(isHeartbeatOnlyEnvelope(envelope({heartbeat_pulse: {count: 2, latest: {pulseId: 'idle-out-nudge.x'}}}))).toBe(true);
-            expect(isHeartbeatOnlyEnvelope(envelope({heartbeat_pulse: {count: 1}, sent_to_me: {count: 0}, task_state_changed: {count: 0}, permission_granted: {count: 0}}))).toBe(true);
+        test('true only when every heartbeat pulse is an idle-out pulse and nothing else rides along', () => {
+            expect(isIdleOnlyEnvelope(envelope({heartbeat_pulse: idle(2)}))).toBe(true);
+            expect(isIdleOnlyEnvelope(envelope({heartbeat_pulse: idle(1), sent_to_me: {count: 0}, task_state_changed: {count: 0}, permission_granted: {count: 0}}))).toBe(true);
+        });
+
+        test('a GitHub notification pulse is content, even coalesced behind a newer idle pulse', () => {
+            // The bucket's `latest` points at the idle pulse; the tally still shows the notification.
+            const mixed = {count: 2, latest: {pulseId: 'idle-out-nudge.x'}, sources: {'idle-out-nudge': 1, 'github-notification': 1}};
+
+            expect(isIdleOnlyEnvelope(envelope({heartbeat_pulse: mixed}))).toBe(false);
+            expect(isIdleOnlyEnvelope(envelope({heartbeat_pulse: {count: 1, latest: {pulseId: 'github-notification.y'}, sources: {'github-notification': 1}}}))).toBe(false);
+        });
+
+        test('unknown content is never skipped: no tally (an older producer), an unknown source, or a count the tally does not cover', () => {
+            expect(isIdleOnlyEnvelope(envelope({heartbeat_pulse: {count: 2, latest: {pulseId: 'idle-out-nudge.x'}}}))).toBe(false);
+            expect(isIdleOnlyEnvelope(envelope({heartbeat_pulse: {count: 1, sources: {unknown: 1}}}))).toBe(false);
+            expect(isIdleOnlyEnvelope(envelope({heartbeat_pulse: {count: 2, sources: {'idle-out-nudge': 1}}}))).toBe(false);
         });
 
         test('false once any content event rides along, and for envelopes without a breakdown', () => {
-            expect(isHeartbeatOnlyEnvelope(envelope({heartbeat_pulse: {count: 1}, sent_to_me: {count: 1}}))).toBe(false);
-            expect(isHeartbeatOnlyEnvelope(envelope({heartbeat_pulse: {count: 1}, task_state_changed: {count: 1}}))).toBe(false);
-            expect(isHeartbeatOnlyEnvelope(envelope({heartbeat_pulse: {count: 1}, permission_granted: {count: 1}}))).toBe(false);
-            expect(isHeartbeatOnlyEnvelope(envelope({sent_to_me: {count: 1}}))).toBe(false);
-            expect(isHeartbeatOnlyEnvelope({payload: {}})).toBe(false);
-            expect(isHeartbeatOnlyEnvelope(null)).toBe(false);
+            expect(isIdleOnlyEnvelope(envelope({heartbeat_pulse: idle(1), sent_to_me: {count: 1}}))).toBe(false);
+            expect(isIdleOnlyEnvelope(envelope({heartbeat_pulse: idle(1), task_state_changed: {count: 1}}))).toBe(false);
+            expect(isIdleOnlyEnvelope(envelope({heartbeat_pulse: idle(1), permission_granted: {count: 1}}))).toBe(false);
+            expect(isIdleOnlyEnvelope(envelope({sent_to_me: {count: 1}}))).toBe(false);
+            expect(isIdleOnlyEnvelope({payload: {}})).toBe(false);
+            expect(isIdleOnlyEnvelope(null)).toBe(false);
         });
     });
 });

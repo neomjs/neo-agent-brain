@@ -15,11 +15,11 @@ import net     from 'node:net';
 import path    from 'node:path';
 import {watch} from 'node:fs';
 
-import {WakeReceiverState}                            from './receiverState.mjs';
-import {createReceiverLiveness}                       from './receiverLiveness.mjs';
-import {evaluateContextGate, isHeartbeatOnlyEnvelope} from './contextGatePolicy.mjs';
-import {dispatchLocalWake, probeSessionContext}       from './localWakeAdapters.mjs';
-import {isEntryModule}                                from '../../services/shared/isEntryModule.mjs';
+import {WakeReceiverState}                       from './receiverState.mjs';
+import {createReceiverLiveness}                  from './receiverLiveness.mjs';
+import {evaluateContextGate, isIdleOnlyEnvelope} from './contextGatePolicy.mjs';
+import {dispatchLocalWake, probeSessionContext}  from './localWakeAdapters.mjs';
+import {isEntryModule}                           from '../../services/shared/isEntryModule.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
 
@@ -327,13 +327,14 @@ export function createWakeReceiver({
                         maxContextTokens : gateConfig.maxContextTokens,
                         warnContextTokens: gateConfig.warnContextTokens,
                         activeWithinMs   : gateConfig.activeWithinMs,
-                        heartbeatOnly    : isHeartbeatOnlyEnvelope(dispatching.envelope)
+                        idleOnly         : isIdleOnlyEnvelope(dispatching.envelope)
                     });
 
-                    // The active-session skip: a heartbeat-only wake exists to end an idle stretch, and
-                    // a probe that shows the session working says there is none to end. Terminal, not
+                    // The active-session skip: an idle-only wake exists to end an idle stretch, and a
+                    // probe that shows the session working says there is none to end. Terminal, not
                     // deferred — a nudge parked until the seat goes quiet would land on a seat that
-                    // already moved; the detector raises a fresh one when the next stretch comes.
+                    // already moved; the detector raises a fresh one when the next stretch comes. A
+                    // wake carrying any content (a message, a GitHub notification pulse) never skips.
                     if (gate.action === 'skip') {
                         await watched.transition(record.recordKey, 'dispatching', 'skipped', {
                             outcomeReason      : `context-gate:${gate.gateOutcome}`,
@@ -342,7 +343,7 @@ export function createWakeReceiver({
                             dispatchFinishedAt : new Date().toISOString()
                         });
                         logger.log?.(
-                            `[Wake Receiver] context gate SKIPPED ${record.subscriptionId}: heartbeat-only wake, ` +
+                            `[Wake Receiver] context gate SKIPPED ${record.subscriptionId}: idle-only wake, ` +
                             `session active ${gate.activeAgoMs} ms ago (within ${gateConfig.activeWithinMs} ms); no idle stretch to end`
                         );
                         continue;

@@ -297,9 +297,9 @@ test.describe('ai/scripts/checkSunsetted', () => {
         }
     });
 
+    // Seeds its own file-backed graph and runs the detector in a child process against it, so it
+    // executes in CI; the skip flag belongs to the rows that read the worker's substrate data.
     test('detector contract: a turn-presence beacon younger than the threshold suppresses the candidate the memory age alone would raise', async () => {
-        test.skip(skipCiSubstrateData, 'CI-skip: substrate data not seeded - bucket C (#10903)');
-
         // A seat deep in a long tool loop saves no memory until the turn ends; its presence hook
         // stamps every tool call. The detector keys on the newest of memory, presence and outbound
         // message, so the 24h-old memory is not the whole story.

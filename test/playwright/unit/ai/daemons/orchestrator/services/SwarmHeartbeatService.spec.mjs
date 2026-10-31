@@ -670,6 +670,32 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         expect(nudgeCalls).toEqual([]);
     });
 
+    test('pulse() holds the swarm wake while the recommended coordinator is under a readiness sentinel or a backoff window, and dispatches once clear', async () => {
+        applyDefaultStubs();
+        const swarmCalls = [];
+        SwarmHeartbeatService.checkAllAgentIdle = async () => ({allIdle: true, cycle_id: '7', identities: ['@a', '@b'], coordinator_recommendation: '@a', details: {}});
+        SwarmHeartbeatService.swarmWakeCooldown = async (signal) => { swarmCalls.push(signal) };
+        SwarmHeartbeatService.getReadinessSentinelMessages = async () => [{
+            id        : 'msg-block-swarm',
+            properties: {task: {type: 'wake-readiness', ready: false, reason: 'benched', expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()}}
+        }];
+
+        await SwarmHeartbeatService.pulse();
+        expect(swarmCalls).toEqual([]);
+
+        SwarmHeartbeatService.getReadinessSentinelMessages = async () => [];
+        SwarmHeartbeatService.getActiveBackoffWindow       = () => ({expiresAtMs: Date.now() + 30 * 60 * 1000, reason: 'error-streak-3'});
+
+        await SwarmHeartbeatService.pulse();
+        expect(swarmCalls).toEqual([]);
+
+        SwarmHeartbeatService.getActiveBackoffWindow = () => null;
+
+        await SwarmHeartbeatService.pulse();
+        expect(swarmCalls).toHaveLength(1);
+        expect(swarmCalls[0].coordinator_recommendation).toBe('@a');
+    });
+
     test('pulse() routes the idle-out nudge once the sentinel has expired', async () => {
         applyDefaultStubs();
         SwarmHeartbeatService.checkSunsetted = async () => ({sunsetted: false, recommended_action: 'idle_out_nudge'});

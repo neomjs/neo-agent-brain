@@ -130,6 +130,23 @@ test.describe('ai/scripts/lifecycle/lastKnownActivity', () => {
         expect(activity).toMatchObject({lastActivitySource: 'memory', ageMs: 30 * MIN});
     });
 
+    test('legacy and current rows are ordered by the same parsed time: an old legacy row never hides a fresh session', () => {
+        // Compared as text, `Memory: 2026-10-01…` sorts above `2026-10-30…` by its prefix alone, and the
+        // helper returned the month-old row with its empty session while a one-minute-old row existed.
+        const db = createGraph();
+        insertMemory(db, 'mem-legacy-old', 30 * 24 * 60 * MIN, {legacy: true});
+        insertMemory(db, 'mem-fresh', 1 * MIN, {sessionId: 'session-fresh'});
+
+        expect(readLastKnownActivity(db, IDENTITY, {now: NOW})).toMatchObject({
+            lastActivitySource: 'memory', ageMs: 1 * MIN, lastMemoryAgeMs: 1 * MIN, lastSessionId: 'session-fresh'
+        });
+
+        // The other direction holds too: a legacy row newer than every modern row is the newest.
+        insertMemory(db, 'mem-legacy-new', 0, {legacy: true});
+
+        expect(readLastKnownActivity(db, IDENTITY, {now: NOW})).toMatchObject({ageMs: 0, lastSessionId: ''});
+    });
+
     test('refuses to run without a database handle or an identity', () => {
         expect(() => readLastKnownActivity(null, IDENTITY)).toThrow('database handle');
         expect(() => readLastKnownActivity(createGraph(), '')).toThrow('agent identity');

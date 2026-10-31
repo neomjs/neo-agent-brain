@@ -12,7 +12,9 @@
  * Pure over an injected `better-sqlite3` handle: no Neo import, no config read, no write. Both
  * detectors (`checkSunsetted.mjs`, `checkAllAgentIdle.mjs`) and the nudge dispatcher call it, so the
  * idle predicate has one definition. The memory read keeps the legacy-row fallback (`name: 'Memory:
- * <iso>'`) because the all-idle detector runs without `checkSunsetted`'s update-on-read migration.
+ * <iso>'`) because the all-idle detector runs without `checkSunsetted`'s update-on-read migration,
+ * and it orders both row shapes by the same parsed time: a legacy name compared as text against a
+ * bare ISO stamp sorts by its `Memory:` prefix, so one old legacy row hid every newer modern row.
  *
  * @module ai/scripts/lifecycle/lastKnownActivity
  */
@@ -50,7 +52,11 @@ function readNewestMemory(db, identity) {
         FROM Nodes
         WHERE json_extract(data, '$.label') = 'AGENT_MEMORY'
           AND (json_extract(data, '$.properties.agentIdentity') = ? OR json_extract(data, '$.properties.userId') = ?)
-        ORDER BY COALESCE(json_extract(data, '$.properties.timestamp'), json_extract(data, '$.properties.name')) DESC
+        ORDER BY julianday(COALESCE(
+                     json_extract(data, '$.properties.timestamp'),
+                     CASE WHEN json_extract(data, '$.properties.name') LIKE 'Memory:%'
+                          THEN trim(substr(json_extract(data, '$.properties.name'), 8)) END
+                 )) DESC
         LIMIT 1
     `).get(identity, identity);
 

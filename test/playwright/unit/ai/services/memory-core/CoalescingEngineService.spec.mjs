@@ -19,8 +19,9 @@ import fs              from 'fs-extra';
 import path            from 'path';
 import {fileURLToPath} from 'url';
 
-// Pure policy module (no Neo dependency) — safe as a static import ahead of the dynamic service loads.
+// Pure policy modules (no Neo dependency) — safe as static imports ahead of the dynamic service loads.
 import {MESSAGE_WAKE_MAX_AGE_MS} from '../../../../../../ai/services/memory-core/wakeCoalescePolicy.mjs';
+import {isIdleOnlyEnvelope}      from '../../../../../../ai/daemons/wake/contextGatePolicy.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../../');
 
@@ -189,6 +190,31 @@ test.describe('CoalescingEngineService', () => {
         expect(first.eventId).toBe(second.eventId);
         expect(first.payload.sourceEventIds).toEqual(['M1', 'P1']);
         expect(first.payload.breakdown.heartbeat_pulse.count).toBe(1);
+    });
+
+    test('the heartbeat bucket tallies every pulse by source, and the receiver policy reads the tally, not the latest pointer', () => {
+        const sub      = buildSubscription();
+        const idleOnly = CoalescingEngineService._buildDigestEnvelope(sub, [
+            buildEnvelope('wake/heartbeat_pulse', {pulseId: 'idle-out-nudge.e30'}, 100),
+            buildEnvelope('wake/heartbeat_pulse', {pulseId: 'idle-out-nudge.e31'}, 101)
+        ], Date.now());
+        const mixed = CoalescingEngineService._buildDigestEnvelope(sub, [
+            buildEnvelope('wake/heartbeat_pulse', {pulseId: 'github-notification.e30'}, 100),
+            buildEnvelope('wake/heartbeat_pulse', {pulseId: 'idle-out-nudge.e31'}, 101),
+            buildEnvelope('wake/heartbeat_pulse', {pulseId: 'P1'}, 102)
+        ], Date.now());
+
+        expect(idleOnly.payload.breakdown.heartbeat_pulse).toMatchObject({count: 2, sources: {'idle-out-nudge': 2}});
+        expect(isIdleOnlyEnvelope(idleOnly)).toBe(true);
+
+        // The newest pulse is the idle one, so `latest` alone would read as a reminder; the tally keeps
+        // the notification (and the prefix-less pulse) visible, and the policy delivers.
+        expect(mixed.payload.breakdown.heartbeat_pulse).toMatchObject({
+            count  : 3,
+            latest : {pulseId: 'P1'},
+            sources: {'github-notification': 1, 'idle-out-nudge': 1, unknown: 1}
+        });
+        expect(isIdleOnlyEnvelope(mixed)).toBe(false);
     });
 
     test('digest preserves the strongest coalesced message priority when the latest is weaker', () => {

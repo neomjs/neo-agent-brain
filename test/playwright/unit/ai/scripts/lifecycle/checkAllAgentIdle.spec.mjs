@@ -183,9 +183,10 @@ test.describe('ai/scripts/checkAllAgentIdle', () => {
         }
     });
 
+    // The two scenarios below seed their own file-backed graph and run the detector in a child
+    // process against it, so they execute in CI; the skip flag above belongs to the rows that read
+    // the worker's substrate data.
     test('a fresh turn-presence beacon makes an agent active although its memory is past the threshold', async () => {
-        test.skip(skipCiSubstrateData, 'CI-skip: substrate data not seeded - bucket C (#10903)');
-
         const oldTime  = new Date(Date.now() - 20 * 60 * 1000).toISOString();
         const beacon   = new Date(Date.now() - 2 * 60 * 1000).toISOString();
         const scenario = await createGraphScenario();
@@ -218,8 +219,6 @@ test.describe('ai/scripts/checkAllAgentIdle', () => {
     });
 
     test('a pending idle-out nudge counts as activity only within the threshold', async () => {
-        test.skip(skipCiSubstrateData, 'CI-skip: substrate data not seeded - bucket C (#10903)');
-
         const oldTime       = new Date(Date.now() - 20 * 60 * 1000).toISOString();
         const scenario      = await createGraphScenario();
         const wakeDaemonDir = mkdtempSync(path.join(os.tmpdir(), 'neo-all-idle-locks-'));

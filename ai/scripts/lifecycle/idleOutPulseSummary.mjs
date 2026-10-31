@@ -17,14 +17,16 @@
  */
 import {
     DEFAULT_CONTEXT_GATE_MAX_TOKENS,
-    DEFAULT_CONTEXT_GATE_WARN_TOKENS
+    DEFAULT_CONTEXT_GATE_WARN_TOKENS,
+    IDLE_OUT_PULSE_SOURCE
 } from '../../daemons/wake/contextGatePolicy.mjs';
 
 /**
- * The pulse-id prefix both renderers and the daemon's decoder branch on.
+ * The pulse-id prefix both renderers and the daemon's decoder branch on, re-exported from the
+ * receiver policy that owns it.
  * @type {String}
  */
-export const IDLE_OUT_PULSE_SOURCE = 'idle-out-nudge';
+export {IDLE_OUT_PULSE_SOURCE};
 
 /**
  * The longest lane-state line a pulse carries; the digest is typed into a harness prompt.

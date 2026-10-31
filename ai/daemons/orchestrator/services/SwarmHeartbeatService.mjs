@@ -441,7 +441,23 @@ class SwarmHeartbeatService extends Base {
                 const gateState = await this.readGate();
                 logger.warn(`[SwarmHeartbeatService] Wake safety gate closed; skipping swarm wake dispatch. Gate reason: ${gateState.reason}`)
             } else {
-                await this.swarmWakeCooldown(allIdleJson)
+                // The swarm wake is a wake to one seat, so it passes the same readiness gate as a
+                // per-seat nudge: a coordinator under a blocking `[wake-readiness]` sentinel or an
+                // active backoff window is not woken by this path either, and no lock is written.
+                // The dispatcher itself honors the coordinator's unanswered `idle_out_nudge` lock.
+                const coordinator = allIdleJson.coordinator_recommendation;
+                const now         = Date.now();
+                const readiness   = coordinator ? WakeDecisionService.decideReady({
+                    currentTimeMs          : now,
+                    activeReadinessSentinel: WakeDecisionService.parseActiveReadinessSentinels(await this.getReadinessSentinelMessages(coordinator), now),
+                    activeBackoffWindow    : this.getActiveBackoffWindow(coordinator, now)
+                }) : {ready: true};
+
+                if (!readiness.ready) {
+                    logger.info(`[SwarmHeartbeatService] Skip swarm wake to ${coordinator}: ${readiness.reason}`)
+                } else {
+                    await this.swarmWakeCooldown(allIdleJson)
+                }
             }
         }
 
