@@ -247,21 +247,90 @@ export function classifyEmbedFailureCode(code) {
  * @returns {String} A bounded `KB_*` code.
  */
 export function classifyEmbedFailureError(error) {
+    for (const link of boundedCauseChain(error)) {
+        const classified = classifyEmbedFailureCode(link.code);
+        if (classified !== KB_VECTOR_EMBED_UNCLASSIFIED) {
+            return classified
+        }
+    }
+
+    return KB_VECTOR_EMBED_UNCLASSIFIED
+}
+
+/**
+ * @summary Yields at most four distinct Error-like objects along a `cause` chain, stopping on cycles.
+ * @param {*} error
+ * @yields {Object}
+ */
+function* boundedCauseChain(error) {
     const visited = new Set();
     let   current = error;
 
     for (let depth = 0; depth < 4 && current && typeof current === 'object' && !visited.has(current); depth++) {
         visited.add(current);
-
-        const classified = classifyEmbedFailureCode(current.code);
-        if (classified !== KB_VECTOR_EMBED_UNCLASSIFIED) {
-            return classified
-        }
-
+        yield current;
         current = current.cause
     }
+}
 
-    return KB_VECTOR_EMBED_UNCLASSIFIED
+/**
+ * @summary Where `IngestionService.embedChunkGroups` met an embed failure: a returned error result or a throw.
+ * @type {Readonly<{returned: String, thrown: String}>}
+ */
+export const EMBED_FAILURE_STAGE = Object.freeze({returned: 'embed-returned', thrown: 'embed-thrown'});
+
+const EMBED_FAILURE_STAGES     = new Set(Object.values(EMBED_FAILURE_STAGE));
+const ERROR_CLASS_NAME_PATTERN = /^[A-Z][A-Za-z0-9]{0,63}$/;
+const ERROR_CLASS_SENTINELS    = new Set(['none', 'other']);
+
+/**
+ * @summary The code-authored trace of an unclassified embed failure: its stage, its error class, and
+ * whether it carried a raw code at all.
+ *
+ * {@link KB_VECTOR_EMBED_UNCLASSIFIED} says only that no vocabulary matched; the message, the raw code
+ * and the details stay behind the credential boundary. The stage is a literal from this file, and the
+ * class is read from the prototype, so a data-carried `constructor` field cannot supply it.
+ *
+ * @param {Object} opts
+ * @param {String} opts.stage         An {@link EMBED_FAILURE_STAGE} value.
+ * @param {*}      opts.error         The thrown value, or a returned result's `error` field.
+ * @param {*}      [opts.codeCarrier] What carries the raw code: the thrown value (default) or the returned result.
+ * @returns {{stage: String, errorClass: String, rawCode: String}} `errorClass` is a class name, `none`
+ *     for a non-object or `other` for a name outside the identifier pattern; `rawCode` is `present` or `absent`.
+ */
+export function traceEmbedFailure({stage, error, codeCarrier = error}) {
+    let errorClass = 'none';
+
+    if (error && typeof error === 'object') {
+        const name = Object.getPrototypeOf(error)?.constructor?.name;
+        errorClass = typeof name === 'string' && ERROR_CLASS_NAME_PATTERN.test(name) ? name : 'other'
+    }
+
+    const coded = [...boundedCauseChain(codeCarrier)].some(link => typeof link.code === 'string' && link.code.length > 0);
+
+    return {stage, errorClass, rawCode: coded ? 'present' : 'absent'}
+}
+
+/**
+ * @summary Formats a trace read back from an ingestion summary as `stage=… class=… rawCode=…`.
+ *
+ * Re-validates every field instead of trusting the writer, so a malformed or foreign trace yields
+ * `null` and nothing reaches the log.
+ *
+ * @param {*} trace
+ * @returns {String|null}
+ */
+export function formatEmbedFailureTrace(trace) {
+    const {stage, errorClass, rawCode} = trace && typeof trace === 'object' ? trace : {};
+
+    if (!EMBED_FAILURE_STAGES.has(stage)
+        || typeof errorClass !== 'string'
+        || !(ERROR_CLASS_SENTINELS.has(errorClass) || ERROR_CLASS_NAME_PATTERN.test(errorClass))
+        || (rawCode !== 'present' && rawCode !== 'absent')) {
+        return null
+    }
+
+    return `stage=${stage} class=${errorClass} rawCode=${rawCode}`
 }
 
 /**

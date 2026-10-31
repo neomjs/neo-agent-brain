@@ -5531,6 +5531,72 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(projected).not.toContain(modelNotResidentError.message);
     });
 
+    test('an unclassified embed failure writes one WARN naming its stage, class and raw-code presence (#1403)', async () => {
+        const {default: IngestionService} = await import(
+            '../../../../../../../ai/services/knowledge-base/IngestionService.mjs'
+        );
+
+        /**
+         * Runs the REAL embed path against one stubbed `embed`, then syncs its summary.
+         * @param {Function} embed Stubbed `vectorService.embed`.
+         * @param {String} repoSlug
+         * @returns {Promise<String[]>} The sync's log lines.
+         */
+        async function syncWithEmbed(embed, repoSlug) {
+            const summary = {errors: [], embeddingsGenerated: 0},
+                  logs    = [];
+
+            await IngestionService.embedChunkGroups.call({
+                createError            : IngestionService.createError.bind(IngestionService),
+                updateIngestionProgress: () => {},
+                vectorService          : {embed},
+                writeTempJsonl         : async () => path.join(
+                    await fs.mkdtemp(path.join(os.tmpdir(), 'neo-embed-trace-')), 'chunks.jsonl'
+                )
+            }, {
+                chunks       : [{repoSlug, text: 'x'}],
+                summary,
+                tenantContext: {tenantId: 't1', repoSlug},
+                viaMcp       : false
+            });
+            await provisionMirrorDir({tenantId: 't1', repoSlug});
+
+            await TenantRepoSyncService.runTask({
+                reason           : 'periodic-sweep:60000',
+                taskStateService : createTaskStateService(),
+                tenantReposConfig: {tenantRepos: [
+                    {tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`}
+                ]},
+                gitMirror                    : makeFakeGitMirror(),
+                envelopeBuilder              : makeFakeEnvelopeBuilder(),
+                knowledgeBaseIngestionService: makeFakeIngestionService({summaryFactory: () => ({
+                    ingested: 1, deleted: 0, embeddingsGenerated: 0, errors: summary.errors, tenantId: 't1', durationMs: 1
+                })}),
+                revisionsFilePath: revisionsFile,
+                seedBootstrap    : false,
+                writeLog         : (level, message) => logs.push(`${level} ${message}`)
+            });
+
+            return logs
+        }
+
+        const
+            marker   = 'https://user:TOKEN-must-not-project@host/x.git',
+            returned = await syncWithEmbed(async () => ({error: 'refused', code: 'SOME_RAW_CODE', message: marker}), 'org/trace-returned'),
+            thrown   = await syncWithEmbed(async () => { throw new SyntaxError(marker) }, 'org/trace-thrown');
+
+        for (const [logs, expected] of [
+            [returned, 'stage=embed-returned class=none rawCode=present'],
+            [thrown,   'stage=embed-thrown class=SyntaxError rawCode=absent']
+        ]) {
+            const traces = logs.filter(line => line.startsWith('WARN') && line.includes('unclassified embed failure'));
+
+            expect(traces).toHaveLength(1);
+            expect(traces[0]).toContain(expected);
+            expect(logs.join('\n')).not.toMatch(/must-not-project|SOME_RAW_CODE/);
+        }
+    });
+
 
     test('health payload: unresolved credentialRef preserves GitMirror source code', async () => {
         const taskStateService = createTaskStateService();

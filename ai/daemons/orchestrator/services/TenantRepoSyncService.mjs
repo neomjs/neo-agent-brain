@@ -22,8 +22,10 @@ import {
     BOUNDED_KB_ERROR_CODE_PATTERN,
     EMBED_DISPOSITION,
     KB_VECTOR_EMBED_PROVIDER_CIRCUIT_OPEN,
+    KB_VECTOR_EMBED_UNCLASSIFIED,
     TENANT_AWARE_CHUNK_ID_PATTERN,
     classifyEmbedDisposition,
+    formatEmbedFailureTrace,
     isDurableFenceRow,
     isEmbedFailureCode
 }                                from '../../../services/knowledge-base/helpers/embedFailureClassification.mjs';
@@ -2924,6 +2926,17 @@ class TenantRepoSyncService extends Base {
                     `deleted=${rawSummary?.deleted ?? 0} ` +
                     `embeddings=${rawSummary?.embeddingsGenerated ?? 0} ` +
                     `errors=${rawSummary?.errors?.length ?? 0}`);
+
+                // An unclassified failure's code-authored trace, once per attempt and before both
+                // outcome guards, so a deferred attempt and a failed one name where they failed.
+                const embedTraces = new Set((Array.isArray(rawSummary?.errors) ? rawSummary.errors : [])
+                    .filter(item => item?.code === KB_VECTOR_EMBED_UNCLASSIFIED)
+                    .map(item => formatEmbedFailureTrace(item.trace))
+                    .filter(Boolean));
+
+                if (embedTraces.size > 0) {
+                    writeLog?.('WARN', `[TenantRepoSync] ${repoLabel} unclassified embed failure: ${[...embedTraces].join('; ')}`);
+                }
 
                 const ingestOutcome = classifyIngestionOutcome(rawSummary);
 
