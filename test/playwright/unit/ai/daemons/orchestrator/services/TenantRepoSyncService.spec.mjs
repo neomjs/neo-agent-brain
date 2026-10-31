@@ -1187,7 +1187,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(snapshot.probeBandFraction).toBeNull();
     });
 
-    test('embedding recovery releases only the affected repo once, then rearms after a failed retry (#16692)', async () => {
+    test('embedding recovery releases only the affected repo once; after a failed retry the ordinary backoff retries it (#16692)', async () => {
         const
             taskStateService = createTaskStateService(),
             embeddingSlug    = 'org/embedding-recovery',
@@ -1367,16 +1367,20 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         probeNow = startedAt + 60_002;
         await TenantRepoSyncService.runTask(options);
-        expect(probeCallCount, 'consumption history rotates the gate key immediately').toBe(4);
-        expect(ingestCallCount, 'the rotated key voids the proof that authorized the consumed generation').toBe(2);
+        expect(probeCallCount, 'a spent bypass runs no canary').toBe(3);
+        expect(ingestCallCount, 'and buys no second recovery generation').toBe(2);
 
-        await proveFullBand();
+        // The ordinary backoff elapses, and the repo's own cadence retries it.
+        persisted = (await fs.readJson(revisionsFile)).revisions;
+        persisted[`t1/${embeddingSlug}`].lastRunAttemptAt -= 60_000;
+        await TenantRepoSyncService.writePersistedRevisions({filePath: revisionsFile, revisions: persisted});
+
         const recovered = await TenantRepoSyncService.runTask(options);
 
         persisted = (await fs.readJson(revisionsFile)).revisions;
 
         expect(recovered.status).toBe('completed');
-        expect(probeCallCount).toBe(5);
+        expect(probeCallCount).toBe(3);
         expect(ingestCallCount).toBe(3);
         expect(persisted[`t1/${embeddingSlug}`].consecutiveFailures).toBe(0);
         expect(persisted[`t1/${embeddingSlug}`].embeddingRecovery).toBeUndefined();
@@ -1384,9 +1388,92 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(mirrorCalls.filter(call => call.args.repoSlug === ordinarySlug)).toHaveLength(0);
     });
 
+    test('a recovery generation that defers again spends the episode\'s bypass; the ordinary backoff retries it (#1382)', async () => {
+        const
+            taskStateService = createTaskStateService(),
+            repoSlug         = 'org/recovery-loop',
+            label            = `t1/${repoSlug}`,
+            startedAt        = Date.now(),
+            fullBand         = () => ({status: 'healthy', probeBandFraction: 1, probeEstimateTokens: 21238, probeSized: true});
+        let ingestCallCount = 0,
+            probeCallCount  = 0;
+
+        await provisionMirrorDir({tenantId: 't1', repoSlug});
+        await TenantRepoSyncService.writePersistedRevisions({
+            filePath : revisionsFile,
+            revisions: {[label]: {
+                lastIngestedRev                   : null,
+                lastRunAttemptAt                  : startedAt, // the ordinary backoff is 8 min away
+                consecutiveFailures               : 3,
+                ingestContractVersion             : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastAttemptedIngestContractVersion: TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastSourceErrorCode               : 'KB_VECTOR_EMBED_FAILED',
+                lastErrorAt                       : startedAt,
+                embeddingRecovery                 : {
+                    episodeId               : 'd'.repeat(32),
+                    causeCode               : 'KB_VECTOR_EMBED_FAILED',
+                    detectedAt              : startedAt,
+                    generationId            : null,
+                    observedAt              : null,
+                    bypassConsumedAt        : null,
+                    lastConsumedGenerationId: null,
+                    lastConsumedAt          : null
+                }
+            }}
+        });
+
+        const
+            options = {
+                reason           : 'periodic-sweep:60000',
+                taskStateService,
+                tenantReposConfig: {tenantRepos: [{tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://github.com/neomjs/recovery-loop.git'}]},
+                gitMirror        : makeFakeGitMirror(),
+                envelopeBuilder  : makeFakeEnvelopeBuilder(),
+                // the plane's shape: the canary answers at the full band, the real batch never embeds
+                knowledgeBaseIngestionService: makeFakeIngestionService({
+                    summaryFactory() {
+                        ingestCallCount++;
+                        return {ingested: 1, deleted: 0, errors: [{code: 'KB_VECTOR_EMBED_FAILED'}]}
+                    }
+                }),
+                revisionsFilePath: revisionsFile,
+                globalCadenceMs  : 60_000,
+                jitterRatio      : 0,
+                backoffCapMs     : 3_600_000,
+                seedBootstrap    : false,
+                embeddingRecoveryProbe() {
+                    probeCallCount++;
+                    return fullBand()
+                }
+            },
+            // one poll-cycle round: a sweep asks for the full-band proof, the poll cycle proves it, the next sweep may spend it
+            proofRound = async () => {
+                await TenantRepoSyncService.runTask(options);
+                await TenantRepoSyncService.proveEmbeddingRecoveryAuthorization({timeoutMs: 1_000, runProbe: fullBand});
+                await TenantRepoSyncService.runTask(options)
+            };
+
+        await proofRound();
+        expect(ingestCallCount, 'the episode\'s one bypass ran and deferred').toBe(1);
+
+        const probesAfterBypass = probeCallCount;
+        await proofRound();
+        await proofRound();
+
+        expect(ingestCallCount, 'a healthy canary no longer buys a full re-materialization per round').toBe(1);
+        expect(probeCallCount, 'nor a canary per sweep').toBe(probesAfterBypass);
+
+        const persisted = (await fs.readJson(revisionsFile)).revisions;
+        persisted[label].lastRunAttemptAt -= 8 * 60_000; // the ordinary backoff elapses: 60 s * 2^3
+        await TenantRepoSyncService.writePersistedRevisions({filePath: revisionsFile, revisions: persisted});
+        await TenantRepoSyncService.runTask(options);
+
+        expect(ingestCallCount, 'the ordinary cadence still retries the repo').toBe(2);
+    });
+
     test.describe('the full-band authorization proof is produced off the sweep and consumed by it', () => {
-        const startedAt = Date.now();
-        let episodeSeq  = 0,
+        const startedAt  = Date.now();
+        let   episodeSeq = 0,
             now         = startedAt;
 
         // One configured repo whose embedding episode awaits a generation. Its ordinary backoff is an
@@ -7408,9 +7495,10 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 lastConsumedAt          : crashedAttemptAt
             }
         });
+        // the crash spent the episode's one bypass, so no canary runs and the ordinary backoff governs
         expect(result.details.repos[0]).toMatchObject({
             status       : 'backoff-suppressed',
-            recoveryState: 'recovery-probe-backoff'
+            recoveryState: 'still-failing'
         });
         expect(JSON.stringify(persisted)).not.toContain('must-not-cross-the-sidecar-boundary');
         expect(await fs.pathExists(inFlightFile)).toBe(false);
