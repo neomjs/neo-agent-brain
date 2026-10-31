@@ -25,9 +25,9 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 // The setup regression is outside this spec's delivery contract.
 if (!Neo.get) Neo.get = () => null;
 
-import RequestContextService       from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
-import {buildWakeReceiverManifest} from '../../../../../../ai/daemons/wake/buildReceiverManifest.mjs';
-import {readWakeDelivery}          from '../../../../../../ai/services/memory-core/wakeDeliveryReader.mjs';
+import RequestContextService, {normalizeUserId} from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import {buildWakeReceiverManifest}              from '../../../../../../ai/daemons/wake/buildReceiverManifest.mjs';
+import {readWakeDelivery}                       from '../../../../../../ai/services/memory-core/wakeDeliveryReader.mjs';
 
 import {createHostWhoIsOnlineReader}       from '../../../../../../ai/services/fleet/hostWhoIsOnlineReader.mjs';
 import {readFleetPresenceSnapshot}         from '../../../../../../ai/services/fleet/fleetPresenceStateAdapter.mjs';
@@ -3133,7 +3133,8 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
 
         function seedBeacon(owner, {turnId = 'turn-1', startedAt = T0, freshUntil, expiresAt} = {}) {
             // Mirrors TurnPresenceService.recordTurnPresence's active turn-presence node — the local
-            // beacon who_is_online consults for the mid-turn rescue (fresh = freshUntil > now).
+            // beacon who_is_online consults for the mid-turn rescue (fresh = freshUntil > now) —
+            // owner key included: an ownerless fixture is visible to every reader, so it hid a peer-blind read.
             GraphService.upsertNode({
                 id        : `AGENT_TURN_PRESENCE:${owner}:${turnId}`,
                 type      : 'AGENT_TURN_PRESENCE',
@@ -3145,7 +3146,9 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                     lastProgressAt: startedAt,
                     status        : 'active',
                     freshUntil    : freshUntil || iso(T0ms + 5 * 60 * 1000),
-                    expiresAt     : expiresAt  || iso(T0ms + 60 * 60 * 1000)
+                    expiresAt     : expiresAt  || iso(T0ms + 60 * 60 * 1000),
+                    userId        : normalizeUserId(owner),
+                    sharedEntity  : false
                 }
             });
         }
@@ -3286,6 +3289,28 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             expect(entry.online).toBe(true);
             expect(entry.reason).toContain('mid-turn rescue');
             expect(entry.signals.turnPresence.fresh).toBe(true);
+        });
+
+        test('a peer sees another seat\'s beacon: the mid-turn rescue holds across identities (#1400)', async () => {
+            const TurnPresenceService = (await import('../../../../../../ai/services/memory-core/TurnPresenceService.mjs')).default,
+                  asSeat              = (id, fn) => RequestContextService.run({userId: normalizeUserId(id), agentIdentityNodeId: id}, fn);
+
+            seedAgent('@neo-peer-a');
+            seedAgent('@neo-peer-b');
+            seedActivity('@neo-peer-a', {timestamp: iso(T0ms - 20 * 60 * 1000)}); // A's add_memory is stale
+            // the real writer under A's own context, so the beacon carries the owner key production stamps
+            await asSeat('@neo-peer-a', () => TurnPresenceService.recordTurnPresence({action: 'start', source: 'spec', note: 'Bash', now: iso(T0ms - 60 * 1000)}));
+
+            for (const reader of ['@neo-peer-b', '@neo-peer-a']) { // B is the defect; A is the positive control
+                const {agents} = await asSeat(reader, () => WakeSubscriptionService.whoIsOnline({verbose: true, now: new Date(T0)})),
+                      entry    = agents.find(a => a.identity === '@neo-peer-a');
+
+                expect(entry.online).toBe(true);
+                expect(entry.reason).toContain('mid-turn rescue');
+                expect(entry.signals.turnPresence.fresh).toBe(true);
+                // the wire projection is unchanged: six fields, the beacon's `note` stays server-side
+                expect(Object.keys(entry.signals.turnPresence).sort()).toEqual(['expiresAt', 'fresh', 'freshUntil', 'lastProgressAt', 'startedAt', 'turnId']);
+            }
         });
 
         test('fresh add_memory + fresh beacon → activity speaks the verdict, and the beacon OBSERVATION still reaches the row (verbose)', async () => {

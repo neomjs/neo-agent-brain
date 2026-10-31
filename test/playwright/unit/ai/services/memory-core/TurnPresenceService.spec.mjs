@@ -144,8 +144,6 @@ test.describe('Neo.ai.services.memory-core.TurnPresenceService', () => {
             now   : '2026-06-19T00:00:00.000Z'
         }));
 
-        // the read runs inside the request context like every production caller (`who_is_online`'s
-        // projection) — `getNodeRecord` is context-scoped, so a contextless read answers null
         const beacon = await asAgent(() => TurnPresenceService.getFreshTurnPresence('@agent-turn', '2026-06-19T00:10:00.000Z'));
 
         expect(beacon.turnId).toBe('turn-horizons');
@@ -178,6 +176,24 @@ test.describe('Neo.ai.services.memory-core.TurnPresenceService', () => {
         expect(legacy.fresh).toBe(false);            // no freshUntil can never read fresh
         expect(legacy.freshUntil).toBeNull();
         expect(legacy.expiresAt).toBeNull()
+    });
+
+    test('the liveness read is the finder\'s one row: no second, owner-scoped read (#1400)', async () => {
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'start', turnId: 'turn-one-read', now: '2026-06-19T00:00:00.000Z'}));
+
+        const getNodeRecord = GraphService.getNodeRecord;
+        let   scopedReads   = 0;
+        GraphService.getNodeRecord = (...args) => (scopedReads++, getNodeRecord.apply(GraphService, args));
+
+        try {
+            // no request context: a roster reader is not the beacon's owner, and the read must not need to be
+            const beacon = TurnPresenceService.getFreshTurnPresence('@agent-turn', '2026-06-19T00:10:00.000Z');
+
+            expect(beacon).toMatchObject({turnId: 'turn-one-read', fresh: true, freshUntil: '2026-06-19T00:30:00.000Z'});
+            expect(scopedReads).toBe(0)
+        } finally {
+            GraphService.getNodeRecord = getNodeRecord
+        }
     });
 
     test('refreshes progress without changing startedAt', async () => {
