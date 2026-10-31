@@ -1194,9 +1194,9 @@ class TenantRepoSyncService extends Base {
             cfg      : AiConfig,
             embedText: (text, explicitProvider, options) =>
                 TextEmbeddingService.embedText(text, explicitProvider, options),
-            input    : probeSize.input,
+            input: probeSize.input,
             operationLabel,
-            now      : this.embeddingRecoveryClock,
+            now  : this.embeddingRecoveryClock,
             probeSize,
             timeoutMs
         })
@@ -2203,6 +2203,8 @@ class TenantRepoSyncService extends Base {
         // first become a durable generation on the existing checkpoint manifest, under the same
         // commit-point ownership fence as every other scheduler fact. Until that commit succeeds,
         // `isRepoDue()` has no recovery evidence and the ordinary backoff remains authoritative.
+        // An episode gets one bypass: a consumed generation whose outcome repeated proves the canary
+        // passes while the batch does not, so from then on only the ordinary backoff retries the repo.
         const
             configuredRepoLabels    = new Set(repos.map(repo => `${repo.tenantId}/${repo.repoSlug}`)),
             awaitingRecoveryEntries = onlyRepoSlugs
@@ -2212,16 +2214,13 @@ class TenantRepoSyncService extends Base {
                         configuredRepoLabels.has(label)
                         && state?.embeddingRecovery
                         && !state.embeddingRecovery.generationId
+                        && !state.embeddingRecovery.lastConsumedGenerationId
                     );
 
         if (awaitingRecoveryEntries.length > 0) {
             const
-                episodeKeys      = awaitingRecoveryEntries.map(([, state]) => {
-                    const recovery = state.embeddingRecovery;
-
-                    return `${recovery.episodeId}:${recovery.lastConsumedGenerationId || 'initial'}`;
-                }),
-                observation      = await this.probeEmbeddingRecovery({
+                episodeKeys = awaitingRecoveryEntries.map(([, state]) => `${state.embeddingRecovery.episodeId}:initial`),
+                observation = await this.probeEmbeddingRecovery({
                     episodeKeys,
                     runProbe       : embeddingRecoveryProbe,
                     clock          : embeddingRecoveryClock,
@@ -2998,13 +2997,13 @@ class TenantRepoSyncService extends Base {
                         lastErrorAt                       : startedMs,
                         corpusOutstanding                 : deferredOutstanding,
                         // A deferral retains a cause; the clean-partial resume marker does not survive it.
-                        partialProgressAt                 : null,
-                        undeliverableChunks               : deferredCensus,
-                        contentPoisonChunks               : deferredPoisonCensus,
+                        partialProgressAt  : null,
+                        undeliverableChunks: deferredCensus,
+                        contentPoisonChunks: deferredPoisonCensus,
                         // Recovery eligibility, on the SAME episode a failure would advance. A
-                        // consumed generation folds into `lastConsumedGenerationId/At` and a newly
-                        // healthy canary generation is required before another bypass, so a
-                        // still-starved provider cannot buy one retry per sweep by deferring.
+                        // consumed generation folds into `lastConsumedGenerationId/At` and spends the
+                        // episode's bypass, so a still-starved provider cannot buy one retry per sweep
+                        // by deferring.
                         embeddingRecovery: isEmbeddingRecoverySourceCode(deferredCauseCode)
                             ? buildEmbeddingRecoveryEpisode({
                                 priorRecovery: priorState?.embeddingRecovery || null,

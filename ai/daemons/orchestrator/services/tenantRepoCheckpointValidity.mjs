@@ -181,13 +181,13 @@ export function normalizeTenantRepoCheckpointState(value) {
         // read, so a stop would survive one process and never cross a reload. The lane would then
         // re-attempt every cadence and rediscover the same terminal cause forever — the defect this
         // field exists to end, reintroduced by the persistence boundary rather than by the logic.
-        // ticket-ref-ok: #238 round 2 is where that was measured; naming it stops the field being
-        // "tidied" back out of an allowlist whose omissions are invisible by construction.
+        // Keep it listed: this allowlist's omissions are invisible by construction, so "tidying" the
+        // field out would bring that endless re-attempt back without a single failing read.
         //
         // Validated WHOLE or dropped: a fingerprint missing either half cannot answer "is this the
         // same input?", and a half-answer must not suppress a repo. Fails toward running.
         terminalStop              : normalizeTerminalStop(value.terminalStop),
-        // The clean-partial resume marker (#430). Same allowlist rule as the operator clear above: a
+        // The clean-partial resume marker. Same allowlist rule as the operator clear above: a
         // field absent here is dropped on read, and a dropped marker means a mid-corpus repo silently
         // falls back to waiting out the global cadence after every reload. Malformed → null, which
         // fails toward the cadence, never toward an extra sweep.
@@ -394,8 +394,8 @@ function normalizeEmbeddingRecovery(value) {
         historyProved         = Boolean(historyGenerationId && historyConsumedAt);
 
     // A consumed current generation is stable history, not a pending grant. Canonicalizing it here
-    // makes a restart re-arm the canary generation while retaining the exact receipt that rotates
-    // the process-local gate key; it can never reuse the consumed bypass.
+    // folds it into `lastConsumedGenerationId`, which spends the episode's bypass: a restart neither
+    // re-arms the canary nor reuses the consumed bypass, and only the ordinary backoff retries the repo.
     const
         generationId             = generationProved && !candidateConsumedAt ? candidateGenerationId : null,
         observedAt               = generationProved && !candidateConsumedAt ? candidateObservedAt : null,
