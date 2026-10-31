@@ -630,6 +630,19 @@ class ConfigBase extends ConfigProvider {
              */
             businessFocusSourcePath: leaf('', 'NEO_BUSINESS_FOCUS_SOURCE_PATH', 'string'),
             /**
+             * File path of the business repository's `strategy/traction/outbound-ledger.json`
+             * (`outbound-ledger.v1` schema) whose public-flagged rows populate the
+             * `### reach and outbound` block of `## Focus (v1)`, as this process sees it. Neo's
+             * deployment points it at the business repository's tenant mirror beneath
+             * `orchestrator.tenantRepoMirrorRoot` (or a host clone on the host edge); another team's
+             * plane leaves it empty and the outbound line stays `unknown` with no error — absence is
+             * ordinary, the capability is configured, never assumed. Not a plane member: an
+             * operator-placed file outside the plane root by default, like `businessFocusSourcePath`
+             * above.
+             * @type {string}
+             */
+            outboundLedgerSourcePath: leaf('', 'NEO_OUTBOUND_LEDGER_SOURCE_PATH', 'string'),
+            /**
              * Stale-assignment idle threshold used by `GoldenPathSynthesizer` when rendering
              * Sandman handoff candidates. Defaults to the ticket-intake 7-day reassignment rule.
              * @type {number}

@@ -1897,7 +1897,8 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
             const capturedAt      = now instanceof Date ? now : new Date(now);
             let   resolvedFocus   = focusV1Inputs && typeof focusV1Inputs === 'object' ? focusV1Inputs : null;
             const effectiveReader = focusV1Reader ?? createFocusV1ProjectionReader({
-                projectionPath: aiConfig.focusV1ProjectionPath,
+                projectionPath    : aiConfig.focusV1ProjectionPath,
+                outboundLedgerPath: aiConfig.outboundLedgerSourcePath,
                 ...(repoEnrichmentEnabled === false ? {absentReason: CLOUD_PLANE_HOST_EDGE_ABSENT_REASON} : {})
             });
 

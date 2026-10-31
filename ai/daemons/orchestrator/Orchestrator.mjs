@@ -1886,9 +1886,13 @@ export class Orchestrator extends Base {
      * @param {Number} [now=Date.now()] Current epoch milliseconds.
      * @param {Object} [options={}]
      * @param {String} [options.projectionPath=memoryCoreConfig.focusV1ProjectionPath] Destination projection file path.
+     * @param {String} [options.outboundLedgerPath=memoryCoreConfig.outboundLedgerSourcePath] Optional outbound-ledger.v1 file path.
      * @returns {Promise<Object|null>}
      */
-    async refreshFocusV1ProjectionIfDue(now = Date.now(), {projectionPath = memoryCoreConfig.focusV1ProjectionPath} = {}) {
+    async refreshFocusV1ProjectionIfDue(now = Date.now(), {
+        projectionPath     = memoryCoreConfig.focusV1ProjectionPath,
+        outboundLedgerPath = memoryCoreConfig.outboundLedgerSourcePath
+    } = {}) {
         if (
             !this.isTaskAuthorityOwned('primary-dev-sync') ||
             !this.goldenPathRepoEnrichmentEnabled ||
@@ -1913,7 +1917,10 @@ export class Orchestrator extends Base {
         }
 
         this.focusV1ProjectionFlight = (async () => {
-            const projection = await this.focusV1ProjectionCollector({now: new Date(now)});
+            const projection = await this.focusV1ProjectionCollector({
+                now: new Date(now),
+                outboundLedgerPath
+            });
             if (this.authorityLeaseLost) {
                 return null;
             }

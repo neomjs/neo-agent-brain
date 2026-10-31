@@ -31,9 +31,11 @@ import {
     FOCUS_V1_HEADING,
     FOCUS_V1_MARKER,
     FOCUS_V1_MAX_BYTES,
+    FOCUS_V1_OUTBOUND_MAX_ROWS,
     FOCUS_V1_PROJECTION_SCHEMA,
     FOCUS_V1_READER_ABSENT_REASON,
     FOCUS_V1_VIEW_KEYS,
+    OUTBOUND_LEDGER_SCHEMA,
     FocusSourceUnavailable,
     collectAndWriteFocusV1Projection,
     collectFocusV1Projection,
@@ -48,6 +50,7 @@ import {
     parseRowStateLine,
     parseViewsReceiptComments,
     projectPublicBusinessRows,
+    readOutboundLedgerFile,
     renderFocusV1Section,
     summarizeV1Rows,
     writeFocusV1Projection
@@ -787,6 +790,297 @@ test.describe('focusV1Section — Sandman handoff ## Focus (v1) producer contrac
             expect(containerInputs.operatorWord.status).toBe('ok');
         } finally {
             fs.rmSync(hostEdgeDir, {recursive: true, force: true});
+        }
+    });
+
+    test('AC-2 & AC-6: parses real multi-segment Institution Row state lines without matching leading "row <N>" and keeps all 5 v1 rows + all 5 needing-love views within <= 2,000 UTF-8 bytes', () => {
+        const liveRows = [
+            {
+                row : 1,
+                epic: '#351',
+                body: 'Row state: row 1 · card half: Mnemosyne (`@neo-fable`) · runtime half: Clio (`@neo-fable-clio`) · ready · 2026-10-09 · card half: 10 of 10 closed (#363, #364, #365, #367, #368, #374, #405, #406, #407, #415) · runtime half: 1 of 1 closed (#465 via PR #482) · candidate `e5aa4238` (packaged `.app` 0.1.0 built 2026-10-09T21:18Z on Darwin 25.3.0 arm64; disposable `--user-data-dir` smoke verified cold start + onboarding wizard + card actions; real operator cold-run sign-off pending to flip `ready -> passed`)'
+            },
+            {
+                row : 2,
+                epic: '#477',
+                body: 'Row state: row 2 · Clio (`@neo-fable-clio`) · unknown · 2026-10-12 · 2 of 2 sub-issues closed (#466 via PR #478, #489 via PR #490); unblocked on `dev` (`4807f34b`) · candidate `e5aa4238` (installed `/Applications/Neo Agent Fleet Manager.app` v0.1.0 built `2026-10-13T16:12Z` predates `#466` `e42cc64f` and `#489` `4807f34b`; packaged-candidate provocation walk pending rebuilt `.app`)'
+            },
+            {
+                row : 3,
+                epic: '#312',
+                body: 'Row state: row 3 · Vega (`@neo-opus-vega`) · failed · 2026-10-14 · 6 of 9 closed (#331, #332, #338, #417, #467, #474); 3 open (#339, #457, #498) · candidate `0.1.0` (`2026-10-13T16:12:41Z`, pre-`#467` / pre-`#474`) · blocker: #498 (Golden Path canvas shows `Graph scene unavailable` on packaged candidate because `fetchGraphScene` fails the whole view when `pre_brief_session` errors on non-indexed focus nodes like `epic-312`)'
+            },
+            {
+                row : 4,
+                epic: '#414',
+                body: 'Row state: row 4 · Grace (`@neo-opus-grace`) · ready · 2026-10-12 · 4 of 4 closed (#413, #420, #421, #468) · candidate `d6316707` (source `dev` after #420/#421/#468; installed `/Applications/Neo Agent Fleet Manager.app` is `0.1.0` built `2026-10-13T16:12:41Z` before #468 merged at `2026-10-14T11:39:51Z`) · plan: walk end-to-end lane handoff on the next packaged candidate build that includes #468 (`d6316707`+) to flip `ready` -> `passed`'
+            },
+            {
+                row : 5,
+                epic: '#424',
+                body: 'Row state: row 5 · Ada (`@neo-opus-ada`) · passed with gaps · 2026-10-14 · 4 of 4 closed (#425, #426, #427, #469) · candidate `0.1.0` (`e5aa4238`, packaged `.app` built `2026-10-13T16:12Z`; source head `d6316707` verified via unit suite; 3 gaps filed as #500, #501, #502)'
+            }
+        ];
+
+        const summary = summarizeV1Rows(liveRows);
+        expect(summary.passed).toBe(0);
+        expect(summary.ready).toBe(2);
+        expect(summary.unknown).toBe(1);
+        expect(summary.failed).toBe(1);
+        expect(summary.missing).toEqual([
+            'r1:ready',
+            'r2:unknown',
+            'r3:failed',
+            'r4:ready',
+            'r5:passed with gaps'
+        ]);
+
+        const liveReceipts = [
+            {
+                viewKey   : 'fleet',
+                needsLove : 'Empty seat cells show raw `—` placeholder with no explanation of why a metric is absent; dock headers repeat `ACTIVE` badge.',
+                buildClass: 'installed candidate 20261013',
+                profile   : 'team instance',
+                observedAt: '2026-10-14T18:54:25Z',
+                seat      : '@neo-opus-vega'
+            },
+            {
+                viewKey   : 'goldenPath',
+                needsLove : 'Canvas displays `Graph scene unavailable` on packaged candidate when `pre_brief_session` errors on non-indexed focus nodes.',
+                buildClass: 'installed candidate 20261013',
+                profile   : 'team instance',
+                observedAt: '2026-10-14T19:10:00Z',
+                seat      : '@neo-opus-vega'
+            },
+            {
+                viewKey   : 'detail',
+                needsLove : 'Detail column comes back empty after layout restore until user switches seat selection.',
+                buildClass: 'installed candidate 20261013',
+                profile   : 'team instance',
+                observedAt: '2026-10-14T19:25:00Z',
+                seat      : '@neo-fable-clio'
+            },
+            {
+                viewKey   : 'stream',
+                needsLove : 'Stream filter bar truncates long event tags without tooltip on narrow split.',
+                buildClass: 'installed candidate 20261013',
+                profile   : 'team instance',
+                observedAt: '2026-10-14T19:40:00Z',
+                seat      : '@neo-opus-grace'
+            },
+            {
+                viewKey   : 'memories',
+                needsLove : 'Search input lacks inline clear button after filtering session turns.',
+                buildClass: 'installed candidate 20261013',
+                profile   : 'team instance',
+                observedAt: '2026-10-14T19:55:00Z',
+                seat      : '@neo-opus-ada'
+            }
+        ];
+
+        const section = renderFocusV1Section({
+            capturedAt: CAPTURED_AT,
+            candidate : 'host-edge',
+            v1        : {
+                asOf     : CAPTURED_AT,
+                candidate: 'host-edge',
+                rows     : liveRows
+            },
+            views: {
+                asOf     : CAPTURED_AT,
+                candidate: 'host-edge',
+                receipts : liveReceipts
+            },
+            reach: {
+                asOf      : CAPTURED_AT,
+                candidate : 'host-edge',
+                traffic   : {views: 3172, uniques: 280},
+                stars     : 1485,
+                forks     : 185,
+                publicRows: [
+                    {category: 'social_Posts', channel: 'x', publicFlag: true, count: 0, repliesWaiting: 0, overdue: false},
+                    {category: 'blog_Articles', channel: 'blog', publicFlag: true, count: 8, lastPublishDate: '2026-10-12', cadence: 'weekly', overdue: true},
+                    {category: 'guerrilla_Threads', channel: 'hn_reddit_devto', publicFlag: true, count: 0, repliesWaiting: 0, overdue: false},
+                    {category: 'awesome_Lists', channel: 'github_pr', publicFlag: true, count: 0, repliesWaiting: 0, overdue: false}
+                ]
+            },
+            operatorWord: {
+                asOf      : CAPTURED_AT,
+                candidate : 'host-edge',
+                candidates: []
+            }
+        });
+
+        expect(Buffer.byteLength(section, 'utf8')).toBeLessThanOrEqual(FOCUS_V1_MAX_BYTES);
+        expect(section).toContain('v1: 0 of 5 rows passed · ready 2 · unknown 1 · failed 1 · missing: r1:ready, r2:unknown, r3:failed, r4:ready, r5:passed with gaps');
+        expect(section).toContain('views: swept 5 · needing love 5 · unassessed:');
+        expect(section).toContain('- row 1 (#351): Row state:');
+        expect(section).toContain('ready');
+        expect(section).toContain('- row 2 (#477): Row state:');
+        expect(section).toContain('unknown');
+        expect(section).toContain('- row 3 (#312): Row state:');
+        expect(section).toContain('failed');
+        expect(section).toContain('- row 4 (#414): Row state:');
+        expect(section).toContain('- row 5 (#424): Row state:');
+        expect(section).toContain('passed with gaps');
+        // All 5 needing-love view keys remain visible after byte-budget compaction:
+        for (const key of ['fleet', 'goldenPath', 'detail', 'stream', 'memories']) {
+            expect(section).toContain(`- \`${key}\`: needs love:`);
+        }
+        // All 4 outbound-ledger.v1 channels render:
+        expect(section).toContain('- outbound `social_Posts`:');
+        expect(section).toContain('- outbound `blog_Articles`:');
+        expect(section).toContain('- outbound `guerrilla_Threads`:');
+        expect(section).toContain('- outbound `awesome_Lists`:');
+    });
+
+    test('AC-3 & business#21: outboundLedgerSourcePath leaf and readOutboundLedgerFile consume outbound-ledger.v1 with 4-row cap and publicFlag filtering', async () => {
+        const leafSpec = McConfigBase.config.data.outboundLedgerSourcePath;
+        expect(leafSpec).toMatchObject({
+            default: '',
+            env    : 'NEO_OUTBOUND_LEDGER_SOURCE_PATH',
+            type   : 'string'
+        });
+        expect(FOCUS_V1_OUTBOUND_MAX_ROWS).toBe(4);
+
+        const tmpDir     = fs.mkdtempSync(path.join(os.tmpdir(), 'outbound-ledger-v1-'));
+        const ledgerPath = path.join(tmpDir, 'outbound-ledger.json');
+
+        try {
+            // 1. Missing file on disk returns status: 'absent' and degrades cleanly to ordinary unknown
+            expect(readOutboundLedgerFile(ledgerPath)).toEqual({
+                status   : 'absent',
+                rows     : [],
+                updatedAt: null,
+                reason   : null
+            });
+
+            const missingProjReader = createFocusV1ProjectionReader({
+                projectionPath    : path.join(tmpDir, 'nonexistent-projection.json'),
+                outboundLedgerPath: ledgerPath
+            });
+            const missingInputs   = await missingProjReader.readFocusV1Inputs({now: new Date(CAPTURED_AT)});
+            const missingRendered = renderFocusV1Section(missingInputs);
+            expect(missingRendered).toContain('- outbound ledger: unknown (no public-flagged reach or outbound ledger rows supplied)');
+
+            // 2. Write valid outbound-ledger.v1 payload (4 public rows + 1 private row + 1 BUSINESS_GOAL row)
+            const payload = {
+                schemaVersion: OUTBOUND_LEDGER_SCHEMA,
+                updatedAt    : '2026-10-30T21:15:00Z',
+                rows         : [
+                    {
+                        id               : 'outbound-social-posts',
+                        type             : 'BUSINESS_METRIC',
+                        category         : 'social_Posts',
+                        channel          : 'x',
+                        publicFlag       : true,
+                        count            : 0,
+                        lastPostAt       : null,
+                        lastInteractionAt: null,
+                        repliesWaiting   : 0,
+                        overdue          : false,
+                        falsifyingQuery  : 'gh issue view 19575 --repo neomjs/neo'
+                    },
+                    {
+                        id             : 'outbound-blog-articles',
+                        type           : 'BUSINESS_METRIC',
+                        category       : 'blog_Articles',
+                        channel        : 'blog',
+                        publicFlag     : true,
+                        count          : 8,
+                        lastPublishDate: '2026-10-12',
+                        cadence        : 'weekly',
+                        overdue        : true,
+                        falsifyingQuery: 'ls learn/blog/*.md',
+                        revenue        : 'SECRET_REVENUE_MUST_BE_STRIPPED'
+                    },
+                    {
+                        id             : 'outbound-guerrilla-threads',
+                        type           : 'BUSINESS_METRIC',
+                        category       : 'guerrilla_Threads',
+                        channel        : 'hn_reddit_devto',
+                        publicFlag     : true,
+                        count          : 0,
+                        repliesWaiting : 0,
+                        overdue        : false,
+                        falsifyingQuery: 'gh issue view 19575 --repo neomjs/neo'
+                    },
+                    {
+                        id             : 'outbound-awesome-lists',
+                        type           : 'BUSINESS_METRIC',
+                        category       : 'awesome_Lists',
+                        channel        : 'github_pr',
+                        publicFlag     : true,
+                        count          : 0,
+                        repliesWaiting : 0,
+                        overdue        : false,
+                        falsifyingQuery: 'gh search prs --author tobiu awesome'
+                    },
+                    {
+                        id        : 'outbound-extra-fifth-public-row',
+                        type      : 'BUSINESS_METRIC',
+                        category  : 'fifth_Channel',
+                        publicFlag: true,
+                        count     : 99
+                    },
+                    {
+                        id        : 'outbound-private-row',
+                        type      : 'BUSINESS_METRIC',
+                        category  : 'private_Channel',
+                        publicFlag: false,
+                        count     : 42
+                    },
+                    {
+                        id        : 'outbound-goal-row',
+                        type      : 'BUSINESS_GOAL',
+                        category  : 'goal_Channel',
+                        publicFlag: true,
+                        value     : 1000
+                    }
+                ]
+            };
+            fs.writeFileSync(ledgerPath, JSON.stringify(payload, null, 2), 'utf8');
+
+            const parsedFile = readOutboundLedgerFile(ledgerPath);
+            expect(parsedFile.status).toBe('ok');
+            expect(parsedFile.rows).toHaveLength(7);
+
+            // 3. Projection reader supplements reach.publicRows from outboundLedgerPath even when projection has empty publicRows
+            const projectionPath = path.join(tmpDir, 'focus-v1-projection.json');
+            await collectAndWriteFocusV1Projection({
+                projectionPath,
+                now              : new Date(CAPTURED_AT),
+                readV1Rows       : async () => ({asOf: CAPTURED_AT, rows: [{row: 1, epic: '#351', rawLine: 'Row state: passed'}]}),
+                readViewsReceipts: async () => ({asOf: CAPTURED_AT, receipts: [{viewKey: 'fleet', needsLove: 'none observed', buildClass: 'installed 0.2.0', observedAt: CAPTURED_AT}]}),
+                readReachTraffic : async () => ({asOf: CAPTURED_AT, traffic: {views: 900, uniques: 140}, stars: 1510, forks: 215}),
+                readOperatorWord : async () => ({asOf: CAPTURED_AT, candidates: []})
+            });
+
+            const projReader = createFocusV1ProjectionReader({
+                projectionPath,
+                outboundLedgerPath: ledgerPath
+            });
+            const projInputs   = await projReader.readFocusV1Inputs({now: new Date(CAPTURED_AT)});
+            const projRendered = renderFocusV1Section(projInputs);
+
+            expect(projInputs.reach.publicRows).toHaveLength(5);
+            expect(projRendered).toContain('- outbound `social_Posts`: channel: x · count: 0 · replies waiting: 0 · overdue: no');
+            expect(projRendered).toContain('- outbound `blog_Articles`: channel: blog · count: 8 · overdue: yes · last publish: 2026-10-12 · cadence: weekly');
+            expect(projRendered).toContain('- outbound `guerrilla_Threads`: channel: hn_reddit_devto · count: 0 · replies waiting: 0 · overdue: no');
+            expect(projRendered).toContain('- outbound `awesome_Lists`: channel: github_pr · count: 0 · replies waiting: 0 · overdue: no');
+            // 4-row cap excludes the 5th public row, and publicFlag/type filters exclude private & goal rows:
+            expect(projRendered).not.toContain('fifth_Channel');
+            expect(projRendered).not.toContain('private_Channel');
+            expect(projRendered).not.toContain('goal_Channel');
+            expect(projRendered).not.toContain('SECRET_REVENUE_MUST_BE_STRIPPED');
+
+            // 4. Unsupported schema on outboundLedgerPath surfaces sanitized reason on the outbound ledger line
+            fs.writeFileSync(ledgerPath, JSON.stringify({schemaVersion: 'wrong-ledger.v0', rows: []}), 'utf8');
+            const badLedgerInputs   = await missingProjReader.readFocusV1Inputs({now: new Date(CAPTURED_AT)});
+            const badLedgerRendered = renderFocusV1Section(badLedgerInputs);
+            expect(badLedgerRendered).toContain('- outbound ledger: unknown (unsupported outbound ledger schema: wrong-ledger.v0)');
+        } finally {
+            fs.rmSync(tmpDir, {recursive: true, force: true});
         }
     });
 });

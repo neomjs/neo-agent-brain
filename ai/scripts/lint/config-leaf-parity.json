@@ -806,6 +806,7 @@
         "nlActionDigestLookbackMs",
         "nlActionDigestMinSuccessRate",
         "nlActionDigestSequenceLimit",
+        "outboundLedgerSourcePath",
         "publicUrl",
         "remConsolidationStallThresholdMs",
         "remRunRecentLimit",
