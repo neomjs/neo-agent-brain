@@ -9,7 +9,9 @@ import {isEntryModule}                     from '../../services/shared/isEntryMo
 
 const
     RECOVERED_MESSAGE       = 'Neo MCP bridge kept its session after a transport error.',
+    RENEWING_MESSAGE        = 'Neo MCP bridge is renewing its remote session.',
     REQUEST_FAILURE_MESSAGE = 'Neo MCP bridge could not deliver the request.',
+    RESUMING_MESSAGE        = 'Neo MCP bridge is resuming its remote session.',
     RUNTIME_FAILURE_MESSAGE = 'Neo MCP bridge transport failed.',
     SESSION_ENDING_CODES    = new Set([-1, 401, 403]),
     STARTUP_FAILURE_MESSAGE = 'Neo MCP bridge failed to start.';
@@ -113,14 +115,18 @@ export function getBridgeErrorCause(error) {
 }
 
 /**
- * @summary Keep a local MCP connection while replacing a lost remote HTTP session.
- * Lost requests receive an error with an unknown outcome and are never replayed. Only future
- * traffic joins a bounded initialization flight, using the original client parameters and protocol
- * contract. Idle SSE reconnects stay with the SDK; auth, protocol and local failures stay terminal.
+ * @summary Keep a local MCP connection while resuming, or else replacing, a lost remote HTTP session.
+ * Lost requests receive an error with an unknown outcome and are never replayed. A retired session the
+ * server may still hold is resumed by its id on the next traffic, with no handshake; only a session the
+ * server refused (404), or one that never reached a session id, joins a bounded initialization flight
+ * using the original client parameters and protocol contract. A lost notification keeps the session:
+ * it cannot be answered, and a renewal would spend the server-side session for nothing. Idle SSE
+ * reconnects stay with the SDK; auth, protocol and local failures stay terminal.
  * @param {Object} options
  * @param {Object} options.localTransport Stdio-facing server transport.
  * @param {Object} options.remoteTransport Initial HTTP client transport.
- * @param {Function} [options.createRemoteTransport] Creates a fresh HTTP transport without a session ID.
+ * @param {Function} [options.createRemoteTransport] Creates an HTTP transport: with no argument a fresh
+ *     one, given a session id one that resumes that session.
  * @param {Number} [options.reinitializeTimeoutMs=10000] Bounds one replacement handshake.
  * @param {Function} [options.onError] Receives terminal reports.
  * @param {Function} [options.onRecovered] Receives survived-error reports.
@@ -146,6 +152,7 @@ export async function bridgeTransports({
         initializeResult,
         initializationFlight = null,
         initialized = false,
+        resumeSessionId = null,
         sequence = 0,
         terminalErrorReported = false;
 
@@ -200,9 +207,12 @@ export async function bridgeTransports({
         })
     };
 
-    const retire = (generation, error) => {
+    const retire = (generation, error, {refused=false} = {}) => {
         if (!generation || current !== generation || closePromise) return;
 
+        // A refused session is gone on the server; any other retirement may leave it alive there, so
+        // the next flight carries its id and lets the first request prove it.
+        resumeSessionId = refused ? null : (generation.transport.sessionId ?? null);
         current = null;
         generation.handshake?.reject(error);
         // Fence before close(): the SDK invokes onclose synchronously and aborted sends reject later.
@@ -215,7 +225,7 @@ export async function bridgeTransports({
                 Promise.resolve(answerFailure(id, request, error, request.sent)).catch(fail)
             }
         }
-        report(onRecovered, 'Neo MCP bridge is renewing its remote session.', error);
+        report(onRecovered, resumeSessionId ? RESUMING_MESSAGE : RENEWING_MESSAGE, error);
         void Promise.resolve().then(() => generation.transport.close()).catch(() => {})
     };
 
@@ -226,7 +236,8 @@ export async function bridgeTransports({
         if (isTerminal(error)) return fail(error);
 
         const cause = getBridgeErrorCause(error);
-        if (error?.code === 404 || cause === 'sse-reconnect-exhausted' ||
+        if (error?.code === 404) return retire(generation, error, {refused: true});
+        if (cause === 'sse-reconnect-exhausted' ||
             cause === 'sse-disconnect' && (generation.handshake || [...pending.values()].some(
                 request => request.generation === generation
             ))) return retire(generation, error);
@@ -310,6 +321,16 @@ export async function bridgeTransports({
             let generation, timer;
             try {
                 if (closePromise) throw new Error('Bridge closed.');
+                if (resumeSessionId) {
+                    // The server may still hold the retired session: carry its id and the negotiated
+                    // protocol, open the stream, and let the first forwarded request prove it. A 404 there
+                    // retires this generation as refused, so the next flight runs the fresh initialize below.
+                    generation = wire(createRemoteTransport(resumeSessionId));
+                    generation.transport.setProtocolVersion?.(initializeResult.protocolVersion);
+                    await generation.transport.start();
+                    if (current !== generation || closePromise) throw new Error('Bridge closed.');
+                    return generation
+                }
                 generation = wire(createRemoteTransport());
                 const ready = new Promise((resolve, reject) => {
                     generation.handshake = {id: `neo-bridge-initialize-${++sequence}`, resolve, reject}
@@ -337,7 +358,7 @@ export async function bridgeTransports({
                 return generation
             } catch (error) {
                 if (isTerminal(error)) fail(error);
-                else if (generation) retire(generation, error);
+                else if (generation) retire(generation, error, {refused: error?.code === 404});
                 throw error
             } finally {
                 clearTimeout(timer)
@@ -390,13 +411,10 @@ export async function bridgeTransports({
             if (closePromise) return;
             if (isTerminal(error)) return fail(error);
             if (request.generation && current !== request.generation) return;
-            if (request.generation && error?.code === 404) return retire(request.generation, error);
-            if (!isRequest) {
-                // Lost notifications cannot be answered. Renew before accepting future traffic.
-                if (current) retire(current, error);
-                return
-            }
+            if (request.generation && error?.code === 404) return retire(request.generation, error, {refused: true});
             report(onRecovered, RECOVERED_MESSAGE, error);
+            // A lost notification cannot be answered; the session is kept, exactly as for a lost request.
+            if (!isRequest) return;
             return answerFailure(message.id, request, error, request.sent)
         }).catch(fail)
     };
@@ -434,7 +452,8 @@ export async function startBridge({
         throw new BridgeConfigurationError('Bridge bearer environment slot is missing or empty.')
     }
 
-    const createRemoteTransport = () => new StreamableHTTPClientTransport(endpoint, {
+    const createRemoteTransport = sessionId => new StreamableHTTPClientTransport(endpoint, {
+        sessionId,
         requestInit: {
             headers: {Authorization: `Bearer ${token}`}
         }
