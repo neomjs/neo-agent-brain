@@ -874,7 +874,13 @@ export async function main(argv = process.argv.slice(2)) {
                 })
             });
 
-            console.log(JSON.stringify(result));
+            console.log(JSON.stringify({
+                status            : result.status,
+                activeCount       : result.activeCount,
+                benignHistoryCount: result.benignHistoryCount,
+                deploymentRunId   : result.deploymentRunId,
+                materializedDigest: result.materializedDigest
+            }));
             return 0
         }
 
