@@ -518,6 +518,68 @@ test.describe('stdioToStreamableHttp', () => {
         }
     });
 
+    test('a response received before 404 retirement still settles once, while retirement fences late callbacks and local close (#1392)', async () => {
+        const
+            fresh                                      = new FakeTransport(),
+            {bridge, errors, local, recovered, remote} = await startInitializedBridge({
+                createRemoteTransport: () => fresh
+            });
+
+        // 1. Response -> 404 retirement before deferred delivery (plus a sibling still-pending write and a queued notification).
+        local.onmessage({jsonrpc: '2.0', id: 2, method: 'tools/list', params: {}});
+        local.onmessage({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'inert-write'}});
+        await flush();
+
+        const retiredOnMessage = remote.onmessage;
+
+        remote.onmessage({jsonrpc: '2.0', id: 2, result: {tools: []}});
+        remote.onmessage({jsonrpc: '2.0', method: 'notifications/tools/list_changed'});
+        remote.onerror(Object.assign(new Error('inert404'), {code: 404}));
+        // 2. Retirement -> late response on the captured callback stays ignored and never duplicates replies.
+        retiredOnMessage({jsonrpc: '2.0', id: 2, result: {tools: ['late-duplicate']}});
+        retiredOnMessage({jsonrpc: '2.0', id: 3, result: {ok: true}});
+        await flush();
+
+        expect(errors).toEqual([]);
+        expect(local.closed).toBe(0);
+        expect(recovered).toEqual(['Neo MCP bridge is renewing its remote session. Cause: http-404.']);
+        expect(local.messages.filter(message => message.id === 2)).toEqual([
+            {jsonrpc: '2.0', id: 2, result: {tools: []}}
+        ]);
+        expect(local.messages.filter(message => message.id === 3)).toEqual([
+            {
+                jsonrpc: '2.0',
+                id     : 3,
+                error  : {
+                    code   : -32603,
+                    message: 'Neo MCP bridge could not deliver the request. Cause: http-404.',
+                    data   : {outcome: 'unknown'}
+                }
+            }
+        ]);
+        expect(local.messages.some(message => message.method === 'notifications/tools/list_changed')).toBe(false);
+        expect(remote.messages.filter(message => message.id === 2 || message.id === 3)).toHaveLength(2);
+
+        // 3. Later requests retain recovery behaviour on the renewed transport without replaying 2 or 3.
+        local.onmessage({jsonrpc: '2.0', id: 4, method: 'tools/list', params: {}});
+        await flush();
+        expect(fresh.messages[0]).toMatchObject({method: 'initialize'});
+        fresh.onmessage({jsonrpc: '2.0', id: fresh.messages[0].id, result: {
+            protocolVersion: '2025-11-25', capabilities: {}, serverInfo: {name: 'fixture', version: '1'}
+        }});
+        await flush();
+        expect(fresh.messages.map(message => message.method)).toEqual(['initialize', 'notifications/initialized', 'tools/list']);
+        expect(fresh.messages.at(-1).id).toBe(4);
+
+        // 4. Response -> local close before deferred delivery stays terminal.
+        fresh.onmessage({jsonrpc: '2.0', id: 4, result: {tools: ['after-close']}});
+        await bridge.close();
+        await flush();
+
+        expect(local.messages.filter(message => message.id === 4)).toEqual([]);
+        expect(local.closed).toBe(1)
+    });
+
     test('a request whose delivery fails is answered locally while the session stays open', async () => {
         const {bridge, errors, local, recovered, remote} = await startInitializedBridge();
 
