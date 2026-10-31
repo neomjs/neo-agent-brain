@@ -1,11 +1,11 @@
 // fs-extra, not node:fs, so the services' existing stream seams keep working: the KB import spec
 // swaps `fsExtra.createReadStream` for a gated fixture to prove a batch flushes before EOF.
-import fs                   from 'fs-extra';
-import path                 from 'path';
-import readline             from 'readline';
-import {compose, Transform} from 'stream';
-import {finished}           from 'stream/promises';
-import zlib                 from 'zlib';
+import fs          from 'fs-extra';
+import path        from 'path';
+import readline    from 'readline';
+import {Transform} from 'stream';
+import {finished}  from 'stream/promises';
+import zlib        from 'zlib';
 
 /**
  * @summary The one encoding decision for every backup-bundle payload: written here, read here.
@@ -29,10 +29,11 @@ import zlib                 from 'zlib';
  * decompressor alone, with the file's errors forwarded onto it and the file closed when it closes,
  * so a missing file rejects with `ENOENT`, a torn compressed file with `Z_BUF_ERROR`, and bytes that
  * are not brotli under a `.br` name with a format error. A torn bundle therefore fails the restore
- * probe loudly instead of reading as a shorter valid one. On the write side the composed writer's
- * `end()` callback fires on `'finish'`, before a deferred file error can surface, so the completion
- * and error boundary is {@link endBundlePayload}: a receipt written after it awaits describes bytes
- * on disk, or never gets written.
+ * probe loudly instead of reading as a shorter valid one. The writer mirrors it: it holds the
+ * compressor, which pipes into the file, and its completion and error boundary is
+ * {@link endBundlePayload}, which settles on both. A file that fails to open, late or while the
+ * exporter still awaits its next page, rejects there: a receipt written after it awaits describes
+ * bytes on disk, or never gets written.
  *
  * @module ai/services/shared/bundlePayload
  */
@@ -196,8 +197,8 @@ function decodeThrough(filePath, decompressor) {
 function escapeLineSeparators(input) {
     const decoder = new TextDecoder('utf-8', {ignoreBOM: true});
     // Zl and Zp hold exactly U+2028 and U+2029; the escape is written by code point.
-    const escape  = text => text.replace(/[\p{Zl}\p{Zp}]/gu, char => '\\u' + char.codePointAt(0).toString(16));
-    const output  = new Transform({
+    const escape = text => text.replace(/[\p{Zl}\p{Zp}]/gu, char => '\\u' + char.codePointAt(0).toString(16));
+    const output = new Transform({
         transform(chunk, encoding, callback) {
             callback(null, escape(decoder.decode(chunk, {stream: true})))
         },
@@ -251,24 +252,60 @@ export function closeBundlePayload(rl) {
 }
 
 /**
+ * The file a compressing writer pipes into, so {@link endBundlePayload} can settle on it: the
+ * compressor finishes before its last bytes, or its file's failed open, reach the file.
+ * @type {WeakMap<import('stream').Transform, import('fs').WriteStream>}
+ */
+const payloadFiles = new WeakMap();
+
+/**
+ * @summary Keeps an error raised before `end()` for {@link endBundlePayload}. The stream holds the
+ * error itself (`errored`), and `finished` rejects with it; the listener only keeps it from being an
+ * uncaught `'error'` while the exporter still awaits its next page.
+ * @param {import('stream').Stream} stream
+ * @returns {import('stream').Stream} The same stream.
+ */
+function holdErrorForEnd(stream) {
+    return stream.on('error', () => {})
+}
+
+/**
+ * @summary Pipes a compressor into a new payload file and hands back the compressor as the one
+ * stream a writer holds, with the file's errors forwarded onto it: {@link decodeThrough}, mirrored.
+ *
+ * `stream.compose` was the first shape here too. Its duplex settled `finished` while the file it
+ * ended in was still opening, so a file whose open failed late read as a written payload.
+ * @param {String} filePath
+ * @param {import('stream').Transform} compressor
+ * @returns {import('stream').Transform}
+ */
+function encodeThrough(filePath, compressor) {
+    const file = holdErrorForEnd(fs.createWriteStream(filePath));
+
+    file.on('error', error => compressor.destroy(error));
+    payloadFiles.set(compressor, file);
+
+    holdErrorForEnd(compressor).pipe(file);
+
+    return compressor
+}
+
+/**
  * @summary Opens a payload for writing, compressing by extension. Pair with {@link endBundlePayload}.
  * @param {String} filePath Absolute path ending in a {@link BUNDLE_PAYLOAD_ENCODINGS} key.
  * @returns {import('stream').Writable} A stream to write lines to. Its `end()` callback is not the
- *     completion boundary: await {@link endBundlePayload}, which settles on `'close'` and rejects
- *     on any error, including a file that could not be opened.
+ *     completion boundary: await {@link endBundlePayload}, which settles once the file has closed
+ *     and rejects on any error, including a file that could not be opened.
  * @throws {Error} `BUNDLE_PAYLOAD_EXTENSION` when the name is not a payload.
  */
 export function createBundlePayloadWriteStream(filePath) {
     switch (bundlePayloadEncoding(filePath)) {
         case 'jsonl':
-            return fs.createWriteStream(filePath);
+            return holdErrorForEnd(fs.createWriteStream(filePath));
         case 'jsonl+br':
-            return compose(
-                zlib.createBrotliCompress({params: {[zlib.constants.BROTLI_PARAM_QUALITY]: BUNDLE_PAYLOAD_BROTLI_QUALITY}}),
-                fs.createWriteStream(filePath)
-            );
+            return encodeThrough(filePath, zlib.createBrotliCompress({params: {[zlib.constants.BROTLI_PARAM_QUALITY]: BUNDLE_PAYLOAD_BROTLI_QUALITY}}));
         case 'jsonl+gz':
-            return compose(zlib.createGzip(), fs.createWriteStream(filePath));
+            return encodeThrough(filePath, zlib.createGzip());
         default:
             throw notABundlePayload(filePath);
     }
@@ -277,15 +314,17 @@ export function createBundlePayloadWriteStream(filePath) {
 /**
  * @summary Ends a payload writer and resolves once its bytes are on disk, rejecting on any error.
  *
- * Settled through `stream/promises`' `finished`, which waits for `'close'`, because the composed
- * writer emits `'finish'` and calls `end()`'s callback with no error BEFORE a deferred file-open
- * error (a missing directory) surfaces. The bare `new Promise(resolve => stream.end(resolve))` the
- * exporters used to carry resolved on that, so a failed export could still return a receipt.
+ * Settled through `stream/promises`' `finished`, on the writer and on the file it pipes into: the
+ * writer emits `'finish'`, and calls `end()`'s callback with no error, before its last bytes or a
+ * failed open reach the file. The bare `new Promise(resolve => stream.end(resolve))` the exporters
+ * used to carry resolved on that, so a failed export could still return a receipt.
  * @param {import('stream').Writable} stream A stream from {@link createBundlePayloadWriteStream}.
  * @returns {Promise<void>}
  */
 export async function endBundlePayload(stream) {
-    const settled = finished(stream);
+    const
+        file    = payloadFiles.get(stream),
+        settled = Promise.all([finished(stream), file && finished(file)]);
 
     stream.end();
 

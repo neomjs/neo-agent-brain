@@ -1,7 +1,9 @@
 import {test, expect} from '@playwright/test';
 import fs             from 'fs';
+import fsExtra        from 'fs-extra';
 import os             from 'os';
 import path           from 'path';
+import {Writable}     from 'stream';
 import zlib           from 'zlib';
 
 import {
@@ -212,6 +214,39 @@ test.describe('ai/services/shared/bundlePayload — one encoding decision for ev
 
     test('a writer whose directory does not exist rejects at end() instead of reporting success', async () => {
         await expect(writeRows(path.join(tmpRoot, 'no-such-dir', 'rows.jsonl.br'))).rejects.toMatchObject({code: 'ENOENT'});
+    });
+
+    test.describe('a file that fails to open rejects at end(): never a written payload, never an uncaught error (#1384)', () => {
+        const createWriteStream = fsExtra.createWriteStream;
+
+        test.afterEach(() => {
+            fsExtra.createWriteStream = createWriteStream;
+        });
+
+        for (const extension of Object.keys(BUNDLE_PAYLOAD_ENCODINGS)) {
+            test(`an open that fails after the writer finished rejects through ${extension}`, async () => {
+                // the shape a busy threadpool gives the real open: the compressor finishes long before it
+                fsExtra.createWriteStream = () => new Writable({
+                    construct(callback) {
+                        setTimeout(() => callback(Object.assign(new Error('EACCES: open refused (injected)'), {code: 'EACCES'})), 50);
+                    },
+                    write(chunk, encoding, callback) {
+                        callback();
+                    }
+                });
+
+                await expect(writeRows(path.join(tmpRoot, `rows${extension}`))).rejects.toMatchObject({code: 'EACCES'});
+            });
+
+            test(`an open that fails while the exporter awaits its next page rejects at end() through ${extension}`, async () => {
+                const out = createBundlePayloadWriteStream(path.join(tmpRoot, 'no-such-dir', `rows${extension}`));
+
+                out.write(rows[0] + '\n');
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+                await expect(endBundlePayload(out)).rejects.toMatchObject({code: 'ENOENT'});
+            });
+        }
     });
 
     test('an extension that is not a payload is refused by both sides before any byte moves', () => {
