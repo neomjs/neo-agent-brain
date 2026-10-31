@@ -2475,7 +2475,7 @@ class VectorService extends Base {
         const knowledgeBase = [];
         // `JSON.stringify` leaves U+2028/U+2029 raw and readline breaks a line at each; the shared
         // reader hands them over as their JSON escapes, so a record quoting either stays one line.
-        const rl            = openBundlePayload(knowledgeBasePath);
+        const rl = openBundlePayload(knowledgeBasePath);
 
         try {
             for await (const line of rl) {
