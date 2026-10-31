@@ -5,8 +5,10 @@ import {
     countRemainingRetries,
     describeBackupMaintenanceHealth,
     describeBackupRetryState,
+    doesReceiptSupersedeBackupStreak,
     getDueTask,
-    isFailedRunRetryDue
+    isFailedRunRetryDue,
+    reconcileBackupRetryStateWithReceipt
 } from '../../../../../../../ai/daemons/orchestrator/scheduling/backup.mjs';
 
 const
@@ -499,7 +501,7 @@ test.describe('orchestrator/scheduling/backup — receipt/retry reconciliation (
         expect(conflicted({durability: {posture: 'unmet'}}).status).toBe('degraded');
     });
 
-    // #233. The third state. Every arm above reconciles two records the observer CAN read; these
+    // The third state. Every arm above reconciles two records the observer CAN read; these
     // bind what happens when it can read neither, which is the deployment that actually shipped the
     // false alarm. `unreachable` is what the reader emits when the backup ROOT is not visible, and
     // the whole point is that it carries no history claim in either direction.
@@ -540,7 +542,7 @@ test.describe('orchestrator/scheduling/backup — receipt/retry reconciliation (
         expect(unreachable().reasonCodes).not.toContain('backup-never-succeeded');
     });
 
-    // #233 RA-1 (@neo-gpt). The SIBLING unobservable state, and the arm whose absence let the first
+    // The SIBLING unobservable state, and the arm whose absence let the first
     // revision of this fix keep fabricating history one state over. `unreachable` was handled and
     // `unreadable` was not, so an exhausted lane with a corrupt receipt emitted
     // `backup-receipt-unreadable` AND `backup-never-succeeded` in the same array — the second
@@ -616,5 +618,201 @@ test.describe('orchestrator/scheduling/backup — receipt/retry reconciliation (
             retryState      : null,
             retryWindowMs   : WINDOW_MS
         }).reasonCodes).toEqual(['backup-receipt-unreachable']);
+    });
+});
+
+test.describe('orchestrator/scheduling/backup — manual qualifying receipt supersedes open streak (#1385)', () => {
+    const
+        STREAK_AT         = T + DAY_MS,
+        MANUAL_AT         = STREAK_AT + 3 * WINDOW_MS,
+        NOW_AT            = MANUAL_AT + WINDOW_MS,
+        qualifyingReceipt = (overrides = {}) => ({
+            backup           : {durationMs: 420, error: null, status: 'success'},
+            bundleCompletedAt: iso(MANUAL_AT),
+            bundleName       : 'backup-2026-10-30T17-51-10.172Z',
+            finishedAt       : iso(MANUAL_AT),
+            integrity        : {emptySubsystems: [], restorable: true},
+            offHostSync      : {status: 'disabled'},
+            schemaVersion    : 1,
+            ...overrides
+        }),
+        exhaustedTaskState = (overrides = {}) => ({
+            failureStreakStartedAt: iso(STREAK_AT),
+            lastErrorAt           : iso(STREAK_AT + 2 * DELAY_MS),
+            lastRunAt             : STREAK_AT + 2 * DELAY_MS,
+            lastSuccessAt         : iso(T - DAY_MS),
+            ...overrides
+        });
+
+    test('AC-1: a qualifying receipt newer than the streak anchor projects retry.phase healthy with supersededBy, ledgerPhase, and receipt lastSuccessAt/lastSuccessAgeMs, and clears exhausted/overdue codes', () => {
+        for (const [posture, syncStatus] of [['opted-out', 'disabled'], ['configured', 'success']]) {
+            const
+                durability = {configErrorCode: null, posture},
+                lastBackup = qualifyingReceipt({offHostSync: {status: syncStatus}}),
+                retryState = reconcileBackupRetryStateWithReceipt({
+                    backupIntervalMs: DAY_MS,
+                    durability,
+                    lastBackup,
+                    now             : NOW_AT,
+                    retryState      : describeBackupRetryState({
+                        intervalMs: DAY_MS,
+                        now       : NOW_AT,
+                        taskState : exhaustedTaskState(),
+                        ...retryOpts()
+                    }),
+                    retryWindowMs   : WINDOW_MS
+                }),
+                health = describeBackupMaintenanceHealth({
+                    backupIntervalMs: DAY_MS,
+                    durability,
+                    lastBackup,
+                    retryState,
+                    retryWindowMs   : WINDOW_MS
+                });
+
+            expect(retryState).toMatchObject({
+                lastSuccessAgeMs : NOW_AT - MANUAL_AT,
+                lastSuccessAt    : iso(MANUAL_AT),
+                ledgerPhase      : BACKUP_RETRY_PHASE.exhausted,
+                phase            : BACKUP_RETRY_PHASE.healthy,
+                retriesRemaining : 0,
+                streakStartedAtMs: STREAK_AT,
+                supersededBy     : {
+                    bundleName: 'backup-2026-10-30T17-51-10.172Z',
+                    finishedAt: iso(MANUAL_AT)
+                }
+            });
+            expect(health).toEqual({
+                observationStatus: 'observed',
+                reasonCodes      : [],
+                restorable       : true,
+                staleAfterMs     : DAY_MS + WINDOW_MS,
+                status           : 'healthy'
+            });
+        }
+    });
+
+    test('AC-1: an in-window retrying streak superseded by a qualifying receipt preserves ledgerPhase retrying and suppresses backup-retry-open', () => {
+        const
+            inWindowNow = STREAK_AT + DELAY_MS,
+            receiptAt   = STREAK_AT + 5000,
+            lastBackup  = qualifyingReceipt({finishedAt: iso(receiptAt)}),
+            durability  = {configErrorCode: null, posture: 'opted-out'},
+            retryState  = reconcileBackupRetryStateWithReceipt({
+                backupIntervalMs: DAY_MS,
+                durability,
+                lastBackup,
+                now             : inWindowNow,
+                retryState      : describeBackupRetryState({
+                    intervalMs: DAY_MS,
+                    now       : inWindowNow,
+                    taskState : exhaustedTaskState({lastRunAt: STREAK_AT, lastSuccessAt: null}),
+                    ...retryOpts()
+                }),
+                retryWindowMs   : WINDOW_MS
+            }),
+            health = describeBackupMaintenanceHealth({
+                backupIntervalMs: DAY_MS,
+                durability,
+                lastBackup,
+                retryState,
+                retryWindowMs   : WINDOW_MS
+            });
+
+        expect(retryState.phase).toBe(BACKUP_RETRY_PHASE.healthy);
+        expect(retryState.ledgerPhase).toBe(BACKUP_RETRY_PHASE.retrying);
+        expect(retryState.lastSuccessAt).toBe(iso(receiptAt));
+        expect(retryState.lastSuccessAgeMs).toBe(inWindowNow - receiptAt);
+        expect(retryState.retriesRemaining).toBeGreaterThan(0);
+        expect(health.reasonCodes).toEqual([]);
+        expect(health.status).toBe('healthy');
+    });
+
+    test('AC-2: non-qualifying receipts leave retry projection and health codes unchanged', () => {
+        const
+            disqualifiedCases = [
+                {label: 'no receipt', lastBackup: null},
+                {label: 'older than streak anchor', lastBackup: qualifyingReceipt({finishedAt: iso(STREAK_AT - 1000)})},
+                {label: 'equal to streak anchor', lastBackup: qualifyingReceipt({finishedAt: iso(STREAK_AT)})},
+                {label: 'older than overdue bound', lastBackup: qualifyingReceipt({finishedAt: iso(MANUAL_AT)}), now: MANUAL_AT + DAY_MS + WINDOW_MS + 1000},
+                {label: 'older than overdue bound (30d)', lastBackup: qualifyingReceipt({finishedAt: iso(MANUAL_AT)}), now: MANUAL_AT + 30 * DAY_MS},
+                {label: 'backup failed', lastBackup: qualifyingReceipt({backup: {status: 'failed'}})},
+                {label: 'integrity absent', lastBackup: qualifyingReceipt({integrity: undefined})},
+                {label: 'restorable null', lastBackup: qualifyingReceipt({integrity: {emptySubsystems: [], restorable: null}})},
+                {label: 'restorable false', lastBackup: qualifyingReceipt({integrity: {emptySubsystems: ['kb'], restorable: false}})},
+                {label: 'offHostSync absent', lastBackup: qualifyingReceipt({offHostSync: undefined})},
+                {label: 'offHostSync failed', lastBackup: qualifyingReceipt({offHostSync: {status: 'failed'}})},
+                {label: 'offHostSync timeout', lastBackup: qualifyingReceipt({offHostSync: {status: 'timeout'}})},
+                {label: 'offHostSync validation-failed', lastBackup: qualifyingReceipt({offHostSync: {status: 'validation-failed'}})},
+                {label: 'durability unmet', durability: {posture: 'unmet'}, lastBackup: qualifyingReceipt()},
+                {label: 'durability configErrorCode', durability: {configErrorCode: 'BAD_CFG', posture: 'configured'}, lastBackup: qualifyingReceipt()}
+            ];
+
+        for (const {durability = {posture: 'opted-out'}, label, lastBackup, now = NOW_AT} of disqualifiedCases) {
+            const baseRetry = describeBackupRetryState({
+                intervalMs: DAY_MS,
+                now,
+                taskState : exhaustedTaskState(),
+                ...retryOpts()
+            });
+
+            expect(doesReceiptSupersedeBackupStreak({
+                backupIntervalMs: DAY_MS,
+                durability,
+                lastBackup,
+                now,
+                retryState      : baseRetry,
+                retryWindowMs   : WINDOW_MS
+            }), label).toBe(false);
+
+            const reconciled = reconcileBackupRetryStateWithReceipt({
+                backupIntervalMs: DAY_MS,
+                durability,
+                lastBackup,
+                now,
+                retryState      : baseRetry,
+                retryWindowMs   : WINDOW_MS
+            });
+            expect(reconciled.phase, label).toBe(BACKUP_RETRY_PHASE.exhausted);
+            expect(reconciled.supersededBy, label).toBeUndefined();
+            expect(reconciled.ledgerPhase, label).toBeUndefined();
+
+            const health = describeBackupMaintenanceHealth({
+                backupIntervalMs: DAY_MS,
+                durability,
+                lastBackup,
+                retryState      : reconciled,
+                retryWindowMs   : WINDOW_MS
+            });
+            expect(health.reasonCodes, label).toContain('backup-retry-exhausted');
+            expect(health.reasonCodes, label).toContain('backup-success-overdue');
+            expect(health.status, label).toBe('degraded');
+        }
+
+        const staleNow  = MANUAL_AT + DAY_MS + WINDOW_MS + 1000,
+              staleBase = reconcileBackupRetryStateWithReceipt({
+                  backupIntervalMs: DAY_MS,
+                  durability      : {posture: 'opted-out'},
+                  lastBackup      : qualifyingReceipt({finishedAt: iso(MANUAL_AT)}),
+                  now             : staleNow,
+                  retryState      : describeBackupRetryState({
+                      intervalMs: DAY_MS,
+                      now       : staleNow,
+                      taskState : exhaustedTaskState(),
+                      ...retryOpts()
+                  }),
+                  retryWindowMs   : WINDOW_MS
+              }),
+              staleHealth = describeBackupMaintenanceHealth({
+                  backupIntervalMs: DAY_MS,
+                  durability      : {posture: 'opted-out'},
+                  lastBackup      : qualifyingReceipt({finishedAt: iso(MANUAL_AT)}),
+                  retryState      : staleBase,
+                  retryWindowMs   : WINDOW_MS
+              });
+
+        expect(staleBase.phase).toBe(BACKUP_RETRY_PHASE.exhausted);
+        expect(staleHealth.reasonCodes).toEqual(['backup-retry-exhausted', 'backup-success-overdue']);
+        expect(staleHealth.status).toBe('degraded');
     });
 });

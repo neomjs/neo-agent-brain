@@ -203,6 +203,103 @@ function resolveNextBackupAttemptAtMs({
 }
 
 /**
+ * @summary True when a positive-evidence restorable receipt completed after the retry streak anchor
+ * and within the overdue bound (`backupIntervalMs + retryWindowMs`).
+ * @param {Object} [options={}]
+ * @param {Number} [options.backupIntervalMs=0] Ordinary periodic backup cadence.
+ * @param {Object} [options.durability={}] Deployment durability posture.
+ * @param {Object|null} [options.lastBackup=null] Validated last-backup receipt projection.
+ * @param {Number} [options.now] Current timestamp in milliseconds.
+ * @param {Object|null} [options.retryState=null] Output of {@link describeBackupRetryState}.
+ * @param {Number} [options.retryWindowMs=0] Bounded failed-run recovery window.
+ * @returns {Boolean}
+ */
+export function doesReceiptSupersedeBackupStreak({
+    backupIntervalMs = 0,
+    durability       = {},
+    lastBackup       = null,
+    now,
+    retryState       = null,
+    retryWindowMs    = 0
+} = {}) {
+    const streakStartedAtMs = Number(retryState?.streakStartedAtMs),
+          finishedAtMs      = toEpochMs(lastBackup?.finishedAt),
+          syncStatus        = lastBackup?.offHostSync?.status,
+          staleAfterMs      = backupIntervalMs > 0
+              ? backupIntervalMs + Math.max(0, retryWindowMs)
+              : null;
+
+    if (!Number.isFinite(streakStartedAtMs) || streakStartedAtMs <= 0) {
+        return false;
+    }
+    if (lastBackup?.backup?.status !== 'success' || lastBackup?.integrity?.restorable !== true) {
+        return false;
+    }
+    if (syncStatus !== 'success' && syncStatus !== 'disabled') {
+        return false;
+    }
+    if (durability?.posture === 'unmet' || Boolean(durability?.configErrorCode)) {
+        return false;
+    }
+    if (finishedAtMs <= streakStartedAtMs) {
+        return false;
+    }
+    if (staleAfterMs !== null) {
+        if (!Number.isFinite(Number(now)) || now - finishedAtMs > staleAfterMs) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @summary Projects `phase: 'healthy'` with `ledgerPhase`, `supersededBy`, and the receipt's
+ * `lastSuccessAt` / `lastSuccessAgeMs` when a fresh qualifying receipt outdates an open streak.
+ * @param {Object} [options={}]
+ * @param {Number} [options.backupIntervalMs=0] Ordinary periodic backup cadence.
+ * @param {Object} [options.durability={}] Deployment durability posture.
+ * @param {Object|null} [options.lastBackup=null] Validated last-backup receipt projection.
+ * @param {Number} [options.now] Current timestamp in milliseconds.
+ * @param {Object|null} [options.retryState=null] Output of {@link describeBackupRetryState}.
+ * @param {Number} [options.retryWindowMs=0] Bounded failed-run recovery window.
+ * @returns {Object|null}
+ */
+export function reconcileBackupRetryStateWithReceipt({
+    backupIntervalMs = 0,
+    durability       = {},
+    lastBackup       = null,
+    now,
+    retryState       = null,
+    retryWindowMs    = 0
+} = {}) {
+    if (!retryState || !doesReceiptSupersedeBackupStreak({
+        backupIntervalMs,
+        durability,
+        lastBackup,
+        now,
+        retryState,
+        retryWindowMs
+    })) {
+        return retryState;
+    }
+
+    const finishedAtMs = toEpochMs(lastBackup.finishedAt);
+
+    return {
+        ...retryState,
+        lastSuccessAgeMs: Number.isFinite(Number(now)) ? Math.max(0, Number(now) - finishedAtMs) : retryState.lastSuccessAgeMs,
+        lastSuccessAt   : lastBackup.finishedAt,
+        ledgerPhase     : retryState.ledgerPhase ?? retryState.phase,
+        phase           : BACKUP_RETRY_PHASE.healthy,
+        supersededBy    : {
+            bundleName: lastBackup.bundleName ?? null,
+            finishedAt: lastBackup.finishedAt
+        }
+    };
+}
+
+/**
  * @summary Reports the lane's retry phase as durable, readable STATE rather than a log edge.
  *
  * @summary AC5 requires budget exhaustion to reach a surface. An edge-triggered log would need
@@ -411,7 +508,11 @@ export function describeBackupMaintenanceHealth({
     // means the lane's run was marked FAILED after it wrote that receipt. One producer is measured:
     // `runBackupWithOffHostSync` (ai/scripts/maintenance/backup.mjs) throws the required-off-host
     // refusal after the success receipt, so a deployment that requires off-host durability without
-    // configuring a sync command exits 1 on every restorable bundle. The local overlay declares the
+    // configuring a sync command exits 1 on every restorable bundle. A fresh qualifying receipt
+    // is read as supersession by `reconcileBackupRetryStateWithReceipt` (setting `lastSuccessAt`)
+    // before reaching this function; the conflict producer above cannot qualify because a required,
+    // unconfigured off-host leg resolves to `posture: 'unmet'` and a configured sync failure writes
+    // `offHostSync.status: 'failed'`. The local overlay declares the
     // documented opt-out (`NEO_ORCHESTRATOR_OFF_HOST_BACKUP_REQUIRED=false`); whether that refusal
     // should fail the task at all on cloud planes is an open decision for the orchestrator seam
     // stewards. **This code is the observer**: it reports the divergence, it does not resolve it.
