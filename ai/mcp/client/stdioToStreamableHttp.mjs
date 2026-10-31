@@ -116,9 +116,10 @@ export function getBridgeErrorCause(error) {
 
 /**
  * @summary Keep a local MCP connection while resuming, or else replacing, a lost remote HTTP session.
- * Lost requests receive an error with an unknown outcome and are never replayed. A retired session the
- * server may still hold is resumed by its id on the next traffic, with no handshake and a best-effort
- * standalone stream (the first POST remains the proof of the session); only a session the
+ * Lost requests receive an error with an unknown outcome and are never replayed; `pending` owns each
+ * request until its received response commits to local delivery or retirement answers it. A retired
+ * session the server may still hold is resumed by its id on the next traffic, with no handshake and a
+ * best-effort standalone stream (the first POST remains the proof of the session); only a session the
  * server refused (404), or one that never reached a session id, joins a bounded initialization flight
  * using the original client parameters and protocol contract. A lost notification keeps the session:
  * it cannot be answered, and a renewal would spend the server-side session for nothing. Idle SSE
@@ -194,7 +195,7 @@ export async function bridgeTransports({
     };
 
     const answerFailure = (id, request, error, unknown=false) => {
-        if (closePromise || pending.get(id) !== request) return;
+        if (closePromise || request.received || pending.get(id) !== request) return;
 
         pending.delete(id);
         return localTransport.send({
@@ -222,7 +223,7 @@ export async function bridgeTransports({
             if (owner.generation === generation) serverRequests.delete(id)
         }
         for (const [id, request] of pending) {
-            if (request.generation === generation) {
+            if (request.generation === generation && !request.received) {
                 Promise.resolve(answerFailure(id, request, error, request.sent)).catch(fail)
             }
         }
@@ -240,7 +241,7 @@ export async function bridgeTransports({
         if (error?.code === 404) return retire(generation, error, {refused: true});
         if (cause === 'sse-reconnect-exhausted' ||
             cause === 'sse-disconnect' && (generation.handshake || [...pending.values()].some(
-                request => request.generation === generation
+                request => request.generation === generation && !request.received
             ))) return retire(generation, error);
 
         setTimeout(() => {
@@ -282,10 +283,10 @@ export async function bridgeTransports({
                 return
             }
 
+            const request = isResponse ? pending.get(message.id) : null;
             if (isResponse) {
-                const request = pending.get(message.id);
-                if (request?.generation !== generation) return;
-                pending.delete(message.id);
+                if (request?.generation !== generation || request.received) return;
+                request.received = true;
 
                 if (!initialized && message.id === initializeRequest?.id) {
                     if (typeof message.result?.protocolVersion === 'string') {
@@ -308,7 +309,13 @@ export async function bridgeTransports({
                 message = {...message, params: {...message.params, requestId: id}}
             }
             Promise.resolve().then(() => {
-                if (current === generation && !closePromise) return localTransport.send(message)
+                if (closePromise) return;
+                if (isResponse) {
+                    if (pending.get(message.id) !== request) return;
+                    pending.delete(message.id);
+                    return localTransport.send(message)
+                }
+                if (current === generation) return localTransport.send(message)
             }).catch(fail)
         };
         return generation
@@ -410,7 +417,7 @@ export async function bridgeTransports({
             request.generation = generation;
             request.sent = true;
             await generation.transport.send(message);
-            if (cancelledId !== undefined) pending.delete(cancelledId)
+            if (cancelledId !== undefined && !pending.get(cancelledId)?.received) pending.delete(cancelledId)
         }).catch(error => {
             if (error !== null && typeof error === 'object') claimedErrors.add(error);
             if (closePromise) return;
