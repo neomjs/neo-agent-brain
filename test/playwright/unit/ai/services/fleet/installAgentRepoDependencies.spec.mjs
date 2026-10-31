@@ -140,7 +140,7 @@ test.describe('runToExit — a stopped install has exited before the Start goes 
     test('a canceled Start stops the command and settles only once it has exited', async () => {
         // the child takes 300 ms to honour SIGTERM, as npm does while it winds down its scripts
         const pidFile    = path.join(root, 'pid'),
-              script     = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on('SIGTERM', () => setTimeout(() => process.exit(0), 300)); setInterval(() => {}, 1000)`,
+              script     = "require('fs').writeFileSync('pid', String(process.pid)); process.on('SIGTERM', () => setTimeout(() => process.exit(0), 300)); setInterval(() => {}, 1000)",
               controller = new AbortController(),
               running    = runToExit(process.execPath, ['-e', script], {cwd: root, env: {}, signal: controller.signal});
 
@@ -165,10 +165,10 @@ test.describe('runToExit — a stopped install has exited before the Start goes 
         // the leader honours SIGTERM at once; its child, like an npm lifecycle script, ignores it and keeps writing
         const pidFile    = path.join(root, 'pid'),
               heartbeat  = path.join(root, 'heartbeat'),
-              writer     = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on('SIGTERM', () => {}); setInterval(() => require('fs').appendFileSync(${JSON.stringify(heartbeat)}, '.'), 20)`,
-              script     = `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(writer)}], {stdio: 'ignore'}); process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)`,
+              writer     = "require('fs').writeFileSync('pid', String(process.pid)); process.on('SIGTERM', () => {}); setInterval(() => require('fs').appendFileSync('heartbeat', '.'), 20)",
+              script     = "require('child_process').spawn(process.execPath, ['-e', process.argv[1]], {stdio: 'ignore'}); process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)",
               controller = new AbortController(),
-              running    = runToExit(process.execPath, ['-e', script], {cwd: root, env: {}, signal: controller.signal, killGraceMs: 200});
+              running    = runToExit(process.execPath, ['-e', script, writer], {cwd: root, env: {}, signal: controller.signal, killGraceMs: 200});
 
         await expect.poll(() => fs.existsSync(heartbeat)).toBe(true);
         controller.abort();

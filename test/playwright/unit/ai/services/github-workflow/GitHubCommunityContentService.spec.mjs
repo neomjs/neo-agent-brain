@@ -53,9 +53,11 @@ test.describe('GitHubCommunityContentService', () => {
                     repository, title: externalBody, author: {login: 'neo-gpt'}, authorAssociation: association
                 })})}});
 
+            const expectedText = trusted ? externalBody : 'Please see proof [QUARANTINED_URL: hostile.example].';
+
             expect(result.status).toBe('available');
-            expect(result.content.body.includes('https://hostile.example')).toBe(trusted);
-            expect(result.content.title.includes('https://hostile.example')).toBe(trusted);
+            expect(result.content.body).toBe(expectedText);
+            expect(result.content.title).toBe(expectedText);
             expect(result.contentTrust).toMatchObject({
                 tier          : trusted ? 'repo-trusted' : association ? 'external' : 'unclassified',
                 sourceRelative: association || 'UNKNOWN', wasModified: !trusted, signals: []
