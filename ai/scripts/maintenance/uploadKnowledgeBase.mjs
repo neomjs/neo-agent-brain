@@ -2,9 +2,10 @@ import {execFile}      from 'child_process';
 import fs              from 'fs-extra';
 import os              from 'os';
 import path            from 'path';
-import readline        from 'readline';
 import {promisify}     from 'util';
 import {fileURLToPath} from 'url';
+
+import {closeBundlePayload, openBundlePayload} from '../../services/shared/bundlePayload.mjs';
 
 // Neo namespace bootstrap (entry-point invariant). `Neo` + `core/_export` populate
 // `globalThis.Neo` so that `ai/services.mjs` → Compare.mjs `Neo.gatekeep` resolves.
@@ -97,22 +98,23 @@ async function resolveVersion() {
 }
 
 /**
- * Counts non-empty JSONL lines in a file (one record per line). Used both for the metadata
+ * @summary Counts non-empty JSONL records without splitting Unicode text. Used both for the metadata
  * `recordCount` stamp and as a guard against shipping an empty artifact.
  *
  * @param {String} filePath Absolute path to a `.jsonl` file.
  * @returns {Promise<Number>}
  */
 async function countJsonlRecords(filePath) {
-    const rl = readline.createInterface({
-        input    : fs.createReadStream(filePath),
-        crlfDelay: Infinity
-    });
-    let count = 0;
-    for await (const line of rl) {
-        if (line.trim()) {
-            count++;
+    const rl    = openBundlePayload(filePath);
+    let   count = 0;
+    try {
+        for await (const line of rl) {
+            if (line.trim()) {
+                count++;
+            }
         }
+    } finally {
+        closeBundlePayload(rl)
     }
     return count;
 }

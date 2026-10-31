@@ -1,7 +1,7 @@
-import {Command}                             from 'commander';
-import {execFile}                            from 'node:child_process';
-import {once}                                from 'node:events';
-import {createReadStream, createWriteStream} from 'node:fs';
+import {Command}           from 'commander';
+import {execFile}          from 'node:child_process';
+import {once}              from 'node:events';
+import {createWriteStream} from 'node:fs';
 import {
     copyFile,
     mkdir,
@@ -14,7 +14,6 @@ import {
 } from 'node:fs/promises';
 import os              from 'node:os';
 import path            from 'node:path';
-import readline        from 'node:readline';
 import {promisify}     from 'node:util';
 import {pathToFileURL} from 'node:url';
 import {
@@ -23,7 +22,8 @@ import {
     TargetSetMeasurementRecorder,
     resolveTargetSetProfile
 } from './helpers/targetSetMeasurementCore.mjs';
-import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
+import {isEntryModule}                         from '../../services/shared/isEntryModule.mjs';
+import {closeBundlePayload, openBundlePayload} from '../../services/shared/bundlePayload.mjs';
 
 const
     execFileAsync            = promisify(execFile),
@@ -346,8 +346,7 @@ export async function samplePidRss(pid) {
  * @returns {Promise<Number>} Valid row count.
  */
 export async function validateVectorFixture({dimension, expectedRows, file}) {
-    const input = createReadStream(file, {encoding: 'utf8'});
-    const lines = readline.createInterface({input, crlfDelay: Infinity});
+    const lines = openBundlePayload(file);
     let   rows  = 0;
 
     try {
@@ -364,8 +363,7 @@ export async function validateVectorFixture({dimension, expectedRows, file}) {
             rows++
         }
     } finally {
-        lines.close();
-        input.destroy()
+        closeBundlePayload(lines)
     }
 
     if (rows !== expectedRows) {
@@ -385,8 +383,7 @@ export async function validateVectorFixture({dimension, expectedRows, file}) {
  * @returns {Promise<{edges: Number, nodes: Number}>}
  */
 export async function validateGraphFixture({expectedEdges, expectedNodes, file}) {
-    const input = createReadStream(file, {encoding: 'utf8'});
-    const lines = readline.createInterface({input, crlfDelay: Infinity});
+    const lines = openBundlePayload(file);
     let   edges = 0, nodes = 0;
 
     try {
@@ -404,8 +401,7 @@ export async function validateGraphFixture({expectedEdges, expectedNodes, file})
             }
         }
     } finally {
-        lines.close();
-        input.destroy()
+        closeBundlePayload(lines)
     }
 
     if (nodes !== expectedNodes || edges !== expectedEdges) {
@@ -431,8 +427,7 @@ export async function copyVectorFixtureInBatches({collection, recorder, source, 
     await mkdir(path.dirname(target), {recursive: true});
 
     const
-        input  = createReadStream(source, {encoding: 'utf8'}),
-        lines  = readline.createInterface({input, crlfDelay: Infinity}),
+        lines  = openBundlePayload(source),
         output = createWriteStream(target, {encoding: 'utf8'});
 
     let batch = [], copied = 0;
@@ -460,8 +455,7 @@ export async function copyVectorFixtureInBatches({collection, recorder, source, 
 
         await flush()
     } finally {
-        lines.close();
-        input.destroy();
+        closeBundlePayload(lines);
         output.end()
     }
 

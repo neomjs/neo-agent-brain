@@ -1,9 +1,10 @@
-import fs       from 'fs-extra';
-import path     from 'path';
-import readline from 'readline';
+import fs   from 'fs-extra';
+import path from 'path';
 // `fs-extra`'s `open` resolves to a numeric descriptor; the positional per-row read needs a real
 // `FileHandle`, so the promises API is imported explicitly rather than assumed to be the same thing.
 import {open as openFileHandle} from 'node:fs/promises';
+
+import {closeBundlePayload, openBundlePayload} from '../../services/shared/bundlePayload.mjs';
 
 /**
  * @module ai/scripts/maintenance/knowledgeBaseArtifact
@@ -265,7 +266,7 @@ export async function resolveSingleArtifactJsonl({artifactDir, fsModule = fs}) {
 }
 
 /**
- * Streams a JSONL file line by line, invoking `onRecord` per parsed record.
+ * @summary Streams whole JSONL records, invoking `onRecord` per parsed record.
  *
  * Whole-file `readFile(path, 'utf8')` is not an option at this scale and never was: the current v1
  * export is ~2.81 GiB, and Node's `buffer.constants.MAX_STRING_LENGTH` is 536,870,888 — 5.62× smaller —
@@ -276,19 +277,20 @@ export async function resolveSingleArtifactJsonl({artifactDir, fsModule = fs}) {
  * @returns {Promise<Number>} Records seen.
  */
 async function streamJsonlRecords({jsonlPath, onRecord}) {
-    const reader = readline.createInterface({
-        input    : fs.createReadStream(jsonlPath),
-        crlfDelay: Infinity
-    });
+    const reader = openBundlePayload(jsonlPath);
 
     let index = 0;
 
-    for await (const line of reader) {
-        if (!line.trim()) {
-            continue
-        }
+    try {
+        for await (const line of reader) {
+            if (!line.trim()) {
+                continue
+            }
 
-        await onRecord(JSON.parse(line), index++);
+            await onRecord(JSON.parse(line), index++);
+        }
+    } finally {
+        closeBundlePayload(reader)
     }
 
     return index

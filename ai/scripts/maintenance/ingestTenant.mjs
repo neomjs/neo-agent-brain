@@ -6,7 +6,6 @@ import AiConfig            from '../../config.mjs';
 import * as core           from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager     from 'neo.mjs/src/manager/Instance.mjs';
 import fs                  from 'fs';
-import readline            from 'readline';
 import KB_Config           from '../../mcp/server/knowledge-base/config.mjs';
 import KB_ChromaManager    from '../../services/knowledge-base/ChromaManager.mjs';
 import KB_IngestionService from '../../services/knowledge-base/IngestionService.mjs';
@@ -15,7 +14,8 @@ import {
     resolveHeavyMaintenanceLeasePath,
     withHeavyMaintenanceLease
 } from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
-import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
+import {isEntryModule}                                                      from '../../services/shared/isEntryModule.mjs';
+import {closeBundlePayload, createBundlePayloadReadStream, openJsonlStream} from '../../services/shared/bundlePayload.mjs';
 
 /**
  * @module ai/scripts/maintenance/ingestTenant
@@ -89,19 +89,23 @@ function printUsage() {
  * @yields {{record: Object, lineNo: Number}|{parseError: String, lineNo: Number}}
  */
 async function* readJsonlRecords(input) {
-    const rl     = readline.createInterface({input, crlfDelay: Infinity});
+    const rl     = openJsonlStream(input);
     let   lineNo = 0;
 
-    for await (const line of rl) {
-        lineNo++;
-        const trimmed = line.trim();
-        if (!trimmed) continue;
+    try {
+        for await (const line of rl) {
+            lineNo++;
+            const trimmed = line.trim();
+            if (!trimmed) continue;
 
-        try {
-            yield {record: JSON.parse(trimmed), lineNo};
-        } catch (error) {
-            yield {parseError: error.message, lineNo};
+            try {
+                yield {record: JSON.parse(trimmed), lineNo};
+            } catch (error) {
+                yield {parseError: error.message, lineNo};
+            }
         }
+    } finally {
+        closeBundlePayload(rl)
     }
 }
 
@@ -201,7 +205,7 @@ async function ingestTenant() {
                 await KB_IngestionService.ready();
                 console.log('✅ KB services ready. Streaming parsed-chunk-v1 records...');
 
-                const input = args.fromStdin ? process.stdin : fs.createReadStream(args.fromFile, 'utf8');
+                const input = args.fromStdin ? process.stdin : createBundlePayloadReadStream(args.fromFile);
 
                 return runIngest({
                     records  : readJsonlRecords(input),
