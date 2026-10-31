@@ -74,8 +74,8 @@ test.describe('deferencePhraseMatch', () => {
 /**
  * @summary The adjacency carves: a cited, negated, confessed or quoted "your call" is not a handback.
  *
- * Every sentence below comes from a live Stop-hook firing recorded on neo-agent-brain#124, named by its
- * author and date (the comment ids are in the ticket); the controls are the fair hits recorded beside them.
+ * Every sentence below comes from a live Stop-hook firing recorded on the hook's false-positive umbrella
+ * ticket, named by its author and date; the controls are the fair hits recorded beside them.
  */
 test.describe('deferencePhraseMatch adjacency carves', () => {
     const silent = [
