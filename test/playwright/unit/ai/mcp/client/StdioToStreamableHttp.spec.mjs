@@ -22,12 +22,18 @@ class FakeTransport {
     closed = 0
     messages = []
     protocolVersion = null
+    sessionId = undefined
     started = 0
+    streams = 0
     terminated = 0
 
     async close() {
         this.closed++;
         this.onclose?.()
+    }
+
+    async resumeStream() {
+        this.streams++
     }
 
     async send(message) {
@@ -401,6 +407,117 @@ test.describe('stdioToStreamableHttp', () => {
         await refused.bridge.close()
     });
 
+    test('a lost notification keeps the session and renews nothing', async () => {
+        let   factories                                  = 0;
+        const {bridge, errors, local, recovered, remote} = await startInitializedBridge({
+            createRemoteTransport: () => { factories++; return new FakeTransport() }
+        });
+
+        remote.sessionId = 'session-1';
+        remote.send      = async message => {
+            if (message.method === 'notifications/cancelled') throw httpError(502, 'Error POSTing to endpoint: Bad Gateway');
+            remote.messages.push(message)
+        };
+        local.onmessage({jsonrpc: '2.0', method: 'notifications/cancelled', params: {requestId: 1}});
+        local.onmessage({jsonrpc: '2.0', id: 2, method: 'tools/list', params: {}});
+        await flush();
+
+        expect(errors).toEqual([]);
+        expect(recovered).toEqual(['Neo MCP bridge kept its session after a transport error. Cause: http-502.']);
+        expect(factories).toBe(0);
+        expect(remote.messages.at(-1)).toMatchObject({id: 2, method: 'tools/list'});
+        expect(local.closed).toBe(0);
+        await bridge.close()
+    });
+
+    test('a dropped stream with a request pending resumes the same session without a handshake', async () => {
+        const
+            sessions                                   = [],
+            replacement                                = new FakeTransport(),
+            {bridge, errors, local, recovered, remote} = await startInitializedBridge({
+                createRemoteTransport: sessionId => { sessions.push(sessionId); return replacement }
+            });
+
+        remote.sessionId = 'session-1';
+        local.onmessage({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'inert-write'}});
+        await flush();
+        remote.onerror(new Error('SSE stream disconnected: body'));
+        local.onmessage({jsonrpc: '2.0', id: 4, method: 'tools/list', params: {}});
+        await flush();
+
+        expect(errors).toEqual([]);
+        expect(recovered).toEqual(['Neo MCP bridge is resuming its remote session. Cause: sse-disconnect.']);
+        expect(local.messages.find(message => message.id === 3)).toMatchObject({error: {data: {outcome: 'unknown'}}});
+        expect(sessions).toEqual(['session-1']);
+        expect(replacement.started).toBe(1);
+        expect(replacement.streams).toBe(1);
+        expect(replacement.protocolVersion).toBe('2025-11-25');
+        expect(replacement.messages.map(message => message.method)).toEqual(['tools/list']);
+        replacement.onmessage({jsonrpc: '2.0', id: 4, result: {tools: []}});
+        await flush();
+        expect(local.messages.at(-1)).toEqual({jsonrpc: '2.0', id: 4, result: {tools: []}});
+        expect(local.closed).toBe(0);
+        await bridge.close()
+    });
+
+    test('a refused resume renews with a fresh handshake', async () => {
+        const
+            sessions                                   = [],
+            resumed                                    = new FakeTransport(),
+            fresh                                      = new FakeTransport(),
+            {bridge, errors, local, recovered, remote} = await startInitializedBridge({
+                createRemoteTransport: sessionId => { sessions.push(sessionId); return sessionId ? resumed : fresh }
+            });
+
+        remote.sessionId  = 'session-1';
+        resumed.sessionId = 'session-1';
+        resumed.send      = async () => { throw httpError(404, 'Error POSTing to endpoint: Session not found') };
+        remote.onerror(new Error('Maximum reconnection attempts (2) exceeded.'));
+        local.onmessage({jsonrpc: '2.0', id: 5, method: 'tools/list', params: {}});
+        await flush();
+        local.onmessage({jsonrpc: '2.0', id: 6, method: 'tools/list', params: {}});
+        await flush();
+
+        expect(errors).toEqual([]);
+        expect(recovered).toEqual([
+            'Neo MCP bridge is resuming its remote session. Cause: sse-reconnect-exhausted.',
+            'Neo MCP bridge is renewing its remote session. Cause: http-404.'
+        ]);
+        expect(local.messages.find(message => message.id === 5)).toMatchObject({error: {data: {outcome: 'unknown'}}});
+        expect(sessions).toEqual(['session-1', undefined]);
+        expect(fresh.messages[0]).toMatchObject({method: 'initialize'});
+        fresh.onmessage({jsonrpc: '2.0', id: fresh.messages[0].id, result: {
+            protocolVersion: '2025-11-25', capabilities: {}, serverInfo: {name: 'fixture', version: '1'}
+        }});
+        await flush();
+        expect(fresh.messages.map(message => message.method)).toEqual(['initialize', 'notifications/initialized', 'tools/list']);
+        expect(local.closed).toBe(0);
+        await bridge.close()
+    });
+
+    test('a resume survives a replacement without resumeStream and one whose stream open rejects', async () => {
+        for (const shape of ['absent', 'rejects']) {
+            const
+                replacement                                = new FakeTransport(),
+                {bridge, errors, local, recovered, remote} = await startInitializedBridge({
+                    createRemoteTransport: () => replacement
+                });
+
+            replacement.resumeStream = shape === 'absent' ? undefined :
+                async () => { throw httpError(502, 'Error GETting endpoint: Bad Gateway') };
+            remote.sessionId = 'session-1';
+            remote.onerror(new Error('Maximum reconnection attempts (2) exceeded.'));
+            local.onmessage({jsonrpc: '2.0', id: 7, method: 'tools/list', params: {}});
+            await flush();
+
+            expect(errors).toEqual([]);
+            expect(recovered).toEqual(['Neo MCP bridge is resuming its remote session. Cause: sse-reconnect-exhausted.']);
+            expect(replacement.messages.map(message => message.method)).toEqual(['tools/list']);
+            expect(local.closed).toBe(0);
+            await bridge.close()
+        }
+    });
+
     test('a request whose delivery fails is answered locally while the session stays open', async () => {
         const {bridge, errors, local, recovered, remote} = await startInitializedBridge();
 
@@ -627,6 +744,78 @@ test.describe('stdioToStreamableHttp', () => {
         }
     });
 
+
+    test('with the real SDK client, a lost notification keeps the session id and costs no handshake', async () => {
+        const
+            requests = [],
+            server   = createServer(async (request, response) => {
+                if (request.method !== 'POST') {
+                    response.writeHead(405).end();
+                    return
+                }
+
+                let body = '';
+
+                for await (const chunk of request) body += chunk;
+
+                const message = JSON.parse(body);
+
+                requests.push({method: message.method, session: request.headers['mcp-session-id']});
+
+                if (message.method === 'initialize') {
+                    response.writeHead(200, {'content-type': 'application/json', 'mcp-session-id': 'session-1'}).end(JSON.stringify({
+                        jsonrpc: '2.0', id: message.id,
+                        result : {protocolVersion: '2025-06-18', capabilities: {}, serverInfo: {name: 'fixture', version: '1.0.0'}}
+                    }))
+                } else if (message.method === 'notifications/cancelled') {
+                    response.writeHead(502).end('Bad Gateway')
+                } else if (!Object.hasOwn(message, 'id')) {
+                    response.writeHead(202).end()
+                } else {
+                    response.writeHead(200, {'content-type': 'application/json'}).end(JSON.stringify({jsonrpc: '2.0', id: message.id, result: {tools: []}}))
+                }
+            });
+
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+
+        const
+            errors    = [],
+            recovered = [],
+            local     = new FakeTransport(),
+            endpoint  = new URL(`http://127.0.0.1:${server.address().port}/mcp`),
+            remote    = new StreamableHTTPClientTransport(endpoint),
+            answer    = id => local.messages.find(message => message.id === id);
+
+        try {
+            await bridgeTransports({
+                localTransport       : local,
+                remoteTransport      : remote,
+                createRemoteTransport: sessionId => new StreamableHTTPClientTransport(endpoint, {sessionId}),
+                onError              : error => errors.push(error.message),
+                onRecovered          : error => recovered.push(error.message)
+            });
+
+            local.onmessage({jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+                protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'fixture', version: '1.0.0'}
+            }});
+            await expect.poll(() => answer(1)).toBeTruthy();
+            local.onmessage({jsonrpc: '2.0', method: 'notifications/initialized'});
+            local.onmessage({jsonrpc: '2.0', method: 'notifications/cancelled', params: {requestId: 1}});
+            await expect.poll(() => recovered.length).toBe(1);
+            local.onmessage({jsonrpc: '2.0', id: 2, method: 'tools/list', params: {}});
+            await expect.poll(() => answer(2)).toBeTruthy();
+
+            expect(errors).toEqual([]);
+            expect(recovered).toEqual(['Neo MCP bridge kept its session after a transport error. Cause: http-502.']);
+            expect(answer(2).result).toEqual({tools: []});
+            expect(requests.filter(({method}) => method === 'initialize')).toHaveLength(1);
+            expect(requests.at(-1)).toEqual({method: 'tools/list', session: 'session-1'});
+            expect(local.closed).toBe(0)
+        } finally {
+            await remote.close().catch(() => {});
+            await new Promise(resolve => server.close(resolve))
+        }
+    });
 
     test('concurrent future calls share a hidden handshake and ignore every retired callback', async () => {
         const replacement                     = new FakeTransport();
@@ -950,13 +1139,15 @@ test.describe('stdioToStreamableHttp', () => {
         }
     })
 
-    test('the executable recovers after committed-write SSE loss and a 404 without replay or stdio EOF', async () => {
+    test('the executable resumes after committed-write SSE loss and renews after a 404, without replay or stdio EOF', async () => {
         let writes = 0, sessionNumber = 0;
         const
             token    = 'inert-loopback-fixture-token',
             requests = [],
+            streams  = [],
             server   = createServer(async (request, response) => {
                 if (request.method === 'GET') {
+                    streams.push(request.headers['mcp-session-id']);
                     response.writeHead(405);
                     response.end();
                     return
@@ -1078,13 +1269,20 @@ test.describe('stdioToStreamableHttp', () => {
             child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 7, method: 'tools/list', params: {}})}\n`);
             expect(await readBridgeMessage(lines, child)).toMatchObject({id: 7, result: {tools: [{name: 'fixture_tool'}]}});
             expect(writes).toBe(1);
-            expect(requests.filter(({method}) => method === 'initialize')).toHaveLength(3);
+            // The lost write retired the first generation while the server still held inert-session-1, so the
+            // next request resumed it with no handshake; only the 404 on id 6 renewed with a fresh initialize.
+            expect(requests.filter(({method}) => method === 'initialize')).toHaveLength(2);
             expect(requests.filter(({method}) => method === 'initialize').every(({session}) => session === undefined)).toBe(true);
+            expect(requests.find(({id}) => id === 5).session).toBe('inert-session-1');
+            // One standalone GET per generation: the first after its initialized notification, the resumed
+            // one on purpose under the same session, the fresh one after the 404.
+            await expect.poll(() => streams.length).toBe(3);
+            expect([...streams].sort()).toEqual(['inert-session-1', 'inert-session-1', 'inert-session-2']);
             expect(requests.filter(({method}) => method === 'notifications/initialized').map(({session}) => session)).toEqual([
-                'inert-session-1', 'inert-session-2', 'inert-session-3'
+                'inert-session-1', 'inert-session-2'
             ]);
-            expect(stderr).toContain('Cause: sse-disconnect.');
-            expect(stderr).toContain('Cause: http-404.');
+            expect(stderr).toContain('is resuming its remote session. Cause: sse-disconnect.');
+            expect(stderr).toContain('is renewing its remote session. Cause: http-404.');
             expect(stderr).not.toContain(token);
 
             child.stdin.end();
