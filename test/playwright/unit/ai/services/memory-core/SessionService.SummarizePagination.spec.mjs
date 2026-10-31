@@ -297,4 +297,122 @@ test.describe('SessionService.summarizeSession — memory-fetch pagination (clos
             aiConfig.summarizationBatchLimit = origLimit;
         }
     });
+
+    test('#1395: summarizeSession links DISCUSSED_IN only for qualified neo issues or bare #N in a single-repo neo session', async () => {
+        const svc                               = SDK.Memory_SessionService,
+              graphSvc                          = SDK.Memory_GraphService,
+              {extractSessionDiscussedIssueIds} = await import('../../../../../../ai/services/memory-core/SessionService.mjs'),
+              origMemGet                        = svc.memoryCollection.get,
+              origModel                         = svc.model,
+              origSess                          = svc.sessionsCollection,
+              origLink                          = graphSvc.linkNodes;
+
+        // 1. Direct contract checks across all repository-qualification cases:
+        //    a) Foreign qualified forms (owner/repo, short alias, URL) never link issue-N, even with bare issue tokens in the same session.
+        expect(extractSessionDiscussedIssueIds(
+            'Reviewed neomjs/neo-stage#552 and Stage #560; follow-up on #552.',
+            'Opened https://github.com/neomjs/neo-stage/issues/552 in /Users/dev/neomjs/neo-stage.'
+        )).toEqual([]);
+
+        //    b) Bare issue references without repository context create no edge.
+        expect(extractSessionDiscussedIssueIds(
+            'Investigated #552 and issue-553 during the review turn.',
+            'No repository path or owner/repo qualifier in this turn.'
+        )).toEqual([]);
+
+        //    c) Bare issue references in a multi-repository session (neo + neo-stage) stay unlinked; only qualified neo references link.
+        expect(extractSessionDiscussedIssueIds(
+            'Coordinated neomjs/neo#20150 with neomjs/neo-stage#552 and checked #552.',
+            'Cross-repo turn.'
+        )).toEqual(['issue-20150']);
+
+        //    d) Qualified neomjs/neo references (and URL form) link issue-N; bare references in a single-repo neo session also link,
+        //       while foreign "Stage PR #N" / "Brain PR #N" / "stage #N" phrasings stay unlinked and mark the session multi-repo.
+        expect(extractSessionDiscussedIssueIds(
+            'Resolved neomjs/neo#552 and verified #553.',
+            'Working in /Users/dev/neomjs/neo on https://github.com/neomjs/neo/issues/554.'
+        )).toEqual(['issue-552', 'issue-554', 'issue-553']);
+
+        expect(extractSessionDiscussedIssueIds(
+            'Approved Stage PR #552 and Brain PR #1393; also reviewed stage #560.',
+            'Working in /Users/dev/neomjs/neo on neomjs/neo#20150.'
+        )).toEqual(['issue-20150']);
+
+        //    e) Linear-time guard on large alphanumeric runs (mirrors SessionSummaryDegradedFallback's 1.5M-char fixture).
+        const startMs     = Date.now(),
+              largeResult = extractSessionDiscussedIssueIds('x'.repeat(1_500_000));
+        expect(largeResult).toEqual([]);
+        expect(Date.now() - startMs).toBeLessThan(1000);
+
+        // 2. Closed-loop summarizeSession integration check on GraphService.linkNodes:
+        const discussedEdges = [];
+        let   currentTurnDoc = '',
+              currentSummary = '';
+
+        svc.memoryCollection.get = async ({offset = 0} = {}) => {
+            if (offset > 0) return {ids: [], documents: [], metadatas: []};
+            return {
+                ids      : ['m-1395'],
+                documents: [currentTurnDoc],
+                metadatas: [{sessionId: 'sess-1395', timestamp: 1000}]
+            };
+        };
+
+        svc.model = {
+            generateContent: async () => ({
+                response: {
+                    text: () => JSON.stringify({
+                        summary     : currentSummary,
+                        title       : 'Repo-qualified issue scent test',
+                        category    : 'bugfix',
+                        quality     : 90,
+                        productivity: 90,
+                        impact      : 80,
+                        complexity  : 40,
+                        technologies: ['neo.mjs']
+                    })
+                }
+            })
+        };
+
+        svc.sessionsCollection = {upsert: async () => {}, get: async () => ({ids: [], metadatas: []})};
+
+        graphSvc.linkNodes = (sourceId, targetId, type, weight, properties) => {
+            if (type === 'DISCUSSED_IN') {
+                discussedEdges.push({sourceId, targetId, type, weight});
+            }
+            return origLink.call(graphSvc, sourceId, targetId, type, weight, properties);
+        };
+
+        try {
+            // Case A: Stage session mentioning foreign qualified and bare references -> zero DISCUSSED_IN edges
+            discussedEdges.length = 0;
+            currentTurnDoc = 'Reviewed https://github.com/neomjs/neo-stage/issues/552 and Stage #552; fixed #552.';
+            currentSummary = 'Completed neomjs/neo-stage#552 review and verified #552.';
+            await svc.summarizeSession('stage-session-1395');
+            expect(discussedEdges).toEqual([]);
+
+            // Case B: Unqualified session mentioning bare references with no repo context -> zero DISCUSSED_IN edges
+            discussedEdges.length = 0;
+            currentTurnDoc = 'Checked #552 and issue-552 status.';
+            currentSummary = 'Checked #552.';
+            await svc.summarizeSession('unqualified-session-1395');
+            expect(discussedEdges).toEqual([]);
+
+            // Case C: Single-repo neomjs/neo session with qualified and bare references -> links both
+            discussedEdges.length = 0;
+            currentTurnDoc = 'Working in /Users/dev/neomjs/neo on neomjs/neo#552 and follow-up #553.';
+            currentSummary = 'Resolved neomjs/neo#552 and #553.';
+            await svc.summarizeSession('neo-session-1395');
+            expect(discussedEdges).toEqual([
+                {sourceId: 'summary_neo-session-1395', targetId: 'issue-552', type: 'DISCUSSED_IN', weight: 0.8},
+                {sourceId: 'summary_neo-session-1395', targetId: 'issue-553', type: 'DISCUSSED_IN', weight: 0.8}
+            ]);
+        } finally {
+            svc.memoryCollection.get = origMemGet;
+            svc.model                = origModel;
+            svc.sessionsCollection   = origSess;
+            graphSvc.linkNodes       = origLink;
+        }
+    });
 });
