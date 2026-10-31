@@ -87,6 +87,18 @@ export const FOCUS_V1_PROJECTION_ABSENT_REASON =
 export const FOCUS_V1_MAX_BYTES = 2000;
 
 /**
+ * Schema identifier for the business repository's `strategy/traction/outbound-ledger.json` file.
+ * @type {String}
+ */
+export const OUTBOUND_LEDGER_SCHEMA = 'outbound-ledger.v1';
+
+/**
+ * Maximum outbound ledger rows rendered in `### reach and outbound` (`blog`, `video`, `shorts`, `social`).
+ * @type {Number}
+ */
+export const FOCUS_V1_OUTBOUND_MAX_ROWS = 4;
+
+/**
  * Stable dock-item view keys for Fleet Manager v1.
  * @type {ReadonlyArray<String>}
  */
@@ -221,9 +233,58 @@ function sanitizeReaderReason(error) {
         .slice(0, 160);
 }
 
+const KNOWN_ROW_STATE_PHRASES = Object.freeze([
+    'passed with gaps',
+    'passed',
+    'ready',
+    'failed',
+    'unknown',
+    'partial',
+    'blocked',
+    'in-progress',
+    'pending'
+]);
+
+/**
+ * @summary Extracts the steward state token from a `Row state:` body after `plan:` truncation,
+ * supporting both leading-state lines (`Row state: ready — ...`) and `·`-delimited multi-segment
+ * epic lines (`Row state: row 1 · card half: ... · ready · 2026-10-09...`).
+ * @param {String} withoutPlan Truncated `Row state:` text after `Row state:`.
+ * @returns {String} Lowercased steward state word/phrase (e.g. `'passed'`, `'passed with gaps'`, `'ready'`, `'failed'`, `'unknown'`).
+ */
+function extractRowStateWord(withoutPlan) {
+    const segments = withoutPlan.split(/\s*·\s*/);
+
+    for (const rawSeg of segments) {
+        const cleaned = rawSeg
+            .replace(/^[`*\s]+|[`*\s]+$/g, '')
+            .split(/\s+(?:—|--)\s+/)[0]
+            .trim()
+            .toLowerCase();
+
+        if (!cleaned) continue;
+
+        for (const phrase of KNOWN_ROW_STATE_PHRASES) {
+            if (cleaned === phrase || new RegExp(`^${phrase}(?:[,:;]|\\s|$)`, 'i').test(cleaned)) {
+                return phrase;
+            }
+        }
+    }
+
+    const firstSeg = segments[0]?.replace(/^[`*\s]+|[`*\s]+$/g, '').trim() || '';
+    if (!/^row\s+\d+\b/i.test(firstSeg)) {
+        const wordMatch = /^`?([a-zA-Z0-9_-]+)`?/.exec(firstSeg);
+        if (wordMatch) {
+            return wordMatch[1].toLowerCase();
+        }
+    }
+
+    return 'unknown';
+}
+
 /**
  * @summary Parses a single `Row state:` line (or full Epic issue Markdown body) into its verbatim
- * truncated line and raw steward state word, never promoting `ready` to `passed`.
+ * truncated line and raw steward state word, never promoting `ready` or `passed with gaps` to `passed`.
  *
  * Truncates any trailing `plan:` clause (`· plan: ...` or `plan: ...`) per `/overview` §3 while
  * preserving the steward's exact words and state token.
@@ -250,8 +311,7 @@ export function parseRowStateLine(text) {
         return {found: false, rawLine: null, stateWord: 'unknown'};
     }
 
-    const wordMatch = /^`?([a-zA-Z0-9_-]+)`?/.exec(withoutPlan);
-    const stateWord = wordMatch ? wordMatch[1].toLowerCase() : 'unknown';
+    const stateWord = extractRowStateWord(withoutPlan);
 
     return {
         found  : true,
@@ -555,6 +615,9 @@ export function projectPublicBusinessRows(rows = [], {allowlist} = {}) {
         if (typeof props.sourceUrl === 'string' && props.sourceUrl.trim()) {
             cleanRow.sourceUrl = props.sourceUrl.trim();
         }
+        if (typeof props.channel === 'string' && props.channel.trim() && props.channel.trim() !== category) {
+            cleanRow.channel = props.channel.trim();
+        }
 
         for (const forbidden of FORBIDDEN_PRIVATE_FIELDS) {
             delete cleanRow[forbidden];
@@ -564,6 +627,74 @@ export function projectPublicBusinessRows(rows = [], {allowlist} = {}) {
     }
 
     return projected;
+}
+
+/**
+ * @summary Pure scalar-path reader for the business repository's `strategy/traction/outbound-ledger.json`
+ * (`outbound-ledger.v1` schema).
+ *
+ * Follows the `businessFocusSourcePath` optional-file contract:
+ * - Empty path (`''`) or missing file (`ENOENT`) is ordinary (`{status: 'absent', rows: [], updatedAt: null, reason: null}`)
+ *   and logs no error, keeping the default `PRIVATE_LEDGER_ABSENT_REASON` fallback.
+ * - Unreadable JSON or a schema mismatch (`schema !== 'outbound-ledger.v1'` or non-array `rows`)
+ *   returns `{status: 'unknown', rows: [], updatedAt: null, reason}` so the handoff reports why
+ *   the configured source was rejected.
+ *
+ * @param {String} [sourcePath=''] Resolved `outboundLedgerSourcePath` leaf value.
+ * @returns {{status: ('absent'|'ok'|'unknown'), rows: Object[], updatedAt: (String|null), reason: (String|null)}}
+ */
+export function readOutboundLedgerFile(sourcePath = '') {
+    if (typeof sourcePath !== 'string' || !sourcePath.trim()) {
+        return {status: 'absent', rows: [], updatedAt: null, reason: null};
+    }
+
+    let rawText;
+    try {
+        rawText = fs.readFileSync(sourcePath, 'utf8');
+    } catch (error) {
+        if (error?.code === 'ENOENT') {
+            return {status: 'absent', rows: [], updatedAt: null, reason: null};
+        }
+        return {
+            status   : 'unknown',
+            rows     : [],
+            updatedAt: null,
+            reason   : sanitizeReaderReason(error)
+        };
+    }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(rawText);
+    } catch (error) {
+        return {
+            status   : 'unknown',
+            rows     : [],
+            updatedAt: null,
+            reason   : `invalid outbound ledger JSON (${sanitizeReaderReason(error)})`
+        };
+    }
+
+    const declaredSchema = parsed && typeof parsed === 'object'
+        ? (parsed.schema ?? parsed.schemaVersion)
+        : null;
+
+    if (!parsed || typeof parsed !== 'object' || declaredSchema !== OUTBOUND_LEDGER_SCHEMA || !Array.isArray(parsed.rows)) {
+        const foundSchema = declaredSchema ? String(declaredSchema) : 'missing';
+        return {
+            status   : 'unknown',
+            rows     : [],
+            updatedAt: null,
+            reason   : `unsupported outbound ledger schema: ${foundSchema}`
+        };
+    }
+
+    return {
+        status   : 'ok',
+        rows     : parsed.rows,
+        updatedAt: typeof parsed.updatedAt === 'string' && parsed.updatedAt.trim() ? parsed.updatedAt.trim() : null,
+        reason   : null
+    };
 }
 
 /**
@@ -1034,6 +1165,7 @@ export function createDefaultFocusV1HostEdgeReaders({
  * @param {Function} [readers.readReachTraffic] Async reader returning `{traffic?, stars?, forks?, asOf?, candidate?, sourceUrl?, falsifyingQuery?}`.
  * @param {Function} [readers.readOperatorWord] Async reader returning `{candidates, asOf?, candidate?, sourceUrl?, falsifyingQuery?}`.
  * @param {Function} [readers.readPrivateLedger] Async reader returning raw ledger rows to be filtered by `projectPublicBusinessRows`.
+ * @param {String}   [readers.outboundLedgerPath=''] Optional path to `strategy/traction/outbound-ledger.json` (`outbound-ledger.v1`), used when `readPrivateLedger` is omitted.
  * @param {Boolean}  [readers.useDefaultHostReaders=false] When `true`, fills omitted GitHub block readers with `createDefaultFocusV1HostEdgeReaders`.
  * @param {Function} [readers.execGh] Optional `gh` CLI runner forwarded to `createDefaultFocusV1HostEdgeReaders`.
  * @param {Function} [readers.evaluateMergeReadiness] Optional merge-readiness evaluator forwarded to `createDefaultFocusV1HostEdgeReaders`.
@@ -1046,6 +1178,7 @@ export function createFocusV1HostEdgeReader({
     readReachTraffic,
     readOperatorWord,
     readPrivateLedger,
+    outboundLedgerPath = '',
     useDefaultHostReaders = false,
     execGh,
     evaluateMergeReadiness,
@@ -1059,6 +1192,20 @@ export function createFocusV1HostEdgeReader({
     const resolvedReadViewsReceipts = readViewsReceipts ?? defaultReaders?.readViewsReceipts;
     const resolvedReadReachTraffic  = readReachTraffic  ?? defaultReaders?.readReachTraffic;
     const resolvedReadOperatorWord  = readOperatorWord  ?? defaultReaders?.readOperatorWord;
+    const resolvedReadPrivateLedger = typeof readPrivateLedger === 'function'
+        ? readPrivateLedger
+        : (typeof outboundLedgerPath === 'string' && outboundLedgerPath.trim()
+            ? async () => {
+                const fileLedger = readOutboundLedgerFile(outboundLedgerPath);
+                if (fileLedger.status === 'unknown') {
+                    return {status: 'unknown', rows: [], reason: fileLedger.reason};
+                }
+                if (fileLedger.status === 'absent') {
+                    return {status: 'unknown', rows: [], reason: PRIVATE_LEDGER_ABSENT_REASON};
+                }
+                return {status: 'ok', rows: fileLedger.rows, updatedAt: fileLedger.updatedAt};
+            }
+            : null);
 
     const runBlockReader = async (fn, fallbackReason) => {
         if (typeof fn !== 'function') {
@@ -1094,11 +1241,14 @@ export function createFocusV1HostEdgeReader({
             runBlockReader(resolvedReadViewsReceipts, absentReason),
             runBlockReader(resolvedReadReachTraffic, absentReason),
             runBlockReader(resolvedReadOperatorWord, absentReason),
-            runBlockReader(readPrivateLedger, PRIVATE_LEDGER_ABSENT_REASON)
+            runBlockReader(resolvedReadPrivateLedger, PRIVATE_LEDGER_ABSENT_REASON)
         ]);
 
-        const rawLedgerRows = Array.isArray(ledger.rows) ? ledger.rows : [];
-        const publicRows    = projectPublicBusinessRows(rawLedgerRows, {allowlist});
+        const rawLedgerRows  = Array.isArray(ledger.rows) ? ledger.rows : [];
+        const publicRows     = projectPublicBusinessRows(rawLedgerRows, {allowlist});
+        const outboundReason = ledger.status === 'unknown' && ledger.reason && ledger.reason !== PRIVATE_LEDGER_ABSENT_REASON
+            ? sanitizeReaderReason(ledger.reason)
+            : null;
 
         return {
             capturedAt: asOf,
@@ -1116,6 +1266,7 @@ export function createFocusV1HostEdgeReader({
                 traffic        : reachTraffic.status === 'ok' ? reachTraffic.traffic ?? null : null,
                 stars          : reachTraffic.status === 'ok' ? reachTraffic.stars ?? null : null,
                 forks          : reachTraffic.status === 'ok' ? reachTraffic.forks ?? null : null,
+                ...(outboundReason ? {outboundReason} : {}),
                 publicRows
             },
             operatorWord
@@ -1242,22 +1393,45 @@ function normalizeProjectedBlock(block, fallbackReason) {
  *
  * @param {Object} [options={}]
  * @param {String} [options.projectionPath] Path to the admitted `focus-v1-projection.v1` JSON file.
+ * @param {String} [options.outboundLedgerPath=''] Optional path to `strategy/traction/outbound-ledger.json` (`outbound-ledger.v1`).
  * @param {String} [options.absentReason=FOCUS_V1_PROJECTION_ABSENT_REASON] Reason recorded when the projection file is absent.
  * @returns {{readFocusV1Inputs: Function}}
  */
 export function createFocusV1ProjectionReader({
     projectionPath,
+    outboundLedgerPath = '',
     absentReason = FOCUS_V1_READER_ABSENT_REASON
 } = {}) {
-    const buildUnavailableInputs = (asOf, reason) => {
-        const cleanReason = sanitizeReaderReason(reason || absentReason);
+    const resolveFallbackOutboundLedger = allowlist => {
+        if (typeof outboundLedgerPath !== 'string' || !outboundLedgerPath.trim()) {
+            return {publicRows: [], outboundReason: null};
+        }
+        const fileLedger = readOutboundLedgerFile(outboundLedgerPath);
+        if (fileLedger.status === 'ok') {
+            return {
+                publicRows    : projectPublicBusinessRows(fileLedger.rows, {allowlist}),
+                outboundReason: null
+            };
+        }
+        if (fileLedger.status === 'unknown' && fileLedger.reason) {
+            return {
+                publicRows    : [],
+                outboundReason: sanitizeReaderReason(fileLedger.reason)
+            };
+        }
+        return {publicRows: [], outboundReason: null};
+    };
+
+    const buildUnavailableInputs = (asOf, reason, allowlist) => {
+        const cleanReason                      = sanitizeReaderReason(reason || absentReason);
+        const {publicRows, outboundReason}     = resolveFallbackOutboundLedger(allowlist);
         return {
             capturedAt: asOf,
             v1        : {status: 'unknown', unavailable: true, reason: cleanReason},
             views     : {status: 'unknown', unavailable: true, reason: cleanReason},
             reach     : {
-                status         : 'unknown',
-                unavailable    : true,
+                status         : publicRows.length > 0 ? 'ok' : 'unknown',
+                unavailable    : publicRows.length === 0,
                 reason         : cleanReason,
                 asOf,
                 candidate      : 'host-edge',
@@ -1266,7 +1440,8 @@ export function createFocusV1ProjectionReader({
                 traffic        : null,
                 stars          : null,
                 forks          : null,
-                publicRows     : []
+                ...(outboundReason ? {outboundReason} : {}),
+                publicRows
             },
             operatorWord: {status: 'unknown', unavailable: true, reason: cleanReason}
         };
@@ -1276,7 +1451,7 @@ export function createFocusV1ProjectionReader({
         const fallbackAsOf = formatGoldenPathCapturedAt(now);
 
         if (typeof projectionPath !== 'string' || !projectionPath.trim()) {
-            return buildUnavailableInputs(fallbackAsOf, absentReason);
+            return buildUnavailableInputs(fallbackAsOf, absentReason, allowlist);
         }
 
         let rawText;
@@ -1284,9 +1459,9 @@ export function createFocusV1ProjectionReader({
             rawText = fs.readFileSync(projectionPath, 'utf8');
         } catch (error) {
             if (error?.code === 'ENOENT') {
-                return buildUnavailableInputs(fallbackAsOf, absentReason);
+                return buildUnavailableInputs(fallbackAsOf, absentReason, allowlist);
             }
-            return buildUnavailableInputs(fallbackAsOf, sanitizeReaderReason(error));
+            return buildUnavailableInputs(fallbackAsOf, sanitizeReaderReason(error), allowlist);
         }
 
         let parsed;
@@ -1295,7 +1470,8 @@ export function createFocusV1ProjectionReader({
         } catch (error) {
             return buildUnavailableInputs(
                 fallbackAsOf,
-                `invalid Focus (v1) projection JSON (${sanitizeReaderReason(error)})`
+                `invalid Focus (v1) projection JSON (${sanitizeReaderReason(error)})`,
+                allowlist
             );
         }
 
@@ -1305,25 +1481,41 @@ export function createFocusV1ProjectionReader({
                 : 'missing';
             return buildUnavailableInputs(
                 fallbackAsOf,
-                `unsupported Focus (v1) projection schema: ${foundSchema}`
+                `unsupported Focus (v1) projection schema: ${foundSchema}`,
+                allowlist
             );
         }
 
-        const capturedAt   = typeof parsed.capturedAt === 'string' && parsed.capturedAt.trim()
+        const capturedAt      = typeof parsed.capturedAt === 'string' && parsed.capturedAt.trim()
             ? formatGoldenPathCapturedAt(parsed.capturedAt)
             : fallbackAsOf;
-        const v1           = normalizeProjectedBlock(parsed.v1, absentReason);
-        const views        = normalizeProjectedBlock(parsed.views, absentReason);
-        const operatorWord = normalizeProjectedBlock(parsed.operatorWord, absentReason);
-        const rawReach     = parsed.reach && typeof parsed.reach === 'object' ? parsed.reach : {};
-        const publicRows   = projectPublicBusinessRows(
+        const v1              = normalizeProjectedBlock(parsed.v1, absentReason);
+        const views           = normalizeProjectedBlock(parsed.views, absentReason);
+        const operatorWord    = normalizeProjectedBlock(parsed.operatorWord, absentReason);
+        const rawReach        = parsed.reach && typeof parsed.reach === 'object' ? parsed.reach : {};
+        const effectiveAllow  = allowlist ?? rawReach.allowlist;
+        let   publicRows      = projectPublicBusinessRows(
             Array.isArray(rawReach.publicRows)
                 ? rawReach.publicRows
                 : Array.isArray(rawReach.ledgerRows)
                     ? rawReach.ledgerRows
                     : [],
-            {allowlist: allowlist ?? rawReach.allowlist}
+            {allowlist: effectiveAllow}
         );
+        let   outboundReason  = rawReach.outboundReason
+            ? sanitizeReaderReason(rawReach.outboundReason)
+            : null;
+
+        if (publicRows.length === 0) {
+            const fallbackLedger = resolveFallbackOutboundLedger(effectiveAllow);
+            if (fallbackLedger.publicRows.length > 0) {
+                publicRows = fallbackLedger.publicRows;
+            }
+            if (!outboundReason && fallbackLedger.outboundReason) {
+                outboundReason = fallbackLedger.outboundReason;
+            }
+        }
+
         const hasTraffic   = rawReach.status !== 'unknown' && (
             rawReach.traffic != null || rawReach.stars != null || rawReach.forks != null
         );
@@ -1343,7 +1535,7 @@ export function createFocusV1ProjectionReader({
                 traffic        : hasTraffic ? rawReach.traffic ?? null : null,
                 stars          : hasTraffic ? rawReach.stars ?? null : null,
                 forks          : hasTraffic ? rawReach.forks ?? null : null,
-                ...(rawReach.outboundReason ? {outboundReason: sanitizeReaderReason(rawReach.outboundReason)} : {}),
+                ...(outboundReason ? {outboundReason} : {}),
                 publicRows
             },
             operatorWord
@@ -1351,6 +1543,79 @@ export function createFocusV1ProjectionReader({
     };
 
     return {readFocusV1Inputs};
+}
+
+/**
+ * @summary Truncates a string to `maxChars` characters, appending `'…'` when shortened.
+ * @param {String} text Input string.
+ * @param {Number} maxChars Maximum character count.
+ * @returns {String}
+ */
+function truncateText(text, maxChars) {
+    const str = String(text ?? '').trim();
+    if (!Number.isFinite(maxChars) || str.length <= maxChars) {
+        return str;
+    }
+    if (maxChars <= 1) {
+        return '…';
+    }
+    return `${str.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+/**
+ * @summary Compacts a verbose `Row state:` line to fit within `maxChars` while preserving the
+ * steward's exact `stateWord` segment so a compacted line never hides whether a row is `ready`,
+ * `passed with gaps`, `failed`, `unknown`, or `passed`.
+ * @param {String} rawLine Verbatim `Row state: ...` line.
+ * @param {String} stateWord Extracted steward state word/phrase.
+ * @param {Number} maxChars Maximum character budget for `rawLine`.
+ * @returns {String}
+ */
+function compactRowStateLine(rawLine, stateWord, maxChars) {
+    const str = String(rawLine ?? '').trim();
+    if (!Number.isFinite(maxChars) || str.length <= maxChars) {
+        return str;
+    }
+
+    if (!/^Row state:\s*/i.test(str)) {
+        return truncateText(str, maxChars);
+    }
+
+    const body     = str.replace(/^Row state:\s*/i, '').trim();
+    const segments = body.split(/\s*·\s*/);
+    const stateIdx = segments.findIndex(seg => {
+        const cleaned = seg
+            .replace(/^[`*\s]+|[`*\s]+$/g, '')
+            .split(/\s+(?:—|--)\s+/)[0]
+            .trim()
+            .toLowerCase();
+        return cleaned === stateWord || new RegExp(`^${stateWord}(?:[,:;]|\\s|$)`, 'i').test(cleaned);
+    });
+
+    if (stateIdx > 0) {
+        const stateSeg      = segments[stateIdx].trim();
+        const afterText     = segments.slice(stateIdx + 1).join(' · ').trim();
+        const beforeParts   = segments.slice(0, stateIdx);
+        // Drop redundant leading `row N` segment during compaction since `- row N (#epic):` already precedes `Row state:`
+        const stewardParts  = beforeParts.length > 1 && /^row\s+\d+$/i.test(beforeParts[0].trim())
+            ? beforeParts.slice(1)
+            : beforeParts;
+        const stewardRaw    = stewardParts.join(' · ').trim();
+        const stewardBudget = Math.max(0, Math.floor((maxChars - 14 - stateSeg.length) * 0.45));
+        const stewardShort  = stewardBudget >= 6 ? truncateText(stewardRaw, stewardBudget) : '';
+        const prefix        = stewardShort
+            ? `Row state: ${stewardShort} · ${stateSeg}`
+            : `Row state: ${stateSeg}`;
+
+        if (!afterText || prefix.length + 3 >= maxChars) {
+            return prefix.length <= maxChars ? prefix : truncateText(`Row state: ${stateSeg}`, maxChars);
+        }
+
+        const remaining = maxChars - prefix.length - 3;
+        return `${prefix} · ${truncateText(afterText, remaining)}`;
+    }
+
+    return truncateText(str, maxChars);
 }
 
 /**
@@ -1414,55 +1679,71 @@ export function renderFocusV1Section({
             : `views: swept 0 · needing love unknown · unassessed: ${FOCUS_V1_VIEW_KEYS.join(', ')} (${viewsReason})`;
 
     // --- 4. Render Block 1: ### v1 ---
-    const v1Lines = [
-        `### v1`,
-        `as of ${v1AsOf} · candidate: ${v1Candidate} · source: ${v1Source}`
-    ];
+    const buildV1Lines = (rowCharCap = Infinity, includeModules = true) => {
+        const lines = [
+            `### v1`,
+            `as of ${v1AsOf} · candidate: ${v1Candidate} · source: ${v1Source}`
+        ];
 
-    if (v1Summary) {
-        for (const row of v1Summary.normalizedRows) {
-            const epicPart = row.epic ? ` (${row.epic})` : '';
-            v1Lines.push(`- row ${row.row}${epicPart}: ${row.rawLine}`);
-        }
-        if (Array.isArray(v1.moduleLines) && v1.moduleLines.length > 0) {
-            for (const modLine of v1.moduleLines.slice(0, 3)) {
-                v1Lines.push(`- module: ${String(modLine).trim()}`);
+        if (v1Summary) {
+            for (const row of v1Summary.normalizedRows) {
+                const epicPart = row.epic ? ` (${row.epic})` : '';
+                const lineText = compactRowStateLine(row.rawLine, row.stateWord, rowCharCap);
+                lines.push(`- row ${row.row}${epicPart}: ${lineText}`);
             }
-        }
-    } else {
-        v1Lines.push(`- status: unknown (${v1Reason})`);
-    }
-
-    // --- 5. Render Block 2: ### views ---
-    const viewsLines = [
-        `### views`,
-        `as of ${viewsAsOf} · candidate: ${viewsCandidate} · source: ${viewsSource}`
-    ];
-
-    if (viewsEval) {
-        if (views.receipts.length === 0) {
-            viewsLines.push(`- views: none yet (no receipt on #505) · unassessed: ${viewsEval.unassessed.join(', ')}`);
-        } else {
-            let renderedNeedsLoveCount = 0;
-            for (const [key, entry] of Object.entries(viewsEval.byKey)) {
-                if (!entry.governing || entry.status !== 'needs-love') continue;
-                renderedNeedsLoveCount++;
-                const gov        = entry.governing;
-                const seatPart   = gov.seat ? ` · ${gov.seat}` : '';
-                const leavesPart = gov.openDesignLeaves.length > 0 ? ` · leaves: ${gov.openDesignLeaves.join(',')}` : '';
-                viewsLines.push(`- \`${key}\`: needs love: ${gov.needsLove} (${gov.buildLabel} · ${gov.profile} · ${gov.observedAt}${seatPart}${leavesPart})`);
-                if (entry.newerSourceLine) {
-                    const src = entry.newerSourceLine;
-                    viewsLines.push(`  - ↳ source ${src.observedAt} · needs love: ${src.needsLove} (does not resolve installed line)`);
+            if (includeModules && Array.isArray(v1.moduleLines) && v1.moduleLines.length > 0) {
+                for (const modLine of v1.moduleLines.slice(0, 3)) {
+                    lines.push(`- module: ${truncateText(String(modLine).trim(), rowCharCap)}`);
                 }
             }
-            if (renderedNeedsLoveCount === 0) {
-                viewsLines.push(`- needing love: none observed (${viewsEval.swept} swept)`);
-            }
+        } else {
+            lines.push(`- status: unknown (${v1Reason})`);
         }
-    } else {
-        viewsLines.push(`- status: unknown (${viewsReason})`);
-    }
+
+        return lines;
+    };
+
+    // --- 5. Render Block 2: ### views ---
+    const buildViewsLines = ({viewCharCap = Infinity, includeNewerSource = true, compactMeta = false, viewCountCap = Infinity} = {}) => {
+        const lines = [
+            `### views`,
+            `as of ${viewsAsOf} · candidate: ${viewsCandidate} · source: ${viewsSource}`
+        ];
+
+        if (viewsEval) {
+            if (views.receipts.length === 0) {
+                lines.push(`- views: none yet (no receipt on #505) · unassessed: ${viewsEval.unassessed.join(', ')}`);
+            } else {
+                let renderedNeedsLoveCount = 0;
+                for (const [key, entry] of Object.entries(viewsEval.byKey)) {
+                    if (!entry.governing || entry.status !== 'needs-love') continue;
+                    if (renderedNeedsLoveCount >= viewCountCap) break;
+                    renderedNeedsLoveCount++;
+                    const gov        = entry.governing;
+                    const needsText  = truncateText(gov.needsLove, viewCharCap);
+                    const seatPart   = gov.seat ? ` · ${gov.seat}` : '';
+                    const leavesPart = gov.openDesignLeaves.length > 0 ? ` · leaves: ${gov.openDesignLeaves.join(',')}` : '';
+                    const metaText   = compactMeta === 'minimal'
+                        ? `${gov.buildClass} · ${String(gov.observedAt).slice(0, 10)}`
+                        : compactMeta
+                            ? `${truncateText(gov.buildLabel, 24)} · ${String(gov.observedAt).slice(0, 10)}${seatPart}`
+                            : `${gov.buildLabel} · ${gov.profile} · ${gov.observedAt}${seatPart}${leavesPart}`;
+                    lines.push(`- \`${key}\`: needs love: ${needsText} (${metaText})`);
+                    if (includeNewerSource && entry.newerSourceLine) {
+                        const src = entry.newerSourceLine;
+                        lines.push(`  - ↳ source ${src.observedAt} · needs love: ${truncateText(src.needsLove, viewCharCap)} (does not resolve installed line)`);
+                    }
+                }
+                if (renderedNeedsLoveCount === 0) {
+                    lines.push(`- needing love: none observed (${viewsEval.swept} swept)`);
+                }
+            }
+        } else {
+            lines.push(`- status: unknown (${viewsReason})`);
+        }
+
+        return lines;
+    };
 
     // --- 6. Render Block 3: ### reach and outbound ---
     const reachAsOf      = reach?.asOf || defaultAsOf;
@@ -1474,84 +1755,98 @@ export function renderFocusV1Section({
         : Array.isArray(reach?.ledgerRows)
             ? projectPublicBusinessRows(reach.ledgerRows, {allowlist: reach?.allowlist})
             : [];
-    const hasTrafficData = reach && reach.status !== 'unknown' && (reach.traffic || reach.stars != null || reach.forks != null);
-    const reachLines     = [
-        `### reach and outbound`,
-        `as of ${reachAsOf} · candidate: ${reachCandidate} · source: ${reachSource}`
-    ];
+    const hasTrafficData  = reach && reach.status !== 'unknown' && (reach.traffic || reach.stars != null || reach.forks != null);
+    const buildReachLines = (compactOutbound = false) => {
+        const lines = [
+            `### reach and outbound`,
+            `as of ${reachAsOf} · candidate: ${reachCandidate} · source: ${reachSource}`
+        ];
 
-    if (hasTrafficData) {
-        const parts = [];
-        if (reach.traffic && typeof reach.traffic === 'object') {
-            const viewsCount = reach.traffic.views ?? reach.traffic.count ?? 'unknown';
-            const uniques    = reach.traffic.uniques ?? 'unknown';
-            const deltaViews = reach.traffic.delta != null ? ` (${reach.traffic.delta >= 0 ? '+' : ''}${reach.traffic.delta})` : '';
-            parts.push(`traffic 14d: ${viewsCount} views${deltaViews}, ${uniques} uniques`);
+        if (hasTrafficData) {
+            const parts = [];
+            if (reach.traffic && typeof reach.traffic === 'object') {
+                const viewsCount = reach.traffic.views ?? reach.traffic.count ?? 'unknown';
+                const uniques    = reach.traffic.uniques ?? 'unknown';
+                const deltaViews = reach.traffic.delta != null ? ` (${reach.traffic.delta >= 0 ? '+' : ''}${reach.traffic.delta})` : '';
+                parts.push(`traffic 14d: ${viewsCount} views${deltaViews}, ${uniques} uniques`);
+            }
+            if (reach.stars != null) {
+                const starCount = typeof reach.stars === 'object' ? reach.stars.count : reach.stars;
+                const starDelta = typeof reach.stars === 'object' && reach.stars.delta != null
+                    ? ` (${reach.stars.delta >= 0 ? '+' : ''}${reach.stars.delta})`
+                    : '';
+                parts.push(`stars: ${starCount}${starDelta}`);
+            }
+            if (reach.forks != null) {
+                const forkCount = typeof reach.forks === 'object' ? reach.forks.count : reach.forks;
+                const forkDelta = typeof reach.forks === 'object' && reach.forks.delta != null
+                    ? ` (${reach.forks.delta >= 0 ? '+' : ''}${reach.forks.delta})`
+                    : '';
+                parts.push(`forks: ${forkCount}${forkDelta}`);
+            }
+            const queryPart = compactOutbound === 'minimal' ? '' : ` · falsifyingQuery: \`${reachQuery}\``;
+            lines.push(`- ${parts.join(' · ')}${queryPart}`);
+        } else {
+            const reachReason = sanitizeReaderReason(reach?.reason || FOCUS_V1_READER_ABSENT_REASON);
+            const queryPart   = compactOutbound === 'minimal' ? '' : ` · falsifyingQuery: \`${reachQuery}\``;
+            lines.push(`- github reach: unknown (${reachReason})${queryPart}`);
         }
-        if (reach.stars != null) {
-            const starCount = typeof reach.stars === 'object' ? reach.stars.count : reach.stars;
-            const starDelta = typeof reach.stars === 'object' && reach.stars.delta != null
-                ? ` (${reach.stars.delta >= 0 ? '+' : ''}${reach.stars.delta})`
-                : '';
-            parts.push(`stars: ${starCount}${starDelta}`);
-        }
-        if (reach.forks != null) {
-            const forkCount = typeof reach.forks === 'object' ? reach.forks.count : reach.forks;
-            const forkDelta = typeof reach.forks === 'object' && reach.forks.delta != null
-                ? ` (${reach.forks.delta >= 0 ? '+' : ''}${reach.forks.delta})`
-                : '';
-            parts.push(`forks: ${forkCount}${forkDelta}`);
-        }
-        reachLines.push(`- ${parts.join(' · ')} · falsifyingQuery: \`${reachQuery}\``);
-    } else {
-        const reachReason = sanitizeReaderReason(reach?.reason || FOCUS_V1_READER_ABSENT_REASON);
-        reachLines.push(`- github reach: unknown (${reachReason}) · falsifyingQuery: \`${reachQuery}\``);
-    }
 
-    if (publicRows.length > 0) {
-        for (const row of publicRows.slice(0, 4)) {
-            const details = [];
-            if (row.value !== undefined) details.push(`value: ${row.value}`);
-            if (row.delta !== undefined) details.push(`delta: ${row.delta >= 0 ? '+' : ''}${row.delta}`);
-            if (row.count !== undefined) details.push(`count: ${row.count}`);
-            if (row.lastPostAt)          details.push(`last post: ${row.lastPostAt}`);
-            if (row.lastInteractionAt)   details.push(`last interaction: ${row.lastInteractionAt}`);
-            if (row.repliesWaiting !== undefined) details.push(`replies waiting: ${row.repliesWaiting}`);
-            if (row.overdue !== undefined)        details.push(`overdue: ${row.overdue ? 'yes' : 'no'}`);
-            if (row.lastPublishDate)     details.push(`last publish: ${row.lastPublishDate}`);
-            if (row.cadence)             details.push(`cadence: ${row.cadence}`);
-            if (row.falsifyingQuery)     details.push(`falsifyingQuery: \`${row.falsifyingQuery}\``);
-            reachLines.push(`- outbound \`${row.category}\`: ${details.join(' · ')}`);
+        if (publicRows.length > 0) {
+            for (const row of publicRows.slice(0, FOCUS_V1_OUTBOUND_MAX_ROWS)) {
+                const details = [];
+                if (compactOutbound !== 'minimal' && row.channel) details.push(`channel: ${row.channel}`);
+                if (row.value !== undefined) details.push(`value: ${row.value}`);
+                if (row.delta !== undefined) details.push(`delta: ${row.delta >= 0 ? '+' : ''}${row.delta}`);
+                if (row.count !== undefined) details.push(`count: ${row.count}`);
+                if (row.lastPostAt)          details.push(`last post: ${row.lastPostAt}`);
+                if (!compactOutbound && row.lastInteractionAt) details.push(`last interaction: ${row.lastInteractionAt}`);
+                if (row.repliesWaiting !== undefined) {
+                    details.push(compactOutbound === 'minimal' ? `replies: ${row.repliesWaiting}` : `replies waiting: ${row.repliesWaiting}`);
+                }
+                if (row.overdue !== undefined)                 details.push(`overdue: ${row.overdue ? 'yes' : 'no'}`);
+                if (row.lastPublishDate)                       details.push(`last publish: ${row.lastPublishDate}`);
+                if (compactOutbound !== 'minimal' && row.cadence) details.push(`cadence: ${row.cadence}`);
+                if (!compactOutbound && row.falsifyingQuery)   details.push(`falsifyingQuery: \`${row.falsifyingQuery}\``);
+                lines.push(`- outbound \`${row.category}\`: ${details.join(' · ')}`);
+            }
+        } else {
+            const outboundReason = sanitizeReaderReason(reach?.outboundReason || PRIVATE_LEDGER_ABSENT_REASON);
+            lines.push(`- outbound ledger: unknown (${outboundReason})`);
         }
-    } else {
-        const outboundReason = sanitizeReaderReason(reach?.outboundReason || PRIVATE_LEDGER_ABSENT_REASON);
-        reachLines.push(`- outbound ledger: unknown (${outboundReason})`);
-    }
+
+        return lines;
+    };
 
     // --- 7. Render Block 4: ### what waits for the operator's word ---
-    const opAsOf      = operatorWord?.asOf || defaultAsOf;
-    const opCandidate = operatorWord?.candidate || candidate;
-    const opSource    = operatorWord?.sourceUrl || 'org:neomjs is:open is:pr review:approved';
-    const opQuery     = operatorWord?.falsifyingQuery || 'gh search prs --owner neomjs --state open --review approved';
-    const opAvailable = operatorWord && operatorWord.status !== 'unknown' && Array.isArray(operatorWord.candidates);
-    const opLines     = [
-        `### what waits for the operator's word`,
-        `as of ${opAsOf} · candidate: ${opCandidate} · source: ${opSource}`
-    ];
+    const opAsOf       = operatorWord?.asOf || defaultAsOf;
+    const opCandidate  = operatorWord?.candidate || candidate;
+    const opSource     = operatorWord?.sourceUrl || 'org:neomjs is:open is:pr review:approved';
+    const opQuery      = operatorWord?.falsifyingQuery || 'gh search prs --owner neomjs --state open --review approved';
+    const opAvailable  = operatorWord && operatorWord.status !== 'unknown' && Array.isArray(operatorWord.candidates);
+    const buildOpLines = (prCap = 5, compactOp = false) => {
+        const lines = [
+            `### what waits for the operator's word`,
+            `as of ${opAsOf} · candidate: ${opCandidate} · source: ${opSource}`
+        ];
 
-    if (opAvailable) {
-        const candidates = operatorWord.candidates;
-        opLines.push(`- approved open PRs (${candidates.length}) · falsifyingQuery: \`${opQuery}\``);
-        for (const item of candidates.slice(0, 5)) {
-            opLines.push(formatOperatorCandidateLine(item));
+        const queryPart = compactOp === 'minimal' ? '' : ` · falsifyingQuery: \`${opQuery}\``;
+        if (opAvailable) {
+            const candidates = operatorWord.candidates;
+            lines.push(`- approved open PRs (${candidates.length})${queryPart}`);
+            for (const item of candidates.slice(0, prCap)) {
+                lines.push(formatOperatorCandidateLine(item));
+            }
+        } else {
+            const opReason = sanitizeReaderReason(operatorWord?.reason || FOCUS_V1_READER_ABSENT_REASON);
+            lines.push(`- status: unknown (${opReason})${queryPart}`);
         }
-    } else {
-        const opReason = sanitizeReaderReason(operatorWord?.reason || FOCUS_V1_READER_ABSENT_REASON);
-        opLines.push(`- status: unknown (${opReason}) · falsifyingQuery: \`${opQuery}\``);
-    }
-    opLines.push(`- decisions outside pull requests: not covered by this read`);
+        lines.push(`- decisions outside pull requests: not covered by this read`);
 
-    const assemble = (viewsBlockLines, opBlockLines) => [
+        return lines;
+    };
+
+    const assemble = (v1BlockLines, viewsBlockLines, reachBlockLines, opBlockLines) => [
         FOCUS_V1_HEADING,
         '',
         `<!-- ${FOCUS_V1_MARKER} · captured: ${defaultAsOf} -->`,
@@ -1559,45 +1854,63 @@ export function renderFocusV1Section({
         v1AnswerLine,
         viewsAnswerLine,
         '',
-        ...v1Lines,
+        ...v1BlockLines,
         '',
         ...viewsBlockLines,
         '',
-        ...reachLines,
+        ...reachBlockLines,
         '',
         ...opBlockLines,
         ''
     ].join('\n') + '\n';
 
-    let rendered = assemble(viewsLines, opLines);
+    let rendered = assemble(buildV1Lines(), buildViewsLines(), buildReachLines(), buildOpLines());
 
-    // Enforce the <= 2,000-byte ceiling by compacting per-view detail lines and long PR lists
-    // while preserving every block header, answer line, and count without duplicating footers.
+    // Enforce the <= 2,000-byte ceiling by compacting verbose v1 Row state prose and per-view
+    // needs-love prose BEFORE dropping any needing-love view key, so all 5 v1 rows and all
+    // needing-love views remain visible within the 2,000-byte budget.
     if (Buffer.byteLength(rendered, 'utf8') > maxBytes) {
-        const viewBody = viewsLines.slice(2);
-        const opFooter = opLines[opLines.length - 1];
-        const opBody   = opLines.slice(2, -1);
-        let   viewCap  = Math.min(viewBody.length, 3);
-        let   opCap    = Math.min(opBody.length, 3);
+        const compactionSteps = [
+            {v1CharCap: 220, viewCharCap: 140, includeNewerSource: true,  opPrCap: 3, compactMeta: false,     compactOutbound: false,     includeModules: true},
+            {v1CharCap: 165, viewCharCap: 105, includeNewerSource: true,  opPrCap: 2, compactMeta: false,     compactOutbound: false,     includeModules: true},
+            {v1CharCap: 130, viewCharCap: 80,  includeNewerSource: false, opPrCap: 2, compactMeta: false,     compactOutbound: false,     includeModules: true},
+            {v1CharCap: 105, viewCharCap: 60,  includeNewerSource: false, opPrCap: 1, compactMeta: true,      compactOutbound: true,      includeModules: false},
+            {v1CharCap: 85,  viewCharCap: 45,  includeNewerSource: false, opPrCap: 0, compactMeta: true,      compactOutbound: true,      includeModules: false},
+            {v1CharCap: 68,  viewCharCap: 36,  includeNewerSource: false, opPrCap: 0, compactMeta: 'minimal', compactOutbound: true,      includeModules: false},
+            {v1CharCap: 54,  viewCharCap: 28,  includeNewerSource: false, opPrCap: 0, compactMeta: 'minimal', compactOutbound: 'minimal', includeModules: false},
+            {v1CharCap: 46,  viewCharCap: 22,  includeNewerSource: false, opPrCap: 0, compactMeta: 'minimal', compactOutbound: 'minimal', includeModules: false}
+        ];
 
-        while (Buffer.byteLength(rendered, 'utf8') > maxBytes && (viewCap > 1 || opCap > 1)) {
-            const compactViewsLines = [
-                viewsLines[0],
-                viewsLines[1],
-                ...viewBody.slice(0, viewCap)
-            ];
-            const compactOpLines = [
-                opLines[0],
-                opLines[1],
-                ...opBody.slice(0, opCap),
-                opFooter
-            ];
-            rendered = assemble(compactViewsLines, compactOpLines);
-            if (viewCap >= opCap && viewCap > 1) {
-                viewCap--;
-            } else if (opCap > 1) {
-                opCap--;
+        for (const step of compactionSteps) {
+            rendered = assemble(
+                buildV1Lines(step.v1CharCap, step.includeModules),
+                buildViewsLines({
+                    viewCharCap       : step.viewCharCap,
+                    includeNewerSource: step.includeNewerSource,
+                    compactMeta       : step.compactMeta
+                }),
+                buildReachLines(step.compactOutbound),
+                buildOpLines(step.opPrCap, step.compactOutbound)
+            );
+            if (Buffer.byteLength(rendered, 'utf8') <= maxBytes) {
+                break;
             }
+        }
+
+        let viewCountCap = viewsEval ? viewsEval.needingLove - 1 : 0;
+        while (Buffer.byteLength(rendered, 'utf8') > maxBytes && viewCountCap >= 1) {
+            rendered = assemble(
+                buildV1Lines(52, false),
+                buildViewsLines({
+                    viewCharCap       : 26,
+                    includeNewerSource: false,
+                    compactMeta       : 'minimal',
+                    viewCountCap
+                }),
+                buildReachLines('minimal'),
+                buildOpLines(0, 'minimal')
+            );
+            viewCountCap--;
         }
     }
 
