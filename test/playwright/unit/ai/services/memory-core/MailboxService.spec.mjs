@@ -3047,7 +3047,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
      * bulk drain be discriminating. The authority question is where it may be recorded.
      *
      * **A previous attempt keyed it on caller identity — "the mailbox owner is reading" — and that
-     * is falsified by the production caller.** `SwarmHeartbeatService.getRecentActivityTimestamps`
+     * is falsified by the production caller.** `SwarmHeartbeatService.getReadinessSentinelMessages`
      * binds the polled agent as the request identity and then reads that agent's own inbox, so an
      * owner-identity test admits the daemon rather than excluding it, and the background sweep would
      * mark up to 100 rows per identity as seen for the whole roster on every pass. The verifying test
@@ -3080,7 +3080,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
     test('#17321 the production heartbeat shape stamps NOTHING — owner-bound, own inbox, direct service call', async () => {
         const [directed] = await seedFor(['heartbeat must not see this']);
 
-        // EXACTLY SwarmHeartbeatService.getRecentActivityTimestamps: bind the polled agent as the
+        // EXACTLY SwarmHeartbeatService.getReadinessSentinelMessages: bind the polled agent as the
         // request identity, then read that same agent's inbox. An owner-identity guard reads this as
         // "the owner is looking at their own mail" and stamps. It is a background poll.
         await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>

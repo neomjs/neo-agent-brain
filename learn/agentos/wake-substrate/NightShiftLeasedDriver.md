@@ -148,6 +148,17 @@ night-shift reachable only when its route is active and Memory Core healthcheck
 shows a fresh heartbeat pulse; route presence alone means the bridge can receive
 A2A messages, not that the watchdog lane is currently running.
 
+The delivery floor: while the swarm-heartbeat lane is on, a reachable seat whose
+last known activity (its newest memory, turn-presence beacon or outbound message)
+is older than the idle threshold receives one heartbeat nudge per idle stretch,
+carrying its own last `lane-state:` line, its idle minutes and the sunset rule.
+The stretch ends only when the seat does something, so an unanswered nudge is
+never repeated and never trips the wake safety gate; a seat that answers nothing
+twice is a sunset candidate, not a target. The lane is `host-edge` authority: its
+switch is `NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED` in the host-edge posture
+(`src/composition/orchestrator/hostEdgeProfile.mjs`), a deployment input the
+plane operator sets, not a code default.
+
 ## 7. Minimal Message Shape
 
 Lane claim:

@@ -56,7 +56,7 @@ import {test, expect} from '@playwright/test';
  * (`checkHeartbeatLock`, `clearHeartbeatLock`, `sweepExpiredTasks`, `checkGateOpen`,
  * `readGate`, `checkSunsetted`, `resumeHarness`, `idleOutNudge`, `checkAllAgentIdle`,
  * `swarmWakeCooldown`, `runScript`, `runScriptJson`, `runCmd`, `getUnreadCount`,
- * `getIssuesCount`, `isPushCapable`, `getRecentActivityTimestamps`,
+ * `getIssuesCount`, `isPushCapable`,
  * `getReadinessSentinelMessages`, `getActiveBackoffWindow`) precisely so unit tests can
  * override them without going through the heavy substrate. Module-binding imports (e.g.
  * `isGateOpen`) cannot be reassigned at import-site in ES modules — instance methods
@@ -157,13 +157,15 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         SwarmHeartbeatService.runScriptJson      = async () => null;
         SwarmHeartbeatService.runScript          = async () => '';
         SwarmHeartbeatService.runCmd             = async () => '[]';
-        delete SwarmHeartbeatService.getGraphDb;
+        // The participation read behind `getPulseIdentities()` needs a graph handle. Under
+        // `fullyParallel` a worker may or may not have initialised GraphService from an earlier
+        // file, so the default stub answers "no AgentIdentity nodes" (everyone eligible) instead
+        // of leaving the read to worker history. Tests that assert SQL install their own fake.
+        SwarmHeartbeatService.getGraphDb         = () => ({prepare: () => ({all: () => [], get: () => undefined})});
         SwarmHeartbeatService.getUnreadCount     = async () => 0;
         SwarmHeartbeatService.getIssuesCount     = async () => 0;
         SwarmHeartbeatService.isPushCapable      = async () => false;
-        // Sub-iii 3-signal-emit-loop seams — default to no-wake by returning
-        // empty activity (decideWake returns 'no-active-signal' → no emit fires).
-        SwarmHeartbeatService.getRecentActivityTimestamps  = async () => [];
+        // Readiness seams the nudge routing consults — default to "ready".
         SwarmHeartbeatService.getReadinessSentinelMessages = async () => [];
         SwarmHeartbeatService.getActiveBackoffWindow       = () => null;
         WakeSubscriptionService.emitHeartbeatPulse         = async () => ({status: 'emitted'});
@@ -614,104 +616,99 @@ test.describe('Neo.ai.daemons.SwarmHeartbeatService', () => {
         expect(idleCalls).toEqual([[]]);
     });
 
-    test('pulse() isolates a sweep failure locally and continues to later steps (#11996 cycle-3 shape)', async () => {
+    test('pulse() isolates a sweep failure locally and continues to the detector steps (#11996 cycle-3 shape)', async () => {
         applyDefaultStubs();
-        SwarmHeartbeatService.sweepExpiredTasks            = async () => { throw new Error('substrate down') };
-        SwarmHeartbeatService.getRecentActivityTimestamps  = async () => [Date.now() - 30 * 60 * 1000]; // active+idle
-        SwarmHeartbeatService.getReadinessSentinelMessages = async () => [];
-        SwarmHeartbeatService.getActiveBackoffWindow       = () => null;
+        SwarmHeartbeatService.sweepExpiredTasks = async () => { throw new Error('substrate down') };
+        SwarmHeartbeatService.checkSunsetted    = async () => ({sunsetted: false, recommended_action: 'idle_out_nudge'});
 
-        const emitted = [];
-        WakeSubscriptionService.emitHeartbeatPulse = async ({targetIdentity}) => { emitted.push(targetIdentity); return {status: 'emitted'} };
+        const nudgeCalls = [];
+        SwarmHeartbeatService.idleOutNudge = async (...args) => { nudgeCalls.push(args) };
 
         // Sweep throws but is caught by the inner try/catch around the sweep step;
-        // pulse() does not propagate the error and proceeds to the 3-signal emit loop.
+        // pulse() does not propagate the error and proceeds to the detector routing.
         await expect(SwarmHeartbeatService.pulse()).resolves.toBeUndefined();
-        expect(emitted.length).toBeGreaterThan(0);
+        expect(nudgeCalls).toEqual([['@test']]);
     });
 
-    test('pulse() 3-signal emit loop calls emitHeartbeatPulse iff decideWake returns wake:true (#11996 AC2)', async () => {
+    test('pulse() has no cadence emitter: an identity the detector did not flag receives no pulse, however quiet its A2A traffic', async () => {
         applyDefaultStubs();
-
-        // Identity has activity 30min ago → active + idle (not within 15m idle window)
-        SwarmHeartbeatService.getRecentActivityTimestamps  = async () => [Date.now() - 30 * 60 * 1000];
-        SwarmHeartbeatService.getReadinessSentinelMessages = async () => [];
-        SwarmHeartbeatService.getActiveBackoffWindow       = () => null;
+        SwarmHeartbeatService.checkSunsetted = async () => ({sunsetted: false, recommended_action: 'no_action'});
 
         const emitted = [];
         WakeSubscriptionService.emitHeartbeatPulse = async ({targetIdentity}) => { emitted.push(targetIdentity); return {status: 'emitted'} };
 
         await SwarmHeartbeatService.pulse();
-        // Default pulseIdentities = [this.identity]; the loop should emit once for active+idle+ready.
-        expect(emitted.length).toBe(1);
+
+        expect(emitted).toEqual([]);
+        expect(typeof SwarmHeartbeatService.getRecentActivityTimestamps).toBe('undefined');
     });
 
-    test('pulse() 3-signal emit loop skips emit when readiness sentinel blocks (#11996 AC2)', async () => {
+    test('pulse() skips the idle-out nudge while a readiness sentinel blocks the seat — no lock, the next scan asks again', async () => {
         applyDefaultStubs();
-
-        SwarmHeartbeatService.getRecentActivityTimestamps  = async () => [Date.now() - 30 * 60 * 1000]; // active+idle
-        // Active blocking sentinel (ready:false, future expiresAt)
+        SwarmHeartbeatService.checkSunsetted = async () => ({sunsetted: false, recommended_action: 'idle_out_nudge'});
         SwarmHeartbeatService.getReadinessSentinelMessages = async () => [{
             id        : 'msg-block',
             properties: {task: {type: 'wake-readiness', ready: false, reason: 'benched', expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()}}
         }];
-        SwarmHeartbeatService.getActiveBackoffWindow = () => null;
 
-        const emitted = [];
-        WakeSubscriptionService.emitHeartbeatPulse = async ({targetIdentity}) => { emitted.push(targetIdentity); return {status: 'emitted'} };
+        const nudgeCalls = [];
+        SwarmHeartbeatService.idleOutNudge = async (...args) => { nudgeCalls.push(args) };
 
         await SwarmHeartbeatService.pulse();
-        expect(emitted.length).toBe(0);
+        expect(nudgeCalls).toEqual([]);
     });
 
-    test('pulse() 3-signal emit loop skips emit when backoff window active (#11996 AC2)', async () => {
+    test('pulse() skips the idle-out nudge while a backoff window is active', async () => {
         applyDefaultStubs();
+        SwarmHeartbeatService.checkSunsetted       = async () => ({sunsetted: false, recommended_action: 'idle_out_nudge'});
+        SwarmHeartbeatService.getActiveBackoffWindow = () => ({expiresAtMs: Date.now() + 30 * 60 * 1000, reason: 'error-streak-3'});
 
-        SwarmHeartbeatService.getRecentActivityTimestamps  = async () => [Date.now() - 30 * 60 * 1000]; // active+idle
+        const nudgeCalls = [];
+        SwarmHeartbeatService.idleOutNudge = async (...args) => { nudgeCalls.push(args) };
+
+        await SwarmHeartbeatService.pulse();
+        expect(nudgeCalls).toEqual([]);
+    });
+
+    test('pulse() holds the swarm wake while the recommended coordinator is under a readiness sentinel or a backoff window, and dispatches once clear', async () => {
+        applyDefaultStubs();
+        const swarmCalls = [];
+        SwarmHeartbeatService.checkAllAgentIdle = async () => ({allIdle: true, cycle_id: '7', identities: ['@a', '@b'], coordinator_recommendation: '@a', details: {}});
+        SwarmHeartbeatService.swarmWakeCooldown = async (signal) => { swarmCalls.push(signal) };
+        SwarmHeartbeatService.getReadinessSentinelMessages = async () => [{
+            id        : 'msg-block-swarm',
+            properties: {task: {type: 'wake-readiness', ready: false, reason: 'benched', expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()}}
+        }];
+
+        await SwarmHeartbeatService.pulse();
+        expect(swarmCalls).toEqual([]);
+
         SwarmHeartbeatService.getReadinessSentinelMessages = async () => [];
         SwarmHeartbeatService.getActiveBackoffWindow       = () => ({expiresAtMs: Date.now() + 30 * 60 * 1000, reason: 'error-streak-3'});
 
-        const emitted = [];
-        WakeSubscriptionService.emitHeartbeatPulse = async ({targetIdentity}) => { emitted.push(targetIdentity); return {status: 'emitted'} };
+        await SwarmHeartbeatService.pulse();
+        expect(swarmCalls).toEqual([]);
+
+        SwarmHeartbeatService.getActiveBackoffWindow = () => null;
 
         await SwarmHeartbeatService.pulse();
-        expect(emitted.length).toBe(0);
+        expect(swarmCalls).toHaveLength(1);
+        expect(swarmCalls[0].coordinator_recommendation).toBe('@a');
     });
 
-    test('getRecentActivityTimestamps binds RequestContextService identity before MailboxService.listMessages call (PR #11999 cycle-2)', async () => {
-        // MailboxService.listMessages() reads RequestContextService.getAgentIdentityNodeId()
-        // at entry and throws "Cannot list messages: no agent identity context bound." when
-        // unbound. Sub-iii's helper MUST wrap the calls in RequestContextService.run({...})
-        // so the production heartbeat loop sees real activity timestamps instead of silently
-        // catching the throw and returning [].
+    test('pulse() routes the idle-out nudge once the sentinel has expired', async () => {
         applyDefaultStubs();
-        // Restore the REAL helper (override the applyDefaultStubs stub).
-        delete SwarmHeartbeatService.getRecentActivityTimestamps;
+        SwarmHeartbeatService.checkSunsetted = async () => ({sunsetted: false, recommended_action: 'idle_out_nudge'});
+        SwarmHeartbeatService.getReadinessSentinelMessages = async () => [{
+            id        : 'msg-expired',
+            properties: {task: {type: 'wake-readiness', ready: false, reason: 'benched', expiresAt: new Date(Date.now() - 60 * 1000).toISOString()}}
+        }];
 
-        const seenContextIdentities = [];
-        MailboxService.listMessages = async ({box, fromIdentity, to}) => {
-            const boundIdentity = RequestContextService.getAgentIdentityNodeId();
-            seenContextIdentities.push({box, fromIdentity, to, boundIdentity});
-            return {messages: [{messageId: `${box}-msg`, sentAt: new Date(Date.now() - 30 * 60 * 1000).toISOString()}]};
-        };
+        const nudgeCalls = [];
+        SwarmHeartbeatService.idleOutNudge = async (...args) => { nudgeCalls.push(args) };
 
-        const targetIdentity = '@neo-context-test';
-        const now            = Date.now();
-        const result         = await SwarmHeartbeatService.getRecentActivityTimestamps(targetIdentity, now);
-
-        try {
-            // Each MailboxService.listMessages call must have seen the bound identity.
-            expect(seenContextIdentities.length).toBeGreaterThan(0);
-            for (const call of seenContextIdentities) {
-                expect(call.boundIdentity).toBe(targetIdentity);
-            }
-            // Result must include parsed timestamps (proves the wrapper returned real data,
-            // not the catch-fallback []).
-            expect(result.length).toBeGreaterThan(0);
-            expect(result.every(ts => Number.isFinite(ts))).toBe(true);
-        } finally {
-            MailboxService.listMessages = originalListMessages;
-        }
+        await SwarmHeartbeatService.pulse();
+        expect(nudgeCalls).toEqual([['@test']]);
     });
 
     test('getReadinessSentinelMessages binds RequestContextService identity AND returns listMessages summaries that decideWake honors (PR #11999 cycle-2)', async () => {

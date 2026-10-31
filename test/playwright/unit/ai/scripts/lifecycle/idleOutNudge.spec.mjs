@@ -116,16 +116,67 @@ test.describe('ai/scripts/idleOutNudge', () => {
         expect(lockAfter).toBe(lockBefore);
     });
 
+    test('A content read that fails after the gate and the lock check leaves no lock behind, and the next attempt emits', async () => {
+        // The lock never ages out, so a lock written before the content reads survived a failing
+        // read as an unsent, permanent lock for the whole quiet stretch. The reads now run first and
+        // the lock is written immediately before the emit; this injects the failure in-process on
+        // the real dispatcher, with the graph handle it reads replaced by one whose every statement
+        // throws, and the pulse emit replaced by a recorder.
+        const {idleOutNudge}          = await import('../../../../../../ai/scripts/lifecycle/idleOutNudge.mjs');
+        const LifecycleService        = (await import('../../../../../../ai/services/memory-core/lifecycle/SystemLifecycleService.mjs')).default;
+        const GraphService            = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        const WakeSubscriptionService = (await import('../../../../../../ai/services/memory-core/WakeSubscriptionService.mjs')).default;
+
+        await LifecycleService.ready();
+        await GraphService.ready();
+
+        const identity      = '@neo-idle-out-inprocess';
+        const inProcessDir  = path.join(os.tmpdir(), `wake-state-idleout-inprocess-${randomUUID()}`);
+        const inProcessLock = getLockPath('idle_out_nudge', identity, {wakeDaemonDir: inProcessDir});
+        const emits         = [];
+        const savedOverride = process.env.WAKE_GATE_OVERRIDE;
+        const savedDb       = Object.getOwnPropertyDescriptor(GraphService, 'db');
+        const savedEmit     = WakeSubscriptionService.emitHeartbeatPulse;
+
+        process.env.WAKE_GATE_OVERRIDE             = '1';
+        WakeSubscriptionService.emitHeartbeatPulse = async opts => { emits.push(opts); return {status: 'emitted'} };
+
+        try {
+            Object.defineProperty(GraphService, 'db', {
+                configurable: true,
+                get         : () => ({storage: {db: {prepare() { throw new Error('injected graph read failure') }}}})
+            });
+
+            await expect(idleOutNudge(identity, {wakeDaemonDir: inProcessDir})).rejects.toThrow('injected graph read failure');
+            expect(fs.existsSync(inProcessLock)).toBe(false);
+            expect(emits).toEqual([]);
+
+            // The graph answers again (no seat activity in between): the next scan's attempt emits.
+            if (savedDb) Object.defineProperty(GraphService, 'db', savedDb); else delete GraphService.db;
+
+            await idleOutNudge(identity, {wakeDaemonDir: inProcessDir});
+            expect(fs.existsSync(inProcessLock)).toBe(true);
+            expect(emits).toEqual([{targetIdentity: identity, pulseId: expect.stringMatching(/^idle-out-nudge\./)}]);
+        } finally {
+            if (Object.getOwnPropertyDescriptor(GraphService, 'db')?.get) {
+                if (savedDb) Object.defineProperty(GraphService, 'db', savedDb); else delete GraphService.db;
+            }
+            WakeSubscriptionService.emitHeartbeatPulse = savedEmit;
+            if (savedOverride === undefined) delete process.env.WAKE_GATE_OVERRIDE; else process.env.WAKE_GATE_OVERRIDE = savedOverride;
+            await fsp.rm(inProcessDir, {recursive: true, force: true});
+        }
+    });
+
     test('Static script: dispatcher invariants framing intact post-Shape-B refactor (#10675 / #11996)', async () => {
         // Per the dispatcher invariants (preserved across Sub-iii Shape A → Shape B refactor),
         // the dispatcher MUST communicate:
         // - Why the nudge fires (idle threshold from checkSunsetted.mjs)
-        // - That no action is needed if mid-turn / rate-limited (lock memory-resolved release)
+        // - That no action is needed if mid-turn / rate-limited (lock activity-resolved release)
         // - Bounded / non-spawning / no-inbox-surfacing framing
         const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
 
         expect(scriptContent).toContain('idle threshold');
-        expect(scriptContent).toContain('memory-resolved');
+        expect(scriptContent).toContain('activity-resolved');
         expect(scriptContent).toContain('non-spawning');
         // The dispatcher consumes the inflightLock primitive
         expect(scriptContent).toContain('writeInflightLock');
@@ -181,16 +232,18 @@ test.describe('ai/scripts/idleOutNudge', () => {
         expect(scriptContent).not.toContain('NUDGE_BODY_TEMPLATE');
     });
 
-    test('Static script: emits machine-readable idle-out cycle-state in the pulse id (#12612)', async () => {
-        // Shape B pulses carry no body; the cycle-state (reason + next-action) rides the pulse id
-        // as `idle-out-nudge.<base64url-JSON>` so the wake digest surfaces the next lifecycle step
-        // instead of an opaque "N heartbeat pulses". The encoded summary is passed as the pulseId.
+    test('Static script: the pulse id carries the seat-specific summary built from its last known activity and lane state (#12612 → #1380)', async () => {
+        // Shape B pulses carry no body; the content rides the pulse id as `idle-out-nudge.<base64url-JSON>`.
+        // The dispatcher reads the seat's last known activity and its newest lane-state line and hands
+        // both to the summary builder; the encoded summary is passed as the pulseId.
         const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
 
-        expect(scriptContent).toContain('idle-out-nudge.');
-        expect(scriptContent).toContain('nextAction');
-        expect(scriptContent).toContain("toString('base64url')");
+        expect(scriptContent).toContain('readLastKnownActivity(db, identity)');
+        expect(scriptContent).toContain('readLastLaneStateLine(db, identity)');
+        expect(scriptContent).toContain('buildIdleOutPulseId({');
         expect(scriptContent).toContain('emitHeartbeatPulse({targetIdentity: identity, pulseId})');
+        // The pulse content has one home; the script holds no inline encoding of its own.
+        expect(scriptContent).not.toContain("toString('base64url')");
     });
 
     // Note: the former `swarm-heartbeat.sh integration` test was removed with

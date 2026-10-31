@@ -615,7 +615,7 @@ class CoalescingEngineService extends Base {
             sent_to_me        : {count: 0, latest: null, latestTs: null, highestPriority: 'normal'},
             task_state_changed: {count: 0, latest: null, latestTs: null},
             permission_granted: {count: 0, latest: null, latestTs: null},
-            heartbeat_pulse   : {count: 0, latest: null, latestTs: null}
+            heartbeat_pulse   : {count: 0, latest: null, latestTs: null, sources: {}}
         };
 
         const bucketOf = {
@@ -643,6 +643,17 @@ class CoalescingEngineService extends Base {
             if (!unopenableEvents.has(evt) && (bucket.latest === null || ts === null || ts >= bucket.latestTs)) {
                 bucket.latest   = evt.payload;
                 bucket.latestTs = ts ?? bucket.latestTs;
+            }
+
+            // Every pulse counted by its pulse-id prefix (`<source>.<payload>`), so the receiver's
+            // active-session skip can tell an idle-out reminder from a GitHub notification riding
+            // the same transport — the `latest` pointer alone hides a content pulse coalesced behind
+            // a newer idle pulse. A pulse without a prefix counts as `unknown`.
+            if (bucketKey === 'heartbeat_pulse') {
+                const pulseId = String(evt.payload?.pulseId ?? ''),
+                      source  = pulseId.includes('.') ? pulseId.slice(0, pulseId.indexOf('.')) : 'unknown';
+
+                bucket.sources[source] = (bucket.sources[source] || 0) + 1;
             }
 
             if (bucketKey === 'sent_to_me') {

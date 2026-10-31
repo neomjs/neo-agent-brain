@@ -22,6 +22,7 @@ import path                                              from 'path';
 import Neo                                               from 'neo.mjs/src/Neo.mjs';
 import * as core                                         from 'neo.mjs/src/core/_export.mjs';
 import {deriveAllAgentIdleCycleId, checkAllAgentIdle}    from '../../../../../../ai/scripts/lifecycle/checkAllAgentIdle.mjs';
+import {getLockPath, writeInflightLock}                  from '../../../../../../ai/scripts/lifecycle/inflightLock.mjs';
 import {resolveTargets}                                  from '../../../../../../ai/daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
 import {participationByIdentity, readAgentIdentityNodes} from '../../../../../../ai/graph/agentIdentityParticipation.mjs';
 import SQLite                                            from '../../../../../../ai/graph/storage/SQLite.mjs';
@@ -179,6 +180,80 @@ test.describe('ai/scripts/checkAllAgentIdle', () => {
             expect(parsed.details['@neo-test-agent-2'].ageMs).toBeLessThan(600000);
         } finally {
             scenario.cleanup();
+        }
+    });
+
+    // The two scenarios below seed their own file-backed graph and run the detector in a child
+    // process against it, so they execute in CI; the skip flag above belongs to the rows that read
+    // the worker's substrate data.
+    test('a fresh turn-presence beacon makes an agent active although its memory is past the threshold', async () => {
+        const oldTime  = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+        const beacon   = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+        const scenario = await createGraphScenario();
+
+        try {
+            const insertStmt = scenario.db.prepare(`INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)`);
+
+            ['@neo-test-agent-1', '@neo-test-agent-2'].forEach(id => insertStmt.run(`memory-${id}`, id, JSON.stringify({
+                id: `memory-${id}`, label: 'AGENT_MEMORY', type: 'AGENT_MEMORY', properties: {agentIdentity: id, timestamp: oldTime}
+            })));
+            insertStmt.run('turn-agent-1', '@neo-test-agent-1', JSON.stringify({
+                id        : 'turn-agent-1', label: 'AGENT_TURN_PRESENCE', type: 'AGENT_TURN_PRESENCE',
+                properties: {agentIdentity: '@neo-test-agent-1', turnId: 'turn-agent-1', startedAt: oldTime, lastProgressAt: beacon, status: 'active'}
+            }));
+
+            const scriptPath = path.resolve(process.cwd(), 'ai/scripts/lifecycle/checkAllAgentIdle.mjs');
+            const parsed     = JSON.parse(execFileSync('node', [scriptPath], {
+                encoding: 'utf-8',
+                env     : {...scenario.env, NEO_SWARM_IDENTITIES: identitiesEnv, NEO_IDLE_THRESHOLD_MS: '600000'}
+            }));
+
+            expect(parsed.allIdle).toBe(false);
+            expect(parsed.details['@neo-test-agent-1']).toMatchObject({lastMemTime: oldTime, lastActivityAt: beacon, lastActivitySource: 'turn-presence'});
+            expect(parsed.details['@neo-test-agent-1'].ageMs).toBeLessThan(600000);
+            expect(parsed.details['@neo-test-agent-2']).toMatchObject({lastActivitySource: 'memory'});
+            expect(parsed.details['@neo-test-agent-2'].ageMs).toBeGreaterThan(600000);
+        } finally {
+            scenario.cleanup();
+        }
+    });
+
+    test('a pending idle-out nudge counts as activity only within the threshold', async () => {
+        const oldTime       = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+        const scenario      = await createGraphScenario();
+        const wakeDaemonDir = mkdtempSync(path.join(os.tmpdir(), 'neo-all-idle-locks-'));
+        const lockPath      = getLockPath('idle_out_nudge', '@neo-test-agent-1', {wakeDaemonDir});
+        const scriptPath    = path.resolve(process.cwd(), 'ai/scripts/lifecycle/checkAllAgentIdle.mjs');
+        const run           = () => JSON.parse(execFileSync('node', [scriptPath], {
+            encoding: 'utf-8',
+            env     : {...scenario.env, NEO_AI_DAEMON_DIR: wakeDaemonDir, NEO_SWARM_IDENTITIES: identitiesEnv, NEO_IDLE_THRESHOLD_MS: '600000'}
+        }));
+
+        try {
+            const insertStmt = scenario.db.prepare(`INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)`);
+            ['@neo-test-agent-1', '@neo-test-agent-2'].forEach(id => insertStmt.run(`memory-${id}`, id, JSON.stringify({
+                id: `memory-${id}`, label: 'AGENT_MEMORY', type: 'AGENT_MEMORY', properties: {agentIdentity: id, timestamp: oldTime}
+            })));
+
+            // A nudge sent just now: the seat still has the threshold to answer, so it is not idle.
+            await writeInflightLock('@neo-test-agent-1', 'idle_out_nudge', 0, {wakeDaemonDir});
+            const fresh = run();
+            expect(fresh.allIdle).toBe(false);
+            expect(fresh.details['@neo-test-agent-1']).toMatchObject({inFlightNudge: true, ageMs: 0});
+
+            // The same nudge, unanswered past the threshold: the seat is idle again, lock or not.
+            const {readFile, writeFile} = await import('fs/promises');
+            const lock                  = JSON.parse(await readFile(lockPath, 'utf8'));
+            lock.timestamp = Date.now() - 11 * 60 * 1000;
+            await writeFile(lockPath, JSON.stringify(lock));
+
+            const stale = run();
+            expect(stale.allIdle).toBe(true);
+            expect(stale.details['@neo-test-agent-1'].inFlightNudge).toBe(true);
+            expect(stale.details['@neo-test-agent-1'].ageMs).toBeGreaterThan(600000);
+        } finally {
+            scenario.cleanup();
+            rmSync(wakeDaemonDir, {recursive: true, force: true});
         }
     });
 

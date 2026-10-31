@@ -146,6 +146,47 @@ test.describe('Neo.ai.daemons.services.WakeDecisionService (#11995, Sub-ii of Ep
     });
 
     // ---------------------------------------------------------------------
+    // decideReady — the ready half on its own (the idle-out nudge routing)
+    // ---------------------------------------------------------------------
+
+    test.describe('decideReady — the ready half on its own', () => {
+        test('ready when neither a blocking sentinel nor a backoff window is active', () => {
+            expect(WakeDecisionService.decideReady({currentTimeMs: NOW})).toEqual({ready: true, reason: 'ready'});
+            expect(WakeDecisionService.decideReady({
+                currentTimeMs          : NOW,
+                activeReadinessSentinel: {ready: true, reason: 'open', expiresAtMs: NOW + 60_000},
+                activeBackoffWindow    : {expiresAtMs: NOW - 1, reason: 'expired'}
+            })).toEqual({ready: true, reason: 'ready'});
+        });
+
+        test('a blocking sentinel wins over the clock, an expired one does not', () => {
+            const blocking = WakeDecisionService.decideReady({
+                currentTimeMs          : NOW,
+                activeReadinessSentinel: {ready: false, reason: 'benched', expiresAtMs: NOW + 60_000}
+            });
+
+            expect(blocking).toEqual({ready: false, reason: 'not-ready (readiness sentinel: benched)'});
+            expect(WakeDecisionService.decideReady({
+                currentTimeMs          : NOW,
+                activeReadinessSentinel: {ready: false, reason: 'benched', expiresAtMs: NOW - 1}
+            }).ready).toBe(true);
+        });
+
+        test('an active backoff window blocks with its reason, and decideWake reports the same reason', () => {
+            const window = {expiresAtMs: NOW + 60_000, reason: 'error-streak-3'};
+
+            expect(WakeDecisionService.decideReady({currentTimeMs: NOW, activeBackoffWindow: window}))
+                .toEqual({ready: false, reason: 'not-ready (backoff window active: error-streak-3)'});
+            expect(WakeDecisionService.decideWake({
+                identity                : '@neo-gpt',
+                currentTimeMs           : NOW,
+                recentActivityTimestamps: [NOW - 30 * 60 * 1000],
+                activeBackoffWindow     : window
+            }).reason).toBe('not-ready (backoff window active: error-streak-3)');
+        });
+    });
+
+    // ---------------------------------------------------------------------
     // parseReadinessSentinel + parseActiveReadinessSentinels
     // ---------------------------------------------------------------------
 

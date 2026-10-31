@@ -21,6 +21,8 @@ import os                        from 'os';
 import Neo                       from 'neo.mjs/src/Neo.mjs';
 import * as core                 from 'neo.mjs/src/core/_export.mjs';
 
+import {getLockPath, writeInflightLock} from '../../../../../../ai/scripts/lifecycle/inflightLock.mjs';
+
 test.describe('ai/scripts/swarmWakeCooldown', () => {
     // Shared cooldown state path; focused runs must not race the file state.
     test.describe.configure({mode: 'serial'});
@@ -157,6 +159,64 @@ test.describe('ai/scripts/swarmWakeCooldown', () => {
         await seedRecentFire();
         const res = runSuppressed({NEO_SWARM_WAKE_COOLDOWN_SECONDS: '1200'});
         expect(res.stderr).toContain('within TTL window (1200s)');
+    });
+
+    /**
+     * One wake per idle stretch across BOTH dispatchers. The per-seat nudge leaves an
+     * `idle_out_nudge` lock that only the seat's activity releases; the all-idle predicate turns true
+     * again once the lock is older than the idle threshold, and the time cooldown has long expired by
+     * then. The second window (+40 min) and the third (+80 min) used to fire the same cycle again,
+     * overwriting the lock; now the lock is the gate.
+     */
+    test.describe('the unanswered idle_out_nudge lock gates the swarm wake (one wake per idle stretch)', () => {
+        const MIN        = 60 * 1000;
+        const signalWith = lastActivityAt => ({
+            allIdle                   : true,
+            cycle_id                  : 'cycle-stretch',
+            identities                : [TEST_COORDINATOR],
+            coordinator_recommendation: TEST_COORDINATOR,
+            details                   : {[TEST_COORDINATOR]: {lastActivityAt, inFlightNudge: true, abandonedCount: 0}}
+        });
+        const seedWindow = async (lockAgeMs) => {
+            // The per-seat nudge fired `lockAgeMs` ago; the swarm cooldown fired at the same time.
+            await writeInflightLock(TEST_COORDINATOR, 'idle_out_nudge', 0, {wakeDaemonDir});
+            const lockPath = getLockPath('idle_out_nudge', TEST_COORDINATOR, {wakeDaemonDir});
+            const lock     = await fs.readJson(lockPath);
+            await fs.writeJson(lockPath, {...lock, timestamp: Date.now() - lockAgeMs}, {spaces: 2});
+            await fs.ensureDir(path.dirname(statePath));
+            await fs.writeJson(statePath, {last_fire_at_iso: new Date(Date.now() - lockAgeMs).toISOString(), last_fire_cycle_id: 'cycle-stretch'});
+            return lockPath
+        };
+
+        test('a second and third window past the cooldown are suppressed while the seat has not acted; the lock stays byte-identical', async () => {
+            for (const windowAgeMs of [40 * MIN, 80 * MIN]) {
+                const lockPath    = await seedWindow(windowAgeMs);
+                const lockBefore  = await fs.readFile(lockPath, 'utf-8');
+                const stateBefore = await fs.readJson(statePath);
+                // The seat's newest stamp predates the lock: silence, truthfully reported idle again.
+                const res = spawnSync('node', [scriptPath, JSON.stringify(signalWith(new Date(Date.now() - windowAgeMs - 30 * MIN).toISOString()))],
+                    childOptions({NEO_SWARM_WAKE_COOLDOWN_SECONDS: '600'}));
+
+                expect(res.stderr).toContain('holds an unanswered idle_out_nudge lock');
+                expect(res.stderr).not.toContain('Firing SYSTEM WAKE');
+                expect(await fs.readFile(lockPath, 'utf-8')).toBe(lockBefore);
+                expect(await fs.readJson(statePath)).toEqual(stateBefore);
+            }
+        });
+
+        test('activity newer than the lock ends the stretch: the lock releases and the next all-idle wake fires', async () => {
+            const lockPath   = await seedWindow(80 * MIN);
+            const lockBefore = await fs.readFile(lockPath, 'utf-8');
+            // The seat acted after the nudge (and went quiet again): a new stretch, one new wake.
+            const res = spawnSync('node', [scriptPath, JSON.stringify(signalWith(new Date(Date.now() - 35 * MIN).toISOString()))],
+                childOptions({NEO_SWARM_WAKE_COOLDOWN_SECONDS: '600'}));
+
+            expect(res.stderr).toContain('Firing SYSTEM WAKE');
+            expect((await fs.readJson(statePath)).last_fire_cycle_id).toBe('cycle-stretch');
+            // A fresh lock for the new stretch, not the old one.
+            expect(await fs.pathExists(lockPath)).toBe(true);
+            expect(await fs.readFile(lockPath, 'utf-8')).not.toBe(lockBefore);
+        });
     });
 
     /**

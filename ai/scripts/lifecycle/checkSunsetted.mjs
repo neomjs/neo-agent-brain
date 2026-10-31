@@ -10,10 +10,11 @@
  *     authoritative signal; staleness alone is NOT a sunset signal. Recovery:
  *     per-harness terminal restart.
  *   - **`idle_out_candidate`** (recoverable): subscription is active AND the
- *     last `AGENT_MEMORY` is older than the configured idle threshold
- *     (`AiConfig.orchestrator.swarmHeartbeat.idleThresholdMs`, env `NEO_IDLE_THRESHOLD_MS`,
- *     10 min default — the same leaf `checkAllAgentIdle.mjs` reads). Recovery: in-place A2A
- *     heartbeat nudge — bounded, non-spawning, idempotent.
+ *     identity's last known activity — the newest of its memory, its turn-presence beacon
+ *     and its outbound message (`lastKnownActivity.mjs`) — is older than the configured idle
+ *     threshold (`AiConfig.orchestrator.swarmHeartbeat.idleThresholdMs`, env
+ *     `NEO_IDLE_THRESHOLD_MS` — the same leaf `checkAllAgentIdle.mjs` reads). Recovery:
+ *     in-place heartbeat nudge — once per idle stretch, non-spawning, idempotent.
  *
  * The two signals are mutually exclusive by construction: `sunset` requires
  * `subscription_active: false`; `idle_out_candidate` requires
@@ -30,6 +31,9 @@
  *         subscription_active: true,
  *         subscription_status: 'active',     // 'missing' | 'active' | 'degraded' | 'disabled'
  *         last_memory_age_min: 12,
+ *         last_activity_at: '2026-10-30T19:21:04.134Z',
+ *         last_activity_source: 'turn-presence', // 'memory' | 'turn-presence' | 'message' | null
+ *         last_activity_age_min: 3,
  *         last_sessionId: 'cce1fea5-...'
  *       },
  *       recommended_action: 'idle_out_nudge', // 'sunset_restart' | 'idle_out_nudge' | 'no_action'
@@ -66,6 +70,7 @@ import GraphService                     from '../../services/memory-core/GraphSe
 import AiConfig                         from '../../config.mjs';
 import memoryCoreConfig                 from '../../mcp/server/memory-core/config.mjs';
 import { checkInflightLock }            from './inflightLock.mjs';
+import {readLastKnownActivity}          from './lastKnownActivity.mjs';
 import {isEntryModule}                  from '../../services/shared/isEntryModule.mjs';
 
 /**
@@ -156,29 +161,18 @@ export async function checkSunsetted(
         })(legacyRows);
     }
 
-    // Find the latest AGENT_MEMORY for this identity and extract its origin session.
-    // Rows use `AGENT_MEMORY` labels, and identity can be tracked via
-    // `properties.agentIdentity` or `properties.userId`.
-    const memStmt = db.prepare(`
-        SELECT json_extract(data, '$.properties.timestamp')   as timestampField,
-               json_extract(data, '$.properties.sessionId')   as sessionIdField
-        FROM Nodes
-        WHERE json_extract(data, '$.label') = 'AGENT_MEMORY'
-          AND (json_extract(data, '$.properties.agentIdentity') = ? OR json_extract(data, '$.properties.userId') = ?)
-        ORDER BY COALESCE(json_extract(data, '$.properties.timestamp'), json_extract(data, '$.properties.name')) DESC
-        LIMIT 1
-    `);
-    const memRow = memStmt.get(identity, identity);
-
-    const originSessionId  = memRow?.sessionIdField || '';
-    const lastMemTimeMs    = memRow?.timestampField ? new Date(memRow.timestampField).getTime() : 0;
-    const memAgeMs         = lastMemTimeMs ? (Date.now() - lastMemTimeMs) : null;
-    const lastMemoryAgeMin = memAgeMs !== null ? Math.round(memAgeMs / 60000) : null;
+    // The identity's last known activity: the newest of its memory, its turn-presence beacon and
+    // its outbound message — one definition shared with `checkAllAgentIdle.mjs`. The memory half
+    // also carries the origin session the fresh-session-spawn boot prompt needs.
+    const activity         = readLastKnownActivity(db, identity);
+    const originSessionId  = activity.lastSessionId;
+    const lastActivityMs   = activity.lastActivityAtMs || 0;
+    const lastMemoryAgeMin = activity.lastMemoryAgeMs !== null ? Math.round(activity.lastMemoryAgeMs / 60000) : null;
 
     // Compute the two recovery signals with in-flight lock awareness. Absence of
-    // an active WAKE_SUBSCRIPTION is the authoritative sunset signal. Memory
-    // staleness is never a sunset signal; when paired with an active subscription,
-    // it only produces the lower-authority in-place idle-out nudge candidate.
+    // an active WAKE_SUBSCRIPTION is the authoritative sunset signal. Quiet is
+    // never a sunset signal; when paired with an active subscription, it only
+    // produces the lower-authority in-place idle-out nudge candidate.
 
     let sunset           = false;
     let idleOutCandidate = false;
@@ -188,7 +182,7 @@ export async function checkSunsetted(
     if (!subscriptionActive) {
         // Sunset path: if a restart is already in flight, downgrade to no-op so
         // recovery stays single-dispatch.
-        lockData = await checkInflightLock(identity, 'sunset_restart', lastMemTimeMs, {wakeDaemonDir});
+        lockData = await checkInflightLock(identity, 'sunset_restart', lastActivityMs, {wakeDaemonDir});
 
         if (lockData.inFlight) {
             sunset = false;
@@ -197,12 +191,13 @@ export async function checkSunsetted(
             sunset = true;
             reason = `No active WAKE_SUBSCRIPTION (status: ${subscriptionStatus})`;
         }
-    } else if (lastMemoryAgeMin !== null && memAgeMs > AiConfig.orchestrator.swarmHeartbeat.idleThresholdMs) {
-        // Active subscription + stale memory = candidate idle-out nudge.
+    } else if (activity.ageMs !== null && activity.ageMs > AiConfig.orchestrator.swarmHeartbeat.idleThresholdMs) {
+        // Active subscription + a quiet stretch past the threshold = candidate idle-out nudge.
         // This signal is "candidate in-place nudge," NOT "agent is idle." The
         // consumer is responsible for bounded, non-spawning, idempotent dispatch
-        // that never destructively types into an active draft.
-        lockData = await checkInflightLock(identity, 'idle_out_nudge', lastMemTimeMs, {wakeDaemonDir});
+        // that never destructively types into an active draft. The lock holds for
+        // the rest of the stretch; only newer activity releases it.
+        lockData = await checkInflightLock(identity, 'idle_out_nudge', lastActivityMs, {wakeDaemonDir});
 
         if (!lockData.inFlight) {
             idleOutCandidate = true;
@@ -225,10 +220,13 @@ export async function checkSunsetted(
         sunset,
         idle_out_candidate: idleOutCandidate,
         evidence          : {
-            subscription_active: subscriptionActive,
-            subscription_status: subscriptionStatus,
-            last_memory_age_min: lastMemoryAgeMin,
-            last_sessionId     : originSessionId
+            subscription_active  : subscriptionActive,
+            subscription_status  : subscriptionStatus,
+            last_memory_age_min  : lastMemoryAgeMin,
+            last_activity_at     : activity.lastActivityAt,
+            last_activity_source : activity.lastActivitySource,
+            last_activity_age_min: activity.ageMs !== null ? Math.round(activity.ageMs / 60000) : null,
+            last_sessionId       : originSessionId
         },
         recommended_action: recommendedAction,
 

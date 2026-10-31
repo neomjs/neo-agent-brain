@@ -714,7 +714,7 @@ test.describe('ai/daemons/wake/receiver — context gate (#16682)', () => {
                 harnessTargetMetadata: {adapter: 'test'},
                 adapterConfig        : {
                     attemptTimeoutMs: 100,
-                    contextGate     : {maxContextTokens: 250_000, warnContextTokens: 200_000}
+                    contextGate     : {maxContextTokens: 250_000, warnContextTokens: 200_000, activeWithinMs: 30 * 60 * 1000}
                 }
             }
         }
@@ -733,7 +733,7 @@ test.describe('ai/daemons/wake/receiver — context gate (#16682)', () => {
 
     let baseUrl, dispatchCalls, probeCalls, probeResult, receiver, server, state, stateDir, warnLines;
 
-    const buildEnvelope = () => ({
+    const buildEnvelope = (payload = {}) => ({
         schemaVersion: '1.0',
         eventType    : 'wake/digest',
         eventId      : 'wake-digest:gate-1',
@@ -742,13 +742,28 @@ test.describe('ai/daemons/wake/receiver — context gate (#16682)', () => {
         payload      : {
             totalEvents   : 1,
             sourceEventIds: ['MESSAGE:gate-1'],
-            breakdown     : {sent_to_me: {count: 1, latest: {messageId: 'MESSAGE:gate-1', subject: 'gate'}}}
+            breakdown     : {sent_to_me: {count: 1, latest: {messageId: 'MESSAGE:gate-1', subject: 'gate'}}},
+            ...payload
         },
         emittedAt: new Date().toISOString()
     });
+    const idleOnlyPayload = {
+        sourceEventIds: ['HEARTBEAT_PULSE:gate-1'],
+        breakdown     : {heartbeat_pulse: {count: 1, latest: {pulseId: 'idle-out-nudge.e30'}, sources: {'idle-out-nudge': 1}}}
+    };
+    // A GitHub mention rides the heartbeat-pulse transport under its own prefix: content, not a reminder.
+    const notificationPayload = {
+        sourceEventIds: ['HEARTBEAT_PULSE:gate-2'],
+        breakdown     : {heartbeat_pulse: {count: 1, latest: {pulseId: 'github-notification.e30'}, sources: {'github-notification': 1}}}
+    };
+    // A coalesced batch whose newest pulse is the idle one — the notification hides behind `latest`.
+    const mixedPulsePayload = {
+        sourceEventIds: ['HEARTBEAT_PULSE:gate-3', 'HEARTBEAT_PULSE:gate-4'],
+        breakdown     : {heartbeat_pulse: {count: 2, latest: {pulseId: 'idle-out-nudge.e30'}, sources: {'github-notification': 1, 'idle-out-nudge': 1}}}
+    };
 
-    async function postWake() {
-        const envelope = buildEnvelope();
+    async function postWake(payload) {
+        const envelope = buildEnvelope(payload);
         const body     = JSON.stringify(envelope);
 
         return fetch(`${baseUrl}/wake`, {
@@ -906,6 +921,64 @@ test.describe('ai/daemons/wake/receiver — context gate (#16682)', () => {
         expect(warnLines).toHaveLength(0);
     });
 
+    test('an idle-only wake into a session active inside the window lands skipped with its reason — no dispatch', async () => {
+        probeResult = {contextTokens: 45_000, lastActivityAt: Date.now() - 2 * 60 * 1000, sessionId: 'ses_working'};
+        await bootReceiver(manifest);
+
+        await postWake(idleOnlyPayload);
+
+        const skipped = await waitForRecord(record => record.state === 'skipped');
+
+        expect(skipped).toMatchObject({
+            state              : 'skipped',
+            outcomeReason      : 'context-gate:active-session',
+            lastGateOutcome    : 'active-session',
+            probedContextTokens: 45_000
+        });
+        expect(dispatchCalls).toHaveLength(0);
+        expect(probeCalls).toHaveLength(1);
+    });
+
+    test('an idle-only wake into a session quiet past the window delivers', async () => {
+        probeResult = {contextTokens: 45_000, lastActivityAt: Date.now() - 31 * 60 * 1000, sessionId: 'ses_quiet'};
+        await bootReceiver(manifest);
+
+        await postWake(idleOnlyPayload);
+
+        expect(await waitForRecord(record => record.state === 'delivered')).toBeTruthy();
+        expect(dispatchCalls).toHaveLength(1);
+    });
+
+    test('a GitHub notification pulse into an active session delivers — the transport is shared, the content is not idle', async () => {
+        probeResult = {contextTokens: 45_000, lastActivityAt: Date.now() - 2 * 60 * 1000, sessionId: 'ses_working'};
+        await bootReceiver(manifest);
+
+        await postWake(notificationPayload);
+
+        expect(await waitForRecord(record => record.state === 'delivered')).toBeTruthy();
+        expect(dispatchCalls).toHaveLength(1);
+    });
+
+    test('a coalesced batch with a notification behind a newer idle pulse delivers into an active session', async () => {
+        probeResult = {contextTokens: 45_000, lastActivityAt: Date.now() - 2 * 60 * 1000, sessionId: 'ses_working'};
+        await bootReceiver(manifest);
+
+        await postWake(mixedPulsePayload);
+
+        expect(await waitForRecord(record => record.state === 'delivered')).toBeTruthy();
+        expect(dispatchCalls).toHaveLength(1);
+    });
+
+    test('a message wake into an active session is never skipped by the idle rule', async () => {
+        probeResult = {contextTokens: 45_000, lastActivityAt: Date.now() - 2 * 60 * 1000, sessionId: 'ses_working'};
+        await bootReceiver(manifest);
+
+        await postWake();
+
+        expect(await waitForRecord(record => record.state === 'delivered')).toBeTruthy();
+        expect(dispatchCalls).toHaveLength(1);
+    });
+
     test('the manifest loader validates contextGate shape when present', async () => {
         const route = overrides => ({
             signingKey,
@@ -922,6 +995,9 @@ test.describe('ai/daemons/wake/receiver — context gate (#16682)', () => {
         };
 
         await expect(load({maxContextTokens: 250_000, warnContextTokens: 200_000})).resolves.toBeDefined();
+        await expect(load({maxContextTokens: 250_000, warnContextTokens: 200_000, activeWithinMs: 1_800_000})).resolves.toBeDefined();
+        await expect(load({maxContextTokens: 250_000, warnContextTokens: 200_000, activeWithinMs: 0})).rejects.toThrow('activeWithinMs');
+        await expect(load({maxContextTokens: 250_000, warnContextTokens: 200_000, activeWithinMs: 'soon'})).rejects.toThrow('activeWithinMs');
         await expect(load({maxContextTokens: 0, warnContextTokens: 0})).rejects.toThrow('contextGate');
         await expect(load({maxContextTokens: 100_000, warnContextTokens: 250_000})).rejects.toThrow('contextGate');
         await expect(load({maxContextTokens: 250_000})).rejects.toThrow('contextGate');

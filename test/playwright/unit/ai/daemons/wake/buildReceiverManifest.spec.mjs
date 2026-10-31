@@ -459,8 +459,10 @@ test.describe('runManifestBuilder — per-peer composition', () => {
         // A per-key merge, not a wholesale replacement: the warn default survives a max override.
         expect(manifest.routes[tuned.id].adapterConfig.contextGate).toEqual({
             maxContextTokens : 400_000,
-            warnContextTokens: DEFAULT_CONTEXT_GATE.warnContextTokens
+            warnContextTokens: DEFAULT_CONTEXT_GATE.warnContextTokens,
+            activeWithinMs   : DEFAULT_CONTEXT_GATE.activeWithinMs
         });
+        expect(DEFAULT_CONTEXT_GATE.activeWithinMs).toBe(30 * 60 * 1000);
     });
 });
 

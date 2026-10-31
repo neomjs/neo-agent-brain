@@ -93,7 +93,32 @@ test.describe('ai/scripts/inflightLock', () => {
     test('checkInflightLock returns inFlight: true if lock is recent', async () => {
         await inflightLock.writeInflightLock(identity, mode, 0, {wakeDaemonDir});
         const result = await inflightLock.checkInflightLock(identity, mode, 0, {wakeDaemonDir}); // Memory is older than lock
-        expect(result).toEqual({ inFlight: true, abandoned: false });
+        expect(result).toEqual({ inFlight: true, abandoned: false, lockAgeMs: expect.any(Number) });
+    });
+
+    test('an idle_out_nudge lock never ages into abandoned: one nudge per idle stretch, no gate trip', async () => {
+        const nudgeMode     = 'idle_out_nudge';
+        const nudgeLockPath = getLockPath(nudgeMode, identity, {wakeDaemonDir});
+
+        expect(inflightLock.ACTIVITY_RELEASED_MODES).toContain(nudgeMode);
+        expect(inflightLock.ACTIVITY_RELEASED_MODES).not.toContain(mode);
+
+        // The third unanswered nudge would have tripped the fleet-wide gate under the boot ramp.
+        await inflightLock.writeInflightLock(identity, nudgeMode, inflightLock.MAX_ABANDONED_ACTIONS - 1, {wakeDaemonDir});
+        const lockContent = JSON.parse(await fs.readFile(nudgeLockPath, 'utf8'));
+        lockContent.timestamp = Date.now() - BOOT_TIMEOUT_MS - 1000;
+        await fs.writeFile(nudgeLockPath, JSON.stringify(lockContent, null, 2));
+
+        const stillHeld = await inflightLock.checkInflightLock(identity, nudgeMode, 0, {wakeDaemonDir});
+        expect(stillHeld).toEqual({ inFlight: true, abandoned: false, lockAgeMs: expect.any(Number) });
+        expect(stillHeld.lockAgeMs).toBeGreaterThan(BOOT_TIMEOUT_MS);
+        expect(existsSync(nudgeLockPath)).toBe(true);
+        expect(existsSync(gatePath)).toBe(false); // no gate write at all
+
+        // Only activity newer than the lock ends the stretch.
+        const released = await inflightLock.checkInflightLock(identity, nudgeMode, lockContent.timestamp + 1000, {wakeDaemonDir});
+        expect(released).toEqual({ inFlight: false, abandoned: false });
+        expect(existsSync(nudgeLockPath)).toBe(false);
     });
 
     test('checkInflightLock clears lock and returns inFlight: false if memory is newer than lock', async () => {

@@ -6,6 +6,17 @@ export const BOOT_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 export const MAX_ABANDONED_ACTIONS = 3;
 
 /**
+ * Modes whose lock only ACTIVITY releases. An idle-out nudge is one reminder per idle stretch, and
+ * the stretch ends when the seat does something (a memory, a presence beacon, an outbound message —
+ * the caller passes the newest of them), never when a timer runs out: an age-out re-nudged the same
+ * silent seat inside the stretch, and three such re-nudges tripped the fleet-wide safety gate for one
+ * closed window. `sunset_restart` keeps the boot ramp — a spawn that never produced a memory is the
+ * incident class the gate exists for.
+ * @type {String[]}
+ */
+export const ACTIVITY_RELEASED_MODES = Object.freeze(['idle_out_nudge']);
+
+/**
  * @summary Build the absolute in-flight lock-file path for one identity/mode pair.
  * @param {string} mode Recovery action mode.
  * @param {string} identity Agent identity.
@@ -25,32 +36,39 @@ export function getLockPath(mode, identity, {wakeDaemonDir}={}) {
 /**
  * @summary Resolve whether a recovery action is already in flight, abandoned, or cleared.
  *
- * Fresh AGENT_MEMORY newer than the lock timestamp proves the target agent
- * responded after dispatch, so the lock is cleared. Locks older than
- * BOOT_TIMEOUT_MS are treated as abandoned; repeated abandonment trips the wake
- * safety gate after MAX_ABANDONED_ACTIONS.
+ * Activity newer than the lock timestamp proves the target agent responded after
+ * dispatch, so the lock is cleared. For the boot-ramp modes, locks older than
+ * BOOT_TIMEOUT_MS are treated as abandoned and repeated abandonment trips the wake
+ * safety gate after MAX_ABANDONED_ACTIONS; an {@link ACTIVITY_RELEASED_MODES} lock
+ * stays in flight until activity clears it.
  *
  * @param {string} identity Agent identity.
  * @param {string} mode Recovery mode, usually `sunset_restart` or `idle_out_nudge`.
- * @param {number} latestMemoryTimestampMs Timestamp of the latest AGENT_MEMORY for this identity.
+ * @param {number} latestActivityTimestampMs The identity's newest activity stamp (memory, presence beacon or outbound message).
  * @param {Object} options
  * @param {String} options.wakeDaemonDir Resolved wake-daemon data member.
- * @returns {Promise<{inFlight: boolean, abandoned: boolean, abandonedCount: number}>} `abandonedCount` only present when abandoned.
+ * @returns {Promise<{inFlight: boolean, abandoned: boolean, abandonedCount: number, lockAgeMs: number}>}
+ *     `abandonedCount` only present when abandoned; `lockAgeMs` only while in flight.
  */
-export async function checkInflightLock(identity, mode, latestMemoryTimestampMs, options={}) {
+export async function checkInflightLock(identity, mode, latestActivityTimestampMs, options={}) {
     const lockPath = getLockPath(mode, identity, options);
 
     try {
         const content  = await fs.readFile(lockPath, 'utf8');
         const lockData = JSON.parse(content);
 
-        if (latestMemoryTimestampMs > lockData.timestamp) {
-            // Fresh memory proves the target agent responded after this lock was written.
+        if (latestActivityTimestampMs > lockData.timestamp) {
+            // Fresh activity proves the target agent responded after this lock was written.
             await fs.unlink(lockPath);
             return { inFlight: false, abandoned: false };
         }
 
         const ageMs = Date.now() - lockData.timestamp;
+
+        if (ACTIVITY_RELEASED_MODES.includes(mode)) {
+            return { inFlight: true, abandoned: false, lockAgeMs: ageMs };
+        }
+
         if (ageMs > BOOT_TIMEOUT_MS) {
             // Abandoned action
             const newAbandonedCount = (lockData.abandonedCount || 0) + 1;
@@ -71,7 +89,7 @@ export async function checkInflightLock(identity, mode, latestMemoryTimestampMs,
             return { inFlight: false, abandoned: true, abandonedCount: newAbandonedCount };
         }
 
-        return { inFlight: true, abandoned: false };
+        return { inFlight: true, abandoned: false, lockAgeMs: ageMs };
     } catch (err) {
         if (err.code === 'ENOENT') {
             return { inFlight: false, abandoned: false };

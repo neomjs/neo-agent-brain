@@ -98,6 +98,19 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
         pureHeartbeat.payload.breakdown.heartbeat_pulse.latest.pulseId =
             `idle-out-nudge.${Buffer.from(JSON.stringify({source: 'idle-out-nudge', reason: 'idle'})).toString('base64url')}`;
         expect(formatLocalWakeDigest(pureHeartbeat)).toContain('idle-out nudge — idle; next: take the plan\'s next step');
+
+        // the seat's own lane-state line and the sunset rule ride along when the producer supplied them
+        pureHeartbeat.payload.breakdown.heartbeat_pulse.latest.pulseId = `idle-out-nudge.${Buffer.from(JSON.stringify({
+            source    : 'idle-out-nudge',
+            reason    : 'idle: 34 min since the last known activity',
+            nextAction: 'run /post-review-pickup',
+            laneState : 'lane-state: next-lane (#1380)',
+            sunsetRule: 'sunset at or below 200k tokens of context; wakes defer above 250k'
+        })).toString('base64url')}`;
+        expect(formatLocalWakeDigest(pureHeartbeat)).toContain(
+            'idle-out nudge — idle: 34 min since the last known activity; next: run /post-review-pickup; ' +
+            'your last lane-state: next-lane (#1380); sunset at or below 200k tokens of context; wakes defer above 250k'
+        );
     });
 
     test('test adapter returns delivered without host process effects', async () => {

@@ -5,19 +5,19 @@
  * Prevents swarm heartbeat from spamming wake events by enforcing a 10-minute cooldown
  * TTL between WAKE messages.
  */
-import fs                                       from 'fs-extra';
-import path                                     from 'path';
-import Neo                                      from 'neo.mjs/src/Neo.mjs';
-import * as core                                from 'neo.mjs/src/core/_export.mjs';
-import { withHeartbeatLock }                    from './heartbeatLock.mjs';
-import RequestContextService                    from '../../mcp/server/shared/services/RequestContextService.mjs';
-import LifecycleService                         from '../../services/memory-core/lifecycle/SystemLifecycleService.mjs';
-import GraphService                             from '../../services/memory-core/GraphService.mjs';
-import MailboxService                           from '../../services/memory-core/MailboxService.mjs';
-import AiConfig                                 from '../../config.mjs';
-import memoryCoreConfig                         from '../../mcp/server/memory-core/config.mjs';
-import { writeInflightLock, clearInflightLock } from './inflightLock.mjs';
-import {isEntryModule}                          from '../../services/shared/isEntryModule.mjs';
+import fs                                                          from 'fs-extra';
+import path                                                        from 'path';
+import Neo                                                         from 'neo.mjs/src/Neo.mjs';
+import * as core                                                   from 'neo.mjs/src/core/_export.mjs';
+import { withHeartbeatLock }                                       from './heartbeatLock.mjs';
+import RequestContextService                                       from '../../mcp/server/shared/services/RequestContextService.mjs';
+import LifecycleService                                            from '../../services/memory-core/lifecycle/SystemLifecycleService.mjs';
+import GraphService                                                from '../../services/memory-core/GraphService.mjs';
+import MailboxService                                              from '../../services/memory-core/MailboxService.mjs';
+import AiConfig                                                    from '../../config.mjs';
+import memoryCoreConfig                                            from '../../mcp/server/memory-core/config.mjs';
+import { writeInflightLock, clearInflightLock, checkInflightLock } from './inflightLock.mjs';
+import {isEntryModule}                                             from '../../services/shared/isEntryModule.mjs';
 
 const COOLDOWN_STATE_FILE = 'swarm-wake-cooldown.json';
 const COOLDOWN_LOCK_FILE  = 'swarm-wake-cooldown.lock';
@@ -75,15 +75,29 @@ export async function swarmWakeCooldown(signal, {wakeDaemonDir}={}) {
             return {fired: false, reason: 'cooldown', ttlSeconds};
         }
 
-        console.error(`[swarmWakeCooldown] Firing SYSTEM WAKE for cycle ${signal.cycle_id} to ${signal.coordinator_recommendation}`);
+        const coordinator    = signal.coordinator_recommendation || '@neo-gemini-julia';
+        const sender         = process.env.NEO_AGENT_IDENTITY || '@system';
+        const abandonedCount = signal.details?.[coordinator]?.abandonedCount || 0;
+
+        // One wake per idle stretch is the policy of the `idle_out_nudge` lock, and this dispatcher
+        // shares that lock with the per-seat nudge: a coordinator still holding an unanswered nudge
+        // was woken this stretch, and the all-idle predicate turning true again past the threshold
+        // is the detector's truthful report of the same silence, not a licence for a second wake.
+        // The lock releases on the seat's own activity (the detector's newest stamp rides the
+        // signal); until then the time cooldown above is not the gate — this is.
+        const coordinatorActivityMs = Date.parse(signal.details?.[coordinator]?.lastActivityAt ?? '') || 0;
+        const nudgeLock             = await checkInflightLock(coordinator, 'idle_out_nudge', coordinatorActivityMs, {wakeDaemonDir});
+
+        if (nudgeLock.inFlight) {
+            console.error(`[swarmWakeCooldown] Suppressed: ${coordinator} holds an unanswered idle_out_nudge lock (${nudgeLock.lockAgeMs}ms old); one wake per idle stretch.`);
+            return {fired: false, reason: 'nudge-in-flight', coordinator, lockAgeMs: nudgeLock.lockAgeMs};
+        }
+
+        console.error(`[swarmWakeCooldown] Firing SYSTEM WAKE for cycle ${signal.cycle_id} to ${coordinator}`);
 
         // Await service readiness to send an A2A message (construct auto-fires init; never call initAsync externally)
         await LifecycleService.ready();
         await GraphService.ready();
-
-        const coordinator    = signal.coordinator_recommendation || '@neo-gemini-julia';
-        const sender         = process.env.NEO_AGENT_IDENTITY || '@system';
-        const abandonedCount = signal.details?.[coordinator]?.abandonedCount || 0;
 
         // Secure the nudge boot ramp before taking the wake action.
         await writeInflightLock(coordinator, 'idle_out_nudge', abandonedCount, {wakeDaemonDir});

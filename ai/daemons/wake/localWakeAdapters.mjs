@@ -79,8 +79,11 @@ export function formatLocalWakeDigest(envelope = {}) {
                 `${formatPullRequestStateEcho(summary)}` +
                 `${summary.latest?.url ? ` (${summary.latest.url})` : ''}`;
         } else if (summary?.source === 'idle-out-nudge') {
+            // Same shape as `wakeDigestBuilder.mjs` — the two renderers move together.
             extra = `; idle-out nudge — ${summary.reason || 'idle'}; ` +
-                `next: ${summary.nextAction || 'take the plan\'s next step'}`;
+                `next: ${summary.nextAction || 'take the plan\'s next step'}` +
+                (summary.laneState  ? `; your last ${summary.laneState}` : '') +
+                (summary.sunsetRule ? `; ${summary.sunsetRule}`          : '');
         }
 
         lines.push(`- ${breakdown.heartbeat_pulse.count} heartbeat pulses${extra}`);
@@ -778,10 +781,10 @@ function codexAutomationIdLines(indent) {
  * @private
  */
 function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, instancePid, tabShortcut}) {
-    const escapedAppName        = escapeAppleScript(appName);
-    const targetPid             = instancePid ? String(instancePid) : '';
-    const addressedCodex        = appName === 'Codex' && Boolean(instancePid);
-    const appActivateLine       = addressedCodex
+    const escapedAppName  = escapeAppleScript(appName);
+    const targetPid       = instancePid ? String(instancePid) : '';
+    const addressedCodex  = appName === 'Codex' && Boolean(instancePid);
+    const appActivateLine = addressedCodex
         ? '  tell application "System Events" to set frontmost of application process id targetAutomationId to true'
         : `  tell application "${escapedAppName}" to activate`;
     const instanceFrontmostLine = instancePid && !addressedCodex

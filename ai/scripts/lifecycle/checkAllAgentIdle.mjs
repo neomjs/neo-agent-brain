@@ -3,8 +3,9 @@
  * @summary All-agent-idle detection at heartbeat layer.
  *
  * This script queries the SQLite GraphLog to determine if ALL configured agents
- * in the swarm are idle (i.e. their last AGENT_MEMORY timestamp is older
- * than IDLE_THRESHOLD).
+ * in the swarm are idle: their last known activity — the newest of memory,
+ * turn-presence beacon and outbound message (`lastKnownActivity.mjs`) — is older
+ * than the idle threshold the swarm-heartbeat leaf declares.
  *
  * Detector Contract:
  * - Emits a structured `AllAgentIdleSignal` when the all-idle predicate holds.
@@ -14,7 +15,7 @@
  *     "cycle_id": string,
  *     "identities": string[],
  *     "coordinator_recommendation": string,
- *     "details": { [identity]: { "lastMemTime": string, "ageMs": number } }
+ *     "details": { [identity]: { "lastMemTime": string, "lastActivityAt": string, "lastActivitySource": string, "ageMs": number } }
  *   }
  */
 import Neo                                               from 'neo.mjs/src/Neo.mjs';
@@ -26,6 +27,7 @@ import AiConfig                                          from '../../config.mjs'
 import memoryCoreConfig                                  from '../../mcp/server/memory-core/config.mjs';
 import {resolveTargets}                                  from '../../daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
 import { checkInflightLock }                             from './inflightLock.mjs';
+import {readLastKnownActivity}                           from './lastKnownActivity.mjs';
 import {participationByIdentity, readAgentIdentityNodes} from '../../graph/agentIdentityParticipation.mjs';
 import {isEntryModule}                                   from '../../services/shared/isEntryModule.mjs';
 
@@ -81,53 +83,27 @@ export async function checkAllAgentIdle({wakeDaemonDir}={}) {
     let   maxAge                = -1;
 
     for (const identity of identities) {
-        const memStmt = db.prepare(`
-            SELECT id,
-                   data,
-                   json_extract(data, '$.properties.name')        as nameField,
-                   json_extract(data, '$.properties.description') as descField,
-                   json_extract(data, '$.properties.timestamp')   as timestampField,
-                   json_extract(data, '$.properties.sessionId')   as sessionIdField
-            FROM Nodes
-            WHERE json_extract(data, '$.label') = 'AGENT_MEMORY'
-              AND (json_extract(data, '$.properties.agentIdentity') = ? OR json_extract(data, '$.properties.userId') = ?)
-            ORDER BY COALESCE(json_extract(data, '$.properties.timestamp'), json_extract(data, '$.properties.name')) DESC
-            LIMIT 1
-        `);
-        const memRow = memStmt.get(identity, identity);
+        const activity = readLastKnownActivity(db, identity, {now});
 
-        let lastMemTime = memRow?.timestampField || null;
+        // Boundary case: an identity with no stamp at all is fully idle, so a fresh checkout cannot
+        // block the all-idle predicate.
+        let ageMs = activity.ageMs ?? Infinity;
 
-        // Fallback for legacy memories whose timestamp only exists in the name field.
-        if (memRow && !lastMemTime) {
-            const tsMatch = memRow.nameField?.match(/^Memory:\s+(.+)$/);
-            if (tsMatch?.[1]) {
-                lastMemTime = tsMatch[1];
-            }
-        }
+        const lockData = await checkInflightLock(identity, 'idle_out_nudge', activity.lastActivityAtMs || 0, {wakeDaemonDir});
 
-        let ageMs = 0;
-        if (lastMemTime) {
-            ageMs = now - new Date(lastMemTime).getTime();
-        } else {
-            // Boundary case: If no AGENT_MEMORY rows exist for the identity, treat them as fully idle
-            // so they don't block the all-idle predicate on fresh checkouts.
-            ageMs = Infinity;
-        }
-
-        // Check if there is an active idle_out_nudge lock for this identity
-        const lastMemTimeMs = lastMemTime ? new Date(lastMemTime).getTime() : 0;
-        const lockData      = await checkInflightLock(identity, 'idle_out_nudge', lastMemTimeMs, {wakeDaemonDir});
-
-        if (lockData.inFlight) {
-            ageMs = 0; // Treat as actively waking up (not idle)
+        // A pending nudge counts as activity only while the seat still has the threshold to answer
+        // it; past that, the lock describes a seat that did not come back, and that seat is idle again.
+        if (lockData.inFlight && lockData.lockAgeMs <= thresholdMs) {
+            ageMs = 0;
         }
 
         details[identity] = {
-            lastMemTime,
+            lastMemTime       : activity.lastMemoryAt,
+            lastActivityAt    : activity.lastActivityAt,
+            lastActivitySource: activity.lastActivitySource,
             ageMs,
-            inFlightNudge : lockData.inFlight,
-            abandonedCount: lockData.abandonedCount || 0
+            inFlightNudge     : lockData.inFlight,
+            abandonedCount    : lockData.abandonedCount || 0
         };
 
         if (ageMs <= thresholdMs) {

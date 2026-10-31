@@ -133,6 +133,18 @@ test.describe('ai/daemons/wake/wakeDigestBuilder', () => {
         // an idle-out nudge without its own next action falls back to the plan's next step
         const nudge = buildWakeDigest('@alice', {heartbeats: [heartbeat(8, {source: 'idle-out-nudge', reason: 'idle'})]});
 
-        expect(nudge).toContain('idle-out nudge — idle; next: take the plan\'s next step')
+        expect(nudge).toContain('idle-out nudge — idle; next: take the plan\'s next step');
+
+        // a nudge that carries the seat's own lane-state line and the sunset rule prints both
+        const rich = buildWakeDigest('@alice', {heartbeats: [heartbeat(9, {
+            source    : 'idle-out-nudge',
+            reason    : 'idle: 34 min since the last known activity',
+            nextAction: 'run /post-review-pickup',
+            laneState : 'lane-state: next-lane (#1380)',
+            sunsetRule: 'sunset at or below 200k tokens of context; wakes defer above 250k'
+        })]});
+
+        expect(rich).toContain('idle-out nudge — idle: 34 min since the last known activity; next: run /post-review-pickup; ' +
+            'your last lane-state: next-lane (#1380); sunset at or below 200k tokens of context; wakes defer above 250k');
     });
 });

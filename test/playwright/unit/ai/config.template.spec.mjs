@@ -521,7 +521,9 @@ test.describe('Tier 1 Config Immutability', () => {
             targets     : null,
             // Wake-policy leaves: NEO_-prefixed env names bound (NEO_IDLE_THRESHOLD_MS /
             // NEO_SWARM_WAKE_COOLDOWN_SECONDS / NEO_SWARM_IDENTITIES), deployment-portable defaults.
-            idleThresholdMs         : 10 * 60 * 1000,
+            // Thirty minutes: the idle-out nudge fires once per idle stretch, inside the provider
+            // cache's hour, never on a cadence.
+            idleThresholdMs         : 30 * 60 * 1000,
             swarmWakeCooldownSeconds: 600,
             allIdleIdentities       : null
         });

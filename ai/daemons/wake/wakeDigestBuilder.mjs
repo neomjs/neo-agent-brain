@@ -146,7 +146,11 @@ export function buildWakeDigest(identity, {messages = [], tasks = [], permission
         if (summary?.source === 'github-notification') {
             extra = `; latest GitHub ${summary.latest?.reason || 'notification'}: "${summary.latest?.title || summary.latest?.id || 'untitled'}"${formatPullRequestStateEcho(summary)}${summary.latest?.url ? ` (${summary.latest.url})` : ''}`;
         } else if (summary?.source === 'idle-out-nudge') {
-            extra = `; idle-out nudge — ${summary.reason || 'idle'}; next: ${summary.nextAction || 'take the plan\'s next step'}`;
+            // The nudge quotes the seat's own last lane-state line and the sunset rule when the
+            // producer supplied them; an older pulse without them still renders its reason.
+            extra = `; idle-out nudge — ${summary.reason || 'idle'}; next: ${summary.nextAction || 'take the plan\'s next step'}` +
+                (summary.laneState  ? `; your last ${summary.laneState}` : '') +
+                (summary.sunsetRule ? `; ${summary.sunsetRule}`          : '');
         }
 
         breakdown += `\n- ${heartbeats.length} heartbeat pulses (latest GraphLog: ${latest.logId}${extra})`;
