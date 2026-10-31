@@ -24,11 +24,16 @@ class FakeTransport {
     protocolVersion = null
     sessionId = undefined
     started = 0
+    streams = 0
     terminated = 0
 
     async close() {
         this.closed++;
         this.onclose?.()
+    }
+
+    async resumeStream() {
+        this.streams++
     }
 
     async send(message) {
@@ -445,6 +450,7 @@ test.describe('stdioToStreamableHttp', () => {
         expect(local.messages.find(message => message.id === 3)).toMatchObject({error: {data: {outcome: 'unknown'}}});
         expect(sessions).toEqual(['session-1']);
         expect(replacement.started).toBe(1);
+        expect(replacement.streams).toBe(1);
         expect(replacement.protocolVersion).toBe('2025-11-25');
         expect(replacement.messages.map(message => message.method)).toEqual(['tools/list']);
         replacement.onmessage({jsonrpc: '2.0', id: 4, result: {tools: []}});
@@ -487,6 +493,29 @@ test.describe('stdioToStreamableHttp', () => {
         expect(fresh.messages.map(message => message.method)).toEqual(['initialize', 'notifications/initialized', 'tools/list']);
         expect(local.closed).toBe(0);
         await bridge.close()
+    });
+
+    test('a resume survives a replacement without resumeStream and one whose stream open rejects', async () => {
+        for (const shape of ['absent', 'rejects']) {
+            const
+                replacement                                = new FakeTransport(),
+                {bridge, errors, local, recovered, remote} = await startInitializedBridge({
+                    createRemoteTransport: () => replacement
+                });
+
+            replacement.resumeStream = shape === 'absent' ? undefined :
+                async () => { throw httpError(502, 'Error GETting endpoint: Bad Gateway') };
+            remote.sessionId = 'session-1';
+            remote.onerror(new Error('Maximum reconnection attempts (2) exceeded.'));
+            local.onmessage({jsonrpc: '2.0', id: 7, method: 'tools/list', params: {}});
+            await flush();
+
+            expect(errors).toEqual([]);
+            expect(recovered).toEqual(['Neo MCP bridge is resuming its remote session. Cause: sse-reconnect-exhausted.']);
+            expect(replacement.messages.map(message => message.method)).toEqual(['tools/list']);
+            expect(local.closed).toBe(0);
+            await bridge.close()
+        }
     });
 
     test('a request whose delivery fails is answered locally while the session stays open', async () => {
@@ -1115,8 +1144,10 @@ test.describe('stdioToStreamableHttp', () => {
         const
             token    = 'inert-loopback-fixture-token',
             requests = [],
+            streams  = [],
             server   = createServer(async (request, response) => {
                 if (request.method === 'GET') {
+                    streams.push(request.headers['mcp-session-id']);
                     response.writeHead(405);
                     response.end();
                     return
@@ -1243,6 +1274,10 @@ test.describe('stdioToStreamableHttp', () => {
             expect(requests.filter(({method}) => method === 'initialize')).toHaveLength(2);
             expect(requests.filter(({method}) => method === 'initialize').every(({session}) => session === undefined)).toBe(true);
             expect(requests.find(({id}) => id === 5).session).toBe('inert-session-1');
+            // One standalone GET per generation: the first after its initialized notification, the resumed
+            // one on purpose under the same session, the fresh one after the 404.
+            await expect.poll(() => streams.length).toBe(3);
+            expect([...streams].sort()).toEqual(['inert-session-1', 'inert-session-1', 'inert-session-2']);
             expect(requests.filter(({method}) => method === 'notifications/initialized').map(({session}) => session)).toEqual([
                 'inert-session-1', 'inert-session-2'
             ]);

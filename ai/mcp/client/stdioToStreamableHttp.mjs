@@ -117,7 +117,8 @@ export function getBridgeErrorCause(error) {
 /**
  * @summary Keep a local MCP connection while resuming, or else replacing, a lost remote HTTP session.
  * Lost requests receive an error with an unknown outcome and are never replayed. A retired session the
- * server may still hold is resumed by its id on the next traffic, with no handshake; only a session the
+ * server may still hold is resumed by its id on the next traffic, with no handshake and a best-effort
+ * standalone stream (the first POST remains the proof of the session); only a session the
  * server refused (404), or one that never reached a session id, joins a bounded initialization flight
  * using the original client parameters and protocol contract. A lost notification keeps the session:
  * it cannot be answered, and a renewal would spend the server-side session for nothing. Idle SSE
@@ -328,6 +329,10 @@ export async function bridgeTransports({
                     generation = wire(createRemoteTransport(resumeSessionId));
                     generation.transport.setProtocolVersion?.(initializeResult.protocolVersion);
                     await generation.transport.start();
+                    // The standalone GET stream is the idle liveness probe a fresh generation gets after its
+                    // initialized notification; a resumed one sends none, so it opens the stream itself, best-effort:
+                    // a 404 reaches onRemoteError and retires it as refused, anything else is a `kept` report.
+                    void generation.transport.resumeStream?.(undefined)?.catch?.(() => {});
                     if (current !== generation || closePromise) throw new Error('Bridge closed.');
                     return generation
                 }
