@@ -9,9 +9,9 @@ import RequestContextService, {normalizeUserId} from '../../mcp/server/shared/se
  *
  * `HARNESS_PRESENCE` is a wake-routing overlay: it says whether a receiver route appears
  * addressable. This service records a separate `AGENT_TURN_PRESENCE` interval: a trusted harness
- * turn began, may refresh progress, and eventually expires or terminalizes. These turn-presence
- * records are NOT the `who_is_online` liveness signal — `who_is_online` derives liveness from
- * `add_memory` recency (roster-scoped); turn-presence is a separate active-turn substrate.
+ * turn began, may refresh progress, and eventually expires or terminalizes. `who_is_online` reads
+ * `add_memory` recency first and a fresh interval as its mid-turn rescue
+ * ({@link TurnPresenceService#getFreshTurnPresence}); both reads are roster-scoped.
  *
  * @class Neo.ai.services.memory-core.TurnPresenceService
  * @extends Neo.core.Base
@@ -125,7 +125,7 @@ class TurnPresenceService extends Base {
         // no-op path below, not a failure — see the contract note on this method.
         const targetTurnId = turnId || (action === 'start'
             ? crypto.randomUUID()
-            : this._findNewestActiveTurnId(agentIdentity, nowDate));
+            : this._findNewestActiveTurn(agentIdentity, nowDate)?.turnId);
         if (!targetTurnId) {
             return {
                 status: 'noop',
@@ -192,6 +192,8 @@ class TurnPresenceService extends Base {
      * window — the consolidate-then-save gate lands the memory only at the turn boundary, so a long
      * mid-turn agent can read `add_memory`-stale yet be live. Returns `null` when no beacon exists, so a
      * beaconless deployment's memory-recency verdict is never gated on a signal it cannot emit.
+     * The projection comes from the finder's own row: a beacon is private to its writer, so an
+     * owner-scoped read would show every reader but the owner nothing; its `note` never crosses.
      *
      * The beacon HORIZONS (`freshUntil` / `expiresAt`) are vouched verbatim alongside the derived
      * boolean: `fresh` answers "is it fresh NOW" for this service's own clock, while a banded
@@ -209,16 +211,13 @@ class TurnPresenceService extends Base {
         if (!agentIdentity) return null;
 
         const nowDate = this._coerceDate(now),
-              turnId  = this._findNewestActiveTurnId(agentIdentity, nowDate);
-        if (!turnId) return null;
-
-        const props = this._getTurnPresenceProperties(this._buildTurnPresenceId(agentIdentity, turnId));
+              props   = this._findNewestActiveTurn(agentIdentity, nowDate);
         if (!props) return null;
 
         const fresh = !!props.freshUntil && this._coerceDate(props.freshUntil).getTime() > nowDate.getTime();
 
         return {
-            turnId,
+            turnId        : props.turnId,
             startedAt     : props.startedAt,
             lastProgressAt: props.lastProgressAt,
             fresh,
@@ -266,10 +265,10 @@ class TurnPresenceService extends Base {
      * @summary Finds the newest non-expired active turn for an identity.
      * @param {String} agentIdentity AgentIdentity node id.
      * @param {Date} nowDate Clock source.
-     * @returns {String|null}
+     * @returns {Object|null} The turn's properties, carrying its `turnId`.
      * @protected
      */
-    _findNewestActiveTurnId(agentIdentity, nowDate) {
+    _findNewestActiveTurn(agentIdentity, nowDate) {
         const sqlite = GraphService.db?.storage?.db;
         if (!sqlite) return null;
 
@@ -289,7 +288,8 @@ class TurnPresenceService extends Base {
         if (!row?.data) return null;
 
         try {
-            return JSON.parse(row.data).properties?.turnId || null;
+            const properties = JSON.parse(row.data).properties;
+            return properties?.turnId ? properties : null;
         } catch {
             return null;
         }
