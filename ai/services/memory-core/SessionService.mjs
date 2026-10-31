@@ -86,7 +86,7 @@ export function extractSessionDiscussedIssueIds(...texts) {
           urlIssueRegex = /https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:issues|pull)\/(\d+)\b/gi,
           urlRepoRegex  = /https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/gi,
           pathRepoRegex = /(?:^|[\s"'`(])(?:\/[^\s"'`)]*\/)?neomjs\/([A-Za-z0-9_.-]+)(?=[/\s"'`),.:;]|$)/gi,
-          qualifiedRegex = /(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s*|(?<![A-Za-z0-9_./-])([A-Za-z][A-Za-z0-9_.-]*)|(?<![A-Za-z0-9_./-])(Stage|Brain|Institution|Skills|Neo)\s+)#(\d+)\b/g,
+          qualifiedRegex = /(?<![A-Za-z0-9_./-])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s*|([A-Za-z][A-Za-z0-9_.-]*)|(Stage|Brain|Institution|Skills|Neo)\s+(?:PR\s+|pull\s+|issue\s+|ticket\s+)?)#(\d+)\b/gi,
           bareIssueRegex = /(?<![A-Za-z0-9_./#-])(?:#|issue-)(\d+)\b/gi,
           toPositiveInt  = raw => {
               const n = Number(raw);

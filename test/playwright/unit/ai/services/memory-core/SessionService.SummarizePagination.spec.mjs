@@ -326,11 +326,23 @@ test.describe('SessionService.summarizeSession — memory-fetch pagination (clos
             'Cross-repo turn.'
         )).toEqual(['issue-20150']);
 
-        //    d) Qualified neomjs/neo references (and URL form) link issue-N; bare references in a single-repo neo session also link.
+        //    d) Qualified neomjs/neo references (and URL form) link issue-N; bare references in a single-repo neo session also link,
+        //       while foreign "Stage PR #N" / "Brain PR #N" / "stage #N" phrasings stay unlinked and mark the session multi-repo.
         expect(extractSessionDiscussedIssueIds(
             'Resolved neomjs/neo#552 and verified #553.',
             'Working in /Users/dev/neomjs/neo on https://github.com/neomjs/neo/issues/554.'
         )).toEqual(['issue-552', 'issue-554', 'issue-553']);
+
+        expect(extractSessionDiscussedIssueIds(
+            'Approved Stage PR #552 and Brain PR #1393; also reviewed stage #560.',
+            'Working in /Users/dev/neomjs/neo on neomjs/neo#20150.'
+        )).toEqual(['issue-20150']);
+
+        //    e) Linear-time guard on large alphanumeric runs (mirrors SessionSummaryDegradedFallback's 1.5M-char fixture).
+        const startMs     = Date.now(),
+              largeResult = extractSessionDiscussedIssueIds('x'.repeat(1_500_000));
+        expect(largeResult).toEqual([]);
+        expect(Date.now() - startMs).toBeLessThan(1000);
 
         // 2. Closed-loop summarizeSession integration check on GraphService.linkNodes:
         const discussedEdges = [];
