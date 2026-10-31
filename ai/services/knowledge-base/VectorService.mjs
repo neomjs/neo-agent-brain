@@ -25,7 +25,7 @@ import crypto                                                          from 'cry
 import fs                                                              from 'fs-extra';
 import logger                                                          from '../../mcp/server/knowledge-base/logger.mjs';
 import path                                                            from 'path';
-import readline                                                        from 'readline';
+import {closeBundlePayload, openBundlePayload}                         from '../shared/bundlePayload.mjs';
 import DestructiveOperationGuard                                       from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import {computeCorpusFingerprint, decideResume, selectResumableChunks} from './helpers/resumableEmbedding.mjs';
 import {clearResumeState, readResumeState, writeResumeState}           from './helpers/kbEmbeddingResumeStore.mjs';
@@ -2473,11 +2473,16 @@ class VectorService extends Base {
         }
 
         const knowledgeBase = [];
-        const fileStream    = fs.createReadStream(knowledgeBasePath);
-        const rl            = readline.createInterface({input: fileStream, crlfDelay: Infinity});
+        // `JSON.stringify` leaves U+2028/U+2029 raw and readline breaks a line at each; the shared
+        // reader hands them over as their JSON escapes, so a record quoting either stays one line.
+        const rl = openBundlePayload(knowledgeBasePath);
 
-        for await (const line of rl) {
-            knowledgeBase.push(JSON.parse(line));
+        try {
+            for await (const line of rl) {
+                knowledgeBase.push(JSON.parse(line));
+            }
+        } finally {
+            closeBundlePayload(rl);
         }
         logger.log(`Loaded ${knowledgeBase.length} knowledge chunks from file.`);
 
