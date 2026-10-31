@@ -162,11 +162,15 @@ function stripMarkdownCode(text) {
 
 /**
  * @summary Replaces quoted prose spans that report a phrase instead of using it.
+ *
+ * A Markdown blockquote line (`> …`, after optional indentation) is the idiomatic way to quote a prior
+ * sentence in a report, so it is a mention like the inline quote forms; an inline `>` stays text.
  * @param {String} text Assistant final-turn text with code spans already removed.
  * @returns {String}
  */
 function stripQuotedMentions(text) {
     return text
+        .replace(/^[ \t]*>.*$/gm, ' ')
         .replace(/"[^"\n]*"/g, ' ')
         .replace(/(^|[^a-zA-Z0-9_])'[^'\n]*'(?=$|[^a-zA-Z0-9_])/g, '$1 ');
 }
@@ -244,9 +248,13 @@ function isCitationBridge(bridge) {
  * Anchors a prior decision's citation or adjacent executed report. Matched RIGHTMOST — the greedy head pushes the anchor
  * as late as possible, so `per your call, but honestly, your call?` is judged on the nearest anchor and
  * the trailing deferential use still fires.
+ *
+ * A duration before `after` or `since` (`three hours after your call`) dates a decision already made and
+ * anchors too; the bare preposition does not, because `I'll continue after your call` waits for one. A
+ * future wait with a duration has not been observed, so the anchor stays on the duration, not on tense.
  * @type {RegExp}
  */
-const CITATION_ANCHOR = /^[\s\S]*\b(?:per|as\s+you\s+(?:said|directed|called)|(?:recorded|followed|implemented|applied|took|went\s+with)(?=\s*$))\b([\s\S]*)$/;
+const CITATION_ANCHOR = /^[\s\S]*\b(?:per|as\s+you\s+(?:said|directed|called)|(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|several|few|couple\s+of)\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?)\s+(?:after|since)|(?:recorded|followed|implemented|applied|took|went\s+with)(?=\s*$))\b([\s\S]*)$/;
 
 /**
  * @summary Checks whether a local "your call" match cites a prior operator decision.
@@ -264,6 +272,49 @@ function isAttributiveCitationContext(phrase, text, startIndex) {
           anchored = CITATION_ANCHOR.exec(prefix);
 
     return anchored !== null && isCitationBridge(anchored[1]);
+}
+
+/**
+ * A negator or contrast marker IMMEDIATELY before the phrase, with at most one article or adverb between.
+ *
+ * `my decision rather than your call` and `this is not your call to make` take the decision in the same
+ * clause; the phrase is their object, not an offer. Adjacency is the point: `Not sure which is better —
+ * your call.` keeps firing because `sure` sits between the negator and the phrase, and a comma or dash
+ * breaks the exemption the same way. Contractions need their apostrophe — `want` would otherwise read
+ * as `wa` + `nt`, and `I want your call on this` is a handback.
+ * @type {RegExp}
+ */
+const NEGATED_PHRASE_PREFIX = /\b(?:not|never|no\s+longer|rather\s+than|instead\s+of|nor|\w+n[’']t)\s+(?:(?:an?|the|really|just|even|simply|merely)\s+)?$/;
+
+/**
+ * @summary Checks whether a local match is negated or contrasted by the words right before it.
+ * @param {String} text Searchable assistant final-turn text.
+ * @param {Number} startIndex Match start index.
+ * @returns {Boolean}
+ */
+function isNegatedOrContrastedContext(text, startIndex) {
+    return NEGATED_PHRASE_PREFIX.test(text.slice(Math.max(0, startIndex - 80), startIndex).toLowerCase());
+}
+
+/**
+ * The author attributing the phrase to their OWN past speech, in the same clause, with the copula right
+ * before it: `the first was telling you the approval was your call when the flag made it mine`. Naming a
+ * past slip is a report, not deference; a matcher that fires on it punishes the precise self-report its own
+ * directive asks for. `That was your call` has no attribution and `I told you: your call` no copula — both fire.
+ * @type {RegExp}
+ */
+const FIRST_PERSON_ATTRIBUTION = /\b(?:i\s+(?:told|said|wrote|asked)|(?:was\s+|kept\s+)?telling)\s+(?:you|him|her|them)\b[^.!?\n]*\b(?:was|is)\s*$/;
+
+/**
+ * @summary Checks whether a local "your call" match is the author's report of their own past deference.
+ * @param {String} phrase Matched deference phrase.
+ * @param {String} text Searchable assistant final-turn text.
+ * @param {Number} startIndex Match start index.
+ * @returns {Boolean}
+ */
+function isFirstPersonAttributionContext(phrase, text, startIndex) {
+    return phrase.toLowerCase() === 'your call' &&
+           FIRST_PERSON_ATTRIBUTION.test(text.slice(Math.max(0, startIndex - 80), startIndex).toLowerCase());
 }
 
 /**
@@ -302,7 +353,9 @@ export function matchDeferencePhrase(text = '', phrases = DEFERENCE_PHRASES) {
             }
 
             if (!isReportedMentionContext(searchableText, startIndex) &&
-                !isAttributiveCitationContext(phrase, searchableText, startIndex)) {
+                !isAttributiveCitationContext(phrase, searchableText, startIndex) &&
+                !isNegatedOrContrastedContext(searchableText, startIndex) &&
+                !isFirstPersonAttributionContext(phrase, searchableText, startIndex)) {
                 return true;
             }
         }

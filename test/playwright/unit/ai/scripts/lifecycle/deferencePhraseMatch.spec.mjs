@@ -72,6 +72,64 @@ test.describe('deferencePhraseMatch', () => {
 });
 
 /**
+ * @summary The adjacency carves: a cited, negated, confessed or quoted "your call" is not a handback.
+ *
+ * Every sentence below comes from a live Stop-hook firing recorded on neo-agent-brain#124, named by its
+ * author and date (the comment ids are in the ticket); the controls are the fair hits recorded beside them.
+ */
+test.describe('deferencePhraseMatch adjacency carves', () => {
+    const silent = [
+        ['temporal citation, hours after (Grace, 2026-10-29)',
+            'Emmy rigged it to our skeleton and drove it with the existing walk animation, which is what you asked for, about three hours after your call.'],
+        ['temporal citation, days since', 'The index row has not moved two days since your call.'],
+        ['temporal citation, an hour after', 'The deploy was green an hour after your call.'],
+        ['contrast, rather than (Grace, 2026-10-24)',
+            'The e2e-brain tier stays at ten shards, my decision rather than your call.'],
+        ['negation, not … to make (Grace, 2026-10-24)', 'This is not your call to make; I decided ten shards.'],
+        ['contrast, instead of (Grace, 2026-10-24)', 'Ten shards, instead of your call, per the policy.'],
+        ['negated contraction', "The shard count isn't your call; the policy settled it."],
+        ['confession, telling you … was (Ada, 2026-09-21)',
+            'The first was telling you the fork-CI approval was your call when `maintain: true` made it mine.'],
+        ['confession, I told you … was', 'I told you yesterday that the fork-CI approval was your call; it was mine.'],
+        ['blockquote line (Ada, 2026-09-21 addendum)', '> Your call?\n\nThat was the quoted sentence; the decision is recorded on the ticket.'],
+        ['indented blockquote line', '  > Twelve or ten shards — your call.\n\nQuoted from the earlier turn, now decided.']
+    ];
+
+    for (const [name, text] of silent) {
+        test(`silent: ${name}`, () => {
+            expect(matchDeferencePhrase(text)).toBeNull();
+        });
+    }
+
+    const fires = [
+        ['decision handback with whether (Vega, 2026-08-17)',
+            'merge-ready under the exception — your call whether that window applies'],
+        ['which is your call (Grace, 2026-10-24)', 'That trade is runner budget against margin, which is your call.'],
+        ['future deference, after without a duration (Grace, 2026-10-29)', "I'll continue after your call"],
+        ['terminal after your call? (Grace, 2026-10-29)', 'Do we ship tonight, after your call?'],
+        ['dash before the phrase (Grace, 2026-10-24)', 'Twelve or ten shards — your call.'],
+        ['not is not adjacent (Grace, 2026-10-24)', 'Not sure which is better — your call.'],
+        ['comma breaks adjacency (Grace, 2026-10-24)', 'Whether to wait or not, your call.'],
+        ['retroactive deference without attribution (Ada, 2026-09-21)', 'That was your call.'],
+        ['grading an order after executing it (Grace, 2026-08-10)', 'Your call to revert the whole file was right.'],
+        ['want is not a negated contraction', 'I want your call on the shard count.'],
+        ['told you without a copula before the phrase', 'I told you: your call.'],
+        ['inline > is text, not a blockquote', 'The margin > the budget, so your call.'],
+        ['a live use after a blockquote mention', '> per your call, ten shards.\n\nTwelve or ten next week — your call?']
+    ];
+
+    for (const [name, text] of fires) {
+        test(`fires: ${name}`, () => {
+            expect(matchDeferencePhrase(text)).toBe('your call');
+        });
+    }
+
+    test('the negation carve does not reach other phrases through ordinary prose', () => {
+        expect(matchDeferencePhrase("I did not finish; want me to take the parser lane next?")).toBe('want me to');
+    });
+});
+
+/**
  * Direct coverage for the deference-register phrase match. The matcher is pure; hook specs cover
  * the runtime block path and the operator-dialogue carve.
  */
