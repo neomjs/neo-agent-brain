@@ -25,7 +25,7 @@ const leakingSnapshot = () => ({
         observedAt       : 1700000000000,
         status           : 'degraded',
         memoryPressure   : {disposition: 'at-cap', reason: 'sustained-saturation', receipt: {samples: [1, 2, 3], windowMs: 60000}},
-        inspect          : {containerId: 'a1b2c3', image: 'neo-agent-brain:dev', mounts: ['/Users/operator/.neo-ai/data:/app/.neo-ai-data']},
+        inspect          : {containerId: 'a1b2c3', image: 'neo-agent-brain:dev', mounts: ['/Users/operator/.neo-ai/data:/app/.neo-ai-data'], currentRun: {startedAt: '2023-11-14T22:13:20.123456789Z', probeReliability: {sampleCount: 3}}},
         stats            : {cpuPercent: 400, memoryBytes: 1073741824},
         logs             : {tail: ['[mc] token=sk-live-secret']},
         providerResidency: {model: 'gemma'},
@@ -130,6 +130,7 @@ test.describe('projectDeploymentStateForFleet — the bounded, redacted wire sha
         expect(projection.services).toEqual([{
             serviceKey    : 'mc-server',
             observedAt    : 1700000000000,
+            startedAt     : '2023-11-14T22:13:20.123456789Z',
             status        : 'degraded',
             memoryPressure: {disposition: 'at-cap', reason: 'sustained-saturation'},
             restartChurn  : {baseline: 'available', detecting: true},
@@ -174,6 +175,7 @@ test.describe('projectDeploymentStateForFleet — the bounded, redacted wire sha
         expect(projectDeploymentServiceForFleet(liveChromaRow())).toEqual({
             serviceKey    : 'chroma',
             observedAt    : 1788568959783,
+            startedAt     : null,
             status        : 'available',
             memoryPressure: {disposition: 'below', reason: null},
             restartChurn  : {baseline: 'available', detecting: true},
@@ -207,12 +209,17 @@ test.describe('projectDeploymentStateForFleet — the bounded, redacted wire sha
         expect(projectDeploymentServiceForFleet({serviceKey: 'ingress', observedAt: 5})).toEqual({
             serviceKey    : 'ingress',
             observedAt    : 5,
+            startedAt     : null,
             status        : null,
             memoryPressure: null,
             restartChurn  : null,
             classification: null,
             diagnosis     : null
         });
+        // the start time sits two blocks deep in `inspect`: a missing link or a non-string reads null
+        for (const inspect of [{}, {currentRun: {}}, {currentRun: {startedAt: 1700000000000}}, 'running']) {
+            expect(projectDeploymentServiceForFleet({serviceKey: 'kb-server', inspect}).startedAt).toBeNull();
+        }
         // a decision without an inner diagnosis (the healthy arm) keeps its own status and action class
         expect(projectDeploymentServiceForFleet({serviceKey: 'kb-server', diagnosis: {status: 'healthy'}}).diagnosis)
             .toEqual({status: 'healthy', actionClass: null, recoveryClass: null, confidence: null});
