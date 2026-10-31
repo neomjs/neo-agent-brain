@@ -16,8 +16,12 @@ import {
     recoverSessionSummaryReceipts,
     stageSessionSummaryReceipt
 } from './helpers/sessionSummaryReceiptStore.mjs';
-import crypto                                      from 'crypto';
-import GraphService                                from './GraphService.mjs';
+import crypto       from 'crypto';
+import GraphService from './GraphService.mjs';
+import {
+    CORPUS_GRAPH_ORIGIN,
+    CORPUS_PROJECTION_ORIGIN
+} from '../graph/corpusProjectionContract.mjs';
 import {capSessionsForSweep}                       from './capSessionsForSweep.mjs';
 import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER} from '../../graph/identityRoots.mjs';
 
@@ -38,6 +42,106 @@ import RequestContextService, {
 import MemoryCoreRecorderService from './MemoryCoreRecorderService.mjs';
 
 const CHROMA_SESSION_READ_TIMEOUT_MS = 10000;
+
+const NEO_REPO_ALIASES = new Set([
+    CORPUS_PROJECTION_ORIGIN,
+    'neo.mjs',
+    CORPUS_GRAPH_ORIGIN,
+    'neomjs/neo.mjs'
+]);
+
+/**
+ * @summary Normalizes an `owner/repo` or short repository alias to a canonical repository token.
+ * Only `neomjs/neo` aliases normalize to `CORPUS_PROJECTION_ORIGIN` (`'neo'`); any other repository
+ * token normalizes to a distinct lowercase identifier so foreign references mark the session without
+ * requiring an enumerated repository table.
+ * @param {String|null|undefined} rawRepo
+ * @returns {String|null}
+ */
+function normalizeRepoToken(rawRepo) {
+    if (typeof rawRepo !== 'string') return null;
+    const trimmed = rawRepo.trim().toLowerCase();
+    if (!trimmed) return null;
+    if (NEO_REPO_ALIASES.has(trimmed)) return CORPUS_PROJECTION_ORIGIN;
+    if (trimmed.startsWith('neomjs/')) return trimmed.slice('neomjs/'.length);
+    return trimmed;
+}
+
+/**
+ * @summary Extracts `issue-N` graph node IDs discussed in a session summary and its turns.
+ *
+ * The Native Edge Graph projects only `CORPUS_GRAPH_ORIGIN` (`neomjs/neo`) under bare `issue-N` IDs.
+ * - Qualified `neomjs/neo` issue references link `issue-N` directly; foreign qualified references
+ *   (owner/repo qualifiers, short repo aliases, or foreign GitHub URLs) never link `issue-N`.
+ * - Bare issue references link `issue-N` only when the session's detected repository
+ *   context is unambiguously `neomjs/neo` (`sessionRepos.size === 1 && sessionRepos.has('neo')`).
+ *
+ * @param {...String} texts Summary and turn documents for the session.
+ * @returns {String[]} Canonical `issue-N` node IDs to link as `DISCUSSED_IN`.
+ */
+export function extractSessionDiscussedIssueIds(...texts) {
+    const linkedIssues  = new Set(),
+          sessionRepos  = new Set(),
+          residualTexts = [],
+          urlIssueRegex = /https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:issues|pull)\/(\d+)\b/gi,
+          urlRepoRegex  = /https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/gi,
+          pathRepoRegex = /(?:^|[\s"'`(])(?:\/[^\s"'`)]*\/)?neomjs\/([A-Za-z0-9_.-]+)(?=[/\s"'`),.:;]|$)/gi,
+          qualifiedRegex = /(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\s*|(?<![A-Za-z0-9_./-])([A-Za-z][A-Za-z0-9_.-]*)|(?<![A-Za-z0-9_./-])(Stage|Brain|Institution|Skills|Neo)\s+)#(\d+)\b/g,
+          bareIssueRegex = /(?<![A-Za-z0-9_./#-])(?:#|issue-)(\d+)\b/gi,
+          toPositiveInt  = raw => {
+              const n = Number(raw);
+              return Number.isSafeInteger(n) && n > 0 ? n : null;
+          };
+
+    for (const rawText of texts) {
+        if (typeof rawText !== 'string' || !rawText) continue;
+
+        for (const match of rawText.matchAll(urlRepoRegex)) {
+            const repo = normalizeRepoToken(match[1]);
+            if (repo) sessionRepos.add(repo);
+        }
+
+        for (const match of rawText.matchAll(pathRepoRegex)) {
+            const repo = normalizeRepoToken(`neomjs/${match[1]}`);
+            if (repo) sessionRepos.add(repo);
+        }
+
+        let masked = rawText.replace(urlIssueRegex, (_, rawRepo, rawNum) => {
+            const repo = normalizeRepoToken(rawRepo),
+                  num  = toPositiveInt(rawNum);
+            if (repo) sessionRepos.add(repo);
+            if (repo === CORPUS_PROJECTION_ORIGIN && num !== null) {
+                linkedIssues.add(`issue-${num}`);
+            }
+            return ' ';
+        });
+
+        masked = masked.replace(qualifiedRegex, (_, fullRepo, neoSlug, shortLabel, rawNum) => {
+            const repo = normalizeRepoToken(fullRepo || neoSlug || shortLabel),
+                  num  = toPositiveInt(rawNum);
+            if (repo) sessionRepos.add(repo);
+            if (repo === CORPUS_PROJECTION_ORIGIN && num !== null) {
+                linkedIssues.add(`issue-${num}`);
+            }
+            return ' ';
+        });
+
+        residualTexts.push(masked);
+    }
+
+    if (sessionRepos.size === 1 && sessionRepos.has(CORPUS_PROJECTION_ORIGIN)) {
+        for (const masked of residualTexts) {
+            for (const match of masked.matchAll(bareIssueRegex)) {
+                const num = toPositiveInt(match[1]);
+                if (num !== null) {
+                    linkedIssues.add(`issue-${num}`);
+                }
+            }
+        }
+    }
+
+    return Array.from(linkedIssues);
+}
 
 /**
  * @summary Service for handling session summarization and drift detection.
@@ -871,18 +975,8 @@ ${sessionContent}
             });
         }
 
-        // --- 2. Semantic Extraction (Regex Linkage) ---
-        const issueRegex   = /(?:#|issue-)(\d+)/gi;
-        const linkedIssues = new Set();
-        let match;
-
-        while ((match = issueRegex.exec(summary)) !== null) {
-            linkedIssues.add(`issue-${match[1]}`);
-        }
-
-        while ((match = issueRegex.exec(aggregatedContent)) !== null) {
-            linkedIssues.add(`issue-${match[1]}`);
-        }
+        // --- 2. Semantic Extraction (Repository-Qualified Linkage) ---
+        const linkedIssues = extractSessionDiscussedIssueIds(summary, aggregatedContent);
 
         linkedIssues.forEach(issueId => {
             // Tie the summary session logically to the issues being discussed
