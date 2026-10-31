@@ -331,6 +331,30 @@ test.describe('VectorService.embed — work-volume branching (#10572)', () => {
         expect(spy.calls.upsert).toBeGreaterThan(0); // embedding actually happened
     });
 
+    test('#1405 a record holding U+2028 and U+2029 loads as one chunk, both characters intact', async () => {
+        const spy   = createSpyCollection({existingIds: []});
+        const texts = [];
+        KB_ChromaManager.getKnowledgeBaseCollection = async () => spy;
+        TextEmbeddingService.embedTexts = async batch => {
+            texts.push(...batch);
+            return batch.map(() => new Array(384).fill(0))
+        };
+
+        // `JSON.stringify` leaves both separators raw; a bare readline breaks the line at each.
+        fs.writeFileSync(fixturePath, JSON.stringify({
+            hash     : 'line-separators',
+            type     : 'method',
+            name     : 'lineSeparators',
+            className: '',
+            content  : 'before between after'
+        }), 'utf8');
+
+        const result = await KB_VectorService.embed(fixturePath, {viaMcp: true});
+
+        expect(result).toMatchObject({embedded: 1, settled: 1, remaining: 0});
+        expect(texts.some(text => text.includes('before between after'))).toBe(true)
+    });
+
     test('#17017 unchanged poison is skipped across sweeps while changed content and replay re-enter', async () => {
         const spy           = createSpyCollection({existingIds: []});
         let   providerCalls = 0;
