@@ -623,15 +623,14 @@ export class DeploymentStateBridgeService extends Base {
      */
     async collectMaintenanceSnapshot({
         backupTaskState    = null,
+        // Module-scope, deliberately not a method: this projection depends only on resolved config
+        // and its own argument, never on instance state, and the contract spec asserts that by
+        // invoking it detached.
         durability         = resolveConfiguredDurabilityPosture(),
         now                = Date.now(),
         receiptPath        = path.join(AiConfig.backupPath, 'last-backup-receipt.json'),
         stagingResidueRoot = AiConfig.backupPath
     } = {}) {
-        // Module-scope, deliberately not a method: this projection depends only on resolved config
-        // and its own argument, never on instance state, and the contract spec asserts that by
-        // invoking it detached.
-
         // `stagingResidue` is projected UNCONDITIONALLY, for the same reason `durability` is: it is a
         // property of the backup ROOT rather than of any run, so it is always REPORTABLE — which is
         // not the same as always successfully measured, and `status` carries that difference: an
@@ -688,15 +687,18 @@ export class DeploymentStateBridgeService extends Base {
 
         if (backupTaskState) {
             retryState = reconcileBackupRetryStateWithReceipt({
+                backupIntervalMs: AiConfig.orchestrator.intervals.backupMs,
                 durability,
                 lastBackup,
-                retryState: describeBackupRetryState({
+                now,
+                retryState      : describeBackupRetryState({
                     now,
                     intervalMs   : AiConfig.orchestrator.intervals.backupMs,
                     retryDelayMs : AiConfig.orchestrator.intervals.backupRetryDelayMs,
                     retryWindowMs: AiConfig.orchestrator.intervals.backupRetryWindowMs,
                     taskState    : backupTaskState
-                })
+                }),
+                retryWindowMs   : AiConfig.orchestrator.intervals.backupRetryWindowMs
             });
             base.retry = retryState
         }

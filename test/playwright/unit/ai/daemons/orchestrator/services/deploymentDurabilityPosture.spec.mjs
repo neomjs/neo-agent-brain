@@ -234,7 +234,7 @@ test.describe('off-host durability posture (#16055)', () => {
         // sibling spec had already initialised Neo in the same worker.
         const source = readFileSync(BRIDGE_PATH, 'utf8');
 
-        expect(source).toContain('const durability = resolveConfiguredDurabilityPosture();');
+        expect(source).toContain('durability         = resolveConfiguredDurabilityPosture(),');
         expect(source).not.toContain("if (outcome.status === 'missing') return null;")
     });
 

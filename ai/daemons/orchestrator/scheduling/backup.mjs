@@ -203,21 +203,31 @@ function resolveNextBackupAttemptAtMs({
 }
 
 /**
- * @summary True when a positive-evidence restorable receipt completed after the retry streak anchor.
+ * @summary True when a positive-evidence restorable receipt completed after the retry streak anchor
+ * and within the overdue bound (`backupIntervalMs + retryWindowMs`).
  * @param {Object} [options={}]
+ * @param {Number} [options.backupIntervalMs=0] Ordinary periodic backup cadence.
  * @param {Object} [options.durability={}] Deployment durability posture.
  * @param {Object|null} [options.lastBackup=null] Validated last-backup receipt projection.
+ * @param {Number} [options.now] Current timestamp in milliseconds.
  * @param {Object|null} [options.retryState=null] Output of {@link describeBackupRetryState}.
+ * @param {Number} [options.retryWindowMs=0] Bounded failed-run recovery window.
  * @returns {Boolean}
  */
 export function doesReceiptSupersedeBackupStreak({
-    durability = {},
-    lastBackup = null,
-    retryState = null
+    backupIntervalMs = 0,
+    durability       = {},
+    lastBackup       = null,
+    now,
+    retryState       = null,
+    retryWindowMs    = 0
 } = {}) {
     const streakStartedAtMs = Number(retryState?.streakStartedAtMs),
           finishedAtMs      = toEpochMs(lastBackup?.finishedAt),
-          syncStatus        = lastBackup?.offHostSync?.status;
+          syncStatus        = lastBackup?.offHostSync?.status,
+          staleAfterMs      = backupIntervalMs > 0
+              ? backupIntervalMs + Math.max(0, retryWindowMs)
+              : null;
 
     if (!Number.isFinite(streakStartedAtMs) || streakStartedAtMs <= 0) {
         return false;
@@ -231,32 +241,58 @@ export function doesReceiptSupersedeBackupStreak({
     if (durability?.posture === 'unmet' || Boolean(durability?.configErrorCode)) {
         return false;
     }
+    if (finishedAtMs <= streakStartedAtMs) {
+        return false;
+    }
+    if (staleAfterMs !== null) {
+        if (!Number.isFinite(Number(now)) || now - finishedAtMs > staleAfterMs) {
+            return false;
+        }
+    }
 
-    return finishedAtMs > streakStartedAtMs;
+    return true;
 }
 
 /**
- * @summary Projects `phase: 'healthy'` with `ledgerPhase` and `supersededBy` when a qualifying receipt outdates an open streak.
+ * @summary Projects `phase: 'healthy'` with `ledgerPhase`, `supersededBy`, and the receipt's
+ * `lastSuccessAt` / `lastSuccessAgeMs` when a fresh qualifying receipt outdates an open streak.
  * @param {Object} [options={}]
+ * @param {Number} [options.backupIntervalMs=0] Ordinary periodic backup cadence.
  * @param {Object} [options.durability={}] Deployment durability posture.
  * @param {Object|null} [options.lastBackup=null] Validated last-backup receipt projection.
+ * @param {Number} [options.now] Current timestamp in milliseconds.
  * @param {Object|null} [options.retryState=null] Output of {@link describeBackupRetryState}.
+ * @param {Number} [options.retryWindowMs=0] Bounded failed-run recovery window.
  * @returns {Object|null}
  */
 export function reconcileBackupRetryStateWithReceipt({
-    durability = {},
-    lastBackup = null,
-    retryState = null
+    backupIntervalMs = 0,
+    durability       = {},
+    lastBackup       = null,
+    now,
+    retryState       = null,
+    retryWindowMs    = 0
 } = {}) {
-    if (!retryState || !doesReceiptSupersedeBackupStreak({durability, lastBackup, retryState})) {
+    if (!retryState || !doesReceiptSupersedeBackupStreak({
+        backupIntervalMs,
+        durability,
+        lastBackup,
+        now,
+        retryState,
+        retryWindowMs
+    })) {
         return retryState;
     }
 
+    const finishedAtMs = toEpochMs(lastBackup.finishedAt);
+
     return {
         ...retryState,
-        ledgerPhase : retryState.ledgerPhase ?? retryState.phase,
-        phase       : BACKUP_RETRY_PHASE.healthy,
-        supersededBy: {
+        lastSuccessAgeMs: Number.isFinite(Number(now)) ? Math.max(0, Number(now) - finishedAtMs) : retryState.lastSuccessAgeMs,
+        lastSuccessAt   : lastBackup.finishedAt,
+        ledgerPhase     : retryState.ledgerPhase ?? retryState.phase,
+        phase           : BACKUP_RETRY_PHASE.healthy,
+        supersededBy    : {
             bundleName: lastBackup.bundleName ?? null,
             finishedAt: lastBackup.finishedAt
         }
@@ -278,18 +314,14 @@ export function reconcileBackupRetryStateWithReceipt({
  * @param {Number} [options.intervalMs=0] Ordinary periodic cadence.
  * @param {Number} [options.retryDelayMs=0] Minimum spacing between retries.
  * @param {Number} [options.retryWindowMs=0] Retry window measured from the streak anchor.
- * @param {Object} [options.durability={}] Optional durability posture for receipt supersession.
- * @param {Object|null} [options.lastBackup=null] Optional backup receipt for streak supersession.
- * @returns {{phase: String, retriesRemaining: Number, windowEndsAtMs: Number|null, streakStartedAtMs: Number, interruptedAt: String|null, lastSuccessAt: String|null, lastSuccessAgeMs: Number|null, nextAttemptAtMs: Number|null, ledgerPhase?: String, supersededBy?: {bundleName: String|null, finishedAt: String}}}
+ * @returns {{phase: String, retriesRemaining: Number, windowEndsAtMs: Number|null, streakStartedAtMs: Number, interruptedAt: String|null, lastSuccessAt: String|null, lastSuccessAgeMs: Number|null, nextAttemptAtMs: Number|null}}
  */
 export function describeBackupRetryState({
     taskState     = {},
     now,
     intervalMs    = 0,
     retryDelayMs  = 0,
-    retryWindowMs = 0,
-    durability    = {},
-    lastBackup    = null
+    retryWindowMs = 0
 } = {}) {
     const streakStartedAtMs = toEpochMs(taskState.failureStreakStartedAt),
           lastSuccessAtMs   = toEpochMs(taskState.lastSuccessAt),
@@ -314,19 +346,18 @@ export function describeBackupRetryState({
     }
 
     const windowEndsAtMs = streakStartedAtMs + retryWindowMs,
-          open           = retryDelayMs > 0 && isRetryWindowOpen({now, streakStartedAtMs, retryWindowMs}),
-          retryState     = {
-              ...base,
-              phase           : open ? BACKUP_RETRY_PHASE.retrying : BACKUP_RETRY_PHASE.exhausted,
-              retriesRemaining: open
-                  ? countRemainingRetries({
-                      now, lastRunAt, streakStartedAtMs, retryDelayMs, retryWindowMs
-                  })
-                  : 0,
-              windowEndsAtMs
-          };
+          open           = retryDelayMs > 0 && isRetryWindowOpen({now, streakStartedAtMs, retryWindowMs});
 
-    return reconcileBackupRetryStateWithReceipt({durability, lastBackup, retryState});
+    return {
+        ...base,
+        phase           : open ? BACKUP_RETRY_PHASE.retrying : BACKUP_RETRY_PHASE.exhausted,
+        retriesRemaining: open
+            ? countRemainingRetries({
+                now, lastRunAt, streakStartedAtMs, retryDelayMs, retryWindowMs
+            })
+            : 0,
+        windowEndsAtMs
+    };
 }
 
 /**
@@ -403,11 +434,9 @@ export function describeBackupMaintenanceHealth({
     retryWindowMs    = 0
 } = {}) {
     const
-        reasonCodes    = [],
-        retryRead      = retryState !== null && retryState !== undefined,
-        superseded     = doesReceiptSupersedeBackupStreak({durability, lastBackup, retryState}),
-        effectivePhase = superseded ? BACKUP_RETRY_PHASE.healthy : retryState?.phase,
-        staleAfterMs   = backupIntervalMs > 0
+        reasonCodes  = [],
+        retryRead    = retryState !== null && retryState !== undefined,
+        staleAfterMs = backupIntervalMs > 0
             ? backupIntervalMs + Math.max(0, retryWindowMs)
             : null,
         // The receipt and the retry ledger are two records of the same lane, and only the receipt is
@@ -439,9 +468,9 @@ export function describeBackupMaintenanceHealth({
     if (durability.configErrorCode) {
         reasonCodes.push('off-host-config-invalid')
     }
-    if (effectivePhase === BACKUP_RETRY_PHASE.retrying) {
+    if (retryState?.phase === BACKUP_RETRY_PHASE.retrying) {
         reasonCodes.push('backup-retry-open')
-    } else if (effectivePhase === BACKUP_RETRY_PHASE.exhausted) {
+    } else if (retryState?.phase === BACKUP_RETRY_PHASE.exhausted) {
         reasonCodes.push('backup-retry-exhausted')
     }
     if (lastBackup?.status === 'unreachable') {
@@ -479,7 +508,11 @@ export function describeBackupMaintenanceHealth({
     // means the lane's run was marked FAILED after it wrote that receipt. One producer is measured:
     // `runBackupWithOffHostSync` (ai/scripts/maintenance/backup.mjs) throws the required-off-host
     // refusal after the success receipt, so a deployment that requires off-host durability without
-    // configuring a sync command exits 1 on every restorable bundle. The local overlay declares the
+    // configuring a sync command exits 1 on every restorable bundle. A fresh qualifying receipt
+    // is read as supersession by `reconcileBackupRetryStateWithReceipt` (setting `lastSuccessAt`)
+    // before reaching this function; the conflict producer above cannot qualify because a required,
+    // unconfigured off-host leg resolves to `posture: 'unmet'` and a configured sync failure writes
+    // `offHostSync.status: 'failed'`. The local overlay declares the
     // documented opt-out (`NEO_ORCHESTRATOR_OFF_HOST_BACKUP_REQUIRED=false`); whether that refusal
     // should fail the task at all on cloud planes is an open decision for the orchestrator seam
     // stewards. **This code is the observer**: it reports the divergence, it does not resolve it.
@@ -491,14 +524,14 @@ export function describeBackupMaintenanceHealth({
     // it consults lives behind the mount the observer lacks. `backup-receipt-unreachable` has
     // already degraded the block by this point, so silence here costs visibility nothing and buys
     // the one thing that matters: the verdict stops asserting a history it cannot see.
-    if (!superseded && retryState && retryState.phase !== BACKUP_RETRY_PHASE.unanchored && !retryState.lastSuccessAt) {
+    if (retryState && retryState.phase !== BACKUP_RETRY_PHASE.unanchored && !retryState.lastSuccessAt) {
         if (receiptEvidence === 'proves-success') {
             reasonCodes.push('backup-state-conflict')
         } else if (receiptEvidence === 'no-success') {
             reasonCodes.push('backup-never-succeeded')
         }
     }
-    if (!superseded && staleAfterMs !== null && retryState?.lastSuccessAgeMs > staleAfterMs) {
+    if (staleAfterMs !== null && retryState?.lastSuccessAgeMs > staleAfterMs) {
         reasonCodes.push('backup-success-overdue')
     }
     // A receipt is proof the lane HAS run, so its retry posture exists and simply went unread — a

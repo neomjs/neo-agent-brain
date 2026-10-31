@@ -893,9 +893,11 @@ test.describe('wrapper + projection behavioral witnesses', () => {
             });
 
             expect(superseded.retry).toMatchObject({
-                ledgerPhase : 'exhausted',
-                phase       : 'healthy',
-                supersededBy: {
+                lastSuccessAgeMs: observedAtMs - manualFinishedMs,
+                lastSuccessAt   : '2026-10-30T17:58:09.000Z',
+                ledgerPhase     : 'exhausted',
+                phase           : 'healthy',
+                supersededBy    : {
                     bundleName: 'backup-2026-10-30T17-51-10.172Z',
                     finishedAt: '2026-10-30T17:58:09.000Z'
                 }
@@ -909,6 +911,7 @@ test.describe('wrapper + projection behavioral witnesses', () => {
 
             const fleetMaintenance = projectDeploymentMaintenanceForFleet({maintenance: superseded});
             expect(fleetMaintenance.backup.phase).toBe('healthy');
+            expect(fleetMaintenance.backup.lastSuccessAgeMs).toBe(observedAtMs - manualFinishedMs);
             expect(fleetMaintenance.backup.health).toEqual({
                 reasonCodes: [],
                 status     : 'healthy'
