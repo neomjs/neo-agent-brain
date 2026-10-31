@@ -1707,10 +1707,11 @@ class GraphService extends Base {
 
     /**
      * @summary Returns one RLS-safe inbound-support projection for Golden Path scoring and
-     * Discussion liveness. Total support preserves existing structural scoring; decaying support
-     * excludes protected fact edges, a message's record edges (`isMessageRecordEdge`) and Golden
-     * Path's own `frontier → GUIDES` output so archaeology or a prior route cannot masquerade as
-     * current swarm motion. The same visible inbound projection
+     * Discussion liveness. `decayingWeight` is the Golden Path ranking and parent-inheritance
+     * input, excluding protected fact edges, a message's record edges (`isMessageRecordEdge`) and
+     * Golden Path's own `frontier → GUIDES` output so permanent records, archaeology or a prior
+     * route cannot masquerade as current swarm motion; `totalWeight` retains the full non-`BLOCKS`
+     * inbound sum for diagnostics. The same visible inbound projection
      * exposes open-blocker and parent facts, keeping admission and cold-start inheritance cache-safe.
      *
      * Root, source node, and edge must all be visible at the cache return boundary. `BLOCKS`,

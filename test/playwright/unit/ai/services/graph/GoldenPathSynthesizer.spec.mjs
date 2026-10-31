@@ -1735,6 +1735,118 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         }
     });
 
+    test('synthesizeGoldenPath ranks candidates and parent inheritance by decayingWeight so 100 message-record edges lose to 3 decaying edges (#1389)', async () => {
+        const originalGetGraphCollection   = StorageRouter.getGraphCollection;
+        const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
+        const originalEmbedText            = TextEmbeddingService.embedText;
+        const OpenAiCompatible             = (await import('../../../../../../ai/provider/OpenAiCompatible.mjs')).default;
+        const originalGenerate             = OpenAiCompatible.prototype.generate;
+        const suffix                       = `${process.pid}-${Date.now()}`;
+        const recordHeavyId                = `issue-record-heavy-${suffix}`;
+        const decayingThreeId              = `issue-decaying-three-${suffix}`;
+        const coldChildRecordParentId      = `issue-cold-child-record-parent-${suffix}`;
+        const coldChildDecayingParentId    = `issue-cold-child-decaying-parent-${suffix}`;
+        const recordEpicId                 = `issue-record-epic-${suffix}`;
+        const decayingEpicId               = `issue-decaying-epic-${suffix}`;
+
+        GraphService.upsertNode({
+            id        : 'frontier',
+            type      : 'SYSTEM_TENET',
+            properties: {name: 'Active Context Frontier'}
+        });
+
+        [
+            {id: recordHeavyId,             title: '100 message records + protected + frontier guide', labels: ['bug', 'ai']},
+            {id: decayingThreeId,           title: '3 decaying session-summary edges',                 labels: ['bug', 'ai']},
+            {id: coldChildRecordParentId,   title: 'Cold child under message-heavy epic',              labels: ['bug', 'ai']},
+            {id: coldChildDecayingParentId, title: 'Cold child under decaying epic',                   labels: ['bug', 'ai']},
+            {id: recordEpicId,              title: 'Epic with only message records',                   labels: ['epic', 'ai']},
+            {id: decayingEpicId,            title: 'Epic with decaying support',                       labels: ['epic', 'ai']}
+        ].forEach(node => GraphService.upsertNode({
+            id        : node.id,
+            type      : 'ISSUE',
+            properties: {
+                labels: node.labels,
+                state : 'OPEN',
+                title : node.title
+            }
+        }));
+
+        for (let i = 0; i < 100; i++) {
+            const msgId = `MESSAGE:record-${suffix}-${i}`;
+            GraphService.upsertNode({id: msgId, type: 'MESSAGE'});
+            GraphService.linkNodes(msgId, recordHeavyId, 'REFERENCES_TICKET', 1);
+            GraphService.linkNodes(msgId, recordEpicId, 'REFERENCES_TICKET', 1);
+        }
+
+        const prId = `pr-protected-${suffix}`;
+        GraphService.upsertNode({id: prId, type: 'PULL_REQUEST'});
+        GraphService.linkNodes(prId, recordHeavyId, 'RESOLVES', 5);
+        GraphService.linkNodes('frontier', recordHeavyId, 'GUIDES', 10);
+
+        for (let i = 0; i < 3; i++) {
+            const summaryId = `summary-decaying-${suffix}-${i}`;
+            GraphService.upsertNode({id: summaryId, type: 'SESSION_SUMMARY'});
+            GraphService.linkNodes(summaryId, decayingThreeId, 'DISCUSSED_IN', 1);
+        }
+
+        const epicSummaryId = `summary-epic-${suffix}`;
+        GraphService.upsertNode({id: epicSummaryId, type: 'SESSION_SUMMARY'});
+        GraphService.linkNodes(epicSummaryId, decayingEpicId, 'DISCUSSED_IN', 4);
+        GraphService.linkNodes(recordEpicId, coldChildRecordParentId, 'PARENT_OF', 0);
+        GraphService.linkNodes(decayingEpicId, coldChildDecayingParentId, 'PARENT_OF', 0);
+
+        // Verify the underlying support split before synthesis runs.
+        const recordHeavySupport   = GraphService.getInboundStructuralSupport({id: recordHeavyId});
+        const decayingThreeSupport = GraphService.getInboundStructuralSupport({id: decayingThreeId});
+        expect(recordHeavySupport.totalWeight).toBe(115);
+        expect(recordHeavySupport.decayingWeight).toBe(0);
+        expect(decayingThreeSupport.totalWeight).toBe(3);
+        expect(decayingThreeSupport.decayingWeight).toBe(3);
+
+        StorageRouter.getGraphCollection = async () => ({
+            query: async () => ({
+                ids      : [[recordHeavyId, decayingThreeId, coldChildRecordParentId, coldChildDecayingParentId]],
+                distances: [[0.1, 0.1, 0.1, 0.1]]
+            })
+        });
+        StorageRouter.getSummaryCollection  = async () => ({get: async () => ({documents: ['decayingWeight ranking proof']})});
+        TextEmbeddingService.embedText      = async () => buildConfiguredEmbedding();
+        OpenAiCompatible.prototype.generate = async () => ({content: '{"strategic_brief":"stub"}'});
+
+        let outcome;
+        try {
+            outcome = await GoldenPathSynthesizer.synthesizeGoldenPath({repoEnrichmentEnabled: false});
+        } finally {
+            StorageRouter.getGraphCollection    = originalGetGraphCollection;
+            StorageRouter.getSummaryCollection  = originalGetSummaryCollection;
+            TextEmbeddingService.embedText      = originalEmbedText;
+            OpenAiCompatible.prototype.generate = originalGenerate;
+            GraphService.removeNodes([
+                recordHeavyId,
+                decayingThreeId,
+                coldChildRecordParentId,
+                coldChildDecayingParentId,
+                recordEpicId,
+                decayingEpicId
+            ]);
+        }
+
+        const handoffContent = fs.readFileSync(tmpHandoffFile, 'utf-8');
+        const routeIds       = outcome.computedRoute.route.items.map(item => item.id);
+
+        expect(routeIds).toEqual([
+            decayingThreeId,
+            coldChildDecayingParentId,
+            coldChildRecordParentId,
+            recordHeavyId
+        ]);
+        expect(handoffContent).toContain(`1. **${decayingThreeId}**: Score 13.00 (Semantic: 5.00, Structural: 3.00)`);
+        expect(handoffContent).toContain(`2. **${coldChildDecayingParentId}**: Score 12.00 (Semantic: 5.00, Structural: 2.00)`);
+        expect(handoffContent).toContain(`3. **${coldChildRecordParentId}**: Score 10.00 (Semantic: 5.00, Structural: 0.00)`);
+        expect(handoffContent).toContain(`4. **${recordHeavyId}**: Score 10.00 (Semantic: 5.00, Structural: 0.00)`);
+    });
+
     test('synthesizeGoldenPath surfaces current incidents, focus epics, and filters non-actionable computed recommendations', async () => {
         const originalGetGraphCollection   = StorageRouter.getGraphCollection;
         const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
@@ -2125,9 +2237,10 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const handoffContent = fs.readFileSync(tmpHandoffFile, 'utf-8');
         const computedIndex  = handoffContent.indexOf('## Computed Golden Path (Strategic Recommendation)');
 
-        // The ready, actionable node is routed and rendered; the not-ready and blocked nodes are gated out.
+        // The ready, actionable node is routed and rendered by decayingWeight (RESOLVES is a protected fact edge);
+        // the not-ready and blocked nodes are gated out.
         expect(computedIndex).toBeGreaterThan(-1);
-        expect(handoffContent).toContain(`${readyId}**: Score 13.50 (Semantic: 5.00, Structural: 3.50)`);
+        expect(handoffContent).toContain(`${readyId}**: Score 11.50 (Semantic: 5.00, Structural: 1.50)`);
         expect(handoffContent).not.toContain(notReadyId);
         expect(handoffContent).not.toContain(blockedId);
     });

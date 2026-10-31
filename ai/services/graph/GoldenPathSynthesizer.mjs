@@ -1381,7 +1381,7 @@ class GoldenPathSynthesizer extends Base {
                             continue
                         }
 
-                        const rawStructScore = structuralSupport.totalWeight;
+                        const rawStructScore = structuralSupport.decayingWeight;
                         let   struct_score   = rawStructScore;
 
                         // Parent inheritance can lift an ISSUE score, but never supplies the decaying
@@ -1395,7 +1395,7 @@ class GoldenPathSynthesizer extends Base {
                             if (parentSupport) {
                                 struct_score = inheritParentStructuralWeight({
                                     structuralWeight      : rawStructScore,
-                                    parentStructuralWeight: parentSupport.totalWeight
+                                    parentStructuralWeight: parentSupport.decayingWeight
                                 })
                             }
                         }
