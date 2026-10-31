@@ -851,6 +851,127 @@ test.describe('wrapper + projection behavioral witnesses', () => {
             rmSync(root, {force: true, recursive: true})
         }
     });
+
+    test('projection: qualifying manual receipt newer than failureStreakStartedAt supersedes retry.phase and clears FM exhausted/overdue state (#1385)', async () => {
+        const root = makeTmp();
+        try {
+            const
+                bridge                                 = (await import('../../../../../../ai/daemons/orchestrator/services/DeploymentStateBridgeService.mjs')).default,
+                {projectDeploymentMaintenanceForFleet} = await import('../../../../../../ai/services/fleet/projectDeploymentStateForFleet.mjs'),
+                {extractDeploymentRows}                = await import('../../../../../../ai/services/fleet/fleetTasksSource.mjs'),
+                collect                                = opts => bridge.prototype.collectMaintenanceSnapshot.call({}, opts),
+                receiptPath                            = path.join(root, 'last-backup-receipt.json'),
+                manualFinishedMs                       = Date.parse('2026-10-30T17:58:09.000Z'),
+                observedAtMs                           = Date.parse('2026-10-30T22:00:00.000Z');
+
+            await writeBackupReceipt({
+                filePath: receiptPath,
+                now     : manualFinishedMs,
+                receipt : buildBackupReceipt({
+                    backup           : {durationMs: 42, error: null, status: 'success'},
+                    bundleCompletedAt: '2026-10-30T17:58:09.000Z',
+                    bundleName       : 'backup-2026-10-30T17-51-10.172Z',
+                    finishedAt       : '2026-10-30T17:58:09.000Z',
+                    integrity        : [
+                        {bundleCount: 10, sourceCount: 10, status: 'pass', subsystem: 'kb'},
+                        {bundleCount: 10, sourceCount: 10, status: 'pass', subsystem: 'mc'},
+                        {bundleCount: 10, sourceCount: 10, status: 'pass', subsystem: 'graph'}
+                    ]
+                })
+            });
+
+            const superseded = await collect({
+                backupTaskState: {
+                    failureStreakStartedAt: '2026-10-30T14:00:00.000Z',
+                    lastErrorAt           : '2026-10-30T14:45:00.000Z',
+                    lastRunAt             : Date.parse('2026-10-30T14:45:00.000Z'),
+                    lastSuccessAt         : '2026-10-28T13:58:02.000Z'
+                },
+                now               : observedAtMs,
+                receiptPath,
+                stagingResidueRoot: root
+            });
+
+            expect(superseded.retry).toMatchObject({
+                ledgerPhase : 'exhausted',
+                phase       : 'healthy',
+                supersededBy: {
+                    bundleName: 'backup-2026-10-30T17-51-10.172Z',
+                    finishedAt: '2026-10-30T17:58:09.000Z'
+                }
+            });
+            expect(superseded.health).toMatchObject({
+                observationStatus: 'observed',
+                reasonCodes      : [],
+                restorable       : true,
+                status           : 'healthy'
+            });
+
+            const fleetMaintenance = projectDeploymentMaintenanceForFleet({maintenance: superseded});
+            expect(fleetMaintenance.backup.phase).toBe('healthy');
+            expect(fleetMaintenance.backup.health).toEqual({
+                reasonCodes: [],
+                status     : 'healthy'
+            });
+
+            const {rows} = extractDeploymentRows({
+                ok      : true,
+                snapshot: {
+                    generatedAt: observedAtMs,
+                    maintenance: superseded
+                },
+                status  : 'available'
+            });
+            expect(rows.find(row => row.name === 'Backup lane')).toMatchObject({
+                name : 'Backup lane',
+                state: 'healthy'
+            });
+
+            const stillExhausted = await collect({
+                backupTaskState: {
+                    failureStreakStartedAt: '2026-10-30T19:00:00.000Z',
+                    lastErrorAt           : '2026-10-30T19:45:00.000Z',
+                    lastRunAt             : Date.parse('2026-10-30T19:45:00.000Z'),
+                    lastSuccessAt         : '2026-10-28T13:58:02.000Z'
+                },
+                now               : observedAtMs,
+                receiptPath,
+                stagingResidueRoot: root
+            });
+
+            expect(stillExhausted.retry.phase).toBe('exhausted');
+            expect(stillExhausted.retry.supersededBy).toBeUndefined();
+            expect(stillExhausted.health.status).toBe('degraded');
+            expect(stillExhausted.health.reasonCodes).toEqual([
+                'backup-retry-exhausted',
+                'backup-success-overdue'
+            ]);
+
+            const unmetDurability = await collect({
+                backupTaskState: {
+                    failureStreakStartedAt: '2026-10-30T14:00:00.000Z',
+                    lastErrorAt           : '2026-10-30T14:45:00.000Z',
+                    lastRunAt             : Date.parse('2026-10-30T14:45:00.000Z'),
+                    lastSuccessAt         : '2026-10-28T13:58:02.000Z'
+                },
+                durability        : {configErrorCode: null, posture: 'unmet'},
+                now               : observedAtMs,
+                receiptPath,
+                stagingResidueRoot: root
+            });
+
+            expect(unmetDurability.durability.posture).toBe('unmet');
+            expect(unmetDurability.retry.phase).toBe('exhausted');
+            expect(unmetDurability.retry.supersededBy).toBeUndefined();
+            expect(unmetDurability.health.reasonCodes).toEqual([
+                'off-host-durability-unmet',
+                'backup-retry-exhausted',
+                'backup-success-overdue'
+            ]);
+        } finally {
+            rmSync(root, {force: true, recursive: true});
+        }
+    });
 });
 
 test.describe('adversarial IO + encoding edges', () => {

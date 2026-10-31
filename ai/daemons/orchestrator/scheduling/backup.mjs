@@ -203,6 +203,67 @@ function resolveNextBackupAttemptAtMs({
 }
 
 /**
+ * @summary True when a positive-evidence restorable receipt completed after the retry streak anchor.
+ * @param {Object} [options={}]
+ * @param {Object} [options.durability={}] Deployment durability posture.
+ * @param {Object|null} [options.lastBackup=null] Validated last-backup receipt projection.
+ * @param {Object|null} [options.retryState=null] Output of {@link describeBackupRetryState}.
+ * @returns {Boolean}
+ */
+export function doesReceiptSupersedeBackupStreak({
+    durability = {},
+    lastBackup = null,
+    retryState = null
+} = {}) {
+    const streakStartedAtMs = Number(retryState?.streakStartedAtMs),
+          finishedAtMs      = toEpochMs(lastBackup?.finishedAt),
+          syncStatus        = lastBackup?.offHostSync?.status;
+
+    if (!Number.isFinite(streakStartedAtMs) || streakStartedAtMs <= 0) {
+        return false;
+    }
+    if (lastBackup?.backup?.status !== 'success' || lastBackup?.integrity?.restorable !== true) {
+        return false;
+    }
+    if (syncStatus !== 'success' && syncStatus !== 'disabled') {
+        return false;
+    }
+    if (durability?.posture === 'unmet' || Boolean(durability?.configErrorCode)) {
+        return false;
+    }
+
+    return finishedAtMs > streakStartedAtMs;
+}
+
+/**
+ * @summary Projects `phase: 'healthy'` with `ledgerPhase` and `supersededBy` when a qualifying receipt outdates an open streak.
+ * @param {Object} [options={}]
+ * @param {Object} [options.durability={}] Deployment durability posture.
+ * @param {Object|null} [options.lastBackup=null] Validated last-backup receipt projection.
+ * @param {Object|null} [options.retryState=null] Output of {@link describeBackupRetryState}.
+ * @returns {Object|null}
+ */
+export function reconcileBackupRetryStateWithReceipt({
+    durability = {},
+    lastBackup = null,
+    retryState = null
+} = {}) {
+    if (!retryState || !doesReceiptSupersedeBackupStreak({durability, lastBackup, retryState})) {
+        return retryState;
+    }
+
+    return {
+        ...retryState,
+        ledgerPhase : retryState.ledgerPhase ?? retryState.phase,
+        phase       : BACKUP_RETRY_PHASE.healthy,
+        supersededBy: {
+            bundleName: lastBackup.bundleName ?? null,
+            finishedAt: lastBackup.finishedAt
+        }
+    };
+}
+
+/**
  * @summary Reports the lane's retry phase as durable, readable STATE rather than a log edge.
  *
  * @summary AC5 requires budget exhaustion to reach a surface. An edge-triggered log would need
@@ -217,14 +278,18 @@ function resolveNextBackupAttemptAtMs({
  * @param {Number} [options.intervalMs=0] Ordinary periodic cadence.
  * @param {Number} [options.retryDelayMs=0] Minimum spacing between retries.
  * @param {Number} [options.retryWindowMs=0] Retry window measured from the streak anchor.
- * @returns {{phase: String, retriesRemaining: Number, windowEndsAtMs: Number|null, streakStartedAtMs: Number, interruptedAt: String|null, lastSuccessAt: String|null, lastSuccessAgeMs: Number|null, nextAttemptAtMs: Number|null}}
+ * @param {Object} [options.durability={}] Optional durability posture for receipt supersession.
+ * @param {Object|null} [options.lastBackup=null] Optional backup receipt for streak supersession.
+ * @returns {{phase: String, retriesRemaining: Number, windowEndsAtMs: Number|null, streakStartedAtMs: Number, interruptedAt: String|null, lastSuccessAt: String|null, lastSuccessAgeMs: Number|null, nextAttemptAtMs: Number|null, ledgerPhase?: String, supersededBy?: {bundleName: String|null, finishedAt: String}}}
  */
 export function describeBackupRetryState({
     taskState     = {},
     now,
     intervalMs    = 0,
     retryDelayMs  = 0,
-    retryWindowMs = 0
+    retryWindowMs = 0,
+    durability    = {},
+    lastBackup    = null
 } = {}) {
     const streakStartedAtMs = toEpochMs(taskState.failureStreakStartedAt),
           lastSuccessAtMs   = toEpochMs(taskState.lastSuccessAt),
@@ -249,18 +314,19 @@ export function describeBackupRetryState({
     }
 
     const windowEndsAtMs = streakStartedAtMs + retryWindowMs,
-          open           = retryDelayMs > 0 && isRetryWindowOpen({now, streakStartedAtMs, retryWindowMs});
+          open           = retryDelayMs > 0 && isRetryWindowOpen({now, streakStartedAtMs, retryWindowMs}),
+          retryState     = {
+              ...base,
+              phase           : open ? BACKUP_RETRY_PHASE.retrying : BACKUP_RETRY_PHASE.exhausted,
+              retriesRemaining: open
+                  ? countRemainingRetries({
+                      now, lastRunAt, streakStartedAtMs, retryDelayMs, retryWindowMs
+                  })
+                  : 0,
+              windowEndsAtMs
+          };
 
-    return {
-        ...base,
-        phase           : open ? BACKUP_RETRY_PHASE.retrying : BACKUP_RETRY_PHASE.exhausted,
-        retriesRemaining: open
-            ? countRemainingRetries({
-                now, lastRunAt, streakStartedAtMs, retryDelayMs, retryWindowMs
-            })
-            : 0,
-        windowEndsAtMs
-    };
+    return reconcileBackupRetryStateWithReceipt({durability, lastBackup, retryState});
 }
 
 /**
@@ -337,9 +403,11 @@ export function describeBackupMaintenanceHealth({
     retryWindowMs    = 0
 } = {}) {
     const
-        reasonCodes  = [],
-        retryRead    = retryState !== null && retryState !== undefined,
-        staleAfterMs = backupIntervalMs > 0
+        reasonCodes    = [],
+        retryRead      = retryState !== null && retryState !== undefined,
+        superseded     = doesReceiptSupersedeBackupStreak({durability, lastBackup, retryState}),
+        effectivePhase = superseded ? BACKUP_RETRY_PHASE.healthy : retryState?.phase,
+        staleAfterMs   = backupIntervalMs > 0
             ? backupIntervalMs + Math.max(0, retryWindowMs)
             : null,
         // The receipt and the retry ledger are two records of the same lane, and only the receipt is
@@ -371,9 +439,9 @@ export function describeBackupMaintenanceHealth({
     if (durability.configErrorCode) {
         reasonCodes.push('off-host-config-invalid')
     }
-    if (retryState?.phase === BACKUP_RETRY_PHASE.retrying) {
+    if (effectivePhase === BACKUP_RETRY_PHASE.retrying) {
         reasonCodes.push('backup-retry-open')
-    } else if (retryState?.phase === BACKUP_RETRY_PHASE.exhausted) {
+    } else if (effectivePhase === BACKUP_RETRY_PHASE.exhausted) {
         reasonCodes.push('backup-retry-exhausted')
     }
     if (lastBackup?.status === 'unreachable') {
@@ -423,14 +491,14 @@ export function describeBackupMaintenanceHealth({
     // it consults lives behind the mount the observer lacks. `backup-receipt-unreachable` has
     // already degraded the block by this point, so silence here costs visibility nothing and buys
     // the one thing that matters: the verdict stops asserting a history it cannot see.
-    if (retryState && retryState.phase !== BACKUP_RETRY_PHASE.unanchored && !retryState.lastSuccessAt) {
+    if (!superseded && retryState && retryState.phase !== BACKUP_RETRY_PHASE.unanchored && !retryState.lastSuccessAt) {
         if (receiptEvidence === 'proves-success') {
             reasonCodes.push('backup-state-conflict')
         } else if (receiptEvidence === 'no-success') {
             reasonCodes.push('backup-never-succeeded')
         }
     }
-    if (staleAfterMs !== null && retryState?.lastSuccessAgeMs > staleAfterMs) {
+    if (!superseded && staleAfterMs !== null && retryState?.lastSuccessAgeMs > staleAfterMs) {
         reasonCodes.push('backup-success-overdue')
     }
     // A receipt is proof the lane HAS run, so its retry posture exists and simply went unread — a

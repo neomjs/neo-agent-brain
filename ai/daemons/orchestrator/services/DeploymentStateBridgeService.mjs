@@ -86,7 +86,8 @@ import {
 } from '../../../services/memory-core/helpers/offHostSyncStore.mjs';
 import {
     describeBackupMaintenanceHealth,
-    describeBackupRetryState
+    describeBackupRetryState,
+    reconcileBackupRetryStateWithReceipt
 } from '../scheduling/backup.mjs';
 import {resolveDurabilityPosture} from './deploymentDurabilityPosture.mjs';
 import {summarizeStagingResidue}  from '../../../scripts/maintenance/backupStagingResidueCore.mjs';
@@ -621,15 +622,15 @@ export class DeploymentStateBridgeService extends Base {
      * @returns {Promise<Object|null>}
      */
     async collectMaintenanceSnapshot({
-        backupTaskState   = null,
-        now               = Date.now(),
-        receiptPath       = path.join(AiConfig.backupPath, 'last-backup-receipt.json'),
+        backupTaskState    = null,
+        durability         = resolveConfiguredDurabilityPosture(),
+        now                = Date.now(),
+        receiptPath        = path.join(AiConfig.backupPath, 'last-backup-receipt.json'),
         stagingResidueRoot = AiConfig.backupPath
     } = {}) {
         // Module-scope, deliberately not a method: this projection depends only on resolved config
         // and its own argument, never on instance state, and the contract spec asserts that by
         // invoking it detached.
-        const durability = resolveConfiguredDurabilityPosture();
 
         // `stagingResidue` is projected UNCONDITIONALLY, for the same reason `durability` is: it is a
         // property of the backup ROOT rather than of any run, so it is always REPORTABLE — which is
@@ -654,17 +655,6 @@ export class DeploymentStateBridgeService extends Base {
 
         let retryState = null,
             lastBackup = null;
-
-        if (backupTaskState) {
-            retryState = describeBackupRetryState({
-                now,
-                intervalMs   : AiConfig.orchestrator.intervals.backupMs,
-                retryDelayMs : AiConfig.orchestrator.intervals.backupRetryDelayMs,
-                retryWindowMs: AiConfig.orchestrator.intervals.backupRetryWindowMs,
-                taskState    : backupTaskState
-            });
-            base.retry = retryState
-        }
 
         try {
             const outcome = await readBackupReceipt({filePath: receiptPath});
@@ -694,6 +684,21 @@ export class DeploymentStateBridgeService extends Base {
                 kind      : 'corrupt',
                 status    : 'unreadable'
             }
+        }
+
+        if (backupTaskState) {
+            retryState = reconcileBackupRetryStateWithReceipt({
+                durability,
+                lastBackup,
+                retryState: describeBackupRetryState({
+                    now,
+                    intervalMs   : AiConfig.orchestrator.intervals.backupMs,
+                    retryDelayMs : AiConfig.orchestrator.intervals.backupRetryDelayMs,
+                    retryWindowMs: AiConfig.orchestrator.intervals.backupRetryWindowMs,
+                    taskState    : backupTaskState
+                })
+            });
+            base.retry = retryState
         }
 
         if (lastBackup) base.lastBackup = lastBackup;
@@ -770,7 +775,7 @@ export class DeploymentStateBridgeService extends Base {
             Array.isArray(AiConfig.orchestrator.deploymentRuntimeAccess.readOperations) &&
             AiConfig.orchestrator.deploymentRuntimeAccess.readOperations.includes('events');
 
-        let deaths = null,
+        let deaths    = null,
             deathRead = {
                 status           : eventsAllowed ? 'unavailable' : 'disabled',
                 source           : 'docker-events',
@@ -1045,7 +1050,7 @@ export class DeploymentStateBridgeService extends Base {
             memoryPressure,
             inspect: inspectSummary,
             stats  : summarizeStats(stats),
-            logs       : logSummary,
+            logs   : logSummary,
             deaths,
             deathRead,
             providerResidency,
