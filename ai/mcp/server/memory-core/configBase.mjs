@@ -617,6 +617,19 @@ class ConfigBase extends ConfigProvider {
              */
             focusV1ProjectionPath: leaf('', 'NEO_FOCUS_V1_PROJECTION_PATH', 'string'),
             /**
+             * File path of the business dashboard whose first screen becomes the handoff's
+             * `## Business focus` section and the `business-goal-focus` graph node, as this process
+             * sees it. Neo's deployment points it at the business repository's tenant mirror
+             * beneath `orchestrator.tenantRepoMirrorRoot`; another team's plane leaves it empty and
+             * the synthesizer writes no section and no node, with no error — absence is ordinary,
+             * the capability is configured, never assumed. Read once per pass by
+             * `GoldenPathSynthesizer`, which hands the resolved string to the pure reader in
+             * `businessFocusSection.mjs`. Not a plane member: an operator-placed private file, never
+             * beneath the plane root by default, like `focusV1ProjectionPath` above.
+             * @type {string}
+             */
+            businessFocusSourcePath: leaf('', 'NEO_BUSINESS_FOCUS_SOURCE_PATH', 'string'),
+            /**
              * Stale-assignment idle threshold used by `GoldenPathSynthesizer` when rendering
              * Sandman handoff candidates. Defaults to the ticket-intake 7-day reassignment rule.
              * @type {number}

@@ -32,7 +32,7 @@ const DEFAULT_MAX_BYTES      = 256 * 1024;
  * @param {Number} [options.now=Date.now()] Current time in epoch ms.
  * @param {Number} [options.staleAfterMs=129600000] Freshness window; <=0 disables stale classification.
  * @param {Number} [options.maxBytes=262144] Hard read-size cap.
- * @param {String|String[]} [options.sections=['goldenPath']] Section slugs to return (`'gaps'`, `'consolidation'`, `'goldenPath'`, `'focus'`), or `'all'` / `['*']` for the full file.
+ * @param {String|String[]} [options.sections=['goldenPath']] Section slugs to return (`'gaps'`, `'consolidation'`, `'goldenPath'`, `'focus'`, `'businessFocus'`), or `'all'` / `['*']` for the full file.
  * @returns {Promise<Object>} Sectioned (`{content: null, sections, availableSections, missingSections, ...}`)
  *          or whole-file (`{content, availableSections, ...}`) freshness envelope, or a `content: null`
  *          error envelope carrying a stable `reason` code.

@@ -13,6 +13,7 @@ import {Buffer} from 'node:buffer';
  * - `## Consolidation Gaps` (or `## Consolidation...`) -> `'consolidation'`
  * - `## Computed Golden Path (Strategic Recommendation)` (or `## Computed Golden Path...`) -> `'goldenPath'`
  * - `## Focus (v1)` (or `## Focus...`) -> `'focus'`
+ * - `## Business focus` -> `'businessFocus'` (the business block; requested by slug, never in the default set)
  * - Any other producer `## <Heading>` -> camelCase slug derived from its title (after stripping trailing parentheticals and emoji/punctuation).
  *
  * @module Neo.ai.services.memory-core.helpers.sandmanHandoffSections
@@ -26,7 +27,8 @@ export const KNOWN_HANDOFF_SECTION_SLUGS = Object.freeze([
     'gaps',
     'consolidation',
     'goldenPath',
-    'focus'
+    'focus',
+    'businessFocus'
 ]);
 
 /**
@@ -53,6 +55,10 @@ export function headingToSectionSlug(rawHeading) {
 
     if (/^(?:Computed\s+)?Golden\s+Path\b/i.test(withoutParens)) {
         return 'goldenPath';
+    }
+
+    if (/^Business\s+focus\b/i.test(withoutParens)) {
+        return 'businessFocus';
     }
 
     if (/^Focus\b/i.test(withoutParens)) {
