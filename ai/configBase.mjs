@@ -2611,7 +2611,7 @@ class ConfigBase extends ConfigProvider {
                     intervalMs: DAY_MS,
                     retention : {
                         keepMinimum: 3,
-                        maxDays    : 30,
+                        maxDays    : 7,
                         /**
                          * How many `.backup-partial-*` staging directories left by ABRUPT death
                          * survive the residue sweep, newest first.
