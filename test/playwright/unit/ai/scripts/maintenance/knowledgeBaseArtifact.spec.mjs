@@ -351,6 +351,20 @@ test.describe('Knowledge Base release artifact — collection-scoped contract (#
 
     // ───────── uploadKnowledgeBase: collection-scoped staging ─────────
 
+    test('counts and packs Unicode line separators as text inside one release record', async () => {
+        const ids                = ['first\u2028second\u2029third'];
+        const {built, servedZip} = await buildServedArtifact({label: 'unicode-lines', ids});
+        const extracted          = path.join(workRoot, 'unicode-lines-extracted');
+
+        await fsExtra.ensureDir(extracted);
+        await unzipTo(servedZip, extracted);
+
+        expect(built.recordCount).toBe(1);
+        expect(readArtifactRecords(extracted)[0]).toMatchObject({
+            id: ids[0], metadata: {content: `content-${ids[0]}`}
+        });
+    });
+
     test('upload stages ONLY the KB collection + a provenance meta, then asserts scope', async () => {
         const stageRoot = path.join(workRoot, 'upload-stage-clean');
         await fsExtra.ensureDir(stageRoot);

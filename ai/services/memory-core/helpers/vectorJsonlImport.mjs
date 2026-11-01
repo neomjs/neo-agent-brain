@@ -1,5 +1,4 @@
-import fs       from 'node:fs';
-import readline from 'node:readline';
+import {closeBundlePayload, openBundlePayload} from '../../shared/bundlePayload.mjs';
 
 import {fingerprintRestoreSourceFile} from './restoreTargetSetAdmission.mjs';
 import {validateJsonlSourceFile}      from './vectorJsonlSourceValidation.mjs';
@@ -149,10 +148,16 @@ async function assertAdmittedVectorSource({
     }
 }
 
+/**
+ * @summary Streams whole JSONL records into bounded vector batches, closing on callback failure.
+ * @param {String} filePath
+ * @param {Number} batchSize
+ * @param {Function} callback
+ * @returns {Promise<void>}
+ */
 async function forEachVectorBatch(filePath, batchSize, callback) {
     const
-        input = fs.createReadStream(filePath, {encoding: 'utf8'}),
-        lines = readline.createInterface({input, crlfDelay: Infinity}),
+        lines = openBundlePayload(filePath),
         batch = [];
 
     try {
@@ -172,8 +177,7 @@ async function forEachVectorBatch(filePath, batchSize, callback) {
             await callback(batch.splice(0, batch.length))
         }
     } finally {
-        lines.close();
-        input.destroy()
+        closeBundlePayload(lines)
     }
 }
 

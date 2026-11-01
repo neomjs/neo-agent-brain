@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import fs           from 'node:fs';
-import readline     from 'node:readline';
+
+import {closeBundlePayload, openBundlePayload} from '../../shared/bundlePayload.mjs';
 
 import {fingerprintCanonical}    from './restoreTargetSetContract.mjs';
 import {validateJsonlSourceFile} from './vectorJsonlSourceValidation.mjs';
@@ -178,10 +179,14 @@ async function inspectVectorFile({filePath, expectedDimension}) {
     return {rowCount, fileFingerprint}
 }
 
+/**
+ * @summary Validates graph envelopes without splitting Unicode text inside a JSONL record.
+ * @param {String} filePath
+ * @returns {Promise<Object>} Counts and fingerprints of the admitted graph.
+ */
 async function inspectGraphFile(filePath) {
     const
-        input = fs.createReadStream(filePath, {encoding: 'utf8'}),
-        lines = readline.createInterface({input, crlfDelay: Infinity}),
+        lines = openBundlePayload(filePath),
         nodes = [],
         edges = [];
 
@@ -212,8 +217,7 @@ async function inspectGraphFile(filePath) {
             }
         }
     } finally {
-        lines.close();
-        input.destroy()
+        closeBundlePayload(lines)
     }
 
     return {

@@ -1,10 +1,10 @@
-import {test, expect} from '@playwright/test';
-import fs             from 'fs';
-import fsExtra        from 'fs-extra';
-import os             from 'os';
-import path           from 'path';
-import {Writable}     from 'stream';
-import zlib           from 'zlib';
+import {test, expect}       from '@playwright/test';
+import fs                   from 'fs';
+import fsExtra              from 'fs-extra';
+import os                   from 'os';
+import path                 from 'path';
+import {Readable, Writable} from 'stream';
+import zlib                 from 'zlib';
 
 import {
     BUNDLE_EXPORT_ENCODING,
@@ -16,7 +16,8 @@ import {
     createBundlePayloadWriteStream,
     endBundlePayload,
     isBundlePayload,
-    openBundlePayload
+    openBundlePayload,
+    openJsonlStream
 } from '../../../../../../ai/services/shared/bundlePayload.mjs';
 
 /**
@@ -74,6 +75,32 @@ test.describe('ai/services/shared/bundlePayload — one encoding decision for ev
         expect(isBundlePayload('x.jsonl')).toBe(true);
         expect(isBundlePayload('x.jsonl.br')).toBe(true);
         expect(Object.values(BUNDLE_PAYLOAD_ENCODINGS).sort()).toEqual(['jsonl', 'jsonl+br', 'jsonl+gz']);
+    });
+
+    test('stream readers preserve split UTF-8 separators and close their input on early exit', async () => {
+        const record = {text: 'a\u2028b\u2029c'};
+        const bytes  = Buffer.from(JSON.stringify(record) + '\n');
+        const input  = Readable.from(Array.from(bytes, byte => Buffer.from([byte])));
+        const reader = openJsonlStream(input);
+        const rows   = [];
+
+        try {
+            for await (const line of reader) rows.push(JSON.parse(line));
+        } finally {
+            closeBundlePayload(reader);
+        }
+        expect(rows).toEqual([record]);
+
+        const pending = new Readable({read() {}});
+        const early   = openJsonlStream(pending);
+        pending.push(JSON.stringify(record) + '\n');
+        for await (const line of early) {
+            expect(JSON.parse(line)).toEqual(record);
+            break;
+        }
+        closeBundlePayload(early);
+        await new Promise(resolve => setImmediate(resolve));
+        expect(pending.destroyed).toBe(true);
     });
 
     test('an export is plain unless its caller asks; the daily bundle asks in one place', () => {

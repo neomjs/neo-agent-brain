@@ -8,7 +8,7 @@ import {finished}  from 'stream/promises';
 import zlib        from 'zlib';
 
 /**
- * @summary The one encoding decision for every backup-bundle payload: written here, read here.
+ * @summary Shared JSONL readers for bundles, imports and release artifacts, and bundle writers.
  *
  * A bundle row is one JSON line whose `embedding` is 4,096 floats serialised as decimal text, 72%
  * of the bytes, and the local plane's daily bundle reached 9.7 GB with nothing in the lane
@@ -218,19 +218,28 @@ function escapeLineSeparators(input) {
  * Each JSONL record is one line, so the non-empty line count is the row count whatever the
  * encoding; U+2028 and U+2029 arrive escaped ({@link escapeLineSeparators}). A torn or missing
  * file rejects the loop; it never ends early with fewer lines.
- * @param {String} filePath Absolute path of a payload in any supported encoding.
+ * @param {String} filePath Absolute path ending in `.jsonl`, `.jsonl.br` or `.jsonl.gz`.
  * @returns {readline.Interface}
  * @throws {Error} `BUNDLE_PAYLOAD_EXTENSION` when the name is not a payload.
  */
 export function openBundlePayload(filePath) {
+    return openJsonlStream(createBundlePayloadReadStream(filePath))
+}
+
+/**
+ * @summary Reads UTF-8 JSONL from a stream without splitting records at Unicode line separators.
+ * @param {import('stream').Readable} input A file stream or stdin; closing the reader destroys it.
+ * @returns {readline.Interface} Pair with {@link closeBundlePayload}, including on early exit.
+ */
+export function openJsonlStream(input) {
     return readline.createInterface({
-        input    : escapeLineSeparators(createBundlePayloadReadStream(filePath)),
+        input    : escapeLineSeparators(input),
         crlfDelay: Infinity
     })
 }
 
 /**
- * @summary Closes a reader from {@link openBundlePayload} and releases its file, whether the loop
+ * @summary Closes a reader from {@link openBundlePayload} or {@link openJsonlStream}, whether the loop
  * ran to the end or left early on a refused row.
  *
  * The readers used to carry a bare `rl.close(); rl.input.destroy()`, silent on a plain file stream

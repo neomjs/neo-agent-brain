@@ -77,6 +77,18 @@ test.describe('ai/scripts/maintenance/ingestTenant — Phase 2C CLI (#11635)', (
     });
 
     test.describe('readJsonlRecords', () => {
+        test('keeps Unicode line separators inside stream records and preserves physical line numbers', async () => {
+            const record  = {content: 'first\u2028second\u2029third'};
+            const input   = Readable.from([JSON.stringify(record) + '\n\ninvalid\n']);
+            const entries = [];
+
+            for await (const entry of readJsonlRecords(input)) entries.push(entry);
+
+            expect(entries).toHaveLength(2);
+            expect(entries[0]).toEqual({record, lineNo: 1});
+            expect(entries[1]).toMatchObject({lineNo: 3, parseError: expect.any(String)});
+        });
+
         test('yields one record per JSONL line and skips blank lines', async () => {
             const entries = [];
 
