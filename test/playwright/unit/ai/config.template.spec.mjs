@@ -629,7 +629,7 @@ test.describe('Tier 1 Config Immutability', () => {
             intervalMs: 24 * 60 * 60 * 1000,
             retention : {
                 keepMinimum: 3,
-                maxDays    : 30,
+                maxDays    : 7,
                 // How many `.backup-partial-*` staging directories left by ABRUPT death survive the
                 // residue sweep. A forensic-retention count rather than an age bound: the residue is
                 // the only surviving evidence of a termination that recorded no terminal outcome, and
