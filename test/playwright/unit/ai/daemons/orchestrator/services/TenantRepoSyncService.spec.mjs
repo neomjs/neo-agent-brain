@@ -5583,16 +5583,19 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         const
             marker   = 'https://user:TOKEN-must-not-project@host/x.git',
             returned = await syncWithEmbed(async () => ({error: 'refused', code: 'SOME_RAW_CODE', message: marker}), 'org/trace-returned'),
+            numeric  = await syncWithEmbed(async () => ({error: 'refused', code: 429, message: marker}), 'org/trace-numeric'),
             thrown   = await syncWithEmbed(async () => { throw new SyntaxError(marker) }, 'org/trace-thrown');
 
         for (const [logs, expected] of [
             [returned, 'stage=embed-returned class=none rawCode=present'],
+            [numeric,  'stage=embed-returned class=none rawCode=present'],
             [thrown,   'stage=embed-thrown class=SyntaxError rawCode=absent']
         ]) {
             const traces = logs.filter(line => line.startsWith('WARN') && line.includes('unclassified embed failure'));
 
             expect(traces).toHaveLength(1);
             expect(traces[0]).toContain(expected);
+            expect(traces[0]).not.toContain('429');
             expect(logs.join('\n')).not.toMatch(/must-not-project|SOME_RAW_CODE/);
         }
     });

@@ -296,7 +296,8 @@ const ERROR_CLASS_SENTINELS    = new Set(['none', 'other']);
  * @param {*}      opts.error         The thrown value, or a returned result's `error` field.
  * @param {*}      [opts.codeCarrier] What carries the raw code: the thrown value (default) or the returned result.
  * @returns {{stage: String, errorClass: String, rawCode: String}} `errorClass` is a class name, `none`
- *     for a non-object or `other` for a name outside the identifier pattern; `rawCode` is `present` or `absent`.
+ *     for a non-object or `other` for a name outside the identifier pattern; `rawCode` is `present` when any
+ *     link of the carrier's cause chain supplies a non-empty code of any type (a numeric status counts), else `absent`.
  */
 export function traceEmbedFailure({stage, error, codeCarrier = error}) {
     let errorClass = 'none';
@@ -306,7 +307,7 @@ export function traceEmbedFailure({stage, error, codeCarrier = error}) {
         errorClass = typeof name === 'string' && ERROR_CLASS_NAME_PATTERN.test(name) ? name : 'other'
     }
 
-    const coded = [...boundedCauseChain(codeCarrier)].some(link => typeof link.code === 'string' && link.code.length > 0);
+    const coded = [...boundedCauseChain(codeCarrier)].some(link => link.code !== undefined && link.code !== null && link.code !== '');
 
     return {stage, errorClass, rawCode: coded ? 'present' : 'absent'}
 }
@@ -314,8 +315,9 @@ export function traceEmbedFailure({stage, error, codeCarrier = error}) {
 /**
  * @summary Formats a trace read back from an ingestion summary as `stage=… class=… rawCode=…`.
  *
- * Re-validates every field instead of trusting the writer, so a malformed or foreign trace yields
- * `null` and nothing reaches the log.
+ * Re-validates every field instead of trusting the writer, so a field outside its admitted values yields
+ * `null` and nothing malformed reaches the log. The guarantee is the shape, not the provenance: a
+ * well-formed object formats whoever built it.
  *
  * @param {*} trace
  * @returns {String|null}
