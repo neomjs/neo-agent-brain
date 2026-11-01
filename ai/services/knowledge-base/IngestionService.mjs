@@ -37,6 +37,7 @@ import {isChromaConnectionError}
 import {resolveEmbeddingAdmissionBand}
                             from '../../embeddingSafeBand.mjs';
 import {
+    EMBED_FAILURE_STAGE,
     KB_VECTOR_EMBED_UNCLASSIFIED,
     KB_VECTOR_EMBED_UNDELIVERABLE_AT_GEOMETRY,
     TENANT_AWARE_CHUNK_ID_PATTERN,
@@ -44,7 +45,8 @@ import {
     classifyEmbedFailureError,
     classifyEmbedResidencyDisposition,
     isDurableFenceRow,
-    isEmbedFailureCode
+    isEmbedFailureCode,
+    traceEmbedFailure
 }
                             from './helpers/embedFailureClassification.mjs';
 import VectorService   from './VectorService.mjs';
@@ -658,14 +660,19 @@ class IngestionService extends Base {
                 }
 
                 if (result?.error) {
+                    const code = classifyEmbedFailureCode(result.code);
+
                     summary.errors.push(this.createError({
                         // Classified rather than defaulted. A provider code is truthy, so the old
                         // `|| 'KB_VECTOR_EMBED_FAILED'` never fired for one — it recorded the
                         // provider's own vocabulary, which the durable `^KB_` filter then dropped to
                         // null. See `embedFailureClassification` for why the fix is a translation.
-                        code   : classifyEmbedFailureCode(result.code),
+                        code,
                         message: result.message || result.error,
-                        details: result
+                        details: result,
+                        trace  : code === KB_VECTOR_EMBED_UNCLASSIFIED
+                            ? traceEmbedFailure({stage: EMBED_FAILURE_STAGE.returned, error: result.error, codeCarrier: result})
+                            : undefined
                     }));
                     this.updateIngestionProgress({
                         embeddedChunks : summary.embeddingsGenerated,
@@ -751,12 +758,13 @@ class IngestionService extends Base {
                 // proved. Field-picked, never spread: the error is provider-adjacent, and copying an
                 // object it carries wholesale would let provider-shaped text ride into the summary.
                 const graduation = normalizeUndeliverableGraduation(error?.undeliverableGraduation);
+                const code       = classifyEmbedFailureError(error);
 
                 summary.errors.push(this.createError({
                     // The throw path carries the provider's code most often — a consumer-deadline
                     // timeout or an upstream abort — so this is the site where the inversion bit
                     // hardest: the better-classified the failure, the emptier the receipt.
-                    code   : classifyEmbedFailureError(error),
+                    code,
                     message: error.message,
                     // `residencyDisposition` is the difference between "re-check the model identifier"
                     // and "something took the model's slot" — opposite remediations behind one code.
@@ -768,7 +776,10 @@ class IngestionService extends Base {
                         repoSlug,
                         ...(residencyDisposition && {residencyDisposition}),
                         ...(graduation && {undeliverableGraduation: graduation})
-                    }
+                    },
+                    trace: code === KB_VECTOR_EMBED_UNCLASSIFIED
+                        ? traceEmbedFailure({stage: EMBED_FAILURE_STAGE.thrown, error})
+                        : undefined
                 }));
                 this.updateIngestionProgress({
                     embeddedChunks : summary.embeddingsGenerated,
@@ -838,14 +849,16 @@ class IngestionService extends Base {
     /**
      * @summary Builds a structured error entry for the ingestion summary.
      * @param {Object} options
+     * @param {Object} [options.trace] An unclassified embed failure's code-authored trace (`traceEmbedFailure`).
      * @returns {Object}
      * @protected
      */
-    createError({code, message, details}) {
+    createError({code, message, details, trace}) {
         return {
             code,
             message,
-            ...(details === undefined ? {} : {details})
+            ...(details === undefined ? {} : {details}),
+            ...(trace === undefined ? {} : {trace})
         };
     }
 

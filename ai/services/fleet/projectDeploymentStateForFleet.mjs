@@ -8,7 +8,8 @@
  * None of that is a wire payload. This projection keeps exactly what a plane card renders, under the
  * snapshot's own field names — nothing is renamed and nothing is invented: a field the snapshot lacks
  * projects as `null`, never as a guessed value. Pure and synchronous, so the redaction is unit-provable
- * in isolation (the red-first arm feeds a leaking fixture and asserts nothing survives).
+ * in isolation (the red-first arm feeds a leaking fixture and asserts nothing survives). One leaf beyond
+ * the cards rides along: each service's `startedAt`, which the cockpit's restart read compares across reads.
  *
  * The plane-log surface is deliberately absent — bounded, redacted log reads are a verb of their own.
  * Observe-only: no actuator, no restart command, rides this shape.
@@ -37,9 +38,9 @@ const
  * `degraded`), `classification` carries the class word beside its declared flag, and `diagnosis` is a
  * `container-health-diagnosis-decision` record — `{status, actionClass, diagnosis: {recoveryClass,
  * confidence} | null}` (`ContainerHealthDiagnosisService#createDecision`), the inner block absent on a
- * healthy service.
+ * healthy service. `startedAt` is lifted out of `inspect.currentRun`; `inspect` itself stays off the wire.
  * @param {Object} row The snapshot's service record.
- * @returns {Object} `{serviceKey, observedAt, status, memoryPressure, restartChurn, classification, diagnosis}`
+ * @returns {Object} `{serviceKey, observedAt, startedAt, status, memoryPressure, restartChurn, classification, diagnosis}`
  *     — each nested block bounded to its named fields, `null` when the record lacks it.
  */
 export function projectDeploymentServiceForFleet(row) {
@@ -49,11 +50,13 @@ export function projectDeploymentServiceForFleet(row) {
         restartChurn   = nestedOf(row, 'restartChurn'),
         classification = nestedOf(row, 'classification'),
         decision       = nestedOf(row, 'diagnosis'),
-        diagnosis      = nestedOf(decision, 'diagnosis');
+        diagnosis      = nestedOf(decision, 'diagnosis'),
+        startedAt      = fieldOf(nestedOf(nestedOf(row, 'inspect'), 'currentRun'), 'startedAt');
 
     return {
         serviceKey    : typeof row?.serviceKey === 'string' ? row.serviceKey : null,
         observedAt    : fieldOf(row, 'observedAt'),
+        startedAt     : typeof startedAt === 'string' ? startedAt : null,
         status        : typeof status === 'string' ? status : null,
         memoryPressure: memoryPressure && {
             disposition: fieldOf(memoryPressure, 'disposition'),

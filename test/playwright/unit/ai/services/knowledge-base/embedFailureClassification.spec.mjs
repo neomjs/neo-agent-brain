@@ -10,6 +10,7 @@ import 'neo.mjs/src/core/Base.mjs';
 import {
     BOUNDED_KB_ERROR_CODE_PATTERN,
     EMBED_DISPOSITION,
+    EMBED_FAILURE_STAGE,
     KB_VECTOR_EMBED_PROVIDER_CIRCUIT_OPEN,
     KB_VECTOR_EMBED_UNCLASSIFIED,
     KB_VECTOR_EMBED_UNDELIVERABLE_AT_GEOMETRY,
@@ -17,10 +18,12 @@ import {
     classifyEmbedFailureCode,
     classifyEmbedFailureError,
     classifyEmbedResidencyDisposition,
+    formatEmbedFailureTrace,
     isDurableFenceRow,
     isEmbedFailureCode,
     KB_VECTOR_EMBED_TRANSPORT_CLOSED,
-    isProviderDeathError
+    isProviderDeathError,
+    traceEmbedFailure
 } from '../../../../../../ai/services/knowledge-base/helpers/embedFailureClassification.mjs';
 import {normalizeTenantRepoCheckpointState}
     from '../../../../../../ai/daemons/orchestrator/services/tenantRepoCheckpointValidity.mjs';
@@ -371,6 +374,52 @@ test.describe('embed failure classification — production path', () => {
                 residencyDisposition: 'evicted-mid-batch'
             }
         }]);
+    });
+
+    test('an unclassified throw records its stage and class, and that it carried no raw code (#1403)', async () => {
+        // The plane's 10-30 specimen: the JSONL load threw a codeless SyntaxError.
+        const run = await runEmbedWithFailure(async () => {
+            throw new SyntaxError('Unexpected token at https://user:TOKEN-must-not-project@host')
+        });
+
+        expect(run.errors).toHaveLength(1);
+        expect(run.errors[0].code).toBe(KB_VECTOR_EMBED_UNCLASSIFIED);
+        expect(run.errors[0].trace).toEqual({stage: 'embed-thrown', errorClass: 'SyntaxError', rawCode: 'absent'});
+    });
+
+    test('an unclassified returned result records that it carried a raw code, never the code (#1403)', async () => {
+        const run = await runEmbedWithFailure(async () => ({
+            error: 'refused', code: 'SOME_RAW_CODE', message: 'https://user:TOKEN-must-not-project@host'
+        }));
+
+        expect(run.errors).toHaveLength(1);
+        expect(run.errors[0].code).toBe(KB_VECTOR_EMBED_UNCLASSIFIED);
+        expect(run.errors[0].trace).toEqual({stage: 'embed-returned', errorClass: 'none', rawCode: 'present'});
+    });
+
+    test('the trace reads the class from the prototype, and the formatter refuses a malformed trace (#1403)', () => {
+        // A thrown JSON body: its own `constructor` field is data, so it must not name the class.
+        const fromData = traceEmbedFailure({
+            stage: EMBED_FAILURE_STAGE.thrown,
+            error: JSON.parse('{"constructor": {"name": "AKIASECRETMUSTNOTPROJECT"}}')
+        });
+
+        expect(fromData.errorClass).toBe('Object');
+        expect(formatEmbedFailureTrace(fromData)).toBe('stage=embed-thrown class=Object rawCode=absent');
+
+        for (const malformed of [
+            undefined,
+            {},
+            {...fromData, stage: 'vector-load'},
+            {...fromData, errorClass: 'ghp_token'},
+            {...fromData, rawCode: 'SOME_RAW_CODE'}
+        ]) {
+            expect(formatEmbedFailureTrace(malformed)).toBeNull();
+        }
+
+        // The guarantee is the shape: a well-formed object formats whoever built it.
+        expect(formatEmbedFailureTrace({stage: EMBED_FAILURE_STAGE.thrown, errorClass: 'Foreign', rawCode: 'absent'}))
+            .toBe('stage=embed-thrown class=Foreign rawCode=absent');
     });
 
     test('an unobserved residency state stays absent from the final ingestion receipt (#16859)', async () => {

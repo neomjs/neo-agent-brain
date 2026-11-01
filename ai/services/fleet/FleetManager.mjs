@@ -111,7 +111,7 @@ function repoCoordinates({repoSlug, cloneUrl, forge = 'github'}, caller) {
     }
 
     const
-        escaped = repoSlug.replace(/\./g, '\\.'),
+        escaped = repoSlug.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&'),
         remote  = new RegExp(`^(?:https://[^/@\\s]+/|ssh://(?:[\\w.-]+@)?[^/@\\s:]+(?::\\d+)?/|[\\w.-]+@[\\w.-]+:)${escaped}(?:\\.git)?$`, 'i'),
         repo    = {repoSlug, cloneUrl: cloneUrl ?? `https://github.com/${repoSlug}.git`, ...(forge === 'github' ? {} : {forge})};
 
