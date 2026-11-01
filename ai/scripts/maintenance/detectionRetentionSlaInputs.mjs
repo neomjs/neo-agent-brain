@@ -16,9 +16,9 @@
  *
  * ## Every unresolvable input is a BREACH, never a pass
  *
- * This is the module's load-bearing decision. `cleanOldBackups` defaults a missing `maxDays` to `30`
- * — correct there, because *pruning* must keep working when config is partial. Reproducing that
- * default here would be actively harmful: the guard would invent the very window it exists to verify
+ * This is the module's load-bearing decision. `cleanOldBackups` falls back to the resolved retention
+ * leaf for a missing `maxDays` — correct there, because *pruning* must keep working when config is
+ * partial. Reproducing that fallback here would be actively harmful: the guard would invent the very window it exists to verify
  * and report a pass it cannot justify. A guard that fabricates its input is worse than an absent
  * guard, because an absent guard leaves the question open while a fabricating one closes it green.
  *

@@ -75,8 +75,9 @@ const execFileAsync = promisify(execFile);
  * ## Retention Policy
  *
  * Semantics mirror `defragChromaDB.cleanOldBackups` but applied to the unified bundle tree:
- * - Keep the newest `K` bundles unconditionally (default `K = 3`)
- * - Delete additional bundles older than `N` days (default `N = 30`)
+ * - Keep the newest `keepMinimum` restorable bundles unconditionally
+ * - Delete additional bundles older than `maxDays` days
+ * - Both values are the leaf `AiConfig.maintenance.backup.retention` (`ai/configBase.mjs`)
  * - Sweep runs at the directory level on `.neo-ai-data/backups/` — one timestamp = one decision
  *   (no more correlating JSONL filenames across roots)
  *
@@ -1310,16 +1311,19 @@ export async function classifyBundleRecoverability(bundlePath) {
  * never a retention candidate and never counts toward `keepMinimum` — an in-flight capture must not
  * be able to age a real recovery source out of the floor.
  *
+ * A field the caller leaves out falls back to the resolved leaf ({@link resolveBackupRetention}),
+ * so pruning keeps running on a partial retention without a second literal for the policy.
+ *
  * @param {String} backupRoot
  * @param {Object} logger
- * @param {Object} [retention]
- * @param {Number} [retention.keepMinimum=3] Newest N restorable bundles to retain unconditionally.
- * @param {Number} [retention.maxDays=30]    Bundles older than this in days are eligible for deletion.
+ * @param {Object} [retention={}]
+ * @param {Number} [retention.keepMinimum] Newest N restorable bundles to retain unconditionally.
+ * @param {Number} [retention.maxDays]     Bundles older than this in days are eligible for deletion.
  */
 export async function cleanOldBackups(backupRoot, logger, retention = {}) {
     if (!await fs.pathExists(backupRoot)) return;
 
-    const {keepMinimum = 3, maxDays = 30} = retention;
+    const {keepMinimum, maxDays} = {...resolveBackupRetention(), ...retention};
 
     const backups     = await listPublishedBundles(backupRoot),
           now         = Date.now(),

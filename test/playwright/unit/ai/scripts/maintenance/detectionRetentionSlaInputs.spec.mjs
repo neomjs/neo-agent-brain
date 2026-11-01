@@ -7,8 +7,8 @@ import {resolveDetectionRetentionInputs} from '../../../../../../ai/scripts/main
 // object carrying `maxDays`) into the two durations the verdict-half consumes.
 //
 // The invariant every rejection case defends: an unresolvable input must be a BREACH, never a pass.
-// `cleanOldBackups` defaults a missing `maxDays` to 30 because pruning must keep working on partial
-// config; reproducing that default here would make the guard invent the window it exists to verify.
+// `cleanOldBackups` falls back to the retention leaf for a missing `maxDays` because pruning must keep
+// working on partial config; reproducing that here would make the guard invent the window it verifies.
 
 const DAY = 86400000;
 
@@ -27,11 +27,11 @@ test.describe('resolveDetectionRetentionInputs (#14030 AC3 wiring-half)', () => 
 
     test('the resolved pair feeds the verdict-half and reproduces the live verdict', () => {
         // The wiring's whole purpose: these are today's shipped leaf values
-        // (`dataIntegritySweepCheckMs` = 1h, `retention.maxDays` = 30), so the guard must be GREEN
+        // (`dataIntegritySweepCheckMs` = 1h, `retention.maxDays` = 7), so the guard must be GREEN
         // on current config — a red guard on an unchanged repo would be a broken guard, not a finding.
         const r = resolveDetectionRetentionInputs({
                 dataIntegritySweepCheckMs: 3600000,
-                retention                : {keepMinimum: 3, maxDays: 30}
+                retention                : {keepMinimum: 3, maxDays: 7}
             }),
             verdict = evaluateDetectionRetentionSla({
                 backupRetentionMs: r.backupRetentionMs,
@@ -39,7 +39,7 @@ test.describe('resolveDetectionRetentionInputs (#14030 AC3 wiring-half)', () => 
             });
 
         expect(verdict.withinSla).toBe(true);
-        expect(verdict.requiredMaxDetectMs).toBe(15 * DAY);
+        expect(verdict.requiredMaxDetectMs).toBe(3.5 * DAY);
     });
 
     test('POSITIVE CONTROL — an injected breach must actually fire', () => {

@@ -27,9 +27,9 @@ import path           from 'path';
  *   - `keepMinimum` — newest N bundles retained unconditionally
  *   - `maxDays`     — bundles older than N days are eligible for deletion
  *
- * Default values (`K=3, N_DAYS=30`) are now owned by the top-level
- * `aiConfig.maintenance.backup.retention` subtree and match the previous
- * hardcoded constants.
+ * The shipped values (`K=3, N_DAYS=7`) are owned by the top-level
+ * `aiConfig.maintenance.backup.retention` leaf; a field the caller leaves out
+ * falls back to that leaf.
  */
 // Serial mode: this spec exercises a shared `cleanOldBackups` import + tmp filesystem
 // state. Running serially within the file avoids cross-test parallel-worker contention
@@ -117,36 +117,35 @@ test.describe('cleanOldBackups — configurable retention', () => {
         return entries.filter(name => name.startsWith('backup-'));
     }
 
-    test('default config (K=3, N=30 days) matches previous hardcoded behavior — byte-equivalence anchor', async () => {
-        // Seed 5 bundles spanning the retention thresholds:
-        //   1d, 10d, 25d, 40d, 60d old
-        // Previous hardcoded expected outcome: newest 3 (1d, 10d, 25d) retained unconditionally;
-        // 40d + 60d eligible for deletion (both > 30 days AND outside newest-3 window).
+    test('the shipped retention is K=3, N=7 days and prunes a 10d and a 25d bundle outside the newest 3', async () => {
+        // A 30-day window kept both 10d and 25d, so 5 survived; the 7-day default prunes them.
+        expect(resolveBackupRetention()).toMatchObject({keepMinimum: 3, maxDays: 7});
+
         await seedBackup(1);
+        await seedBackup(2);
+        await seedBackup(3);
         await seedBackup(10);
         await seedBackup(25);
-        await seedBackup(40);
-        await seedBackup(60);
 
         await cleanOldBackups(tmpRoot, {log: () => {}});
 
         const remaining = await listBackups();
         expect(remaining).toHaveLength(3);
-        // Survivor set = newest 3
+        // Survivor set = the newest 3, all inside the 7-day window
         for (const name of remaining) {
             const match   = name.match(/^backup-(.+?)(-suffix.*)?$/);
             const isoTime = match[1].replace(/T(\d{2})-(\d{2})-(\d{2})/, 'T$1:$2:$3');
             const ageDays = (Date.now() - new Date(isoTime).getTime()) / 86400000;
-            expect(ageDays).toBeLessThan(30);
+            expect(ageDays).toBeLessThan(7);
         }
     });
 
-    test('explicit default config object {keepMinimum: 3, maxDays: 30} matches no-argument behavior', async () => {
+    test('explicit shipped config object {keepMinimum: 3, maxDays: 7} matches no-argument behavior', async () => {
         await seedBackup(1);
         await seedBackup(10);
         await seedBackup(40);
 
-        await cleanOldBackups(tmpRoot, {log: () => {}}, {keepMinimum: 3, maxDays: 30});
+        await cleanOldBackups(tmpRoot, {log: () => {}}, {keepMinimum: 3, maxDays: 7});
 
         const remaining = await listBackups();
         // 3 backups, newest-3 floor protects all of them (40d would normally be eligible
@@ -194,29 +193,29 @@ test.describe('cleanOldBackups — configurable retention', () => {
         expect(remaining).toHaveLength(24);
     });
 
-    test('missing cleanOldBackups retention argument uses function defaults', async () => {
+    test('a missing retention argument reads the leaf, so 10d goes (it would survive at 30d)', async () => {
         await seedBackup(1);
-        await seedBackup(40);
-        await seedBackup(60);
+        await seedBackup(2);
+        await seedBackup(3);
+        await seedBackup(10);
 
         await cleanOldBackups(tmpRoot, {log: () => {}}, undefined);
 
         const remaining = await listBackups();
-        // Function-level K=3 default — all 3 backups retained unconditionally despite
-        // 40d + 60d being >30d.
+        // The leaf: K=3 holds 1d, 2d, 3d; 10d is outside the floor and past N=7d.
         expect(remaining).toHaveLength(3);
     });
 
-    test('empty cleanOldBackups retention object uses property defaults', async () => {
+    test('a partial retention falls back to the leaf per field — pruning keeps running', async () => {
         await seedBackup(1);
-        await seedBackup(40);
-        await seedBackup(60);
-        await seedBackup(90);
+        await seedBackup(2);
+        await seedBackup(3);
+        await seedBackup(10);
 
-        await cleanOldBackups(tmpRoot, {log: () => {}}, {});
+        // Only keepMinimum given: maxDays comes from the leaf (7d), so 10d is pruned.
+        await cleanOldBackups(tmpRoot, {log: () => {}}, {keepMinimum: 3});
 
         const remaining = await listBackups();
-        // K=3 default — newest 3 retained (1d, 40d, 60d); 90d eligible for deletion (outside K=3, >N=30d)
         expect(remaining).toHaveLength(3);
     });
 
