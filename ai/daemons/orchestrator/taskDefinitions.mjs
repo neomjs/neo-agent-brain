@@ -537,6 +537,14 @@ export function buildTaskDefinitions({
             pidFileName    : 'heavy-maintenance-starvation-watchdog.pid',
             expectedCommand: 'HeavyMaintenanceStarvationWatchdog',
             serviceTask    : true
+        },
+        // The data-integrity sweep runs the `DataIntegrityDiagnosisService` runner in-process, with
+        // the same posture: the entry exists only for the persisted state envelope.
+        'data-integrity-sweep': {
+            label          : 'Data-integrity sweep',
+            pidFileName    : 'data-integrity-sweep.pid',
+            expectedCommand: 'DataIntegrityDiagnosisService',
+            serviceTask    : true
         }
     };
 
