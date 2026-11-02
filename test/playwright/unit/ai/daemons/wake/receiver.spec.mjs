@@ -1020,7 +1020,7 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
             }
         }
     });
-    const bounds = {accept: 250, reload: 250, drain: 250, dispatch: 250};
+    const bounds = {accept: 2000, reload: 2000, drain: 2000, dispatch: 250};
     const never  = () => new Promise(() => {});
 
     let server, stateDir;
@@ -1031,7 +1031,13 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
         await fs.rm(stateDir, {recursive: true, force: true});
     });
 
-    async function start({accept, attemptTimeoutMs = 100, dispatch = async () => 'delivered'} = {}) {
+    async function start({
+        accept,
+        transitionDelayMs = 0,
+        attemptTimeoutMs  = 100,
+        dispatch          = async () => 'delivered',
+        stepBoundsMs      = bounds
+    } = {}) {
         const stuck = [];
 
         stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-wake-stuck-'));
@@ -1040,6 +1046,13 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
 
         await state.init();
         if (accept) state.accept = accept;
+        if (transitionDelayMs > 0) {
+            const originalTransition = state.transition.bind(state);
+            state.transition = async (...args) => {
+                await new Promise(resolve => setTimeout(resolve, transitionDelayMs));
+                return originalTransition(...args);
+            };
+        }
 
         ({server} = createWakeReceiver({
             manifest          : manifestFor(attemptTimeoutMs),
@@ -1047,7 +1060,7 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
             dispatch,
             logger            : {error() {}, warn() {}, log() {}},
             onStuck           : entry => stuck.push(entry),
-            stepBoundsMs      : bounds,
+            stepBoundsMs,
             watchdogIntervalMs: 10
         }));
         await new Promise((resolve, reject) => {
@@ -1085,7 +1098,7 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
     }
 
     test('an accept that never settles is named stuck within its bound', async () => {
-        const {stuck, url} = await start({accept: never}),
+        const {stuck, url} = await start({accept: never, stepBoundsMs: {...bounds, accept: 250}}),
               abort        = new AbortController(),
               request      = post(url, abort.signal).catch(() => null);
 
@@ -1095,7 +1108,7 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
     });
 
     test('a dispatch that never settles is named stuck, with its route, after its wake was accepted', async () => {
-        const {stuck, url} = await start({dispatch: never});
+        const {stuck, url} = await start({dispatch: never, transitionDelayMs: 300});
 
         expect((await post(url)).status).toBe(202);
         await expect.poll(() => stuck.map(entry => entry.step)).toEqual(['dispatch']);
@@ -1126,7 +1139,7 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
         const {stuck, url} = await start();
 
         expect((await post(url)).status).toBe(202);
-        await new Promise(resolve => setTimeout(resolve, 4 * bounds.accept));
+        await new Promise(resolve => setTimeout(resolve, Math.max(...Object.values(bounds)) + 500));
         expect(stuck).toEqual([]);
     });
 });

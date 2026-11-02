@@ -20,8 +20,17 @@ import {readCoreCorpusManifest} from '../../../../../../ai/services/knowledge-ba
  * @returns {String}
  */
 function checkoutRevision(root) {
-    const revision = process.env.NEO_TEST_BRAIN_REVISION || process.env.GITHUB_SHA
-        || execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+    let gitHead = '';
+
+    if (!process.env.NEO_TEST_BRAIN_REVISION) {
+        try {
+            gitHead = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim()
+        } catch {
+            gitHead = ''
+        }
+    }
+
+    const revision = process.env.NEO_TEST_BRAIN_REVISION || gitHead || process.env.GITHUB_SHA || '';
 
     if (!/^[a-f0-9]{40}$/u.test(revision)) {
         throw new Error('The core-corpus unit receipt needs one exact Brain checkout revision')
@@ -74,14 +83,19 @@ test.describe('Neo.ai.services.knowledge-base.DatabaseService shared core sync (
             VectorService      = (await import('../../../../../../ai/services/knowledge-base/VectorService.mjs')).default,
             SourceRegistry     = (await import('../../../../../../ai/services/knowledge-base/source/SourceRegistry.mjs')).default,
             originalGetSources = SourceRegistry.getSources,
+            originalGithubSha  = process.env.GITHUB_SHA,
             directory          = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-core-sync-')),
-            dataPath           = path.join(directory, 'core.jsonl'),
-            brainRevision      = checkoutRevision(aiConfig.neoRootDir);
-
-        // Named mutant: reconnecting the old registry to the core scan makes this arm red.
-        SourceRegistry.getSources = () => { throw new Error('legacy SourceRegistry consulted') };
+            dataPath           = path.join(directory, 'core.jsonl');
 
         try {
+            // Simulate `suite (base)`, where `HEAD` is detached to `HEAD^1` while `GITHUB_SHA` holds the event head.
+            process.env.GITHUB_SHA = '0'.repeat(40);
+
+            const brainRevision = checkoutRevision(aiConfig.neoRootDir);
+
+            // Named mutant: reconnecting the old registry to the core scan makes this arm red.
+            SourceRegistry.getSources = () => { throw new Error('legacy SourceRegistry consulted') };
+
             const result = await DatabaseService.createKnowledgeBase({
                 brainRevision, dataPath, listConfiguredTenantRepos: async () => ({tenantRepos: []})
             });
@@ -119,6 +133,11 @@ test.describe('Neo.ai.services.knowledge-base.DatabaseService shared core sync (
                 tenantId: 'neo-shared', repoSlug: 'neo-agent-brain'
             }));
         } finally {
+            if (originalGithubSha === undefined) {
+                delete process.env.GITHUB_SHA;
+            } else {
+                process.env.GITHUB_SHA = originalGithubSha;
+            }
             SourceRegistry.getSources = originalGetSources;
             await fs.rm(directory, {recursive: true, force: true});
         }
