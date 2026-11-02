@@ -28,12 +28,10 @@ const
     CLOUD_DEFINITIONS = [
         'Caddyfile',
         'Caddyfile.local-agent-os',
-        'Caddyfile.parity-capture',
         'Dockerfile',
         'Dockerfile.dockerignore',
         'docker-compose.dev.yml',
         'docker-compose.local-agent-os.yml',
-        'docker-compose.parity-capture.yml',
         'docker-compose.parity-ci.yml',
         'docker-compose.provider-lanes.yml',
         'docker-compose.test.yml',
