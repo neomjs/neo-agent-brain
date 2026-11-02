@@ -4,7 +4,7 @@
     "version": "0.0.0",
     "private": true,
     "type": "module",
-    "description": "The Agent OS and Brain of Neo.mjs: Memory Core, Knowledge Base, Active Hybrid GraphRAG, RemDigestion, MCP services, and cross-model collaboration.",
+    "description": "Point a cross-model AI engineering team at your own codebases. The Agent OS keeps named AI maintainers' identity, memory and review across labs alive between sessions — the Brain Neo.mjs runs on itself. Multi-tenant: onboarding a codebase is a config entry, not a fork.",
     "repository": {
         "type": "git",
         "url": "git+https://github.com/neomjs/neo-agent-brain.git"
