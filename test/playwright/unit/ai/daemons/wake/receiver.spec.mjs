@@ -1139,7 +1139,7 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
         const {stuck, url} = await start();
 
         expect((await post(url)).status).toBe(202);
-        await new Promise(resolve => setTimeout(resolve, 4 * bounds.dispatch));
+        await new Promise(resolve => setTimeout(resolve, Math.max(...Object.values(bounds)) + 500));
         expect(stuck).toEqual([]);
     });
 });

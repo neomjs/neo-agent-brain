@@ -87,15 +87,15 @@ test.describe('Neo.ai.services.knowledge-base.DatabaseService shared core sync (
             directory          = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-core-sync-')),
             dataPath           = path.join(directory, 'core.jsonl');
 
-        // Simulate `suite (base)`, where `HEAD` is detached to `HEAD^1` while `GITHUB_SHA` holds the event head.
-        process.env.GITHUB_SHA = '0'.repeat(40);
-
-        const brainRevision = checkoutRevision(aiConfig.neoRootDir);
-
-        // Named mutant: reconnecting the old registry to the core scan makes this arm red.
-        SourceRegistry.getSources = () => { throw new Error('legacy SourceRegistry consulted') };
-
         try {
+            // Simulate `suite (base)`, where `HEAD` is detached to `HEAD^1` while `GITHUB_SHA` holds the event head.
+            process.env.GITHUB_SHA = '0'.repeat(40);
+
+            const brainRevision = checkoutRevision(aiConfig.neoRootDir);
+
+            // Named mutant: reconnecting the old registry to the core scan makes this arm red.
+            SourceRegistry.getSources = () => { throw new Error('legacy SourceRegistry consulted') };
+
             const result = await DatabaseService.createKnowledgeBase({
                 brainRevision, dataPath, listConfiguredTenantRepos: async () => ({tenantRepos: []})
             });
