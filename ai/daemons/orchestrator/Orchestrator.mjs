@@ -504,7 +504,7 @@ export class Orchestrator extends Base {
      */
     beforeSetContainerHealthDiagnosisService(value) {
         // Resolved at the use site and injected — the service holds no env reader of its own.
-        const {deploymentStateBridge, memorySaturation, restartChurn} = AiConfig.orchestrator;
+        const {deploymentStateBridge, diskPressure, memorySaturation, restartChurn} = AiConfig.orchestrator;
 
         // An unspannable memory window is not a tuning choice — it is a detector that cannot fire on
         // any scheduling path, and it looks identical from the outside to a service that is never
@@ -546,6 +546,10 @@ export class Orchestrator extends Base {
 
         return ClassSystemUtil.beforeSetInstance(value, ContainerHealthDiagnosisService, {
             diagnosisConfig: {
+                buildCacheWarmFloorBytes     : diskPressure.buildCacheWarmFloorBytes,
+                diskPressurePercent          : diskPressure.percent,
+                diskPressureWindowMs         : diskPressure.windowMs,
+                minReclaimableBuildCacheBytes: diskPressure.minReclaimableBuildCacheBytes,
                 // The saturation thresholds decide whether a lane at its ceiling is reported at all,
                 // so they are leaves resolved here rather than constants inside the service — same
                 // reason and same shape as the churn trio beside them.

@@ -46,6 +46,7 @@ export const RECOVERY_RUN_GRAPH_NODE_TYPES = Object.freeze({
 export const RECOVERY_TARGET_IDENTITY_KINDS = Object.freeze([
     'compose-service',
     'deploy-target',
+    'engine',
     'supervised-task'
 ]);
 

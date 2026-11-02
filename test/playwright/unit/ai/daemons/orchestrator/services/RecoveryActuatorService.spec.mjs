@@ -2338,9 +2338,118 @@ test.describe('Neo.ai.daemons.services.RecoveryActuatorService', () => {
         });
     });
 
-    // The healLedgerRetention boundary getter's VALID path is exercised by the heal-ledger append tests above
-    // (recordDiagnosis / deploy-target redeploy spread `...this.healLedgerRetention` into every appended event).
-    // Its fail-visible INVALID path is covered without mutating the shared AiConfig singleton: the pure-function
-    // validateHealLedgerRetention unit spec (healEventLedgerStore.spec) plus the config-template boundary spec,
-    // which drives an invalid env-resolved retention leaf through the same guard (config.template.spec).
+    test.describe('engine target & prune-build-cache (#1430)', () => {
+        const GIB = 1024 ** 3;
+
+        test('admits prune-build-cache only for engine targets and rejects all container/deploy lifecycle actions on engine', async () => {
+            const {service, runtimeCalls} = createService({
+                deploymentRuntimeAccessService: {
+                    runtimeAccessConfig: DEFAULT_RUNTIME_ACCESS_CONFIG,
+                    async applyLifecycle(options) {
+                        runtimeCalls.push(options);
+                        return {
+                            ok        : true,
+                            statusCode: 200,
+                            data      : {
+                                operation          : 'prune-build-cache',
+                                keepStorageBytes   : options.keepStorageBytes,
+                                cachesDeletedCount : 3,
+                                spaceReclaimedBytes: 6 * GIB,
+                                serialized         : true,
+                                statfsBefore       : {freeBytes: 4 * GIB},
+                                statfsAfter        : {freeBytes: 10 * GIB}
+                            },
+                            proof: {
+                                capabilityEnvelope: 'lifecycle-write',
+                                operation         : 'prune-build-cache',
+                                serviceKey        : options.serviceKey,
+                                targetIdentity    : {kind: 'engine', id: options.serviceKey}
+                            }
+                        };
+                    }
+                }
+            });
+
+            // Disallowed actions on engine target:
+            for (const action of ['restart', 'reconfigure', 'redeploy', 'warm-provider', 'raise-ceiling']) {
+                const rejected = await service.apply('docker-engine', action, {
+                    now           : 10_000,
+                    targetIdentity: {kind: 'engine', id: 'docker-engine'}
+                });
+                expect(rejected).toMatchObject({
+                    status    : 'rejected',
+                    reasonCode: 'action-not-allowed-for-target'
+                });
+            }
+
+            // prune-build-cache rejected on compose-service target:
+            const rejectedCompose = await service.apply('mc-server', 'prune-build-cache', {
+                now           : 10_000,
+                targetIdentity: {kind: 'compose-service', id: 'mc-server'}
+            });
+            expect(rejectedCompose).toMatchObject({
+                status    : 'rejected',
+                reasonCode: 'action-not-allowed-for-target'
+            });
+            expect(runtimeCalls).toEqual([]);
+
+            // Admitted prune-build-cache on docker-engine:
+            const actioned = await service.apply('docker-engine', 'prune-build-cache', {
+                now             : 10_000,
+                keepStorageBytes: 2 * GIB,
+                targetIdentity  : {kind: 'engine', id: 'docker-engine'}
+            });
+            expect(actioned.status).toBe('actioned');
+            expect(actioned.buildCachePrune).toMatchObject({
+                keepStorageBytes   : 2 * GIB,
+                spaceReclaimedBytes: 6 * GIB,
+                statfsBefore       : {freeBytes: 4 * GIB},
+                statfsAfter        : {freeBytes: 10 * GIB}
+            });
+            expect(runtimeCalls).toHaveLength(1);
+        });
+
+        test('a prune-build-cache that reclaims zero bytes transitions to recorded (prune-freed-nothing) so a non-cache disk fill cannot loop', async () => {
+            const {service, runtimeCalls} = createService({
+                deploymentRuntimeAccessService: {
+                    runtimeAccessConfig: DEFAULT_RUNTIME_ACCESS_CONFIG,
+                    async applyLifecycle(options) {
+                        runtimeCalls.push(options);
+                        return {
+                            ok        : true,
+                            statusCode: 200,
+                            data      : {
+                                operation          : 'prune-build-cache',
+                                keepStorageBytes   : options.keepStorageBytes,
+                                cachesDeletedCount : 0,
+                                spaceReclaimedBytes: 0,
+                                serialized         : true,
+                                statfsBefore       : {freeBytes: 4 * GIB},
+                                statfsAfter        : {freeBytes: 4 * GIB}
+                            },
+                            proof: {
+                                capabilityEnvelope: 'lifecycle-write',
+                                operation         : 'prune-build-cache',
+                                serviceKey        : options.serviceKey,
+                                targetIdentity    : {kind: 'engine', id: options.serviceKey}
+                            }
+                        };
+                    }
+                }
+            });
+
+            const outcome = await service.apply('docker-engine', 'prune-build-cache', {
+                now             : 20_000,
+                keepStorageBytes: 2 * GIB,
+                targetIdentity  : {kind: 'engine', id: 'docker-engine'}
+            });
+
+            expect(outcome).toMatchObject({
+                status    : 'recorded',
+                reasonCode: 'prune-freed-nothing',
+                alarmOnly : true
+            });
+            expect(runtimeCalls).toHaveLength(1);
+        });
+    });
 });

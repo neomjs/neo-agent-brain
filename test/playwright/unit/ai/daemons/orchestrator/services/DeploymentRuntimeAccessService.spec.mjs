@@ -207,7 +207,7 @@ test.describe('Neo.ai.daemons.services.DeploymentRuntimeAccessService', () => {
             JSON.stringify({status: 'die', id: 'old-container', time: 1710000001, Actor: {ID: 'old-container', Attributes: {exitCode: '137'}}})
         ].join('\n');
         const {service, calls} = createService({eventBody});
-        const result = await service.readObserve({
+        const result           = await service.readObserve({
             serviceKey: 'mc-server',
             operation : 'events',
             since     : '2024-03-09T16:00:00.000Z',
@@ -1188,5 +1188,237 @@ test.describe('applyLifecycle — authority is rechecked AFTER target resolution
         await service.applyLifecycle({serviceKey: 'mc-server', operation: 'restart'});
 
         expect(calls.some(call => /\/restart/.test(call.path))).toBe(true);
+    });
+});
+
+test.describe('engine disk observation & bounded build-cache prune (#1430)', () => {
+    const GIB = 1024 ** 3;
+
+    const ENGINE_CONFIG = {
+        ...BASE_CONFIG,
+        readOperations     : ['inspect', 'logs', 'stats', 'events', 'system-df'],
+        lifecycleOperations: ['restart', 'update-memory-limit', 'prune-build-cache']
+    };
+
+    function makeStatfs({totalBytes = 60 * GIB, freeBytes = 6 * GIB} = {}) {
+        const blocks = Math.round(totalBytes / 4096),
+              bfree  = Math.round(freeBytes / 4096);
+
+        return {
+            bsize : 4096,
+            blocks,
+            bfree,
+            bavail: bfree
+        };
+    }
+
+    test('readObserve system-df normalizes /df and statfs into the engine-scoped disk breakdown', async () => {
+        const calls   = [];
+        const service = Neo.create(DeploymentRuntimeAccessService, {
+            runtimeAccessConfig: ENGINE_CONFIG,
+            nowFn              : () => 1710000000000,
+            statfsFn           : async () => makeStatfs({totalBytes: 60 * GIB, freeBytes: 6 * GIB}),
+            dockerRequestFn    : async request => {
+                calls.push(request);
+                if (request.path === '/system/df') {
+                    return {
+                        statusCode: 200,
+                        headers   : {},
+                        body      : JSON.stringify({
+                            LayersSize: 18 * GIB,
+                            Images    : [
+                                {Size: 10 * GIB, SharedSize: 2 * GIB, Containers: 2},
+                                {Size: 8 * GIB, SharedSize: 0, Containers: 0}
+                            ],
+                            Containers: [
+                                {SizeRw: 256 * 1024 * 1024, State: 'running'}
+                            ],
+                            Volumes: [
+                                {UsageData: {Size: 20 * GIB, RefCount: 1}},
+                                {UsageData: {Size: 2 * GIB, RefCount: 0}}
+                            ],
+                            BuildCache: [
+                                {Size: 2 * GIB, InUse: true, Shared: false},
+                                {Size: 12 * GIB, InUse: false, Shared: false}
+                            ]
+                        })
+                    };
+                }
+                throw new Error(`Unexpected request: ${request.method} ${request.path}`);
+            }
+        });
+
+        const result = await service.readObserve({serviceKey: 'docker-engine', operation: 'system-df'});
+
+        expect(result.ok).toBe(true);
+        expect(result.proof).toMatchObject({
+            capabilityEnvelope: 'read-observe',
+            operation         : 'system-df',
+            serviceKey        : 'docker-engine',
+            targetIdentity    : {kind: 'engine', id: 'docker-engine'}
+        });
+        expect(result.data.statfs).toMatchObject({
+            totalBytes : 60 * GIB,
+            freeBytes  : 6 * GIB,
+            usedBytes  : 54 * GIB,
+            usedPercent: 90
+        });
+        expect(result.data.df).toEqual({
+            images: {
+                activeCount     : 1,
+                totalCount      : 2,
+                totalBytes      : 18 * GIB,
+                reclaimableBytes: 8 * GIB
+            },
+            volumes: {
+                activeCount     : 1,
+                totalCount      : 2,
+                totalBytes      : 22 * GIB,
+                reclaimableBytes: 2 * GIB
+            },
+            buildCache: {
+                activeCount     : 1,
+                totalCount      : 2,
+                totalBytes      : 14 * GIB,
+                reclaimableBytes: 12 * GIB
+            }
+        });
+    });
+
+    test('AC-3: no image or volume prune/delete operation is reachable through L0 runtime access or control-plane helpers', async () => {
+        const restartActuator = await import('../../../../../../../ai/daemons/orchestrator/control-plane/restartActuator.mjs');
+        const exportedNames   = Object.keys(restartActuator);
+
+        // No image or volume prune/delete helper exists on the control-plane module.
+        expect(exportedNames.filter(name => /image|volume|delete/i.test(name))).toEqual([]);
+
+        const forbiddenOps = [
+            'prune-images',
+            'image-prune',
+            'delete-image',
+            'remove-image',
+            'prune-volumes',
+            'volume-prune',
+            'delete-volume',
+            'remove-volume',
+            'system-prune',
+            'prune-containers'
+        ];
+
+        for (const operation of forbiddenOps) {
+            // Even if a caller injects the forbidden operation name into lifecycleOperations or readOperations,
+            // the closed operation set in assertOperationAllowed rejects it before any Docker request is made.
+            const {service, calls} = createService({
+                config: {
+                    readOperations     : [...ENGINE_CONFIG.readOperations, operation],
+                    lifecycleOperations: [...ENGINE_CONFIG.lifecycleOperations, operation]
+                }
+            });
+
+            await expect(service.applyLifecycle({
+                serviceKey: 'docker-engine',
+                operation
+            })).rejects.toMatchObject({reason: 'runtime-operation-disallowed'});
+
+            await expect(service.readObserve({
+                serviceKey: 'docker-engine',
+                operation
+            })).rejects.toMatchObject({reason: 'runtime-operation-disallowed'});
+
+            expect(calls).toEqual([]);
+        }
+    });
+
+    test('AC-4: prune-build-cache refuses missing, zero, or non-integer keepStorageBytes warm floor at L0', async () => {
+        const {service, calls} = createService({config: ENGINE_CONFIG});
+
+        for (const badFloor of [undefined, null, 0, -1024, 1.5, NaN, '2GiB']) {
+            await expect(service.applyLifecycle({
+                serviceKey      : 'docker-engine',
+                operation       : 'prune-build-cache',
+                keepStorageBytes: badFloor
+            })).rejects.toMatchObject({reason: 'runtime-build-cache-prune-warm-floor-required'});
+        }
+
+        expect(calls).toEqual([]);
+    });
+
+    test('AC-4 + AC-5: prune-build-cache enforces keep-storage on the wire, records statfs before/after, and serializes per engine', async () => {
+        let   freeBytes = 5 * GIB;
+        const calls     = [],
+              order = [];
+
+        const service = Neo.create(DeploymentRuntimeAccessService, {
+            runtimeAccessConfig: ENGINE_CONFIG,
+            nowFn              : () => 1710000000000,
+            statfsFn           : async () => makeStatfs({totalBytes: 60 * GIB, freeBytes}),
+            dockerRequestFn    : async request => {
+                calls.push(request);
+                order.push(`enter:${request.path}`);
+                await new Promise(resolve => setTimeout(resolve, 10));
+
+                if (request.path.startsWith('/build/prune?')) {
+                    const reclaimed = freeBytes === 5 * GIB ? 9 * GIB : 0;
+                    freeBytes += reclaimed;
+                    order.push(`exit:${request.path}:${freeBytes}`);
+                    return {
+                        statusCode: 200,
+                        headers   : {},
+                        body      : JSON.stringify({
+                            CachesDeleted : reclaimed > 0 ? ['cache-1', 'cache-2'] : [],
+                            SpaceReclaimed: reclaimed
+                        })
+                    };
+                }
+
+                throw new Error(`Unexpected Docker request: ${request.method} ${request.path}`);
+            }
+        });
+
+        const [first, second] = await Promise.all([
+            service.applyLifecycle({
+                serviceKey      : 'docker-engine',
+                operation       : 'prune-build-cache',
+                keepStorageBytes: 2 * GIB,
+                reason          : 'first-prune'
+            }),
+            service.applyLifecycle({
+                serviceKey        : 'docker-engine',
+                operation         : 'prune-build-cache',
+                reservedSpaceBytes: 2 * GIB,
+                reason            : 'second-prune'
+            })
+        ]);
+
+        // Both requests carry keep-storage and never pass all=1/true.
+        expect(calls).toHaveLength(2);
+        expect(calls[0]).toMatchObject({
+            method: 'POST',
+            path  : `/build/prune?reserved-space=${2 * GIB}&keep-storage=${2 * GIB}`
+        });
+        expect(calls[0].path).not.toContain('all=');
+
+        // First prune sees 5 GiB -> 14 GiB; second prune runs strictly AFTER the first finishes,
+        // so its statfsBefore sees 14 GiB rather than a racing 5 GiB.
+        expect(first.data).toMatchObject({
+            keepStorageBytes   : 2 * GIB,
+            cachesDeletedCount : 2,
+            spaceReclaimedBytes: 9 * GIB,
+            serialized         : true,
+            statfsBefore       : {freeBytes: 5 * GIB},
+            statfsAfter        : {freeBytes: 14 * GIB}
+        });
+        expect(second.data).toMatchObject({
+            keepStorageBytes   : 2 * GIB,
+            cachesDeletedCount : 0,
+            spaceReclaimedBytes: 0,
+            serialized         : true,
+            statfsBefore       : {freeBytes: 14 * GIB},
+            statfsAfter        : {freeBytes: 14 * GIB}
+        });
+        expect(order[0]).toMatch(/^enter:/);
+        expect(order[1]).toMatch(/^exit:/);
+        expect(order[2]).toMatch(/^enter:/);
+        expect(order[3]).toMatch(/^exit:/);
     });
 });

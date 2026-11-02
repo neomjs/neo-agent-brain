@@ -16,6 +16,7 @@ export const CONTAINER_HEALTH_FACT_TYPES = Object.freeze({
     containerDown             : 'container-down',
     containerUnhealthy        : 'container-unhealthy',
     cpuThrottling             : 'cpu-throttling',
+    diskPressure              : 'disk-pressure',
     endpointProbeFailed       : 'endpoint-probe-failed',
     evalContention            : 'ollama-eval-contention',
     heapObservationUnavailable: 'heap-observation-unavailable',
@@ -29,9 +30,10 @@ export const CONTAINER_HEALTH_FACT_TYPES = Object.freeze({
 });
 
 export const CONTAINER_HEALTH_ACTION_CLASSES = Object.freeze({
-    raiseCeiling: 'raise-ceiling',
-    record      : 'record',
-    restart     : 'restart',
-    throttleShed: 'throttle-shed',
-    warmProvider: 'warm-provider'
+    pruneBuildCache: 'prune-build-cache',
+    raiseCeiling   : 'raise-ceiling',
+    record         : 'record',
+    restart        : 'restart',
+    throttleShed   : 'throttle-shed',
+    warmProvider   : 'warm-provider'
 });

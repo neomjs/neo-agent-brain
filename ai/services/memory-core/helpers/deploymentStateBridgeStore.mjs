@@ -14,12 +14,13 @@ const CURRENT_SNAPSHOT_SECTIONS = [
     'selfHeal',
     'tenantRepoSync',
     'maintenance',
-    'heavyMaintenanceStarvation'
+    'heavyMaintenanceStarvation',
+    'engineDisk'
 ];
 
 // Additive schema-compatible sections: produced when present, tolerated absent in older snapshots
 // (a snapshot predating the section's introduction stays valid, never degraded for its absence).
-const ADDITIVE_SNAPSHOT_SECTIONS = ['maintenance', 'heavyMaintenanceStarvation'];
+const ADDITIVE_SNAPSHOT_SECTIONS = ['maintenance', 'heavyMaintenanceStarvation', 'engineDisk'];
 
 const CURRENT_PRODUCER_METADATA = Object.freeze({
     name         : 'orchestrator-deployment-state-bridge',
@@ -63,6 +64,7 @@ export function createDeploymentStateSnapshot({
     tenantRepoSync = null,
     maintenance = null,
     heavyMaintenanceStarvation = null,
+    engineDisk = null,
     producer = CURRENT_PRODUCER_METADATA
 } = {}) {
     if (!Number.isFinite(generatedAt)) {
@@ -97,6 +99,10 @@ export function createDeploymentStateSnapshot({
     // is indistinguishable from before this section existed.
     if (heavyMaintenanceStarvation !== null && heavyMaintenanceStarvation !== undefined) {
         snapshot.heavyMaintenanceStarvation = heavyMaintenanceStarvation
+    }
+
+    if (engineDisk !== null && engineDisk !== undefined) {
+        snapshot.engineDisk = engineDisk
     }
 
     return snapshot
@@ -176,8 +182,8 @@ export function selectLastServiceDeath(inspection, serviceKey, {channelEnabled =
     // Observed, definitively. `record` is null here and ONLY here, and it means "no death recorded".
     return {
         status: 'available',
-        record : Array.isArray(service.deaths) && service.deaths.length > 0 ? service.deaths[0] : null,
-        reason : null
+        record: Array.isArray(service.deaths) && service.deaths.length > 0 ? service.deaths[0] : null,
+        reason: null
     };
 }
 

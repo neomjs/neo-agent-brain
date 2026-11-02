@@ -354,6 +354,7 @@ export class DeploymentStateBridgeService extends Base {
     lastWriteAt           = 0
     writeInFlight         = false
     statsSamplesByService = new Map()
+    engineDiskSamples     = []
     eventCursorByService  = new Map()
     recentDeathsByService = new Map()
 
@@ -474,6 +475,7 @@ export class DeploymentStateBridgeService extends Base {
         const heavyMaintenanceStarvation = this.collectHeavyMaintenanceStarvationSnapshot({
             watchdogTaskState: this.taskStateService?.getTaskState?.('heavy-maintenance-starvation-watchdog') || null
         });
+        const engineDisk = await this.collectEngineDiskSnapshot({observedAt: generatedAt});
 
         return createDeploymentStateSnapshot({
             generatedAt,
@@ -483,8 +485,83 @@ export class DeploymentStateBridgeService extends Base {
             selfHeal,
             tenantRepoSync,
             maintenance,
-            heavyMaintenanceStarvation
+            heavyMaintenanceStarvation,
+            engineDisk
         });
+    }
+
+    /**
+     * @summary Collects the plane-level Docker engine disk snapshot (`statfs` + `docker system df -v`)
+     * and diagnoses sustained disk pressure against the shared `/data` mount and Docker build cache.
+     *
+     * @param {Object} [options]
+     * @param {Number} [options.observedAt=this.now()] Epoch ms.
+     * @returns {Promise<Object|null>}
+     */
+    async collectEngineDiskSnapshot({observedAt = this.now()} = {}) {
+        const readOperations = AiConfig.orchestrator.deploymentRuntimeAccess.readOperations;
+
+        if (
+            typeof this.diagnosisService?.diagnoseEngineDisk !== 'function' ||
+            typeof this.runtimeAccessService?.readObserve !== 'function' ||
+            (typeof this.runtimeAccessService?.readEngineSystemDf !== 'function' &&
+             this.runtimeAccessService?.supportsEngineDisk !== true) ||
+            !Array.isArray(readOperations) ||
+            !readOperations.includes('system-df')
+        ) {
+            return null;
+        }
+
+        const errors = [];
+        let   result = null,
+            readFailed = false;
+
+        try {
+            result = await this.runtimeAccessService.readObserve({
+                serviceKey: 'docker-engine',
+                operation : 'system-df'
+            });
+        } catch (error) {
+            readFailed = true;
+            errors.push(summarizeRuntimeAccessError(error, {operation: 'system-df'}));
+        }
+
+        const data = result?.data && typeof result.data === 'object' ? result.data : null;
+
+        if (!readFailed && !data?.statfs && !data?.df) {
+            return null;
+        }
+
+        let latestSample = null;
+        if (data?.statfs || data?.df) {
+            latestSample = {
+                ...data,
+                observedAtMs: observedAt
+            };
+            const sampleWindow = Math.max(1, Number(AiConfig.orchestrator.deploymentStateBridge.statsSampleWindow) || 6);
+            this.engineDiskSamples = [...this.engineDiskSamples, latestSample].slice(-sampleWindow);
+        }
+
+        const diagnosis = this.diagnosisService.diagnoseEngineDisk({
+            targetId   : 'docker-engine',
+            diskSample : latestSample,
+            diskSamples: this.engineDiskSamples,
+            readFailed,
+            observedAt
+        });
+
+        return {
+            schemaVersion : 1,
+            recordType    : 'deployment-engine-disk-state',
+            targetIdentity: {kind: 'engine', id: 'docker-engine'},
+            observedAt,
+            status        : readFailed ? 'degraded' : 'available',
+            statfs        : data?.statfs || null,
+            df            : data?.df || null,
+            diagnosis,
+            proof         : result?.proof || null,
+            errors
+        };
     }
 
     /**

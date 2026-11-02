@@ -22,7 +22,7 @@ import {CONTAINER_HEALTH_ACTION_CLASSES} from './ContainerHealthDiagnosisService
  * with exceptions. Every member of `CONTAINER_HEALTH_ACTION_CLASSES` has a row, an unrecognised class
  * routes to record-with-diagnosis rather than to any action, and adding an action class without a row
  * fails a spec instead of silently acquiring the behaviour of whichever branch it falls through to.
- * ADR-0026 AC-9 forbids widening the closed action set from an implementation sub, so this class // ticket-ref-ok: the ADR clause is the binding constraint on this class's authority, not background reading
+ * ADR-0026 [not-ticket-ref: decision-record authority] AC-9 forbids widening the closed action set from an implementation sub, so this class
  * cannot name an action the actuator does not already admit — the route table's `actuatorAction`
  * values are a SUBSET of the actuator's own `DEFAULT_ACTIONS`, asserted by spec.
  *
@@ -68,7 +68,7 @@ import {CONTAINER_HEALTH_ACTION_CLASSES} from './ContainerHealthDiagnosisService
  * - **`throttle-shed` is admitted by nothing.** The actuator's closed set is `reconfigure` / `restart`
  *   / `redeploy` / `warm-provider` / `raise-ceiling`, and shed is in none of them, while
  *   `exhaustion`-non-store and `contention` both emit it. Inventing an action to carry it here is
- *   exactly what ADR-0026 AC-9 forbids. That gap is real and is someone's ticket; it is not this // ticket-ref-ok: the ADR clause is what makes inventing an action illegal here
+ *   exactly what ADR-0026 [not-ticket-ref: decision-record authority] AC-9 forbids. That gap is real and is someone's ticket; it is not this
  *   controller's licence.
  * - **`record` is already the terminal.** Routing it back through an actuator action would turn a
  *   diagnosis whose policy is "observe only" into a privileged effect.
@@ -93,6 +93,10 @@ export const CONTAINER_HEALTH_ACTION_ROUTES = Object.freeze({
         actuatorAction: 'raise-ceiling',
         knob          : 'container-memory-ceiling',
         reasonCode    : 'container-health-raise-ceiling'
+    }),
+    [CONTAINER_HEALTH_ACTION_CLASSES.pruneBuildCache]: Object.freeze({
+        actuatorAction: 'prune-build-cache',
+        reasonCode    : 'container-health-prune-build-cache'
     }),
     [CONTAINER_HEALTH_ACTION_CLASSES.throttleShed]: Object.freeze({
         actuatorAction: null,
@@ -212,6 +216,10 @@ export class ContainerHealthControllerService extends Base {
             outcomes.push(await this.consume({decision: service?.diagnosis || null, now}));
         }
 
+        if (snapshot?.engineDisk?.diagnosis) {
+            outcomes.push(await this.consume({decision: snapshot.engineDisk.diagnosis, now}));
+        }
+
         return outcomes;
     }
 
@@ -318,6 +326,9 @@ export class ContainerHealthControllerService extends Base {
                 now,
                 reason,
                 ...(route.knob ? {knob: route.knob} : {}),
+                ...(route.actuatorAction === 'prune-build-cache' && Number.isFinite(diagnosis.details?.keepStorageBytes)
+                    ? {keepStorageBytes: diagnosis.details.keepStorageBytes}
+                    : {}),
                 // Carried INTO the actuator so it is revalidated after its own awaited preparation,
                 // immediately before the privileged effect. A check made out here is separated from
                 // the effect by `readHealAttempts`, which is I/O — and an authority check with an
@@ -488,7 +499,14 @@ export class ContainerHealthControllerService extends Base {
                     recoveryRunId : outcome?.recoveryRunId || null,
                     source        : 'container-health-controller',
                     targetIdentity: decision.diagnosis.targetIdentity || decision.targetIdentity || null,
-                    evidenceFacts : decision.diagnosis.evidenceFacts || []
+                    evidenceFacts : decision.diagnosis.evidenceFacts || [],
+                    ...(outcome?.buildCachePrune ? {buildCachePrune: outcome.buildCachePrune} : {}),
+                    ...(decision.diagnosis.details?.images ? {
+                        images    : decision.diagnosis.details.images,
+                        volumes   : decision.diagnosis.details.volumes,
+                        buildCache: decision.diagnosis.details.buildCache,
+                        statfs    : decision.diagnosis.details.statfs
+                    } : {})
                 }
             }, {
                 dir: this.healLedgerDir,
