@@ -584,7 +584,6 @@ test.describe('provider-lane composition receipt (#17021)', () => {
             'docker-compose.dev.yml',
             'docker-compose.local-agent-os.yml',
             'docker-compose.parity-ci.yml',
-            'docker-compose.parity-capture.yml',
             'docker-compose.provider-lanes.yml',
             'docker-compose.test.yml'
         ];

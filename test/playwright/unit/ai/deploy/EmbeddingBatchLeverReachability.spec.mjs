@@ -31,8 +31,8 @@ const
      * Profiles an operator boots on their own, each with the services that read these leaves.
      *
      * `kb-server` runs ingestion; `orchestrator` drives tenant-repo ingestion through the same
-     * VectorService path. Overlay-only files (`parity-ci`, `parity-capture`) are deliberately absent:
-     * they are merged ONTO a standalone profile and are not a deployment on their own, so requiring
+     * VectorService path. The overlay-only `parity-ci` file is deliberately absent:
+     * it is merged ONTO a standalone profile and is not a deployment on its own, so requiring
      * the leaves there would assert a contract nothing boots.
      */
     STANDALONE = [

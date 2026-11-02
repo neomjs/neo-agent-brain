@@ -2165,42 +2165,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         })).resolves.toEqual({
             harnessType: 'codex',
             inspected  : true,
-            serverNames: Object.keys(matrix).map(key => `neo-mjs-${key}`),
-            capturePlan: {
-                producer        : 'installed-codex-mcp-list',
-                harnessType     : 'codex',
-                repoPath        : '/managed/seat-codex/neo',
-                sourceRoot      : '/installed/neo',
-                expectedIdentity: '@neo-gpt',
-                servers         : {
-                    'memory-core': {
-                        name   : 'neo-mjs-memory-core',
-                        enabled: true,
-                        stdio  : {
-                            command: process.execPath,
-                            args   : ['/installed/neo/ai/mcp/server/memory-core/mcp-server.mjs'],
-                            envVars: ['NEO_AGENT_IDENTITY']
-                        },
-                        remote: {
-                            url             : resources['memory-core'].url,
-                            credentialEnvVar: 'NEO_MCP_REMOTE_TOKEN'
-                        }
-                    },
-                    'knowledge-base': {
-                        name   : 'neo-mjs-knowledge-base',
-                        enabled: true,
-                        stdio  : {
-                            command: process.execPath,
-                            args   : ['/installed/neo/ai/mcp/server/knowledge-base/mcp-server.mjs'],
-                            envVars: ['NEO_AGENT_IDENTITY']
-                        },
-                        remote: {
-                            url             : resources['knowledge-base'].url,
-                            credentialEnvVar: 'NEO_MCP_REMOTE_TOKEN'
-                        }
-                    }
-                }
-            }
+            serverNames: Object.keys(matrix).map(key => `neo-mjs-${key}`)
         });
 
         expect(calls).toHaveLength(1);
@@ -2227,7 +2192,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
             mcpPlan
         };
         const receipt = await FleetLifecycleService.inspectPreparedRemoteMcpAdapter(inspection);
-        expect(receipt.capturePlan.servers['memory-core'].stdio.environment).toEqual({ELECTRON_RUN_AS_NODE: '1'});
+        expect(receipt).toMatchObject({harnessType: 'codex', inspected: true});
 
         delete rows.find(row => row.transport.type === 'stdio').transport.env;
         await expect(FleetLifecycleService.inspectPreparedRemoteMcpAdapter(inspection)).rejects.toThrow(/stdio execution contract/);
