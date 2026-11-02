@@ -186,4 +186,39 @@ test.describe('GitHub Workflow MCP Server Tool Registration', () => {
         expect(operations.filter(value => value.operationId === 'list_pull_requests')).toHaveLength(1);
         expect(operations.some(value => value.operationId === 'falsify_pull_request_belief')).toBe(false);
     });
+
+    test('#1425 registers update_issue_body and publishes its authorship/assignee guard in the handbook', async () => {
+        const {listTools, callTool} = await import('../../../../../../../ai/mcp/server/github-workflow/toolService.mjs');
+        const listedTool            = listTools().tools.find(tool => tool.name === 'update_issue_body');
+        const handbook              = await callTool('get_mcp_tool_handbook', {toolId: 'update_issue_body'});
+
+        expect(listedTool).toBeTruthy();
+        expect(listedTool.annotations.readOnlyHint).toBe(false);
+        expect(listedTool.description.length).toBeLessThanOrEqual(120);
+        expect(listedTool.inputSchema.required).toEqual(['body']);
+        expect(listedTool.inputSchema.properties).toMatchObject({
+            repo                   : {type: 'string'},
+            issue_number           : {type: 'integer'},
+            pr_number              : {type: 'integer'},
+            body                   : {type: 'string'},
+            acknowledgedForeignBody: {type: 'string'}
+        });
+        expect(listedTool.outputSchema.required).toEqual([
+            'message',
+            'id',
+            'number',
+            'kind',
+            'url',
+            'updatedAt',
+            'previousBytes',
+            'updatedBytes',
+            'byteDelta'
+        ]);
+
+        expect(handbook.found).toBe(true);
+        expect(handbook.handbook).toContain('FOREIGN_BODY_FORBIDDEN');
+        expect(handbook.handbook).toContain('acknowledgedForeignBody');
+        expect(handbook.handbook).toContain('EMPTY_BODY');
+        expect(handbook.handbook).toContain('byteDelta');
+    });
 });

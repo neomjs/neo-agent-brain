@@ -40,6 +40,7 @@ const REPOSITORY_TARGET_TOOLS = Object.freeze(new Set([
     'get_pull_request_diff',
     'get_conversation',
     'manage_issue_comment',
+    'update_issue_body',
     'manage_issue_labels',
     'manage_issue_assignees',
     'manage_pr_review',
@@ -86,6 +87,7 @@ const GITHUB_TOOL_ACCESS = Object.freeze({
     manage_pr_review           : PUBLIC_GITHUB_WRITE_ACCESS,
     manage_pr_reviewers        : PUBLIC_GITHUB_WRITE_ACCESS,
     signal_state_transition    : PUBLIC_GITHUB_WRITE_ACCESS,
+    update_issue_body          : PUBLIC_GITHUB_WRITE_ACCESS,
     update_issue_relationship  : PUBLIC_GITHUB_WRITE_ACCESS,
     validate_pr_review_body    : NON_PUBLIC_GITHUB_WRITE_ACCESS
 });
@@ -502,6 +504,7 @@ const serviceMapping = {
     manage_discussion_comment  : DiscussionService .manageDiscussionComment.bind(DiscussionService),
     manage_issue_assignees     : IssueService      .manageIssueAssignees   .bind(IssueService),
     manage_issue_comment       : IssueService      .manageIssueComment     .bind(IssueService),
+    update_issue_body          : IssueService      .updateIssueBody        .bind(IssueService),
     manage_issue_labels        : IssueService      .manageIssueLabels      .bind(IssueService),
     manage_issue_projects      : IssueService      .manageIssueProjects    .bind(IssueService),
     manage_pr_review           : PullRequestService.managePrReview         .bind(PullRequestService),

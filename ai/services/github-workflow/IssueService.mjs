@@ -16,6 +16,10 @@ import {
     ADD_BLOCKED_BY,
     REMOVE_BLOCKED_BY,
     GET_ISSUE_ID,
+    GET_ISSUE_BODY_TARGET,
+    GET_PULL_REQUEST_BODY_TARGET,
+    UPDATE_ISSUE_BODY,
+    UPDATE_PULL_REQUEST_BODY,
     ADD_COMMENT,
     UPDATE_COMMENT,
     GET_PROJECT_V2_METADATA,
@@ -1098,6 +1102,162 @@ class IssueService extends Base {
             const targetFailure = await this.#getIssueCommentTargetFailure(comment_id, target, {issue_number, pr_number});
 
             return targetFailure || this.updateComment(comment_id, body);
+        }
+    }
+
+    /**
+     * @summary Replaces the Markdown body of a GitHub issue or pull request with authorship/assignment gating.
+     *
+     * Provides a native MCP write surface (`update_issue_body`) so seats can fold state and corrected
+     * acceptance criteria directly into an issue or PR body without shelling out to `gh issue edit` /
+     * `gh pr edit`.
+     *
+     * **Guards:**
+     * 1. Requires `issue_number` XOR `pr_number`.
+     * 2. Refuses empty or whitespace-only `body` strings (`EMPTY_BODY`) before any GitHub I/O.
+     * 3. Fetches the target's `id`, current `body`, `author`, `assignees`, and the authenticated
+     *    `viewer.login` in one GraphQL round-trip.
+     * 4. If the authenticated caller is neither the author nor a current assignee, refuses with
+     *    `FOREIGN_BODY_FORBIDDEN` unless a non-empty `acknowledgedForeignBody` reason is supplied.
+     *
+     * @param {Object} options
+     * @param {Number} [options.issue_number]            The issue number to update (mutually exclusive with `pr_number`).
+     * @param {Number} [options.pr_number]               The pull request number to update (mutually exclusive with `issue_number`).
+     * @param {String} options.body                      The complete replacement Markdown body (must be non-empty).
+     * @param {String} [options.acknowledgedForeignBody] Explicit reason required when the caller is neither author nor assignee.
+     * @param {String} [options.repo]                    Optional bare name or `owner/name` repository target.
+     * @returns {Promise<Object>} Updated metadata (`updatedAt`, `previousBytes`, `updatedBytes`, `byteDelta`, and optional `acknowledgedForeignBody`) or a structured error.
+     */
+    async updateIssueBody({issue_number, pr_number, body, acknowledgedForeignBody, repo}) {
+        const target = resolveRepositoryTarget(repo, {owner: aiConfig.owner, repo: aiConfig.repo});
+
+        if (target.error) return target;
+
+        if (issue_number && pr_number) {
+            return {
+                error  : 'Bad Request',
+                message: "Please provide either 'pr_number' or 'issue_number', not both.",
+                code   : 'INVALID_ARGUMENTS'
+            };
+        }
+
+        if (!issue_number && !pr_number) {
+            return {
+                error  : 'Bad Request',
+                message: "Missing required argument: Please provide 'pr_number' or 'issue_number'.",
+                code   : 'MISSING_ARGUMENTS'
+            };
+        }
+
+        if (typeof body !== 'string' || body.trim().length === 0) {
+            return {
+                error  : 'Bad Request',
+                message: 'Refusing to replace an issue or pull request body with an empty string.',
+                code   : 'EMPTY_BODY'
+            };
+        }
+
+        const isPR      = Boolean(pr_number),
+              number    = isPR ? pr_number : issue_number,
+              kindLabel = isPR ? 'Pull request' : 'Issue',
+              query     = isPR ? GET_PULL_REQUEST_BODY_TARGET : GET_ISSUE_BODY_TARGET;
+
+        try {
+            const lookupData = await GraphqlService.query(query, {
+                      owner: target.owner,
+                      repo : target.repo,
+                      number
+                  }),
+                  viewerLogin    = lookupData?.viewer?.login || null,
+                  targetNode     = isPR
+                      ? lookupData?.repository?.pullRequest
+                      : lookupData?.repository?.issue;
+
+            if (!targetNode?.id) {
+                return {
+                    error  : 'Not Found',
+                    message: `${kindLabel} #${number} was not found in ${target.fullName}.`,
+                    code   : 'NOT_FOUND'
+                };
+            }
+
+            const authorLogin      = targetNode.author?.login || null,
+                  assigneeLogins   = (targetNode.assignees?.nodes || []).map(node => node?.login).filter(Boolean),
+                  normalizedViewer = viewerLogin ? viewerLogin.toLowerCase() : null,
+                  isAuthor         = Boolean(normalizedViewer && authorLogin && authorLogin.toLowerCase() === normalizedViewer),
+                  isAssignee       = Boolean(normalizedViewer && assigneeLogins.some(login => login.toLowerCase() === normalizedViewer)),
+                  trimmedAck       = typeof acknowledgedForeignBody === 'string' ? acknowledgedForeignBody.trim() : '';
+
+            if (!isAuthor && !isAssignee && !trimmedAck) {
+                return {
+                    error  : 'Foreign Body Edit Refused',
+                    code   : 'FOREIGN_BODY_FORBIDDEN',
+                    message: [
+                        `${kindLabel} #${number} in ${target.fullName} is authored by ${authorLogin ? `@${authorLogin}` : 'an unknown author'} `,
+                        `and assigned to [${assigneeLogins.length > 0 ? assigneeLogins.map(u => `@${u}`).join(', ') : 'unassigned'}]; `,
+                        `caller ${viewerLogin ? `@${viewerLogin}` : '(unresolved viewer)'} is neither the author nor a current assignee. `,
+                        `Under the authorship rule, only the author or current assignee may replace a ticket or PR body by default. `,
+                        `For an intentional foreign-body edit (such as epic-review prescription recording or maintainer handoff), `,
+                        `pass \`acknowledgedForeignBody: '<reason>'\`.`
+                    ].join(''),
+                    number,
+                    kind     : isPR ? 'pull_request' : 'issue',
+                    author   : authorLogin,
+                    assignees: assigneeLogins,
+                    viewerLogin
+                };
+            }
+
+            const previousBody  = typeof targetNode.body === 'string' ? targetNode.body : '',
+                  previousBytes = Buffer.byteLength(previousBody, 'utf8'),
+                  updatedBytes  = Buffer.byteLength(body, 'utf8'),
+                  byteDelta     = updatedBytes - previousBytes,
+                  mutation      = isPR ? UPDATE_PULL_REQUEST_BODY : UPDATE_ISSUE_BODY,
+                  mutationData  = await GraphqlService.query(mutation, {
+                      id: targetNode.id,
+                      body
+                  }),
+                  updatedNode   = isPR
+                      ? mutationData?.updatePullRequest?.pullRequest
+                      : mutationData?.updateIssue?.issue;
+
+            if (!updatedNode?.updatedAt) {
+                return {
+                    error  : 'GraphQL API request failed',
+                    message: `${isPR ? 'updatePullRequest' : 'updateIssue'} returned no updated node for ${target.fullName}#${number}.`,
+                    code   : 'GRAPHQL_API_ERROR'
+                };
+            }
+
+            const result = {
+                message  : `Successfully updated body of ${isPR ? 'PR' : 'issue'} #${number}`,
+                id       : updatedNode.id,
+                number,
+                kind     : isPR ? 'pull_request' : 'issue',
+                url      : updatedNode.url,
+                updatedAt: updatedNode.updatedAt,
+                previousBytes,
+                updatedBytes,
+                byteDelta
+            };
+
+            if (trimmedAck) {
+                result.acknowledgedForeignBody = trimmedAck;
+            }
+
+            if (!isAuthor && !isAssignee) {
+                result.author    = authorLogin;
+                result.assignees = assigneeLogins;
+            }
+
+            return result;
+        } catch (error) {
+            logger.error(`Error updating body on ${target.fullName} ${isPR ? 'PR' : 'issue'} #${number} via GraphQL:`, error);
+            return {
+                error  : 'GraphQL API request failed',
+                message: error.message,
+                code   : 'GRAPHQL_API_ERROR'
+            };
         }
     }
 

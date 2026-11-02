@@ -57,6 +57,7 @@ test.describe('github-workflow 18-operation repository-target boundary (#17420)'
             ['get_pull_request_diff',       () => PullRequestService.getPullRequestDiff({...invalid, pr_number: 1})],
             ['get_conversation',            () => PullRequestService.getConversation({...invalid, pr_number: 1})],
             ['manage_issue_comment',        () => IssueService.manageIssueComment({...invalid, issue_number: 1, body: 'x', action: 'create'})],
+            ['update_issue_body',           () => IssueService.updateIssueBody({...invalid, issue_number: 1, body: 'x'})],
             ['manage_issue_labels',         () => IssueService.manageIssueLabels({...invalid, issue_number: 1, labels: ['bug'], action: 'add'})],
             ['manage_issue_assignees',      () => IssueService.manageIssueAssignees({...invalid, issue_number: 1, assignees: ['neo-gpt'], action: 'add'})],
             ['manage_pr_review',            () => PullRequestService.managePrReview({...invalid, action: 'create', pr_number: 1, state: 'COMMENT', body: 'x'})],
@@ -82,7 +83,7 @@ test.describe('github-workflow 18-operation repository-target boundary (#17420)'
             });
         }
 
-        expect(operations).toHaveLength(18);
+        expect(operations).toHaveLength(19);
         expect(githubCalls).toBe(0);
         expect(execCalls).toBe(0);
     });

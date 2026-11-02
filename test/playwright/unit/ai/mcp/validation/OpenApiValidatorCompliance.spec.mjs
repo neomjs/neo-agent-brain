@@ -214,6 +214,7 @@ const expectedGithubWorkflowToolTiers = {
     get_pull_request_diff      : 'read',
     get_conversation           : 'read',
     manage_issue_comment       : 'write',
+    update_issue_body          : 'write',
     manage_issue_labels        : 'write',
     manage_issue_assignees     : 'write',
     manage_pr_review           : 'write',
@@ -237,6 +238,7 @@ const expectedGithubWorkflowToolTiers = {
 const githubWorkflowDangerousReadForbidden = [
     'checkout_pull_request',
     'manage_issue_comment',
+    'update_issue_body',
     'manage_issue_labels',
     'manage_issue_assignees',
     'manage_pr_review',
