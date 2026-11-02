@@ -254,7 +254,7 @@ function isCitationBridge(bridge) {
  * future wait with a duration has not been observed, so the anchor stays on the duration, not on tense.
  * @type {RegExp}
  */
-const CITATION_ANCHOR = /^[\s\S]*\b(?:per|as\s+you\s+(?:said|directed|called)|(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|several|few|couple\s+of)\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?)\s+(?:after|since)|(?:recorded|followed|implemented|applied|took|went\s+with)(?=\s*$))\b([\s\S]*)$/;
+const CITATION_ANCHOR = /^[\s\S]*\b(?:per|as\s+you\s+(?:said|directed|called)|(?:\d+|an?|one|two|three|four|five|six|seven|eight|nine|ten|several|few|couple\s+of)\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?)\s+(?:after|since)|(?:recorded|followed|implemented|applied|took|went\s+with|relayed)(?=\s*$))\b([\s\S]*)$/;
 
 /**
  * @summary Checks whether a local "your call" match cites a prior operator decision.
