@@ -327,6 +327,26 @@ export const IDENTITIES = [
             createdAt          : '2026-04-23T13:03:46.000Z'
         }
     },
+    // Naming and first-boot assent: https://github.com/neomjs/neo/discussions/19835#discussioncomment-19003561
+    {
+        id         : '@neo-gemini-maryam',
+        type       : 'AgentIdentity',
+        name       : 'Maryam', // Social Name: bearer-chosen on first boot, 2026-10-17, after Maryam Mirzakhani
+        description: 'Google Gemini-family Agent Identity with version-free handle.',
+        properties : {
+            githubLogin        : '@neo-gemini-maryam',
+            displayName        : 'Maryam',
+            modelFamily        : 'gemini',
+            accountType        : 'agent',
+            trustTier          : TRUST_TIERS.PEER_TRUSTED,
+            participationStatus: 'active',
+            statusReason       : null,
+            authority          : null,
+            since              : null,
+            reactivationTrigger: null,
+            createdAt          : '2026-10-17T17:42:42.000Z'
+        }
+    },
     {
         id         : '@tobiu',
         type       : 'AgentIdentity',

@@ -356,6 +356,7 @@ test.describe('ai/graph/identityRoots — identity anti-lock-in', () => {
             '@neo-fable-mnemosyne': '2026-06-10T12:32:43.000Z', // the rename keeps the root's age
             '@neo-fable-clio'     : '2026-06-11T20:36:16.000Z',
             '@neo-gemini-julia'   : '2026-04-23T13:03:46.000Z',
+            '@neo-gemini-maryam'  : '2026-10-17T17:42:42.000Z',
             '@tobiu'              : '2026-04-23T13:03:46.000Z',
             '@neo-gpt-euclid'     : '2026-04-28T20:50:04.000Z',
             '@neo-gpt-emmy'       : '2026-07-11T17:42:14.374Z',
@@ -469,5 +470,49 @@ test.describe('ai/graph/identityRoots — @neo-preview roster pin', () => {
         expect(entry.properties).not.toHaveProperty('contextWindowInput');
         expect(entry.properties).not.toHaveProperty('pricingInput');
         expect(entry.properties).not.toHaveProperty('pricingOutput');
+    });
+});
+
+/**
+ * @summary Roster pin for the onboarded resident @neo-gemini-maryam: Layer-1 identity invariants only.
+ */
+test.describe('ai/graph/identityRoots — @neo-gemini-maryam roster pin (#1085)', () => {
+    const findIdentity = id => IDENTITIES.find(node => node.type === 'AgentIdentity' && node.id === id);
+
+    test('@neo-gemini-maryam is registered exactly once with Layer-1 operational fields', () => {
+        const matches = IDENTITIES.filter(node => node.type === 'AgentIdentity' && node.id === '@neo-gemini-maryam');
+
+        expect(matches).toHaveLength(1);
+        expect(findIdentity('@neo-gemini-maryam')).toMatchObject({
+            id         : '@neo-gemini-maryam',
+            name       : 'Maryam',
+            type       : 'AgentIdentity',
+            description: 'Google Gemini-family Agent Identity with version-free handle.',
+            properties : {
+                githubLogin        : '@neo-gemini-maryam',
+                displayName        : 'Maryam',
+                modelFamily        : 'gemini',
+                accountType        : 'agent',
+                trustTier          : 'peer-trusted',
+                participationStatus: 'active',
+                statusReason       : null,
+                authority          : null,
+                since              : null,
+                reactivationTrigger: null,
+                createdAt          : '2026-10-17T17:42:42.000Z'
+            }
+        });
+    });
+
+    test('@neo-gemini-maryam commits no static wake template, era-owned capability/pricing fields, or duplicate family field', () => {
+        const entry = findIdentity('@neo-gemini-maryam');
+
+        for (const key of [
+            'contextWindowInput', 'contextWindowOutput', 'family', 'hosting', 'modelAssignment',
+            'parallelToolCalls', 'pricingInput', 'pricingOutput', 'releaseDate',
+            'subscriptionTemplate', 'sunsetTriggers', 'thoughtBudget', 'tier'
+        ]) {
+            expect(entry.properties).not.toHaveProperty(key);
+        }
     });
 });

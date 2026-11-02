@@ -39,6 +39,10 @@ test.describe('identityRootsMigration — the flat registry expressed through th
 
         expect(residents).toHaveLength(epochSeeds.length);
         expect(report.skipped.filter(entry => entry.accountType === 'agent')).toEqual([{
+            id         : '@neo-gemini-maryam',
+            accountType: 'agent',
+            reason     : 'post-epoch-resident-no-seed-era'
+        }, {
             id         : '@neo-gpt-emmy',
             accountType: 'agent',
             reason     : 'post-epoch-resident-no-seed-era'
