@@ -1269,7 +1269,7 @@ export class RecoveryActuatorService extends Base {
             throw new Error('Deployment runtime access service is unavailable');
         }
 
-        const resolvedKeepStorageBytes = keepStorageBytes ?? AiConfig.orchestrator?.diskPressure?.buildCacheWarmFloorBytes;
+        const resolvedKeepStorageBytes = keepStorageBytes ?? AiConfig.orchestrator.diskPressure.buildCacheWarmFloorBytes;
 
         const result = await this.deploymentRuntimeAccessService.applyLifecycle({
             serviceKey      : target.id,

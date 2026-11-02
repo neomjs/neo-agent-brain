@@ -538,7 +538,7 @@ export class DeploymentStateBridgeService extends Base {
                 ...data,
                 observedAtMs: observedAt
             };
-            const sampleWindow = Math.max(1, Number(AiConfig.orchestrator.deploymentStateBridge.statsSampleWindow) || 6);
+            const sampleWindow = Math.max(1, AiConfig.orchestrator.deploymentStateBridge.statsSampleWindow);
             this.engineDiskSamples = [...this.engineDiskSamples, latestSample].slice(-sampleWindow);
         }
 
