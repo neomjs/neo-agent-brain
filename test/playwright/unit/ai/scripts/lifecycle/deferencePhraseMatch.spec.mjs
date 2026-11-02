@@ -18,6 +18,7 @@ test.describe('deferencePhraseMatch', () => {
         ['applied', 'I applied your call.'],
         ['took', 'I took your call as the decision.'],
         ['went with', 'I went with your call.'],
+        ['relayed (#1420)', 'Euclid also relayed your call to pause the film.'],
         ['case folding', 'I RECORDED YOUR CALL.'],
         ['soft wraps', 'I went\n with\nyour\ncall.'],
         ['emphasis', 'I **recorded** __your call__.'],
@@ -38,7 +39,9 @@ test.describe('deferencePhraseMatch', () => {
         ['emphasized choice after report', 'I went with your call.\n\n**Your call:** A or B?'],
         ['question after citation', 'per #1 your call, but honestly, your call?'],
         ['citation tokens after executed verb', 'I recorded rule 1 your call?'],
-        ['intervening pronoun', 'I recorded it, your call?']
+        ['intervening pronoun', 'I recorded it, your call?'],
+        ['relayed then handback (#1420)', 'Relayed. Your call?'],
+        ['relayed pronoun then handback (#1420)', 'I relayed it, your call.']
     ];
 
     for (const [name, text] of handbacks) {
