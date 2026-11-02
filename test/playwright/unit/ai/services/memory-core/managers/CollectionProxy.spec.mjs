@@ -119,4 +119,23 @@ test.describe('Neo.ai.services.memory-core.managers.CollectionProxy — collecti
             expect(await proxy.resolveCollectionId()).toBeNull();
         });
     });
+
+    test.describe('embed() — the drain embeds turns before `add` (#128)', () => {
+        // `StorageRouter.getMemoryCollection()` always hands the drain this proxy, so without `embed`
+        // here the drain could not embed explicitly and no turn would reach the store.
+        test('delegates to the PRIMARY collection, the one `get()` reads', async () => {
+            const calls = [],
+                  proxy = proxyFronting(
+                      {id: 'primary',   embed: async (inputs, isQuery) => { calls.push(['primary', inputs, isQuery]); return inputs.map(() => [1]); }},
+                      {id: 'secondary', embed: async inputs => { calls.push(['secondary', inputs]); return inputs.map(() => [2]); }}
+                  );
+
+            expect(await proxy.embed(['a', 'b'])).toEqual([[1], [1]]);
+            expect(calls).toEqual([['primary', ['a', 'b'], false]]);
+        });
+
+        test('no resolvable collection fails loudly rather than embedding nothing', async () => {
+            await expect(proxyFronting().embed(['a'])).rejects.toThrow(/embed\(\) failed: No underlying collection/);
+        });
+    });
 });

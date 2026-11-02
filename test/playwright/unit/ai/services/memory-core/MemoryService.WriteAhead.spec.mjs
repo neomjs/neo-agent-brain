@@ -87,7 +87,9 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
             if (collectionMode === 'throw') throw new Error('chroma down (spec)');
             if (collectionMode === 'hang')  return new Promise(() => {}); // never settles
             return {
-                add: async ({ids = [], metadatas = []} = {}) => { ids.forEach((id, i) => memStore.set(id, metadatas[i] || {})); },
+                // The WAL drain embeds before `add`, through the collection's own embedding function.
+                embed: async texts => texts.map(() => [0]),
+                add  : async ({ids = [], metadatas = []} = {}) => { ids.forEach((id, i) => memStore.set(id, metadatas[i] || {})); },
                 get: async ({ids = []} = {}) => {
                     const found = ids.filter(id => memStore.has(id));
                     return {ids: found, metadatas: found.map(id => memStore.get(id))};
@@ -816,8 +818,12 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
             const drain = await drainMemoryWal({
                 ids       : [result.id],
                 collection: {
-                    add: async ({ids = [], metadatas = []}) => {
+                    // The embed is the provider call the drain attributes; `add` only persists.
+                    embed: async texts => {
                         events.push({kind: 'embedding', ...getProviderActivityContext()});
+                        return texts.map(() => [0]);
+                    },
+                    add: async ({ids = [], metadatas = []}) => {
                         ids.forEach((id, index) => memStore.set(id, metadatas[index] || {}));
                     }
                 }

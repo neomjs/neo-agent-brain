@@ -70,6 +70,11 @@ function createSpyCollection() {
         getCalls,
         queryCalls,
 
+        // The WAL drain embeds before `add`, through the collection's own embedding function.
+        async embed(texts) {
+            return texts.map(() => [0]);
+        },
+
         async add({ids, metadatas, documents}) {
             addCalls.push({ids, metadatas, documents});
             ids.forEach((id, i) => rows.set(id, {

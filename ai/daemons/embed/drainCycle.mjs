@@ -69,16 +69,25 @@ export const MAX_RECORD_COOLDOWN_MS = 3600000;
 export const DEFAULT_MAX_IN_CYCLE_MS = 120000;
 
 /**
- * @summary Runs one WAL-owned collection write with exact provider-stage attribution.
- * @param {Object} collection Memory collection.
- * @param {Object} payload Chroma add payload.
+ * @summary Embeds WAL turn records and adds them without `documents`, with exact provider-stage attribution.
+ *
+ * A turn's document is derived from its split fields (`composeTurnDocumentText`) and readers rebuild it
+ * (`resolveTurnDocumentForRead`), so storing it would keep the text twice and feed Chroma's full-text index
+ * a third copy. `collection.embed(texts, false)` is the call chromadb's own `add` makes for documents
+ * passed without embeddings, so the vectors match what auto-embedding stored.
+ * @param {Object}   collection Memory collection.
+ * @param {Object[]} records    WAL records (`{id, metadata, document}`).
  * @returns {Promise<*>}
  */
-function addWalRecords(collection, payload) {
+function addWalRecords(collection, records) {
     return runWithProviderActivityContext({
         operationStage: 'mc-wal-drain-embedding',
         service       : 'memory-core'
-    }, () => collection.add(payload));
+    }, async () => collection.add({
+        ids       : records.map(record => record.id),
+        embeddings: await collection.embed(records.map(record => record.document), false),
+        metadatas : records.map(record => record.metadata)
+    }));
 }
 
 /**
@@ -159,7 +168,7 @@ export function isProviderContentionError(error) {
  * duration remains, and pretending otherwise would be a comment that outruns its code.
  *
  * @param {Object}   options
- * @param {Object}   options.collection    Content-store collection (`add({ids, metadatas, documents})`).
+ * @param {Object}   options.collection    Content-store collection (`embed(texts, false)`, `add({ids, embeddings, metadatas})`).
  * @param {Object[]} options.records       Pending WAL records (`{id, metadata, document, segmentKey}`).
  * @param {Number}   options.maxRetries    In-cycle whole-batch retry bound.
  * @param {Number}   options.backoffBaseMs Exponential backoff base for in-cycle retries.
@@ -183,17 +192,12 @@ export async function embedBatch({
     maxInCycleMs      = DEFAULT_MAX_IN_CYCLE_MS,
     now               = Date.now
 }) {
-    const payload = {
-            ids      : records.map(record => record.id),
-            metadatas: records.map(record => record.metadata),
-            documents: records.map(record => record.document)
-        },
-        startedAt = now(),
-        budgetSpent = () => Number.isFinite(maxInCycleMs) && maxInCycleMs > 0 && now() - startedAt >= maxInCycleMs;
+    const startedAt   = now(),
+          budgetSpent = () => Number.isFinite(maxInCycleMs) && maxInCycleMs > 0 && now() - startedAt >= maxInCycleMs;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-            await addWalRecords(collection, payload);
+            await addWalRecords(collection, records);
             return {succeeded: [...records], failed: []};
         } catch (error) {
             if (isContentionError(error)) {
@@ -250,7 +254,7 @@ export async function embedBatch({
         }
 
         try {
-            await addWalRecords(collection, {ids: [record.id], metadatas: [record.metadata], documents: [record.document]});
+            await addWalRecords(collection, [record]);
             succeeded.push(record);
         } catch (error) {
             failed.push({record, error});
@@ -262,14 +266,14 @@ export async function embedBatch({
 
 /**
  * @summary Verifies that an `add`-succeeded batch actually persisted a valid vector — the atomic-write
- * Prevent floor for the auto-embed drain path.
+ * Prevent floor for the drain path.
  *
- * `embedBatch` calls `collection.add({ids, metadatas, documents})` with **no `embeddings`** — it relies on
- * Chroma's collection embedding-function to auto-generate the vector. That auto-embed is **not atomic**: the
- * provider call can fail (timeout, oversized input, model-not-resident) while the document/metadata still
- * persist, leaving a metadata-only row — the recurring corruption shape — on the *highest-volume* write path.
- * `add`-success therefore does NOT imply embed-success, so this reads the persisted vectors back and classifies
- * each with the same {@link classifyRowVector} invariant the explicit-embedding write gate uses.
+ * Written when `embedBatch` let Chroma's embedding function generate the vector inside `add`, where a provider
+ * failure could still persist the metadata without a vector — the recurring corruption shape — on the
+ * *highest-volume* write path. `embedBatch` now embeds before `add`, so a provider failure stops the
+ * write. The read-back stays as the floor against a persisted row without a vector, the shape
+ * `reEmbedMissingHeal` repairs, whatever produced it. Each vector is classified with the same
+ * {@link classifyRowVector} invariant the explicit-embedding write gate uses.
  *
  * Disposition per outcome:
  * - **valid vector** → `embedded` (safe to mark reconciled).
@@ -415,7 +419,7 @@ async function deleteMetadataOnlyRows({collection, metadataOnly, log}) {
  * exactly the embedded ids. Ids still pending get their embed marker (the normal path). Ids that
  * VANISHED from the pending set mid-embed were tombstoned by `SessionService.purgeSession`
  * (sole-drainer invariant — nothing else writes markers), meaning the purge's content-store
- * delete may have run before our `add` resurrected the document: the cycle compensates with
+ * delete may have run before our `add` resurrected the row: the cycle compensates with
  * `collection.delete` for those ids and writes no marker (the purge already did).
  *
  * **Failure isolation:** records failing the per-record pass enter `retryState`
@@ -517,7 +521,7 @@ export async function drainWalOnce({
 
             if (tombstoned.length > 0) {
                 // Tombstoned mid-embed: purgeSession marked these records (always BEFORE its own
-                // content-store delete), so our add may have resurrected purged documents — undo it.
+                // content-store delete), so our add may have resurrected purged rows — undo it.
                 // A failed compensation delete cannot be retried from the WAL (the records are
                 // already reconciled by the purge's tombstone), so it is logged loudly with the
                 // exact ids instead of rethrowing the whole cycle.
