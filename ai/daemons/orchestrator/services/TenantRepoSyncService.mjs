@@ -4053,13 +4053,14 @@ class TenantRepoSyncService extends Base {
      *
      * @param {Object} [options]
      * @param {String[]|null} [options.onlyRepoSlugs=null] Restrict to these configured slugs; omit for every configured repo. An unknown slug is refused, never silently skipped.
-     * @param {Object|null} [options.tenantReposConfig=null] Injected repo config; defaults to the deployment's. Mirrors {@link #syncTenantRepos}'s seam rather than reading the singleton directly, so a caller can scope this the same way the sweep is scoped.
+     * @param {Object|null} [options.tenantReposConfig=null] Injected repo config; defaults to {@link #resolveTenantReposConfig} across graph, `kb-config.yaml`, and `AiConfig` tiers.
+     * @param {Object|null} [options.ingestionService=null] Stub KB ingestion service (test seam); forwarded to {@link #resolveTenantReposConfig}.
      * @param {String|null} [options.revisionsFilePath=null] Manifest path override; defaults to {@link #defaultRevisionsFilePath}.
      * @param {Function|null} [options.writeLog=null] Structured log sink.
      * @returns {Promise<{status: String, details: Object}>} `completed` with a per-repo outcome list, or `failed` carrying `KB_TENANT_REPO_SYNC_REPO_NOT_CONFIGURED`.
      */
-    async clearTenantRepoBackoff({onlyRepoSlugs = null, revisionsFilePath = null, writeLog = null, tenantReposConfig = null} = {}) {
-        const resolvedConfig = tenantReposConfig || AiConfig.data.orchestrator.tenantRepoSync,
+    async clearTenantRepoBackoff({onlyRepoSlugs = null, revisionsFilePath = null, writeLog = null, tenantReposConfig = null, ingestionService = null} = {}) {
+        const resolvedConfig = tenantReposConfig || await this.resolveTenantReposConfig({ingestionService}),
               allRepos       = resolvedConfig.tenantRepos || [],
               knownSlugs     = allRepos.map(repo => repo.repoSlug);
 

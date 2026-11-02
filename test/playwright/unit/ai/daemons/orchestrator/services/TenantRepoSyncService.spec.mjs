@@ -439,6 +439,48 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         })
     });
 
+    test('clear-backoff without tenantReposConfig resolves graph and kb-config.yaml tiers via resolveTenantReposConfig', async () => {
+        const repoSlug = 'github-content-sync';
+
+        await TenantRepoSyncService.writePersistedRevisions({
+            filePath : revisionsFile,
+            revisions: {
+                [repoSlug]: {
+                    lastIngestedRev      : 'sha-content-sync',
+                    lastRunAttemptAt     : 555,
+                    consecutiveFailures  : 3,
+                    ingestContractVersion: 3
+                }
+            }
+        });
+
+        const ingestionStub = {
+            listConfiguredTenantRepos: async () => ({
+                tenantRepos: [{
+                    tenantId     : 'neo-shared',
+                    repoSlug,
+                    cloneUrl     : 'https://github.com/neomjs/github-content-sync.git',
+                    credentialRef: 'env:GITHUB_TOKEN'
+                }]
+            })
+        };
+
+        const result = await TenantRepoSyncService.clearTenantRepoBackoff({
+            onlyRepoSlugs    : [repoSlug],
+            revisionsFilePath: revisionsFile,
+            ingestionService : ingestionStub
+        });
+
+        expect(result.status).toBe('completed');
+        expect(result.details.cleared).toEqual([{repoSlug, previousConsecutiveFailures: 3}]);
+
+        const persisted = await TenantRepoSyncService.readPersistedRevisions({filePath: revisionsFile});
+
+        expect(persisted[repoSlug].consecutiveFailures).toBe(0);
+        expect(persisted[repoSlug].backoffClearedFromFailures).toBe(3);
+        expect(persisted[repoSlug].lastIngestedRev).toBe('sha-content-sync');
+    });
+
     test('embedding recovery checkpoints degrade by omission, retain restart truth, and consumed grants become history (#16692)', async () => {
         const
             episodeId    = 'a'.repeat(32),
