@@ -18,6 +18,7 @@ import {
     buildTaskDefinitions
 } from '../../../../../../ai/daemons/orchestrator/taskDefinitions.mjs';
 import TaskStateService, {createInitialTaskState} from '../../../../../../ai/daemons/orchestrator/services/TaskStateService.mjs';
+import {TASK_REGISTRY}                            from '../../../../../../ai/daemons/orchestrator/scheduling/registry.mjs';
 
 const __filename    = fileURLToPath(import.meta.url);
 const __dirname     = path.dirname(__filename);
@@ -642,6 +643,17 @@ test.describe('Orchestrator parent-prop propagation (#11834 AC3)', () => {
         orchestrator.heavyMaintenanceLeasePath = newPath;
 
         expect(orchestrator.maintenanceBackpressureService.heavyMaintenanceLeasePath).toBe(newPath);
+    });
+});
+
+test.describe('Scheduled lanes have a task-state envelope (#1433)', () => {
+    test('every TASK_REGISTRY lane gets an envelope from the task-definition table', () => {
+        // The scheduler walks TASK_REGISTRY, but envelopes come from the definition table alone and
+        // `markStarted` dereferences them unguarded: a lane missing here throws on every poll.
+        const state   = createInitialTaskState(buildTaskDefinitions()),
+              missing = TASK_REGISTRY.map(({taskName}) => taskName).filter(taskName => !state[taskName]);
+
+        expect(missing).toEqual([]);
     });
 });
 
