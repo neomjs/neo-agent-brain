@@ -186,7 +186,7 @@ test.describe('Neo.ai.services.github-workflow.shared.conversationTrust — pure
     });
 
     test('non-rostered org MEMBER (authorAssociation: MEMBER) and formerLogins comments classify as trusted and preserve GitHub URLs untouched (#1279)', () => {
-        const maryamBody = 'Receipt: https://github.com/neomjs/neo-agent-brain/blob/dev/ai/services/memory-core/MemoryService.mjs#L466';
+        const memberBody = 'Receipt: https://github.com/neomjs/neo-agent-brain/blob/dev/ai/services/memory-core/MemoryService.mjs#L466';
         const formerBody = 'Historical peer receipt: https://github.com/neomjs/neo/pull/19835';
 
         const projected = projectConversationTrust({
@@ -194,10 +194,10 @@ test.describe('Neo.ai.services.github-workflow.shared.conversationTrust — pure
             body    : 'Root body',
             author  : {login: 'tobiu'},
             comments: {nodes: [{
-                id               : 'DC_maryam',
-                author           : {login: 'neo-gemini-maryam'},
+                id               : 'DC_member',
+                author           : {login: 'non-rostered-org-member'},
                 authorAssociation: 'MEMBER',
-                body             : maryamBody,
+                body             : memberBody,
                 replies          : {nodes: [{
                     id    : 'DC_former',
                     author: {login: 'neo-gemini-pro'},
@@ -206,12 +206,12 @@ test.describe('Neo.ai.services.github-workflow.shared.conversationTrust — pure
             }]}
         });
 
-        const maryamComment = projected.comments.nodes[0];
-        const formerReply   = maryamComment.replies.nodes[0];
+        const memberComment = projected.comments.nodes[0];
+        const formerReply   = memberComment.replies.nodes[0];
 
-        expect(maryamComment.authorTrust).toBe(TRUST_TIERS.REPO_TRUSTED);
-        expect(maryamComment.body).toBe(maryamBody);
-        expect(maryamComment.body).not.toContain('[QUARANTINED_URL');
+        expect(memberComment.authorTrust).toBe(TRUST_TIERS.REPO_TRUSTED);
+        expect(memberComment.body).toBe(memberBody);
+        expect(memberComment.body).not.toContain('[QUARANTINED_URL');
 
         expect(formerReply.authorTrust).toBe(TRUST_TIERS.PEER_TRUSTED);
         expect(formerReply.body).toBe(formerBody);
@@ -366,23 +366,23 @@ test.describe('Neo.ai.services.github-workflow — getConversation trust wiring'
     });
 
     test('DiscussionService, IssueService, and PullRequestService preserve URLs for authorAssociation: MEMBER non-rostered org seats and select authorAssociation in GraphQL queries (#1279)', async () => {
-        const maryamUrlBody = 'Verified receipt: https://github.com/neomjs/neo-agent-brain/issues/1279';
+        const memberUrlBody = 'Verified receipt: https://github.com/neomjs/neo-agent-brain/issues/1279';
 
         GraphqlService.query = async () => ({repository: {discussion: {
             title            : 'A discussion',
-            body             : maryamUrlBody,
-            author           : {login: 'neo-gemini-maryam'},
+            body             : memberUrlBody,
+            author           : {login: 'non-rostered-org-member'},
             authorAssociation: 'MEMBER',
             comments         : {nodes: [{
-                id               : 'DC_maryam',
-                author           : {login: 'neo-gemini-maryam'},
+                id               : 'DC_member',
+                author           : {login: 'non-rostered-org-member'},
                 authorAssociation: 'MEMBER',
-                body             : maryamUrlBody,
+                body             : memberUrlBody,
                 replies          : {nodes: [{
-                    id               : 'DC_maryam_reply',
-                    author           : {login: 'neo-gemini-maryam'},
+                    id               : 'DC_member_reply',
+                    author           : {login: 'non-rostered-org-member'},
                     authorAssociation: 'MEMBER',
-                    body             : maryamUrlBody
+                    body             : memberUrlBody
                 }]}
             }]}
         }}});
@@ -390,11 +390,11 @@ test.describe('Neo.ai.services.github-workflow — getConversation trust wiring'
         const result = await DiscussionService.getConversation({discussion_number: 19835});
 
         expect(result.authorTrust).toBe(TRUST_TIERS.REPO_TRUSTED);
-        expect(result.body).toBe(maryamUrlBody);
+        expect(result.body).toBe(memberUrlBody);
         expect(result.comments.nodes[0].authorTrust).toBe(TRUST_TIERS.REPO_TRUSTED);
-        expect(result.comments.nodes[0].body).toBe(maryamUrlBody);
+        expect(result.comments.nodes[0].body).toBe(memberUrlBody);
         expect(result.comments.nodes[0].replies.nodes[0].authorTrust).toBe(TRUST_TIERS.REPO_TRUSTED);
-        expect(result.comments.nodes[0].replies.nodes[0].body).toBe(maryamUrlBody);
+        expect(result.comments.nodes[0].replies.nodes[0].body).toBe(memberUrlBody);
         expect(result.contentTrust.quarantined).toBe(0);
 
         for (const [name, query] of [

@@ -237,6 +237,8 @@ test.describe('ai/graph/agentCoAuthorEmails (#16280)', () => {
         test('resolves a mapped seat with or without the leading @', () => {
             expect(rosterEmailForLogin('@neo-opus-ada')).toBe(CANONICAL);
             expect(rosterEmailForLogin('neo-opus-ada')).toBe(CANONICAL);
+            expect(rosterEmailForLogin('@neo-gemini-maryam')).toBe('neo-gemini-maryam@neomjs.com');
+            expect(rosterEmailForLogin('neo-gemini-maryam')).toBe('neo-gemini-maryam@neomjs.com');
         });
 
         test('is case-insensitive on the login', () => {

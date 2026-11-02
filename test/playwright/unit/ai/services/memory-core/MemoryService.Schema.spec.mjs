@@ -208,6 +208,7 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
 
     test('resolveMemoryTrustTier resolves canonical roster ids and all formerLogins aliases to their owning trust tier (#1279)', () => {
         expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: '@neo-gemini-julia'})).toBe(TRUST_TIERS.PEER_TRUSTED);
+        expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: '@neo-gemini-maryam'})).toBe(TRUST_TIERS.PEER_TRUSTED);
 
         for (const formerLogin of [
             '@neo-gemini-pro',
@@ -227,7 +228,7 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
         }
     });
 
-    test('resolveMemoryTrustTier resolves auto-provisioned AgentIdentity graph nodes (e.g. @neo-gemini-maryam) from GraphService (#1279)', () => {
+    test('resolveMemoryTrustTier resolves auto-provisioned AgentIdentity graph nodes from GraphService (#1279)', () => {
         const
             originalDb            = GraphService.db,
             originalGetNodeRecord = GraphService.getNodeRecord;
@@ -235,9 +236,9 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
         try {
             GraphService.db = {nodes: new Map()};
             GraphService.getNodeRecord = ({id}) => {
-                if (id === '@neo-gemini-maryam') {
+                if (id === '@auto-provisioned-seat') {
                     return {
-                        id        : '@neo-gemini-maryam',
+                        id        : '@auto-provisioned-seat',
                         type      : 'AgentIdentity',
                         properties: {
                             trustTier: TRUST_TIERS.INTERNAL_AUTHORED
@@ -247,8 +248,8 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
                 return null;
             };
 
-            expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: '@neo-gemini-maryam'})).toBe(TRUST_TIERS.INTERNAL_AUTHORED);
-            expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: 'neo-gemini-maryam'})).toBe(TRUST_TIERS.INTERNAL_AUTHORED);
+            expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: '@auto-provisioned-seat'})).toBe(TRUST_TIERS.INTERNAL_AUTHORED);
+            expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: 'auto-provisioned-seat'})).toBe(TRUST_TIERS.INTERNAL_AUTHORED);
             expect(MemoryService.constructor.resolveMemoryTrustTier({agentIdentity: '@unknown-unprovisioned'})).toBe(TRUST_TIERS.UNCLASSIFIED);
         } finally {
             GraphService.db            = originalDb;

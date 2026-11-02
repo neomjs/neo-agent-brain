@@ -123,10 +123,14 @@ test.describe('Neo.ai.scripts.revalidationSweep', () => {
     });
 
     test.describe('resolveIdentityForFamily', () => {
-        test('resolves gemini family to @neo-gemini-julia', () => {
+        test('resolves gemini family to @neo-gemini-julia and fans out to both active Gemini identities', () => {
             const identity = resolveIdentityForFamily('gemini');
             expect(identity.id).toBe('@neo-gemini-julia');
             expect(identity.properties.modelFamily).toBe('gemini');
+            expect(resolveIdentitiesForFamily('gemini').map(entry => entry.id)).toEqual([
+                '@neo-gemini-julia',
+                '@neo-gemini-maryam'
+            ]);
         });
 
         test('resolves claude family to @neo-opus-ada', () => {
@@ -234,7 +238,7 @@ test.describe('Neo.ai.scripts.revalidationSweep', () => {
                 ],
                 postComment : ({ number, body }) => {
                     postedNumbers.push(number);
-                    expect(body).toContain('@neo-gemini-julia');
+                    expect(body).toContain('@neo-gemini-julia, @neo-gemini-maryam');
                 }
             };
             const result = await revalidationSweep({
