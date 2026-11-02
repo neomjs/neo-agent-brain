@@ -713,6 +713,8 @@
         "collections.graph",
         "collections.memoryProd",
         "collections.memoryTest",
+        "collections.messageProd",
+        "collections.messageTest",
         "collections.sessionProd",
         "collections.sessionTest",
         "collections.temporalSummaryProd",

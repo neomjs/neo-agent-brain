@@ -40,7 +40,7 @@ test.describe('Neo.ai.mcp.server.shared.services.DestructiveOperationGuard (#108
         // collection (the stale neo-agent-graph vs the live neo-native-graph) unguarded at the name layer.
         // Parity is checked against the PRODUCTION leaves: the guard protects production names regardless of
         // the unit-test isolation toggle, so `collections.memory`/`.session` (test-toggled here) would be wrong.
-        for (const name of [aiConfig.collections.memoryProd, aiConfig.collections.sessionProd, aiConfig.collections.graph, kbConfig.collectionName]) {
+        for (const name of [aiConfig.collections.memoryProd, aiConfig.collections.sessionProd, aiConfig.collections.messageProd, aiConfig.collections.graph, kbConfig.collectionName]) {
             expect(typeof name).toBe('string');
             expect(GUARDED_CANONICAL_COLLECTION_NAMES.has(name)).toBe(true);
         }

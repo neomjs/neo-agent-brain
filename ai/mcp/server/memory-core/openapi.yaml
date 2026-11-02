@@ -2674,6 +2674,17 @@ paths:
                   projectionStatus:
                     type: string
                     enum: [pending]
+                  visibility:
+                    type: object
+                    description: "Semantic-recall state at send time, in `add_memory`'s vocabulary: always `embed-deferred`, because the embed daemon indexes the message after the send returns."
+                    required: [semanticQueryable, state]
+                    properties:
+                      semanticQueryable:
+                        type: boolean
+                        enum: [false]
+                      state:
+                        type: string
+                        enum: [embed-deferred]
                   revisionDigest:
                     type: string
                     pattern: '^[0-9a-f]{64}$'
@@ -3105,7 +3116,7 @@ paths:
       x-neo-tool-tier: admin
       x-pass-as-object: true
       description: |
-        Sender-side retraction: permanently clears the message's `subject` and `bodyText` to `'[retracted by sender]'` and sets `retracted: true`. All edges (`SENT_BY`, `SENT_TO`, `DELIVERED_TO`, `PART_OF_THREAD`, `IN_REPLY_TO`) survive so thread context remains coherent — receivers see the placeholder, not an unexplained gap. Only the sender (`SENT_BY` match) can retract. Irreversible; no undo path.
+        Sender-side retraction: permanently clears the message's `subject` and `bodyText` to `'[retracted by sender]'` and sets `retracted: true`. All edges (`SENT_BY`, `SENT_TO`, `DELIVERED_TO`, `PART_OF_THREAD`, `IN_REPLY_TO`) survive so thread context remains coherent — receivers see the placeholder, not an unexplained gap. The message also leaves the semantic message index. Only the sender (`SENT_BY` match) can retract. Irreversible; no undo path.
       tags: [Mailbox]
       parameters:
         - name: messageId

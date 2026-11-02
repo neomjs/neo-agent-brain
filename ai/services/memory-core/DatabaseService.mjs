@@ -791,8 +791,13 @@ class DatabaseService extends Base {
 
     /**
      * Truncates specified collections (or graph) from the database.
+     *
+     * `messages` (the A2A message index) is opt-in and never exported: it is derived from the graph's
+     * MESSAGE nodes, so a restore rebuilds it with `backfillMessageEmbeddings.mjs` instead of carrying
+     * its 4096-d vectors in every backup bundle.
+     *
      * @param {Object} options
-     * @param {String[]}      [options.include=['memories', 'summaries', 'graph']]
+     * @param {String[]}      [options.include=['memories', 'summaries', 'graph']] Also accepts `temporal-summaries` and `messages`.
      * @param {String|Object} [options.confirmation] Explicit production confirmation token.
      * @returns {Promise<{message: string}>}
      */
@@ -818,6 +823,12 @@ class DatabaseService extends Base {
                 const proxy = Neo.create('Neo.ai.services.memory-core.managers.CollectionProxy', { collectionType: 'temporalSummary' });
                 await proxy.drop({confirmation});
                 truncated.push('temporal-summaries');
+            }
+
+            if (include.includes('messages')) {
+                const proxy = Neo.create('Neo.ai.services.memory-core.managers.CollectionProxy', {collectionType: 'message'});
+                await proxy.drop({confirmation});
+                truncated.push('messages');
             }
 
             if (include.includes('graph')) {
