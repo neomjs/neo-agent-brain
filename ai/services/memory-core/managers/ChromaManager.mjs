@@ -300,6 +300,27 @@ class ChromaManager extends AbstractVectorManager {
     }
 
     /**
+     * @summary Resolves the message collection: one row per accepted A2A message, written by the embed
+     * daemon's message drain, carrying the routing metadata that message admission filters on.
+     * @returns {Promise<Object>}
+     */
+    async getMessageCollection() {
+        if (!this._messageCollectionPromise) {
+            const collectionName = aiConfig.collections.message;
+            this.assertCollectionNotProdBleed({name: collectionName, database: this.resolveChromaClientConfig(aiConfig).database});
+            this._messageCollectionPromise = this.#executeSilently(async () => {
+                return await this.client.getOrCreateCollection({
+                    name             : collectionName,
+                    embeddingFunction: this.#createEmbeddingFunction()
+                });
+            }, {filter: MC_WARN_FILTER});
+        }
+
+        this.messageCollection = await this._messageCollectionPromise;
+        return this.messageCollection;
+    }
+
+    /**
      * @returns {Promise<Object>}
      */
     async getGraphCollection() {

@@ -22,6 +22,7 @@ import {
     TASK_STATE_CHANGED_SCHEMA_VERSION
 } from './taskAssignmentContract.mjs';
 import {
+    appendMessageWalEmbedMarker,
     appendMessageWalGraphProjectionMarker,
     appendWalMessage,
     getMessageWalGraphProjectionStats,
@@ -3051,6 +3052,15 @@ function linkOptionalMailboxEdge(source, target, type, weight, properties) {
 const MESSAGE_RETRACTED_PLACEHOLDER = '[retracted by sender]';
 
 /**
+ * @summary The `visibility` an accepted message reports. The embed daemon's message drain makes a
+ * message semantically searchable after the send returns, never during it, so at send time it is
+ * always `embed-deferred` (the `add_memory` vocabulary). Listing is `projectionStatus`'s concern.
+ *
+ * @type {Object}
+ */
+const MESSAGE_SEND_VISIBILITY = Object.freeze({semanticQueryable: false, state: 'embed-deferred'});
+
+/**
  * @summary A2A (Agent-to-Agent) Messaging Service mapped to the Native Edge Graph.
  *
  * Implements the Mailbox primitives for direct or broadcast agent communications.
@@ -3679,6 +3689,7 @@ class MailboxService extends Base {
                 priority,
                 status          : 'sent',
                 projectionStatus: 'pending',
+                visibility      : MESSAGE_SEND_VISIBILITY,
                 ...(isRequestPublish ? {
                     revisionDigest: initialRevision.revisionDigest,
                     revision      : initialRevision,
@@ -3703,9 +3714,10 @@ class MailboxService extends Base {
 
         return {
             messageId,
-            sentAt: timestamp,
+            sentAt    : timestamp,
             priority,
-            status: 'sent',
+            status    : 'sent',
+            visibility: MESSAGE_SEND_VISIBILITY,
             ...(isRequestPublish ? {
                 revisionDigest: initialRevision.revisionDigest,
                 revision      : initialRevision,
@@ -5562,7 +5574,45 @@ class MailboxService extends Base {
         messageNode.properties.bodyText  = MESSAGE_RETRACTED_PLACEHOLDER;
         GraphService.upsertNode(messageNode);
 
+        await this._retractMessageFromIndex(messageId);
+
         return { messageId, retracted: true, status: 'retracted' };
+    }
+
+    /**
+     * @summary Takes a retracted message out of the semantic index.
+     *
+     * The WAL keeps the original text until its segment is pruned, so the record is first marked
+     * `retracted` for the embed drain and only then is its vector deleted — the order a session purge
+     * uses, which makes the drain skip the record and compensate an embed already in flight. A message
+     * whose WAL segment is gone needs no marker. Neither step can fail the retraction itself: both
+     * failures are logged with the message id.
+     *
+     * @param {String} messageId MESSAGE:<uuid> identifier.
+     * @returns {Promise<void>}
+     * @private
+     */
+    async _retractMessageFromIndex(messageId) {
+        const dir = aiConfig.messageWal.dir;
+
+        try {
+            const [record] = await readWalMessagesByIds({dir, ids: [messageId]});
+
+            if (record?.segmentKey) {
+                await appendMessageWalEmbedMarker({id: messageId, segmentKey: record.segmentKey, retracted: true}, {dir});
+            }
+        } catch (e) {
+            logger.error('[MailboxService.deleteMessage] retraction marker append failed', {messageId, error: e?.message || String(e)});
+        }
+
+        try {
+            // Lazy: the vector store is needed only here, and an eager import would connect it at load.
+            const {default: StorageRouter} = await import('./managers/StorageRouter.mjs');
+
+            await (await StorageRouter.getMessageCollection()).delete({ids: [messageId]});
+        } catch (e) {
+            logger.error('[MailboxService.deleteMessage] message vector delete failed', {messageId, error: e?.message || String(e)});
+        }
     }
 
     /**

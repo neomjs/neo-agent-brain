@@ -380,6 +380,14 @@ test.describe('Memory Core Config (#10010)', () => {
         expect(config.collections.temporalSummary).toBe(config.collections.temporalSummaryTest);
     });
 
+    test('collections.message resolves by construction from the *Prod/*Test leaves under the toggle (#1439)', () => {
+        // The message index follows the same shape: a unit run resolves a per-worker test name that
+        // purgeTestCollections' `test-message-` contract reclaims, never `neo-agent-messages`.
+        expect(config.collections.messageProd).toBe('neo-agent-messages');
+        expect(config.collections.message).toMatch(/^test-message-/);
+        expect(config.collections.message).toBe(config.collections.messageTest);
+    });
+
     test('maxSessionsPerSummarySweep defaults to 5 and parses NEO_MC_MAX_SESSIONS_PER_SUMMARY_SWEEP as a number (#13592)', () => {
         expect(config.maxSessionsPerSummarySweep).toBe(5);
 

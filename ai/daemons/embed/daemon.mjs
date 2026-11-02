@@ -9,6 +9,9 @@
  * an interrupted cycle simply leaves records pending for the next pass (`collection.add`
  * is idempotent per id at worst-duplicate level).
  *
+ * A second loop drains the accepted-message WAL into the message collection the same way, so A2A
+ * messages become semantically searchable (`MESSAGE_WAL_STORE` in `./drainCycle.mjs`).
+ *
  * Sibling of `ai/daemons/wake/daemon.mjs`: same orchestrator supervision
  * (`taskDefinitions.mjs` → `embedDaemon`, continuous task), same singleton PID lock, same
  * dual-sink logging contract. Drain logic lives in `./drainCycle.mjs` so specs exercise the
@@ -35,20 +38,27 @@ import {execSync} from 'child_process';
 
 import StorageRouter                       from '../../services/memory-core/managers/StorageRouter.mjs';
 import {DAEMON_EXIT_CRASH, DAEMON_EXIT_OK} from '../shared/daemonExit.mjs';
-import {startDrainLoop}                    from './drainCycle.mjs';
+import {MESSAGE_WAL_STORE, startDrainLoop} from './drainCycle.mjs';
 import {acquireDrainLock}                  from './drainLock.mjs';
 import {getMissingMemoryWalLeaves}         from '../../services/memory-core/helpers/memoryWalStore.mjs';
+import {getMissingMessageWalLeaves}        from '../../services/memory-core/helpers/messageWalStore.mjs';
 
 // Stale-config boot guard: the gitignored config.mjs is a MATERIALIZED template copy — on a
 // deployment whose overlay predates the memoryWal daemon leaves they resolve undefined, and
 // everything below (data dir, log paths, poll loop) would crash with an unactionable TypeError.
-// Fail loud + name the fix instead; the orchestrator's restart cooldown surfaces the line.
-const missingLeaves = getMissingMemoryWalLeaves(memoryCoreConfig.memoryWal,
-    ['dir', 'daemonDataDir', 'pollIntervalMs', 'batchSize', 'maxRetries', 'backoffBaseMs', 'retentionLimit']);
+// The message loop reads the messageWal leaves the same way, and a missing `dir` there would
+// drain nothing in silence. Fail loud + name the fix instead; the orchestrator's restart cooldown
+// surfaces the line.
+const missingLeaves = [
+    ...getMissingMemoryWalLeaves(memoryCoreConfig.memoryWal,
+        ['dir', 'daemonDataDir', 'pollIntervalMs', 'batchSize', 'maxRetries', 'backoffBaseMs', 'retentionLimit']).map(leaf => `memoryWal.${leaf}`),
+    ...getMissingMessageWalLeaves(memoryCoreConfig.messageWal,
+        ['dir', 'pollIntervalMs', 'batchSize', 'maxRetries', 'backoffBaseMs']).map(leaf => `messageWal.${leaf}`)
+];
 
 if (missingLeaves.length > 0) {
-    console.error(`[Embed Daemon] memoryWal config leaves missing: ${missingLeaves.join(', ')} — ` +
-        'sync the memoryWal block from config.template.mjs into the local config.mjs ' +
+    console.error(`[Embed Daemon] config leaves missing: ${missingLeaves.join(', ')} — ` +
+        'sync the memoryWal/messageWal blocks from config.template.mjs into the local config.mjs ' +
         '(node ai/scripts/setup/initServerConfigs.mjs --migrate-config) and restart. Exiting.');
     process.exit(1);
 }
@@ -323,6 +333,17 @@ async function main() {
         getCollection    : () => StorageRouter.getMemoryCollection(),
         getConfig        : () => memoryCoreConfig.memoryWal,
         expectedDimension: memoryCoreConfig.vectorDimension,
+        log              : writeLog
+    });
+
+    // The message loop claims no lock of its own. The message WAL directory's `.drain-lock` belongs
+    // to the message daemon, which writes the graph markers there; this loop writes only the embed
+    // markers, and this daemon's singleton is what keeps it the sole embed drainer.
+    startDrainLoop({
+        getCollection    : () => StorageRouter.getMessageCollection(),
+        getConfig        : () => memoryCoreConfig.messageWal,
+        expectedDimension: memoryCoreConfig.vectorDimension,
+        store            : MESSAGE_WAL_STORE,
         log              : writeLog
     });
 }

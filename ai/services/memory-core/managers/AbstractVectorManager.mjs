@@ -56,6 +56,16 @@ class AbstractVectorManager extends Base {
     }
 
     /**
+     * @summary Resolves the A2A message collection abstraction from the Vector Storage Layer
+     * (one row per accepted message, with the routing metadata message admission filters on).
+     * @abstract
+     * @returns {Promise<Object>}
+     */
+    async getMessageCollection() {
+        throw new Error('Abstract method: must be implemented by subclass');
+    }
+
+    /**
      * @summary Ingests data directly into the active Vector Storage Layer adapter.
      * @abstract
      * @param {Object} args

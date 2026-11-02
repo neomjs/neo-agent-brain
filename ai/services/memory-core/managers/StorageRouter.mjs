@@ -69,6 +69,15 @@ class StorageRouter extends Base {
     }
 
     /**
+     * @summary Resolves the A2A message collection, which the embed daemon's message drain writes.
+     * No query re-ranker: the admission-scoped read surface that would use one does not exist yet.
+     * @returns {Promise<CollectionProxy>} A proxy respecting aiConfig.engine
+     */
+    async getMessageCollection() {
+        return Neo.create(CollectionProxy, {collectionType: 'message'});
+    }
+
+    /**
      * @summary On-demand probe of each collection's vector-query (HNSW) path.
      *
      * A populated-but-corrupt collection passes `count()` but throws on `query()` (e.g. a desynced
