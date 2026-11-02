@@ -171,6 +171,118 @@ export const GET_ISSUE_ID = `
 `;
 
 /**
+ * Query to fetch an issue's body, author, assignees, and authenticated viewer login before
+ * replacing the issue body via `update_issue_body`.
+ *
+ * Variables required:
+ * - $owner: String!
+ * - $repo: String!
+ * - $number: Int!
+ */
+export const GET_ISSUE_BODY_TARGET = `
+  query GetIssueBodyTarget(
+    $owner: String!
+    $repo: String!
+    $number: Int!
+  ) {
+    viewer {
+      login
+    }
+    repository(owner: $owner, name: $repo) {
+      issue(number: $number) {
+        id
+        number
+        body
+        url
+        author {
+          login
+        }
+        assignees(first: 20) {
+          nodes {
+            login
+          }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * Query to fetch a pull request's body, author, assignees, and authenticated viewer login
+ * before replacing the pull request body via `update_issue_body`.
+ *
+ * Variables required:
+ * - $owner: String!
+ * - $repo: String!
+ * - $number: Int!
+ */
+export const GET_PULL_REQUEST_BODY_TARGET = `
+  query GetPullRequestBodyTarget(
+    $owner: String!
+    $repo: String!
+    $number: Int!
+  ) {
+    viewer {
+      login
+    }
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        id
+        number
+        body
+        url
+        author {
+          login
+        }
+        assignees(first: 20) {
+          nodes {
+            login
+          }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * Mutation to replace an existing issue's Markdown body.
+ *
+ * Variables required:
+ * - $id: ID! - The global node ID of the issue to update
+ * - $body: String! - The replacement Markdown body
+ */
+export const UPDATE_ISSUE_BODY = `
+  mutation UpdateIssueBody($id: ID!, $body: String!) {
+    updateIssue(input: {id: $id, body: $body}) {
+      issue {
+        id
+        url
+        updatedAt
+      }
+    }
+  }
+`;
+
+/**
+ * Mutation to replace an existing pull request's Markdown body.
+ *
+ * Variables required:
+ * - $id: ID! - The global node ID of the pull request to update
+ * - $body: String! - The replacement Markdown body
+ */
+export const UPDATE_PULL_REQUEST_BODY = `
+  mutation UpdatePullRequestBody($id: ID!, $body: String!) {
+    updatePullRequest(input: {pullRequestId: $id, body: $body}) {
+      pullRequest {
+        id
+        url
+        updatedAt
+      }
+    }
+  }
+`;
+
+/**
  * Builds a query that resolves several issues' open/closed state in ONE round trip.
  *
  * Aliased per number rather than issued per issue, because the cost objection to checking A+FU

@@ -570,7 +570,7 @@ paths:
            the stale version. The tax punishes the careful reader, misleads the frugal one, and
            grows with how wrong the body is.
 
-        Bodies are edited outside this tool (`gh issue edit` / `gh pr edit`).
+        Bodies are edited via `update_issue_body` (`gh issue edit` / `gh pr edit` as CLI fallback).
 
         **Action: 'create'**
         - Creates a new comment on an issue or PR.
@@ -646,6 +646,86 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /issues/body/update:
+    post:
+      summary: Update Issue or Pull Request Body
+      x-neo-tool-summary: Replace an issue or PR body in place (author/assignee guard; pass acknowledgedForeignBody to override).
+      operationId: update_issue_body
+      x-neo-tool-tier: write
+      x-pass-as-object: true
+      x-annotations:
+        readOnlyHint: false
+      description: |
+        Replaces the Markdown body of a GitHub issue or pull request in place and returns `updatedAt` plus the UTF-8 byte delta (`previousBytes`, `updatedBytes`, `byteDelta`).
+
+        **When to Use:**
+        - To fold current state, revised acceptance criteria, or scope updates directly into the issue or PR body instead of appending correction comments (`BODY = state`, `COMMENT = dialogue`).
+        - Preferred over `gh issue edit` / `gh pr edit` so seats whose harness blocks shell body edits can maintain issue and PR bodies natively over MCP.
+
+        **Guards:**
+        - **Target (`issue_number` xor `pr_number`):** Pass exactly one of `issue_number` or `pr_number`.
+        - **Non-empty body (`EMPTY_BODY`):** Blank or whitespace-only `body` strings are refused before GitHub I/O.
+        - **Authorship / assignment rule (`FOREIGN_BODY_FORBIDDEN`):** By default, only the issue/PR author or a current assignee may replace the body. When an intentional foreign-body edit is required (e.g. recording an `epic-review` prescription block or maintainer handoff), pass a non-empty `acknowledgedForeignBody` reason; the acknowledgement is echoed in the result.
+      tags: [Issues, Pull Requests]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - body
+              properties:
+                repo:
+                  $ref: '#/components/schemas/RepositoryTarget'
+                issue_number:
+                  type: integer
+                  description: The issue number to update (mutually exclusive with pr_number).
+                  example: 1425
+                pr_number:
+                  type: integer
+                  description: The pull request number to update (mutually exclusive with issue_number).
+                  example: 1436
+                body:
+                  type: string
+                  description: The complete replacement Markdown body (must be non-empty).
+                  example: "## Problem\nUpdated state."
+                acknowledgedForeignBody:
+                  type: string
+                  description: Explicit reason required when the authenticated caller is neither the author nor a current assignee of the target issue or pull request.
+                  example: "epic-review Stage 5 prescription block on parent epic"
+      responses:
+        '200':
+          description: Issue or pull request body updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateIssueBodyResponse'
+        '400':
+          description: Bad Request (missing/ambiguous target or empty body).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Foreign body edit refused without acknowledgedForeignBody.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Target issue or pull request not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error, e.g., GraphQL failure.
           content:
             application/json:
               schema:
@@ -2427,6 +2507,53 @@ components:
           format: date-time
           description: The last-modified timestamp (ISO-8601). Populated by 'update' action only.
           example: "2026-04-24T02:15:33Z"
+
+    UpdateIssueBodyResponse:
+      type: object
+      required: [message, id, number, kind, url, updatedAt, previousBytes, updatedBytes, byteDelta]
+      properties:
+        message:
+          type: string
+          description: Human-readable confirmation of the body update.
+        id:
+          type: string
+          description: The canonical GitHub global node ID of the issue or pull request.
+        number:
+          type: integer
+          description: The issue or pull request number.
+        kind:
+          type: string
+          enum: [issue, pull_request]
+          description: Whether an issue or a pull request body was updated.
+        url:
+          type: string
+          format: uri
+          description: The canonical GitHub URL of the updated issue or pull request.
+        updatedAt:
+          type: string
+          format: date-time
+          description: The last-modified timestamp (ISO-8601) returned by GitHub.
+        previousBytes:
+          type: integer
+          description: UTF-8 byte length of the body before replacement.
+        updatedBytes:
+          type: integer
+          description: UTF-8 byte length of the replacement body.
+        byteDelta:
+          type: integer
+          description: Signed UTF-8 byte delta (updatedBytes - previousBytes).
+        acknowledgedForeignBody:
+          type: string
+          description: Present when a foreign-body override reason was supplied.
+        author:
+          type: string
+          nullable: true
+          description: Target author login (included on foreign-body overrides).
+        assignees:
+          type: array
+          items:
+            type: string
+          description: Current assignee logins on the target (included on foreign-body overrides).
 
     ErrorResponse:
       type: object

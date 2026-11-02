@@ -2042,3 +2042,316 @@ test.describe('Neo.ai.services.github-workflow.IssueService — listIssues @me a
         expect(result.message).toContain('@me');
     });
 });
+
+/**
+ * @summary Contract coverage for `IssueService.updateIssueBody`.
+ *
+ * Covers:
+ * - Replacing an issue body and a PR body from a seat returns `updatedAt` and `byteDelta`;
+ *   an empty or whitespace-only body is refused before GitHub I/O (`EMPTY_BODY`).
+ * - A caller who is neither author nor assignee is refused with the authorship rule
+ *   (`FOREIGN_BODY_FORBIDDEN`) unless `acknowledgedForeignBody` is passed; the acknowledgement
+ *   appears in the result.
+ * - Happy path (issue + PR), empty body refused, foreign body refused, and acknowledged
+ *   foreign body admitted.
+ */
+test.describe('Neo.ai.services.github-workflow.IssueService — updateIssueBody (#1425)', () => {
+    let IssueService;
+    let GraphqlService;
+    let originalQuery;
+
+    test.beforeAll(async () => {
+        GraphqlService = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
+        IssueService   = (await import('../../../../../../ai/services/github-workflow/IssueService.mjs')).default;
+
+        originalQuery = GraphqlService.query.bind(GraphqlService);
+    });
+
+    test.afterEach(() => {
+        GraphqlService.query = originalQuery;
+    });
+
+    test('happy path (issue): replaces an issue body when caller is the author and returns updatedAt + byteDelta', async () => {
+        const previousBody = '## Problem\nOld issue state.';
+        const nextBody     = '## Problem\nUpdated issue state with expanded acceptance criteria.';
+        let   callCount    = 0;
+
+        GraphqlService.query = async (query, variables) => {
+            callCount++;
+
+            if (callCount === 1) {
+                expect(query).toContain('GetIssueBodyTarget');
+                expect(variables).toEqual({
+                    owner : 'neomjs',
+                    repo  : 'neo',
+                    number: 1425
+                });
+                return {
+                    viewer    : {login: 'neo-gemini-julia'},
+                    repository: {
+                        issue: {
+                            id       : 'I_kwDOABcD_1425',
+                            number   : 1425,
+                            body     : previousBody,
+                            url      : 'https://github.com/neomjs/neo/issues/1425',
+                            author   : {login: 'neo-gemini-julia'},
+                            assignees: {nodes: []}
+                        }
+                    }
+                };
+            }
+
+            if (callCount === 2) {
+                expect(query).toContain('UpdateIssueBody');
+                expect(variables).toEqual({
+                    id  : 'I_kwDOABcD_1425',
+                    body: nextBody
+                });
+                return {
+                    updateIssue: {
+                        issue: {
+                            id       : 'I_kwDOABcD_1425',
+                            url      : 'https://github.com/neomjs/neo/issues/1425',
+                            updatedAt: '2026-11-02T18:05:00Z'
+                        }
+                    }
+                };
+            }
+
+            throw new Error(`Unexpected GraphqlService.query call #${callCount}`);
+        };
+
+        const result = await IssueService.updateIssueBody({
+            issue_number: 1425,
+            body        : nextBody
+        });
+
+        const expectedPrevBytes = Buffer.byteLength(previousBody, 'utf8');
+        const expectedNextBytes = Buffer.byteLength(nextBody, 'utf8');
+
+        expect(callCount).toBe(2);
+        expect(result).toEqual({
+            message      : 'Successfully updated body of issue #1425',
+            id           : 'I_kwDOABcD_1425',
+            number       : 1425,
+            kind         : 'issue',
+            url          : 'https://github.com/neomjs/neo/issues/1425',
+            updatedAt    : '2026-11-02T18:05:00Z',
+            previousBytes: expectedPrevBytes,
+            updatedBytes : expectedNextBytes,
+            byteDelta    : expectedNextBytes - expectedPrevBytes
+        });
+    });
+
+    test('happy path (PR): replaces a PR body when caller is an assignee and returns updatedAt + negative byteDelta', async () => {
+        const previousBody = '## Summary\nVerbose initial PR description with extra paragraphs that were compacted.';
+        const nextBody     = '## Summary\nCompact PR description.';
+        let   callCount    = 0;
+
+        GraphqlService.query = async (query, variables) => {
+            callCount++;
+
+            if (callCount === 1) {
+                expect(query).toContain('GetPullRequestBodyTarget');
+                expect(variables).toEqual({
+                    owner : 'neomjs',
+                    repo  : 'neo-agent-brain',
+                    number: 1436
+                });
+                return {
+                    viewer    : {login: 'neo-gemini-julia'},
+                    repository: {
+                        pullRequest: {
+                            id       : 'PR_kwDOABcD_1436',
+                            number   : 1436,
+                            body     : previousBody,
+                            url      : 'https://github.com/neomjs/neo-agent-brain/pull/1436',
+                            author   : {login: 'neo-fable-mnemosyne'},
+                            assignees: {nodes: [{login: 'neo-gemini-julia'}]}
+                        }
+                    }
+                };
+            }
+
+            if (callCount === 2) {
+                expect(query).toContain('UpdatePullRequestBody');
+                expect(variables).toEqual({
+                    id  : 'PR_kwDOABcD_1436',
+                    body: nextBody
+                });
+                return {
+                    updatePullRequest: {
+                        pullRequest: {
+                            id       : 'PR_kwDOABcD_1436',
+                            url      : 'https://github.com/neomjs/neo-agent-brain/pull/1436',
+                            updatedAt: '2026-11-02T18:06:00Z'
+                        }
+                    }
+                };
+            }
+
+            throw new Error(`Unexpected GraphqlService.query call #${callCount}`);
+        };
+
+        const result = await IssueService.updateIssueBody({
+            repo     : 'neo-agent-brain',
+            pr_number: 1436,
+            body     : nextBody
+        });
+
+        const expectedPrevBytes = Buffer.byteLength(previousBody, 'utf8');
+        const expectedNextBytes = Buffer.byteLength(nextBody, 'utf8');
+
+        expect(callCount).toBe(2);
+        expect(result).toEqual({
+            message      : 'Successfully updated body of PR #1436',
+            id           : 'PR_kwDOABcD_1436',
+            number       : 1436,
+            kind         : 'pull_request',
+            url          : 'https://github.com/neomjs/neo-agent-brain/pull/1436',
+            updatedAt    : '2026-11-02T18:06:00Z',
+            previousBytes: expectedPrevBytes,
+            updatedBytes : expectedNextBytes,
+            byteDelta    : expectedNextBytes - expectedPrevBytes
+        });
+        expect(result.byteDelta).toBeLessThan(0);
+    });
+
+    test('refuses an empty or whitespace-only body with EMPTY_BODY before any GitHub I/O', async () => {
+        let callCount = 0;
+        GraphqlService.query = async () => { callCount++; };
+
+        const emptyResult = await IssueService.updateIssueBody({
+            issue_number: 1425,
+            body        : ''
+        });
+        const whitespaceResult = await IssueService.updateIssueBody({
+            pr_number: 1436,
+            body     : '   \n\t  '
+        });
+
+        expect(emptyResult).toMatchObject({
+            error: 'Bad Request',
+            code : 'EMPTY_BODY'
+        });
+        expect(whitespaceResult).toMatchObject({
+            error: 'Bad Request',
+            code : 'EMPTY_BODY'
+        });
+        expect(callCount).toBe(0);
+    });
+
+    test('refuses ambiguous or missing target identifiers before any GitHub I/O', async () => {
+        let callCount = 0;
+        GraphqlService.query = async () => { callCount++; };
+
+        const both = await IssueService.updateIssueBody({
+            issue_number: 1425,
+            pr_number   : 1436,
+            body        : 'Non-empty'
+        });
+        const neither = await IssueService.updateIssueBody({
+            body: 'Non-empty'
+        });
+
+        expect(both.code).toBe('INVALID_ARGUMENTS');
+        expect(neither.code).toBe('MISSING_ARGUMENTS');
+        expect(callCount).toBe(0);
+    });
+
+    test('refuses a caller who is neither author nor assignee with FOREIGN_BODY_FORBIDDEN and the authorship rule', async () => {
+        let callCount = 0;
+
+        GraphqlService.query = async () => {
+            callCount++;
+            return {
+                viewer    : {login: 'neo-gemini-julia'},
+                repository: {
+                    issue: {
+                        id       : 'I_kwDOABcD_1425',
+                        number   : 1425,
+                        body     : 'Original body',
+                        url      : 'https://github.com/neomjs/neo/issues/1425',
+                        author   : {login: 'neo-fable-mnemosyne'},
+                        assignees: {nodes: [{login: 'neo-opus-vega'}]}
+                    }
+                }
+            };
+        };
+
+        const result = await IssueService.updateIssueBody({
+            issue_number: 1425,
+            body        : 'Attempted foreign edit without acknowledgement'
+        });
+
+        expect(callCount).toBe(1);
+        expect(result).toMatchObject({
+            error      : 'Foreign Body Edit Refused',
+            code       : 'FOREIGN_BODY_FORBIDDEN',
+            number     : 1425,
+            kind       : 'issue',
+            author     : 'neo-fable-mnemosyne',
+            assignees  : ['neo-opus-vega'],
+            viewerLogin: 'neo-gemini-julia'
+        });
+        expect(result.message).toContain('authorship rule');
+        expect(result.message).toContain('acknowledgedForeignBody');
+    });
+
+    test('admits a foreign-body edit when acknowledgedForeignBody is supplied and echoes the acknowledgement in the result', async () => {
+        const previousBody = '## Problem\nOriginal epic body.';
+        const nextBody     = '## Problem\nOriginal epic body.\n\n## Prescription\nRecorded by reviewer.';
+        const ackReason    = 'epic-review Stage 5 prescription block on unowned epic';
+        let   callCount    = 0;
+
+        GraphqlService.query = async () => {
+            callCount++;
+            if (callCount === 1) {
+                return {
+                    viewer    : {login: 'neo-gemini-julia'},
+                    repository: {
+                        issue: {
+                            id       : 'I_kwDOABcD_1425',
+                            number   : 1425,
+                            body     : previousBody,
+                            url      : 'https://github.com/neomjs/neo/issues/1425',
+                            author   : {login: 'neo-fable-mnemosyne'},
+                            assignees: {nodes: [{login: 'neo-opus-vega'}]}
+                        }
+                    }
+                };
+            }
+            return {
+                updateIssue: {
+                    issue: {
+                        id       : 'I_kwDOABcD_1425',
+                        url      : 'https://github.com/neomjs/neo/issues/1425',
+                        updatedAt: '2026-11-02T18:07:00Z'
+                    }
+                }
+            };
+        };
+
+        const result = await IssueService.updateIssueBody({
+            issue_number           : 1425,
+            body                   : nextBody,
+            acknowledgedForeignBody: ackReason
+        });
+
+        expect(callCount).toBe(2);
+        expect(result).toEqual({
+            message                : 'Successfully updated body of issue #1425',
+            id                     : 'I_kwDOABcD_1425',
+            number                 : 1425,
+            kind                   : 'issue',
+            url                    : 'https://github.com/neomjs/neo/issues/1425',
+            updatedAt              : '2026-11-02T18:07:00Z',
+            previousBytes          : Buffer.byteLength(previousBody, 'utf8'),
+            updatedBytes           : Buffer.byteLength(nextBody, 'utf8'),
+            byteDelta              : Buffer.byteLength(nextBody, 'utf8') - Buffer.byteLength(previousBody, 'utf8'),
+            acknowledgedForeignBody: ackReason,
+            author                 : 'neo-fable-mnemosyne',
+            assignees              : ['neo-opus-vega']
+        });
+    });
+});
