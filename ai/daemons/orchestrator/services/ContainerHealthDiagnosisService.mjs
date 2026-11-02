@@ -159,7 +159,11 @@ export const DEFAULT_CONTAINER_HEALTH_DIAGNOSIS_CONFIG = Object.freeze({
     // not move a CPU or provider clock. Its default matches the span the shipped sample retention
     // can actually produce — a window nothing can span is a detector that never fires; see
     // `describeMemoryWindowReachability`.
-    memorySaturationWindowMs  : 30000
+    memorySaturationWindowMs     : 30000,
+    // Plane-wide Docker / data-mount disk-pressure thresholds and build-cache hygiene bounds.
+    diskPressurePercent          : 90,
+    diskPressureWindowMs         : 30000,
+    minReclaimableBuildCacheBytes: 1024 * 1024 * 1024
 });
 
 const RUNNING_STATES = new Set(['created', 'restarting', 'running', 'paused']);
@@ -434,6 +438,162 @@ export class ContainerHealthDiagnosisService extends Base {
             }),
             churnBaseline: churn.nextBaseline
         };
+    }
+
+    /**
+     * @summary Diagnoses plane-wide Docker / data-mount disk pressure and partitions reclaimable
+     * build cache from non-reclaimable images and volumes (ADR-0025 [not-ticket-ref: decision-record authority] §2.4,
+     * ADR-0026 [not-ticket-ref: decision-record authority] §2.4/§2.9).
+     *
+     * Evaluated over a sustained window of `{statfs, df}` samples so a brief burst cannot trigger a
+     * prune. When `statfs.usedPercent >= diskPressurePercent` holds across the measured window:
+     * - Reclaimable build cache at or above `minReclaimableBuildCacheBytes` emits `prune-build-cache`.
+     * - Pressure without reclaimable build cache emits `record` naming `images` and `volumes`
+     *   without acting on them — images and volumes are never pruned or deleted automatically.
+     *
+     * @param {Object} [options]
+     * @param {String} [options.targetId='docker-engine'] Engine target identity id.
+     * @param {Object|null} [options.diskSample=null] Latest `{statfs, df, observedAtMs}` sample.
+     * @param {Object[]|null} [options.diskSamples=null] Window of `{statfs, df, observedAtMs}` samples.
+     * @param {Boolean} [options.readFailed=false] Whether the runtime `system-df` read failed.
+     * @param {Number} [options.observedAt=this.now()] Epoch milliseconds.
+     * @returns {Object} Diagnosis decision envelope keyed to `{kind: 'engine', id: targetId}`.
+     */
+    diagnoseEngineDisk({
+        targetId = 'docker-engine',
+        diskSample = null,
+        diskSamples = null,
+        readFailed = false,
+        observedAt = this.now()
+    } = {}) {
+        this.validateServiceKey(targetId);
+
+        const
+            targetIdentity = createRecoveryTargetIdentity({kind: 'engine', id: targetId}),
+            config         = this.configValues,
+            samples        = normalizeStatsSamples({stats: diskSample, statsSamples: diskSamples}),
+            latestSample   = samples.at(-1) || (diskSample && typeof diskSample === 'object' ? diskSample : null),
+            facts          = [];
+
+        if (readFailed) {
+            facts.push(this.createFact({
+                type         : CONTAINER_HEALTH_FACT_TYPES.runtimeReadFailed,
+                serviceKey   : targetId,
+                observedAt,
+                severity     : 'warning',
+                authoritative: false,
+                details      : {operation: 'system-df'}
+            }));
+        }
+
+        const
+            usedPercents = samples
+                .map(sample => Number(sample?.statfs?.usedPercent))
+                .filter(Number.isFinite),
+            timestamps   = samples
+                .map(sample => Number.isFinite(sample?.observedAtMs) ? sample.observedAtMs : sample?.observedAt)
+                .filter(Number.isFinite),
+            diskWindow   = summarizeSustainedWindow({
+                values       : usedPercents,
+                threshold    : config.diskPressurePercent,
+                expectedCount: Math.max(config.minResourceSamples, samples.length),
+                timestamps,
+                minWindowMs  : config.diskPressureWindowMs
+            });
+
+        if (!diskWindow.sustained) {
+            return this.createDecision({
+                serviceKey: targetId,
+                targetIdentity,
+                observedAt,
+                facts,
+                status    : facts.length > 0 ? 'advisory' : 'healthy'
+            });
+        }
+
+        const
+            statfs = latestSample?.statfs && typeof latestSample.statfs === 'object' ? latestSample.statfs : null,
+            df     = latestSample?.df && typeof latestSample.df === 'object' ? latestSample.df : null,
+            images = df?.images && typeof df.images === 'object'
+                ? df.images
+                : {activeCount: 0, totalCount: 0, totalSizeBytes: 0, reclaimableBytes: 0},
+            volumes    = df?.volumes && typeof df.volumes === 'object'
+                ? df.volumes
+                : {activeCount: 0, totalCount: 0, totalSizeBytes: 0, reclaimableBytes: 0},
+            buildCache = df?.buildCache && typeof df.buildCache === 'object'
+                ? df.buildCache
+                : {activeCount: 0, totalCount: 0, inUseCount: 0, totalSizeBytes: 0, reclaimableBytes: 0},
+            reclaimableBuildCacheBytes = Number.isFinite(Number(buildCache.reclaimableBytes))
+                ? Math.max(0, Math.trunc(Number(buildCache.reclaimableBytes)))
+                : 0,
+            reclaimableBuildCacheAboveFloor = reclaimableBuildCacheBytes >= config.minReclaimableBuildCacheBytes,
+            actionClass = reclaimableBuildCacheAboveFloor
+                ? CONTAINER_HEALTH_ACTION_CLASSES.pruneBuildCache
+                : CONTAINER_HEALTH_ACTION_CLASSES.record,
+            classificationReason = reclaimableBuildCacheAboveFloor
+                ? 'engine-disk-pressure-build-cache-reclaimable'
+                : 'engine-disk-pressure-no-reclaimable-build-cache',
+            diskFact = this.createFact({
+                type         : CONTAINER_HEALTH_FACT_TYPES.diskPressure,
+                serviceKey   : targetId,
+                observedAt,
+                severity     : 'critical',
+                authoritative: true,
+                details      : {
+                    metric                       : 'disk',
+                    targetIdentity,
+                    threshold                    : config.diskPressurePercent,
+                    sampleCount                  : samples.length,
+                    observedWindowMs             : diskWindow.observedWindowMs,
+                    requiredWindowMs             : config.diskPressureWindowMs,
+                    minPercent                   : diskWindow.min,
+                    maxPercent                   : diskWindow.max,
+                    meanPercent                  : diskWindow.mean,
+                    reclaimableBuildCacheBytes,
+                    minReclaimableBuildCacheBytes: config.minReclaimableBuildCacheBytes,
+                    reclaimableBuildCacheAboveFloor,
+                    statfs,
+                    images,
+                    volumes,
+                    buildCache
+                }
+            });
+
+        facts.push(diskFact);
+
+        const diagnosis = createRecoveryDiagnosisEvent({
+            diagnosisId  : this.createDiagnosisId({serviceKey: targetId, observedAt, recoveryClass: 'exhaustion'}),
+            recoveryClass: 'exhaustion',
+            confidence   : 0.9,
+            targetIdentity,
+            evidenceFacts: [diskFact],
+            observedAt,
+            source       : 'container-health-diagnostics',
+            details      : {
+                actionClass,
+                classificationReason,
+                sampleWindowMs               : config.diskPressureWindowMs,
+                minResourceSamples           : config.minResourceSamples,
+                factCount                    : facts.length,
+                authoritativeFactCount       : 1,
+                minReclaimableBuildCacheBytes: config.minReclaimableBuildCacheBytes,
+                reclaimableBuildCacheBytes,
+                statfs,
+                images,
+                volumes,
+                buildCache
+            }
+        });
+
+        return this.createDecision({
+            serviceKey: targetId,
+            targetIdentity,
+            observedAt,
+            facts,
+            status    : 'diagnosed',
+            diagnosis,
+            actionClass
+        });
     }
 
     /**
@@ -1472,12 +1632,12 @@ export class ContainerHealthDiagnosisService extends Base {
      * @param {Object} options
      * @returns {Object}
      */
-    createDecision({serviceKey, observedAt, facts, status, diagnosis = null, actionClass = null}) {
+    createDecision({serviceKey, targetIdentity = null, observedAt, facts, status, diagnosis = null, actionClass = null}) {
         return {
             schemaVersion : 1,
             recordType    : 'container-health-diagnosis-decision',
             serviceKey,
-            targetIdentity: diagnosis?.targetIdentity || {kind: 'compose-service', id: serviceKey},
+            targetIdentity: diagnosis?.targetIdentity || targetIdentity || {kind: 'compose-service', id: serviceKey},
             observedAt,
             status,
             actionClass,

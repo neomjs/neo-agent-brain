@@ -34,7 +34,7 @@ import {
 } from '../../../services/memory-core/helpers/recoveryKnobRegistry.mjs';
 import {isStoreBackedService} from './ContainerHealthDiagnosisService.mjs';
 
-const DEFAULT_ACTIONS = Object.freeze(['reconfigure', 'restart', 'redeploy', 'warm-provider', 'raise-ceiling']);
+const DEFAULT_ACTIONS = Object.freeze(['reconfigure', 'restart', 'redeploy', 'warm-provider', 'raise-ceiling', 'prune-build-cache']);
 
 /**
  * @summary Fingerprints the OBSERVED STATE behind one diagnosis, for the futility breaker's run-breaker.
@@ -60,13 +60,14 @@ function fingerprintDiagnosisState(diagnosisEvent) {
     return facts.length === 0 ? 'no-evidence' : JSON.stringify(facts);
 }
 const DEFAULT_DEPLOY_TARGETS  = Object.freeze(['cloud-deploy']);
+const DEFAULT_ENGINE_TARGETS  = Object.freeze(['docker-engine']);
 const COMPOSE_RESTART_ACTIONS = Object.freeze(['reconfigure', 'restart']);
 
 /**
  * @summary Normalizes string/object recovery-target entries into stable descriptors.
  *
  * String entries use the same value for `serviceKey` and `id`. Object entries may use an
- * explicit `serviceKey` plus either `id`, `taskName`, `composeService`, or `deployTarget`.
+ * explicit `serviceKey` plus either `id`, `taskName`, `composeService`, `deployTarget`, or `engine`.
  *
  * @param {Array<String|Object>} entries Configured recovery target entries.
  * @param {String} kind Recovery target kind.
@@ -92,7 +93,7 @@ export function normalizeRecoveryActuatorTargets(entries, kind) {
             continue;
         }
 
-        const id         = String(entry.id || entry.taskName || entry.composeService || entry.deployTarget || '').trim(),
+        const id         = String(entry.id || entry.taskName || entry.composeService || entry.deployTarget || entry.engine || '').trim(),
               serviceKey = String(entry.serviceKey || id).trim();
 
         if (!serviceKey || !id) {
@@ -261,6 +262,11 @@ export class RecoveryActuatorService extends Base {
         return normalizeRecoveryActuatorTargets(this.cfg.blockedDeployTargets, 'deploy-target');
     }
 
+    /** @summary Resolves the configured engine recovery blocklist. */
+    get blockedEngines() {
+        return normalizeRecoveryActuatorTargets(this.cfg.blockedEngines || [], 'engine');
+    }
+
     /** @summary Resolves all currently-known supervised-task recovery targets except blocked ones. */
     get supervisedTaskTargets() {
         const taskNames = Object.keys(this.processSupervisorService?.taskDefinitions || {});
@@ -291,11 +297,17 @@ export class RecoveryActuatorService extends Base {
             .filter(target => !isRecoveryActuatorTargetBlocked(target, this.blockedDeployTargets));
     }
 
+    /** @summary Resolves all built-in engine recovery targets except blocked ones. */
+    get engineTargets() {
+        return normalizeRecoveryActuatorTargets(DEFAULT_ENGINE_TARGETS, 'engine')
+            .filter(target => !isRecoveryActuatorTargetBlocked(target, this.blockedEngines));
+    }
+
     /**
      * @summary Applies one bounded recovery action if the target registry and anti-thrash envelope admit it.
      *
      * @param {String} serviceKey Stable recovery target key.
-     * @param {String} action reconfigure | restart | redeploy | warm-provider | raise-ceiling.
+     * @param {String} action reconfigure | restart | redeploy | warm-provider | raise-ceiling | prune-build-cache.
      * @param {Object} [options]
      * @param {Object|null} [options.diagnosisEvent=null] Optional structured diagnosis event.
      * @param {Object|null} [options.targetIdentity=null] Optional typed target identity.
@@ -578,7 +590,7 @@ export class RecoveryActuatorService extends Base {
 
             // Any other error while authority is no longer held means the effect's outcome is
             // UNKNOWN, not absent. Represented on the existing `failed` terminal with structured
-            // detail rather than a new terminal value: the action set is closed (ADR-0026 AC-9 — // ticket-ref-ok: the ADR is the authority forbidding a widened action set) and
+            // detail rather than a new terminal value: the action set is closed (ADR-0026 [not-ticket-ref: decision-record authority] AC-9) and
             // an unknown outcome is a property of this run, not a new kind of run.
             const authorityLostAfterDispatch = typeof isAuthorityHeld === 'function' && isAuthorityHeld() !== true,
                   preparedButNotDispatched   = Boolean(restartDispatchMarker) && [
@@ -685,9 +697,11 @@ export class RecoveryActuatorService extends Base {
         // failure may rewrite a known-applied effect as pre-dispatch `not-applied`. For production
         // compose restarts, a failed mutable-state commit therefore leaves the pre-POST ledger
         // interlock latest so a successor re-observes before any further POST.
-        const updatedAt       = Date.now(),
-              nextBackoffAt   = this.computeBackoffUntil({attempt: nextAttempt, now: updatedAt}),
-              heldAfterEffect = typeof isAuthorityHeld !== 'function' || isAuthorityHeld() === true;
+        const updatedAt         = Date.now(),
+              pruneFreedNothing = action === 'prune-build-cache' && result.freedNothing === true,
+              finalStatus       = pruneFreedNothing || target.kind === 'deploy-target' ? 'recorded' : 'actioned',
+              nextBackoffAt     = pruneFreedNothing ? null : this.computeBackoffUntil({attempt: nextAttempt, now: updatedAt}),
+              heldAfterEffect   = typeof isAuthorityHeld !== 'function' || isAuthorityHeld() === true;
 
         // POST-EFFECT, and the two shared surfaces get OPPOSITE treatment on purpose. Mutable
         // anti-thrash state is successor-owned and fenced; the append-only action audit survives a
@@ -697,10 +711,12 @@ export class RecoveryActuatorService extends Base {
                 attempts,
                 serviceKey,
                 action,
-                attempt     : nextAttempt,
-                backoffUntil: nextBackoffAt,
-                now         : updatedAt,
-                status      : target.kind === 'deploy-target' ? 'recorded' : 'actioned'
+                attempt            : nextAttempt,
+                backoffUntil       : nextBackoffAt,
+                now                : updatedAt,
+                status             : finalStatus,
+                alarmOnly          : pruneFreedNothing,
+                alarmOnlyReasonCode: pruneFreedNothing ? 'prune-freed-nothing' : null
             });
             await this.writeHealAttempts(attempts, {isAuthorityHeld});
         } else {
@@ -714,7 +730,8 @@ export class RecoveryActuatorService extends Base {
             backoffUntil  : nextBackoffAt,
             diagnosisEvent: diagnosis,
             outcome       : {
-                status        : target.kind === 'deploy-target' ? 'recorded' : 'actioned',
+                status        : finalStatus,
+                ...(pruneFreedNothing ? {reasonCode: 'prune-freed-nothing', alarmOnly: true} : {}),
                 serviceKey,
                 action,
                 targetIdentity: createRecoveryTargetIdentity({kind: target.kind, id: target.id}),
@@ -730,13 +747,14 @@ export class RecoveryActuatorService extends Base {
                 supervisor       : result.supervisor || null,
                 recorded         : result.recorded || null,
                 providerResidency: result.providerResidency || null,
-                ceilingRaise     : result.ceilingRaise || null
+                ceilingRaise     : result.ceilingRaise || null,
+                buildCachePrune  : result.buildCachePrune || null
             },
             recoveryRunId: runId,
             serviceKey,
             startedAt,
             target,
-            taskStatus   : 'completed',
+            taskStatus   : pruneFreedNothing ? 'failed' : 'completed',
             updatedAt,
             isAuthorityHeld
         });
@@ -914,7 +932,8 @@ export class RecoveryActuatorService extends Base {
         const candidates = [
             ...this.composeServiceTargets,
             ...this.supervisedTaskTargets,
-            ...this.deployTargets
+            ...this.deployTargets,
+            ...this.engineTargets
         ].filter(target => target.serviceKey === serviceKey || target.id === serviceKey);
 
         if (targetIdentity) {
@@ -955,6 +974,10 @@ export class RecoveryActuatorService extends Base {
 
         if (target.kind === 'deploy-target') {
             return action === 'redeploy';
+        }
+
+        if (target.kind === 'engine') {
+            return action === 'prune-build-cache';
         }
 
         return false;
@@ -1017,7 +1040,7 @@ export class RecoveryActuatorService extends Base {
     /**
      * @summary Raises a store-backed service's memory ceiling: durable knob override + LIVE cgroup
      * update, with NO restart — the store-variant actuator envelope of
-     * ADR-0026 §2.8. // ticket-ref-ok: the ADR is the governing authority for the no-restart contract
+     * ADR-0026 [not-ticket-ref: decision-record authority] §2.8.
      *
      * This is `reconfigureComposeService`'s deliberate sibling, differing in exactly the step it
      * omits. For a transient service the restart IS the heal and the overlay needs a boot to be read.
@@ -1198,6 +1221,10 @@ export class RecoveryActuatorService extends Base {
             return this.raiseComposeServiceCeiling({knob, knobValues, reason, target, isAuthorityHeld});
         }
 
+        if (action === 'prune-build-cache') {
+            return this.pruneEngineBuildCache({target, reason, isAuthorityHeld});
+        }
+
         if (target.kind === 'compose-service') {
             return this.restartComposeService({
                 target,
@@ -1214,6 +1241,52 @@ export class RecoveryActuatorService extends Base {
         }
 
         return this.recordDeployTarget({target, action, reason, isAuthorityHeld});
+    }
+
+    /**
+     * @summary Prunes the Docker engine's inactive build cache above a mandatory warm floor
+     * (`keepStorageBytes`) through the L0 lifecycle-write envelope
+     * (ADR-0026 [not-ticket-ref: decision-record authority] §2.4/§2.9).
+     *
+     * When the prune frees zero bytes and `statfs` free bytes do not increase, `freedNothing: true`
+     * signals the caller to transition the target to alarm-only (`recorded`, `prune-freed-nothing`)
+     * rather than burning the window budget on no-op prunes.
+     *
+     * @param {Object} options
+     * @param {Object} options.target Resolved engine target.
+     * @param {String|null} [options.reason=null] Recovery reason.
+     * @param {Function|null} [options.isAuthorityHeld=null] Live authority oracle.
+     * @returns {Promise<Object>}
+     */
+    async pruneEngineBuildCache({target, reason = null, isAuthorityHeld = null}) {
+        this.assertAuthorityHeld({isAuthorityHeld, action: 'prune-build-cache', target});
+
+        if (!this.deploymentRuntimeAccessService?.applyLifecycle) {
+            throw new Error('Deployment runtime access service is unavailable');
+        }
+
+        const result = await this.deploymentRuntimeAccessService.applyLifecycle({
+            serviceKey      : target.id,
+            operation       : 'prune-build-cache',
+            keepStorageBytes: AiConfig.orchestrator.diskPressure.buildCacheWarmFloorBytes,
+            reason          : reason || `recovery-actuator:${target.serviceKey}`,
+            ...(typeof isAuthorityHeld === 'function' ? {isAuthorityHeld} : {})
+        });
+
+        const
+            data                = result.data || {},
+            spaceReclaimedBytes = Number(data.spaceReclaimedBytes ?? 0),
+            freeBytesBefore     = Number(data.statfsBefore?.freeBytes),
+            freeBytesAfter      = Number(data.statfsAfter?.freeBytes),
+            freeBytesIncreased  = Number.isFinite(freeBytesBefore) && Number.isFinite(freeBytesAfter) &&
+                freeBytesAfter > freeBytesBefore,
+            freedNothing        = !(spaceReclaimedBytes > 0) && !freeBytesIncreased;
+
+        return {
+            runtimeAccess  : result.proof || null,
+            buildCachePrune: data,
+            freedNothing
+        };
     }
 
     /**
@@ -1655,13 +1728,13 @@ export class RecoveryActuatorService extends Base {
             };
         }
 
-        if (state.attemptCount >= this.getMaxAttemptsPerWindow()) {
+        if (state.alarmOnly === true || state.attemptCount >= this.getMaxAttemptsPerWindow()) {
             state.alarmOnly = true;
             attempts[key] = state;
             return {
                 admitted  : false,
                 attempt   : state.attemptCount,
-                reasonCode: 'attempt-cap-reached',
+                reasonCode: state.alarmOnlyReasonCode || 'attempt-cap-reached',
                 status    : 'recorded'
             };
         }
@@ -1938,7 +2011,7 @@ export class RecoveryActuatorService extends Base {
      * @param {Object} options
      * @returns {void}
      */
-    persistAttempt({attempts, serviceKey, action, attempt, backoffUntil, now, status}) {
+    persistAttempt({attempts, serviceKey, action, attempt, backoffUntil, now, status, alarmOnly = false, alarmOnlyReasonCode = null}) {
         const key   = this.getAttemptKey({serviceKey, action}),
               state = this.getCurrentAttemptState({attempts, key, now});
 
@@ -1949,7 +2022,8 @@ export class RecoveryActuatorService extends Base {
             lastAttemptAt: now,
             lastStatus   : status,
             backoffUntil,
-            alarmOnly    : attempt >= this.getMaxAttemptsPerWindow()
+            alarmOnly    : Boolean(alarmOnly) || attempt >= this.getMaxAttemptsPerWindow(),
+            ...(alarmOnlyReasonCode ? {alarmOnlyReasonCode} : {})
         };
     }
 
@@ -2168,9 +2242,10 @@ export class RecoveryActuatorService extends Base {
         if (action === 'warm-provider') {
             return 'provider-role-residency';
         }
-        if (action === 'raise-ceiling') {
-            // The class the diagnosis layer emits for a store at its ceiling; synthesizing `crash`
-            // here would record a restart-shaped story for an action whose point is not restarting.
+        if (action === 'raise-ceiling' || action === 'prune-build-cache') {
+            // The class the diagnosis layer emits for a store at its ceiling or an engine under disk
+            // pressure; synthesizing `crash` here would record a restart-shaped story for an action
+            // whose point is not restarting.
             return 'exhaustion';
         }
         return target.kind === 'deploy-target' ? 'config-drift' : 'crash';
@@ -2208,7 +2283,7 @@ export class RecoveryActuatorService extends Base {
      */
     getRungForTarget(target) {
         if (target?.kind === 'supervised-task') return 'rung-1';
-        if (target?.kind === 'compose-service') return 'rung-2';
+        if (target?.kind === 'compose-service' || target?.kind === 'engine') return 'rung-2';
         if (target?.kind === 'deploy-target') return 'rung-3';
 
         return 'rung-0';

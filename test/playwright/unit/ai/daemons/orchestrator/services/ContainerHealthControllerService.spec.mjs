@@ -15,7 +15,8 @@ import {
     CONTAINER_HEALTH_ACTION_CLASSES,
     ContainerHealthDiagnosisService
 } from '../../../../../../../ai/daemons/orchestrator/services/ContainerHealthDiagnosisService.mjs';
-import {RecoveryActuatorService} from '../../../../../../../ai/daemons/orchestrator/services/RecoveryActuatorService.mjs';
+import {DeploymentRuntimeAccessService} from '../../../../../../../ai/daemons/orchestrator/services/DeploymentRuntimeAccessService.mjs';
+import {RecoveryActuatorService}        from '../../../../../../../ai/daemons/orchestrator/services/RecoveryActuatorService.mjs';
 import {
     appendHealEvent,
     HEAL_LEDGER_DIR_NAME,
@@ -102,6 +103,28 @@ test.describe('Neo.ai.daemons.services.ContainerHealthControllerService', () => 
                       async applyLifecycle(options) {
                           runtimeCalls.push(options);
 
+                          if (options.operation === 'prune-build-cache') {
+                              return {
+                                  ok        : true,
+                                  statusCode: 200,
+                                  data      : {
+                                      operation          : 'prune-build-cache',
+                                      keepStorageBytes   : options.keepStorageBytes,
+                                      cachesDeletedCount : 4,
+                                      spaceReclaimedBytes: 8 * GIB,
+                                      serialized         : true,
+                                      statfsBefore       : {freeBytes: 5 * GIB, totalBytes: 60 * GIB, usedPercent: 91.67},
+                                      statfsAfter        : {freeBytes: 13 * GIB, totalBytes: 60 * GIB, usedPercent: 78.33}
+                                  },
+                                  proof: {
+                                      capabilityEnvelope: 'lifecycle-write',
+                                      operation         : options.operation,
+                                      serviceKey        : options.serviceKey,
+                                      targetIdentity    : {kind: 'engine', id: options.serviceKey}
+                                  }
+                              };
+                          }
+
                           return {
                               ok        : true,
                               statusCode: 204,
@@ -163,7 +186,7 @@ test.describe('Neo.ai.daemons.services.ContainerHealthControllerService', () => 
     }
 
     /**
-     * The ADR-0025 §2.4 authoritative pair — a `container-unhealthy` state AND a failed DIRECT endpoint // ticket-ref-ok: the ADR clause defines the pair this fixture exists to encode
+     * The ADR-0025 [not-ticket-ref: decision-record authority] §2.4 authoritative pair — a `container-unhealthy` state AND a failed DIRECT endpoint
      * probe. Named rather than inlined because "unhealthy" alone is NOT this, and an earlier revision of
      * this suite proved how easy that is to forget: it asserted a restart on a container whose own test
      * comment said the process "kept serving".
@@ -224,7 +247,7 @@ test.describe('Neo.ai.daemons.services.ContainerHealthControllerService', () => 
 
     test('a genuinely wedged container reaches the actuator and is restarted (#16766)', async () => {
         const {controller, runtimeCalls} = createStack(),
-              // The ADR-0025 §2.4 pair: the runtime says unhealthy AND a direct probe of the service // ticket-ref-ok: the ADR clause is what licenses this restart
+              // The ADR-0025 [not-ticket-ref: decision-record authority] §2.4 pair: the runtime says unhealthy AND a direct probe of the service
               // itself failed. Two independent channels agreeing is what licenses a privileged restart.
               decision = wedged('mc-server');
 
@@ -422,7 +445,7 @@ test.describe('Neo.ai.daemons.services.ContainerHealthControllerService', () => 
         const {controller, runtimeCalls} = createStack(),
               decision                   = answering('mc-server');
 
-        // The false-unhealthy case, at the controller seam rather than only at the classifier. ADR-0025 // ticket-ref-ok: the ADR clause is the authority for refusing this action
+        // The false-unhealthy case, at the controller seam rather than only at the classifier. ADR-0025 [not-ticket-ref: decision-record authority]
         // §2.1's live instance: a provider-dependent canary false-fails while the service still answers
         // and persists. Restarting it destroys the in-flight work whose slowness caused the red, and on
         // Memory Core that is the WAL capture the deployment comment says must never be vetoed.
@@ -529,7 +552,7 @@ test.describe('Neo.ai.daemons.services.ContainerHealthControllerService', () => 
         expect(controller).toBeTruthy();
 
         for (const action of routed) {
-            expect(['reconfigure', 'restart', 'redeploy', 'warm-provider', 'raise-ceiling']).toContain(action);
+            expect(['reconfigure', 'restart', 'redeploy', 'warm-provider', 'raise-ceiling', 'prune-build-cache']).toContain(action);
         }
     });
 
@@ -1171,5 +1194,238 @@ test.describe('Neo.ai.daemons.services.ContainerHealthControllerService', () => 
         expect(outcome.status).toBe('actuated');
         expect(outcome.actuatorOutcome.status).toBe('actioned');
         expect(runtimeCalls).toHaveLength(1);
+    });
+
+    test.describe('plane disk pressure — diagnosis to controller to actuator (#1430)', () => {
+        function diskSample({usedPercent = 90, reclaimableBuildCacheBytes = 10 * GIB, observedAtMs} = {}) {
+            const totalBytes = 60 * GIB,
+                  usedBytes  = Math.round((usedPercent / 100) * totalBytes),
+                  freeBytes  = totalBytes - usedBytes;
+
+            return {
+                ...(Number.isFinite(observedAtMs) ? {observedAtMs} : {}),
+                statfs: {
+                    mountPath     : '/data',
+                    totalBytes,
+                    usedBytes,
+                    freeBytes,
+                    availableBytes: freeBytes,
+                    usedPercent
+                },
+                df: {
+                    layersSizeBytes: 18 * GIB,
+                    images         : {totalBytes: 18 * GIB, reclaimableBytes: 4 * GIB, count: 6, activeCount: 4},
+                    containers     : {totalBytes: 512 * 1024 * 1024, count: 4, runningCount: 4},
+                    volumes        : {totalBytes: 22 * GIB, reclaimableBytes: 0, count: 3, activeCount: 3},
+                    buildCache     : {
+                        totalBytes      : reclaimableBuildCacheBytes + 2 * GIB,
+                        inUseBytes      : 2 * GIB,
+                        reclaimableBytes: reclaimableBuildCacheBytes,
+                        entryCount      : 18,
+                        inUseCount      : 2
+                    }
+                }
+            };
+        }
+
+        function diagnoseEngineDisk(samples) {
+            return Neo.create(ContainerHealthDiagnosisService, {nowFn: () => OBSERVED_AT}).diagnoseEngineDisk({
+                targetId   : 'docker-engine',
+                diskSample : samples.at(-1),
+                diskSamples: samples,
+                observedAt : OBSERVED_AT
+            });
+        }
+
+        test('AC-2: sustained disk pressure + reclaimable build cache above floor drives exactly one bounded prune-build-cache', async () => {
+            const {controller, runtimeCalls} = createStack({
+                actuatorConfig: {maxAttemptsPerWindow: 1, maxAttemptsWindowMs: 3_600_000}
+            });
+
+            const decision = diagnoseEngineDisk([
+                diskSample({usedPercent: 91, reclaimableBuildCacheBytes: 12 * GIB, observedAtMs: OBSERVED_AT - 60_000}),
+                diskSample({usedPercent: 92, reclaimableBuildCacheBytes: 12 * GIB, observedAtMs: OBSERVED_AT})
+            ]);
+
+            expect(decision.status).toBe('diagnosed');
+            expect(decision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.pruneBuildCache);
+            expect(decision.targetIdentity).toEqual({kind: 'engine', id: 'docker-engine'});
+
+            const firstBatch = await controller.consumeSnapshot({
+                snapshot: {
+                    services  : [],
+                    engineDisk: {diagnosis: decision}
+                }
+            });
+
+            expect(firstBatch).toHaveLength(1);
+            expect(firstBatch[0].status).toBe('actuated');
+            expect(firstBatch[0].actuatorAction).toBe('prune-build-cache');
+            expect(firstBatch[0].actuatorOutcome.status).toBe('actioned');
+            expect(firstBatch[0].actuatorOutcome.buildCachePrune).toMatchObject({
+                keepStorageBytes   : 2 * GIB,
+                spaceReclaimedBytes: 8 * GIB,
+                statfsBefore       : {freeBytes: 5 * GIB},
+                statfsAfter        : {freeBytes: 13 * GIB}
+            });
+
+            // A second sustained observation inside the window is bounded by the actuator cap —
+            // exactly one prune-build-cache reaches the Docker runtime.
+            const secondBatch = await controller.consumeSnapshot({
+                snapshot: {
+                    services  : [],
+                    engineDisk: {diagnosis: decision}
+                }
+            });
+
+            expect(secondBatch).toHaveLength(1);
+            expect(secondBatch[0].actuatorOutcome.status).toBe('recorded');
+            expect(secondBatch[0].actuatorOutcome.reasonCode).toBe('attempt-cap-reached');
+            expect(runtimeCalls).toEqual([{
+                serviceKey      : 'docker-engine',
+                operation       : 'prune-build-cache',
+                keepStorageBytes: 2 * GIB,
+                reason          : 'container-health-controller:engine-disk-pressure-build-cache-reclaimable'
+            }]);
+
+            const events = await readLedger();
+            expect(events[0]).toMatchObject({
+                collection: 'docker-engine',
+                status    : 'actioned',
+                detail    : {
+                    action         : 'prune-build-cache',
+                    actionClass    : 'prune-build-cache',
+                    buildCachePrune: expect.objectContaining({
+                        keepStorageBytes   : 2 * GIB,
+                        spaceReclaimedBytes: 8 * GIB
+                    })
+                }
+            });
+        });
+
+        test('AC-2: sustained disk pressure without reclaimable build cache routes to record only, naming images and volumes without acting on them', async () => {
+            const {controller, runtimeCalls} = createStack();
+
+            const decision = diagnoseEngineDisk([
+                diskSample({usedPercent: 91, reclaimableBuildCacheBytes: 512 * 1024 * 1024, observedAtMs: OBSERVED_AT - 60_000}),
+                diskSample({usedPercent: 92, reclaimableBuildCacheBytes: 512 * 1024 * 1024, observedAtMs: OBSERVED_AT})
+            ]);
+
+            expect(decision.status).toBe('diagnosed');
+            expect(decision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.record);
+            expect(decision.diagnosis.details.classificationReason).toBe('engine-disk-pressure-no-reclaimable-build-cache');
+
+            const outcomes = await controller.consumeSnapshot({
+                snapshot: {
+                    services  : [],
+                    engineDisk: {diagnosis: decision}
+                }
+            });
+
+            expect(outcomes).toHaveLength(1);
+            expect(outcomes[0].status).toBe('recorded');
+            expect(outcomes[0].actuatorAction).toBeNull();
+            expect(outcomes[0].reasonCode).toBe('diagnosis-record');
+            expect(runtimeCalls).toEqual([]);
+
+            const events = await readLedger();
+            expect(events).toHaveLength(1);
+            expect(events[0]).toMatchObject({
+                collection: 'docker-engine',
+                status    : 'recorded',
+                detail    : {
+                    actionClass         : 'record',
+                    classificationReason: 'engine-disk-pressure-no-reclaimable-build-cache',
+                    images              : {totalBytes: 18 * GIB, reclaimableBytes: 4 * GIB, count: 6, activeCount: 4},
+                    volumes             : {totalBytes: 22 * GIB, reclaimableBytes: 0, count: 3, activeCount: 3}
+                }
+            });
+        });
+
+        test('API-1.53 BuildCacheUsage with Shared: true items normalizes to reclaimableBytes: 0 and routes sustained disk pressure to record instead of prune-build-cache', async () => {
+            const {controller, runtimeCalls} = createStack();
+
+            const sharedItemSizes = [
+                146088668, 146088668, 146088668, 146088668, 146088668,
+                146088668, 146088668, 146088668, 146088668, 146088668,
+                146088668, 146088668, 146088668, 146088668, 146088668,
+                146088668, 146088668, 146088668, 146088668, 146088668,
+                146088534
+            ];
+
+            const runtimeAccess = Neo.create(DeploymentRuntimeAccessService, {
+                runtimeAccessConfig: {
+                    enabled            : true,
+                    mechanism          : 'docker-socket',
+                    socketPath         : '/var/run/docker.sock',
+                    composeProject     : 'neo',
+                    allowedServices    : ['chroma', 'kb-server', 'mc-server', 'local-model'],
+                    readOperations     : ['inspect', 'logs', 'stats', 'events', 'system-df'],
+                    lifecycleOperations: ['restart', 'update-memory-limit', 'prune-build-cache']
+                },
+                statfsFn: async () => ({
+                    bsize : 4096,
+                    blocks: Math.floor((60 * GIB) / 4096),
+                    bfree : Math.floor((4 * GIB) / 4096),
+                    bavail: Math.floor((4 * GIB) / 4096)
+                }),
+                dockerRequestFn: async request => ({
+                    statusCode: 200,
+                    headers   : {},
+                    body      : JSON.stringify({
+                        ImageUsage: {
+                            TotalCount : 6,
+                            ActiveCount: 4,
+                            TotalSize  : 18 * GIB,
+                            Reclaimable: 4 * GIB
+                        },
+                        VolumeUsage: {
+                            TotalCount : 3,
+                            ActiveCount: 3,
+                            TotalSize  : 22 * GIB,
+                            Reclaimable: 0
+                        },
+                        BuildCacheUsage: {
+                            TotalCount: 21,
+                            TotalSize : 3067861894,
+                            Items     : sharedItemSizes.map((Size, index) => ({
+                                ID    : `cache-shared-${index + 1}`,
+                                Size,
+                                InUse : false,
+                                Shared: true
+                            }))
+                        }
+                    })
+                })
+            });
+
+            const observed = await runtimeAccess.readObserve({
+                serviceKey: 'docker-engine',
+                operation : 'system-df'
+            });
+            expect(observed.data.df.buildCache.reclaimableBytes).toBe(0);
+
+            const decision = diagnoseEngineDisk([
+                {...observed.data, observedAtMs: OBSERVED_AT - 60_000},
+                {...observed.data, observedAtMs: OBSERVED_AT}
+            ]);
+
+            expect(decision.status).toBe('diagnosed');
+            expect(decision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.record);
+            expect(decision.diagnosis.details.classificationReason).toBe('engine-disk-pressure-no-reclaimable-build-cache');
+
+            const outcomes = await controller.consumeSnapshot({
+                snapshot: {
+                    services  : [],
+                    engineDisk: {diagnosis: decision}
+                }
+            });
+
+            expect(outcomes).toHaveLength(1);
+            expect(outcomes[0].status).toBe('recorded');
+            expect(outcomes[0].actuatorAction).toBeNull();
+            expect(outcomes[0].reasonCode).toBe('diagnosis-record');
+            expect(runtimeCalls).toEqual([]);
+        });
     });
 });

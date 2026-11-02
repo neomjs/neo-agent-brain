@@ -159,12 +159,12 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
         restoreRuntimeAccessConfig = snapshotAiConfig(AiConfig, RUNTIME_ACCESS_CONFIG_PATHS);
 
         Object.assign(AiConfig.orchestrator.deploymentStateBridge, {
-             allowedServices             : [],
-             includeEvents               : false,
-             includeLogs                 : true,
-             eventLookbackMs             : 5 * 60 * 1000,
-             recentDeathLimit            : 10,
-             logTail                     : 120,
+             allowedServices : [],
+             includeEvents   : false,
+             includeLogs     : true,
+             eventLookbackMs : 5 * 60 * 1000,
+             recentDeathLimit: 10,
+             logTail         : 120,
             logMaxBytes                 : 32 * 1024,
             statsSampleWindow           : 2,
             providerResidencyServiceKeys: ['local-model', 'model'],
@@ -284,12 +284,12 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
                 truncated: false,
                 tail     : 120
             },
-            deaths: [],
+            deaths   : [],
             deathRead: {
-                status            : 'available',
-                source            : 'docker-events',
-                limit             : 10,
-                unavailableReason : null
+                status           : 'available',
+                source           : 'docker-events',
+                limit            : 10,
+                unavailableReason: null
             },
             diagnosis: {
                 serviceKey : 'model',
@@ -329,7 +329,7 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
         AiConfig.orchestrator.deploymentStateBridge.includeEvents    = true;
         AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit = 2;
 
-        const calls = [],
+        const calls                = [],
               runtimeAccessService = {
                   async readObserve(request) {
                       calls.push(request);
@@ -365,12 +365,12 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
 
         expect(calls.map(call => call.operation)).toEqual(['inspect', 'stats', 'logs', 'events']);
         expect(snapshot.services[0]).toMatchObject({
-            deaths: [{at: new Date(OBSERVED_AT - 1000).toISOString(), exitCode: 137, oomKilled: true}],
+            deaths   : [{at: new Date(OBSERVED_AT - 1000).toISOString(), exitCode: 137, oomKilled: true}],
             deathRead: {
-                status            : 'available',
-                source            : 'docker-events',
-                limit             : 2,
-                unavailableReason : null
+                status           : 'available',
+                source           : 'docker-events',
+                limit            : 2,
+                unavailableReason: null
             }
         });
     });
@@ -448,7 +448,7 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
             snapshot = await service.collectSnapshot();
 
         expect(snapshot.services[0]).toMatchObject({
-            deaths    : null,
+            deaths   : null,
             deathRead: {
                 status           : 'unavailable',
                 unavailableReason: 'docker-socket-unavailable'
@@ -499,8 +499,8 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
         // An arm that mutates shared config cleans up after itself; it does not assume the block it
         // happens to sit in will do it.
         const originalReadOperations = AiConfig.orchestrator.deploymentRuntimeAccess.readOperations,
-              originalLimit         = AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit,
-              originalLookback      = AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs;
+              originalLimit          = AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit,
+              originalLookback       = AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs;
 
         try {
             AiConfig.orchestrator.deploymentStateBridge.includeEvents   = true;
@@ -733,7 +733,7 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
                 composeProject     : null,
                 allowedServices    : ['kb-server', 'mc-server'],
                 readOperations     : ['inspect', 'stats', 'logs'],
-                lifecycleOperations: ['restart', 'update-memory-limit']
+                lifecycleOperations: ['restart', 'update-memory-limit', 'prune-build-cache']
             },
             bridgeConfig: {
                 allowedServices     : ['kb-server', 'mc-server'],

@@ -1,5 +1,7 @@
+import fs               from 'fs';
 import http             from 'http';
 import Base             from 'neo.mjs/src/core/Base.mjs';
+import AiConfig         from '../../../config.mjs';
 import {RECOVERY_KNOBS} from '../../../services/memory-core/helpers/recoveryKnobRegistry.mjs';
 
 export const DEPLOYMENT_RUNTIME_MECHANISMS = Object.freeze([
@@ -11,7 +13,8 @@ export const DEPLOYMENT_RUNTIME_READ_OPERATIONS = Object.freeze([
     'inspect',
     'logs',
     'stats',
-    'events'
+    'events',
+    'system-df'
 ]);
 
 export const DEPLOYMENT_RUNTIME_LIFECYCLE_OPERATIONS = Object.freeze([
@@ -22,8 +25,14 @@ export const DEPLOYMENT_RUNTIME_LIFECYCLE_OPERATIONS = Object.freeze([
     // ADR-0026 [not-ticket-ref: the ADR is the governing authority for this operation's envelope] §2.8;
     // still config-and-lifecycle-only — it moves one bounded resource limit on one allowlisted,
     // identity-proven target, never code or an open container field.
-    'update-memory-limit'
+    'update-memory-limit',
+    // A bounded Docker engine build-cache prune (`POST /build/prune?reserved-space=<bytes>&keep-storage=<bytes>`).
+    // Enforces a positive warm floor at L0, serializes per engine, and records
+    // `statfs` free bytes before and after. Images and volumes remain unreachable.
+    'prune-build-cache'
 ]);
+
+export const DEPLOYMENT_RUNTIME_ENGINE_TARGET_ID = 'docker-engine';
 
 /**
  * The orchestrator's own Compose service key.
@@ -206,7 +215,13 @@ export class DeploymentRuntimeAccessService extends Base {
          * @protected
          * @reactive
          */
-        writeLog_: null
+        writeLog_: null,
+        /**
+         * @member {Function|null} statfsFn_=null
+         * @protected
+         * @reactive
+         */
+        statfsFn_: null
     }
 
     /**
@@ -219,6 +234,14 @@ export class DeploymentRuntimeAccessService extends Base {
      * @protected
      */
     memoryLimitLocksByService = new Map()
+
+    /**
+     * Per-engine tail of the build-cache prune critical section (`withEnginePruneExclusion`).
+     * Serializes `statfsBefore -> POST /build/prune -> statfsAfter` per engine target.
+     * @member {Map} buildCachePruneLocksByEngine=new Map()
+     * @protected
+     */
+    buildCachePruneLocksByEngine = new Map()
 
     /**
      * Resolves the active runtime-access config.
@@ -272,8 +295,8 @@ export class DeploymentRuntimeAccessService extends Base {
      * Executes a read-only deployment observation through the read-observe envelope.
      *
      * @param {Object} options
-     * @param {String} options.serviceKey Allowlisted compose service key.
-     * @param {'inspect'|'logs'|'stats'|'events'} options.operation Read operation.
+     * @param {String} [options.serviceKey] Allowlisted compose service key (or `'docker-engine'` for `system-df`).
+     * @param {'inspect'|'logs'|'stats'|'events'|'system-df'} options.operation Read operation.
      * @param {Number} [options.tail] Log tail count for `logs`.
      * @param {String|Number} [options.since] Lower bound for `logs` or `events`.
      * @param {String|Number} [options.until] Upper bound for `logs` or `events`.
@@ -283,6 +306,10 @@ export class DeploymentRuntimeAccessService extends Base {
         this.assertEnabled();
         this.assertMechanismSupported();
         this.assertOperationAllowed('read-observe', operation);
+
+        if (operation === 'system-df') {
+            return this.readEngineSystemDf({serviceKey});
+        }
 
         const target = await this.resolveServiceTarget(serviceKey);
 
@@ -309,11 +336,12 @@ export class DeploymentRuntimeAccessService extends Base {
      * Executes a lifecycle operation through the lifecycle-write envelope.
      *
      * @param {Object} options
-     * @param {String} options.serviceKey Allowlisted compose service key.
-     * @param {'restart'|'update-memory-limit'} options.operation Lifecycle operation.
+     * @param {String} [options.serviceKey] Allowlisted compose service key (or `'docker-engine'` for `prune-build-cache`).
+     * @param {'restart'|'update-memory-limit'|'prune-build-cache'} options.operation Lifecycle operation.
      * @param {String} [options.reason='manual'] Audit reason.
      * @param {Number} [options.restartTimeoutSeconds] Docker restart timeout.
      * @param {Number} [options.memoryLimitBytes] Target memory ceiling for `update-memory-limit`.
+     * @param {Number} [options.keepStorageBytes] Positive integer warm-cache floor in bytes for `prune-build-cache`.
      * @param {Function|null} [options.isAuthorityHeld=null] Current-authority oracle, re-asked AFTER
      * target resolution and immediately before the mutating call. Optional: a caller that omits it
      * keeps today's behaviour exactly.
@@ -322,10 +350,21 @@ export class DeploymentRuntimeAccessService extends Base {
      * @param {Function|null} [options.onBeforeRestartDispatch=null] Durable restart-interlock writer.
      * @returns {Promise<Object>} Lifecycle result plus structured proof metadata.
      */
-    async applyLifecycle({serviceKey, operation = 'restart', reason = 'manual', restartTimeoutSeconds, memoryLimitBytes, isAuthorityHeld = null, isEffectStillAdmitted = null, expectedContainerId = null, onBeforeRestartDispatch = null} = {}) {
+    async applyLifecycle({serviceKey, operation = 'restart', reason = 'manual', restartTimeoutSeconds, memoryLimitBytes, keepStorageBytes, isAuthorityHeld = null, isEffectStillAdmitted = null, expectedContainerId = null, onBeforeRestartDispatch = null} = {}) {
         this.assertEnabled();
         this.assertMechanismSupported();
         this.assertOperationAllowed('lifecycle-write', operation);
+
+        if (operation === 'prune-build-cache') {
+            return this.pruneEngineBuildCache({
+                serviceKey,
+                reason,
+                keepStorageBytes,
+                isAuthorityHeld,
+                isEffectStillAdmitted
+            });
+        }
+
         this.assertNotSelfLifecycleTarget(serviceKey);
 
         const target = await this.resolveServiceTarget(serviceKey);
@@ -432,11 +471,26 @@ export class DeploymentRuntimeAccessService extends Base {
         const allowed = envelope === 'read-observe'
             ? this.configValues.readOperations
             : this.configValues.lifecycleOperations;
+        const closedSet = envelope === 'read-observe'
+            ? DEPLOYMENT_RUNTIME_READ_OPERATIONS
+            : DEPLOYMENT_RUNTIME_LIFECYCLE_OPERATIONS;
 
         if (!Array.isArray(allowed) || !allowed.includes(operation)) {
             throw createRuntimeAccessError({
                 reason : 'runtime-operation-not-allowlisted',
                 message: `Deployment runtime ${envelope} operation '${operation}' is not allowlisted`,
+                details: {
+                    ...this.createEffectiveConfigSummary(),
+                    envelope,
+                    operation
+                }
+            });
+        }
+
+        if (!closedSet.includes(operation)) {
+            throw createRuntimeAccessError({
+                reason : 'runtime-operation-disallowed',
+                message: `Deployment runtime ${envelope} operation '${operation}' is outside the closed L0 operation set`,
                 details: {
                     ...this.createEffectiveConfigSummary(),
                     envelope,
@@ -831,9 +885,9 @@ export class DeploymentRuntimeAccessService extends Base {
         }
 
         const filters = {
-                type  : ['container'],
-                event : ['oom', 'die'],
-                label : [
+                type : ['container'],
+                event: ['oom', 'die'],
+                label: [
                     `com.docker.compose.project=${target.composeProject}`,
                     `com.docker.compose.service=${target.serviceKey}`
                 ]
@@ -856,8 +910,8 @@ export class DeploymentRuntimeAccessService extends Base {
         }
 
         return {
-            ok   : true,
-            data : {
+            ok  : true,
+            data: {
                 appliedSince: sinceStamp,
                 appliedUntil: untilStamp,
                 bounded     : true,
@@ -1202,6 +1256,279 @@ export class DeploymentRuntimeAccessService extends Base {
     }
 
     /**
+     * @summary Reads engine-level filesystem capacity (`statfs`) and Docker `/system/df` class breakdown.
+     *
+     * @param {Object} [options={}]
+     * @param {String} [options.serviceKey='docker-engine'] Engine target id (`'docker-engine'`).
+     * @returns {Promise<Object>}
+     */
+    async readEngineSystemDf({serviceKey} = {}) {
+        const targetId = this.resolveEngineTargetId(serviceKey),
+              statfs   = await this.readDataMountStatfs(),
+              response = await this.dockerRequest({
+                  method: 'GET',
+                  path  : '/system/df'
+              }),
+              parsed   = this.parseJson(response.body, 'system df'),
+              df       = normalizeDockerSystemDf(parsed);
+
+        return {
+            ok  : true,
+            data: {
+                targetId,
+                statfs,
+                df
+            },
+            proof     : this.createEngineProofMetadata({
+                envelope : 'read-observe',
+                operation: 'system-df',
+                targetId
+            }),
+            statusCode: response.statusCode
+        };
+    }
+
+    /**
+     * @summary Prunes Docker build cache through the lifecycle-write envelope with a mandatory warm floor
+     * and per-engine serialization.
+     *
+     * @param {Object} [options={}]
+     * @param {String} [options.serviceKey='docker-engine'] Engine target id (`'docker-engine'`).
+     * @param {String} [options.reason='manual'] Audit reason.
+     * @param {Number} options.keepStorageBytes Positive integer warm-cache floor in bytes.
+     * @param {Function|null} [options.isAuthorityHeld=null] Current-authority oracle.
+     * @param {Function|null} [options.isEffectStillAdmitted=null] Live effect-admission oracle.
+     * @returns {Promise<Object>}
+     */
+    async pruneEngineBuildCache({
+        serviceKey,
+        reason = 'manual',
+        keepStorageBytes,
+        isAuthorityHeld = null,
+        isEffectStillAdmitted = null
+    } = {}) {
+        const targetId = this.resolveEngineTargetId(serviceKey);
+
+        if (!Number.isInteger(keepStorageBytes) || keepStorageBytes <= 0) {
+            throw createRuntimeAccessError({
+                Type   : TypeError,
+                reason : 'runtime-build-cache-prune-warm-floor-required',
+                message: `prune-build-cache requires a positive integer warm floor (keepStorageBytes), received ${JSON.stringify(keepStorageBytes)}`,
+                details: {
+                    ...this.createEffectiveConfigSummary(),
+                    serviceKey: targetId,
+                    targetId,
+                    operation : 'prune-build-cache'
+                }
+            });
+        }
+
+        return this.withEnginePruneExclusion(targetId, async () => {
+            if (typeof isAuthorityHeld === 'function' && isAuthorityHeld() !== true) {
+                throw createRuntimeAccessError({
+                    reason : 'runtime-authority-lost',
+                    message: `Authority moved while preparing '${targetId}'; refusing prune-build-cache.`,
+                    details: {serviceKey: targetId, targetId, operation: 'prune-build-cache'}
+                });
+            }
+
+            if (typeof isEffectStillAdmitted === 'function' && isEffectStillAdmitted() !== true) {
+                throw createRuntimeAccessError({
+                    reason : 'runtime-effect-not-admitted',
+                    message: `Lifecycle write for '${targetId}' is no longer admitted by live evidence.`,
+                    details: {serviceKey: targetId, targetId, operation: 'prune-build-cache'}
+                });
+            }
+
+            const statfsBefore = await this.readDataMountStatfs(),
+                  encodedFloor = encodeURIComponent(String(keepStorageBytes)),
+                  response     = await this.dockerRequest({
+                      method: 'POST',
+                      path  : `/build/prune?reserved-space=${encodedFloor}&keep-storage=${encodedFloor}`
+                  }),
+                  parsed              = response.body ? this.parseJson(response.body, 'build prune') : {},
+                  cachesDeleted       = Array.isArray(parsed?.CachesDeleted)
+                      ? parsed.CachesDeleted.filter(id => typeof id === 'string')
+                      : [],
+                  spaceReclaimedBytes = Math.max(0, Number(parsed?.SpaceReclaimed ?? 0) || 0),
+                  statfsAfter         = await this.readDataMountStatfs();
+
+            return {
+                ok  : true,
+                data: {
+                    pruned            : true,
+                    serialized        : true,
+                    targetId,
+                    reason,
+                    keepStorageBytes,
+                    cachesDeleted,
+                    cachesDeletedCount: cachesDeleted.length,
+                    spaceReclaimedBytes,
+                    freeBytesBefore   : statfsBefore.freeBytes,
+                    freeBytesAfter    : statfsAfter.freeBytes,
+                    statfsBefore,
+                    statfsAfter
+                },
+                proof     : this.createEngineProofMetadata({
+                    envelope : 'lifecycle-write',
+                    operation: 'prune-build-cache',
+                    targetId,
+                    reason
+                }),
+                statusCode: response.statusCode
+            };
+        });
+    }
+
+    /**
+     * @summary Serializes `prune-build-cache` operations per engine target.
+     *
+     * @param {String} targetId Canonical engine target id.
+     * @param {Function} criticalSection Async section spanning `statfsBefore -> /build/prune -> statfsAfter`.
+     * @returns {Promise<*>}
+     */
+    async withEnginePruneExclusion(targetId, criticalSection) {
+        const previous = this.buildCachePruneLocksByEngine.get(targetId) ?? Promise.resolve(),
+              run      = previous.then(criticalSection, criticalSection),
+              tail     = run.then(() => {}, () => {});
+
+        this.buildCachePruneLocksByEngine.set(targetId, tail);
+
+        try {
+            return await run;
+        } finally {
+            if (this.buildCachePruneLocksByEngine.get(targetId) === tail) {
+                this.buildCachePruneLocksByEngine.delete(targetId);
+            }
+        }
+    }
+
+    /**
+     * @summary Validates and returns the canonical engine target id (`'docker-engine'`).
+     *
+     * @param {String|null|undefined} serviceKey Optional engine target identifier.
+     * @returns {String}
+     */
+    resolveEngineTargetId(serviceKey) {
+        if (serviceKey === undefined || serviceKey === null || serviceKey === '') {
+            return DEPLOYMENT_RUNTIME_ENGINE_TARGET_ID;
+        }
+
+        if (serviceKey !== DEPLOYMENT_RUNTIME_ENGINE_TARGET_ID) {
+            throw createRuntimeAccessError({
+                reason : 'runtime-engine-target-invalid',
+                message: `Engine operation requires target '${DEPLOYMENT_RUNTIME_ENGINE_TARGET_ID}', received '${String(serviceKey)}'`,
+                details: {
+                    ...this.createEffectiveConfigSummary(),
+                    serviceKey: String(serviceKey)
+                }
+            });
+        }
+
+        return DEPLOYMENT_RUNTIME_ENGINE_TARGET_ID;
+    }
+
+    /**
+     * @summary Reads filesystem capacity for the orchestrator data mount via `statfs`.
+     *
+     * @returns {Promise<{path: String, totalBytes: Number, freeBytes: Number, availableBytes: Number, usedBytes: Number, usedPercent: Number}>}
+     */
+    async readDataMountStatfs() {
+        const mountPath = AiConfig.plane.dataRoot,
+              statfsFn  = this.statfsFn || fs.statfsSync;
+
+        let raw;
+
+        try {
+            raw = await statfsFn(mountPath);
+        } catch (error) {
+            throw createRuntimeAccessError({
+                reason : 'runtime-statfs-failed',
+                message: `Failed to read statfs for '${mountPath}': ${error.message}`,
+                code   : error.code || null,
+                details: {
+                    ...this.createEffectiveConfigSummary(),
+                    mountPath
+                }
+            });
+        }
+
+        let totalBytes,
+            freeBytes,
+            availableBytes;
+
+        if (raw && typeof raw === 'object' && raw.bsize !== undefined && raw.blocks !== undefined) {
+            const blockSize = Number(raw.bsize);
+
+            totalBytes     = blockSize * Number(raw.blocks);
+            freeBytes      = blockSize * Number(raw.bfree ?? raw.bavail ?? 0);
+            availableBytes = blockSize * Number(raw.bavail ?? raw.bfree ?? 0);
+        } else {
+            totalBytes     = Number(raw?.totalBytes);
+            freeBytes      = Number(raw?.freeBytes);
+            availableBytes = Number(raw?.availableBytes ?? raw?.freeBytes);
+        }
+
+        if (!Number.isFinite(totalBytes) || totalBytes <= 0 || !Number.isFinite(freeBytes) || freeBytes < 0) {
+            throw createRuntimeAccessError({
+                reason : 'runtime-statfs-invalid',
+                message: `statfs for '${mountPath}' returned invalid capacity values`,
+                details: {
+                    ...this.createEffectiveConfigSummary(),
+                    mountPath
+                }
+            });
+        }
+
+        const usedBytes   = Math.max(0, totalBytes - freeBytes),
+              usedPercent = Number(((usedBytes / totalBytes) * 100).toFixed(2));
+
+        return {
+            path          : mountPath,
+            totalBytes,
+            freeBytes,
+            availableBytes: Number.isFinite(availableBytes) && availableBytes >= 0 ? availableBytes : freeBytes,
+            usedBytes,
+            usedPercent
+        };
+    }
+
+    /**
+     * @summary Creates structured proof metadata for engine-scoped runtime operations.
+     *
+     * @param {Object} options
+     * @param {'read-observe'|'lifecycle-write'} options.envelope Capability envelope.
+     * @param {String} options.operation Operation name.
+     * @param {String} [options.targetId='docker-engine'] Canonical engine target id.
+     * @param {String} [options.reason] Optional lifecycle reason.
+     * @returns {Object}
+     */
+    createEngineProofMetadata({envelope, operation, targetId = DEPLOYMENT_RUNTIME_ENGINE_TARGET_ID, reason} = {}) {
+        const observedAt = this.nowFn ? this.nowFn() : Date.now();
+
+        return {
+            schemaVersion     : 1,
+            recordType        : 'deployment-runtime-access',
+            runtimeMechanism  : this.mechanism,
+            capabilityEnvelope: envelope,
+            operation,
+            auditLabel        : `${envelope}:${operation}`,
+            auditMode         : this.configValues.auditMode || 'metadata',
+            serviceKey        : targetId,
+            targetIdentity    : {
+                kind: 'engine',
+                id  : targetId
+            },
+            target: {
+                targetId,
+                composeProject: this.configValues.composeProject || null
+            },
+            observedAt,
+            reason: reason || null
+        };
+    }
+
+    /**
      * Performs a runtime request through the injected seam or Docker socket implementation.
      * @param {Object} request Request descriptor.
      * @returns {Promise<{statusCode: Number, headers: Object, body: String}>}
@@ -1407,7 +1734,90 @@ function normalizeDockerEvent(event) {
         action,
         containerId,
         atMs,
-        at         : new Date(atMs).toISOString(),
-        exitCode   : Number.isFinite(exitCode) ? exitCode : null
+        at      : new Date(atMs).toISOString(),
+        exitCode: Number.isFinite(exitCode) ? exitCode : null
+    };
+}
+
+/**
+ * @summary Normalizes Docker `/system/df` responses across classic array fields and API 1.52+ `*Usage` objects.
+ *
+ * @param {Object} parsed Parsed `/system/df` payload.
+ * @returns {{images: {totalCount: Number, activeCount: Number, totalBytes: Number, reclaimableBytes: Number}, volumes: {totalCount: Number, activeCount: Number, totalBytes: Number, reclaimableBytes: Number}, buildCache: {totalCount: Number, activeCount: Number, totalBytes: Number, reclaimableBytes: Number}}}
+ */
+function normalizeDockerSystemDf(parsed) {
+    const raw         = parsed && typeof parsed === 'object' ? parsed : {},
+          imagesList  = Array.isArray(raw.Images) ? raw.Images : [],
+          volumesList = Array.isArray(raw.Volumes) ? raw.Volumes : [],
+          cacheList   = Array.isArray(raw.BuildCache)
+              ? raw.BuildCache
+              : (Array.isArray(raw.BuildCacheUsage?.Items) ? raw.BuildCacheUsage.Items : []);
+
+    const images = raw.ImageUsage && typeof raw.ImageUsage === 'object'
+        ? {
+            totalCount      : Math.max(0, Number(raw.ImageUsage.TotalCount ?? imagesList.length ?? 0) || 0),
+            activeCount     : Math.max(0, Number(raw.ImageUsage.ActiveCount ?? imagesList.filter(img => Number(img?.Containers) > 0).length ?? 0) || 0),
+            totalBytes      : Math.max(0, Number(raw.ImageUsage.TotalSize ?? raw.LayersSize ?? 0) || 0),
+            reclaimableBytes: Math.max(0, Number(raw.ImageUsage.Reclaimable ?? 0) || 0)
+        }
+        : {
+            totalCount : imagesList.length,
+            activeCount: imagesList.filter(img => Number(img?.Containers) > 0).length,
+            totalBytes : Number.isFinite(Number(raw.LayersSize)) && Number(raw.LayersSize) >= 0
+                ? Number(raw.LayersSize)
+                : imagesList.reduce((sum, img) => sum + Math.max(0, Number(img?.Size) || 0), 0),
+            reclaimableBytes: imagesList.reduce((sum, img) => sum + (
+                Number(img?.Containers) > 0
+                    ? 0
+                    : Math.max(0, (Number(img?.Size) || 0) - Math.max(0, Number(img?.SharedSize) || 0))
+            ), 0)
+        };
+
+    const volumes = raw.VolumeUsage && typeof raw.VolumeUsage === 'object'
+        ? {
+            totalCount      : Math.max(0, Number(raw.VolumeUsage.TotalCount ?? volumesList.length ?? 0) || 0),
+            activeCount     : Math.max(0, Number(raw.VolumeUsage.ActiveCount ?? volumesList.filter(vol => Number(vol?.UsageData?.RefCount) > 0).length ?? 0) || 0),
+            totalBytes      : Math.max(0, Number(raw.VolumeUsage.TotalSize ?? 0) || 0),
+            reclaimableBytes: Math.max(0, Number(raw.VolumeUsage.Reclaimable ?? 0) || 0)
+        }
+        : {
+            totalCount      : volumesList.length,
+            activeCount     : volumesList.filter(vol => Number(vol?.UsageData?.RefCount) > 0).length,
+            totalBytes      : volumesList.reduce((sum, vol) => sum + Math.max(0, Number(vol?.UsageData?.Size) || 0), 0),
+            reclaimableBytes: volumesList.reduce((sum, vol) => sum + (
+                Number(vol?.UsageData?.RefCount) > 0
+                    ? 0
+                    : Math.max(0, Number(vol?.UsageData?.Size) || 0)
+            ), 0)
+        };
+
+    const buildCache = raw.BuildCacheUsage && typeof raw.BuildCacheUsage === 'object'
+        ? {
+            totalCount      : Math.max(0, Number(raw.BuildCacheUsage.TotalCount ?? cacheList.length ?? 0) || 0),
+            activeCount     : Math.max(0, Number(raw.BuildCacheUsage.ActiveCount ?? cacheList.filter(item => item?.InUse === true).length ?? 0) || 0),
+            totalBytes      : Math.max(0, Number(raw.BuildCacheUsage.TotalSize ?? 0) || 0),
+            reclaimableBytes: Math.max(0, Number(
+                raw.BuildCacheUsage.Reclaimable ?? cacheList.reduce((sum, item) => sum + (
+                    !item?.InUse && !item?.Shared
+                        ? Math.max(0, Number(item?.Size) || 0)
+                        : 0
+                ), 0)
+            ) || 0)
+        }
+        : {
+            totalCount      : cacheList.length,
+            activeCount     : cacheList.filter(item => item?.InUse === true).length,
+            totalBytes      : cacheList.reduce((sum, item) => sum + Math.max(0, Number(item?.Size) || 0), 0),
+            reclaimableBytes: cacheList.reduce((sum, item) => sum + (
+                !item?.InUse && !item?.Shared
+                    ? Math.max(0, Number(item?.Size) || 0)
+                    : 0
+            ), 0)
+        };
+
+    return {
+        images,
+        volumes,
+        buildCache
     };
 }

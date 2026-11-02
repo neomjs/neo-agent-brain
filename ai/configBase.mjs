@@ -1450,6 +1450,39 @@ class ConfigBase extends ConfigProvider {
                      */
                     severity: leaf('critical', 'NEO_RESTART_CHURN_SEVERITY', 'string')
                 },
+                /**
+                 * Plane Docker disk-pressure detection and build-cache prune thresholds.
+                 *
+                 * Capacity is read from `statfs` on the orchestrator's data mount (`/app/.neo-ai-data`), which lives on
+                 * the engine's data disk, paired with `GET /system/df` class breakdown (`images`, `volumes`, `buildCache`).
+                 * Only build cache is reclaimed autonomously; images and volumes stay record-only.
+                 * @type {Object}
+                 */
+                diskPressure: {
+                    /**
+                     * Sustained filesystem used-percentage at or above which `disk-pressure` is emitted.
+                     * @type {Number}
+                     */
+                    percent: leaf(90, 'NEO_DISK_PRESSURE_PERCENT', 'number'),
+                    /**
+                     * Minimum measured timestamp window (ms) disk usage must remain at or above `percent`.
+                     * Mirrors `memorySaturation.windowMs` against the bridge's 2-sample × 30s default span.
+                     * @type {Number}
+                     */
+                    windowMs: leaf(30000, 'NEO_DISK_PRESSURE_WINDOW_MS', 'number'),
+                    /**
+                     * Minimum reclaimable build-cache bytes required to route `disk-pressure` to
+                     * `prune-build-cache` instead of `record` (default 1 GiB).
+                     * @type {Number}
+                     */
+                    minReclaimableBuildCacheBytes: leaf(1024 * 1024 * 1024, 'NEO_DISK_PRESSURE_MIN_RECLAIMABLE_BUILD_CACHE_BYTES', 'positiveInt'),
+                    /**
+                     * Reserved warm-cache floor in bytes passed to `POST /build/prune` (`reserved-space` / `keep-storage`)
+                     * so the next image build still hits warm layers (default 2 GiB). Enforced at L0 (`> 0`).
+                     * @type {Number}
+                     */
+                    buildCacheWarmFloorBytes: leaf(2 * 1024 * 1024 * 1024, 'NEO_DISK_PRESSURE_BUILD_CACHE_WARM_FLOOR_BYTES', 'positiveInt')
+                },
                 authorityProfile: leaf('', 'NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE', 'string', {
                     requiredFor: [{
                         entrypoints: ['orchestrator-daemon'],
@@ -1621,8 +1654,8 @@ class ConfigBase extends ConfigProvider {
                     socketPath                  : leaf('/var/run/docker.sock', 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_SOCKET_PATH', 'string'),
                     composeProject              : leaf(null, 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_COMPOSE_PROJECT', 'string'),
                     allowedServices             : leaf(['chroma', 'kb-server', 'mc-server', 'local-model'], 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_ALLOWED_SERVICES', 'csv'),
-                    readOperations              : leaf(['inspect', 'logs', 'stats', 'events'], 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_READ_OPERATIONS', 'csv'),
-                    lifecycleOperations         : leaf(['restart', 'update-memory-limit'], 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_LIFECYCLE_OPERATIONS', 'csv'),
+                    readOperations              : leaf(['inspect', 'logs', 'stats', 'events', 'system-df'], 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_READ_OPERATIONS', 'csv'),
+                    lifecycleOperations         : leaf(['restart', 'update-memory-limit', 'prune-build-cache'], 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_LIFECYCLE_OPERATIONS', 'csv'),
                     timeoutMs                   : leaf(5000, 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_TIMEOUT_MS', 'number'),
                     responseMaxBytes            : leaf(1024 * 1024, 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_RESPONSE_MAX_BYTES', 'number'),
                     logTail                     : leaf(200, 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_LOG_TAIL', 'number'),
@@ -2295,6 +2328,7 @@ class ConfigBase extends ConfigProvider {
                     blockedSupervisedTasks     : leaf([], 'NEO_RECOVERY_ACTUATOR_BLOCKED_SUPERVISED_TASKS', 'csv'),
                     blockedComposeServices     : leaf([], 'NEO_RECOVERY_ACTUATOR_BLOCKED_COMPOSE_SERVICES', 'csv'),
                     blockedDeployTargets       : leaf([], 'NEO_RECOVERY_ACTUATOR_BLOCKED_DEPLOY_TARGETS', 'csv'),
+                    blockedEngines             : leaf([], 'NEO_RECOVERY_ACTUATOR_BLOCKED_ENGINES', 'csv'),
                     healAttemptsPath           : leaf(path.resolve(planeDataRootDefault, 'orchestrator-daemon/heal-attempts.json'), 'NEO_RECOVERY_ACTUATOR_HEAL_ATTEMPTS_PATH', 'string', {planeMember: true}),
                     recoveryRunStateDir        : leaf(path.resolve(planeDataRootDefault, 'orchestrator-daemon/recovery-runs'), 'NEO_RECOVERY_ACTUATOR_RUN_STATE_DIR', 'string', {planeMember: true}),
                     recoveryRunRetentionLimit  : leaf(100, 'NEO_RECOVERY_ACTUATOR_RUN_RETENTION_LIMIT', 'number'),

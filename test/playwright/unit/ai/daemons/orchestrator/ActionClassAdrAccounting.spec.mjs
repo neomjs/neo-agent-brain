@@ -20,7 +20,7 @@ const
     adrPath  = path.join(repoRoot, 'learn/agentos/decisions/0026-recovery-actuator.md'),
     adrText  = fs.readFileSync(adrPath, 'utf8'),
 
-    /** The dispositions an emitted action class may hold against ADR-0026 §2.4. */ // ticket-ref-ok: the ADR this spec's subject IS
+    /** The dispositions an emitted action class may hold against ADR-0026 [not-ticket-ref: decision-record authority] §2.4. */
     DISPOSITIONS = Object.freeze(['admitted', 'terminal', 'disclosed-unimplemented']),
 
     /**
@@ -35,6 +35,11 @@ const
      * claiming an accounting the ADR does not give.
      */
     ACTION_CLASS_ACCOUNTING = Object.freeze({
+        'prune-build-cache': {
+            disposition: 'admitted',
+            anchor     : 'prune-build-cache',
+            note       : 'Admitted for the Docker engine target only (§2.4 matrix + §2.9 + AC-14).'
+        },
         'raise-ceiling': {
             disposition: 'admitted',
             anchor     : 'raise-ceiling',

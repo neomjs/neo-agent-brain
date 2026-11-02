@@ -2339,8 +2339,8 @@ test.describe('cpu saturation names its subject', () => {
  */
 test.describe('ContainerHealthDiagnosisService — CPU quota and throttling', () => {
     const
-        ONE_CPU   = {...runningInspect(), HostConfig: {NanoCpus: 1e9}},
-        FOUR_CPU  = {...runningInspect(), HostConfig: {NanoCpus: 4e9}},
+        ONE_CPU  = {...runningInspect(), HostConfig: {NanoCpus: 1e9}},
+        FOUR_CPU = {...runningInspect(), HostConfig: {NanoCpus: 4e9}},
         // the bridge's proof: inspect and stats resolved to one container, which every sample carries
         PROVED    = {runtimeContainerId: 'c1'},
         throttled = (from, to, {cpuPercent = 79, containerId = 'c1'} = {}) => [
@@ -2457,5 +2457,118 @@ test.describe('ContainerHealthDiagnosisService — CPU quota and throttling', ()
 
         expect(unproved.facts.find(item => item.type === CONTAINER_HEALTH_FACT_TYPES.resourceSaturation)?.details, 'CPU keeps the per-core reading')
             .toMatchObject({quotaCpus: null, minPercent: 150})
+    });
+});
+
+test.describe('ContainerHealthDiagnosisService — plane disk pressure (#1430)', () => {
+    const GIB = 1024 ** 3;
+
+    function diskSample({usedPercent = 90, reclaimableBuildCacheBytes = 10 * GIB, observedAtMs = OBSERVED_AT} = {}) {
+        const totalBytes = 60 * GIB,
+              usedBytes  = Math.round((usedPercent / 100) * totalBytes),
+              freeBytes  = totalBytes - usedBytes;
+
+        return {
+            observedAtMs,
+            statfs: {
+                mountPath     : '/data',
+                totalBytes,
+                usedBytes,
+                freeBytes,
+                availableBytes: freeBytes,
+                usedPercent
+            },
+            df: {
+                layersSizeBytes: 16 * GIB,
+                images         : {totalBytes: 16 * GIB, reclaimableBytes: 4 * GIB, count: 5, activeCount: 4},
+                containers     : {totalBytes: 256 * 1024 * 1024, count: 4, runningCount: 4},
+                volumes        : {totalBytes: 24 * GIB, reclaimableBytes: 0, count: 3, activeCount: 3},
+                buildCache     : {
+                    totalBytes      : reclaimableBuildCacheBytes + 2 * GIB,
+                    inUseBytes      : 2 * GIB,
+                    reclaimableBytes: reclaimableBuildCacheBytes,
+                    entryCount      : 12,
+                    inUseCount      : 2
+                }
+            }
+        };
+    }
+
+    test('sustained disk pressure with reclaimable build cache >= floor emits prune-build-cache', () => {
+        const service = createService(),
+              samples = [
+                  diskSample({usedPercent: 91, reclaimableBuildCacheBytes: 9 * GIB, observedAtMs: OBSERVED_AT - 60_000}),
+                  diskSample({usedPercent: 92, reclaimableBuildCacheBytes: 9 * GIB, observedAtMs: OBSERVED_AT})
+              ],
+              decision = service.diagnoseEngineDisk({
+                  targetId   : 'docker-engine',
+                  diskSample : samples.at(-1),
+                  diskSamples: samples,
+                  observedAt : OBSERVED_AT
+              });
+
+        expect(decision.status).toBe('diagnosed');
+        expect(decision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.pruneBuildCache);
+        expect(decision.targetIdentity).toEqual({kind: 'engine', id: 'docker-engine'});
+        expect(decision.diagnosis.recoveryClass).toBe('exhaustion');
+        expect(decision.diagnosis.details).toMatchObject({
+            classificationReason         : 'engine-disk-pressure-build-cache-reclaimable',
+            minReclaimableBuildCacheBytes: 1 * GIB,
+            reclaimableBuildCacheBytes   : 9 * GIB
+        });
+        expect(decision.diagnosis.details).not.toHaveProperty('keepStorageBytes');
+        expect(decision.facts).toHaveLength(1);
+        expect(decision.facts[0].type).toBe(CONTAINER_HEALTH_FACT_TYPES.diskPressure);
+        expect(decision.facts[0].authoritative).toBe(true);
+    });
+
+    test('sustained disk pressure without reclaimable build cache emits record-only, naming images and volumes', () => {
+        const service = createService(),
+              samples = [
+                  diskSample({usedPercent: 91, reclaimableBuildCacheBytes: 512 * 1024 * 1024, observedAtMs: OBSERVED_AT - 60_000}),
+                  diskSample({usedPercent: 92, reclaimableBuildCacheBytes: 512 * 1024 * 1024, observedAtMs: OBSERVED_AT})
+              ],
+              decision = service.diagnoseEngineDisk({
+                  targetId   : 'docker-engine',
+                  diskSample : samples.at(-1),
+                  diskSamples: samples,
+                  observedAt : OBSERVED_AT
+              });
+
+        expect(decision.status).toBe('diagnosed');
+        expect(decision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.record);
+        expect(decision.diagnosis.recoveryClass).toBe('exhaustion');
+        expect(decision.diagnosis.details).toMatchObject({
+            classificationReason: 'engine-disk-pressure-no-reclaimable-build-cache',
+            images              : {totalBytes: 16 * GIB, reclaimableBytes: 4 * GIB, count: 5, activeCount: 4},
+            volumes             : {totalBytes: 24 * GIB, reclaimableBytes: 0, count: 3, activeCount: 3}
+        });
+        expect(decision.facts[0].authoritative).toBe(true);
+    });
+
+    test('transient or sub-threshold disk usage remains healthy', () => {
+        const service = createService();
+
+        const transient = service.diagnoseEngineDisk({
+            targetId   : 'docker-engine',
+            diskSamples: [
+                diskSample({usedPercent: 92, observedAtMs: OBSERVED_AT - 15_000}),
+                diskSample({usedPercent: 92, observedAtMs: OBSERVED_AT})
+            ],
+            observedAt: OBSERVED_AT
+        });
+        expect(transient.status).toBe('healthy');
+        expect(transient.facts).toEqual([]);
+
+        const belowThreshold = service.diagnoseEngineDisk({
+            targetId   : 'docker-engine',
+            diskSamples: [
+                diskSample({usedPercent: 84, observedAtMs: OBSERVED_AT - 60_000}),
+                diskSample({usedPercent: 92, observedAtMs: OBSERVED_AT})
+            ],
+            observedAt: OBSERVED_AT
+        });
+        expect(belowThreshold.status).toBe('healthy');
+        expect(belowThreshold.facts).toEqual([]);
     });
 });
