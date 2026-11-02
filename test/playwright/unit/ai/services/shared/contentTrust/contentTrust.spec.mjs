@@ -24,6 +24,7 @@ test.describe('Neo.ai.services.shared.contentTrust.authorTrustClassifier', () =>
         expect(classifyAuthorTrust('@neo-opus-ada')).toBe(TRUST_TIERS.PEER_TRUSTED);
         expect(classifyAuthorTrust('neo-opus-ada')).toBe(TRUST_TIERS.PEER_TRUSTED);
         expect(classifyAuthorTrust('Neo-GPT-Euclid')).toBe(TRUST_TIERS.PEER_TRUSTED);
+        expect(classifyAuthorTrust('@neo-gemini-maryam')).toBe(TRUST_TIERS.PEER_TRUSTED);
         expect(classifyAuthorTrust('tobiu')).toBe(TRUST_TIERS.OWNER)
     });
 
@@ -45,8 +46,8 @@ test.describe('Neo.ai.services.shared.contentTrust.authorTrustClassifier', () =>
     });
 
     test('authorAssociation (OWNER, MEMBER, COLLABORATOR) classifies non-rostered logins as REPO_TRUSTED while preserving EXTERNAL for untrusted associations', () => {
-        expect(classifyAuthorTrust('neo-gemini-maryam', {authorAssociation: 'MEMBER'})).toBe(TRUST_TIERS.REPO_TRUSTED);
-        expect(classifyAuthorTrust('@neo-gemini-maryam', {authorAssociation: 'member'})).toBe(TRUST_TIERS.REPO_TRUSTED);
+        expect(classifyAuthorTrust('non-rostered-org-member', {authorAssociation: 'MEMBER'})).toBe(TRUST_TIERS.REPO_TRUSTED);
+        expect(classifyAuthorTrust('@non-rostered-org-member', {authorAssociation: 'member'})).toBe(TRUST_TIERS.REPO_TRUSTED);
         expect(classifyAuthorTrust('org-owner-seat', {authorAssociation: 'OWNER'})).toBe(TRUST_TIERS.REPO_TRUSTED);
         expect(classifyAuthorTrust('repo-collab-seat', {authorAssociation: 'COLLABORATOR'})).toBe(TRUST_TIERS.REPO_TRUSTED);
 
@@ -57,7 +58,8 @@ test.describe('Neo.ai.services.shared.contentTrust.authorTrustClassifier', () =>
 
         // Roster tier still takes precedence over authorAssociation.
         expect(classifyAuthorTrust('tobiu', {authorAssociation: 'MEMBER'})).toBe(TRUST_TIERS.OWNER);
-        expect(classifyAuthorTrust('neo-opus-ada', {authorAssociation: 'MEMBER'})).toBe(TRUST_TIERS.PEER_TRUSTED)
+        expect(classifyAuthorTrust('neo-opus-ada', {authorAssociation: 'MEMBER'})).toBe(TRUST_TIERS.PEER_TRUSTED);
+        expect(classifyAuthorTrust('neo-gemini-maryam', {authorAssociation: 'MEMBER'})).toBe(TRUST_TIERS.PEER_TRUSTED)
     });
 
     test('an unknown login is EXTERNAL — never inferred up from being plausible', () => {

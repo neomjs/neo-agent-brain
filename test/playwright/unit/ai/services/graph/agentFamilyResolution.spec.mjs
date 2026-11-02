@@ -118,7 +118,7 @@ test.describe('ai/services/graph/agentFamilyResolution — hydration-index famil
         // Pin today's exact fallback population so silent growth (or the retirement moment)
         // surfaces as a conscious spec update, never an invisible behavior change.
         expect(postEpoch.map(identity => identity.id)).toEqual([
-            '@neo-gpt-emmy', '@neo-gpt-sophie', '@neo-kimi-phoebe', '@neo-kimi-iris',
+            '@neo-gemini-maryam', '@neo-gpt-emmy', '@neo-gpt-sophie', '@neo-kimi-phoebe', '@neo-kimi-iris',
             // Provisioned 2026-08-22 ahead of first boot. Its `modelFamily` is 'unknown' rather than
             // a vendor, so this arm additionally witnesses that the flat-field fallback carries an
             // unresolved family unchanged — it must never resolve to a guessed lab.
@@ -214,10 +214,11 @@ test.describe('ai/services/graph/agentFamilyResolution — reviewer-side budget 
         // still pass against a registry that resolved nobody. This one drives the real one.
         const live = getCoreSwarmAgentFamilies();
 
-        expect(resolveReviewerFamily(review('neo-opus-grace'), live).family).toBe('claude');
-        expect(resolveReviewerFamily(review('neo-fable-clio'), live).family, 'fable is claude').toBe('claude');
-        expect(resolveReviewerFamily(review('neo-gpt-emmy'),   live).family).toBe('gpt');
-        expect(resolveReviewerFamily(review('neo-kimi-phoebe'),live).family).toBe('kimi');
+        expect(resolveReviewerFamily(review('neo-opus-grace'),   live).family).toBe('claude');
+        expect(resolveReviewerFamily(review('neo-fable-clio'),   live).family, 'fable is claude').toBe('claude');
+        expect(resolveReviewerFamily(review('neo-gemini-maryam'),live).family).toBe('gemini');
+        expect(resolveReviewerFamily(review('neo-gpt-emmy'),     live).family).toBe('gpt');
+        expect(resolveReviewerFamily(review('neo-kimi-phoebe'),  live).family).toBe('kimi');
     });
 });
 
@@ -319,6 +320,7 @@ test.describe('ai/services/graph/agentFamilyResolution — own-entry authority',
         }
 
         expect(parseSelfIdLogin('Authored by Sophie (probe)')).toBe('neo-gpt-sophie');
+        expect(parseSelfIdLogin('Authored by Maryam (probe)')).toBe('neo-gemini-maryam');
     });
 
     test('explicit own login and family values keep their exact identity', () => {

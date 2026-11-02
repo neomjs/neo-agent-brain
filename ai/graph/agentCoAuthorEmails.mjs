@@ -48,6 +48,7 @@ const EMAIL_BY_LOGIN = Object.freeze({
     '@neo-fable-mnemosyne': 'neo-fable@neomjs.com',          // 92
     '@neo-fable-clio'     : 'neo-fable-clio@neomjs.com',     // 64
     '@neo-gemini-julia'   : 'neo-gemini-3-1-pro@neomjs.com', // 288
+    '@neo-gemini-maryam'  : 'neo-gemini-maryam@neomjs.com',  // Verified primary, operator-approved 2026-10-17
     '@neo-preview'        : 'neo-preview@neomjs.com'         // 0 — provisioned ahead of first boot; satisfies the sunset form
 });
 
