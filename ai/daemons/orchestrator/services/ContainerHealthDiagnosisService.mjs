@@ -163,8 +163,7 @@ export const DEFAULT_CONTAINER_HEALTH_DIAGNOSIS_CONFIG = Object.freeze({
     // Plane-wide Docker / data-mount disk-pressure thresholds and build-cache hygiene bounds.
     diskPressurePercent          : 90,
     diskPressureWindowMs         : 30000,
-    minReclaimableBuildCacheBytes: 1024 * 1024 * 1024,
-    buildCacheWarmFloorBytes     : 2 * 1024 * 1024 * 1024
+    minReclaimableBuildCacheBytes: 1024 * 1024 * 1024
 });
 
 const RUNNING_STATES = new Set(['created', 'restarting', 'running', 'paused']);
@@ -448,8 +447,7 @@ export class ContainerHealthDiagnosisService extends Base {
      *
      * Evaluated over a sustained window of `{statfs, df}` samples so a brief burst cannot trigger a
      * prune. When `statfs.usedPercent >= diskPressurePercent` holds across the measured window:
-     * - Reclaimable build cache at or above `minReclaimableBuildCacheBytes` emits `prune-build-cache`
-     *   carrying `keepStorageBytes: buildCacheWarmFloorBytes` so the active warm floor is preserved.
+     * - Reclaimable build cache at or above `minReclaimableBuildCacheBytes` emits `prune-build-cache`.
      * - Pressure without reclaimable build cache emits `record` naming `images` and `volumes`
      *   without acting on them — images and volumes are never pruned or deleted automatically.
      *
@@ -553,7 +551,6 @@ export class ContainerHealthDiagnosisService extends Base {
                     meanPercent                  : diskWindow.mean,
                     reclaimableBuildCacheBytes,
                     minReclaimableBuildCacheBytes: config.minReclaimableBuildCacheBytes,
-                    buildCacheWarmFloorBytes     : config.buildCacheWarmFloorBytes,
                     reclaimableBuildCacheAboveFloor,
                     statfs,
                     images,
@@ -579,7 +576,6 @@ export class ContainerHealthDiagnosisService extends Base {
                 minResourceSamples           : config.minResourceSamples,
                 factCount                    : facts.length,
                 authoritativeFactCount       : 1,
-                keepStorageBytes             : config.buildCacheWarmFloorBytes,
                 minReclaimableBuildCacheBytes: config.minReclaimableBuildCacheBytes,
                 reclaimableBuildCacheBytes,
                 statfs,

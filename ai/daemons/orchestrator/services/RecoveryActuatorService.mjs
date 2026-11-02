@@ -316,7 +316,6 @@ export class RecoveryActuatorService extends Base {
      * @param {String|null} [options.reason=null] Operator/controller reason.
      * @param {Function|null} [options.isEffectStillAdmitted=null] Last-boundary effect predicate.
      * @param {String|null} [options.expectedContainerId=null] Diagnosed container incarnation.
-     * @param {Number|null} [options.keepStorageBytes=null] Warm-floor bytes for `prune-build-cache`.
      * @returns {Promise<Object>} Action outcome descriptor.
      */
     async apply(serviceKey, action, {
@@ -336,8 +335,7 @@ export class RecoveryActuatorService extends Base {
         // arbitrary group of leaves and have it applied as one. `raise-ceiling` may omit values to
         // invoke the knob's registry-owned automatic policy; `reconfigure` remains caller-authored.
         knob = null,
-        knobValues = null,
-        keepStorageBytes = null
+        knobValues = null
     } = {}) {
         if (typeof serviceKey !== 'string' || serviceKey.length === 0) {
             throw new TypeError('RecoveryActuatorService.apply: serviceKey is required');
@@ -552,7 +550,6 @@ export class RecoveryActuatorService extends Base {
                 action,
                 knob,
                 knobValues,
-                keepStorageBytes,
                 reason,
                 isAuthorityHeld,
                 isEffectStillAdmitted,
@@ -1192,7 +1189,7 @@ export class RecoveryActuatorService extends Base {
      * @param {Object} options
      * @returns {Promise<Object>}
      */
-    async executeTargetAction({target, action, reason, knob, knobValues, keepStorageBytes = null, isAuthorityHeld = null, isEffectStillAdmitted = null, expectedContainerId = null, onBeforeRestartDispatch = null}) {
+    async executeTargetAction({target, action, reason, knob, knobValues, isAuthorityHeld = null, isEffectStillAdmitted = null, expectedContainerId = null, onBeforeRestartDispatch = null}) {
         // The last COMMON point before every effect kind dispatches — common in syntax, which is not
         // the same as last-owned in time. It fences an action whose effect begins immediately
         // (`warm-provider` awaits its repair as its first statement), and it is NOT sufficient for an
@@ -1225,7 +1222,7 @@ export class RecoveryActuatorService extends Base {
         }
 
         if (action === 'prune-build-cache') {
-            return this.pruneEngineBuildCache({target, keepStorageBytes, reason, isAuthorityHeld});
+            return this.pruneEngineBuildCache({target, reason, isAuthorityHeld});
         }
 
         if (target.kind === 'compose-service') {
@@ -1248,7 +1245,7 @@ export class RecoveryActuatorService extends Base {
 
     /**
      * @summary Prunes the Docker engine's inactive build cache above a mandatory warm floor
-     * (`keepStorageBytes` / `reservedSpaceBytes`) through the L0 lifecycle-write envelope
+     * (`keepStorageBytes`) through the L0 lifecycle-write envelope
      * (ADR-0026 [not-ticket-ref: decision-record authority] §2.4/§2.9).
      *
      * When the prune frees zero bytes and `statfs` free bytes do not increase, `freedNothing: true`
@@ -1257,24 +1254,21 @@ export class RecoveryActuatorService extends Base {
      *
      * @param {Object} options
      * @param {Object} options.target Resolved engine target.
-     * @param {Number|null} [options.keepStorageBytes=null] Warm floor in bytes.
      * @param {String|null} [options.reason=null] Recovery reason.
      * @param {Function|null} [options.isAuthorityHeld=null] Live authority oracle.
      * @returns {Promise<Object>}
      */
-    async pruneEngineBuildCache({target, keepStorageBytes = null, reason = null, isAuthorityHeld = null}) {
+    async pruneEngineBuildCache({target, reason = null, isAuthorityHeld = null}) {
         this.assertAuthorityHeld({isAuthorityHeld, action: 'prune-build-cache', target});
 
         if (!this.deploymentRuntimeAccessService?.applyLifecycle) {
             throw new Error('Deployment runtime access service is unavailable');
         }
 
-        const resolvedKeepStorageBytes = keepStorageBytes ?? AiConfig.orchestrator.diskPressure.buildCacheWarmFloorBytes;
-
         const result = await this.deploymentRuntimeAccessService.applyLifecycle({
             serviceKey      : target.id,
             operation       : 'prune-build-cache',
-            keepStorageBytes: resolvedKeepStorageBytes,
+            keepStorageBytes: AiConfig.orchestrator.diskPressure.buildCacheWarmFloorBytes,
             reason          : reason || `recovery-actuator:${target.serviceKey}`,
             ...(typeof isAuthorityHeld === 'function' ? {isAuthorityHeld} : {})
         });

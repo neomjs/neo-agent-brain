@@ -6,6 +6,7 @@ import path           from 'node:path';
 import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
+import AiConfig       from '../../../../../../../ai/config.template.mjs';
 import {
     DeploymentRuntimeAccessService,
     DEPLOYMENT_RUNTIME_SELF_SERVICE_KEY,
@@ -1213,12 +1214,16 @@ test.describe('engine disk observation & bounded build-cache prune (#1430)', () 
     }
 
     test('readObserve system-df normalizes /df and statfs into the engine-scoped disk breakdown', async () => {
-        const calls   = [];
-        const service = Neo.create(DeploymentRuntimeAccessService, {
+        const calls       = [],
+              statfsPaths = [];
+        const service     = Neo.create(DeploymentRuntimeAccessService, {
             runtimeAccessConfig: ENGINE_CONFIG,
             nowFn              : () => 1710000000000,
-            statfsFn           : async () => makeStatfs({totalBytes: 60 * GIB, freeBytes: 6 * GIB}),
-            dockerRequestFn    : async request => {
+            statfsFn           : async mountPath => {
+                statfsPaths.push(mountPath);
+                return makeStatfs({totalBytes: 60 * GIB, freeBytes: 6 * GIB});
+            },
+            dockerRequestFn: async request => {
                 calls.push(request);
                 if (request.path === '/system/df') {
                     return {
@@ -1251,6 +1256,7 @@ test.describe('engine disk observation & bounded build-cache prune (#1430)', () 
         const result = await service.readObserve({serviceKey: 'docker-engine', operation: 'system-df'});
 
         expect(result.ok).toBe(true);
+        expect(statfsPaths).toEqual([AiConfig.plane.dataRoot]);
         expect(result.proof).toMatchObject({
             capabilityEnvelope: 'read-observe',
             operation         : 'system-df',
@@ -1258,6 +1264,7 @@ test.describe('engine disk observation & bounded build-cache prune (#1430)', () 
             targetIdentity    : {kind: 'engine', id: 'docker-engine'}
         });
         expect(result.data.statfs).toMatchObject({
+            path       : AiConfig.plane.dataRoot,
             totalBytes : 60 * GIB,
             freeBytes  : 6 * GIB,
             usedBytes  : 54 * GIB,
@@ -1282,6 +1289,70 @@ test.describe('engine disk observation & bounded build-cache prune (#1430)', () 
                 totalBytes      : 14 * GIB,
                 reclaimableBytes: 12 * GIB
             }
+        });
+    });
+
+    test('readObserve system-df treats API-1.53 BuildCacheUsage items with Shared: true as non-reclaimable (0 bytes)', async () => {
+        const sharedItemSizes = [
+            146088668, 146088668, 146088668, 146088668, 146088668,
+            146088668, 146088668, 146088668, 146088668, 146088668,
+            146088668, 146088668, 146088668, 146088668, 146088668,
+            146088668, 146088668, 146088668, 146088668, 146088668,
+            146088534
+        ];
+        const totalSize = sharedItemSizes.reduce((sum, size) => sum + size, 0);
+        expect(sharedItemSizes).toHaveLength(21);
+        expect(totalSize).toBe(3067861894);
+
+        const service = Neo.create(DeploymentRuntimeAccessService, {
+            runtimeAccessConfig: ENGINE_CONFIG,
+            nowFn              : () => 1710000000000,
+            statfsFn           : async () => makeStatfs({totalBytes: 60 * GIB, freeBytes: 4 * GIB}),
+            dockerRequestFn    : async request => {
+                if (request.path === '/system/df') {
+                    return {
+                        statusCode: 200,
+                        headers   : {},
+                        body      : JSON.stringify({
+                            ImageUsage: {
+                                TotalCount : 6,
+                                ActiveCount: 4,
+                                TotalSize  : 18 * GIB,
+                                Reclaimable: 4 * GIB
+                            },
+                            VolumeUsage: {
+                                TotalCount : 3,
+                                ActiveCount: 3,
+                                TotalSize  : 22 * GIB,
+                                Reclaimable: 0
+                            },
+                            // Docker 29 / API 1.53 shape: Reclaimable and ActiveCount omitted,
+                            // all 21 items InUse: false, Shared: true.
+                            BuildCacheUsage: {
+                                TotalCount: 21,
+                                TotalSize : 3067861894,
+                                Items     : sharedItemSizes.map((Size, index) => ({
+                                    ID    : `cache-shared-${index + 1}`,
+                                    Size,
+                                    InUse : false,
+                                    Shared: true
+                                }))
+                            }
+                        })
+                    };
+                }
+                throw new Error(`Unexpected request: ${request.method} ${request.path}`);
+            }
+        });
+
+        const result = await service.readObserve({serviceKey: 'docker-engine', operation: 'system-df'});
+
+        expect(result.ok).toBe(true);
+        expect(result.data.df.buildCache).toEqual({
+            totalCount      : 21,
+            activeCount     : 0,
+            totalBytes      : 3067861894,
+            reclaimableBytes: 0
         });
     });
 
@@ -1383,10 +1454,10 @@ test.describe('engine disk observation & bounded build-cache prune (#1430)', () 
                 reason          : 'first-prune'
             }),
             service.applyLifecycle({
-                serviceKey        : 'docker-engine',
-                operation         : 'prune-build-cache',
-                reservedSpaceBytes: 2 * GIB,
-                reason            : 'second-prune'
+                serviceKey      : 'docker-engine',
+                operation       : 'prune-build-cache',
+                keepStorageBytes: 2 * GIB,
+                reason          : 'second-prune'
             })
         ]);
 

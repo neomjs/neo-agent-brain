@@ -491,8 +491,8 @@ export class DeploymentStateBridgeService extends Base {
     }
 
     /**
-     * @summary Collects the plane-level Docker engine disk snapshot (`statfs` + `docker system df -v`)
-     * and diagnoses sustained disk pressure against the shared `/data` mount and Docker build cache.
+     * @summary Collects the plane-level Docker engine disk snapshot (`statfs` + `GET /system/df`)
+     * and diagnoses sustained disk pressure against `AiConfig.plane.dataRoot` and Docker build cache.
      *
      * @param {Object} [options]
      * @param {Number} [options.observedAt=this.now()] Epoch ms.
@@ -504,8 +504,7 @@ export class DeploymentStateBridgeService extends Base {
         if (
             typeof this.diagnosisService?.diagnoseEngineDisk !== 'function' ||
             typeof this.runtimeAccessService?.readObserve !== 'function' ||
-            (typeof this.runtimeAccessService?.readEngineSystemDf !== 'function' &&
-             this.runtimeAccessService?.supportsEngineDisk !== true) ||
+            typeof this.runtimeAccessService?.readEngineSystemDf !== 'function' ||
             !Array.isArray(readOperations) ||
             !readOperations.includes('system-df')
         ) {

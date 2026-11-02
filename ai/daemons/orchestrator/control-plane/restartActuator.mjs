@@ -1,6 +1,6 @@
 /**
  * @module ai/daemons/orchestrator/control-plane/restartActuator
- * @summary The daemon-core lifecycle-write restart-actuator endpoint.
+ * @summary The daemon-core lifecycle-write restart-actuator endpoint (ticket-ref-ok: #14760 owning-leaf anchor, #14477 parent-epic).
  *
  * The lifecycle-write half of the R3 boundary. Its **placement is its authority**: living under `control-plane/`
  * (lifecycle-write) rather than `diagnostics/` (read-observe) IS the structural R3 seam — one folder per
@@ -53,46 +53,5 @@ export async function restartRuntimeTarget({runtimeAccess, serviceKey, reason = 
         return {ok: true, result};
     } catch (error) {
         return {ok: false, error: `control-plane: lifecycle-write envelope refused the restart — ${error.message}`};
-    }
-}
-
-/**
- * @summary Control-plane engine build-cache prune routed through the L0 lifecycle-write envelope.
- *
- * @param {Object} options
- * @param {Object} options.runtimeAccess The injected `DeploymentRuntimeAccessService` instance.
- * @param {Number} options.keepStorageBytes Positive integer warm-cache floor in bytes (`> 0`).
- * @param {String} [options.serviceKey='docker-engine'] Canonical engine target id.
- * @param {String} [options.reason='control-plane prune-build-cache'] Audit reason forwarded to the envelope.
- * @param {String} [options.dataPath] Optional filesystem mount path override for `statfs`.
- * @returns {Promise<Object>} `{ok:true, result}` on a delegated prune; `{ok:false, error}` on a refusal.
- */
-export async function pruneRuntimeBuildCache({
-    runtimeAccess,
-    keepStorageBytes,
-    serviceKey = 'docker-engine',
-    reason = 'control-plane prune-build-cache',
-    dataPath
-} = {}) {
-    if (!runtimeAccess || typeof runtimeAccess.applyLifecycle !== 'function') {
-        return {ok: false, error: 'control-plane: no lifecycle-write runtime access wired — refusing prune-build-cache'};
-    }
-
-    try {
-        const result = await runtimeAccess.applyLifecycle({
-            serviceKey,
-            operation: 'prune-build-cache',
-            keepStorageBytes,
-            reason,
-            dataPath
-        });
-
-        if (result && typeof result === 'object' && result.ok === false) {
-            return {ok: false, error: result.error ?? 'control-plane: lifecycle-write envelope refused prune-build-cache', result};
-        }
-
-        return {ok: true, result};
-    } catch (error) {
-        return {ok: false, error: `control-plane: lifecycle-write envelope refused prune-build-cache — ${error.message}`};
     }
 }

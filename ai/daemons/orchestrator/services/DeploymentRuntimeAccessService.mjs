@@ -1,6 +1,7 @@
 import fs               from 'fs';
 import http             from 'http';
 import Base             from 'neo.mjs/src/core/Base.mjs';
+import AiConfig         from '../../../config.mjs';
 import {RECOVERY_KNOBS} from '../../../services/memory-core/helpers/recoveryKnobRegistry.mjs';
 
 export const DEPLOYMENT_RUNTIME_MECHANISMS = Object.freeze([
@@ -220,13 +221,7 @@ export class DeploymentRuntimeAccessService extends Base {
          * @protected
          * @reactive
          */
-        statfsFn_: null,
-        /**
-         * @member {String} dataPath_='/app/.neo-ai-data'
-         * @protected
-         * @reactive
-         */
-        dataPath_: '/app/.neo-ai-data'
+        statfsFn_: null
     }
 
     /**
@@ -305,16 +300,15 @@ export class DeploymentRuntimeAccessService extends Base {
      * @param {Number} [options.tail] Log tail count for `logs`.
      * @param {String|Number} [options.since] Lower bound for `logs` or `events`.
      * @param {String|Number} [options.until] Upper bound for `logs` or `events`.
-     * @param {String} [options.dataPath] Optional filesystem mount path override for `system-df`.
      * @returns {Promise<Object>} Observation payload plus structured proof metadata.
      */
-    async readObserve({serviceKey, operation = 'inspect', tail, since, until, dataPath} = {}) {
+    async readObserve({serviceKey, operation = 'inspect', tail, since, until} = {}) {
         this.assertEnabled();
         this.assertMechanismSupported();
         this.assertOperationAllowed('read-observe', operation);
 
         if (operation === 'system-df') {
-            return this.readEngineSystemDf({serviceKey, dataPath});
+            return this.readEngineSystemDf({serviceKey});
         }
 
         const target = await this.resolveServiceTarget(serviceKey);
@@ -348,9 +342,6 @@ export class DeploymentRuntimeAccessService extends Base {
      * @param {Number} [options.restartTimeoutSeconds] Docker restart timeout.
      * @param {Number} [options.memoryLimitBytes] Target memory ceiling for `update-memory-limit`.
      * @param {Number} [options.keepStorageBytes] Positive integer warm-cache floor in bytes for `prune-build-cache`.
-     * @param {Number} [options.reservedSpaceBytes] Alias for `keepStorageBytes`.
-     * @param {Number} [options.warmFloorBytes] Alias for `keepStorageBytes`.
-     * @param {String} [options.dataPath] Optional filesystem mount path override for `statfs` before/after receipt.
      * @param {Function|null} [options.isAuthorityHeld=null] Current-authority oracle, re-asked AFTER
      * target resolution and immediately before the mutating call. Optional: a caller that omits it
      * keeps today's behaviour exactly.
@@ -359,7 +350,7 @@ export class DeploymentRuntimeAccessService extends Base {
      * @param {Function|null} [options.onBeforeRestartDispatch=null] Durable restart-interlock writer.
      * @returns {Promise<Object>} Lifecycle result plus structured proof metadata.
      */
-    async applyLifecycle({serviceKey, operation = 'restart', reason = 'manual', restartTimeoutSeconds, memoryLimitBytes, keepStorageBytes, reservedSpaceBytes, warmFloorBytes, dataPath, isAuthorityHeld = null, isEffectStillAdmitted = null, expectedContainerId = null, onBeforeRestartDispatch = null} = {}) {
+    async applyLifecycle({serviceKey, operation = 'restart', reason = 'manual', restartTimeoutSeconds, memoryLimitBytes, keepStorageBytes, isAuthorityHeld = null, isEffectStillAdmitted = null, expectedContainerId = null, onBeforeRestartDispatch = null} = {}) {
         this.assertEnabled();
         this.assertMechanismSupported();
         this.assertOperationAllowed('lifecycle-write', operation);
@@ -368,8 +359,7 @@ export class DeploymentRuntimeAccessService extends Base {
             return this.pruneEngineBuildCache({
                 serviceKey,
                 reason,
-                keepStorageBytes: keepStorageBytes ?? reservedSpaceBytes ?? warmFloorBytes,
-                dataPath,
+                keepStorageBytes,
                 isAuthorityHeld,
                 isEffectStillAdmitted
             });
@@ -1270,12 +1260,11 @@ export class DeploymentRuntimeAccessService extends Base {
      *
      * @param {Object} [options={}]
      * @param {String} [options.serviceKey='docker-engine'] Engine target id (`'docker-engine'`).
-     * @param {String} [options.dataPath] Optional filesystem mount path override.
      * @returns {Promise<Object>}
      */
-    async readEngineSystemDf({serviceKey, dataPath} = {}) {
+    async readEngineSystemDf({serviceKey} = {}) {
         const targetId = this.resolveEngineTargetId(serviceKey),
-              statfs   = await this.readDataMountStatfs(dataPath),
+              statfs   = await this.readDataMountStatfs(),
               response = await this.dockerRequest({
                   method: 'GET',
                   path  : '/system/df'
@@ -1307,7 +1296,6 @@ export class DeploymentRuntimeAccessService extends Base {
      * @param {String} [options.serviceKey='docker-engine'] Engine target id (`'docker-engine'`).
      * @param {String} [options.reason='manual'] Audit reason.
      * @param {Number} options.keepStorageBytes Positive integer warm-cache floor in bytes.
-     * @param {String} [options.dataPath] Optional filesystem mount path override for `statfs`.
      * @param {Function|null} [options.isAuthorityHeld=null] Current-authority oracle.
      * @param {Function|null} [options.isEffectStillAdmitted=null] Live effect-admission oracle.
      * @returns {Promise<Object>}
@@ -1316,7 +1304,6 @@ export class DeploymentRuntimeAccessService extends Base {
         serviceKey,
         reason = 'manual',
         keepStorageBytes,
-        dataPath,
         isAuthorityHeld = null,
         isEffectStillAdmitted = null
     } = {}) {
@@ -1326,7 +1313,7 @@ export class DeploymentRuntimeAccessService extends Base {
             throw createRuntimeAccessError({
                 Type   : TypeError,
                 reason : 'runtime-build-cache-prune-warm-floor-required',
-                message: `prune-build-cache requires a positive integer warm floor (keepStorageBytes / reservedSpaceBytes), received ${JSON.stringify(keepStorageBytes)}`,
+                message: `prune-build-cache requires a positive integer warm floor (keepStorageBytes), received ${JSON.stringify(keepStorageBytes)}`,
                 details: {
                     ...this.createEffectiveConfigSummary(),
                     serviceKey: targetId,
@@ -1353,7 +1340,7 @@ export class DeploymentRuntimeAccessService extends Base {
                 });
             }
 
-            const statfsBefore = await this.readDataMountStatfs(dataPath),
+            const statfsBefore = await this.readDataMountStatfs(),
                   encodedFloor = encodeURIComponent(String(keepStorageBytes)),
                   response     = await this.dockerRequest({
                       method: 'POST',
@@ -1364,7 +1351,7 @@ export class DeploymentRuntimeAccessService extends Base {
                       ? parsed.CachesDeleted.filter(id => typeof id === 'string')
                       : [],
                   spaceReclaimedBytes = Math.max(0, Number(parsed?.SpaceReclaimed ?? 0) || 0),
-                  statfsAfter         = await this.readDataMountStatfs(dataPath);
+                  statfsAfter         = await this.readDataMountStatfs();
 
             return {
                 ok  : true,
@@ -1374,7 +1361,6 @@ export class DeploymentRuntimeAccessService extends Base {
                     targetId,
                     reason,
                     keepStorageBytes,
-                    reservedSpaceBytes: keepStorageBytes,
                     cachesDeleted,
                     cachesDeletedCount: cachesDeleted.length,
                     spaceReclaimedBytes,
@@ -1445,13 +1431,10 @@ export class DeploymentRuntimeAccessService extends Base {
     /**
      * @summary Reads filesystem capacity for the orchestrator data mount via `statfs`.
      *
-     * @param {String} [dataPathOverride] Optional filesystem path override.
      * @returns {Promise<{path: String, totalBytes: Number, freeBytes: Number, availableBytes: Number, usedBytes: Number, usedPercent: Number}>}
      */
-    async readDataMountStatfs(dataPathOverride) {
-        const mountPath = typeof dataPathOverride === 'string' && dataPathOverride.trim().length > 0
-                  ? dataPathOverride.trim()
-                  : (this.configValues.dataPath || this.dataPath || '/app/.neo-ai-data'),
+    async readDataMountStatfs() {
+        const mountPath = AiConfig.plane.dataRoot,
               statfsFn  = this.statfsFn || fs.statfsSync;
 
         let raw;
@@ -1814,7 +1797,11 @@ function normalizeDockerSystemDf(parsed) {
             activeCount     : Math.max(0, Number(raw.BuildCacheUsage.ActiveCount ?? cacheList.filter(item => item?.InUse === true).length ?? 0) || 0),
             totalBytes      : Math.max(0, Number(raw.BuildCacheUsage.TotalSize ?? 0) || 0),
             reclaimableBytes: Math.max(0, Number(
-                raw.BuildCacheUsage.Reclaimable ?? cacheList.reduce((sum, item) => sum + (item?.InUse ? 0 : Math.max(0, Number(item?.Size) || 0)), 0)
+                raw.BuildCacheUsage.Reclaimable ?? cacheList.reduce((sum, item) => sum + (
+                    !item?.InUse && !item?.Shared
+                        ? Math.max(0, Number(item?.Size) || 0)
+                        : 0
+                ), 0)
             ) || 0)
         }
         : {
@@ -1822,9 +1809,9 @@ function normalizeDockerSystemDf(parsed) {
             activeCount     : cacheList.filter(item => item?.InUse === true).length,
             totalBytes      : cacheList.reduce((sum, item) => sum + Math.max(0, Number(item?.Size) || 0), 0),
             reclaimableBytes: cacheList.reduce((sum, item) => sum + (
-                item?.InUse
-                    ? 0
-                    : Math.max(0, Number(item?.Size) || 0)
+                !item?.InUse && !item?.Shared
+                    ? Math.max(0, Number(item?.Size) || 0)
+                    : 0
             ), 0)
         };
 

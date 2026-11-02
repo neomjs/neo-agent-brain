@@ -2395,9 +2395,8 @@ test.describe('Neo.ai.daemons.services.RecoveryActuatorService', () => {
 
             // Admitted prune-build-cache on docker-engine:
             const actioned = await service.apply('docker-engine', 'prune-build-cache', {
-                now             : 10_000,
-                keepStorageBytes: 2 * GIB,
-                targetIdentity  : {kind: 'engine', id: 'docker-engine'}
+                now           : 10_000,
+                targetIdentity: {kind: 'engine', id: 'docker-engine'}
             });
             expect(actioned.status).toBe('actioned');
             expect(actioned.buildCachePrune).toMatchObject({
@@ -2407,6 +2406,7 @@ test.describe('Neo.ai.daemons.services.RecoveryActuatorService', () => {
                 statfsAfter        : {freeBytes: 10 * GIB}
             });
             expect(runtimeCalls).toHaveLength(1);
+            expect(runtimeCalls[0].keepStorageBytes).toBe(2 * GIB);
         });
 
         test('a prune-build-cache that reclaims zero bytes transitions to recorded (prune-freed-nothing) so a non-cache disk fill cannot loop', async () => {
@@ -2439,9 +2439,8 @@ test.describe('Neo.ai.daemons.services.RecoveryActuatorService', () => {
             });
 
             const outcome = await service.apply('docker-engine', 'prune-build-cache', {
-                now             : 20_000,
-                keepStorageBytes: 2 * GIB,
-                targetIdentity  : {kind: 'engine', id: 'docker-engine'}
+                now           : 20_000,
+                targetIdentity: {kind: 'engine', id: 'docker-engine'}
             });
 
             expect(outcome).toMatchObject({
@@ -2450,6 +2449,7 @@ test.describe('Neo.ai.daemons.services.RecoveryActuatorService', () => {
                 alarmOnly : true
             });
             expect(runtimeCalls).toHaveLength(1);
+            expect(runtimeCalls[0].keepStorageBytes).toBe(2 * GIB);
         });
     });
 });

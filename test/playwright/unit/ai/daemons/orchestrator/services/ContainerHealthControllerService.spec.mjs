@@ -15,7 +15,8 @@ import {
     CONTAINER_HEALTH_ACTION_CLASSES,
     ContainerHealthDiagnosisService
 } from '../../../../../../../ai/daemons/orchestrator/services/ContainerHealthDiagnosisService.mjs';
-import {RecoveryActuatorService} from '../../../../../../../ai/daemons/orchestrator/services/RecoveryActuatorService.mjs';
+import {DeploymentRuntimeAccessService} from '../../../../../../../ai/daemons/orchestrator/services/DeploymentRuntimeAccessService.mjs';
+import {RecoveryActuatorService}        from '../../../../../../../ai/daemons/orchestrator/services/RecoveryActuatorService.mjs';
 import {
     appendHealEvent,
     HEAL_LEDGER_DIR_NAME,
@@ -1339,6 +1340,92 @@ test.describe('Neo.ai.daemons.services.ContainerHealthControllerService', () => 
                     volumes             : {totalBytes: 22 * GIB, reclaimableBytes: 0, count: 3, activeCount: 3}
                 }
             });
+        });
+
+        test('API-1.53 BuildCacheUsage with Shared: true items normalizes to reclaimableBytes: 0 and routes sustained disk pressure to record instead of prune-build-cache', async () => {
+            const {controller, runtimeCalls} = createStack();
+
+            const sharedItemSizes = [
+                146088668, 146088668, 146088668, 146088668, 146088668,
+                146088668, 146088668, 146088668, 146088668, 146088668,
+                146088668, 146088668, 146088668, 146088668, 146088668,
+                146088668, 146088668, 146088668, 146088668, 146088668,
+                146088534
+            ];
+
+            const runtimeAccess = Neo.create(DeploymentRuntimeAccessService, {
+                runtimeAccessConfig: {
+                    enabled            : true,
+                    mechanism          : 'docker-socket',
+                    socketPath         : '/var/run/docker.sock',
+                    composeProject     : 'neo',
+                    allowedServices    : ['chroma', 'kb-server', 'mc-server', 'local-model'],
+                    readOperations     : ['inspect', 'logs', 'stats', 'events', 'system-df'],
+                    lifecycleOperations: ['restart', 'update-memory-limit', 'prune-build-cache']
+                },
+                statfsFn: async () => ({
+                    bsize : 4096,
+                    blocks: Math.floor((60 * GIB) / 4096),
+                    bfree : Math.floor((4 * GIB) / 4096),
+                    bavail: Math.floor((4 * GIB) / 4096)
+                }),
+                dockerRequestFn: async request => ({
+                    statusCode: 200,
+                    headers   : {},
+                    body      : JSON.stringify({
+                        ImageUsage: {
+                            TotalCount : 6,
+                            ActiveCount: 4,
+                            TotalSize  : 18 * GIB,
+                            Reclaimable: 4 * GIB
+                        },
+                        VolumeUsage: {
+                            TotalCount : 3,
+                            ActiveCount: 3,
+                            TotalSize  : 22 * GIB,
+                            Reclaimable: 0
+                        },
+                        BuildCacheUsage: {
+                            TotalCount: 21,
+                            TotalSize : 3067861894,
+                            Items     : sharedItemSizes.map((Size, index) => ({
+                                ID    : `cache-shared-${index + 1}`,
+                                Size,
+                                InUse : false,
+                                Shared: true
+                            }))
+                        }
+                    })
+                })
+            });
+
+            const observed = await runtimeAccess.readObserve({
+                serviceKey: 'docker-engine',
+                operation : 'system-df'
+            });
+            expect(observed.data.df.buildCache.reclaimableBytes).toBe(0);
+
+            const decision = diagnoseEngineDisk([
+                {...observed.data, observedAtMs: OBSERVED_AT - 60_000},
+                {...observed.data, observedAtMs: OBSERVED_AT}
+            ]);
+
+            expect(decision.status).toBe('diagnosed');
+            expect(decision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.record);
+            expect(decision.diagnosis.details.classificationReason).toBe('engine-disk-pressure-no-reclaimable-build-cache');
+
+            const outcomes = await controller.consumeSnapshot({
+                snapshot: {
+                    services  : [],
+                    engineDisk: {diagnosis: decision}
+                }
+            });
+
+            expect(outcomes).toHaveLength(1);
+            expect(outcomes[0].status).toBe('recorded');
+            expect(outcomes[0].actuatorAction).toBeNull();
+            expect(outcomes[0].reasonCode).toBe('diagnosis-record');
+            expect(runtimeCalls).toEqual([]);
         });
     });
 });

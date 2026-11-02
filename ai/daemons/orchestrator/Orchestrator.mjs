@@ -546,7 +546,6 @@ export class Orchestrator extends Base {
 
         return ClassSystemUtil.beforeSetInstance(value, ContainerHealthDiagnosisService, {
             diagnosisConfig: {
-                buildCacheWarmFloorBytes     : diskPressure.buildCacheWarmFloorBytes,
                 diskPressurePercent          : diskPressure.percent,
                 diskPressureWindowMs         : diskPressure.windowMs,
                 minReclaimableBuildCacheBytes: diskPressure.minReclaimableBuildCacheBytes,

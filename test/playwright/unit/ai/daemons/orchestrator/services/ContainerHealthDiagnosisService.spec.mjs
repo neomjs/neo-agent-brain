@@ -2494,7 +2494,7 @@ test.describe('ContainerHealthDiagnosisService — plane disk pressure (#1430)',
         };
     }
 
-    test('sustained disk pressure with reclaimable build cache >= floor emits prune-build-cache with warm floor', () => {
+    test('sustained disk pressure with reclaimable build cache >= floor emits prune-build-cache', () => {
         const service = createService(),
               samples = [
                   diskSample({usedPercent: 91, reclaimableBuildCacheBytes: 9 * GIB, observedAtMs: OBSERVED_AT - 60_000}),
@@ -2513,10 +2513,10 @@ test.describe('ContainerHealthDiagnosisService — plane disk pressure (#1430)',
         expect(decision.diagnosis.recoveryClass).toBe('exhaustion');
         expect(decision.diagnosis.details).toMatchObject({
             classificationReason         : 'engine-disk-pressure-build-cache-reclaimable',
-            keepStorageBytes             : 2 * GIB,
             minReclaimableBuildCacheBytes: 1 * GIB,
             reclaimableBuildCacheBytes   : 9 * GIB
         });
+        expect(decision.diagnosis.details).not.toHaveProperty('keepStorageBytes');
         expect(decision.facts).toHaveLength(1);
         expect(decision.facts[0].type).toBe(CONTAINER_HEALTH_FACT_TYPES.diskPressure);
         expect(decision.facts[0].authoritative).toBe(true);

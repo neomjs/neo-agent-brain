@@ -326,9 +326,6 @@ export class ContainerHealthControllerService extends Base {
                 now,
                 reason,
                 ...(route.knob ? {knob: route.knob} : {}),
-                ...(route.actuatorAction === 'prune-build-cache' && Number.isFinite(diagnosis.details?.keepStorageBytes)
-                    ? {keepStorageBytes: diagnosis.details.keepStorageBytes}
-                    : {}),
                 // Carried INTO the actuator so it is revalidated after its own awaited preparation,
                 // immediately before the privileged effect. A check made out here is separated from
                 // the effect by `readHealAttempts`, which is I/O — and an authority check with an
