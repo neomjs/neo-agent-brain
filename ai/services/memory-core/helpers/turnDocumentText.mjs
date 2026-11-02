@@ -64,6 +64,34 @@ export function resolveTurnDocumentForRead({documents, metadata} = {}) {
 }
 
 /**
+ * @summary Groups rows into the Chroma record sets their stored-document state allows, for paths that copy
+ * rows with their vectors (import, defrag, heal).
+ *
+ * A turn stored without its document has no `documents` entry, and chromadb rejects a `null` one
+ * (`validateDocuments`), so a batch mixing both is written as two record sets. A copy keeps what was stored:
+ * it never writes a reconstruction back as a document.
+ *
+ * @param {Object[]} rows `{id, embedding, metadata, document}`, where `document` is the STORED document or `null`.
+ * @returns {Object[]} Up to two record sets (`{ids, embeddings, metadatas, documents?}`), none empty.
+ */
+export function toChromaRecordSets(rows = []) {
+    const recordSet = (group, withDocuments) => ({
+        ids       : group.map(row => row.id),
+        embeddings: group.map(row => row.embedding),
+        metadatas : group.map(row => row.metadata ?? null),
+        ...(withDocuments && {documents: group.map(row => row.document)})
+    });
+
+    const stored   = rows.filter(row => typeof row.document === 'string'),
+          unstored = rows.filter(row => typeof row.document !== 'string');
+
+    return [
+        stored.length   > 0 && recordSet(stored,   true),
+        unstored.length > 0 && recordSet(unstored, false)
+    ].filter(Boolean);
+}
+
+/**
  * @summary Canonicalizes one raw-turn frontier into stable chronological order.
  *
  * Chroma result order is not an input-authority contract. Sorting by the stored turn timestamp

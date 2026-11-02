@@ -29,8 +29,11 @@ import {resolveTurnDocumentForRead} from '../../services/memory-core/helpers/tur
  * stored vectors are missing from the HNSW index.
  *
  * Intact-vector rows keep their stored embeddings. Missing-vector rows are re-embedded from their
- * documents via `embedFn`. A missing-vector row that returns no document (or is absent from the
- * metadata read) is `unrecoverable` — surfaced with reason metadata and counts, not dropped.
+ * documents via `embedFn`; a turn stored without its document is re-embedded from its reconstruction. The
+ * extracted `documents` carry what is STORED (`null` when absent), never a reconstruction, so a writer
+ * copying them keeps a de-duplicated turn de-duplicated. A missing-vector row that returns no
+ * document (or is absent from the metadata read) is `unrecoverable` — surfaced with reason metadata and
+ * counts, not dropped.
  *
  * @param {Object}     options
  * @param {Object}     options.collection       Chroma collection handle (`.get({ids, include})`).
@@ -104,7 +107,7 @@ export async function extractMemoryCoreCollectionData({
         for (let j = 0; j < (got.ids?.length || 0); j++) {
             batchData.ids.push(got.ids[j]);
             batchData.embeddings.push(got.embeddings[j]);
-            batchData.documents.push(got.documents?.[j] ?? '');
+            batchData.documents.push(got.documents?.[j] ?? null);
             batchData.metadatas.push(got.metadatas?.[j] ?? {});
             counts.intact++;
         }
@@ -135,7 +138,7 @@ export async function extractMemoryCoreCollectionData({
             }
         }
 
-        const reEmbedIds = [], reEmbedDocs = [], reEmbedMetas = [];
+        const reEmbedIds = [], reEmbedDocs = [], reEmbedStored = [], reEmbedMetas = [];
 
         for (let j = 0; j < (got.ids?.length || 0); j++) {
             // Field↔document de-dup: a dropped turn-document (falsy doc + turn metadata) is reconstructed
@@ -159,6 +162,7 @@ export async function extractMemoryCoreCollectionData({
             }
             reEmbedIds.push(got.ids[j]);
             reEmbedDocs.push(doc);
+            reEmbedStored.push(got.documents?.[j] ?? null);
             reEmbedMetas.push(got.metadatas?.[j] ?? {});
         }
 
@@ -183,7 +187,7 @@ export async function extractMemoryCoreCollectionData({
 
                 batchData.ids.push(reEmbedIds[j]);
                 batchData.embeddings.push(embeddings[j]);
-                batchData.documents.push(reEmbedDocs[j]);
+                batchData.documents.push(reEmbedStored[j]);
                 batchData.metadatas.push(reEmbedMetas[j]);
                 counts.reEmbedded++;
             }

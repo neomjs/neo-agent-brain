@@ -1,6 +1,7 @@
 import {closeBundlePayload, openBundlePayload} from '../../shared/bundlePayload.mjs';
 
 import {fingerprintRestoreSourceFile} from './restoreTargetSetAdmission.mjs';
+import {toChromaRecordSets}           from './turnDocumentText.mjs';
 import {validateJsonlSourceFile}      from './vectorJsonlSourceValidation.mjs';
 
 /**
@@ -54,7 +55,9 @@ export async function importVectorJsonlToEmptyCollection({
         maxBatchSize = 0;
 
     await forEachVectorBatch(filePath, batchSize, async rows => {
-        await collection.add(toChromaPayload(rows));
+        for (const recordSet of toChromaRecordSets(rows)) {
+            await collection.add(recordSet);
+        }
         await validateVectorRowsInCollection({collection, rows});
 
         rowCount     += rows.length;
@@ -208,15 +211,6 @@ async function validateVectorRowsInCollection({collection, rows}) {
             canonicalJson(normalizeVectorRow(row))) {
             throw new Error(`restore vector read-back mismatch for id '${row.id}'`)
         }
-    }
-}
-
-function toChromaPayload(rows) {
-    return {
-        ids       : rows.map(row => row.id),
-        embeddings: rows.map(row => row.embedding),
-        metadatas : rows.map(row => row.metadata ?? null),
-        documents : rows.map(row => row.document ?? null)
     }
 }
 

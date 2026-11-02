@@ -1,4 +1,5 @@
 import {extractMemoryCoreCollectionData}                          from '../../../scripts/maintenance/repairMemoryCoreStoredEmbeddings.mjs';
+import {toChromaRecordSets}                                       from './turnDocumentText.mjs';
 import {partitionRowsByVectorValidity, summarizeVectorRejections} from './vectorWriteInvariant.mjs';
 
 /**
@@ -105,14 +106,10 @@ export function createReEmbedMissingHeal({embedFn, auditCoverage, expectedDimens
 
         // In-place additive promotion: fill the absent vectors for their existing ids. Idempotent and
         // re-runnable — re-embedding an already-present vector is a harmless overwrite, a partial write is
-        // re-healed next cycle.
-        if (valid.length > 0) {
-            await collection.upsert({
-                ids       : valid.map(row => row.id),
-                embeddings: valid.map(row => row.embedding),
-                documents : valid.map(row => row.document),
-                metadatas : valid.map(row => row.metadata)
-            });
+        // re-healed next cycle. A turn stored without its document is re-embedded from its reconstruction
+        // but written back without one.
+        for (const recordSet of toChromaRecordSets(valid)) {
+            await collection.upsert(recordSet);
         }
 
         const reEmbedded    = valid.length,

@@ -13,7 +13,8 @@ import {
     createDynamicTextEmbeddingFunction,
     registerNeoChromaEmbeddingFunctions
 } from '../../services/shared/vector/chromaClientPrimitives.mjs';
-import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
+import {isEntryModule}               from '../../services/shared/isEntryModule.mjs';
+import {resolveTurnDocumentForRead} from '../../services/memory-core/helpers/turnDocumentText.mjs';
 
 /**
  * @summary On-demand Chroma integrity diagnostic for unified-store SQLite and API read paths.
@@ -619,8 +620,9 @@ export async function auditCollectionVectorDimensions({collection, collectionNam
  * recovery classifier separate a re-embeddable WAL-stall (documents present, vectors missing) from an
  * unrecoverable wipe (documents also gone). Given the gutted ids (metadata present, vector absent — the
  * `missingFromVector` set surfaced by `auditChromaVectorCoverage`), samples up to `sampleSize` and counts
- * those whose stored document is a non-empty string: a present document is what a lossless re-embed re-drives
- * from, an absent one means the row is unrecoverable from documents alone. A read-only `.get` does not invoke
+ * those with non-empty source text: the stored document, or for a turn stored without one its reconstruction
+ * from the split fields. That text is what a lossless re-embed re-drives from; a row with neither is
+ * unrecoverable from documents alone. A read-only `.get` does not invoke
  * the embedder, so this is NOT gated by the embed canary. Returns the producer's per-collection sample element
  * shape, 1:1. A probe failure surfaces as an `error` field with a zero count — it never throws into the runner.
  *
@@ -640,10 +642,13 @@ export async function auditCollectionDocumentPresence({collection, collectionNam
     }
 
     try {
-        const {documents = []} = await collection.get({ids: sampledIds, include: ['documents']}),
-              // A present document is a non-empty string — the source a lossless re-embed re-drives from
-              // (WAL-stall); a null/empty document means the row is unrecoverable from documents alone (wipe).
-              documentsPresentCount = documents.filter(document => typeof document === 'string' && document.length > 0).length;
+        const {documents = [], metadatas = []} = await collection.get({ids: sampledIds, include: ['documents', 'metadatas']}),
+              // Non-empty source text is what a lossless re-embed re-drives from (WAL-stall); a row with neither
+              // a document nor a reconstructable turn is unrecoverable from documents alone (wipe).
+              documentsPresentCount = documents.filter((document, index) => {
+                  const text = resolveTurnDocumentForRead({documents: [document], metadata: metadatas[index]});
+                  return typeof text === 'string' && text.length > 0;
+              }).length;
 
         return {collection: collectionName, documentsPresentCount, sampledCount: sampledIds.length};
     } catch (error) {
@@ -696,7 +701,8 @@ export async function probeCollection({
 
         return {
             ids   : response.ids.length,
-            hasDoc: typeof response.documents?.[0] === 'string'
+            // A turn stored without its document still has its text.
+            hasDoc: typeof resolveTurnDocumentForRead({documents: response.documents, metadata: response.metadatas?.[0]}) === 'string'
         }
     }));
 

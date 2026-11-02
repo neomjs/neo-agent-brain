@@ -473,6 +473,19 @@ test.describe('auditCollectionDocumentPresence — data-integrity WAL-stall-vs-w
         expect(result.sampledCount).toBe(3);
     });
 
+    test('a turn stored without its document counts as recoverable; a non-turn without one does not (#128)', async () => {
+        const collection = {
+            get: async ({ids}) => ({
+                ids,
+                documents: [null, 'stored', null],
+                metadatas: [{type: 'agent-interaction', prompt: 'p', thought: 't', response: 'r'}, {type: 'summary'}, {type: 'summary'}]
+            })
+        };
+
+        expect(await auditCollectionDocumentPresence({collection, collectionName: 'neo-agent-memory', ids: ['a', 'b', 'c']}))
+            .toEqual({collection: 'neo-agent-memory', documentsPresentCount: 2, sampledCount: 3});
+    });
+
     test('sampleSize caps the ids probed', async () => {
         // chroma returns documents for the 2 requested (sampled) ids only.
         const collection = makeDocCollection({documents: ['t1', 't2']});

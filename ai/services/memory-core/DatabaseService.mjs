@@ -6,6 +6,7 @@ import Base                                                                  fro
 import StorageRouter                                                         from './managers/StorageRouter.mjs';
 import DestructiveOperationGuard                                             from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import {classifyExportCompleteness, EXPORT_COMPLETENESS, recordExportGrowth} from './helpers/exportCompleteness.mjs';
+import {toChromaRecordSets}                                                  from './helpers/turnDocumentText.mjs';
 import {partitionRowsByVectorValidity, summarizeVectorRejections}            from './helpers/vectorWriteInvariant.mjs';
 import {validateJsonlSourceFile}                                             from './helpers/vectorJsonlSourceValidation.mjs';
 import {importGraphJsonl}                                                    from './helpers/graphJsonlImport.mjs';
@@ -678,12 +679,10 @@ class DatabaseService extends Base {
                             return;
                         }
                         try {
-                            await collection.add({
-                                ids       : chunk.map(r => r.id),
-                                embeddings: chunk.map(r => r.embedding),
-                                metadatas : chunk.map(r => r.metadata),
-                                documents : chunk.map(r => r.document)
-                            });
+                            // A turn exported without its stored document is re-added without one.
+                            for (const recordSet of toChromaRecordSets(chunk)) {
+                                await collection.add(recordSet);
+                            }
                             fileInserted += chunk.length;
                         } catch (e) {
                             fileFailed += chunk.length;
@@ -707,12 +706,9 @@ class DatabaseService extends Base {
                         if (chunk.length === 0) {
                             return;
                         }
-                        await collection.upsert({
-                            ids       : chunk.map(r => r.id),
-                            embeddings: chunk.map(r => r.embedding),
-                            metadatas : chunk.map(r => r.metadata),
-                            documents : chunk.map(r => r.document)
-                        });
+                        for (const recordSet of toChromaRecordSets(chunk)) {
+                            await collection.upsert(recordSet);
+                        }
                         fileInserted += chunk.length;
                     }
                 };

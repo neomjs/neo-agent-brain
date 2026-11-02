@@ -14,6 +14,7 @@ import {
 import {registerNeoChromaEmbeddingFunctions}                         from '../../services/shared/vector/chromaClientPrimitives.mjs';
 import {auditChromaVectorCoverage}                                   from './checkChromaIntegrity.mjs';
 import {extractMemoryCoreCollectionData, truncateToEmbedTokenBudget} from './repairMemoryCoreStoredEmbeddings.mjs';
+import {toChromaRecordSets}                                          from '../../services/memory-core/helpers/turnDocumentText.mjs';
 import {resolveAutonomousRepairExit}                                 from '../../services/memory-core/helpers/acceptedLossSettlement.mjs';
 import {appendAutoAcceptedLoss}                                      from '../../services/memory-core/helpers/acceptedLossAuditStore.mjs';
 import {getAcceptedLossAuditFilePath}                                from '../../services/memory-core/helpers/acceptedLossAuditStore.mjs';
@@ -476,15 +477,26 @@ export async function addCollectionData({
     const total = data.ids.length;
 
     for (let i = 0; i < total; i += batchSize) {
-        const end = Math.min(i + batchSize, total);
+        const end  = Math.min(i + batchSize, total),
+              rows = data.ids.slice(i, end).map((id, offset) => {
+                  const document = data.documents[i + offset],
+                        metadata = data.metadatas[i + offset];
+
+                  return {
+                      id,
+                      embedding: data.embeddings[i + offset],
+                      metadata,
+                      // A turn stored without its document stays without one; every other document,
+                      // absent ones included, is sanitized as before.
+                      document : document == null && metadata?.type === 'agent-interaction' ? null : sanitizeDocuments([document])[0]
+                  };
+              });
+
         writeProgress(`     Upserting ${i} to ${end}... `);
 
-        await collection.add({
-            ids       : data.ids.slice(i, end),
-            embeddings: data.embeddings.slice(i, end),
-            metadatas : data.metadatas.slice(i, end),
-            documents : sanitizeDocuments(data.documents.slice(i, end))
-        });
+        for (const recordSet of toChromaRecordSets(rows)) {
+            await collection.add(recordSet);
+        }
         log('✅');
     }
 }
