@@ -69,9 +69,12 @@ function planeResponse({status = 200, contentType = 'application/json', sessionI
  *     behavior for non-`list_permissions` tools.
  * @param {Number}   [options.failInitializeTimes] Reject that many initialize attempts with 503
  *     before succeeding.
+ * @param {Function} [options.identityResponder] `async ({bearer, call}) => identity` — answers
+ *     `list_permissions` by the bearer the request presents, in place of `identityBySession`.
+ * @param {String[]} [options.refuseBearers] Bearers whose initialize the plane answers with 401.
  * @returns {Object} `{fetchImpl, calls}`
  */
-function scriptedPlane({identityBySession = [IDENTITY], toolResponder = null, toolsBySession = null, toolListResponder = null, failInitializeTimes = 0, deleteDelayMs = 0} = {}) {
+function scriptedPlane({identityBySession = [IDENTITY], toolResponder = null, toolsBySession = null, toolListResponder = null, failInitializeTimes = 0, deleteDelayMs = 0, identityResponder = null, refuseBearers = []} = {}) {
     const calls = [];
 
     let sessions           = 0,
@@ -108,6 +111,10 @@ function scriptedPlane({identityBySession = [IDENTITY], toolResponder = null, to
         }
 
         if (body?.method === 'initialize') {
+            if (refuseBearers.some(bearer => call.authorization === `Bearer ${bearer}`)) {
+                return planeResponse({status: 401, body: 'unauthorized'})
+            }
+
             if (initializeFailures > 0) {
                 initializeFailures--;
 
@@ -146,7 +153,9 @@ function scriptedPlane({identityBySession = [IDENTITY], toolResponder = null, to
             const sessionOrdinal = Math.max(0, sessions - 1);
 
             if (call.toolName === 'list_permissions') {
-                const identity = identityBySession[Math.min(sessionOrdinal, identityBySession.length - 1)];
+                const identity = identityResponder
+                    ? await identityResponder({bearer: call.authorization?.replace(/^Bearer /, '') ?? '', call})
+                    : identityBySession[Math.min(sessionOrdinal, identityBySession.length - 1)];
 
                 return planeResponse({body: {jsonrpc: '2.0', id: body.id, result: {
                     content: [{type: 'text', text: JSON.stringify({identity})}]
@@ -242,7 +251,7 @@ test.describe('planeMailboxClient: init (SDK handshake + single-viewer proof)', 
     test('identity mismatch refuses fail-closed AND tears the session down (awaited DELETE)', async () => {
         const {admission, plane} = await initializedClient({identityBySession: ['@someone-else']});
 
-        expect(admission).toEqual({ok: false, reason: 'plane identity mismatch', blockerCode: 'viewer-binding-unavailable'});
+        expect(admission).toEqual({ok: false, reason: 'plane identity mismatch', blockerCode: 'viewer-binding-unavailable', resolvedIdentity: '@someone-else'});
         expect(plane.calls.some(call => call.method === 'DELETE')).toBe(true)
     });
 
@@ -764,6 +773,152 @@ test.describe('planeMailboxClient: post-failure liveness (the bricked-client reg
 
         expect(initializes).toBeGreaterThanOrEqual(3);
         expect(plane.calls.filter(call => call.toolName === 'list_permissions').length).toBeGreaterThanOrEqual(2)
+    })
+});
+
+test.describe('planeMailboxClient: rotate (a successor bearer without a new init)', () => {
+    const sameViewer = async () => IDENTITY,
+          lastCall   = (plane, name) => plane.calls.filter(call => call.toolName === name).at(-1),
+          deleted    = (plane, sessionId) => plane.calls.some(call => call.method === 'DELETE' && call.sessionHeader === sessionId);
+
+    test('a successor proven for the same viewer serves the next call, and the replaced session is torn down', async () => {
+        const {client, plane} = await initializedClient({identityResponder: sameViewer});
+
+        await expect(client.rotate({credential: 'token-2'})).resolves.toEqual({ok: true, identity: IDENTITY});
+        await client.listMessages();
+
+        expect(lastCall(plane, 'list_messages').authorization).toBe('Bearer token-2');
+
+        await client.close();
+
+        expect(deleted(plane, 'sess-1'), 'close never tears a replaced session, so this DELETE is the retirement').toBe(true)
+    });
+
+    test('a successor the plane refuses leaves the current session serving', async () => {
+        const {client, plane} = await initializedClient({refuseBearers: ['token-revoked']});
+        const outcome         = await client.rotate({credential: 'token-revoked'});
+
+        expect(outcome.ok).toBe(false);
+        expect(outcome.reason).toMatch(/^plane unreachable \(/);
+
+        await client.listMessages();
+
+        expect(lastCall(plane, 'list_messages')).toMatchObject({authorization: 'Bearer token-1', sessionHeader: 'sess-1'});
+        expect(deleted(plane, 'sess-1')).toBe(false)
+    });
+
+    test('a successor for another account is refused and named, and the current session keeps serving', async () => {
+        const {client, plane} = await initializedClient({identityResponder: async ({bearer}) => bearer === 'token-other' ? '@another-account' : IDENTITY});
+
+        await expect(client.rotate({credential: 'token-other'})).resolves.toEqual({
+            ok: false, reason: 'plane identity mismatch', blockerCode: 'viewer-binding-unavailable', resolvedIdentity: '@another-account'
+        });
+
+        await client.listMessages();
+
+        expect(lastCall(plane, 'list_messages').authorization).toBe('Bearer token-1')
+    });
+
+    test('a call in flight on the replaced session settles before that session is torn down', async () => {
+        let release;
+
+        const held            = new Promise(resolve => {release = resolve}),
+              {client, plane} = await initializedClient({
+                  identityResponder: sameViewer,
+                  toolResponder    : async ({call}) => {
+                      call.sessionHeader === 'sess-1' && await held;
+                      return {payload: {served: call.sessionHeader}}
+                  }
+              });
+
+        const inFlight = client.listMessages();
+
+        await expect(client.rotate({credential: 'token-2'})).resolves.toMatchObject({ok: true});
+
+        expect(deleted(plane, 'sess-1'), 'the replaced session waits for the call riding it').toBe(false);
+
+        release();
+
+        await expect(inFlight).resolves.toEqual({served: 'sess-1'});
+        await client.close();
+
+        expect(deleted(plane, 'sess-1')).toBe(true)
+    });
+
+    test('a re-proof that started with the replaced bearer never overwrites the successor', async () => {
+        let lost = false, release, entered;
+
+        const gate            = new Promise(resolve => {release = resolve}),
+              reproving       = new Promise(resolve => {entered = resolve}),
+              {client, plane} = await initializedClient({
+                  // The init proof answers at once; the token-1 re-proof after the 404 holds
+                  identityResponder: async ({bearer, call}) => {
+                      if (bearer === 'token-1' && call.sessionHeader === 'sess-2') {
+                          entered();
+                          await gate
+                      }
+
+                      return IDENTITY
+                  },
+                  toolResponder: async ({call}) => {
+                      if (!lost) {
+                          lost = true;
+                          return {status: 404}
+                      }
+
+                      return {payload: {served: call.authorization}}
+                  }
+              });
+
+        const recovering = client.listMessages();
+
+        await reproving;
+        await expect(client.rotate({credential: 'token-2'})).resolves.toMatchObject({ok: true});
+        release();
+
+        await expect(recovering, 'the recovered call replays on the successor').resolves.toEqual({served: 'Bearer token-2'});
+        await expect(client.listMessages()).resolves.toEqual({served: 'Bearer token-2'});
+        await client.close();
+
+        expect(deleted(plane, 'sess-2'), 'the losing re-proof tears its own candidate down').toBe(true)
+    });
+
+    test('a close that lands during the proof tears the candidate down before it resolves', async () => {
+        let entered;
+
+        const proving         = new Promise(resolve => {entered = resolve}),
+              {client, plane} = await initializedClient({
+                  identityResponder: async ({bearer}) => {
+                      if (bearer === 'token-2') {
+                          entered();
+                          // Outlasts close's own teardown of the current session, as the establishment fence's proof does
+                          await new Promise(resolve => setTimeout(resolve, 40))
+                      }
+
+                      return IDENTITY
+                  }
+              });
+
+        const rotating = client.rotate({credential: 'token-2'});
+
+        await proving;
+        await client.close();
+
+        expect(deleted(plane, 'sess-2'), 'close resolved only after the candidate was gone').toBe(true);
+        await expect(rotating).resolves.toEqual({ok: false, reason: 'client closed'})
+    });
+
+    test('rotate before init or after close presents nothing', async () => {
+        const plane  = scriptedPlane(),
+              client = createPlaneMailboxClient({baseUrl: LOOPBACK_URL, credential: 'token-1', fetchImpl: plane.fetchImpl});
+
+        await expect(client.rotate({credential: 'token-2'})).resolves.toEqual({ok: false, reason: 'client not initialized'});
+
+        await client.init({expectedIdentity: IDENTITY});
+        await client.close();
+
+        await expect(client.rotate({credential: 'token-2'})).resolves.toEqual({ok: false, reason: 'client closed'});
+        expect(plane.calls.filter(call => call.authorization === 'Bearer token-2')).toEqual([])
     })
 });
 

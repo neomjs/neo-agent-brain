@@ -38,6 +38,10 @@ import {
  * (initialize ~17s, list_messages ~25s observed 2026-08-02) while still bounding every call —
  * an unbounded hang is the sender-eating failure mode the wake fabric taught the same night.
  *
+ * **A successor bearer is proven before it serves.** `rotate({credential})` proves a candidate for
+ * the same viewer and only then makes it the bearer every new session presents; the replaced session
+ * retires once the calls riding it settle. A refusal leaves the current binding serving.
+ *
  * Zero config reads: `baseUrl` + `credential` are injected by the boot entry, which resolves the
  * `AiConfig.fleet.planeBase` / `planeBearer` leaves at its use site per the AiConfig SSOT
  * discipline.
@@ -58,11 +62,11 @@ import {
  * @param {Function} [options.fetchImpl] Injection seam for tests — forwarded to the SDK transport's
  *     custom-fetch option; defaults to global `fetch`.
  * @param {Function} [options.createSession] Full session-factory override for tests:
- *     `() => {client, transport}` with SDK-compatible shapes. Defaults to the real SDK pair.
+ *     `bearer => {client, transport}` with SDK-compatible shapes. Defaults to the real SDK pair.
  * @param {String[]} [options.allowPlainHttpHosts=[]] Deployment-declared confidential internal
  *     hostnames forwarded to the shared endpoint policy (compose-internal service DNS); empty
  *     keeps the strict loopback-or-TLS rule unchanged.
- * @returns {Object} `{init, callTool, listMessages, addMessage, close}`
+ * @returns {Object} `{init, rotate, callTool, listMessages, addMessage, close}`
  * @throws {Error} When the endpoint fails the shared secure-endpoint policy.
  */
 /**
@@ -92,8 +96,8 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
         )
     }
 
-    const buildSession = createSession || (() => {
-        const headers = credential ? {Authorization: `Bearer ${credential}`} : {};
+    const buildSession = createSession || (presented => {
+        const headers = presented ? {Authorization: `Bearer ${presented}`} : {};
 
         return {
             transport: new StreamableHTTPClientTransport(new URL(endpoint), {
@@ -105,9 +109,12 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
     });
 
     let session = null, // {client, transport, identity} once proven
+        bearer       = credential, // what every new session presents; a proven rotation replaces it
         expected     = null,
         establishing = null, // the single-flight proof attempt every concurrent acquirer shares
-        closing      = null; // the shared terminal close barrier every closer awaits
+        closing      = null, // the shared terminal close barrier every closer awaits
+        generation   = 0,    // bumped when a rotation stores its successor
+        rotation     = null; // the tail of the one-at-a-time rotation chain
 
     /**
      * Every teardown in flight, OBSERVABLE to the close barrier: a failing caller's candidate-local
@@ -140,14 +147,35 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
     }
 
     /**
-     * @summary Establish + PROVE one session: SDK connect (initialize handshake included), then the
-     * `list_permissions` identity oracle against the held expectation. Any failure tears the
-     * candidate down and reports a bounded refusal — a session is only ever stored proven.
-     * @returns {Promise<Object>} Bounded `{ok, identity?, reason?}`.
+     * @summary Tear down a session a rotation replaced, once the calls riding it have settled: a
+     * teardown under a call would fail that call as ambiguous. Enrolled in {@link pendingTeardowns},
+     * so the close barrier drains it too.
+     * @param {Object} replaced The session the rotation replaced
      * @private
      */
-    async function connectProven() {
-        const candidate = buildSession();
+    function retire(replaced) {
+        const work = (async () => {
+            while (replaced.calls?.size) {
+                await Promise.allSettled([...replaced.calls])
+            }
+
+            await teardown(replaced)
+        })().finally(() => pendingTeardowns.delete(work));
+
+        pendingTeardowns.add(work)
+    }
+
+    /**
+     * @summary PROVE one candidate without storing it: SDK connect (initialize handshake included),
+     * then the `list_permissions` identity oracle against the held expectation. Any failure tears the
+     * candidate down and reports a bounded refusal; a subject other than the expected one is named as
+     * `resolvedIdentity`.
+     * @param {String} presented The bearer the candidate presents
+     * @returns {Promise<Object>} `{ok: true, identity, candidate}` or a bounded `{ok: false, reason}`.
+     * @private
+     */
+    async function proveCandidate(presented) {
+        const candidate = buildSession(presented);
 
         try {
             await candidate.client.connect(candidate.transport)
@@ -180,12 +208,66 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
             // to a different subject would silently re-attribute the whole surface.
             await teardown(candidate);
 
-            return {ok: false, reason: 'plane identity mismatch', blockerCode: VIEWER_BINDING_UNAVAILABLE}
+            return {ok: false, reason: 'plane identity mismatch', blockerCode: VIEWER_BINDING_UNAVAILABLE, resolvedIdentity: identity}
         }
 
-        session = {...candidate, identity};
+        return {ok: true, identity, candidate}
+    }
 
-        return {ok: true, identity}
+    /**
+     * @summary Establish + PROVE one session with the current bearer and store it. A rotation that
+     * stored its successor while this proof ran wins: the candidate is torn down and the successor
+     * answers. A session is only ever stored proven.
+     * @returns {Promise<Object>} Bounded `{ok, identity?, reason?}`.
+     * @private
+     */
+    async function connectProven() {
+        const started = generation,
+              proof   = await proveCandidate(bearer);
+
+        if (started !== generation) {
+            proof.ok && await teardown(proof.candidate);
+
+            return session ? {ok: true, identity: session.identity} : {ok: false, reason: 'plane bearer rotated during the proof'}
+        }
+
+        if (!proof.ok) return proof;
+
+        session = {...proof.candidate, identity: proof.identity};
+
+        return {ok: true, identity: proof.identity}
+    }
+
+    /**
+     * @summary Prove `next` for the held expectation and make it the bearer every session presents.
+     * The successor serves the next call and the replaced session retires; any refusal, or a close
+     * that lands first, leaves the current binding as it was.
+     * @param {String} next The successor bearer
+     * @returns {Promise<Object>} `{ok: true, identity}` or a bounded `{ok: false, reason}`.
+     * @private
+     */
+    async function rotateOnce(next) {
+        if (!expected) return {ok: false, reason: closing ? 'client closed' : 'client not initialized'};
+
+        const proof = await proveCandidate(next);
+
+        if (!expected || closing) {
+            proof.ok && await teardown(proof.candidate);
+
+            return {ok: false, reason: 'client closed'}
+        }
+
+        if (!proof.ok) return proof;
+
+        const replaced = session;
+
+        bearer  = next;
+        session = {...proof.candidate, identity: proof.identity};
+        generation++;
+
+        replaced && retire(replaced);
+
+        return {ok: true, identity: proof.identity}
     }
 
     /**
@@ -354,7 +436,16 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
             }
         }
 
-        return candidate.client.callTool({name, arguments: args})
+        // Tracked on the session, so a rotation retires it only after this call settles
+        const call = candidate.client.callTool({name, arguments: args});
+
+        (candidate.calls ??= new Set()).add(call);
+
+        try {
+            return await call
+        } finally {
+            candidate.calls.delete(call)
+        }
     }
 
     return {
@@ -381,6 +472,23 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
             expected = next;
 
             return acquireProven()
+        },
+
+        /**
+         * @summary Adopt a successor bearer once the plane proves it for the same viewer, with no
+         * new `init`: every consumer keeps this client. Rotations run one at a time; a refusal
+         * leaves the current binding serving.
+         * @param {Object} options
+         * @param {String} options.credential The successor bearer
+         * @returns {Promise<Object>} `{ok: true, identity}`, or a bounded `{ok: false, reason}` that
+         *     names another account's subject as `resolvedIdentity`.
+         */
+        rotate({credential: next}) {
+            const run = () => rotateOnce(next);
+
+            rotation = (rotation || Promise.resolve()).then(run, run);
+
+            return rotation
         },
 
         /**
@@ -536,6 +644,11 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
 
                 if (establishing) {
                     try { await establishing } catch { /* refusal paths tear their own candidate */ }
+                }
+
+                // A rotation proving its candidate sees the cleared expectation and tears it down
+                if (rotation) {
+                    try { await rotation } catch { /* rotateOnce settles every path itself */ }
                 }
 
                 // A proof that completed between the clear above and its own mismatch check may
