@@ -77,6 +77,9 @@ async function firstChunk(file, sourcePath) {
 
 test.describe('Neo.ai.services.knowledge-base.DatabaseService shared core sync (#282)', () => {
     test('the exact Engine pin and Brain revision compile separately without consulting SourceRegistry', async () => {
+        // Two real corpus builds take 16–30 s on CI runners; the 30 s default trips on a busy one.
+        test.setTimeout(120_000);
+
         const
             aiConfig           = (await import('../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default,
             DatabaseService    = (await import('../../../../../../ai/services.mjs')).KB_DatabaseService,
