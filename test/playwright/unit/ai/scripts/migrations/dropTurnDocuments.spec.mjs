@@ -163,6 +163,21 @@ test.describe('Neo.ai.scripts.migrations.dropTurnDocuments against a real Chroma
         expect(await fullText(collection, 'tok1x')).toEqual(['turn-1'])
     });
 
+    test('a document holding U+2028 or U+2029 restores whole', async () => {
+        const collection   = await seed('separators'),
+              snapshotPath = path.join(root, 'separators.jsonl'),
+              // JSON.stringify leaves both raw; a line reader that breaks at them splits the snapshot record
+              metadata     = {...turn(7), prompt: `line${String.fromCodePoint(0x2028)}break`, thought: `paragraph${String.fromCodePoint(0x2029)}break`};
+
+        await collection.add({ids: ['turn-separators'], documents: [composeTurnDocumentText(metadata)], metadatas: [metadata]});
+        const before = await read(collection);
+
+        await dropTurnDocuments({collection, apply: true, snapshotPath});
+
+        expect(await restoreTurnDocuments({collection, snapshotPath})).toEqual({snapshotted: 4, restored: 4, missing: 0});
+        expect(await read(collection)).toEqual(before)
+    });
+
     test('a batch whose update commits and then fails is read back and counted as cleared', async () => {
         const collection   = await seed('committed'),
               snapshotPath = path.join(root, 'committed.jsonl'),

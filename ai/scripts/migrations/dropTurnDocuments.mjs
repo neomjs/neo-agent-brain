@@ -26,7 +26,7 @@
  *   [--batch <n>]                                                               # rows per request, default 250
  */
 import fs                                               from 'node:fs';
-import readline                                         from 'node:readline';
+import {closeBundlePayload, openJsonlStream}            from '../../services/shared/bundlePayload.mjs';
 import {composeTurnDocumentText, isReconstructableTurn} from '../../services/memory-core/helpers/turnDocumentText.mjs';
 import {isEntryModule}                                  from '../../services/shared/isEntryModule.mjs';
 
@@ -196,7 +196,7 @@ export async function dropTurnDocuments({collection, apply = false, snapshotPath
 export async function restoreTurnDocuments({collection, snapshotPath, batchSize = BATCH_SIZE}) {
     const
         stats = {snapshotted: 0, restored: 0, missing: 0},
-        lines = readline.createInterface({input: fs.createReadStream(snapshotPath), crlfDelay: Infinity});
+        lines = openJsonlStream(fs.createReadStream(snapshotPath));
 
     let batch = [];
 
@@ -215,13 +215,17 @@ export async function restoreTurnDocuments({collection, snapshotPath, batchSize 
         batch = []
     };
 
-    for await (const line of lines) {
-        if (!line) continue;
+    try {
+        for await (const line of lines) {
+            if (!line) continue;
 
-        batch.push(JSON.parse(line));
-        stats.snapshotted++;
+            batch.push(JSON.parse(line));
+            stats.snapshotted++;
 
-        if (batch.length === batchSize) await flush()
+            if (batch.length === batchSize) await flush()
+        }
+    } finally {
+        closeBundlePayload(lines)
     }
 
     if (batch.length) await flush();
