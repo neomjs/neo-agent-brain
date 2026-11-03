@@ -632,20 +632,33 @@ export function resolveFleetPlaneBearer({aiConfig = AiConfig, readFile = null} =
 }
 
 /**
+ * @summary Whether the deployment declares a plane bearer in either home, readable or not: the
+ * launcher's credential pipe refuses to sit beside a declared one.
+ * @param {Object} [options]
+ * @param {Object} [options.aiConfig=AiConfig] Resolved Tier-1 config tree.
+ * @returns {Boolean}
+ */
+export function declaresFleetPlaneBearer({aiConfig = AiConfig} = {}) {
+    return [aiConfig.fleet.planeBearer, aiConfig.fleet.planeBearerFile].some(home => home.trim() !== '')
+}
+
+/**
  * @summary The credential-class non-alias teeth: a resolved plane bearer that IS the
  * deployment's bootstrap/healthcheck admission token is refused. The ledger's load-bearing rule
  * (class 3 ≠ bootstrap/healthcheck PAT) is otherwise only prose — this makes an aliased
- * deployment fail at boot, at the one moment someone can mint the distinct credential.
+ * deployment fail at boot, at the one moment someone can mint the distinct credential. A bearer
+ * piped in on `fleet.planeCredentialFd` meets the same teeth, at boot and at every rotation.
  * @param {Object} [options]
  * @param {Object} [options.aiConfig=AiConfig] Resolved Tier-1 config tree.
  * @param {Function} [options.readFile] Injection seam for tests; defaults to `readFileSync`.
+ * @param {Object|null} [options.planeCredential=null] A piped `{bearer, bearerClass}`, judged in place of the configured bearer.
  * @returns {String} The class-clean resolved bearer (may be `''`).
  * @throws {Error} When the plane bearer equals the admission token.
  */
-export function assertFleetPlaneBearerClass({aiConfig = AiConfig, readFile = null} = {}) {
+export function assertFleetPlaneBearerClass({aiConfig = AiConfig, readFile = null, planeCredential = null} = {}) {
     const
         read        = readFile ?? (target => readFileSync(target, 'utf8')),
-        planeBearer = resolveFleetPlaneBearer({aiConfig, readFile: read});
+        planeBearer = planeCredential?.bearer ?? resolveFleetPlaneBearer({aiConfig, readFile: read});
 
     if (!planeBearer) return planeBearer;
 
@@ -661,7 +674,7 @@ export function assertFleetPlaneBearerClass({aiConfig = AiConfig, readFile = nul
 
     if (admissionToken && planeBearer === admissionToken) {
         throw new Error(
-            '[FleetServer] fleet.planeBearer resolves to the deployment\'s bootstrap/healthcheck ' +
+            `[FleetServer] ${planeCredential ? 'the piped plane bearer' : 'fleet.planeBearer'} resolves to the deployment's bootstrap/healthcheck ` +
             'admission token — the credential-class ledger forbids that aliasing. Mint a distinct ' +
             'class-3 credential for the Fleet service\'s plane sessions.'
         )
@@ -678,13 +691,15 @@ export function assertFleetPlaneBearerClass({aiConfig = AiConfig, readFile = nul
  * secret file. With neither declared, a plane bearer whose declared class is a forge PAT
  * (`fleet.planeBearerClass`) is the answer: the operator's one PAT serves both audiences, a reuse
  * the credential-class ledger declares. Otherwise `''` — the caller renders that as an honest
- * unarmed state, never a fallback onto a different credential class.
+ * unarmed state, never a fallback onto a different credential class. A piped plane credential
+ * stands in for the configured bearer and its class.
  * @param {Object} [options]
  * @param {Object} [options.aiConfig=AiConfig] Resolved Tier-1 config tree.
  * @param {Function} [options.readFile] Injection seam for tests; defaults to `readFileSync`.
+ * @param {Object|null} [options.planeCredential=null] A piped `{bearer, bearerClass}`.
  * @returns {String} The resolved fleet-surface bearer, or `''`.
  */
-export function resolveFleetPlaneAdmissionBearer({aiConfig = AiConfig, readFile = null} = {}) {
+export function resolveFleetPlaneAdmissionBearer({aiConfig = AiConfig, readFile = null, planeCredential = null} = {}) {
     const direct = aiConfig.fleet.planeAdmissionBearer.trim();
 
     if (direct) return direct;
@@ -700,8 +715,8 @@ export function resolveFleetPlaneAdmissionBearer({aiConfig = AiConfig, readFile 
         }
     }
 
-    return FORGE_PAT_BEARER_CLASSES.includes(aiConfig.fleet.planeBearerClass.trim())
-        ? resolveFleetPlaneBearer({aiConfig, readFile})
+    return FORGE_PAT_BEARER_CLASSES.includes(planeCredential?.bearerClass ?? aiConfig.fleet.planeBearerClass.trim())
+        ? planeCredential?.bearer ?? resolveFleetPlaneBearer({aiConfig, readFile})
         : ''
 }
 
@@ -716,19 +731,20 @@ export function resolveFleetPlaneAdmissionBearer({aiConfig = AiConfig, readFile 
  * @param {Object} [options]
  * @param {Object} [options.aiConfig=AiConfig] Resolved Tier-1 config tree.
  * @param {Function} [options.readFile] Injection seam for tests; defaults to `readFileSync`.
+ * @param {Object|null} [options.planeCredential=null] A piped `{bearer, bearerClass}`, judged in place of the configured bearer.
  * @returns {String} The class-clean resolved bearer (may be `''`).
  * @throws {Error} When the fleet-surface bearer aliases an undeclared plane-MCP bearer or the admission token.
  */
-export function assertFleetPlaneAdmissionBearerClass({aiConfig = AiConfig, readFile = null} = {}) {
+export function assertFleetPlaneAdmissionBearerClass({aiConfig = AiConfig, readFile = null, planeCredential = null} = {}) {
     const
         read            = readFile ?? (target => readFileSync(target, 'utf8')),
-        admissionBearer = resolveFleetPlaneAdmissionBearer({aiConfig, readFile: read});
+        admissionBearer = resolveFleetPlaneAdmissionBearer({aiConfig, readFile: read, planeCredential});
 
     if (!admissionBearer) return admissionBearer;
 
-    const planeBearer = resolveFleetPlaneBearer({aiConfig, readFile: read});
+    const planeBearer = planeCredential?.bearer ?? resolveFleetPlaneBearer({aiConfig, readFile: read});
 
-    if (planeBearer && admissionBearer === planeBearer && !FORGE_PAT_BEARER_CLASSES.includes(aiConfig.fleet.planeBearerClass.trim())) {
+    if (planeBearer && admissionBearer === planeBearer && !FORGE_PAT_BEARER_CLASSES.includes(planeCredential?.bearerClass ?? aiConfig.fleet.planeBearerClass.trim())) {
         throw new Error(
             '[FleetServer] fleet.planeAdmissionBearer resolves to the same bytes as the plane-MCP ' +
             'bearer — the credential-class ledger forbids presenting the MC credential to the ' +
@@ -796,17 +812,18 @@ export function resolveFleetViewerMcAuthorization({aiConfig = AiConfig, readFile
  * @param {Object} [options]
  * @param {Object} [options.aiConfig=AiConfig] Resolved Tier-1 config tree.
  * @param {Function} [options.readFile] Injection seam for tests; defaults to `readFileSync`.
+ * @param {Object|null} [options.planeCredential=null] A piped `{bearer, bearerClass}`, judged in place of the configured bearer.
  * @returns {String} The class-clean resolved viewer mint (may be `''`).
  * @throws {Error} When the viewer mint aliases the plane-MCP bearer or the admission bearer.
  */
-export function assertFleetViewerMcAuthorizationClass({aiConfig = AiConfig, readFile = null} = {}) {
+export function assertFleetViewerMcAuthorizationClass({aiConfig = AiConfig, readFile = null, planeCredential = null} = {}) {
     const
         read       = readFile ?? (target => readFileSync(target, 'utf8')),
         viewerMint = resolveFleetViewerMcAuthorization({aiConfig, readFile: read});
 
     if (!viewerMint) return viewerMint;
 
-    const planeBearer = resolveFleetPlaneBearer({aiConfig, readFile: read});
+    const planeBearer = planeCredential?.bearer ?? resolveFleetPlaneBearer({aiConfig, readFile: read});
 
     if (planeBearer && viewerMint === planeBearer) {
         throw new Error(
@@ -816,7 +833,7 @@ export function assertFleetViewerMcAuthorizationClass({aiConfig = AiConfig, read
         )
     }
 
-    const admissionBearer = resolveFleetPlaneAdmissionBearer({aiConfig, readFile: read});
+    const admissionBearer = resolveFleetPlaneAdmissionBearer({aiConfig, readFile: read, planeCredential});
 
     if (admissionBearer && viewerMint === admissionBearer) {
         throw new Error(

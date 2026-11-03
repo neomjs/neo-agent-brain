@@ -380,6 +380,17 @@ class ConfigBase extends ConfigProvider {
                  */
                 planeBearerFile: leaf('', 'NEO_FLEET_PLANE_BEARER_FILE', 'string'),
                 /**
+                 * Inherited fd of the launcher's credential pipe: the packaged Fleet Manager keeps
+                 * the PAT in its main process and hands it over here, never in env. Set, the plane
+                 * bearer and its class arrive on it as newline-delimited JSON frames, the first at
+                 * boot and each later one a rotation the running server adopts once the plane proves
+                 * it for the bound viewer; every frame is answered on the same fd. The pipe is then
+                 * the bearer's only home, so a configured `planeBearer` or `planeBearerFile` refuses
+                 * the boot. `null` keeps the configured bearer.
+                 * @type {Number|null}
+                 */
+                planeCredentialFd: leaf(null, 'NEO_FLEET_PLANE_CREDENTIAL_FD', 'nonNegativeInt'),
+                /**
                  * Bearer credential for the PLANE'S FLEET SURFACE (`/fleet`, `/fleet/probe`,
                  * `/fleet/events`) when this process consumes a containerized plane as a fleet
                  * client — a DIFFERENT MINT from `planeBearer`, which serves the plane's MCP

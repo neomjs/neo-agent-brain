@@ -243,6 +243,7 @@
         "fleet.planeBearer",
         "fleet.planeBearerClass",
         "fleet.planeBearerFile",
+        "fleet.planeCredentialFd",
         "fleet.planeInternalHosts",
         "fleet.port",
         "fleet.shutdownBudgetMs",

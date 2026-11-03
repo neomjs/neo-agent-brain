@@ -4,7 +4,14 @@ import os              from 'node:os';
 import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-import {assertFleetPlaneBearerClass, resolveFleetPlaneBearer} from '../../../../../../ai/services/fleet/fleetServer.mjs';
+import {
+    assertFleetPlaneAdmissionBearerClass,
+    assertFleetPlaneBearerClass,
+    assertFleetViewerMcAuthorizationClass,
+    declaresFleetPlaneBearer,
+    resolveFleetPlaneAdmissionBearer,
+    resolveFleetPlaneBearer
+} from '../../../../../../ai/services/fleet/fleetServer.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..');
 
@@ -136,5 +143,74 @@ test.describe('assertFleetPlaneBearerClass — the credential-class non-alias te
         // read, and the teeth-free bare-resolver arm
         expect(source).not.toMatch(/credential:\s*AiConfig\.fleet\.planeBearer\b/);
         expect(source).not.toMatch(/credential:\s*resolveFleetPlaneBearer\(/)
+    });
+});
+
+test.describe('a piped plane credential meets the teeth a configured bearer meets (#1462)', () => {
+    const
+        ADMISSION_FILE = '/deploy/secrets/admission',
+        config         = (fleet = {}) => ({fleet: {
+            admissionTokenFile       : ADMISSION_FILE,
+            planeAdmissionBearer     : '',
+            planeAdmissionBearerFile : '',
+            planeBearer              : '',
+            planeBearerClass         : '',
+            planeBearerFile          : '',
+            viewerMcAuthorization    : '',
+            viewerMcAuthorizationFile: '',
+            ...fleet
+        }}),
+        admissionToken = token => target => {
+            expect(target).toBe(ADMISSION_FILE);
+            return `${token}\n`
+        };
+
+    test('a piped bearer that IS the admission token is refused exactly like a configured one, and named as piped', () => {
+        const aiConfig = config();
+
+        expect(() => assertFleetPlaneBearerClass({aiConfig, readFile: admissionToken('shared-token'), planeCredential: {bearer: 'shared-token', bearerClass: ''}}))
+            .toThrow(/^\[FleetServer\] the piped plane bearer resolves to the deployment's bootstrap\/healthcheck admission token — the credential-class ledger forbids that aliasing/);
+        expect(() => assertFleetPlaneBearerClass({aiConfig: config({planeBearer: 'shared-token'}), readFile: admissionToken('shared-token')}))
+            .toThrow(/^\[FleetServer\] fleet\.planeBearer resolves to the deployment's bootstrap\/healthcheck admission token/)
+    });
+
+    test('a declared home counts whether or not its file can be read; blank declarations do not', () => {
+        expect(declaresFleetPlaneBearer({aiConfig: config({planeBearer: 'direct'})})).toBe(true);
+        expect(declaresFleetPlaneBearer({aiConfig: config({planeBearerFile: '/run/secrets/absent'})})).toBe(true);
+        expect(declaresFleetPlaneBearer({aiConfig: config({planeBearer: '  ', planeBearerFile: ''})})).toBe(false)
+    });
+
+    test('the piped bearer is judged in place of the configured one', () => {
+        expect(assertFleetPlaneBearerClass({
+            aiConfig       : config({planeBearer: 'shared-token'}),
+            readFile       : admissionToken('shared-token'),
+            planeCredential: {bearer: 'ghp_distinct', bearerClass: 'github-pat'}
+        })).toBe('ghp_distinct')
+    });
+
+    test('a forge-PAT class on the frame presents the piped bearer at the fleet surface; any other class arms nothing, and a declared admission bearer still wins', () => {
+        const readFile = admissionToken('bootstrap-token');
+
+        expect(assertFleetPlaneAdmissionBearerClass({aiConfig: config(), readFile, planeCredential: {bearer: 'ghp_rotated', bearerClass: 'github-pat'}})).toBe('ghp_rotated');
+        expect(assertFleetPlaneAdmissionBearerClass({aiConfig: config(), readFile, planeCredential: {bearer: 'plane-mint', bearerClass: ''}})).toBe('');
+        // the configured class describes the configured bearer, never the piped one
+        expect(resolveFleetPlaneAdmissionBearer({aiConfig: config({planeBearerClass: 'github-pat'}), planeCredential: {bearer: 'plane-mint', bearerClass: ''}})).toBe('');
+        expect(resolveFleetPlaneAdmissionBearer({aiConfig: config({planeAdmissionBearer: 'fleet-mint'}), planeCredential: {bearer: 'ghp_rotated', bearerClass: 'github-pat'}})).toBe('fleet-mint')
+    });
+
+    test('a declared fleet-surface bearer equal to a piped plane mint is refused, as with a configured one', () => {
+        expect(() => assertFleetPlaneAdmissionBearerClass({
+            aiConfig       : config({planeAdmissionBearer: 'same-mint'}),
+            readFile       : admissionToken('bootstrap-token'),
+            planeCredential: {bearer: 'same-mint', bearerClass: ''}
+        })).toThrow(/same bytes as the plane-MCP bearer/)
+    });
+
+    test('the viewer mint refuses a piped bearer it aliases', () => {
+        expect(() => assertFleetViewerMcAuthorizationClass({
+            aiConfig       : config({viewerMcAuthorization: 'viewer-mint'}),
+            readFile       : admissionToken('bootstrap-token'),
+            planeCredential: {bearer: 'viewer-mint', bearerClass: ''}
+        })).toThrow(/viewerMcAuthorization resolves to the same bytes as the plane-MCP bearer/)
     });
 });
