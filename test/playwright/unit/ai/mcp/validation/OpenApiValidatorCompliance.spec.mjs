@@ -310,6 +310,7 @@ const expectedMemoryCoreToolTiers = {
     add_message                            : 'write',
     list_messages                          : 'read',
     get_message                            : 'read',
+    query_messages                         : 'read',
     mark_read                              : 'write',
     archive_message                        : 'extended',
     delete_message                         : 'admin',
