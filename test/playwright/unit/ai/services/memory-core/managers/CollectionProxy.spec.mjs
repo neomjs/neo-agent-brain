@@ -21,7 +21,7 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
  * @summary `resolveCollectionId` answers with the SOURCE's identity, never the proxy's own.
  *
  * `CollectionProxy` extends `Neo.core.Base`, so `proxy.id` is a framework instance id (`neo-base-NN`)
- * that moves with construction order. Backup receipts recorded exactly that as `collectionId` (#281),
+ * that moves with construction order. Backup receipts once recorded exactly that as `collectionId`,
  * so `deriveLineage` compared process-instance counters instead of collections — reporting `changed`
  * for an ordinary restart and `same` across a genuine swap. These arms pin the distinction the
  * receipt depends on.
@@ -60,7 +60,7 @@ test.describe('Neo.ai.services.memory-core.managers.CollectionProxy — collecti
     test('two proxies over the SAME collection agree — so a restart alone cannot read as `changed`', async () => {
         // The lineage property that mattered: separate processes construct separate proxies with
         // different instance ids. If identity tracked the proxy, every restart would look like a
-        // collection change, which is precisely what #270's MC evidence showed.
+        // collection change, which is precisely what the collapse guard's Memory Core evidence showed.
         const first  = proxyFronting({id: 'same-collection'}),
               second = proxyFronting({id: 'same-collection'});
 
@@ -92,7 +92,7 @@ test.describe('Neo.ai.services.memory-core.managers.CollectionProxy — collecti
         test('NEGATIVE CONTROL: a change confined to a SECONDARY does not move the identity', async () => {
             // The false-refuse this prevents. Under a composite identity, swapping a member that
             // contributes no exported rows would derive `lineage: changed` for a source whose data
-            // never moved — and #270's collapse guard would refuse a healthy capture on that basis.
+            // never moved — and the collapse guard would refuse a healthy capture on that basis.
             const before = proxyFronting({id: 'primary'}, {id: 'secondary-v1'}),
                   after  = proxyFronting({id: 'primary'}, {id: 'secondary-v2'});
 
