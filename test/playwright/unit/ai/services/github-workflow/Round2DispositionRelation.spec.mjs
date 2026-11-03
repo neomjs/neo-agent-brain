@@ -16,7 +16,7 @@ setup({
 
 /**
  * The Round-2 RELATION: whether a disposition-shaped body is a disposition OF the round it cites. The shape tier proves a
- * body is disposition-shaped; @neo-gpt then showed a shaped body with a plausible review id and an invented RA-999 still
+ * body is disposition-shaped; a shaped body with a plausible review id and an invented action still
  * passed, because "is this a disposition of that round" is a claim about two documents. These arms drive the relation
  * directly, and they live in their own spec so the Brain's curated unit run executes them.
  */
@@ -50,7 +50,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — the Round-
         '### 🔚 Verdict', '', 'Approve'
     ].join('\n');
 
-    // neo#19125's shape: two reviewers requested changes, and the one with the OLDER RC dispositions it
+    // Two reviewers requested changes, and the one with the OLDER RC dispositions it.
     const LATER_RC_OF_ANOTHER_REVIEWER = {
         author     : {login: 'neo-opus-vega'},
         body       : ['# PR Review Summary', '', '### 📋 Required Actions', '', '- [ ] a later reviewer\'s only action'].join('\n'),
@@ -64,7 +64,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — the Round-
     const BOTH_ACTIONS_ADDRESSED = ['| RA-1 | make the tier semantic | ADDRESSED | done |',
                                     '| RA-2 | update the stale predecessors | ADDRESSED | done |'];
 
-    // The cited RC under the ids the shape gate's own table uses (`PullRequestService.spec`, #380)
+    // The cited RC under the ids accepted by the shape gate's own table in PullRequestService.spec.
     const CITED_RC  = {...PRIOR_RC, databaseId: 5256218531, id: 'PRR_123', url: 'https://github.com/neomjs/neo/pull/1#pullrequestreview-5256218531'},
           CITE_LINK = '[5256218531](https://github.com/neomjs/neo/pull/1#pullrequestreview-5256218531)',
           citing    = value => round2With(BOTH_ACTIONS_ADDRESSED).replace('* **Round-1 Review ID:** PRR_prior', `* **Round-1 Review ID:**${value}`);
@@ -171,7 +171,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — the Round-
 
     /**
      * The third live specimen: a prior action quoted correctly, with its markdown stripped.
-     * `**RA-1 (scope):** make the tier semantic` became `RA-1 (scope): make the tier semantic`.
+     * The copied action lost the bold formatting around its label but retained its wording.
      *
      * The byte-verbatim rule is right and is not being relaxed — it is what stops a Round 2 quietly
      * softening the demand it claims to discharge. The defect is that the rule is unstated and its
@@ -333,6 +333,43 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — the Round-
         });
 
         expect(failure, 'the micro checklist is the prior round\'s action packet').toBeNull();
+    });
+
+    for (const checked of [' ', 'x']) {
+        test('micro review metadata does not add an action for attribution [' + checked + ']', () => {
+            const action      = '**RA-1:** Keep the real finding.',
+                  attribution = 'PR body attribution: Authored by is the only attribution.',
+                  prior       = {
+                      ...PRIOR_RC,
+                      body: microRc(['**Findings:**', '- [ ] ' + action]).body +
+                          '\n- [' + checked + '] ' + attribution
+                  },
+                  row = '| RA-1 | ' + action + ' | ADDRESSED | repaired |';
+
+            expect(getRound2DispositionRelationFailure({
+                body: round2With([row]), reviews: [prior], state: 'APPROVED'
+            }), 'only the finding belongs to the author action packet').toBeNull();
+
+            expect(getRound2DispositionRelationFailure({
+                body: round2With([row, '| RA-2 | ' + attribution + ' | ADDRESSED | checked |']),
+                reviews: [prior], state: 'APPROVED'
+            })?.message, 'the former workaround must now be rejected as an invented action')
+                .toContain('against the prior round');
+        });
+    }
+
+    test('a micro review with no findings cannot turn its attribution check into an action', () => {
+        const attribution = 'PR body attribution: Authored by is the only attribution.',
+              prior       = {
+                  ...PRIOR_RC,
+                  body: microRc(['**Findings:** None.']).body + '\n- [x] ' + attribution
+              },
+              failure = getRound2DispositionRelationFailure({
+                  body: round2With(['| RA-1 | ' + attribution + ' | ADDRESSED | checked |']),
+                  reviews: [prior], state: 'APPROVED'
+              });
+
+        expect(failure?.message).toContain('lists no Required Actions');
     });
 
     test('#378: over a micro review, a reworded or invented action is still refused', () => {
