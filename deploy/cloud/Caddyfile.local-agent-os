@@ -4,7 +4,12 @@
 		request_header -X-Auth-Request-Preferred-Username
 
 		handle_path /mc/* {
-			reverse_proxy mc-server:3001
+			reverse_proxy mc-server:3001 {
+				transport http {
+					# Retire idle sockets before the MCP server's advertised 5s idle limit.
+					keepalive 4s
+				}
+			}
 		}
 
 		handle_path /kb/* {
