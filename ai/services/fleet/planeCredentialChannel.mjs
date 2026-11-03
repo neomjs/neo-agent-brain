@@ -12,7 +12,7 @@
  *
  * A refusal never echoes the frame, which may hold a bearer.
  */
-import readline from 'node:readline';
+import {openJsonlStream} from '../shared/bundlePayload.mjs';
 
 /**
  * @summary Parses one frame without ever echoing it.
@@ -61,14 +61,14 @@ export function planeCredentialAnswer(result, expectedIdentity) {
 
 /**
  * @summary Opens the pipe over a duplex stream: the inherited fd as a `net.Socket`, because the
- * launcher's extra `stdio` pipe is a socket pair.
+ * launcher's extra `stdio` pipe is a socket pair. The launcher closing its end closes the pipe.
  * @param {Object} options
  * @param {import('node:stream').Duplex} options.stream
  * @returns {Object} `{next, answer, serve}`
  */
 export function openPlaneCredentialChannel({stream}) {
     const
-        lines   = readline.createInterface({input: stream, crlfDelay: Infinity})[Symbol.asyncIterator](),
+        lines   = openJsonlStream(stream)[Symbol.asyncIterator](),
         channel = {
             /**
              * @summary The next frame, parsed; `null` once the launcher closed the pipe.
