@@ -449,8 +449,14 @@ test.describe('Neo.ai.daemons.embed.drainCycle', () => {
         expect(getProviderActivityContext()).toBeNull();
     });
 
+    // A turn as `MemoryService.addMemory` writes it: `type: 'agent-interaction'` marks its document as derived.
+    const turnRecord = id => {
+        const base = record(id, Date.now());
+        return {...base, metadata: {...base.metadata, type: 'agent-interaction'}, segmentKey: 'unused'};
+    };
+
     test('embedBatch adds turns with explicit embeddings and no documents, batch and per-record (#128)', async () => {
-        const records    = ['x', 'y'].map(id => ({...record(id, Date.now()), segmentKey: 'unused'}));
+        const records    = ['x', 'y'].map(turnRecord);
         const collection = createFakeCollection();
 
         collection.failNextAdds = 1;   // the batch add fails once, so the per-record pass runs too
@@ -474,6 +480,27 @@ test.describe('Neo.ai.daemons.embed.drainCycle', () => {
             {texts: ['doc-x', 'doc-y'], isQuery: false},
             {texts: ['doc-x'],          isQuery: false},
             {texts: ['doc-y'],          isQuery: false}
+        ]);
+    });
+
+    test('embedBatch keeps the document of a record that is not a turn, such as an A2A message (#128)', async () => {
+        const message    = {...record('m', Date.now()), metadata: {kind: 'direct', sessionId: 'session-m'}, segmentKey: 'unused'};
+        const collection = createFakeCollection();
+
+        await embedBatch({
+            collection,
+            records      : [turnRecord('t'), message],
+            maxRetries   : 0,
+            backoffBaseMs: 1,
+            sleep        : async () => {},
+            log          : () => {}
+        });
+
+        // One embed for the batch; the message's content is stored, the turn's derivation is not.
+        expect(collection.embedCalls).toEqual([{texts: ['doc-t', 'doc-m'], isQuery: false}]);
+        expect(collection.addCalls.map(payload => [payload.ids, payload.documents])).toEqual([
+            [['m'], ['doc-m']],
+            [['t'], undefined]
         ]);
     });
 

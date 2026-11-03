@@ -8,6 +8,7 @@ import {
     appendMessageWalEmbedMarker,
     readPendingMessageWalEmbedRecords
 } from '../../services/memory-core/helpers/messageWalStore.mjs';
+import {toChromaRecordSets}                          from '../../services/memory-core/helpers/turnDocumentText.mjs';
 import {classifyRowVector, VECTOR_REJECTION_REASONS} from '../../services/memory-core/helpers/vectorWriteInvariant.mjs';
 import {createDrainDispositionTracker}               from '../shared/drainDisposition.mjs';
 import {isProviderTimeoutCode}                       from '../../provider/createTimeoutError.mjs';
@@ -104,25 +105,35 @@ export const MAX_RECORD_COOLDOWN_MS = 3600000;
 export const DEFAULT_MAX_IN_CYCLE_MS = 120000;
 
 /**
- * @summary Embeds WAL turn records and adds them without `documents`, with exact provider-stage attribution.
+ * @summary Embeds WAL records explicitly and adds them, storing a document only where it is content,
+ * with exact provider-stage attribution.
  *
- * A turn's document is derived from its split fields (`composeTurnDocumentText`) and readers rebuild it
- * (`resolveTurnDocumentForRead`), so storing it would keep the text twice and feed Chroma's full-text index
- * a third copy. `collection.embed(texts, false)` is the call chromadb's own `add` makes for documents
- * passed without embeddings, so the vectors match what auto-embedding stored.
- * @param {Object}   collection Memory collection.
+ * A turn's document (`metadata.type === 'agent-interaction'`) is derived from its split fields
+ * (`composeTurnDocumentText`) and readers rebuild it (`resolveTurnDocumentForRead`), so storing it would
+ * keep the text twice and feed Chroma's full-text index a third copy: a turn is added without one. Any
+ * other record's document, such as an A2A message's subject and body, is its content and is stored.
+ * `collection.embed(texts, false)` is the call chromadb's own `add` makes for documents passed without
+ * embeddings, so the vectors match what auto-embedding stored.
+ * @param {Object}   collection The drained store's collection.
  * @param {Object[]} records    WAL records (`{id, metadata, document}`).
- * @returns {Promise<*>}
+ * @returns {Promise<void>}
  */
 function addWalRecords(collection, records) {
     return runWithProviderActivityContext({
         operationStage: 'mc-wal-drain-embedding',
         service       : 'memory-core'
-    }, async () => collection.add({
-        ids       : records.map(record => record.id),
-        embeddings: await collection.embed(records.map(record => record.document), false),
-        metadatas : records.map(record => record.metadata)
-    }));
+    }, async () => {
+        const embeddings = await collection.embed(records.map(record => record.document), false);
+
+        for (const recordSet of toChromaRecordSets(records.map((record, index) => ({
+            id       : record.id,
+            embedding: embeddings[index],
+            metadata : record.metadata,
+            document : record.metadata?.type === 'agent-interaction' ? null : record.document
+        })))) {
+            await collection.add(recordSet);
+        }
+    });
 }
 
 /**
