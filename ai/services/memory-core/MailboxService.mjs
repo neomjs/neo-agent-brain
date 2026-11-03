@@ -4959,7 +4959,8 @@ class MailboxService extends Base {
      *
      * {@link admissionWhere} pre-filters the message index, so the top-k holds admitted rows only.
      * Each hit is then re-checked with `canReadMessage` against its graph facts, the rule
-     * `getMessage` applies; a row whose metadata disagrees with its graph is dropped and logged.
+     * `getMessage` applies; a row whose metadata disagrees with its graph, or whose projection has a
+     * gap, is dropped and logged. Recall never repairs: `getMessage` stays the on-demand repair path.
      * Content comes from the graph node, so a retracted message shows its placeholder. Archive is
      * the recipient's own view and does not filter recall.
      *

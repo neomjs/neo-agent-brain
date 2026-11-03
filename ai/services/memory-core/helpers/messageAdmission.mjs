@@ -60,7 +60,7 @@ export function admissionWhere(me, grants = []) {
               {from: self},
               {to: self},
               {recipients: {$contains: self}},
-              {cohort: 'legacy-unknown'},
+              {$and: [{kind: 'broadcast'}, {cohort: 'legacy-unknown'}]},
               {$and: [{kind: 'broadcast'}, {recipientCount: 0}]}
           ];
 
