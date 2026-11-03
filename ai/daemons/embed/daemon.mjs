@@ -38,7 +38,7 @@ import {execSync} from 'child_process';
 
 import StorageRouter                       from '../../services/memory-core/managers/StorageRouter.mjs';
 import {DAEMON_EXIT_CRASH, DAEMON_EXIT_OK} from '../shared/daemonExit.mjs';
-import {MESSAGE_WAL_STORE, startDrainLoop} from './drainCycle.mjs';
+import {startEmbedDrainLoops}              from './drainCycle.mjs';
 import {acquireDrainLock}                  from './drainLock.mjs';
 import {getMissingMemoryWalLeaves}         from '../../services/memory-core/helpers/memoryWalStore.mjs';
 import {getMissingMessageWalLeaves}        from '../../services/memory-core/helpers/messageWalStore.mjs';
@@ -329,22 +329,13 @@ async function main() {
 
     // The shared loop host (`drainCycle.mjs`) owns cycle scheduling, per-cycle config/collection
     // resolution, and failure absorption; this process wrapper owns PID/lifecycle/logging only.
-    startDrainLoop({
-        getCollection    : () => StorageRouter.getMemoryCollection(),
-        getConfig        : () => memoryCoreConfig.memoryWal,
-        expectedDimension: memoryCoreConfig.vectorDimension,
-        log              : writeLog
-    });
-
-    // The message loop claims no lock of its own. The message WAL directory's `.drain-lock` belongs
-    // to the message daemon, which writes the graph markers there; this loop writes only the embed
-    // markers, and this daemon's singleton is what keeps it the sole embed drainer.
-    startDrainLoop({
-        getCollection    : () => StorageRouter.getMessageCollection(),
-        getConfig        : () => memoryCoreConfig.messageWal,
-        expectedDimension: memoryCoreConfig.vectorDimension,
-        store            : MESSAGE_WAL_STORE,
-        log              : writeLog
+    startEmbedDrainLoops({
+        getMemoryCollection : () => StorageRouter.getMemoryCollection(),
+        getMessageCollection: () => StorageRouter.getMessageCollection(),
+        getMemoryConfig     : () => memoryCoreConfig.memoryWal,
+        getMessageConfig    : () => memoryCoreConfig.messageWal,
+        expectedDimension   : memoryCoreConfig.vectorDimension,
+        log                 : writeLog
     });
 }
 
