@@ -70,6 +70,38 @@ test.describe('extractMemoryCoreCollectionData — MC stored-embedding repair ex
         expect(result.data.embeddings[result.data.ids.indexOf('a')]).toEqual([1]);    // stored, untouched
     });
 
+    test('a turn stored without its document re-embeds from its reconstruction; the extract carries null, never the reconstruction (#128)', async () => {
+        const turn     = {type: 'agent-interaction', prompt: 'p', thought: 't', response: 'r'};
+        const rows     = {i: {embedding: [1], metadata: turn}, m: {metadata: turn}};
+        const embedded = [];
+
+        const result = await extractMemoryCoreCollectionData({
+            collection      : makeCollection(rows),
+            allIds          : ['i', 'm'],
+            missingVectorIds: ['m'],
+            embedFn         : async docs => { embedded.push(...docs); return docs.map(() => [7]); }
+        });
+
+        expect(result.counts).toEqual({total: 2, intact: 1, reEmbedded: 1, unrecoverable: 0});
+        expect(embedded).toEqual(['User Prompt: p\nAgent Thought: t\nAgent Response: r']);
+        expect(result.data.documents).toEqual([null, null]);
+    });
+
+    test('a type-only or partial turn without a document is unrecoverable, never re-embedded from `undefined` (#128)', async () => {
+        const rows     = {t: {metadata: {type: 'agent-interaction'}}, p: {metadata: {type: 'agent-interaction', prompt: 'p', thought: 't'}}};
+        const embedded = [];
+
+        const result = await extractMemoryCoreCollectionData({
+            collection      : makeCollection(rows),
+            allIds          : ['t', 'p'],
+            missingVectorIds: ['t', 'p'],
+            embedFn         : async docs => { embedded.push(...docs); return docs.map(() => [7]); }
+        });
+
+        expect(result.counts).toEqual({total: 2, intact: 0, reEmbedded: 0, unrecoverable: 2});
+        expect(embedded).toEqual([]);
+    });
+
     test('can stream recovered batches without retaining full collection data in memory', async () => {
         const rows    = {a: {embedding: [1], document: 'da', metadata: {}}, m: {document: 'dm', metadata: {k: 1}}};
         const batches = [];

@@ -393,6 +393,34 @@ test.describe('Memory_DatabaseService — Chroma preserve-live parity for #impor
         }
     });
 
+    test('merge and replace modes: a turn exported without its document is written without one (#128)', async () => {
+        const turn             = {type: 'agent-interaction', prompt: 'p', thought: 't', response: 'r'};
+        const originalTruncate = Memory_DatabaseService.truncateDatabase.bind(Memory_DatabaseService);
+        Memory_DatabaseService.truncateDatabase = async () => ({message: 'stubbed for the #128 replace-mode case'});
+
+        try {
+            for (const mode of ['merge', 'replace']) {
+                const memoryCollection = buildFakeCollection({name: `fake-memories-${mode}`, liveIds: []});
+                Memory_StorageRouter.getMemoryCollection  = async () => memoryCollection;
+                Memory_StorageRouter.getSummaryCollection = async () => buildFakeCollection({name: `fake-summaries-${mode}`});
+
+                const backupFile = path.join(tmpDir, `memory-backup-turn-${mode}-${Date.now()}.jsonl`);
+                await writeJsonl(backupFile, [
+                    {id: 'doc-1',  embedding: validEmbedding, metadata: {tag: 'N'}, document: 'd1'},
+                    {id: 'turn-1', embedding: validEmbedding, metadata: turn,       document: null}
+                ]);
+
+                const result = await Memory_DatabaseService.manageDatabaseBackup({action: 'import', file: backupFile, mode});
+                const writes = mode === 'merge' ? memoryCollection.addCalls : memoryCollection.upsertCalls;
+
+                expect(result.counts.memories.inserted).toBe(2);
+                expect(writes.map(payload => [payload.ids, 'documents' in payload])).toEqual([[['doc-1'], true], [['turn-1'], false]]);
+            }
+        } finally {
+            Memory_DatabaseService.truncateDatabase = originalTruncate;
+        }
+    });
+
     test('replace mode: streams 501 records through bounded 250-row upserts', async () => {
         const memoryCollection = buildFakeCollection({name: 'fake-memories', liveIds: []});
         Memory_StorageRouter.getMemoryCollection  = async () => memoryCollection;

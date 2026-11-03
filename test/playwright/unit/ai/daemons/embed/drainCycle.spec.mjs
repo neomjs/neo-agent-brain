@@ -72,16 +72,16 @@ test.describe('Neo.ai.daemons.embed.drainCycle', () => {
     const VALID_VECTOR     = [0.11, 0.22, 0.33, 0.44];
 
     /**
-     * Controllable content-store fake: records every add/get/delete, stores metadata + (simulated
-     * auto-embed) vectors by id, and exposes `failNextAdds` (transient whole-batch failures),
-     * `failNextGets` (transient verify-read failures), `onAdd` (per-payload hook), and `noVectorFor`
-     * — ids whose `add` "succeeds" but persists NO vector, simulating the non-atomic auto-embed that
-     * produces the metadata-only corruption row.
+     * Controllable content-store fake: records every embed/add/get/delete, stores metadata + vectors by
+     * id, and exposes `failNextAdds` (transient whole-batch failures), `failNextGets` (transient
+     * verify-read failures), `onEmbed` / `onAdd` (per-call hooks), and `noVectorFor` — ids whose `add`
+     * "succeeds" but persists NO vector, the metadata-only corruption row.
      */
     const createFakeCollection = () => {
         const fake = {
             store               : new Map(),
             vectors             : new Map(),
+            embedCalls          : [],
             addCalls            : [],
             getCalls            : [],
             deleteCalls         : [],
@@ -89,8 +89,14 @@ test.describe('Neo.ai.daemons.embed.drainCycle', () => {
             failNextGets        : 0,
             noVectorFor         : new Set(),
             throwVectorAbsentFor: new Set(),
+            onEmbed             : null,
             onAdd               : null,
-            add                 : async payload => {
+            embed               : async (texts, isQuery) => {
+                fake.embedCalls.push({texts, isQuery});
+                if (fake.onEmbed) await fake.onEmbed(texts);
+                return texts.map(() => [...VALID_VECTOR]);
+            },
+            add: async payload => {
                 fake.addCalls.push(payload);
                 if (fake.onAdd) await fake.onAdd(payload);
                 if (fake.failNextAdds > 0) {
@@ -99,9 +105,9 @@ test.describe('Neo.ai.daemons.embed.drainCycle', () => {
                 }
                 payload.ids.forEach((id, i) => {
                     fake.store.set(id, payload.metadatas[i]);
-                    // Simulate Chroma auto-embed: a valid vector lands UNLESS this id is marked non-atomic
-                    // (metadata persists, vector does not) — the metadata-only corruption shape.
-                    if (!fake.noVectorFor.has(id)) fake.vectors.set(id, [...VALID_VECTOR]);
+                    // Chroma embeds documents passed without embeddings; a valid vector lands UNLESS this
+                    // id is marked (metadata persists, vector does not) — the metadata-only corruption shape.
+                    if (!fake.noVectorFor.has(id)) fake.vectors.set(id, payload.embeddings?.[i] ?? [...VALID_VECTOR]);
                 });
             },
             get: async ({ids}) => {
@@ -421,12 +427,14 @@ test.describe('Neo.ai.daemons.embed.drainCycle', () => {
         expect(failed[0].error.message).toContain('poison');
     });
 
-    test('embedBatch owns WAL attribution only around its collection writes', async () => {
+    test('embedBatch owns WAL attribution only around its embed and its collection writes', async () => {
         const records    = [{...record('x', Date.now()), segmentKey: 'unused'}];
         const collection = createFakeCollection();
         const contexts   = [];
+        const walStage   = {operationStage: 'mc-wal-drain-embedding', service: 'memory-core'};
 
-        collection.onAdd = () => contexts.push(getProviderActivityContext());
+        collection.onEmbed = () => contexts.push(getProviderActivityContext());
+        collection.onAdd   = () => contexts.push(getProviderActivityContext());
 
         await embedBatch({
             collection,
@@ -437,11 +445,64 @@ test.describe('Neo.ai.daemons.embed.drainCycle', () => {
             log          : () => {}
         });
 
-        expect(contexts).toEqual([{
-            operationStage: 'mc-wal-drain-embedding',
-            service       : 'memory-core'
-        }]);
+        // The embed is the provider call, so it is the one the stage exists to attribute.
+        expect(contexts).toEqual([walStage, walStage]);
         expect(getProviderActivityContext()).toBeNull();
+    });
+
+    // A turn as `MemoryService.addMemory` writes it: `type: 'agent-interaction'` marks its document as derived.
+    const turnRecord = id => {
+        const base = record(id, Date.now());
+        return {...base, metadata: {...base.metadata, type: 'agent-interaction'}, segmentKey: 'unused'};
+    };
+
+    test('embedBatch adds turns with explicit embeddings and no documents, batch and per-record (#128)', async () => {
+        const records    = ['x', 'y'].map(turnRecord);
+        const collection = createFakeCollection();
+
+        collection.failNextAdds = 1;   // the batch add fails once, so the per-record pass runs too
+
+        const {succeeded} = await embedBatch({
+            collection,
+            records,
+            maxRetries   : 0,
+            backoffBaseMs: 1,
+            sleep        : async () => {},
+            log          : () => {}
+        });
+
+        expect(succeeded.map(r => r.id)).toEqual(['x', 'y']);
+        expect(collection.addCalls).toHaveLength(3);
+        collection.addCalls.forEach(payload => {
+            expect(payload).not.toHaveProperty('documents');
+            expect(payload.embeddings).toHaveLength(payload.ids.length);
+        });
+        expect(collection.embedCalls).toEqual([
+            {texts: ['doc-x', 'doc-y'], isQuery: false},
+            {texts: ['doc-x'],          isQuery: false},
+            {texts: ['doc-y'],          isQuery: false}
+        ]);
+    });
+
+    test('embedBatch keeps the document of a record that is not a turn, such as an A2A message (#128)', async () => {
+        const message    = {...record('m', Date.now()), metadata: {kind: 'direct', sessionId: 'session-m'}, segmentKey: 'unused'};
+        const collection = createFakeCollection();
+
+        await embedBatch({
+            collection,
+            records      : [turnRecord('t'), message],
+            maxRetries   : 0,
+            backoffBaseMs: 1,
+            sleep        : async () => {},
+            log          : () => {}
+        });
+
+        // One embed for the batch; the message's content is stored, the turn's derivation is not.
+        expect(collection.embedCalls).toEqual([{texts: ['doc-t', 'doc-m'], isQuery: false}]);
+        expect(collection.addCalls.map(payload => [payload.ids, payload.documents])).toEqual([
+            [['m'], ['doc-m']],
+            [['t'], undefined]
+        ]);
     });
 
     test('embedBatch: provider contention yields the cycle — one attempt, no isolation pass (#16012)', async () => {

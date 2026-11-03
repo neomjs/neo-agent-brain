@@ -52,6 +52,10 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
         linkNodesCalls     = [];
         upsertNodeCalls = [];
         spyCollection = {
+            // The WAL drain embeds before `add`, through the collection's own embedding function.
+            async embed(texts) {
+                return texts.map(() => [0]);
+            },
             async add(payload) {
                 collectionAddCalls.push(payload);
             }

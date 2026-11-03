@@ -3,6 +3,7 @@ import {mkdtemp, readFile, rm} from 'fs/promises';
 import os                      from 'os';
 import path                    from 'path';
 import {
+    addCollectionData,
     anyRepairNonClean,
     applyAutonomousSettlement,
     assertDefragTargetSupported,
@@ -17,6 +18,27 @@ import {
     writeDefragState
 } from '../../../../../../ai/scripts/maintenance/defragChromaDB.mjs';
 import AiConfig                     from '../../../../../../ai/mcp/server/memory-core/config.template.mjs';
+
+test('addCollectionData keeps a turn stored without its document without one and sanitizes every other document (#128)', async () => {
+    const adds = [];
+
+    await addCollectionData({
+        collection: {add: async payload => { adds.push(payload); }},
+        data      : {
+            ids       : ['t1', 's1', 'x1'],
+            embeddings: [[0.1], [0.2], [0.3]],
+            metadatas : [{type: 'agent-interaction'}, {type: 'summary'}, {type: 'summary'}],
+            documents : [null, 'summary', null]
+        },
+        writeProgress: () => {},
+        log          : () => {}
+    });
+
+    expect(adds).toEqual([
+        {ids: ['s1', 'x1'], embeddings: [[0.2], [0.3]], metadatas: [{type: 'summary'}, {type: 'summary'}], documents: ['summary', '']},
+        {ids: ['t1'],       embeddings: [[0.1]],        metadatas: [{type: 'agent-interaction'}]}
+    ]);
+});
 
 /**
  * AC4 — the Memory Core defrag-wiring orchestration: full (uncapped) enumeration ->

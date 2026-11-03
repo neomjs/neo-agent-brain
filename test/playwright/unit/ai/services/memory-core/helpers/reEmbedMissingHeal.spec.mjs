@@ -69,6 +69,26 @@ test.describe('Neo.ai.services.memory-core.reEmbedMissingHeal', () => {
         expect(collection.upserts[0].documents).toEqual(['document a', 'document b']);
     });
 
+    test('a turn stored without its document re-embeds from its reconstruction and is written back without one (#128)', async () => {
+        const turn       = {type: 'agent-interaction', prompt: 'p', thought: 't', response: 'r'};
+        const collection = mockCollection({
+            a: {document: null,         metadata: turn},
+            b: {document: 'document b', metadata: {kind: 'turn'}}
+        });
+        const embedded   = [];
+        const heal       = makeHeal({
+            embedFn         : async docs => { embedded.push(...docs); return docs.map(() => validVector()); },
+            missingVectorIds: ['a', 'b']
+        });
+
+        expect((await heal({collection, now: 1_000})).status).toBe('healed');
+        expect(embedded).toEqual(['User Prompt: p\nAgent Thought: t\nAgent Response: r', 'document b']);
+        expect(collection.upserts).toEqual([
+            {ids: ['b'], embeddings: [validVector()], metadatas: [{kind: 'turn'}], documents: ['document b']},
+            {ids: ['a'], embeddings: [validVector()], metadatas: [turn]}
+        ]);
+    });
+
     test('no missing vectors → clean no-op: never a false heal, never a write', async () => {
         const collection = mockCollection({a: {document: 'document a'}});
         const heal       = makeHeal({embedFn: async docs => docs.map(() => validVector()), missingVectorIds: []});

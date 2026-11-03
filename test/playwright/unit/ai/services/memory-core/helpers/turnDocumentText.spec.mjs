@@ -5,7 +5,9 @@ import {
     canonicalizeSessionTurnInput,
     composeTurnDocumentText,
     computeSessionTurnInputRevision,
-    resolveTurnDocumentForRead
+    isReconstructableTurn,
+    resolveTurnDocumentForRead,
+    toChromaRecordSets
 } from '../../../../../../../ai/services/memory-core/helpers/turnDocumentText.mjs';
 
 // Pure derivation (no I/O). Composes the canonical turn-document text from a turn's split fields — the
@@ -155,4 +157,31 @@ test.describe('computeSessionTurnInputRevision — Dream raw-input frontier (#16
             metadatas: [metadata]
         })).toThrow(/equal lengths/)
     })
+});
+
+test.describe('isReconstructableTurn (#128)', () => {
+    test('requires the turn type and all three split fields as strings', () => {
+        expect(isReconstructableTurn({type: 'agent-interaction', prompt: 'p', thought: 't', response: 'r'})).toBe(true);
+        expect(isReconstructableTurn({type: 'agent-interaction', prompt: '',  thought: '',  response: ''})).toBe(true);
+        expect(isReconstructableTurn({type: 'agent-interaction'})).toBe(false);
+        expect(isReconstructableTurn({type: 'agent-interaction', prompt: 'p', thought: 't'})).toBe(false);
+        expect(isReconstructableTurn({type: 'summary', prompt: 'p', thought: 't', response: 'r'})).toBe(false);
+        expect(isReconstructableTurn(null)).toBe(false);
+    });
+});
+
+test.describe('toChromaRecordSets (#128)', () => {
+    const row = (id, document, type = 'agent-interaction') => ({id, embedding: [0.1], metadata: {type}, document});
+
+    test('splits a mixed batch into a set with documents and a set without, never a null entry', () => {
+        expect(toChromaRecordSets([row('a', 'stored a'), row('b', null), row('c', '', 'summary')])).toEqual([
+            {ids: ['a', 'c'], embeddings: [[0.1], [0.1]], metadatas: [{type: 'agent-interaction'}, {type: 'summary'}], documents: ['stored a', '']},
+            {ids: ['b'],      embeddings: [[0.1]],        metadatas: [{type: 'agent-interaction'}]}
+        ]);
+    });
+
+    test('returns one set when every row agrees, and none for no rows', () => {
+        expect(toChromaRecordSets([row('a', null)])).toEqual([{ids: ['a'], embeddings: [[0.1]], metadatas: [{type: 'agent-interaction'}]}]);
+        expect(toChromaRecordSets([])).toEqual([]);
+    });
 });

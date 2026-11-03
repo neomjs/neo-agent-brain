@@ -76,6 +76,24 @@ class CollectionProxy extends Base {
         return primary?.id ?? null
     }
 
+    /**
+     * @summary Embeds texts with the PRIMARY collection's embedding function, the one its `add` uses for
+     * documents passed without embeddings, so a caller can embed once and add explicit vectors. The WAL
+     * drain stores turns without their documents this way. Like `get()`, the primary answers.
+     * @param {String[]} inputs Texts to embed.
+     * @param {Boolean} [isQuery=false] Whether the texts are queries rather than documents.
+     * @returns {Promise<Number[][]>} One vector per input.
+     */
+    async embed(inputs, isQuery = false) {
+        const [primary] = await this.getCollections();
+
+        if (!primary) {
+            throw new Error(`[CollectionProxy] embed() failed: No underlying collection available for type '${this.collectionType}'`);
+        }
+
+        return primary.embed(inputs, isQuery);
+    }
+
     async add(args) {
         const collections = await this.getCollections();
         await Promise.all(collections.map(c => c.add(args)));
