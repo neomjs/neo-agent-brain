@@ -358,6 +358,27 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — the Round-
         });
     }
 
+    test('nested bold evidence does not hide a later micro finding', () => {
+        const actions = ['**RA-1:** First thing.', '**RA-2:** Second thing.'],
+              prior   = {
+                  ...PRIOR_RC,
+                  body: microRc(['**Findings:**', '- [ ] ' + actions[0],
+                      '  - **Why:** The evidence belongs to the first finding.',
+                      '- [ ] ' + actions[1]]).body + '\n- [x] PR body attribution: checked'
+              },
+              rows = actions.map((action, index) =>
+                  '| RA-' + (index + 1) + ' | ' + action + ' | ADDRESSED | repaired |');
+
+        expect(getRound2DispositionRelationFailure({
+            body: round2With(rows), reviews: [prior], state: 'APPROVED'
+        })).toBeNull();
+
+        expect(getRound2DispositionRelationFailure({
+            body: round2With(rows.slice(0, 1)), reviews: [prior], state: 'APPROVED'
+        })?.message, 'nested evidence must not allow a later finding to disappear')
+            .toContain('against the prior round');
+    });
+
     test('a micro review with no findings cannot turn its attribution check into an action', () => {
         const attribution = 'PR body attribution: Authored by is the only attribution.',
               prior       = {
