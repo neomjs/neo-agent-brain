@@ -29,6 +29,8 @@ import BaseServer                                  from '../../../../../../ai/mc
 import {buildOutputZodSchema, toOpenApiJsonSchema} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
 // Static import is safe: a pure classifier with no imports of its own, so it pulls in no Neo graph.
 import {collisionPreventionTag} from '../../../../../../ai/services/shared/a2aCollisionTags.mjs';
+// Pure as well: identity normalization only.
+import {admissionWhere}         from '../../../../../../ai/services/memory-core/helpers/messageAdmission.mjs';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -754,6 +756,49 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         expect(deletes[0].args).toEqual({ids: [receipt.messageId]});
         // The marker preceded the delete: from that moment the drain can no longer embed the old text.
         expect(deletes[0].pendingAtDelete).not.toContain(receipt.messageId);
+    });
+
+    test('#1445: query_messages filters by admission and re-checks every hit against its graph', async () => {
+        GraphService.upsertNode({id: '@carol', type: 'AgentIdentity', name: 'Carol', properties: {accountType: 'agent'}});
+        GraphService.upsertNode({id: '@dave',  type: 'AgentIdentity', name: 'Dave',  properties: {accountType: 'agent'}});
+
+        await RequestContextService.run({agentIdentityNodeId: '@bob'},  () => PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'}));
+        await RequestContextService.run({agentIdentityNodeId: '@dave'}, () => PermissionService.grantPermission({to: '@carol', scope: 'CAN_REPLY_TO'}));
+
+        const send      = (from, to, subject) => RequestContextService.run({agentIdentityNodeId: from}, () => callMemoryCoreTool('add_message', {to, subject, body: `${subject} body`})),
+              mine      = await send('@alice', '@bob',  'per-ray sun'),
+              retracted = await send('@alice', '@bob',  'retract me'),
+              foreign   = await send('@carol', '@dave', 'per-ray sun for dave');
+
+        await expect.poll(async () => (await readPendingMessageWalRecords({dir: messageWalDir})).length).toBe(0);
+
+        const originalGetMessageCollection = StorageRouter.getMessageCollection,
+              queries                      = [];
+
+        // The stub returns rows a correct filter would refuse, so only the graph re-check stands between them and @bob.
+        StorageRouter.getMessageCollection = async () => ({
+            delete: async () => {},
+            query : async args => (queries.push(args), {
+                ids      : [[mine.messageId, foreign.messageId, 'MESSAGE:absent', retracted.messageId]],
+                distances: [[0.1, 0.2, 0.3, 0.4]]
+            })
+        });
+
+        let result;
+
+        try {
+            await RequestContextService.run({agentIdentityNodeId: '@alice'}, () => MailboxService.deleteMessage({messageId: retracted.messageId}));
+            result = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => callMemoryCoreTool('query_messages', {query: 'per-ray sun', nResults: 4}));
+        } finally {
+            StorageRouter.getMessageCollection = originalGetMessageCollection;
+        }
+
+        expect(queries).toHaveLength(1);
+        expect(queries[0]).toMatchObject({queryTexts: ['per-ray sun'], nResults: 4, where: admissionWhere('@bob')});
+        expect(result.messages.map(message => message.messageId)).toEqual([mine.messageId, retracted.messageId]);
+        expect(result.messages[0]).toMatchObject({subject: 'per-ray sun', body: 'per-ray sun body', from: '@alice', to: '@bob', distance: 0.1});
+        // A retracted message answers with its graph placeholder, never the text a stale vector held.
+        expect(result.messages[1]).toMatchObject({subject: '[retracted by sender]', body: '[retracted by sender]', distance: 0.4});
     });
 
     for (const deferred of [false, true]) {

@@ -1,7 +1,8 @@
 import fs                                  from 'fs/promises';
 import path                                from 'path';
-import {UNKNOWN_PLANE_ID, isOpaquePlaneId} from '../../../planeConfig.mjs';
-import {withAppendLock}                    from './walAppendLock.mjs';
+import {UNKNOWN_PLANE_ID, isOpaquePlaneId}       from '../../../planeConfig.mjs';
+import {normalizeMailboxIdentityForComparison} from './mailboxReadStateClassifier.mjs';
+import {withAppendLock}                          from './walAppendLock.mjs';
 
 /**
  * @summary Durable JSONL write-ahead store for accepted A2A mailbox messages.
@@ -310,13 +311,14 @@ export async function appendMessageWalEmbedMarker({id, segmentKey, embeddedAt, r
 /**
  * @summary Maps one accepted message WAL record to the embed drain's record shape.
  *
- * The document is the subject and body. The metadata is what message admission filters on, read
+ * The document is the subject and body. The metadata is what `admissionWhere` filters on, read
  * from the record's immutable send-time routing rather than the graph: sender, destination and,
- * for a broadcast, its cohort. A broadcast that carries its send-time audience is `known` and lists
- * it in `recipients`; one without it (a row older than the audience snapshot) is `legacy-unknown`
- * and lists nobody, so no filter can manufacture its readers. An empty audience is omitted rather
- * than stored as `[]`: admission matches `recipients` with `$contains`, and an absent key matches
- * no one.
+ * for a broadcast, its cohort. Identities are stored canonical, so admission compares one spelling.
+ * A broadcast that carries its send-time audience is `known`, counts it in `recipientCount` and
+ * lists it in `recipients`; one without it (a row older than the audience snapshot) is
+ * `legacy-unknown`. An empty audience is counted but not listed, because Chroma rejects `[]`. The
+ * count is what admits a known-zero broadcast to everyone, as `getMessage` does, since a `where`
+ * clause cannot test for a missing key.
  *
  * @param {Object} record Accepted message WAL record (`graphProjectionVersion: 1`).
  * @param {String} segmentKey WAL segment key containing the record.
@@ -328,8 +330,8 @@ export function toMessageEmbedRecord(record, segmentKey) {
           broadcast          = routing.to === 'AGENT:*',
           audience           = routing.broadcastRecipients,
           metadata           = {
-              from  : routing.sentBy,
-              to    : routing.to,
+              from  : normalizeMailboxIdentityForComparison(routing.sentBy),
+              to    : normalizeMailboxIdentityForComparison(routing.to),
               kind  : broadcast ? 'broadcast' : 'direct',
               sentAt: record.timestamp
           };
@@ -337,8 +339,12 @@ export function toMessageEmbedRecord(record, segmentKey) {
     if (broadcast) {
         metadata.cohort = Array.isArray(audience) ? 'known' : 'legacy-unknown';
 
-        if (Array.isArray(audience) && audience.length > 0) {
-            metadata.recipients = [...audience]
+        if (Array.isArray(audience)) {
+            metadata.recipientCount = audience.length;
+
+            if (audience.length > 0) {
+                metadata.recipients = audience.map(normalizeMailboxIdentityForComparison)
+            }
         }
     }
 
