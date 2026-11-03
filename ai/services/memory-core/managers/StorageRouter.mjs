@@ -70,7 +70,7 @@ class StorageRouter extends Base {
 
     /**
      * @summary Resolves the A2A message collection, which the embed daemon's message drain writes.
-     * No query re-ranker: the admission-scoped read surface that would use one does not exist yet.
+     * No query re-ranker: `MailboxService.queryMessages` ranks by distance inside its admission filter.
      * @returns {Promise<CollectionProxy>} A proxy respecting aiConfig.engine
      */
     async getMessageCollection() {

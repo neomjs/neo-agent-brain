@@ -377,17 +377,31 @@ test.describe('Neo.ai.services.memory-core.helpers.messageWalStore', () => {
         });
 
         const known = toMessageEmbedRecord(message('MESSAGE:known', {to: 'AGENT:*', broadcastRecipients: ['@bob', '@carol']}), '2026-07-30');
-        expect(known.metadata).toEqual({from: '@alice', to: 'AGENT:*', kind: 'broadcast', sentAt: DAY, cohort: 'known', recipients: ['@bob', '@carol']});
+        expect(known.metadata).toEqual({from: '@alice', to: 'AGENT:*', kind: 'broadcast', sentAt: DAY, cohort: 'known', recipientCount: 2, recipients: ['@bob', '@carol']});
 
-        // A known audience of zero lists nobody: an absent key matches no `$contains` filter.
+        // A known audience of zero is counted, not listed: the count is what admits it to everyone.
         const knownZero = toMessageEmbedRecord(message('MESSAGE:zero', {to: 'AGENT:*', broadcastRecipients: []}), '2026-07-30');
-        expect(knownZero.metadata.cohort).toBe('known');
+        expect(knownZero.metadata).toMatchObject({cohort: 'known', recipientCount: 0});
         expect(knownZero.metadata).not.toHaveProperty('recipients');
 
-        // A row older than the audience snapshot is legacy, never given guessed readers.
+        // A row older than the audience snapshot is legacy, never given guessed readers or a count.
         const legacy = toMessageEmbedRecord(message('MESSAGE:legacy', {to: 'AGENT:*', broadcastRecipients: undefined}), '2026-07-30');
         expect(legacy.metadata.cohort).toBe('legacy-unknown');
         expect(legacy.metadata).not.toHaveProperty('recipients');
+        expect(legacy.metadata).not.toHaveProperty('recipientCount');
+    });
+
+    test('toMessageEmbedRecord stores identities canonical, so admission compares one spelling (#1445)', () => {
+        const record = (id, routing) => toMessageEmbedRecord({
+            id,
+            timestamp: DAY,
+            message  : {id, type: 'MESSAGE', name: id, properties: {subject: 's', bodyText: 'b'}},
+            routing
+        }, '2026-07-30').metadata;
+
+        expect(record('MESSAGE:direct', {sentBy: 'AGENT:@alice', to: 'bob'})).toMatchObject({from: '@alice', to: '@bob'});
+        expect(record('MESSAGE:broadcast', {sentBy: '@@alice', to: 'AGENT:*', broadcastRecipients: ['AGENT:bob', '@@carol']}))
+            .toMatchObject({from: '@alice', to: 'AGENT:*', recipients: ['@bob', '@carol']});
     });
 
     test('readPendingMessageWalEmbedRecords returns unmarked records in drain shape and skips embedded and retracted ones (#1439)', async () => {

@@ -3022,6 +3022,89 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /mailbox/messages/query:
+    post:
+      summary: Query Messages
+      operationId: query_messages
+      x-neo-tool-tier: read
+      x-pass-as-object: true
+      x-annotations:
+        readOnlyHint: true
+      x-neo-tool-summary: Semantic recall over A2A messages you can open, ranked by similarity; list_messages filters and sorts.
+      description: |
+        Searches A2A messages by meaning, returning only messages `get_message` would open for you:
+        - your own sends;
+        - direct messages to you, or to an inbox you hold `CAN_READ_INBOX_OF` on;
+        - broadcasts delivered to you, or open to everyone.
+
+        `list_messages` filters and sorts by fields, while this tool ranks by semantic similarity.
+
+        Content is read from the graph, so a retracted message shows its placeholder. A message becomes searchable once the embed drain has indexed it; until then `add_message` reports `visibility.state: 'embed-deferred'`.
+      tags: [Mailbox]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  description: Natural-language search query.
+                nResults:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                  default: 10
+                  description: Maximum messages to return.
+                fromIdentity:
+                  type: string
+                  description: Only messages from this sender.
+                threadId:
+                  type: string
+                  description: Only messages in this thread.
+      responses:
+        '200':
+          description: Admitted messages, nearest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  _channelSeparation:
+                    type: string
+                    description: "Security annotation marking the payload as DATA, not executable COMMANDS."
+                  query:
+                    type: string
+                  count:
+                    type: integer
+                  messages:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        messageId:
+                          type: string
+                        subject:
+                          type: string
+                        body:
+                          type: string
+                        from:
+                          type: string
+                        to:
+                          type: string
+                        sentAt:
+                          type: string
+                        distance:
+                          type: number
+        '500':
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /mailbox/messages/read:
     post:
       summary: Mark Message Read

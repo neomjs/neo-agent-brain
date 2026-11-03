@@ -640,7 +640,8 @@ const serviceMapping = {
     get_community_activity_content         : getCommunityActivityContent,
     list_messages                          : listMessagesTool,
     get_message                            : MailboxService         .getMessage              .bind(MailboxService),
-    get_rem_pipeline_state                 : HealthService          .getRemPipelineState     .bind(HealthService),
+    query_messages                         : MailboxService         .queryMessages           .bind(MailboxService),
+    get_rem_pipeline_state                : HealthService          .getRemPipelineState     .bind(HealthService),
     get_sqlite_holder_diagnostics:
                               HealthService          .getSqliteHolderDiagnostics.bind(HealthService),
     get_deployment_state_snapshot: readDeploymentInspection,
