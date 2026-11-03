@@ -632,6 +632,17 @@ export function resolveFleetPlaneBearer({aiConfig = AiConfig, readFile = null} =
 }
 
 /**
+ * @summary Whether the deployment declares a plane bearer in either home, readable or not: the
+ * launcher's credential pipe refuses to sit beside a declared one.
+ * @param {Object} [options]
+ * @param {Object} [options.aiConfig=AiConfig] Resolved Tier-1 config tree.
+ * @returns {Boolean}
+ */
+export function declaresFleetPlaneBearer({aiConfig = AiConfig} = {}) {
+    return [aiConfig.fleet.planeBearer, aiConfig.fleet.planeBearerFile].some(home => home.trim() !== '')
+}
+
+/**
  * @summary The credential-class non-alias teeth: a resolved plane bearer that IS the
  * deployment's bootstrap/healthcheck admission token is refused. The ledger's load-bearing rule
  * (class 3 ≠ bootstrap/healthcheck PAT) is otherwise only prose — this makes an aliased

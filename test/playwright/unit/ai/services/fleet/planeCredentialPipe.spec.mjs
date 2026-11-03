@@ -304,25 +304,33 @@ test.describe('the fleet server takes its plane bearer from the launcher\'s pipe
         }
     });
 
-    test('a refused boot frame is answered on the pipe before the process exits', async () => {
-        const stranger = startFleet(await fleetEnv()),
-              twoHomes = startFleet(await fleetEnv({NEO_FLEET_PLANE_BEARER: SUCCESSOR}));
+    const twoHomes = 'fleet.planeCredentialFd and fleet.planeBearer / fleet.planeBearerFile both name the plane bearer; with the pipe set, it is the only home';
 
-        stranger.send({bearer: STRANGER, bearerClass: 'github-pat'});
-        twoHomes.send({bearer: BOOT, bearerClass: 'github-pat'});
+    for (const {name, env = () => ({}), frame = {bearer: BOOT, bearerClass: 'github-pat'}, refusal} of [
+        {name: 'a bearer for another account', frame: {bearer: STRANGER, bearerClass: 'github-pat'}, refusal: {reason: 'plane identity mismatch', resolvedIdentity: '@neo-pipe-stranger', expectedIdentity: VIEWER}},
+        {name: 'a configured bearer beside the pipe', env: () => ({NEO_FLEET_PLANE_BEARER: SUCCESSOR}), refusal: {reason: twoHomes}},
+        {name: 'a configured bearer file that does not exist', env: () => ({NEO_FLEET_PLANE_BEARER_FILE: path.join(root, 'absent-bearer')}), refusal: {reason: twoHomes}},
+        {name: 'a configured bearer file that is empty', env: () => ({NEO_FLEET_PLANE_BEARER_FILE: path.join(root, 'admission-token-empty')}), refusal: {reason: twoHomes}},
+        {name: 'a bearer the viewer mint aliases', env: () => ({NEO_FLEET_VIEWER_MC_AUTHORIZATION: BOOT}), refusal: {reason: expect.stringMatching(/viewerMcAuthorization resolves to the same bytes as the plane-MCP bearer/)}},
+        {name: 'a non-forge bearer a fleet-surface mint aliases', env: () => ({NEO_FLEET_PLANE_ADMISSION_BEARER: BOOT}), frame: {bearer: BOOT, bearerClass: ''}, refusal: {reason: expect.stringMatching(/planeAdmissionBearer resolves to the same bytes as the plane-MCP bearer/)}}
+    ]) {
+        test(`${name} is refused on the pipe at boot, and the process exits before its transport starts`, async () => {
+            fs.writeFileSync(path.join(root, 'admission-token-empty'), '');
 
-        expect(await answer(stranger, 1)).toEqual({state: 'refused', reason: 'plane identity mismatch', resolvedIdentity: '@neo-pipe-stranger', expectedIdentity: VIEWER});
-        expect(await answer(twoHomes, 1)).toEqual({
-            state : 'refused',
-            reason: 'fleet.planeCredentialFd and fleet.planeBearer / fleet.planeBearerFile both name the plane bearer; with the pipe set, it is the only home'
-        });
+            const fleet = startFleet(await fleetEnv(env()));
 
-        await expect.poll(() => [stranger.child.exitCode, twoHomes.child.exitCode]).toEqual([1, 1]);
+            fleet.send(frame);
 
-        for (const bearer of BEARERS) {
-            expect(stranger.log() + twoHomes.log()).not.toContain(bearer)
-        }
-    });
+            expect(await answer(fleet, 1)).toEqual({state: 'refused', ...refusal});
+            await expect.poll(() => fleet.child.exitCode).toBe(1);
+            expect(fleet.answers).toHaveLength(1);
+            expect(fleet.log()).not.toContain('[fleet] boot phase transport');
+
+            for (const bearer of BEARERS) {
+                expect(fleet.log()).not.toContain(bearer)
+            }
+        })
+    }
 
     test('with the fd unset, the configured bearer boots plane mode as before', async () => {
         const fleet = startFleet(await fleetEnv({NEO_FLEET_PLANE_CREDENTIAL_FD: '', NEO_FLEET_PLANE_BEARER: BOOT}));

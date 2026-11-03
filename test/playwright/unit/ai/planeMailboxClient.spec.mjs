@@ -845,6 +845,39 @@ test.describe('planeMailboxClient: rotate (a successor bearer without a new init
         expect(deleted(plane, 'sess-1')).toBe(true)
     });
 
+    test('an observer read still discovering the replaced session\'s schema settles before that session is torn down', async () => {
+        let release, entered;
+
+        const held            = new Promise(resolve => {release = resolve}),
+              discovering     = new Promise(resolve => {entered = resolve}),
+              {client, plane} = await initializedClient({
+                  identityResponder: sameViewer,
+                  toolListResponder: async ({call}) => {
+                      if (call.sessionHeader === 'sess-1') {
+                          entered();
+                          await held
+                      }
+
+                      return {tools: mailboxTools(['own'])}
+                  },
+                  toolResponder    : async ({call}) => ({payload: {served: call.sessionHeader}})
+              });
+
+        const inFlight = client.listMessages({observer: {scope: 'own'}});
+
+        await discovering;
+        await expect(client.rotate({credential: 'token-2'})).resolves.toMatchObject({ok: true});
+
+        expect(deleted(plane, 'sess-1'), 'the replaced session waits for the discovery riding it').toBe(false);
+
+        release();
+
+        await expect(inFlight).resolves.toEqual({served: 'sess-1'});
+        await client.close();
+
+        expect(deleted(plane, 'sess-1')).toBe(true)
+    });
+
     test('a re-proof that started with the replaced bearer never overwrites the successor', async () => {
         let lost = false, release, entered;
 

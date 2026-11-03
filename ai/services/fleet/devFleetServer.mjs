@@ -71,7 +71,7 @@ import {probeExistingFleetServer, resolveFleetBearer, resolveFleetViewer,
 import {assertFleetPlaneAdmissionBearerClass,
         assertFleetPlaneBearerClass,
         assertFleetViewerMcAuthorizationClass,
-        resolveFleetPlaneBearer}                                          from './fleetServer.mjs';
+        declaresFleetPlaneBearer}                                         from './fleetServer.mjs';
 import {openPlaneCredentialChannel, planeCredentialAnswer}               from './planeCredentialChannel.mjs';
 import {createPlaneFleetClient}   from './planeFleetClient.mjs';
 import {createPlaneMailboxClient} from './planeMailboxClient.mjs';
@@ -188,6 +188,19 @@ async function boot() {
         viewer;
 
     /**
+     * @summary The teeth a configured bearer meets, applied to a piped one, at boot and at every rotation.
+     * @param {Object} credential The piped `{bearer, bearerClass}`
+     * @returns {String} Its fleet-surface bearer
+     * @throws {Error} When the bearer aliases the admission token, the viewer mint or a fleet-surface mint
+     */
+    function assertPipedCredentialClass(credential) {
+        assertFleetPlaneBearerClass({planeCredential: credential});
+        assertFleetViewerMcAuthorizationClass({planeCredential: credential});
+
+        return assertFleetPlaneAdmissionBearerClass({planeCredential: credential})
+    }
+
+    /**
      * @summary Reads the boot bearer, the pipe's first frame, through the teeth a configured bearer
      * meets. A refusal is answered on the pipe before the process exits, so the launcher reads why.
      * @returns {Promise<Object>} The piped `{bearer, bearerClass}`
@@ -202,13 +215,13 @@ async function boot() {
 
         let reason = !planeBase
             ? 'fleet.planeCredentialFd is set, but fleet.planeBase is empty: the credential pipe serves plane mode only'
-            : resolveFleetPlaneBearer()
-                ? 'fleet.planeCredentialFd and fleet.planeBearer / fleet.planeBearerFile both name the plane bearer; with the pipe set, it is the only home'
+            : declaresFleetPlaneBearer()
+                ?'fleet.planeCredentialFd and fleet.planeBearer / fleet.planeBearerFile both name the plane bearer; with the pipe set, it is the only home'
                 : frame.ok ? null : frame.reason;
 
         if (!reason) {
             try {
-                assertFleetPlaneBearerClass({planeCredential: frame.credential})
+                assertPipedCredentialClass(frame.credential)
             } catch (error) {
                 reason = error.message
             }
@@ -253,9 +266,7 @@ async function boot() {
         let answer, planeAdmissionBearer;
 
         try {
-            assertFleetPlaneBearerClass({planeCredential: credential});
-            assertFleetViewerMcAuthorizationClass({planeCredential: credential});
-            planeAdmissionBearer = assertFleetPlaneAdmissionBearerClass({planeCredential: credential});
+            planeAdmissionBearer = assertPipedCredentialClass(credential);
             answer               = planeCredentialAnswer(await planeClient.rotate({credential: credential.bearer}), viewer.agentIdentityNodeId)
         } catch (error) {
             answer = {state: 'refused', reason: error.message}
@@ -709,7 +720,7 @@ async function boot() {
             // (never the relay's plane or admission credential), served by the armed handshake as
             // the pair, refused at transport startup if it aliases the process bearer. Empty is
             // the honest not-armed default.
-            mcAuthorization: assertFleetViewerMcAuthorizationClass() || null,
+            mcAuthorization: assertFleetViewerMcAuthorizationClass({planeCredential}) || null,
             runInContext   : (context, fn) => RequestContextService.run(context, fn)
         });
 

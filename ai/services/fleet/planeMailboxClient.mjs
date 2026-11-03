@@ -428,16 +428,19 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
      * @throws {Error} Typed observer refusal or SDK transport/tool error.
      */
     async function callProvenSession(candidate, name, args) {
-        if ((name === 'list_messages' || name === 'get_message') && args?.observer !== undefined) {
-            const scope = args.observer?.scope;
+        // Tracked on the session before its first await, observer discovery included, so a rotation
+        // retires it only after the whole operation settles
+        const call = (async () => {
+            if ((name === 'list_messages' || name === 'get_message') && args?.observer !== undefined) {
+                const scope = args.observer?.scope;
 
-            if (typeof scope !== 'string' || !await supportsObserver(candidate, name, args.observer)) {
-                throw observerUnavailable(name, typeof scope === 'string' ? scope : 'invalid')
+                if (typeof scope !== 'string' || !await supportsObserver(candidate, name, args.observer)) {
+                    throw observerUnavailable(name, typeof scope === 'string' ? scope : 'invalid')
+                }
             }
-        }
 
-        // Tracked on the session, so a rotation retires it only after this call settles
-        const call = candidate.client.callTool({name, arguments: args});
+            return candidate.client.callTool({name, arguments: args})
+        })();
 
         (candidate.calls ??= new Set()).add(call);
 

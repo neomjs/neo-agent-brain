@@ -8,6 +8,7 @@ import {
     assertFleetPlaneAdmissionBearerClass,
     assertFleetPlaneBearerClass,
     assertFleetViewerMcAuthorizationClass,
+    declaresFleetPlaneBearer,
     resolveFleetPlaneAdmissionBearer,
     resolveFleetPlaneBearer
 } from '../../../../../../ai/services/fleet/fleetServer.mjs';
@@ -171,6 +172,12 @@ test.describe('a piped plane credential meets the teeth a configured bearer meet
             .toThrow(/^\[FleetServer\] the piped plane bearer resolves to the deployment's bootstrap\/healthcheck admission token — the credential-class ledger forbids that aliasing/);
         expect(() => assertFleetPlaneBearerClass({aiConfig: config({planeBearer: 'shared-token'}), readFile: admissionToken('shared-token')}))
             .toThrow(/^\[FleetServer\] fleet\.planeBearer resolves to the deployment's bootstrap\/healthcheck admission token/)
+    });
+
+    test('a declared home counts whether or not its file can be read; blank declarations do not', () => {
+        expect(declaresFleetPlaneBearer({aiConfig: config({planeBearer: 'direct'})})).toBe(true);
+        expect(declaresFleetPlaneBearer({aiConfig: config({planeBearerFile: '/run/secrets/absent'})})).toBe(true);
+        expect(declaresFleetPlaneBearer({aiConfig: config({planeBearer: '  ', planeBearerFile: ''})})).toBe(false)
     });
 
     test('the piped bearer is judged in place of the configured one', () => {
