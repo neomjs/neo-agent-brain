@@ -30,6 +30,8 @@
  *    MCP client — the bearer's plane-side subject must BE the boot-resolved viewer, else startup
  *    refuses plane mode fail-closed; an empty base keeps the in-process singletons. All-or-nothing
  *    per boot, logged either way — the operator can always trust which plane the cockpit shows.
+ *    With the launcher's credential pipe (`fleet.planeCredentialFd`), the bearer arrives as the
+ *    pipe's first frame, and each later frame rotates it in place, answered on the same pipe.
  * 6. binds the packaged runtime by its sealed record (`bindCurrentRuntime`), opens runtime custody
  *    in `'pending-recovery'` (`awaitRecovery: true`) so Starts are excluded, and starts
  *    `startFleetBridgeServer` listening before timing payload inventory (`runtime verify`) and
@@ -68,7 +70,9 @@ import {probeExistingFleetServer, resolveFleetBearer, resolveFleetViewer,
         resolveFleetViewerClaim}                                          from './fleetLaunchContract.mjs';
 import {assertFleetPlaneAdmissionBearerClass,
         assertFleetPlaneBearerClass,
-        assertFleetViewerMcAuthorizationClass}                            from './fleetServer.mjs';
+        assertFleetViewerMcAuthorizationClass,
+        resolveFleetPlaneBearer}                                          from './fleetServer.mjs';
+import {openPlaneCredentialChannel, planeCredentialAnswer}               from './planeCredentialChannel.mjs';
 import {createPlaneFleetClient}   from './planeFleetClient.mjs';
 import {createPlaneMailboxClient} from './planeMailboxClient.mjs';
 import {createPlaneWakeIdentitiesReader,
@@ -96,6 +100,7 @@ import {wireFleetSessionMemoriesSource}                                  from '.
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
 import {wireOperatorComposeWriter}                                       from './wireOperatorComposeWriter.mjs';
 import {bindCurrentRuntime}                                              from './runtimeGeneration.mjs';
+import net                                                               from 'node:net';
 import path                                                              from 'node:path';
 import {fileURLToPath}                                                   from 'node:url';
 import {isEntryModule}                                                   from '../shared/isEntryModule.mjs';
@@ -157,22 +162,114 @@ async function boot() {
     //    a bearer resolving to any OTHER subject would silently re-attribute every admission
     //    decision — refusal is the only honest outcome.
     //  - in-process mode: the existing host-graph verification (seeded AgentIdentity node).
-    const planeBase = AiConfig.fleet.planeBase.trim(),
+    const planeBase         = AiConfig.fleet.planeBase.trim(),
+          // The launcher's credential pipe: set, the bearer and its class arrive as the first frame,
+          // and every later frame is a rotation (served once the transport listens)
+          credentialChannel = AiConfig.fleet.planeCredentialFd === null ? null : openPlaneCredentialChannel({
+              stream: new net.Socket({fd: AiConfig.fleet.planeCredentialFd, readable: true, writable: true, allowHalfOpen: true})
+          }),
+          // Held here only: a bearer never enters AiConfig
+          planeCredential   = credentialChannel ? await readBootCredential() : null,
           // The credential arms through the ASSERT variant — matching the composed server's call
           // site for this same credential, so the two-home custody split AND the credential-class
           // non-alias teeth arrive together: a bearer aliasing the deployment's admission token
           // fails this boot exactly as in production. Never the direct leaf alone.
           planeClient = planeBase ? createPlaneMailboxClient({
               baseUrl   : `${planeBase.replace(/\/+$/, '')}/mc/mcp`,
-              credential: assertFleetPlaneBearerClass()
+              credential: assertFleetPlaneBearerClass({planeCredential})
           }) : null;
 
     let
         fleetWakeStreamConsumer = null,
+        armedAdmissionBearer    = '',
         openWork                = null,
         wakeRound               = null,
         server                  = null,
         viewer;
+
+    /**
+     * @summary Reads the boot bearer, the pipe's first frame, through the teeth a configured bearer
+     * meets. A refusal is answered on the pipe before the process exits, so the launcher reads why.
+     * @returns {Promise<Object>} The piped `{bearer, bearerClass}`
+     */
+    async function readBootCredential() {
+        const frame = await credentialChannel.next();
+
+        if (!frame) {
+            console.error('[fleet] the credential pipe closed before it carried the boot bearer.');
+            process.exit(1)
+        }
+
+        let reason = !planeBase
+            ? 'fleet.planeCredentialFd is set, but fleet.planeBase is empty: the credential pipe serves plane mode only'
+            : resolveFleetPlaneBearer()
+                ? 'fleet.planeCredentialFd and fleet.planeBearer / fleet.planeBearerFile both name the plane bearer; with the pipe set, it is the only home'
+                : frame.ok ? null : frame.reason;
+
+        if (!reason) {
+            try {
+                assertFleetPlaneBearerClass({planeCredential: frame.credential})
+            } catch (error) {
+                reason = error.message
+            }
+        }
+
+        if (reason) {
+            console.error(`[fleet] the piped boot bearer is refused: ${reason}`);
+            await credentialChannel.answer({state: 'refused', reason});
+            process.exit(1)
+        }
+
+        return frame.credential
+    }
+
+    /**
+     * @summary Arms the plane's fleet surface: the wake stream and the seat-define client present
+     * the fleet-surface bearer. A rotation that changes it re-arms both, so neither keeps a replaced bearer.
+     * @param {String} planeAdmissionBearer Empty leaves the stream unarmed and refuses every define
+     */
+    function armFleetSurface(planeAdmissionBearer) {
+        fleetWakeStreamConsumer?.stop();
+        fleetWakeStreamConsumer = planeAdmissionBearer ? createFleetWakeSseConsumer({
+            eventsUrl : `${planeBase.replace(/\/+$/, '')}/fleet/events`,
+            credential: planeAdmissionBearer,
+            pollDigest: args => planeClient.callTool('manage_wake_subscription', {action: 'poll-digest', ...args})
+        }) : null;
+        fleetWakeStreamConsumer?.start();
+        armedAdmissionBearer = planeAdmissionBearer;
+
+        // The plane owns a seat's definition and operator, so a seat is defined there first, with the
+        // same fleet-surface credential; an empty one refuses every define with that reason.
+        FleetControlBridge.planeFleet = createPlaneFleetClient({baseUrl: planeBase, credential: planeAdmissionBearer})
+    }
+
+    /**
+     * @summary Adopts a piped successor bearer: the teeth a configured bearer meets, then the plane's
+     * proof for the bound viewer. On a refusal the current bearer keeps serving.
+     * @param {Object} credential The piped `{bearer, bearerClass}`
+     * @returns {Promise<Object>} The frame's answer
+     */
+    async function adoptPlaneCredential(credential) {
+        let answer, planeAdmissionBearer;
+
+        try {
+            assertFleetPlaneBearerClass({planeCredential: credential});
+            assertFleetViewerMcAuthorizationClass({planeCredential: credential});
+            planeAdmissionBearer = assertFleetPlaneAdmissionBearerClass({planeCredential: credential});
+            answer               = planeCredentialAnswer(await planeClient.rotate({credential: credential.bearer}), viewer.agentIdentityNodeId)
+        } catch (error) {
+            answer = {state: 'refused', reason: error.message}
+        }
+
+        if (answer.state === 'adopted') {
+            planeAdmissionBearer !== armedAdmissionBearer && armFleetSurface(planeAdmissionBearer);
+            console.log(`[fleet] plane bearer rotated: ${answer.identity} verified plane-side; the replaced session retires once its calls settle`)
+        } else {
+            console.warn(`[fleet] plane bearer rotation refused: ${answer.reason}; the current bearer keeps serving`)
+        }
+
+        return answer
+    }
 
     /** @summary Drain owned observation/sender work before closing its verified plane session. */
     async function closeObservedWorkAndPlane() {
@@ -196,6 +293,9 @@ async function boot() {
         const admission          = await planeClient.init({expectedIdentity: viewer.agentIdentityNodeId});
         console.log(formatFleetBootPhaseLine('plane init', Date.now() - planeInitStartedAt,
             admission.ok ? `verified: ${admission.identity}` : `refused: ${admission.reason}`));
+
+        // The boot frame's answer, flushed before a refusal exits
+        await credentialChannel?.answer(planeCredentialAnswer(admission, viewer.agentIdentityNodeId));
 
         if (!admission.ok) {
             console.error(`[fleet] plane mode refused (${planeBase}): ${admission.reason} — fix fleet.planeBase / fleet.planeBearer, or empty the base for in-process mode.`);
@@ -279,22 +379,7 @@ async function boot() {
         // `poll-digest` through the proven plane client, cold start included (the stream's
         // `state` handshake vouches the subscription id). Fail-soft past construction: a dead
         // stream degrades the axis back to honest `unknown` with the disconnect reason.
-        const planeAdmissionBearer = assertFleetPlaneAdmissionBearerClass();
-
-        if (planeAdmissionBearer) {
-            const wakeStreamConsumer = createFleetWakeSseConsumer({
-                eventsUrl : `${planeBase.replace(/\/+$/, '')}/fleet/events`,
-                credential: planeAdmissionBearer,
-                pollDigest: args => planeClient.callTool('manage_wake_subscription', {action: 'poll-digest', ...args})
-            });
-
-            wakeStreamConsumer.start();
-            fleetWakeStreamConsumer = wakeStreamConsumer
-        }
-
-        // The plane owns a seat's definition and operator, so a seat is defined there first, with the
-        // same fleet-surface credential; an empty one refuses every define with that reason.
-        FleetControlBridge.planeFleet = createPlaneFleetClient({baseUrl: planeBase, credential: planeAdmissionBearer});
+        armFleetSurface(assertFleetPlaneAdmissionBearerClass({planeCredential}));
 
         FleetManager.wakeStateOptions = {
             // The proven client returns PARSED payloads (its mapToolResult owns envelope handling)
@@ -304,12 +389,11 @@ async function boot() {
             // the decomposed routes verb's recency derivation.
             listActiveSubscriptionIdentities  : createPlaneWakeIdentitiesReader(planeClient),
             listActiveSubscriptionObservations: createPlaneWakeObservationsReader(planeClient),
-            resolveDeliveryLiveness           : fleetWakeStreamConsumer
-                ? () => fleetWakeStreamConsumer.resolveDeliveryLiveness()
-                : () => ({
-                    alive : 'unknown',
-                    reason: 'no fleet-surface credential declared (fleet.planeAdmissionBearer / fleet.planeAdmissionBearerFile, or a forge-PAT fleet.planeBearerClass) — poll remains the truth lane'
-                }),
+            // read per call: a rotation re-arms the stream
+            resolveDeliveryLiveness           : () => fleetWakeStreamConsumer?.resolveDeliveryLiveness() ?? {
+                alive : 'unknown',
+                reason: 'no fleet-surface credential declared (fleet.planeAdmissionBearer / fleet.planeAdmissionBearerFile, or a forge-PAT fleet.planeBearerClass) — poll remains the truth lane'
+            },
             resolveTerminalDeliveryFailures   : () => ({
                 state     : 'unknown',
                 reason    : 'terminal delivery receipts live with the containerized delivery authority; not exposed yet',
@@ -722,6 +806,12 @@ async function boot() {
         // process emits; the launcher that supplied (or will inject) it owns the hand-off.
         console.log(`[fleet] authenticated app<->fleet transport listening on http://127.0.0.1:${server.address().port}/fleet (viewer: ${viewer.agentIdentityNodeId}, bearer: ${AiConfig.fleet.bearer ? 'supplied' : 'generated'})`);
         console.log(formatFleetBootPhaseLine('transport', Date.now() - transportStartedAt, `port: ${server.address().port}`));
+
+        // Every later frame on the credential pipe is a rotation, adopted one at a time
+        credentialChannel?.serve(adoptPlaneCredential).then(
+            ()    => console.log('[fleet] the credential pipe closed; the bound plane bearer keeps serving'),
+            error => console.error(`[fleet] the credential pipe failed (${error?.message ?? error}); the bound plane bearer keeps serving`)
+        );
 
         if (runtime.generation) {
             const runtimeVerifyStartedAt = Date.now();

@@ -259,6 +259,7 @@ test.describe('Fleet open-work boot custody (#761)', () => {
                   FleetManager                         : {getTenantService: async () => ({})},
                   AiConfig                             : {fleet: {openWorkWakes: false, bearerHandshake: false, bearer: 'supplied'}},
                   planeClient                          : null,
+                  credentialChannel                    : null,
                   FleetRegistryService                 : {},
                   RequestContextService                : {run() {}},
                   wireFleetOpenWorkWakes               : () => null,
