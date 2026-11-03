@@ -22,7 +22,7 @@
  */
 
 import {bytesToTokens}              from '../../services/memory-core/helpers/consumerFrictionHelper.mjs';
-import {resolveTurnDocumentForRead} from '../../services/memory-core/helpers/turnDocumentText.mjs';
+import {isReconstructableTurn, resolveTurnDocumentForRead} from '../../services/memory-core/helpers/turnDocumentText.mjs';
 
 /**
  * @summary Extracts a Memory Core collection's data for a shadow rebuild, RE-EMBEDDING the rows whose
@@ -141,11 +141,12 @@ export async function extractMemoryCoreCollectionData({
         const reEmbedIds = [], reEmbedDocs = [], reEmbedStored = [], reEmbedMetas = [];
 
         for (let j = 0; j < (got.ids?.length || 0); j++) {
-            // Field↔document de-dup: a dropped turn-document (falsy doc + turn metadata) is reconstructed
-            // from its split metadata so its missing vector is recovered, not marked unrecoverable. Non-turn
-            // rows and present documents are unchanged — the empty/missing classification below still applies.
+            // Field↔document de-dup: a dropped turn-document (falsy doc + complete split fields) is reconstructed
+            // from its split metadata so its missing vector is recovered, not marked unrecoverable. A type-only or
+            // partial turn, non-turn rows and present documents are unchanged — the empty/missing classification
+            // below still applies.
             let doc = got.documents?.[j];
-            if (!doc && got.metadatas?.[j]?.type === 'agent-interaction') {
+            if (!doc && isReconstructableTurn(got.metadatas?.[j])) {
                 doc = resolveTurnDocumentForRead({documents: [], metadata: got.metadatas[j]});
             }
             const documentProblem = getDocumentProblem(doc);

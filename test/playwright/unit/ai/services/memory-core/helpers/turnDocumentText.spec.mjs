@@ -5,6 +5,7 @@ import {
     canonicalizeSessionTurnInput,
     composeTurnDocumentText,
     computeSessionTurnInputRevision,
+    isReconstructableTurn,
     resolveTurnDocumentForRead,
     toChromaRecordSets
 } from '../../../../../../../ai/services/memory-core/helpers/turnDocumentText.mjs';
@@ -156,6 +157,17 @@ test.describe('computeSessionTurnInputRevision — Dream raw-input frontier (#16
             metadatas: [metadata]
         })).toThrow(/equal lengths/)
     })
+});
+
+test.describe('isReconstructableTurn (#128)', () => {
+    test('requires the turn type and all three split fields as strings', () => {
+        expect(isReconstructableTurn({type: 'agent-interaction', prompt: 'p', thought: 't', response: 'r'})).toBe(true);
+        expect(isReconstructableTurn({type: 'agent-interaction', prompt: '',  thought: '',  response: ''})).toBe(true);
+        expect(isReconstructableTurn({type: 'agent-interaction'})).toBe(false);
+        expect(isReconstructableTurn({type: 'agent-interaction', prompt: 'p', thought: 't'})).toBe(false);
+        expect(isReconstructableTurn({type: 'summary', prompt: 'p', thought: 't', response: 'r'})).toBe(false);
+        expect(isReconstructableTurn(null)).toBe(false);
+    });
 });
 
 test.describe('toChromaRecordSets (#128)', () => {

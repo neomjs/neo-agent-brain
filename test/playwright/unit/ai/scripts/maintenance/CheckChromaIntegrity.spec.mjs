@@ -486,6 +486,42 @@ test.describe('auditCollectionDocumentPresence — data-integrity WAL-stall-vs-w
             .toEqual({collection: 'neo-agent-memory', documentsPresentCount: 2, sampledCount: 3});
     });
 
+    test('a type-only or partial turn without a stored document is NOT recoverable (#128)', async () => {
+        const collection = {
+            get: async ({ids}) => ({
+                ids,
+                documents: [null, null, null],
+                metadatas: [
+                    {type: 'agent-interaction'},
+                    {type: 'agent-interaction', prompt: 'p', thought: 't'},
+                    {type: 'agent-interaction', prompt: 'p', thought: 't', response: 'r'}
+                ]
+            })
+        };
+
+        // Only the complete turn counts: a composed `User Prompt: undefined …` is not source text.
+        expect(await auditCollectionDocumentPresence({collection, collectionName: 'neo-agent-memory', ids: ['a', 'b', 'c']}))
+            .toEqual({collection: 'neo-agent-memory', documentsPresentCount: 1, sampledCount: 3});
+    });
+
+    test('probeCollection reports hasDoc for a documentless turn only when its split fields can rebuild it (#128)', async () => {
+        const probe = metadata => probeCollection({
+            name      : 'memory',
+            collection: {
+                count: async () => 1,
+                get  : async options => options.limit
+                    ? {ids: ['t']}
+                    : {ids: options.ids, documents: [null], embeddings: [[0.1, 0.2]], metadatas: [metadata]},
+                query: async () => ({ids: [['t']], distances: [[0]]})
+            }
+        });
+        const hasDoc = result => result.steps.find(step => step.label === 'get metadata/document by id').value.hasDoc;
+
+        expect(hasDoc(await probe({type: 'agent-interaction'}))).toBe(false);
+        expect(hasDoc(await probe({type: 'agent-interaction', prompt: 'p', thought: 't'}))).toBe(false);
+        expect(hasDoc(await probe({type: 'agent-interaction', prompt: 'p', thought: 't', response: 'r'}))).toBe(true);
+    });
+
     test('sampleSize caps the ids probed', async () => {
         // chroma returns documents for the 2 requested (sampled) ids only.
         const collection = makeDocCollection({documents: ['t1', 't2']});

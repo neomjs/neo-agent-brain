@@ -87,6 +87,21 @@ test.describe('extractMemoryCoreCollectionData — MC stored-embedding repair ex
         expect(result.data.documents).toEqual([null, null]);
     });
 
+    test('a type-only or partial turn without a document is unrecoverable, never re-embedded from `undefined` (#128)', async () => {
+        const rows     = {t: {metadata: {type: 'agent-interaction'}}, p: {metadata: {type: 'agent-interaction', prompt: 'p', thought: 't'}}};
+        const embedded = [];
+
+        const result = await extractMemoryCoreCollectionData({
+            collection      : makeCollection(rows),
+            allIds          : ['t', 'p'],
+            missingVectorIds: ['t', 'p'],
+            embedFn         : async docs => { embedded.push(...docs); return docs.map(() => [7]); }
+        });
+
+        expect(result.counts).toEqual({total: 2, intact: 0, reEmbedded: 0, unrecoverable: 2});
+        expect(embedded).toEqual([]);
+    });
+
     test('can stream recovered batches without retaining full collection data in memory', async () => {
         const rows    = {a: {embedding: [1], document: 'da', metadata: {}}, m: {document: 'dm', metadata: {k: 1}}};
         const batches = [];

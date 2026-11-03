@@ -64,6 +64,22 @@ export function resolveTurnDocumentForRead({documents, metadata} = {}) {
 }
 
 /**
+ * @summary Whether a turn's split fields can rebuild its document: the `agent-interaction` type AND all three
+ * fields present as strings.
+ *
+ * {@link composeTurnDocumentText} interpolates a missing field as `undefined`, so a type-only or partial turn
+ * still composes a non-empty string. Recovery decisions (is this row re-embeddable?) ask this predicate, never
+ * the composed text's length.
+ *
+ * @param {Object|null} metadata The record metadata.
+ * @returns {Boolean}
+ */
+export function isReconstructableTurn(metadata) {
+    return metadata?.type === 'agent-interaction' &&
+        ['prompt', 'thought', 'response'].every(field => typeof metadata[field] === 'string');
+}
+
+/**
  * @summary Groups rows into the Chroma record sets their stored-document state allows, for paths that copy
  * rows with their vectors (import, defrag, heal).
  *
