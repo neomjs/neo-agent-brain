@@ -20,6 +20,7 @@ import {
     embedBatch,
     getBackoffDelayMs,
     startDrainLoop,
+    startEmbedDrainLoops,
     MAX_RECORD_COOLDOWN_MS,
     MESSAGE_WAL_STORE
 } from '../../../../../../ai/daemons/embed/drainCycle.mjs';
@@ -657,6 +658,41 @@ test.describe('Neo.ai.daemons.embed.drainCycle', () => {
             await seed('after-stop');
             await new Promise(resolve => setTimeout(resolve, 60));
             expect(collection.store.has('after-stop')).toBe(false);
+        });
+
+        test('startEmbedDrainLoops starts the memory and the message loop together for every embed host (#1439)', async () => {
+            // The plane hosts its embed drain in-process, not in the daemon: one call for both loops is
+            // what keeps a host from embedding memories while silently skipping messages.
+            const messageDir = path.join(tmpDir, 'messages');
+
+            await seed('loop-memory');
+            await appendWalMessage({
+                id                    : 'MESSAGE:loop-message',
+                timestamp             : Date.now(),
+                graphProjectionVersion: 1,
+                message               : {id: 'MESSAGE:loop-message', type: 'MESSAGE', name: 's', properties: {subject: 's', bodyText: 'b'}},
+                routing               : {sentBy: '@alice', to: '@bob', senderUserId: 'alice', broadcastRecipients: []},
+                optionalEdges         : {relatedTickets: [], relatedSessions: [], taggedConcepts: []}
+            }, {dir: messageDir, planeId: 'test-message-plane'});
+
+            const memoryCollection  = createFakeCollection(),
+                  messageCollection = createFakeCollection(),
+                  loops             = startEmbedDrainLoops({
+                      getMemoryCollection : async () => memoryCollection,
+                      getMessageCollection: async () => messageCollection,
+                      getMemoryConfig     : loopConfig(tmpDir),
+                      getMessageConfig    : loopConfig(messageDir)
+                  });
+
+            try {
+                await expect.poll(() => memoryCollection.store.has('loop-memory'), {timeout: 5000}).toBe(true);
+                await expect.poll(() => messageCollection.store.has('MESSAGE:loop-message'), {timeout: 5000}).toBe(true);
+                expect(messageCollection.store.has('loop-memory')).toBe(false);
+                expect(memoryCollection.store.has('MESSAGE:loop-message')).toBe(false);
+            } finally {
+                loops.memory.stop();
+                loops.message.stop();
+            }
         });
 
         test('absorbs a failing cycle and keeps looping (collection resolution failure)', async () => {

@@ -696,3 +696,29 @@ export function startDrainLoop({getCollection, getConfig, expectedDimension, sto
         getWindowSince: disposition.getWindowSince
     };
 }
+
+/**
+ * @summary Starts every drain an embed host owns: the `add_memory` WAL into the memory collection and
+ * the accepted-message WAL into the message collection.
+ *
+ * Both embed hosts call this one function, the embed daemon and Memory Core's in-process drain
+ * (`memoryWal.inProcessDrain`), so neither can run one loop without the other. The message loop
+ * claims no lock of its own: the host's memory-WAL lock makes it the sole embed drainer, and the
+ * message WAL directory's lock belongs to the graph-projection drain, whose markers this loop never
+ * writes.
+ *
+ * @param {Object}   options
+ * @param {Function} options.getMemoryCollection  Async resolver for the memory collection.
+ * @param {Function} options.getMessageCollection Async resolver for the message collection.
+ * @param {Function} options.getMemoryConfig      Returns the `memoryWal` config slice (read per cycle).
+ * @param {Function} options.getMessageConfig     Returns the `messageWal` config slice (read per cycle).
+ * @param {Number}   [options.expectedDimension]  Required vector dimension for the post-add verify.
+ * @param {Function} [options.log]                `(level, message)` sink.
+ * @returns {{memory: Object, message: Object}} Both loop handles (see {@link startDrainLoop}).
+ */
+export function startEmbedDrainLoops({getMemoryCollection, getMessageCollection, getMemoryConfig, getMessageConfig, expectedDimension, log}) {
+    return {
+        memory : startDrainLoop({getCollection: getMemoryCollection, getConfig: getMemoryConfig, expectedDimension, log}),
+        message: startDrainLoop({getCollection: getMessageCollection, getConfig: getMessageConfig, expectedDimension, store: MESSAGE_WAL_STORE, log})
+    }
+}

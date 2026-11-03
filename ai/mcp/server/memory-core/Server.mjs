@@ -24,7 +24,7 @@ import {
     Memory_CoalescingEngineService    as CoalescingEngineService,
     Memory_WebhookDeliveryService     as WebhookDeliveryService
 } from '../../../services.mjs';
-import {startDrainLoop}          from '../../../daemons/embed/drainCycle.mjs';
+import {startEmbedDrainLoops}    from '../../../daemons/embed/drainCycle.mjs';
 import {acquireDrainLock}        from '../../../daemons/embed/drainLock.mjs';
 import MemoryCoreRecorderService from '../../../services/memory-core/MemoryCoreRecorderService.mjs';
 import {
@@ -353,12 +353,19 @@ class Server extends BaseServer {
             }
 
             if (this.walDrainLock) {
-                this.walDrainLoop = startDrainLoop({
-                    getCollection    : () => StorageRouter.getMemoryCollection(),
-                    getConfig        : () => aiConfig.memoryWal,
-                    expectedDimension: aiConfig.vectorDimension,
-                    log              : drainLog
+                // The embed host's loops start together, so accepted messages are embedded wherever
+                // memories are (`startEmbedDrainLoops`).
+                const embedLoops = startEmbedDrainLoops({
+                    getMemoryCollection : () => StorageRouter.getMemoryCollection(),
+                    getMessageCollection: () => StorageRouter.getMessageCollection(),
+                    getMemoryConfig     : () => aiConfig.memoryWal,
+                    getMessageConfig    : () => aiConfig.messageWal,
+                    expectedDimension   : aiConfig.vectorDimension,
+                    log                 : drainLog
                 });
+
+                this.walDrainLoop        = embedLoops.memory;
+                this.messageEmbedLoop    = embedLoops.message;
                 // Publish the drain receipt to the metrics projection. Registered ONLY on the branch that
                 // actually hosts the loop, so a process that does not drain reports `unavailable` rather
                 // than an empty backlog — zero pending against live provider load is the alarm condition,
