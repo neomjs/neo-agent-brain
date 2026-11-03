@@ -758,6 +758,43 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         expect(deletes[0].pendingAtDelete).not.toContain(receipt.messageId);
     });
 
+    test('#1440: a retraction marks only a record still pending embed; an embedded one loses just its vector', async () => {
+        const {appendMessageWalEmbedMarker, getMessageWalEmbedMarkersFileName} = await import('../../../../../../ai/services/memory-core/helpers/messageWalStore.mjs');
+
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'}));
+
+        const receipt = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () => callMemoryCoreTool('add_message', {
+            to     : '@bob',
+            subject: 'already embedded',
+            body   : 'the drain wrote this one'
+        }));
+
+        await expect.poll(async () => (await readPendingMessageWalRecords({dir: messageWalDir})).length).toBe(0);
+
+        const [pending] = await readPendingMessageWalEmbedRecords({dir: messageWalDir, ids: [receipt.messageId]});
+
+        // The drain has embedded it.
+        await appendMessageWalEmbedMarker({id: receipt.messageId, segmentKey: pending.segmentKey}, {dir: messageWalDir});
+
+        const originalGetMessageCollection = StorageRouter.getMessageCollection,
+              deletes                      = [];
+
+        StorageRouter.getMessageCollection = async () => ({delete: async args => deletes.push(args)});
+
+        try {
+            await RequestContextService.run({agentIdentityNodeId: '@alice'}, () => MailboxService.deleteMessage({messageId: receipt.messageId}));
+        } finally {
+            StorageRouter.getMessageCollection = originalGetMessageCollection;
+        }
+
+        const markers = (await fsPromises.readFile(path.join(messageWalDir, getMessageWalEmbedMarkersFileName(pending.segmentKey)), 'utf8'))
+            .trim().split('\n').map(line => JSON.parse(line)).filter(marker => marker.id === receipt.messageId);
+
+        expect(markers).toHaveLength(1);
+        expect(markers[0].retracted).toBeUndefined();
+        expect(deletes).toEqual([{ids: [receipt.messageId]}]);
+    });
+
     test('#1445: query_messages filters by admission and re-checks every hit against its graph', async () => {
         GraphService.upsertNode({id: '@carol', type: 'AgentIdentity', name: 'Carol', properties: {accountType: 'agent'}});
         GraphService.upsertNode({id: '@dave',  type: 'AgentIdentity', name: 'Dave',  properties: {accountType: 'agent'}});

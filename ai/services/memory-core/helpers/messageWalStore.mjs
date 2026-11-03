@@ -309,31 +309,31 @@ export async function appendMessageWalEmbedMarker({id, segmentKey, embeddedAt, r
 }
 
 /**
- * @summary Maps one accepted message WAL record to the embed drain's record shape.
+ * @summary Builds the metadata `admissionWhere` filters on, from one message's route.
  *
- * The document is the subject and body. The metadata is what `admissionWhere` filters on, read
- * from the record's immutable send-time routing rather than the graph: sender, destination and,
- * for a broadcast, its cohort. Identities are stored canonical, so admission compares one spelling.
- * A broadcast that carries its send-time audience is `known`, counts it in `recipientCount` and
- * lists it in `recipients`; one without it (a row older than the audience snapshot) is
- * `legacy-unknown`. An empty audience is counted but not listed, because Chroma rejects `[]`. The
- * count is what admits a known-zero broadcast to everyone, as `getMessage` does, since a `where`
- * clause cannot test for a missing key.
+ * The WAL mapper and the graph backfill (`backfillMessageEmbeddings.mjs`) both call this, so the
+ * two sources cannot disagree on what admission reads. Identities are stored canonical, so admission
+ * compares one spelling. A broadcast with a known audience is `known`, counts it in `recipientCount`
+ * and lists it in `recipients`; one without (older than the audience snapshot) is `legacy-unknown`.
+ * An empty audience is counted but not listed, because Chroma rejects `[]`. The count is what admits
+ * a known-zero broadcast to everyone, as `getMessage` does, since a `where` clause cannot test for a
+ * missing key.
  *
- * @param {Object} record Accepted message WAL record (`graphProjectionVersion: 1`).
- * @param {String} segmentKey WAL segment key containing the record.
- * @returns {{id: String, segmentKey: String, document: String, metadata: Object}}
+ * @param {Object}   route
+ * @param {String}   route.sentBy     Sender identity.
+ * @param {String}   route.to         Destination identity, or `AGENT:*`.
+ * @param {String[]} [route.audience] A broadcast's known recipients; absent when unknown.
+ * @param {String}   [route.threadId] Thread id.
+ * @param {Number}   route.sentAt     Send time, epoch ms.
+ * @returns {Object}
  */
-export function toMessageEmbedRecord(record, segmentKey) {
-    const {message, routing} = record,
-          {properties}       = message,
-          broadcast          = routing.to === 'AGENT:*',
-          audience           = routing.broadcastRecipients,
-          metadata           = {
-              from  : normalizeMailboxIdentityForComparison(routing.sentBy),
-              to    : normalizeMailboxIdentityForComparison(routing.to),
-              kind  : broadcast ? 'broadcast' : 'direct',
-              sentAt: record.timestamp
+export function toMessageEmbedMetadata({sentBy, to, audience, threadId, sentAt}) {
+    const broadcast = to === 'AGENT:*',
+          metadata  = {
+              from: normalizeMailboxIdentityForComparison(sentBy),
+              to  : normalizeMailboxIdentityForComparison(to),
+              kind: broadcast ? 'broadcast' : 'direct',
+              sentAt
           };
 
     if (broadcast) {
@@ -348,15 +348,47 @@ export function toMessageEmbedRecord(record, segmentKey) {
         }
     }
 
-    if (properties.partOfThread) {
-        metadata.threadId = properties.partOfThread
+    if (threadId) {
+        metadata.threadId = threadId
     }
+
+    return metadata
+}
+
+/**
+ * @summary The text a message is embedded as: its subject and body.
+ * @param {Object} properties A message's `subject` and `bodyText`.
+ * @returns {String}
+ */
+export function toMessageEmbedDocument(properties) {
+    return [properties.subject, properties.bodyText].filter(Boolean).join('\n\n')
+}
+
+/**
+ * @summary Maps one accepted message WAL record to the embed drain's record shape.
+ *
+ * The route is the record's immutable send-time routing, not the graph's, and
+ * {@link toMessageEmbedMetadata} turns it into what admission filters on.
+ *
+ * @param {Object} record Accepted message WAL record (`graphProjectionVersion: 1`).
+ * @param {String} segmentKey WAL segment key containing the record.
+ * @returns {{id: String, segmentKey: String, document: String, metadata: Object}}
+ */
+export function toMessageEmbedRecord(record, segmentKey) {
+    const {message, routing} = record,
+          {properties}       = message;
 
     return {
         id      : record.id,
         segmentKey,
-        document: [properties.subject, properties.bodyText].filter(Boolean).join('\n\n'),
-        metadata
+        document: toMessageEmbedDocument(properties),
+        metadata: toMessageEmbedMetadata({
+            sentBy  : routing.sentBy,
+            to      : routing.to,
+            audience: routing.broadcastRecipients,
+            threadId: properties.partOfThread,
+            sentAt  : record.timestamp
+        })
     }
 }
 
