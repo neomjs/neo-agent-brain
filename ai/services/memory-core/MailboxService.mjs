@@ -30,6 +30,7 @@ import {
     getMessageWalSegmentKey,
     getMissingMessageWalLeaves,
     readWalMessagesByIds,
+    readPendingMessageWalEmbedRecords,
     readPendingMessageWalRecords
 } from './helpers/messageWalStore.mjs';
 import {readAgentIdentityNodes}       from '../../graph/agentIdentityParticipation.mjs';
@@ -4958,7 +4959,8 @@ class MailboxService extends Base {
      *
      * {@link admissionWhere} pre-filters the message index, so the top-k holds admitted rows only.
      * Each hit is then re-checked with `canReadMessage` against its graph facts, the rule
-     * `getMessage` applies; a row whose metadata disagrees with its graph is dropped and logged.
+     * `getMessage` applies; a row whose metadata disagrees with its graph, or whose projection has a
+     * gap, is dropped and logged. Recall never repairs: `getMessage` stays the on-demand repair path.
      * Content comes from the graph node, so a retracted message shows its placeholder. Archive is
      * the recipient's own view and does not filter recall.
      *
@@ -5664,11 +5666,12 @@ class MailboxService extends Base {
     /**
      * @summary Takes a retracted message out of the semantic index.
      *
-     * The WAL keeps the original text until its segment is pruned, so the record is first marked
-     * `retracted` for the embed drain and only then is its vector deleted — the order a session purge
-     * uses, which makes the drain skip the record and compensate an embed already in flight. A message
-     * whose WAL segment is gone needs no marker. Neither step can fail the retraction itself: both
-     * failures are logged with the message id.
+     * The WAL keeps the original text until its segment is pruned, so a record the drain has not
+     * embedded yet is first marked `retracted` and only then is its vector deleted — the order a
+     * session purge uses, which makes the drain skip the record and compensate an embed already in
+     * flight. The record is found through the pending-embed reader, which needs no graph projection
+     * marker; an embedded record, or one whose segment is gone, needs only the delete. Neither step
+     * can fail the retraction itself: both failures are logged with the message id.
      *
      * @param {String} messageId MESSAGE:<uuid> identifier.
      * @returns {Promise<void>}
@@ -5678,10 +5681,10 @@ class MailboxService extends Base {
         const dir = aiConfig.messageWal.dir;
 
         try {
-            const [record] = await readWalMessagesByIds({dir, ids: [messageId]});
+            const [pending] = await readPendingMessageWalEmbedRecords({dir, ids: [messageId], limit: 1});
 
-            if (record?.segmentKey) {
-                await appendMessageWalEmbedMarker({id: messageId, segmentKey: record.segmentKey, retracted: true}, {dir});
+            if (pending) {
+                await appendMessageWalEmbedMarker({id: messageId, segmentKey: pending.segmentKey, retracted: true}, {dir});
             }
         } catch (e) {
             logger.error('[MailboxService.deleteMessage] retraction marker append failed', {messageId, error: e?.message || String(e)});

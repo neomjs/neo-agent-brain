@@ -142,6 +142,14 @@ test.describe('Neo.ai.services.memory-core.helpers.messageAdmission', () => {
         expect(matches(where, {from: '@alice', to: 'AGENT:*', kind: 'broadcast', cohort: 'known', recipientCount: 1, recipients: ['@bob']})).toBe(false);
     });
 
+    test('only a broadcast can be open to everyone: a direct row tagged legacy stays closed (#1440)', () => {
+        const where = admissionWhere('@dave');
+
+        expect(matches(where, {from: '@alice', to: '@bob', kind: 'direct', cohort: 'legacy-unknown'})).toBe(false);
+        expect(matches(where, {from: '@alice', to: '@bob', kind: 'direct', recipientCount: 0})).toBe(false);
+        expect(matches(where, {from: '@alice', to: 'AGENT:*', kind: 'broadcast', cohort: 'legacy-unknown'})).toBe(true);
+    });
+
     test('admissionWhere omits the grant clause without grants, and drops self and broadcast grants (#1445)', () => {
         expect(JSON.stringify(admissionWhere('@dave'))).not.toContain('$in');
         expect(JSON.stringify(admissionWhere('dave', ['AGENT:@dave', 'AGENT:*']))).not.toContain('$in');
