@@ -16,8 +16,8 @@ import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
  *
  * ## Why this exists
  *
- * Unit tests name their Chroma collections `test-memory-<ts>-<rand>` / `test-session-<ts>-<rand>`
- * (memory-core `config.template.mjs` under `UNIT_TEST_MODE`) and clean them in `afterAll`. Interrupted
+ * Unit tests name their Chroma collections `test-memory-<ts>-<rand>` / `test-session-<ts>-<rand>` /
+ * `test-message-<ts>-<rand>` (memory-core `config.template.mjs` under `UNIT_TEST_MODE`) and clean them in `afterAll`. Interrupted
  * runs (`Ctrl-C`, CI cancel, bare-`npx` bypasses) skip that teardown, so the collections accumulate in
  * the shared `default_tenant`/`default_database` — thousands of orphans build up over time against only a
  * handful of real production collections. The SQLite-daemon spec has the same failure mode for its db +
@@ -27,7 +27,7 @@ import {isEntryModule} from '../../services/shared/isEntryModule.mjs';
  *
  * ## Safety model
  *
- * Deletion is a positive allowlist (`test-(memory|session)-*`) gated by a defense-in-depth denylist of the
+ * Deletion is a positive allowlist (`test-(memory|session|message)-*`) gated by a defense-in-depth denylist of the
  * real production collections. A collection is deleted only when it matches the test-name contract AND is
  * not a protected name — so no production collection can ever be reached, even on a pattern slip.
  *
@@ -52,15 +52,15 @@ export const DATA_DIR           = path.resolve(PROJECT_ROOT, '.neo-ai-data');
  * (defense-in-depth denylist behind the positive test-name allowlist).
  */
 export const PROTECTED_COLLECTIONS = new Set([
-    'neo-agent-memory', 'neo-agent-sessions', 'neo-knowledge-base', 'neo-native-graph'
+    'neo-agent-memory', 'neo-agent-sessions', 'neo-agent-messages', 'neo-knowledge-base', 'neo-native-graph'
 ]);
 
 /**
  * Unit-test Chroma collection naming contract (memory-core `config.template.mjs` under
- * `UNIT_TEST_MODE`): `test-memory-<ts>-<rand>` / `test-session-<ts>-<rand>`. The purge targets exactly
- * this shape, so it can never match a production collection name.
+ * `UNIT_TEST_MODE`): `test-memory-<ts>-<rand>` / `test-session-<ts>-<rand>` / `test-message-<ts>-<rand>`.
+ * The purge targets exactly this shape, so it can never match a production collection name.
  */
-export const TEST_COLLECTION_PATTERN = /^test-(memory|session)-/;
+export const TEST_COLLECTION_PATTERN = /^test-(memory|session|message)-/;
 
 /**
  * @summary Pure classifier: is `name` a deletable unit-test orphan collection?

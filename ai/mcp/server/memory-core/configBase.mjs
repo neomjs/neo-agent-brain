@@ -59,6 +59,7 @@ const DAY_MS        = 24 * 60 * 60 * 1000;
 const testMemoryCollection          = `test-memory-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 const testSessionCollection         = `test-session-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 const testTemporalSummaryCollection = `test-temporal-summary-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+const testMessageCollection         = `test-message-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
 // Per-worker-unique WAL test directory under the OS temp root (same isolation rationale as the
 // test collection names above): fullyParallel workers never share a write-ahead directory, and
@@ -318,11 +319,12 @@ class ConfigBase extends ConfigProvider {
              */
             collections: {
                 /**
-                 * `memory` / `session` / `temporalSummary` (the active names consumers read) are formulas
-                 * (below) resolving `*Prod` / `*Test` by construction from `useTestDatabase` — no inline
+                 * `memory` / `session` / `temporalSummary` / `message` (the active names consumers read) are
+                 * formulas (below) resolving `*Prod` / `*Test` by construction from `useTestDatabase` — no inline
                  * `process.env` in a leaf default. The test names are per-worker-unique (module consts above)
                  * for fullyParallel isolation; consumers (HealthService, ChromaManager, defragChromaDB) read
-                 * `collections.memory` / `session` / `temporalSummary` unchanged.
+                 * `collections.memory` / `session` / `temporalSummary` / `message` unchanged. `message` holds
+                 * one row per accepted A2A message, embedded by the embed daemon's message drain.
                  * @type {string}
                  */
                 memoryProd         : leaf('neo-agent-memory', 'NEO_MEMORY_COLLECTION_NAME', 'string'),
@@ -331,6 +333,8 @@ class ConfigBase extends ConfigProvider {
                 sessionTest        : leaf(testSessionCollection, 'NEO_SESSION_COLLECTION_NAME_TEST', 'string'),
                 temporalSummaryProd: leaf('neo-temporal-summary', 'NEO_TEMPORAL_SUMMARY_COLLECTION_NAME', 'string'),
                 temporalSummaryTest: leaf(testTemporalSummaryCollection, 'NEO_TEMPORAL_SUMMARY_COLLECTION_NAME_TEST', 'string'),
+                messageProd        : leaf('neo-agent-messages', 'NEO_MESSAGE_COLLECTION_NAME', 'string'),
+                messageTest        : leaf(testMessageCollection, 'NEO_MESSAGE_COLLECTION_NAME_TEST', 'string'),
                 useTestDatabase    : leaf(false, 'UNIT_TEST_MODE', 'boolean'),
                 graph              : leaf('neo-native-graph', 'NEO_GRAPH_COLLECTION_NAME', 'string')
             },
@@ -995,6 +999,7 @@ class ConfigBase extends ConfigProvider {
             'collections.memory'          : data => data.collections.useTestDatabase || data.storagePaths.useTestHarness ? data.collections.memoryTest          : data.collections.memoryProd,
             'collections.session'         : data => data.collections.useTestDatabase || data.storagePaths.useTestHarness ? data.collections.sessionTest         : data.collections.sessionProd,
             'collections.temporalSummary' : data => data.collections.useTestDatabase || data.storagePaths.useTestHarness ? data.collections.temporalSummaryTest : data.collections.temporalSummaryProd,
+            'collections.message'         : data => data.collections.useTestDatabase || data.storagePaths.useTestHarness ? data.collections.messageTest         : data.collections.messageProd,
             'memoryWal.dir'               : data => data.memoryWal.useTestDatabase || data.storagePaths.useTestHarness ? data.memoryWal.dirTest : data.memoryWal.dirProd,
             'messageWal.dir'              : data => {
                 const configuredDir = data.messageWal.useTestDatabase || data.storagePaths.useTestHarness ?

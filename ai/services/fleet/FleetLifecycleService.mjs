@@ -3587,7 +3587,7 @@ class FleetLifecycleService extends Base {
      * @param {Object[]} options.mcpPlan Exact non-secret renderer input returned by workspace preparation.
      * @param {String[]} [options.launched=[]] Servers this Start runs through Fleet's launcher, whose rows carry
      *     the launcher contract instead of the plain Node runtime env.
-     * @returns {Promise<Object>} Redacted receipt plus a producer-bound MC/KB capture plan.
+     * @returns {Promise<Object>} Redacted installed-adapter inspection receipt.
      */
     async inspectPreparedRemoteMcpAdapter({
         agent,
@@ -3702,84 +3702,11 @@ class FleetLifecycleService extends Base {
             }
         }
 
-        const captureServers = {};
-
-        for (const key of REMOTE_MCP_SERVER_KEYS) {
-            const
-                planRow   = planByKey.get(key),
-                transport = byName.get(planRow.name).transport;
-
-            captureServers[key] = {
-                name   : planRow.name,
-                enabled: planRow.enabled,
-                stdio  : {
-                    command: planRow.command,
-                    args   : [...planRow.args],
-                    envVars: [...planRow.runtimeEnv],
-                    ...(planRow.environment ? {environment: {...planRow.environment}} : {})
-                },
-                remote: {
-                    url             : transport.url,
-                    credentialEnvVar: transport.bearer_token_env_var
-                }
-            }
-        }
-
         return {
             harnessType,
             inspected  : true,
-            serverNames: expectedNames,
-            capturePlan: {
-                producer        : 'installed-codex-mcp-list',
-                harnessType,
-                repoPath,
-                sourceRoot      : mcpPlan[0].sourceRoot,
-                expectedIdentity: `@${agentIdentity}`,
-                servers         : captureServers
-            }
+            serverNames: expectedNames
         }
-    }
-
-    /**
-     * @summary Empirically bind a generated Codex adapter to the AC4 capture in one call.
-     *
-     * The caller supplies only preparation/readback inputs plus the data-only capture spec. This
-     * method performs the installed `codex mcp list --json` inspection itself and passes its private
-     * receipt directly into the driver; no public field can claim that an arbitrary literal plan was
-     * produced by an installed adapter.
-     *
-     * @param {Object} options Inspection inputs accepted by
-     *     {@link inspectPreparedRemoteMcpAdapter}, plus `captureSpec`.
-     * @param {Object} options.captureSpec Data-only AC4 capture request.
-     * @param {String} options.resolvedMcpCredential Plane bearer already resolved by
-     *     FleetTenantService; never sourced from this process's ambient environment.
-     * @returns {Promise<Object>} Capture result; never the executable capture plan.
-     */
-    async capturePreparedRemoteMcpLatencyPair(options={}) {
-        const
-            {captureSpec, resolvedMcpCredential, ...inspection} = options,
-            receipt                                             = await this.inspectPreparedRemoteMcpAdapter(inspection);
-
-        if (!receipt?.inspected || !receipt.capturePlan) {
-            throw new Error(
-                'FleetLifecycleService.capturePreparedRemoteMcpLatencyPair: installed Codex ' +
-                'inspection did not produce a capture plan.'
-            )
-        }
-
-        if (typeof resolvedMcpCredential !== 'string' || !resolvedMcpCredential) {
-            throw new Error(
-                'FleetLifecycleService.capturePreparedRemoteMcpLatencyPair: resolved plane credential is required.'
-            )
-        }
-
-        const run = (await import('../../scripts/diagnostics/captureParityLatencyPair.mjs'))
-            .captureParityLatencyPair;
-
-        return run(captureSpec, {
-            capturePlan    : receipt.capturePlan,
-            planeCredential: resolvedMcpCredential
-        })
     }
 
     /**

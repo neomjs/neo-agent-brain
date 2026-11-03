@@ -4,6 +4,10 @@ import {
     pruneReconciledWalSegments,
     readPendingWalRecords
 } from '../../services/memory-core/helpers/memoryWalStore.mjs';
+import {
+    appendMessageWalEmbedMarker,
+    readPendingMessageWalEmbedRecords
+} from '../../services/memory-core/helpers/messageWalStore.mjs';
 import {classifyRowVector, VECTOR_REJECTION_REASONS} from '../../services/memory-core/helpers/vectorWriteInvariant.mjs';
 import {createDrainDispositionTracker}               from '../shared/drainDisposition.mjs';
 import {isProviderTimeoutCode}                       from '../../provider/createTimeoutError.mjs';
@@ -37,9 +41,40 @@ import {runWithProviderActivityContext}              from '../../services/shared
  * one record per agent turn (minutes apart), not per second, and drains in `batchSize` chunks per
  * cycle once the embedder recovers.
  *
+ * ## Stores
+ *
+ * The WAL the pass reads is a store: a pending reader returning `{id, segmentKey, document,
+ * metadata}` records, an embed-marker writer and, optionally, segment retention.
+ * {@link MEMORY_WAL_STORE} is the default; {@link MESSAGE_WAL_STORE} drains accepted A2A messages
+ * into the message collection through the same retry, verify and compensation logic. A
+ * retraction's `retracted` marker plays the purge tombstone's part there.
+ *
  * @module ai/daemons/embed/drainCycle
  * @see module:ai/services/memory-core/helpers/memoryWalStore
+ * @see module:ai/services/memory-core/helpers/messageWalStore
  */
+
+/**
+ * @summary The `add_memory` WAL as a drain store, and the default one: its pending reader, embed
+ * markers and reconciled-segment retention.
+ * @type {Object}
+ */
+export const MEMORY_WAL_STORE = Object.freeze({
+    readPending  : readPendingWalRecords,
+    appendMarker : appendWalEmbedMarker,
+    pruneSegments: ({dir, retentionLimit, now}) => pruneReconciledWalSegments({dir, retentionLimit, activeSegmentKey: getWalSegmentKey(now())})
+});
+
+/**
+ * @summary The accepted-message WAL as a drain store. It has no `pruneSegments`: the message WAL's
+ * writer prunes on append (`appendWalMessage`), and its reconciliation already waits on these embed
+ * markers, so a second pruner would only race the first.
+ * @type {Object}
+ */
+export const MESSAGE_WAL_STORE = Object.freeze({
+    readPending : readPendingMessageWalEmbedRecords,
+    appendMarker: appendMessageWalEmbedMarker
+});
 
 /**
  * Hard ceiling for the per-record cross-cycle retry cooldown. A persistently failing
@@ -440,6 +475,8 @@ async function deleteMetadataOnlyRows({collection, metadataOnly, log}) {
  * @param {Number}   options.retentionLimit   Reconciled-segment retention bound for pruning.
  * @param {Number}   [options.expectedDimension] Required vector dimension for the post-add atomic-write verify;
  *     absent/non-positive → verify skipped (add-success⟹embed-success, the prior behavior).
+ * @param {Object}   [options.store]          The WAL drained (see the module's "Stores"). Defaults to
+ *     {@link MEMORY_WAL_STORE}.
  * @param {Map}      [options.retryState]     Cross-cycle per-record cooldown state (caller-owned).
  * @param {Function} [options.log]            `(level, message)` sink. Defaults to a no-op.
  * @param {Function} [options.sleep]          Delay primitive. Defaults to a real timer.
@@ -458,6 +495,7 @@ export async function drainWalOnce({
     backoffBaseMs,
     retentionLimit,
     expectedDimension,
+    store        = MEMORY_WAL_STORE,
     retryState   = new Map(),
     log          = () => {},
     onCycleStart = () => {},
@@ -469,7 +507,7 @@ export async function drainWalOnce({
     // Full pending read (not limit-bounded): a newest-first limited read would let records
     // cooling down at the head permanently shadow older drainable ones. Scan cost is bounded —
     // see the module-level "Scan-cost bound (AC10)" note.
-    const allPending = await readPendingWalRecords({dir, ids});
+    const allPending = await store.readPending({dir, ids});
     summary.pending  = allPending.length;
 
     const cycleStart = now();
@@ -516,7 +554,7 @@ export async function drainWalOnce({
         if (embedded.length > 0) {
             // Purge-race compensation window: re-read pending state for exactly the embedded ids.
             const succeededIds = embedded.map(record => record.id);
-            const stillPending = new Set((await readPendingWalRecords({dir, ids: succeededIds})).map(record => record.id));
+            const stillPending = new Set((await store.readPending({dir, ids: succeededIds})).map(record => record.id));
             const tombstoned   = embedded.filter(record => !stillPending.has(record.id));
 
             if (tombstoned.length > 0) {
@@ -540,17 +578,13 @@ export async function drainWalOnce({
 
                 if (!stillPending.has(record.id)) continue;
 
-                await appendWalEmbedMarker({id: record.id, segmentKey: record.segmentKey, embeddedAt: now()}, {dir});
+                await store.appendMarker({id: record.id, segmentKey: record.segmentKey, embeddedAt: now()}, {dir});
                 summary.embedded++;
             }
         }
     }
 
-    summary.prunedSegments = await pruneReconciledWalSegments({
-        dir,
-        retentionLimit,
-        activeSegmentKey: getWalSegmentKey(now())
-    });
+    summary.prunedSegments = store.pruneSegments ? await store.pruneSegments({dir, retentionLimit, now}) : 0;
 
     // Post-cycle residue — the ONE field a disposition consumer may read for cleanliness. `pending`
     // is the PRE-drain observation (records read at the top of the cycle), so it is not a measure of
@@ -590,9 +624,11 @@ export async function drainWalOnce({
  *
  * @param {Object}   options
  * @param {Function} options.getCollection Async resolver for the content-store collection.
- * @param {Function} options.getConfig     Returns the `memoryWal` config slice (read per cycle).
+ * @param {Function} options.getConfig     Returns the drained WAL's config slice (read per cycle): `memoryWal`,
+ *     or `messageWal` for {@link MESSAGE_WAL_STORE}.
  * @param {Number}   [options.expectedDimension] Required vector dimension for the post-add atomic-write verify
  *     (deploy-fixed; read once at wire-up). Absent → verify skipped (logged) — wire it in production.
+ * @param {Object}   [options.store]       The WAL drained. Defaults to {@link MEMORY_WAL_STORE}.
  * @param {Function} [options.log]         `(level, message)` sink. Defaults to a no-op.
  * @param {Map}      [options.retryState]  Cross-cycle per-record cooldown state.
  * @param {Function} [options.now]         Clock source (epoch ms), injected into the disposition
@@ -602,7 +638,7 @@ export async function drainWalOnce({
  *     (`{state, drainedClean, reason, counts, at}` — see {@link createDrainDispositionTracker}),
  *     the field the parity pilot consumes to decide a seat's WAL write disposition.
  */
-export function startDrainLoop({getCollection, getConfig, expectedDimension, log = () => {}, retryState = new Map(), now = Date.now}) {
+export function startDrainLoop({getCollection, getConfig, expectedDimension, store = MEMORY_WAL_STORE, log = () => {}, retryState = new Map(), now = Date.now}) {
     let stopped = false;
     let timer   = null;
 
@@ -616,7 +652,7 @@ export function startDrainLoop({getCollection, getConfig, expectedDimension, log
 
         try {
             const collection = await getCollection();
-            const summary    = await drainWalOnce({dir, collection, batchSize, maxRetries, backoffBaseMs, retentionLimit, expectedDimension, retryState, log, onCycleStart: disposition.recordCycleStart});
+            const summary    = await drainWalOnce({dir, collection, batchSize, maxRetries, backoffBaseMs, retentionLimit, expectedDimension, store, retryState, log, onCycleStart: disposition.recordCycleStart});
 
             // Idle cycles stay silent — at a multi-second poll interval, per-cycle no-op lines
             // would dominate the log without adding signal.

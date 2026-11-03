@@ -7,17 +7,21 @@ import os             from 'os';
 import path           from 'path';
 
 import {
+    appendMessageWalEmbedMarker,
     appendMessageWalGraphProjectionMarker,
     appendWalMessage,
+    getMessageWalEmbedMarkersFileName,
     getMessageWalGraphProjectionStats,
     getMessageWalGraphMarkersFileName,
     getMessageWalRecordsFileName,
     getMessageWalSegmentKey,
     pruneReconciledMessageWalSegments,
     readMessageWalProvenanceSegments,
+    readPendingMessageWalEmbedRecords,
     readPendingMessageWalRecords,
     readWalMessages,
-    readWalMessagesByIds
+    readWalMessagesByIds,
+    toMessageEmbedRecord
 } from '../../../../../../../ai/services/memory-core/helpers/messageWalStore.mjs';
 
 /**
@@ -277,11 +281,12 @@ test.describe('Neo.ai.services.memory-core.helpers.messageWalStore', () => {
                 now    : ms
             });
             await appendMessageWalGraphProjectionMarker({id, segmentKey}, {dir: tmpDir});
+            await appendMessageWalEmbedMarker({id, segmentKey}, {dir: tmpDir});
         }
 
         const originalReadFile = fs.readFile;
         let   releasePruneReadGate;
-        const pruneReadGate    = new Promise(resolve => {
+        const pruneReadGate = new Promise(resolve => {
             releasePruneReadGate = resolve;
         });
         let pruneReadsCompleted = false;
@@ -321,9 +326,90 @@ test.describe('Neo.ai.services.memory-core.helpers.messageWalStore', () => {
         expect(names).toContain('message-wal-2026-07-29.jsonl');
         expect(names).not.toContain('message-wal-2026-07-28.jsonl');
         expect(names).not.toContain('message-wal-2026-07-28.graph.jsonl');
+        expect(names).not.toContain('message-wal-2026-07-28.embedded.jsonl');
         expect(names).toContain('message-wal-2026-07-27.jsonl');
 
         expect(await pruneReconciledMessageWalSegments({dir: tmpDir, retentionLimit: 0})).toBe(0);
         expect(await pruneReconciledMessageWalSegments({dir: path.join(tmpDir, 'missing'), retentionLimit: 5})).toBe(0);
+    });
+
+    test('a projected segment is retained until every record is embedded or retracted (#1439)', async () => {
+        const days = [Date.UTC(2026, 6, 27, 12), Date.UTC(2026, 6, 28, 12), Date.UTC(2026, 6, 29, 12)];
+
+        for (const [index, ms] of days.entries()) {
+            const id           = `MESSAGE:day-${index}`,
+                  {segmentKey} = await appendWalMessage({...record(id), timestamp: ms}, {dir: tmpDir, planeId: PLANE_ID, now: ms});
+
+            await appendMessageWalGraphProjectionMarker({id, segmentKey}, {dir: tmpDir});
+        }
+
+        // Projected, never embedded: the embed drain still needs every one of them.
+        expect(await pruneReconciledMessageWalSegments({dir: tmpDir, retentionLimit: 1, activeSegmentKey: '2026-07-30'})).toBe(0);
+
+        await appendMessageWalEmbedMarker({id: 'MESSAGE:day-0', segmentKey: '2026-07-27', retracted: true}, {dir: tmpDir});
+        await appendMessageWalEmbedMarker({id: 'MESSAGE:day-1', segmentKey: '2026-07-28'}, {dir: tmpDir});
+
+        // Day 0 (retracted) and day 1 (embedded) now reconcile; day 2 is still pending. Retaining one
+        // reconciled segment removes only the oldest, day 0.
+        expect(await pruneReconciledMessageWalSegments({dir: tmpDir, retentionLimit: 1, activeSegmentKey: '2026-07-30'})).toBe(1);
+
+        const names = await fs.readdir(tmpDir);
+        expect(names).not.toContain('message-wal-2026-07-27.jsonl');
+        expect(names).not.toContain(getMessageWalEmbedMarkersFileName('2026-07-27'));
+        expect(names).toContain('message-wal-2026-07-28.jsonl');
+        expect(names).toContain('message-wal-2026-07-29.jsonl');
+    });
+
+    test('toMessageEmbedRecord maps send-time routing into the metadata admission filters on (#1439)', () => {
+        const message = (id, routing, properties = {}) => ({
+            ...record(id),
+            timestamp: DAY,
+            message  : {id, type: 'MESSAGE', name: id, properties: {subject: `${id} subject`, bodyText: `${id} body`, ...properties}},
+            routing  : {sentBy: '@alice', senderUserId: 'alice', ...routing}
+        });
+
+        const direct = toMessageEmbedRecord(message('MESSAGE:direct', {to: '@bob', broadcastRecipients: []}, {partOfThread: 'THREAD:1'}), '2026-07-30');
+        expect(direct).toEqual({
+            id        : 'MESSAGE:direct',
+            segmentKey: '2026-07-30',
+            document  : 'MESSAGE:direct subject\n\nMESSAGE:direct body',
+            metadata  : {from: '@alice', to: '@bob', kind: 'direct', sentAt: DAY, threadId: 'THREAD:1'}
+        });
+
+        const known = toMessageEmbedRecord(message('MESSAGE:known', {to: 'AGENT:*', broadcastRecipients: ['@bob', '@carol']}), '2026-07-30');
+        expect(known.metadata).toEqual({from: '@alice', to: 'AGENT:*', kind: 'broadcast', sentAt: DAY, cohort: 'known', recipients: ['@bob', '@carol']});
+
+        // A known audience of zero lists nobody: an absent key matches no `$contains` filter.
+        const knownZero = toMessageEmbedRecord(message('MESSAGE:zero', {to: 'AGENT:*', broadcastRecipients: []}), '2026-07-30');
+        expect(knownZero.metadata.cohort).toBe('known');
+        expect(knownZero.metadata).not.toHaveProperty('recipients');
+
+        // A row older than the audience snapshot is legacy, never given guessed readers.
+        const legacy = toMessageEmbedRecord(message('MESSAGE:legacy', {to: 'AGENT:*', broadcastRecipients: undefined}), '2026-07-30');
+        expect(legacy.metadata.cohort).toBe('legacy-unknown');
+        expect(legacy.metadata).not.toHaveProperty('recipients');
+    });
+
+    test('readPendingMessageWalEmbedRecords returns unmarked records in drain shape and skips embedded and retracted ones (#1439)', async () => {
+        for (const id of ['MESSAGE:pending', 'MESSAGE:embedded', 'MESSAGE:retracted']) {
+            await appendWalMessage({...record(id), timestamp: DAY}, {dir: tmpDir, planeId: PLANE_ID, now: DAY});
+        }
+
+        const segmentKey = getMessageWalSegmentKey(DAY);
+
+        await appendMessageWalEmbedMarker({id: 'MESSAGE:embedded', segmentKey}, {dir: tmpDir});
+        await appendMessageWalEmbedMarker({id: 'MESSAGE:retracted', segmentKey, retracted: true}, {dir: tmpDir});
+
+        const pending = await readPendingMessageWalEmbedRecords({dir: tmpDir});
+        expect(pending.map(entry => entry.id)).toEqual(['MESSAGE:pending']);
+        expect(pending[0]).toMatchObject({segmentKey, document: 'MESSAGE:pending', metadata: {from: '@alice', to: '@bob', kind: 'direct'}});
+
+        // The reconciled-segment cache must not hide a record appended after a clean read.
+        await appendMessageWalEmbedMarker({id: 'MESSAGE:pending', segmentKey}, {dir: tmpDir});
+        expect(await readPendingMessageWalEmbedRecords({dir: tmpDir})).toEqual([]);
+        await appendWalMessage({...record('MESSAGE:late'), timestamp: DAY}, {dir: tmpDir, planeId: PLANE_ID, now: DAY});
+        expect((await readPendingMessageWalEmbedRecords({dir: tmpDir})).map(entry => entry.id)).toEqual(['MESSAGE:late']);
+
+        expect(await readPendingMessageWalEmbedRecords({dir: tmpDir, ids: ['MESSAGE:embedded']})).toEqual([]);
     });
 });

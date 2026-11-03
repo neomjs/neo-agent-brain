@@ -151,6 +151,15 @@ export function getMessageWalGraphMarkersFileName(segmentKey) {
 }
 
 /**
+ * @summary Builds the embed markers file name for a message WAL segment key.
+ * @param {String} segmentKey `YYYY-MM-DD` day key.
+ * @returns {String} JSONL embed markers file name.
+ */
+export function getMessageWalEmbedMarkersFileName(segmentKey) {
+    return `message-wal-${segmentKey}.embedded.jsonl`;
+}
+
+/**
  * @summary Appends one accepted A2A message intent to its UTC-day WAL segment, optionally pruning
  * reconciled non-active segments beyond `retentionLimit`.
  * @param {Object} record
@@ -258,6 +267,91 @@ export async function appendMessageWalGraphProjectionMarker({
     deleteReconciledMessageSegmentCacheEntry(dir, segmentKey);
 
     return filePath;
+}
+
+/**
+ * @summary Appends an embed marker for one accepted message WAL record.
+ *
+ * Two writers share this file, as `add_memory`'s embed markers are shared with `purgeSession`: the
+ * embed daemon's message drain marks a record embedded, and a sender's retraction marks it
+ * `retracted` BEFORE deleting its vector. Either marker ends the record's pending state, so a
+ * retracted record is never embedded from its WAL copy, and a retraction that lands while the drain
+ * is mid-`add` is undone by the drain's purge-race compensation. Each marker is one short line,
+ * well inside POSIX's atomic-append range.
+ *
+ * @param {Object} marker
+ * @param {String} marker.id Stable `MESSAGE:*` id.
+ * @param {String} marker.segmentKey WAL segment key containing the accepted record.
+ * @param {Number} [marker.embeddedAt] Epoch-ms marker time.
+ * @param {Boolean} [marker.retracted] `true` when a retraction, not an embed, writes the marker.
+ * @param {Object} options
+ * @param {String} options.dir Message WAL directory.
+ * @returns {Promise<String>} Written markers file path.
+ */
+export async function appendMessageWalEmbedMarker({id, segmentKey, embeddedAt, retracted}, {dir} = {}) {
+    if (!dir) {
+        throw new TypeError('appendMessageWalEmbedMarker: dir is required');
+    }
+    if (typeof id !== 'string' || !id.startsWith('MESSAGE:') || typeof segmentKey !== 'string' || segmentKey.length === 0) {
+        throw new TypeError('appendMessageWalEmbedMarker: id and segmentKey are required');
+    }
+
+    await fs.mkdir(dir, {recursive: true});
+
+    const filePath = path.join(dir, getMessageWalEmbedMarkersFileName(segmentKey)),
+          marker   = {id, embeddedAt: embeddedAt ?? Date.now(), ...(retracted ? {retracted: true} : {})};
+
+    await fs.appendFile(filePath, `${JSON.stringify(marker)}\n`, 'utf8');
+    embedReconciledMessageSegmentCache.delete(getReconciledMessageSegmentCacheKey(dir, segmentKey));
+
+    return filePath;
+}
+
+/**
+ * @summary Maps one accepted message WAL record to the embed drain's record shape.
+ *
+ * The document is the subject and body. The metadata is what message admission filters on, read
+ * from the record's immutable send-time routing rather than the graph: sender, destination and,
+ * for a broadcast, its cohort. A broadcast that carries its send-time audience is `known` and lists
+ * it in `recipients`; one without it (a row older than the audience snapshot) is `legacy-unknown`
+ * and lists nobody, so no filter can manufacture its readers. An empty audience is omitted rather
+ * than stored as `[]`: admission matches `recipients` with `$contains`, and an absent key matches
+ * no one.
+ *
+ * @param {Object} record Accepted message WAL record (`graphProjectionVersion: 1`).
+ * @param {String} segmentKey WAL segment key containing the record.
+ * @returns {{id: String, segmentKey: String, document: String, metadata: Object}}
+ */
+export function toMessageEmbedRecord(record, segmentKey) {
+    const {message, routing} = record,
+          {properties}       = message,
+          broadcast          = routing.to === 'AGENT:*',
+          audience           = routing.broadcastRecipients,
+          metadata           = {
+              from  : routing.sentBy,
+              to    : routing.to,
+              kind  : broadcast ? 'broadcast' : 'direct',
+              sentAt: record.timestamp
+          };
+
+    if (broadcast) {
+        metadata.cohort = Array.isArray(audience) ? 'known' : 'legacy-unknown';
+
+        if (Array.isArray(audience) && audience.length > 0) {
+            metadata.recipients = [...audience]
+        }
+    }
+
+    if (properties.partOfThread) {
+        metadata.threadId = properties.partOfThread
+    }
+
+    return {
+        id      : record.id,
+        segmentKey,
+        document: [properties.subject, properties.bodyText].filter(Boolean).join('\n\n'),
+        metadata
+    }
 }
 
 /**
@@ -613,7 +707,8 @@ export async function readWalMessagesByIds({dir, ids, limit} = {}) {
     return records;
 }
 
-const reconciledMessageSegmentCache = new Map();
+const reconciledMessageSegmentCache      = new Map();
+const embedReconciledMessageSegmentCache = new Map();
 
 /**
  * @summary Builds a cache key for a reconciled message WAL segment's stat signature.
@@ -658,15 +753,17 @@ async function getMessageWalFileStatSignature(filePath) {
 }
 
 /**
- * @summary Computes the composite stat signature of a message segment's payload file and graph marker file.
+ * @summary Computes the composite stat signature of a message segment's payload file and one of its
+ * marker files: the graph markers by default, or the embed markers for the embed drain's reader.
  * @param {String} dir Message WAL directory.
  * @param {String} segmentKey UTC-day segment key.
+ * @param {String} [markersFileName] Marker file name inside `dir`.
  * @returns {Promise<String|null>}
  * @private
  */
-async function getMessageWalSegmentStatSignature(dir, segmentKey) {
+async function getMessageWalSegmentStatSignature(dir, segmentKey, markersFileName = getMessageWalGraphMarkersFileName(segmentKey)) {
     const recordsPath              = path.join(dir, getMessageWalRecordsFileName(segmentKey));
-    const markersPath              = path.join(dir, getMessageWalGraphMarkersFileName(segmentKey));
+    const markersPath              = path.join(dir, markersFileName);
     const [recordsSig, markersSig] = await Promise.all([
         getMessageWalFileStatSignature(recordsPath),
         getMessageWalFileStatSignature(markersPath)
@@ -748,13 +845,83 @@ export async function readPendingMessageWalRecords({dir, ids, limit} = {}) {
 }
 
 /**
+ * @summary Reads accepted message WAL records that carry no embed marker yet, in the embed drain's
+ * record shape.
+ *
+ * Each record comes back through {@link toMessageEmbedRecord}, so `drainWalOnce` embeds it without
+ * knowing it is a message. Embedding is independent of graph projection: a record waits here until
+ * the drain marks it embedded or a retraction marks it retracted, whatever its projection state.
+ * Segments with `0` pending records are cached by their payload + embed-marker stat signature, as
+ * {@link readPendingMessageWalRecords} caches graph-reconciled ones, so a poll over the retained
+ * segments re-parses only the files that changed.
+ *
+ * @param {Object} options
+ * @param {String} options.dir Message WAL directory.
+ * @param {String[]} [options.ids] Optional targeted record ids.
+ * @param {Number} [options.limit] Maximum pending records to return.
+ * @returns {Promise<Object[]>} Pending drain records, newest segment first.
+ */
+export async function readPendingMessageWalEmbedRecords({dir, ids, limit} = {}) {
+    if (!dir) return [];
+
+    const idFilter = Array.isArray(ids) ? new Set(ids) : null,
+          bounded  = Number.isFinite(limit) && limit > 0 ? limit : Infinity,
+          pending  = [];
+
+    for (const segmentKey of await listMessageWalSegmentKeys(dir)) {
+        if (pending.length >= bounded) break;
+
+        const cacheKey      = !idFilter ? getReconciledMessageSegmentCacheKey(dir, segmentKey) : null,
+              statSignature = cacheKey ? await getMessageWalSegmentStatSignature(dir, segmentKey, getMessageWalEmbedMarkersFileName(segmentKey)) : null;
+
+        if (cacheKey && statSignature && embedReconciledMessageSegmentCache.get(cacheKey) === statSignature) {
+            continue;
+        }
+
+        const records   = await readJsonlEntries(path.join(dir, getMessageWalRecordsFileName(segmentKey))),
+              markedIds = new Set(
+                  (await readJsonlEntries(path.join(dir, getMessageWalEmbedMarkersFileName(segmentKey)))).map(entry => entry.id)
+              );
+
+        let segmentPendingCount = 0,
+            truncatedByLimit    = false;
+
+        for (const record of records) {
+            if (!record?.id || markedIds.has(record.id)) continue;
+            if (record.graphProjectionVersion !== 1) continue;
+
+            segmentPendingCount++;
+
+            if (idFilter && !idFilter.has(record.id)) continue;
+            if (pending.length >= bounded) {
+                truncatedByLimit = true;
+                break;
+            }
+            pending.push(toMessageEmbedRecord(record, segmentKey));
+        }
+
+        if (cacheKey && statSignature && !truncatedByLimit) {
+            if (segmentPendingCount === 0) {
+                embedReconciledMessageSegmentCache.set(cacheKey, statSignature);
+            } else {
+                embedReconciledMessageSegmentCache.delete(cacheKey);
+            }
+        }
+    }
+
+    return pending;
+}
+
+/**
  * @summary Removes fully-reconciled, non-active message WAL segments beyond a retention bound.
  *
  * Mirrors `pruneReconciledWalSegments` in `memoryWalStore.mjs`: `appendWalMessage` schedules this
  * detached (`.catch(() => {})`) off the awaited `add_message` return path (`aiConfig.memoryWal.retentionLimit`,
  * shared across both WAL families) so writes never wait on historical segment reads. Mailbox views read
  * the graph (not WAL segment files) and only boot-time `ensureBroadcastCohortStamps` (`readMessageWalCandidateRecords`)
- * scans historical segments; segments with ANY unprojected record and the active segment are kept.
+ * scans historical segments. A segment is reconciled only when every record is both projected and
+ * embedded (or retracted), so the active segment and any segment holding an unprojected or unembedded
+ * record are kept — the embed drain never loses a record to pruning, as the memory WAL's drain does not.
  *
  * @param {Object} options
  * @param {String} options.dir Message WAL directory.
@@ -778,12 +945,15 @@ export async function pruneReconciledMessageWalSegments({dir, retentionLimit, ac
     const reconciled = [];
 
     for (const segmentKey of segmentKeys) {
-        let records, marked;
+        let records, projected, embedded;
 
         try {
-            records = await readJsonlEntries(path.join(dir, getMessageWalRecordsFileName(segmentKey)));
-            marked  = new Set(
+            records   = await readJsonlEntries(path.join(dir, getMessageWalRecordsFileName(segmentKey)));
+            projected = new Set(
                 (await readJsonlEntries(path.join(dir, getMessageWalGraphMarkersFileName(segmentKey)))).map(entry => entry.id)
+            );
+            embedded  = new Set(
+                (await readJsonlEntries(path.join(dir, getMessageWalEmbedMarkersFileName(segmentKey)))).map(entry => entry.id)
             );
         } catch {
             continue;
@@ -791,7 +961,7 @@ export async function pruneReconciledMessageWalSegments({dir, retentionLimit, ac
 
         if (records.every(record =>
             record?.id &&
-            (record.graphProjectionVersion !== 1 || marked.has(record.id))
+            (record.graphProjectionVersion !== 1 || (projected.has(record.id) && embedded.has(record.id)))
         )) {
             reconciled.push(segmentKey);
         }
@@ -802,13 +972,15 @@ export async function pruneReconciledMessageWalSegments({dir, retentionLimit, ac
 
     await Promise.all(toRemove.flatMap(segmentKey => [
         fs.rm(path.join(dir, getMessageWalRecordsFileName(segmentKey)),      {force: true}),
-        fs.rm(path.join(dir, getMessageWalGraphMarkersFileName(segmentKey)), {force: true})
+        fs.rm(path.join(dir, getMessageWalGraphMarkersFileName(segmentKey)), {force: true}),
+        fs.rm(path.join(dir, getMessageWalEmbedMarkersFileName(segmentKey)), {force: true})
     ]));
 
     if (toRemove.length > 0) {
         projectionStatsCache.delete(dir);
         for (const segmentKey of toRemove) {
             deleteReconciledMessageSegmentCacheEntry(dir, segmentKey);
+            embedReconciledMessageSegmentCache.delete(getReconciledMessageSegmentCacheKey(dir, segmentKey));
         }
     }
 

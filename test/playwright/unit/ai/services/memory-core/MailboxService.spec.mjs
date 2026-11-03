@@ -34,7 +34,7 @@ test.describe.configure({ mode: 'serial' });
 
 test.describe('Neo.ai.services.memory-core.MailboxService', () => {
     let MailboxService, GraphService, PermissionService, LifecycleService, SwarmHeartbeatService, buildMailboxDelta, callMemoryCoreTool, originalAutoSave, mailboxAiConfig, originalMailboxPolicy, readWalMessages, readPendingMessageWalRecords;
-    let readBackgroundDeliveryState;
+    let readBackgroundDeliveryState, readPendingMessageWalEmbedRecords, StorageRouter;
     let messageWalDir, getWakeDeliverySeries, readMessageWalSegmentLoadObservations;
 
     test.beforeAll(async () => {
@@ -53,9 +53,11 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         buildMailboxDelta = (await import('../../../../../../ai/services/memory-core/MemoryService.mjs')).buildMailboxDelta;
         callMemoryCoreTool = (await import('../../../../../../ai/mcp/server/memory-core/toolService.mjs')).callTool;
         const messageWalStore = await import('../../../../../../ai/services/memory-core/helpers/messageWalStore.mjs');
-        readWalMessages              = messageWalStore.readWalMessages;
-        readPendingMessageWalRecords = messageWalStore.readPendingMessageWalRecords;
-        messageWalDir                = mailboxAiConfig.messageWal.dir;
+        readWalMessages                   = messageWalStore.readWalMessages;
+        readPendingMessageWalRecords      = messageWalStore.readPendingMessageWalRecords;
+        readPendingMessageWalEmbedRecords = messageWalStore.readPendingMessageWalEmbedRecords;
+        messageWalDir                     = mailboxAiConfig.messageWal.dir;
+        StorageRouter                     = (await import('../../../../../../ai/services/memory-core/managers/StorageRouter.mjs')).default;
 
         // Pin this suite to strict-isolation mode. These tests predate the
         // config-gated default and assert `'blocked'`-mode behavior (Unauthorized
@@ -696,7 +698,8 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             expect(outcome.deadline).toBeUndefined();
             expect(outcome.receipt).toMatchObject({
                 status          : 'sent',
-                projectionStatus: 'pending'
+                projectionStatus: 'pending',
+                visibility      : {semanticQueryable: false, state: 'embed-deferred'}
             });
             expect(projectionEntered).toBe(false);
 
@@ -715,6 +718,42 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             release.resolve();
             MailboxService._projectMessageWalRecord = originalProject;
         }
+    });
+
+    test('#1439: a retraction marks the WAL record retracted for the embed drain before it deletes the vector', async () => {
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
+            await PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'});
+        });
+
+        const receipt = await RequestContextService.run({agentIdentityNodeId: '@alice'}, () => callMemoryCoreTool('add_message', {
+            to     : '@bob',
+            subject: 'retract me',
+            body   : 'this text must leave the semantic index'
+        }));
+
+        // Projected, so the graph markers index the record's segment for the retraction to find.
+        await expect.poll(async () => (await readPendingMessageWalRecords({dir: messageWalDir})).length).toBe(0);
+        expect((await readPendingMessageWalEmbedRecords({dir: messageWalDir})).map(record => record.id)).toContain(receipt.messageId);
+
+        const originalGetMessageCollection = StorageRouter.getMessageCollection,
+              deletes                      = [];
+
+        StorageRouter.getMessageCollection = async () => ({
+            delete: async args => {
+                deletes.push({args, pendingAtDelete: (await readPendingMessageWalEmbedRecords({dir: messageWalDir})).map(record => record.id)});
+            }
+        });
+
+        try {
+            await RequestContextService.run({agentIdentityNodeId: '@alice'}, () => MailboxService.deleteMessage({messageId: receipt.messageId}));
+        } finally {
+            StorageRouter.getMessageCollection = originalGetMessageCollection;
+        }
+
+        expect(deletes).toHaveLength(1);
+        expect(deletes[0].args).toEqual({ids: [receipt.messageId]});
+        // The marker preceded the delete: from that moment the drain can no longer embed the old text.
+        expect(deletes[0].pendingAtDelete).not.toContain(receipt.messageId);
     });
 
     for (const deferred of [false, true]) {

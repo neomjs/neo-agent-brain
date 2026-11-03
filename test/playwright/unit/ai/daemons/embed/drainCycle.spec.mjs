@@ -11,11 +11,17 @@ import {
     readPendingWalRecords
 } from '../../../../../../ai/services/memory-core/helpers/memoryWalStore.mjs';
 import {
+    appendMessageWalEmbedMarker,
+    appendWalMessage,
+    readPendingMessageWalEmbedRecords
+} from '../../../../../../ai/services/memory-core/helpers/messageWalStore.mjs';
+import {
     drainWalOnce,
     embedBatch,
     getBackoffDelayMs,
     startDrainLoop,
-    MAX_RECORD_COOLDOWN_MS
+    MAX_RECORD_COOLDOWN_MS,
+    MESSAGE_WAL_STORE
 } from '../../../../../../ai/daemons/embed/drainCycle.mjs';
 import {createDrainDispositionTracker}          from '../../../../../../ai/daemons/shared/drainDisposition.mjs';
 import {OPENAI_COMPATIBLE_REQUEST_TIMEOUT_CODE} from '../../../../../../ai/provider/createTimeoutError.mjs';
@@ -322,6 +328,38 @@ test.describe('Neo.ai.daemons.embed.drainCycle', () => {
         expect(collection.store.has('raced')).toBe(false);
         expect(collection.store.has('normal')).toBe(true);
         expect(await readPendingWalRecords({dir: tmpDir})).toHaveLength(0);
+    });
+
+    test('#1439: the message store embeds accepted messages, and a retraction landing mid-embed is compensated', async () => {
+        const message = id => ({
+            id,
+            timestamp             : Date.now(),
+            graphProjectionVersion: 1,
+            message               : {id, type: 'MESSAGE', name: id, properties: {subject: `s-${id}`, bodyText: `b-${id}`}},
+            routing               : {sentBy: '@alice', to: '@bob', senderUserId: 'alice', broadcastRecipients: []},
+            optionalEdges         : {relatedTickets: [], relatedSessions: [], taggedConcepts: []}
+        });
+
+        const {segmentKey} = await appendWalMessage(message('MESSAGE:raced'), {dir: tmpDir, planeId: 'test-message-plane'});
+        await appendWalMessage(message('MESSAGE:normal'), {dir: tmpDir, planeId: 'test-message-plane'});
+
+        const collection = createFakeCollection();
+        // A sender's retraction racing the in-flight embed: its marker lands while `add` runs.
+        collection.onAdd = async ({ids}) => {
+            if (ids.includes('MESSAGE:raced')) {
+                await appendMessageWalEmbedMarker({id: 'MESSAGE:raced', segmentKey, retracted: true}, {dir: tmpDir});
+            }
+        };
+
+        const summary = await drain(collection, {store: MESSAGE_WAL_STORE});
+
+        expect(summary).toMatchObject({embedded: 1, compensated: 1, prunedSegments: 0});
+        expect(collection.addCalls[0].documents).toContain('s-MESSAGE:normal\n\nb-MESSAGE:normal');
+        expect(collection.store.get('MESSAGE:normal')).toMatchObject({from: '@alice', to: '@bob', kind: 'direct'});
+        expect(collection.store.has('MESSAGE:raced')).toBe(false);
+        expect(await readPendingMessageWalEmbedRecords({dir: tmpDir})).toEqual([]);
+        // The message store reads only `message-wal-*` files: the memory WAL in the same dir is untouched.
+        expect(await readPendingWalRecords({dir: tmpDir})).toEqual([]);
     });
 
     test('targeted drain: `ids` reconciles only the requested records', async () => {

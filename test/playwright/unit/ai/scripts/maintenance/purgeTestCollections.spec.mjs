@@ -11,11 +11,12 @@ import {CHROMA_TEST_DATABASE} from '../../../../../../ai/services/shared/vector/
  * dry-run/apply behavior of the fs-residue cleaner (incl. that it never touches the real graph db).
  */
 test.describe('purgeTestCollections guard', () => {
-    test('purges test-memory-* / test-session-* but never a protected production collection', () => {
+    test('purges test-memory-* / test-session-* / test-message-* but never a protected production collection', () => {
         expect(isPurgeableTestCollection('test-memory-1700000000000-abc')).toBe(true);
         expect(isPurgeableTestCollection('test-session-1700000000000-xyz')).toBe(true);
+        expect(isPurgeableTestCollection('test-message-1700000000000-q7z')).toBe(true);
 
-        for (const real of ['neo-agent-memory', 'neo-agent-sessions', 'neo-knowledge-base', 'neo-native-graph']) {
+        for (const real of ['neo-agent-memory', 'neo-agent-sessions', 'neo-agent-messages', 'neo-knowledge-base', 'neo-native-graph']) {
             expect(isPurgeableTestCollection(real)).toBe(false);
         }
         // Non-test, non-protected names (e.g. a KB shadow-swap collection) are also retained.
