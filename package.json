@@ -122,7 +122,7 @@
         "catharsis": "0.11.0",
         "chalk": "^6.0.1",
         "postcss": "^8.5.32",
-        "sass": "^1.107.0"
+        "sass": "^1.107.1"
     },
     "overrides": {
         "gray-matter": {
