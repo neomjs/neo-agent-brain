@@ -201,7 +201,7 @@ Confirming delivery is a separate step from the health gate: `up --wait` proves 
 
 Everything above describes a pipeline running *forward* from a known-good state. A plane that has drifted needs the opposite: the pipeline has to be *pointed at* a deployment nobody is currently maintaining, and the reason a rebuild alone does not fix it is a configuration contract, not a revision gap.
 
-The worked case is the orchestrator's authority role. Its config leaf carries **no default** — requiredness is armed by that emptiness — so a plane that never declares `NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE` produces a *refused launch* that writes no state directory, no PID file and no log. Rebuilding it at a newer revision reproduces the refusal at a newer revision. There are thirteen such required inputs.
+The worked case is the orchestrator's authority role. Its config leaf carries **no default** — requiredness is armed by that emptiness — so a plane that never declares `NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE` produces a *refused launch* that writes no state directory, no PID file and no log. Rebuilding it at a newer revision reproduces the refusal at a newer revision. There are twenty-two such required inputs in the canonical profile census.
 
 [`ai/scripts/maintenance/migrateDeployment.mjs`](../../../ai/scripts/maintenance/migrateDeployment.mjs) is the supervised bootstrap for that case. It is operator-invoked, never scheduled, and never mutates on its own judgement:
 
@@ -217,7 +217,7 @@ node ai/scripts/maintenance/migrateDeployment.mjs apply \
 
 Four properties are worth knowing before running it, because each was a defect first.
 
-**It refuses by default, and it refuses per service.** The census classifies keys per *profile*, but a profile's required list is not uniform across its services: on the canonical profile four of the thirteen required inputs are declared by one service only. Observations are therefore kept per service and never unioned — a union only ever shrinks the delta, so a key set on one container and absent from another would report as satisfied for both. Anything the tool could not establish blocks rather than annotating an authorizing verdict.
+**It refuses by default, and it refuses per service.** The census classifies keys per *profile*, and every Neo service config template inherits the shared root `ai/configBase.mjs`, so template declaration is wider than what any one container consumes. Each service's scope is therefore resolved from the target Compose profile's per-service `environment` placement (`deploy/cloud/docker-compose.yml`, the same authority `lint-config-template-ssot.mjs` parses to enforce the census) backed by the profile's config templates. Observations are kept per service and never unioned — a union only ever shrinks the delta, so a key set on one container and absent from another would report as satisfied for both. Anything the tool could not establish blocks rather than annotating an authorizing verdict.
 
 **The config cohort is wider than the revision cohort.** `/app/.neo-revision` is written by the Neo image, so only Neo services can produce a revision receipt. But the deployment contract spans services that cannot: Compose owns `NEO_DEPLOY_HOSTNAME` on the ingress service. Both cohorts are derived — the config cohort from the plane's own Compose service labels, never a hardcoded list — so a deployment with a differently-named proxy stays inside the contract.
 
@@ -225,7 +225,7 @@ Four properties are worth knowing before running it, because each was a defect f
 
 **Values the plane already carries are preserved.** `NEO_DEPLOY_HOSTNAME` is supplied by interpolation (`${NEO_DEPLOY_HOSTNAME:-localhost}`) rather than stored, so a repair run whose environment lacks it would re-render the *fallback* and silently reset a plane that had a real hostname. Compose-owned observed values are carried forward, with an explicit `--set` for the same key taking precedence.
 
-Two bounds, stated because they are real. Compose-owned obligation is read from observed env, so it cannot detect a compose-owned key Compose *forgot* to set. And the compose file paths are discovered from the plane's own labels, which on a multi-clone host may point outside the checkout running the tool.
+Two bounds, stated because they are real. For an overlay-only Compose-owned service that has no entry in the base profile, obligation falls back to observed env and therefore cannot detect a key Compose *forgot* to set on that custom service. And the compose file paths are discovered from the plane's own labels, which on a multi-clone host may point outside the checkout running the tool.
 
 ## Out of scope
 

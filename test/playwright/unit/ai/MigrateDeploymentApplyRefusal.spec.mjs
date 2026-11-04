@@ -67,7 +67,7 @@ case "$1" in
     elif [[ "$*" == *'com.docker.compose.service'* ]]; then
       # The config cohort is DISCOVERED from these labels, so the stub must answer as a real plane does:
       # the Neo services plus a compose-owned proxy that carries the ingress-owned hostname.
-      printf '%s\\n' mc-server orchestrator kb-server ingress
+      printf '%s\\n' mc-server orchestrator kb-server fleet-server ingress
     else
       echo "probe-project"
     fi ;;

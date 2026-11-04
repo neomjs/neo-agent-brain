@@ -2,9 +2,10 @@
 import fs              from 'fs-extra';
 import os              from 'node:os';
 import path            from 'path';
-import {execFile}      from 'node:child_process';
-import {promisify}     from 'node:util';
-import {fileURLToPath} from 'url';
+import {execFile}         from 'node:child_process';
+import {promisify}        from 'node:util';
+import {fileURLToPath}    from 'url';
+import {load as loadYaml} from 'js-yaml';
 
 import {buildMigrationPlan, formatPlan, parseObservedEnv, resolveCensus} from './deploymentMigrationCore.mjs';
 import {isEntryModule}                                                   from '../../services/shared/isEntryModule.mjs';
@@ -438,65 +439,146 @@ async function discoverConfigCohort(project) {
 }
 
 /**
- * @summary Resolves each service's declared env surface, so the census is judged per service.
+ * @summary Resolves each service's consumed env surface in the target profile, so the census is judged per service.
  *
- * The census classifies keys per **profile**; the profile block names which config template governs each
- * service, and that template is the per-service authority. `buildConfigEnvDefaultsForTemplate` is the
- * same resolver the parity lint used to compute the census, so this derives the scope from the existing
- * authority rather than introducing a second mapping free to drift from it.
- *
- * A service whose scope cannot be resolved is returned absent rather than defaulted to the whole census:
- * the plan gate refuses on that, because evaluating every profile key against one service invents
- * obligations it never declared.
- * @param {Object}   parity  The parsed parity document.
- * @param {String}   profile Repo-relative Compose path.
- * @param {String[]} services Service names to resolve.
+ * Every Neo service config template inherits `ai/configBase.mjs`, so `buildConfigEnvDefaultsForTemplate`
+ * returns the shared root leaves for every service while omitting sibling-template leaves a container consumes
+ * through child tasks. The target Compose profile (`profile`) is the per-service placement authority that
+ * `lint-config-template-ssot.mjs` parses via `collectComposeEnvironment` to enforce the census: each
+ * template-backed service's scope is the set of `NEO_*`/`MCP_*` keys wired on that service in `profile` and
+ * backed by the profile's declared templates. Unresolvable profiles, templates, or declared services fail
+ * closed in `errors`.
+ * @param {Object}   parity                     The parsed parity document.
+ * @param {String}   profile                    Repo-relative Compose path.
+ * @param {String[]} services                   Service names to resolve.
+ * @param {Object}   [observedEnvByService={}]  Service name → observed env `Map`.
+ * @param {Object}   [census=null]              Output of `resolveCensus`.
+ * @param {Object}   [options={}]               Optional injection hooks for testing.
+ * @param {String}   [options.rootDir]          Repository root directory.
+ * @param {Object}   [options.composeDocument]  Pre-parsed Compose profile document.
  * @returns {Promise<Object>} `{serviceScopes, errors}` — scopes keyed by service, unresolved names in `errors`.
  */
-async function resolveServiceScopes(parity, profile, services, observedEnvByService = {}, census = null) {
-    const declared      = parity?.$composeDefaultParity?.profiles?.[profile]?.services || {},
+export async function resolveServiceScopes(
+    parity,
+    profile,
+    services,
+    observedEnvByService = {},
+    census = null,
+    {rootDir = repoRoot, composeDocument} = {}
+) {
+    const profileEntry  = parity?.$composeDefaultParity?.profiles?.[profile],
+          declared      = profileEntry?.services || {},
           serviceScopes = {},
           errors        = [];
 
+    if (!profileEntry || typeof profileEntry !== 'object') {
+        errors.push(`profile '${profile}' is not declared under $composeDefaultParity.profiles`);
+        return {serviceScopes, errors}
+    }
+
+    let document = composeDocument;
+
+    if (document === undefined) {
+        try {
+            const raw = await fs.readFile(path.join(rootDir, profile), 'utf8');
+            document  = loadYaml(raw)
+        } catch (error) {
+            errors.push(`profile '${profile}': could not read Compose service definitions — ${error.message}`);
+            return {serviceScopes, errors}
+        }
+    }
+
+    if (!document?.services || typeof document.services !== 'object') {
+        errors.push(`profile '${profile}': Compose document carries no 'services' map`);
+        return {serviceScopes, errors}
+    }
+
+    let buildConfigEnvDefaultsForTemplate, collectComposeEnvironment;
+
+    try {
+        ({buildConfigEnvDefaultsForTemplate, collectComposeEnvironment} =
+            await import('../lint/lint-config-template-ssot.mjs'))
+    } catch (error) {
+        errors.push(`could not load lint-config-template-ssot.mjs — ${error.message}`);
+        return {serviceScopes, errors}
+    }
+
+    const uniqueTemplates      = [...new Set(Object.values(declared).filter(Boolean))],
+          allTemplateKeys      = new Set(),
+          templateErrorsByPath = new Map();
+
+    for (const template of uniqueTemplates) {
+        try {
+            const defaults = await buildConfigEnvDefaultsForTemplate({rootDir, template});
+            Object.keys(defaults).forEach(key => allTemplateKeys.add(key))
+        } catch (error) {
+            templateErrorsByPath.set(template, error.message)
+        }
+    }
+
+    const classified = census
+        ? [...census.requiredDeploymentInputs, ...census.optionalOverrides, ...census.secrets]
+        : [];
+
     for (const service of services) {
-        const template = declared[service];
+        const hasDeclaredTemplate = Object.prototype.hasOwnProperty.call(declared, service),
+              template            = declared[service],
+              serviceConfig       = document.services[service];
 
-        if (!template) {
-            // A service with no Neo config template is COMPOSE-owned. `ingress` is Caddy, and Compose
-            // declares its `NEO_DEPLOY_HOSTNAME` directly, so its obligation is what Compose sets on it —
-            // read from its observed env narrowed to census-classified keys.
-            //
-            // Bound, stated because it is real: this cannot detect a compose-owned key Compose FORGOT to
-            // set, since an absent key is simply out of scope. It holds for the keys at issue because
-            // Compose supplies them with fallbacks, so absence is unreachable. The stronger source is a
-            // `docker compose config` render of the discovered files, giving obligation independent of the
-            // observation; that needs the plane's own compose files, whose discovered paths can live in a
-            // different agent's checkout than the one running this tool.
-            const observed = observedEnvByService[service];
-
-            if (observed instanceof Map && census) {
-                serviceScopes[service] = new Set([
-                    ...census.requiredDeploymentInputs, ...census.optionalOverrides, ...census.secrets
-                ].filter(key => observed.has(key)));
-
+        if (hasDeclaredTemplate) {
+            if (!template || typeof template !== 'string') {
+                errors.push(`service '${service}': empty or non-string config template under $composeDefaultParity.profiles['${profile}'].services`);
                 continue
             }
 
-            errors.push(
-                `service '${service}' has no config template under $composeDefaultParity.profiles['${profile}'].services ` +
-                'and no observed env to attribute from'
-            );
+            if (templateErrorsByPath.has(template)) {
+                errors.push(`service '${service}': could not resolve declared env from '${template}' — ${templateErrorsByPath.get(template)}`);
+                continue
+            }
 
+            if (!serviceConfig || typeof serviceConfig !== 'object') {
+                errors.push(
+                    `service '${service}' is declared under $composeDefaultParity.profiles['${profile}'].services ` +
+                    `but has no service entry in '${profile}'`
+                );
+                continue
+            }
+
+            const composeEnv = collectComposeEnvironment(serviceConfig.environment);
+
+            serviceScopes[service] = new Set(
+                [...composeEnv.keys()].filter(key => /^(?:NEO_|MCP_)/.test(key) && allTemplateKeys.has(key))
+            );
             continue
         }
 
-        try {
-            const {buildConfigEnvDefaultsForTemplate} = await import('../lint/lint-config-template-ssot.mjs');
+        if (serviceConfig && typeof serviceConfig === 'object') {
+            const composeEnv = collectComposeEnvironment(serviceConfig.environment),
+                  scopedKeys = new Set([...composeEnv.keys()].filter(key => /^(?:NEO_|MCP_)/.test(key))),
+                  observed   = observedEnvByService[service];
 
-            serviceScopes[service] = new Set(Object.keys(await buildConfigEnvDefaultsForTemplate({template})))
-        } catch (error) {
-            errors.push(`service '${service}': could not resolve declared env from '${template}' — ${error.message}`)
+            if (observed instanceof Map && classified.length) {
+                classified.filter(key => observed.has(key)).forEach(key => scopedKeys.add(key))
+            }
+
+            serviceScopes[service] = scopedKeys;
+            continue
         }
+
+        // A service with neither a Neo config template nor a base-profile service entry (for example, a
+        // differently-named proxy defined in an overlay) is COMPOSE-owned: its obligation is read from its
+        // observed env narrowed to census-classified keys.
+        const observed = observedEnvByService[service];
+
+        if (observed instanceof Map && census) {
+            serviceScopes[service] = new Set(classified.filter(key => observed.has(key)));
+            continue
+        }
+
+        errors.push(
+            `service '${service}' has no config template under $composeDefaultParity.profiles['${profile}'].services ` +
+            'and no observed env to attribute from'
+        )
     }
 
     return {serviceScopes, errors}
