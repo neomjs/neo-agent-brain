@@ -57,13 +57,19 @@ function normalizeOpenApiJsonSchema(node) {
  * Dynamically constructs a Zod schema for a tool's input arguments based on its
  * OpenAPI operation definition. This schema is used for robust runtime validation
  * of incoming tool call arguments.
+ *
+ * Root tool-argument objects default to `.strict()` so unknown or misspelled top-level
+ * parameter names fail fast with `unrecognized_keys` instead of being silently stripped
+ * onto default values (unless `requestBodySchema.additionalProperties` explicitly permits
+ * open top-level properties).
+ *
  * @param {object} openApiDocument - The OpenAPI document object.
  * @param {object} operation       - The OpenAPI operation object.
  * @returns {z.ZodObject} A Zod object schema representing the tool's input.
  */
 function buildZodSchema(openApiDocument, operation) {
     const shape      = {};
-    let   strictRoot = false;
+    let   strictRoot = true;
 
     // Process parameters defined in the OpenAPI operation (path, query, header, etc.).
     if (operation.parameters) {
@@ -89,7 +95,7 @@ function buildZodSchema(openApiDocument, operation) {
             requestBodySchema = resolveRef(openApiDocument, requestBodySchema.$ref);
         }
 
-        strictRoot = requestBodySchema.additionalProperties === false;
+        strictRoot = !requestBodySchema.additionalProperties;
 
         if (requestBodySchema.properties) {
             const { properties, required = [] } = requestBodySchema;

@@ -99,18 +99,28 @@ test.describe('Neo.ai.services.neural-link.InstanceService - server boundary', (
 
     test('every transaction tool carries explicit Group selection through its compiled wire and forwarder', async () => {
         const doc     = YAML.parse(fs.readFileSync(new URL('../../../../../../ai/mcp/server/neural-link/openapi.yaml', import.meta.url), 'utf8'));
-        const methods = {undo: 'undo', redo: 'redo', list_transactions: 'listTransactions',
-            begin_transaction: 'beginTransaction', commit_transaction: 'commitTransaction',
-            abort_transaction: 'abortTransaction', save_transaction: 'saveTransaction', replay_transaction: 'replayTransaction'};
-        for (const [operationId, methodName] of Object.entries(methods)) {
+        const methods = {
+            undo              : ['undo',              {}],
+            redo              : ['redo',              {}],
+            list_transactions : ['listTransactions',  {}],
+            begin_transaction : ['beginTransaction',  {name: 'batch'}],
+            commit_transaction: ['commitTransaction', {}],
+            abort_transaction : ['abortTransaction',  {}],
+            save_transaction  : ['saveTransaction',   {name: 'batch', txId: 'row'}],
+            replay_transaction: ['replayTransaction', {archiveId: 'archive-1'}]
+        };
+        for (const [operationId, [methodName, extraArgs]] of Object.entries(methods)) {
             let operation;
             for (const [path, item] of Object.entries(doc.paths)) {
                 for (const [method, entry] of Object.entries(item)) {
                     if (entry.operationId === operationId) operation = {path, method, ...entry}
                 }
             }
-            const request = buildZodSchema(doc, operation).parse({groupId: 'group-b', sessionId: 'app-session',
-                name: 'batch', txId: 'row', archiveId: 'archive-1'});
+            const request = buildZodSchema(doc, operation).parse({
+                groupId  : 'group-b',
+                sessionId: 'app-session',
+                ...extraArgs
+            });
             expect(request.groupId).toBe('group-b');
             await InstanceService[methodName](request);
             expect(calls.at(-1)).toMatchObject({sessionId: 'app-session', op: operationId,

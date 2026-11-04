@@ -144,12 +144,20 @@ test.describe('manage_knowledge_base shared core deletion boundary', () => {
         }
 
         expect(operation).toBeTruthy();
-        const parsed = buildZodSchema(spec, operation).parse({
+        const schema   = buildZodSchema(spec, operation);
+        const parsed   = schema.parse({action: 'embed'});
+        const rejected = schema.safeParse({
             action: 'embed', staleStrategy: 'delete-upfront', viaMcp: true
         });
 
         expect(parsed).toEqual({action: 'embed'});
-        expect('staleStrategy' in parsed).toBe(false);
-        expect('viaMcp' in parsed).toBe(false)
+        expect(rejected.success).toBe(false);
+        expect(
+            rejected.error.issues.some(
+                issue => issue.code === 'unrecognized_keys' &&
+                    issue.keys?.includes('staleStrategy') &&
+                    issue.keys?.includes('viaMcp')
+            )
+        ).toBe(true)
     })
 });
