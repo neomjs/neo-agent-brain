@@ -43,6 +43,11 @@ x-neo-harness-tool-projection:
   operatorOnlyTiers:
     - admin
 
+# Strict top-level input validation (#1466). Rejects unknown or misspelled top-level keys
+# (such as `repository` instead of `repo`) with `unrecognized_keys` instead of stripping
+# them onto the default repository.
+x-neo-strict-input: true
+
 paths:
   /docs:
     get:

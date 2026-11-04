@@ -57,13 +57,22 @@ function normalizeOpenApiJsonSchema(node) {
  * Dynamically constructs a Zod schema for a tool's input arguments based on its
  * OpenAPI operation definition. This schema is used for robust runtime validation
  * of incoming tool call arguments.
+ *
+ * Root tool-argument objects use `.strict()` when the OpenAPI document or operation
+ * declares `x-neo-strict-input: true` or `requestBodySchema.additionalProperties === false`
+ * (and `additionalProperties` does not explicitly permit open top-level properties),
+ * so unknown or misspelled top-level parameter names fail fast with `unrecognized_keys`.
+ *
  * @param {object} openApiDocument - The OpenAPI document object.
  * @param {object} operation       - The OpenAPI operation object.
  * @returns {z.ZodObject} A Zod object schema representing the tool's input.
  */
 function buildZodSchema(openApiDocument, operation) {
     const shape      = {};
-    let   strictRoot = false;
+    let   strictRoot = Boolean(
+        openApiDocument?.['x-neo-strict-input'] === true ||
+        operation?.['x-neo-strict-input'] === true
+    );
 
     // Process parameters defined in the OpenAPI operation (path, query, header, etc.).
     if (operation.parameters) {
@@ -89,7 +98,11 @@ function buildZodSchema(openApiDocument, operation) {
             requestBodySchema = resolveRef(openApiDocument, requestBodySchema.$ref);
         }
 
-        strictRoot = requestBodySchema.additionalProperties === false;
+        if (requestBodySchema.additionalProperties === false) {
+            strictRoot = true;
+        } else if (requestBodySchema.additionalProperties) {
+            strictRoot = false;
+        }
 
         if (requestBodySchema.properties) {
             const { properties, required = [] } = requestBodySchema;

@@ -1220,31 +1220,81 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
             ).toEqual([]);
         });
 
-        test(`${server}: every emitted input schema stays strict at the root (regression guard against #9837 overreach)`, () => {
-            const yamlPath   = path.join(repoRoot, 'ai/mcp/server', server, 'openapi.yaml');
-            const doc        = yaml.load(fs.readFileSync(yamlPath, 'utf8'));
-            let   checkedOps = 0;
-            let   strictOps  = 0;
+        test(`${server}: every emitted input schema stays strict at the root (regression guard against #9837 overreach and #1466 x-neo-strict-input contract)`, () => {
+            const yamlPath       = path.join(repoRoot, 'ai/mcp/server', server, 'openapi.yaml');
+            const doc            = yaml.load(fs.readFileSync(yamlPath, 'utf8'));
+            let   checkedOps     = 0;
+            let   strictOps      = 0;
+            const stripOffenders = [];
 
-            for (const [, pathItem] of Object.entries(doc.paths || {})) {
-                for (const [, op] of Object.entries(pathItem)) {
+            for (const [routePath, pathItem] of Object.entries(doc.paths || {})) {
+                for (const [method, op] of Object.entries(pathItem)) {
                     if (!op?.operationId) continue;
 
-                    const inputSchema = toOpenApiJsonSchema(buildZodSchema(doc, op));
+                    const zodSchema   = buildZodSchema(doc, op);
+                    const inputSchema = toOpenApiJsonSchema(zodSchema);
 
                     // The root input schema is always `z.object(...)` — should NOT be passthrough.
-                    // (Individual nested property objects may legitimately be lenient; we only
-                    // guard the top-level contract surface here so agents passing unknown top-level
-                    // fields fail fast.)
+                    // When `x-neo-strict-input: true` is declared at the document or operation level,
+                    // runtime Zod parsing must also reject unknown top-level keys with `unrecognized_keys`.
                     if (inputSchema.type === 'object') {
                         checkedOps++;
                         if (inputSchema.additionalProperties === false) strictOps++;
+
+                        if (doc['x-neo-strict-input'] === true || op['x-neo-strict-input'] === true) {
+                            const probe                   = zodSchema.safeParse({ __unexpected_top_level_key__: true });
+                            const hasUnrecognizedKeyIssue = !probe.success && probe.error.issues.some(
+                                issue => issue.code === 'unrecognized_keys' && issue.keys?.includes('__unexpected_top_level_key__')
+                            );
+                            if (!hasUnrecognizedKeyIssue) {
+                                stripOffenders.push(`${op.operationId} (${method.toUpperCase()} ${routePath})`);
+                            }
+                        }
                     }
                 }
             }
 
             expect(checkedOps, `${server} exposes no object-typed input schemas — audit needed`).toBeGreaterThan(0);
             expect(strictOps, `${server} input-schema strictness must match op count`).toBe(checkedOps);
+            expect(
+                stripOffenders,
+                `Strict-input schemas in ${server} strip unknown top-level keys instead of rejecting them with unrecognized_keys:\n${stripOffenders.join('\n')}`
+            ).toEqual([]);
         });
     }
+
+    test('github-workflow: rejects unknown top-level alias keys (e.g. repository vs repo) with unrecognized_keys (#1466)', () => {
+        const yamlPath = path.join(repoRoot, 'ai/mcp/server/github-workflow/openapi.yaml');
+        const doc      = yaml.load(fs.readFileSync(yamlPath, 'utf8'));
+        const opsById  = new Map();
+
+        expect(doc['x-neo-strict-input']).toBe(true);
+
+        for (const pathItem of Object.values(doc.paths || {})) {
+            for (const op of Object.values(pathItem)) {
+                if (op?.operationId) {
+                    opsById.set(op.operationId, op);
+                }
+            }
+        }
+
+        for (const [opId, op] of opsById.entries()) {
+            const zodSchema = buildZodSchema(doc, op);
+            const result    = zodSchema.safeParse({
+                action      : 'create',
+                body        : 'test body',
+                issue_number: 15,
+                pr_number   : 15,
+                title       : 'test title',
+                toolId      : 'healthcheck',
+                repository  : 'neomjs/neo-agent-brain'
+            });
+
+            expect(result.success, `${opId} must reject unknown top-level key 'repository'`).toBe(false);
+            expect(
+                result.error.issues.some(issue => issue.code === 'unrecognized_keys' && issue.keys?.includes('repository')),
+                `${opId} must report 'repository' in unrecognized_keys`
+            ).toBe(true);
+        }
+    });
 });
