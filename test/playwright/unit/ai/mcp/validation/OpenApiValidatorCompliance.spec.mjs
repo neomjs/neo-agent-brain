@@ -793,38 +793,26 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
     });
 
     test('ingest_source_files declares the bulk opt-in and withholds the orchestrator-owned attempt', () => {
-        // `services.mjs` parses every SDK call through this schema: `viaMcp: false` must be declared
-        // so it survives validation instead of defaulting to true and sending tenant-scale batches into
+        // `services.mjs` parses every SDK call through this schema, and Zod DROPS undeclared keys
+        // silently: a stripped `viaMcp: false` re-reads as true and sends tenant-scale batches into
         // the MCP work-volume gate. `materializationAttempt` is the opposite case. That proof identity
         // reaches the service only through the unwrapped, trusted `ingestSourceFilesForTenantSync`,
-        // so the public contract must reject it at the strict root schema boundary.
+        // so the public contract must strip it.
         const doc      = yaml.load(fs.readFileSync(path.join(repoRoot, 'ai/mcp/server/knowledge-base/openapi.yaml'), 'utf8')),
               ingestOp = getOperationsById(doc).ingest_source_files,
-              schema   = buildZodSchema(doc, ingestOp),
-              parsed   = schema.parse({
-                  tenantId        : 'neo-shared',
-                  repoSlug        : 'create-app',
-                  files           : [],
-                  headRevision    : 'abc123',
-                  manifestSnapshot: {repoSlug: 'create-app', pathsAfterPush: ['x.md']},
-                  viaMcp          : false
-              }),
-              attemptProbe = schema.safeParse({
+              parsed   = buildZodSchema(doc, ingestOp).parse({
                   tenantId              : 'neo-shared',
                   repoSlug              : 'create-app',
                   files                 : [],
-                  materializationAttempt: {attemptId: 'a'.repeat(32), ingestContractVersion: 2}
+                  headRevision          : 'abc123',
+                  manifestSnapshot      : {repoSlug: 'create-app', pathsAfterPush: ['x.md']},
+                  materializationAttempt: {attemptId: 'a'.repeat(32), ingestContractVersion: 2},
+                  viaMcp                : false
               });
 
         expect(Object.hasOwn(parsed, 'viaMcp'), 'viaMcp survives the Zod gate').toBe(true);
         expect(parsed.viaMcp, 'an explicit false is preserved, not defaulted away').toBe(false);
-        expect(attemptProbe.success, 'the public contract rejects orchestrator-owned proof identity').toBe(false);
-        expect(
-            attemptProbe.error.issues.some(
-                issue => issue.code === 'unrecognized_keys' && issue.keys?.includes('materializationAttempt')
-            ),
-            'materializationAttempt is rejected with unrecognized_keys'
-        ).toBe(true);
+        expect(Object.hasOwn(parsed, 'materializationAttempt'), 'the public contract strips orchestrator-owned proof identity').toBe(false);
     });
 
     test('neural-link declares the harness-visible projection policy (#13064)', () => {
@@ -1232,7 +1220,7 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
             ).toEqual([]);
         });
 
-        test(`${server}: every emitted input schema stays strict at the root (regression guard against #9837 overreach and #1466 strip-mode leak)`, () => {
+        test(`${server}: every emitted input schema stays strict at the root (regression guard against #9837 overreach and #1466 x-neo-strict-input contract)`, () => {
             const yamlPath       = path.join(repoRoot, 'ai/mcp/server', server, 'openapi.yaml');
             const doc            = yaml.load(fs.readFileSync(yamlPath, 'utf8'));
             let   checkedOps     = 0;
@@ -1246,19 +1234,21 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
                     const zodSchema   = buildZodSchema(doc, op);
                     const inputSchema = toOpenApiJsonSchema(zodSchema);
 
-                    // The root input schema is always `z.object(...)` — should NOT be passthrough
-                    // or strip-mode. Both the emitted JSON Schema (`additionalProperties === false`)
-                    // and runtime Zod parsing (`unrecognized_keys`) must reject unknown top-level keys.
+                    // The root input schema is always `z.object(...)` — should NOT be passthrough.
+                    // When `x-neo-strict-input: true` is declared at the document or operation level,
+                    // runtime Zod parsing must also reject unknown top-level keys with `unrecognized_keys`.
                     if (inputSchema.type === 'object') {
                         checkedOps++;
                         if (inputSchema.additionalProperties === false) strictOps++;
 
-                        const probe                   = zodSchema.safeParse({ __unexpected_top_level_key__: true });
-                        const hasUnrecognizedKeyIssue = !probe.success && probe.error.issues.some(
-                            issue => issue.code === 'unrecognized_keys' && issue.keys?.includes('__unexpected_top_level_key__')
-                        );
-                        if (!hasUnrecognizedKeyIssue) {
-                            stripOffenders.push(`${op.operationId} (${method.toUpperCase()} ${routePath})`);
+                        if (doc['x-neo-strict-input'] === true || op['x-neo-strict-input'] === true) {
+                            const probe                   = zodSchema.safeParse({ __unexpected_top_level_key__: true });
+                            const hasUnrecognizedKeyIssue = !probe.success && probe.error.issues.some(
+                                issue => issue.code === 'unrecognized_keys' && issue.keys?.includes('__unexpected_top_level_key__')
+                            );
+                            if (!hasUnrecognizedKeyIssue) {
+                                stripOffenders.push(`${op.operationId} (${method.toUpperCase()} ${routePath})`);
+                            }
                         }
                     }
                 }
@@ -1268,7 +1258,7 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
             expect(strictOps, `${server} input-schema strictness must match op count`).toBe(checkedOps);
             expect(
                 stripOffenders,
-                `Root input schemas in ${server} strip unknown top-level keys instead of rejecting them with unrecognized_keys:\n${stripOffenders.join('\n')}`
+                `Strict-input schemas in ${server} strip unknown top-level keys instead of rejecting them with unrecognized_keys:\n${stripOffenders.join('\n')}`
             ).toEqual([]);
         });
     }
@@ -1278,6 +1268,8 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
         const doc      = yaml.load(fs.readFileSync(yamlPath, 'utf8'));
         const opsById  = new Map();
 
+        expect(doc['x-neo-strict-input']).toBe(true);
+
         for (const pathItem of Object.values(doc.paths || {})) {
             for (const op of Object.values(pathItem)) {
                 if (op?.operationId) {
@@ -1286,8 +1278,7 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
             }
         }
 
-        for (const opId of ['manage_issue_comment', 'get_conversation', 'manage_pr_review', 'create_issue']) {
-            const op        = opsById.get(opId);
+        for (const [opId, op] of opsById.entries()) {
             const zodSchema = buildZodSchema(doc, op);
             const result    = zodSchema.safeParse({
                 action      : 'create',
@@ -1295,6 +1286,7 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
                 issue_number: 15,
                 pr_number   : 15,
                 title       : 'test title',
+                toolId      : 'healthcheck',
                 repository  : 'neomjs/neo-agent-brain'
             });
 

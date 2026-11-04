@@ -153,28 +153,14 @@ test.describe('NL relocation — admission and digest meet in the container grap
                       replayed = saved.saved ? markNlTransactionReplayed({archiveId: saved.archiveId, now: 99}) : null,
                       afterMark = saved.saved ? getNlTransaction({archiveId: saved.archiveId}) : null;
 
-                // CUSTODY: a caller cannot mint its own custodian. Verified across both layers: the real
-                // dispatcher rejects a caller-supplied top-level custodian as an unrecognized key, and
-                // the store itself ignores a caller-supplied custodian while preserving originWriter.
-                let forgedSave = null, forgedError = null, forgedDispatcherRejection = null;
+                // CUSTODY: a caller cannot mint its own custodian. Sent through the REAL dispatcher, because
+                // one of the two layers that block this lives in the dispatcher's schema parse (undeclared
+                // keys are stripped) and the other in the store (it never reads a caller custodian).
+                // Measured: each layer alone is sufficient, so this arm reds only when both are removed.
+                let forgedSave = null, forgedError = null;
 
                 try {
-                    await callTool('save_nl_transaction', {
-                        appSessionId: 'app-forge',
-                        name        : 'forged',
-                        custodian   : 'neo-someone-else',
-                        transaction : {
-                            txId: 'tx-forge', status: 'committed', committedAt: 4243,
-                            originWriter: {agentId: 'claimed-agent', sessionId: 'claimed-session'},
-                            ops: [{method: 'setConfigs', args: [{id: 'c9'}]}]
-                        }
-                    });
-                } catch (error) {
-                    forgedDispatcherRejection = error.message;
-                }
-
-                try {
-                    forgedSave = saveNlTransaction({
+                    forgedSave = await callTool('save_nl_transaction', {
                         appSessionId: 'app-forge',
                         name        : 'forged',
                         custodian   : 'neo-someone-else',
@@ -289,9 +275,6 @@ test.describe('NL relocation — admission and digest meet in the container grap
                         readableTokens: dispatchTokens
                     },
                     custody     : {
-                        dispatcherRejectedCustodian: Boolean(
-                            forgedDispatcherRejection && forgedDispatcherRejection.includes('custodian')
-                        ),
                         error             : forgedError,
                         saved             : forgedSave?.saved ?? null,
                         storedCustodian   : forgedRead?.custodian ?? null,
@@ -472,9 +455,7 @@ test.describe('NL relocation — admission and digest meet in the container grap
         // The two halves of the custody requirement, separated on purpose. `originWriter` names a
         // browser-plane agent the container cannot authenticate, so it stays a declaration and replay keeps
         // consuming it. `custodian` is derived from the request context and is absent from the request
-        // schema, so the dispatcher's strict Zod facade rejects a caller's attempt before the store ever
-        // sees it, and the store itself also ignores a direct caller-supplied `custodian`.
-        expect(out.custody.dispatcherRejectedCustodian).toBe(true);
+        // schema, so the dispatcher's Zod facade strips a caller's attempt before the store ever sees it.
         expect(out.custody.error).toBeNull();
         expect(out.custody.saved).toBe(true);
 
