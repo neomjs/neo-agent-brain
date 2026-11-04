@@ -1118,6 +1118,27 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         ]);
     });
 
+    test('fleetRoster names a shut start gate once, even where a seat\'s own refusal hides it on the row (#1471)', async () => {
+        let gate = 'the Fleet is verifying its runtime: Start opens when it finishes';
+
+        // the only seat carries its own refusal, so no row shows the gate
+        registryStub.listAgents = () => [
+            {id: 'released', githubUsername: 'released-gh', harnessType: 'codex', launchOwner: 'external', launchOwnerSince: '2026-09-19T17:05:00.000Z'}
+        ];
+        managerStub.fleetRepoStatus     = () => [];
+        managerStub.fleetRuntimeStatus  = () => [];
+        managerStub.getLifecycleService = () => ({startGateRefusal: () => gate});
+        FleetControlBridge.identityResolver = () => ({family: null, engineTag: null});
+
+        const shut = await FleetControlBridge.fleetRoster();
+
+        expect(shut.rows[0].launchRefusal).toBe('released to its own harness: adopt it to start it here');
+        expect(shut.startGate, 'the roster says why the whole Fleet refuses Start').toBe(gate);
+
+        gate = null;
+        expect((await FleetControlBridge.fleetRoster()).startGate, 'an open gate reads null').toBeNull();
+    });
+
     test('fleetRoster stamps launch-derived truth per row — templated families carry their auth mode, native-neo stays honestly unlaunchable', async () => {
         registryStub.listAgents = () => [
             {id: 'desk',   githubUsername: 'desk-gh',   harnessType: 'claude-desktop'},

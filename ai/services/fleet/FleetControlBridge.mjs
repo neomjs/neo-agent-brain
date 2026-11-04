@@ -1883,14 +1883,14 @@ class FleetControlBridge extends Base {
      * from its identity node as the presence report carries it (`participationRead` says whether that report
      * answered), and hands the enriched agents to the Body-side pure map (`createFleetCockpitStatus` — which never
      * imports `ai/graph` or the Brain launch seam; the hemisphere boundary holds, the Body only hoists what arrives
-     * stamped).
+     * stamped). The same gate rides the DTO once as `startGate`, since a seat's own refusal hides it on that row.
      *
      * Rides the authenticated `registryBridge` as a **read** verb; it carries NO lifecycle-write /
      * restart authority (the R3 read-observe ÷ lifecycle-write seam). An agent without an identity
      * root can use its declared harness family; unknown families remain unclassified. Activity
      * stays on its own {@link #fleetActivity} verb. Lane stamps read the lanes that source holds
      * (`readHeldLaneSnapshot`) synchronously; this read never requests another page of its own.
-     * @returns {Object} the serializable cockpit DTO `{sources, capabilities, rows, events}`.
+     * @returns {Object} the serializable cockpit DTO `{sources, capabilities, startGate, rows, events}`.
      */
     async fleetRoster() {
         const
@@ -1940,6 +1940,7 @@ class FleetControlBridge extends Base {
             throttleStatus: throttle?.states ?? [],
             presenceStatus: presence?.states ?? [],
             laneStatus    : me.activitySource?.readHeldLaneSnapshot?.() ?? null,
+            startGate,
             capabilities  : {
                 activity: createNotWiredCapability(FLEET_COCKPIT_SOURCES.activity, 'activity rides the dedicated fleetActivity verb'),
                 runtime : {
