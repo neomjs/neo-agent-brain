@@ -1073,6 +1073,30 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         });
     });
 
+    test('fleetRoster answers while the plane\'s presence read is still out, naming it pending on every row (#1468)', async () => {
+        registryStub.listAgents        = () => [{id: 'iris', githubUsername: 'neo-kimi-iris', harnessType: 'opencode'}];
+        managerStub.fleetRepoStatus    = () => [];
+        managerStub.fleetRuntimeStatus = () => [];
+
+        // the real producer under the roster, with a bound this spec can wait out
+        Object.assign(managerStub, {
+            presenceStateOptions: {readPresence: () => new Promise(() => {})},
+            getLifecycleService : () => ({startGateRefusal: () => null, getRegistry: () => registryStub}),
+            fleetPresenceStatus() { return FleetManager.fleetPresenceStatus.call(this, {timeoutMs: 50}) }
+        });
+
+        const
+            pending = 'presence read still pending after 50 ms',
+            dto     = await Promise.race([
+                FleetControlBridge.fleetRoster(),
+                new Promise(resolve => setTimeout(() => resolve('still waiting'), 1000))
+            ]);
+
+        expect(dto, 'the roster does not wait out the plane call').not.toBe('still waiting');
+        expect(dto.capabilities.presence).toMatchObject({state: 'degraded', reason: pending});
+        expect(dto.rows[0]).toMatchObject({participationStatus: null, participationRead: {state: 'unread', reason: pending}});
+    });
+
     test('fleetRoster stamps the start verb\'s own refusal: a released seat carries its words, every other seat null', async () => {
         registryStub.listAgents = () => [
             {id: 'default',  githubUsername: 'default-gh',  harnessType: 'codex', launchOwner: 'external'},

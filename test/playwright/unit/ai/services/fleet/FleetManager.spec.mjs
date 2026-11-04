@@ -2528,3 +2528,73 @@ test.describe.serial('Neo.ai.services.fleet.FleetManager — replaceSeatCredenti
         expect(startedAfterConvergence).toMatchObject({id: 'alice', state: 'running', pid: 4242});
     });
 });
+
+test.describe('Neo.ai.services.fleet.FleetManager — the roster\'s plane axes answer within their bound (#1468)', () => {
+    const
+        // a plane call that waits out the SDK's 60 s
+        never  = () => new Promise(() => {}),
+        within = read => Promise.race([read, new Promise(resolve => setTimeout(() => resolve('still waiting'), 1000))]);
+
+    test.beforeEach(() => {
+        FleetManager.lifecycleService = {getRegistry: () => ({listAgents: () => [{id: 'alice', githubUsername: 'alice'}]})};
+    });
+
+    test.afterEach(() => {
+        FleetManager.lifecycleService     = null;
+        FleetManager.presenceStateOptions = null;
+        FleetManager.wakeStateOptions     = null;
+    });
+
+    test('a presence read still out at the bound reads as pending on every seat, and the snapshot answers', async () => {
+        const pending = 'presence read still pending after 50 ms';
+
+        FleetManager.presenceStateOptions = {readPresence: never};
+
+        const snapshot = await within(FleetManager.fleetPresenceStatus({timeoutMs: 50}));
+
+        expect(snapshot, 'the roster does not wait out the plane call').not.toBe('still waiting');
+        expect(snapshot.capability).toMatchObject({state: 'degraded', reason: pending});
+        expect(snapshot.states[0]).toMatchObject({presence: 'unknown', reason: pending, participationRead: {state: 'unread', reason: pending}});
+    });
+
+    test('a wake read still out at the bound reads as unknown, naming the wait', async () => {
+        FleetManager.wakeStateOptions = {
+            listActiveSubscriptionIdentities: never,
+            resolveDeliveryLiveness         : () => ({alive: true}),
+            resolveTerminalDeliveryFailures : () => ({state: 'observed', byIdentity: new Map()})
+        };
+
+        const snapshot = await within(FleetManager.fleetWakeStatus({timeoutMs: 50}));
+
+        expect(snapshot, 'the roster does not wait out the plane call').not.toBe('still waiting');
+        expect(snapshot.states[0]).toMatchObject({wake: 'unknown', reason: 'wake read still pending after 50 ms'});
+    });
+
+    test('a read that answers inside the bound is the snapshot it always was', async () => {
+        FleetManager.presenceStateOptions = {readPresence: async () => ({agents: [{identity: '@alice', state: 'online', signals: {}}]})};
+
+        const snapshot = await FleetManager.fleetPresenceStatus({timeoutMs: 50});
+
+        expect(snapshot.capability.state).toBe('wired');
+        expect(snapshot.states[0].presence).not.toBe('unknown');
+    });
+
+    test('a read that answers after the bound logs its axis and duration once', async () => {
+        const lines = [], log = console.log;
+
+        console.log = line => lines.push(String(line));
+
+        try {
+            FleetManager.presenceStateOptions = {readPresence: () => new Promise(resolve => setTimeout(() => resolve({agents: []}), 120))};
+            await FleetManager.fleetPresenceStatus({timeoutMs: 50});
+            await new Promise(resolve => setTimeout(resolve, 200));
+        } finally {
+            console.log = log;
+        }
+
+        const late = lines.filter(line => line.startsWith('[fleet] roster presence read'));
+
+        expect(late).toHaveLength(1);
+        expect(late[0]).toMatch(/^\[fleet\] roster presence read answered after \d+ ms \(bound 50 ms\)$/);
+    });
+});

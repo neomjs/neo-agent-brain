@@ -573,6 +573,15 @@ class ConfigBase extends ConfigProvider {
                  */
                 tenantProbeTimeoutMs: leaf(30000, 'NEO_FLEET_TENANT_PROBE_TIMEOUT_MS', 'number'),
                 /**
+                 * How long the roster read waits on each plane-sourced axis (wake, presence) before
+                 * reporting it pending; the plane call itself runs on. Each axis is one plane call that
+                 * only the SDK's 60s bounds, while the cockpit gives the roster, its first read, 10s. 4s
+                 * leaves the roster's own work inside that budget, so a loaded plane costs the roster an
+                 * axis, never the whole answer. Milliseconds.
+                 * @type {number}
+                 */
+                rosterAxisTimeoutMs: leaf(4000, 'NEO_FLEET_ROSTER_AXIS_TIMEOUT_MS', 'number'),
+                /**
                  * Whole-quit budget in milliseconds that Fleet may spend across request drain and
                  * launch-admission continuity handoff before the host's grace escalates to SIGKILL.
                  * `devFleetServer` (`cleanShutdown`) reads this leaf once at quit start (falling back
