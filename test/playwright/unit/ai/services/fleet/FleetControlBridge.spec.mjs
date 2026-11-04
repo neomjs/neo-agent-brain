@@ -1073,6 +1073,42 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         });
     });
 
+    test('fleetRoster answers while the plane\'s wake and presence reads are still out, naming the wait on every row (#1468)', async () => {
+        registryStub.listAgents        = () => [{id: 'iris', githubUsername: 'neo-kimi-iris', harnessType: 'opencode'}];
+        managerStub.fleetRepoStatus    = () => [];
+        managerStub.fleetRuntimeStatus = () => [];
+
+        const never = () => new Promise(() => {});
+
+        // the real producers under the roster, both plane calls out, with a bound this spec can wait out
+        Object.assign(managerStub, {
+            presenceStateOptions: {readPresence: never},
+            wakeStateOptions    : {
+                listActiveSubscriptionIdentities: never,
+                resolveDeliveryLiveness         : () => ({alive: true}),
+                resolveTerminalDeliveryFailures : () => ({state: 'observed', byIdentity: new Map()})
+            },
+            getLifecycleService: () => ({startGateRefusal: () => null, getRegistry: () => registryStub}),
+            fleetPresenceStatus() { return FleetManager.fleetPresenceStatus.call(this, {timeoutMs: 50}) },
+            fleetWakeStatus    () { return FleetManager.fleetWakeStatus.call(this, {timeoutMs: 50}) }
+        });
+
+        const
+            pending = 'presence read still pending after 50 ms',
+            dto     = await Promise.race([
+                FleetControlBridge.fleetRoster(),
+                new Promise(resolve => setTimeout(() => resolve('still waiting'), 1000))
+            ]);
+
+        expect(dto, 'the roster does not wait out the plane calls').not.toBe('still waiting');
+        expect(dto.capabilities.presence).toMatchObject({state: 'degraded', reason: pending});
+        expect(dto.rows[0]).toMatchObject({
+            participationStatus: null,
+            participationRead  : {state: 'unread', reason: pending},
+            wake               : {state: 'unknown', reason: 'wake read still pending after 50 ms'}
+        });
+    });
+
     test('fleetRoster stamps the start verb\'s own refusal: a released seat carries its words, every other seat null', async () => {
         registryStub.listAgents = () => [
             {id: 'default',  githubUsername: 'default-gh',  harnessType: 'codex', launchOwner: 'external'},
