@@ -2931,8 +2931,8 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 cwd              : CHECKOUT,
                 runtimeGeneration: FleetLifecycleService.installedRuntime.generation
             })).toThrow('Fleet Start refused: running runtime generation is not verified.');
-            expect(FleetLifecycleService.startGateRefusal(), 'the roster closes Start while the bound runtime is unverified')
-                .toBe('the Fleet is verifying its runtime: Start opens when it finishes');
+            expect(FleetLifecycleService.startGate(), 'the roster closes Start while the bound runtime is unverified')
+                .toEqual({state: 'booting', reason: 'the Fleet is verifying its runtime: Start opens when it finishes'});
 
             await FleetLifecycleService.installedRuntime.verify();
             expect(fullReads).toEqual([fixture.sealedGenerations.seat.directory]);
@@ -2949,12 +2949,12 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 cwd              : CHECKOUT,
                 runtimeGeneration: FleetLifecycleService.installedRuntime.generation
             })).toThrow('Fleet Start refused: launch continuity is not ready.');
-            expect(FleetLifecycleService.startGateRefusal(), 'the roster closes Start while recovery is pending, the runtime verified')
-                .toBe('the Fleet is verifying its runtime: Start opens when it finishes');
+            expect(FleetLifecycleService.startGate(), 'the roster closes Start while recovery is pending, the runtime verified')
+                .toEqual({state: 'booting', reason: 'the Fleet is verifying its runtime: Start opens when it finishes'});
 
             const recovered = await FleetLifecycleService.recoverRuntimeCustody({verifyRuntime});
             expect(McpLaunchAdmissionService.continuityPhase).toBe('ready');
-            expect(FleetLifecycleService.startGateRefusal(), 'the gate opens once recovery settles').toBeNull();
+            expect(FleetLifecycleService.startGate(), 'the gate opens once recovery settles').toBeNull();
             expect(recovered.map(row => [row.agentId, row.state])).toEqual([['seat', 'active'], ['peer', 'active']]);
             expect(fullReads, 'running generation is not inventoried a second time during recovery').toEqual([
                 fixture.sealedGenerations.seat.directory,
@@ -2977,12 +2977,14 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 cwd              : CHECKOUT,
                 runtimeGeneration: brokenRuntime.generation
             })).toThrow('Fleet Start refused: running runtime generation failed verification (runtime-integrity-failed).');
-            expect(FleetLifecycleService.startGateRefusal(), 'a failed verification is named, not read as still verifying')
-                .toBe('the Fleet refuses Starts: running runtime generation failed verification (runtime-integrity-failed)');
+            expect(FleetLifecycleService.startGate(), 'a failed verification is named, not read as still verifying').toEqual({
+                state : 'refused',
+                reason: 'the Fleet refuses Starts: running runtime generation failed verification (runtime-integrity-failed)'
+            });
 
             FleetLifecycleService.installedRuntime = null;
-            expect(FleetLifecycleService.startGateRefusal(), 'an unavailable continuity names its phase')
-                .toBe('the Fleet refuses Starts: launch continuity is unavailable')
+            expect(FleetLifecycleService.startGate(), 'an unavailable continuity names its phase')
+                .toEqual({state: 'refused', reason: 'the Fleet refuses Starts: launch continuity is unavailable'})
         } finally {
             await fixture.teardown()
         }
@@ -3200,8 +3202,8 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             expect(spawn.calls[0].child.signals).toContain('SIGTERM');
             expect(JSON.parse(fs.readFileSync(path.join(directory, 'issuer.json'), 'utf8')).snapshot.seats).toEqual([]);
             expect(() => FleetLifecycleService.start('seat')).toThrow(/runtime custody is frozen/);
-            expect(FleetLifecycleService.startGateRefusal(), 'the roster closes Start on frozen custody too')
-                .toBe('the Fleet refuses Starts: its runtime custody is frozen');
+            expect(FleetLifecycleService.startGate(), 'the roster closes Start on frozen custody too')
+                .toEqual({state: 'refused', reason: 'the Fleet refuses Starts: its runtime custody is frozen'});
         } finally {
             service.journal?.close(); service.journal = null; service.journalFailed = false; service.readSeatStarts = null;
             FleetLifecycleService.processes.clear();

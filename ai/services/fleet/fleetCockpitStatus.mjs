@@ -41,9 +41,13 @@ function githubAvatarUrl(githubUsername) {
  *     join only to `githubUsername`, never the registry key, and a GitLab seat reads no GitHub forge facts.
  * @param {Object[]} options.events        Optional already-normalized cockpit events.
  * @param {Object}   options.capabilities  Optional source-capability overrides from wired adapters.
- * @returns {Object} serializable cockpit DTO `{sources, capabilities, rows, events}`.
+ * @param {Object|null} [options.startGate=null] The lifecycle's `{state, reason}` while the Fleet refuses every
+ *     Start (`'booting'` until verification and recovery finish, `'refused'` until something changes), or `null`
+ *     when it may start seats. A row's `launchRefusal` folds the reason under the seat's own refusal; this says it
+ *     once for the whole Fleet, so a booting Fleet can be named as such.
+ * @returns {Object} serializable cockpit DTO `{sources, capabilities, startGate, rows, events}`.
  */
-export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtimeStatus = [], wakeStatus = [], throttleStatus = [], presenceStatus = [], laneStatus = null, events = [], capabilities = {}} = {}) {
+export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtimeStatus = [], wakeStatus = [], throttleStatus = [], presenceStatus = [], laneStatus = null, events = [], capabilities = {}, startGate = null} = {}) {
     const suppliedCapabilities = capabilities || {}
 
     const statusByAgentId = new Map(
@@ -94,6 +98,9 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
 
     return {
         sources     : FLEET_COCKPIT_SOURCES,
+        startGate   : ['booting', 'refused'].includes(startGate?.state) && typeof startGate.reason === 'string'
+            ? {state: startGate.state, reason: startGate.reason}
+            : null,
         capabilities: {
             activity: suppliedCapabilities.activity || createNotWiredCapability(FLEET_COCKPIT_SOURCES.activity, 'A2A / PR / lane activity adapter not wired'),
             runtime : suppliedCapabilities.runtime || createNotWiredCapability(FLEET_COCKPIT_SOURCES.runtime, 'runtime process status is pending the Fleet runtime-status wire method'),

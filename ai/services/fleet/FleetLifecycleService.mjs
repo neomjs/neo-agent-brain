@@ -782,21 +782,24 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * @summary Why this Fleet refuses every Start right now, in the words the cockpit shows on a closed Start, or
-     * `null` when it may start seats. These are {@link start}'s fleet-wide gates in its order: the packaged runtime's
+     * @summary Why this Fleet refuses every Start right now, or `null` when it may start seats. `state` is `'booting'`
+     * while the packaged runtime's verification or launch continuity's recovery runs, so Start opens by itself when
+     * they finish, and `'refused'` for a gate that holds until something changes. `reason` is in the words the cockpit
+     * shows on a closed Start. These are {@link start}'s fleet-wide gates in its order: the packaged runtime's
      * verification, launch continuity, runtime custody. A booting packaged Fleet answers its wire before verification
      * and recovery settle, so the roster says why Start stays closed until they do.
-     * @returns {String|null}
+     * @returns {{state: 'booting'|'refused', reason: String}|null}
      */
-    startGateRefusal() {
-        const admission = this.getLaunchAdmission(), runtime = this.installedRuntime;
+    startGate() {
+        const admission = this.getLaunchAdmission(), runtime = this.installedRuntime,
+              refused   = reason => ({state: 'refused', reason: `the Fleet refuses Starts: ${reason}`});
 
-        if (runtime?.failureReason) return `the Fleet refuses Starts: ${runtime.failureReason}`;
+        if (runtime?.failureReason) return refused(runtime.failureReason);
         if ((runtime?.verify && !runtime.verified) || ['pending-recovery', 'recovering'].includes(admission.continuityPhase)) {
-            return 'the Fleet is verifying its runtime: Start opens when it finishes'
+            return {state: 'booting', reason: 'the Fleet is verifying its runtime: Start opens when it finishes'}
         }
-        if (admission.continuityPhase !== 'ready') return `the Fleet refuses Starts: launch continuity is ${admission.continuityPhase}`;
-        if (admission.journalFailed) return 'the Fleet refuses Starts: its runtime custody is frozen';
+        if (admission.continuityPhase !== 'ready') return refused(`launch continuity is ${admission.continuityPhase}`);
+        if (admission.journalFailed) return refused('its runtime custody is frozen');
         return null
     }
 

@@ -66,7 +66,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             setAvatar            : payload  => { calls.push(['setAvatar', payload]); return {id: payload.id, metadata: {avatarUrl: payload.avatarUrl}}; },
             adoptAgent           : payload  => { calls.push(['adoptAgent', payload]);   return {id: payload.id, launchOwner: 'fleet'}; },
             releaseAgent         : payload  => { calls.push(['releaseAgent', payload]); return {id: payload.id, launchOwner: 'external'}; },
-            getLifecycleService  : ()       => ({startGateRefusal: () => null})
+            getLifecycleService  : ()       => ({startGate: () => null})
         };
 
         tenantServiceStub = {
@@ -1088,7 +1088,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
                 resolveDeliveryLiveness         : () => ({alive: true}),
                 resolveTerminalDeliveryFailures : () => ({state: 'observed', byIdentity: new Map()})
             },
-            getLifecycleService: () => ({startGateRefusal: () => null, getRegistry: () => registryStub}),
+            getLifecycleService: () => ({startGate: () => null, getRegistry: () => registryStub}),
             fleetPresenceStatus() { return FleetManager.fleetPresenceStatus.call(this, {timeoutMs: 50}) },
             fleetWakeStatus    () { return FleetManager.fleetWakeStatus.call(this, {timeoutMs: 50}) }
         });
@@ -1137,7 +1137,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         ];
         managerStub.fleetRepoStatus     = () => [];
         managerStub.fleetRuntimeStatus  = () => [];
-        managerStub.getLifecycleService = () => ({startGateRefusal: () => gate});
+        managerStub.getLifecycleService = () => ({startGate: () => gate && {state: 'booting', reason: gate}});
         FleetControlBridge.identityResolver = () => ({family: null, engineTag: null});
 
         const refusals = async () => (await FleetControlBridge.fleetRoster()).rows.map(({id, launchRefusal}) => [id, launchRefusal]);
@@ -1152,6 +1152,27 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             ['idle',     null],
             ['released', 'released to its own harness: adopt it to start it here']
         ]);
+    });
+
+    test('fleetRoster names a shut start gate once, even where a seat\'s own refusal hides it on the row (#1471)', async () => {
+        let gate = 'the Fleet is verifying its runtime: Start opens when it finishes';
+
+        // the only seat carries its own refusal, so no row shows the gate
+        registryStub.listAgents = () => [
+            {id: 'released', githubUsername: 'released-gh', harnessType: 'codex', launchOwner: 'external', launchOwnerSince: '2026-09-19T17:05:00.000Z'}
+        ];
+        managerStub.fleetRepoStatus     = () => [];
+        managerStub.fleetRuntimeStatus  = () => [];
+        managerStub.getLifecycleService = () => ({startGate: () => gate && {state: 'booting', reason: gate}});
+        FleetControlBridge.identityResolver = () => ({family: null, engineTag: null});
+
+        const shut = await FleetControlBridge.fleetRoster();
+
+        expect(shut.rows[0].launchRefusal).toBe('released to its own harness: adopt it to start it here');
+        expect(shut.startGate, 'the roster says why the whole Fleet refuses Start').toEqual({state: 'booting', reason: gate});
+
+        gate = null;
+        expect((await FleetControlBridge.fleetRoster()).startGate, 'an open gate reads null').toBeNull();
     });
 
     test('fleetRoster stamps launch-derived truth per row — templated families carry their auth mode, native-neo stays honestly unlaunchable', async () => {
@@ -1204,7 +1225,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — fleetRoster joins th
     const rosterManager = ({wake, throttle} = {}) => ({
         fleetRepoStatus    : () => [],
         fleetRuntimeStatus : () => [],
-        getLifecycleService: () => ({startGateRefusal: () => null}),
+        getLifecycleService: () => ({startGate: () => null}),
         ...(wake     && {fleetWakeStatus    : async () => wake}),
         ...(throttle && {fleetThrottleStatus: async () => throttle})
     });
