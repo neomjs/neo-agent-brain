@@ -62,6 +62,10 @@ services:
         # Reducing the 4096 dimension would cut this proportionally and is NOT the lever: below
         # ~4k, `query_documents` retrieval quality degrades materially, and it would invalidate
         # every stored vector.
+        #
+        # Every `limits:` in this file is a cap, never a reservation: Docker sets nothing aside at
+        # create, so the services' limits added together bound what they may use at once; they are
+        # not the VM size the plane needs. Size the VM from measured use (`docker stats`).
         limits:
           memory: "${NEO_CHROMA_MEMORY_LIMIT:-8g}"
           cpus  : "2.0"
