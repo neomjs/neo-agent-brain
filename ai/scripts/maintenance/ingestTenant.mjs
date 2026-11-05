@@ -130,7 +130,8 @@ async function* readJsonlRecords(input) {
 async function runIngest({records, batchSize, ingestFn, onBatch, shouldYield}) {
     const totals = {ingested: 0, embeddingsGenerated: 0, deleted: 0, batches: 0, parseErrors: 0, errors: [],
         completedInputRecords: 0, acceptedEmbeddingChunks: 0, settledEmbeddingChunks: 0};
-    const iterator = records[Symbol.asyncIterator]();
+    // Native delegation owns the cursor and forwards return/throw to the input iterator.
+    const iterator = (async function* () { yield* records })();
     let   batch    = [];
 
     const yielded = (pendingRecords, remainingChunks = null) => ({
