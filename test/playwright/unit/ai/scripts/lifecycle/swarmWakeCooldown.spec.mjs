@@ -22,29 +22,38 @@ import Neo                       from 'neo.mjs/src/Neo.mjs';
 import * as core                 from 'neo.mjs/src/core/_export.mjs';
 
 import {getLockPath, writeInflightLock} from '../../../../../../ai/scripts/lifecycle/inflightLock.mjs';
+import SQLite                           from '../../../../../../ai/graph/storage/SQLite.mjs';
 
 test.describe('ai/scripts/swarmWakeCooldown', () => {
     // Shared cooldown state path; focused runs must not race the file state.
     test.describe.configure({mode: 'serial'});
 
     const scriptPath = path.resolve(process.cwd(), 'ai/scripts/lifecycle/swarmWakeCooldown.mjs');
-    let statePath, wakeDaemonDir, workDir;
+    let graphStorage, statePath, wakeDaemonDir, workDir;
 
-    // The subprocess invokes `MailboxService.addMessage({to: coordinator, ...})`,
-    // and `validateMailboxTarget` rejects unrecognized targets at addMessage-time.
-    // The subprocess runs with `UNIT_TEST_MODE='true'` → graph
-    // storage is `:memory:` (per-process), so fixture-process seeding cannot reach
-    // the subprocess. Use a canonical identity that `seedAgentIdentities.mjs`
-    // provisions at the subprocess's `LifecycleService.initAsync` boot.
-    const TEST_COORDINATOR = '@neo-opus-ada';
+    // The subprocess invokes `MailboxService.addMessage({to: coordinator, ...})`, and
+    // `validateMailboxTarget` rejects a target without an AgentIdentity node. Boot seeds no team
+    // identity, so every subprocess reads a scenario graph that already holds the coordinator.
+    const TEST_COORDINATOR = '@test-coordinator';
 
     test.beforeEach(async () => {
         workDir       = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-swarm-wake-cooldown-'));
         wakeDaemonDir = path.join(workDir, '.neo-ai-data', 'wake-daemon');
         statePath     = path.join(wakeDaemonDir, 'swarm-wake-cooldown.json');
+        graphStorage  = Neo.create(SQLite, {dbPath: path.join(workDir, 'graph.sqlite')});
+
+        await graphStorage.ready();
+
+        graphStorage.db.prepare('INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)').run(TEST_COORDINATOR, null, JSON.stringify({
+            id        : TEST_COORDINATOR,
+            label     : 'AgentIdentity',
+            properties: {accountType: 'agent', userId: null}
+        }))
     });
 
     test.afterEach(async () => {
+        graphStorage.db?.open && graphStorage.db.close();
+        graphStorage.destroy();
         await fs.remove(workDir)
     });
 
@@ -53,8 +62,9 @@ test.describe('ai/scripts/swarmWakeCooldown', () => {
         encoding: 'utf-8',
         env     : {
             ...process.env,
-            NEO_AI_DAEMON_DIR : wakeDaemonDir,
-            NEO_UNIT_TEST_MODE: 'true',
+            NEO_AI_DAEMON_DIR      : wakeDaemonDir,
+            NEO_MEMORY_DB_PATH_TEST: graphStorage.dbPath,
+            NEO_UNIT_TEST_MODE     : 'true',
             ...env
         }
     });

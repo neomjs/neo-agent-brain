@@ -1,21 +1,27 @@
 import {createHash} from 'crypto';
 
-import {IDENTITIES} from './identityRoots.mjs';
+import {BROADCAST_SENTINEL, SYSTEM_SENDER} from './mailboxRoots.mjs';
 
 /**
  * @module ai/graph/bootSeedManifest
- * @summary Canonical, enumerable v1 manifest for every deterministic Native Edge
+ * @summary Canonical, enumerable v2 manifest for every deterministic Native Edge
  * Graph record created by ordinary Memory Core boot.
  *
  * Boot and fresh-target recovery both consume this module. Adding a boot seed
  * anywhere else makes the recovery predicate fail closed because the persisted
  * graph can no longer equal this complete manifest.
+ *
+ * Every plane boots with the same records: two anchors, plus the two roots the mailbox
+ * needs (`mailboxRoots.mjs`). No team identity is a boot seed.
+ * A team's identities reach its plane through the setup seed
+ * (`ai/scripts/setup/seedAgentIdentities.mjs`) or through a principal's first
+ * authenticated request, never through boot.
  */
 
 /**
  * @member {Number}
  */
-export const GRAPH_BOOT_SEED_VERSION = 1;
+export const GRAPH_BOOT_SEED_VERSION = 2;
 
 const FIXED_NODE_SPECS = Object.freeze([
     Object.freeze({
@@ -29,7 +35,9 @@ const FIXED_NODE_SPECS = Object.freeze([
         type       : 'System',
         name       : 'Global System Primer',
         description: 'Core framework tenets: 1. All Playwright tests must be run using "npm run test-unit -- [file]". No npx. 2. UI debugging and application state inspection must use the Neural Link MCP tools. 3. Look at .agents/skills for reusable agent workflows.'
-    })
+    }),
+    SYSTEM_SENDER,
+    BROADCAST_SENTINEL
 ]);
 
 const FIXED_EDGE_SPECS = Object.freeze([
@@ -47,17 +55,11 @@ const FIXED_EDGE_SPECS = Object.freeze([
  * `GraphService.upsertGlobalNode()` and whose edge specs are suitable for
  * `GraphService.linkGlobalNodes()`.
  *
- * @param {Object} [options]
- * @param {Object[]} [options.identities=IDENTITIES] Canonical identity roots.
  * @returns {{version: Number, nodes: Object[], edges: Object[], fingerprint: String}}
  */
-export function createGraphBootSeedManifest({identities = IDENTITIES} = {}) {
-    if (!Array.isArray(identities)) {
-        throw new TypeError('createGraphBootSeedManifest: identities must be an array')
-    }
-
+export function createGraphBootSeedManifest() {
     const
-        nodes       = [...FIXED_NODE_SPECS, ...identities].map(cloneJsonValue),
+        nodes       = FIXED_NODE_SPECS.map(cloneJsonValue),
         edges       = FIXED_EDGE_SPECS.map(cloneJsonValue),
         fingerprint = fingerprintGraphBootSeedRecords({nodes, edges});
 
@@ -77,9 +79,6 @@ export function createGraphBootSeedManifest({identities = IDENTITIES} = {}) {
  * copy is not merely duplication: it drifts (description text, `semanticVectorId`), and
  * because the module header makes this manifest the completeness predicate for
  * fresh-target recovery, a divergent copy makes that predicate fail closed.
- *
- * Fixed specs only — identity roots are not addressable here, because they are supplied
- * per-call to {@link createGraphBootSeedManifest} and are not a fixed part of the manifest.
  *
  * @param {String} id Fixed boot-seed node id, e.g. `'frontier'`.
  * @returns {Object} Detached spec clone, suitable for `GraphService.upsertGlobalNode()`.

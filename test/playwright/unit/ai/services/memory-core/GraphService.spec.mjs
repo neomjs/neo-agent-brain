@@ -25,6 +25,7 @@ import {
     createGraphBootSeedManifest,
     evaluateGraphBootSeedFreshness
 } from '../../../../../../ai/graph/bootSeedManifest.mjs';
+import {readAgentIdentityNodes} from '../../../../../../ai/graph/agentIdentityParticipation.mjs';
 
 test.describe('Neo.ai.services.memory-core.GraphService', () => {
     let GraphService;
@@ -1368,7 +1369,7 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         expect(ready).toBe(true);
     });
 
-    test('should auto-provision all identity roots at boot via initAsync', async () => {
+    test('boot provisions the mailbox roots and no team identity via initAsync', async () => {
         // Guarantee pristine isolated boundary baseline natively
         if (GraphService.db) {
             GraphService.db.nodes.clear();
@@ -1389,87 +1390,42 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         // Run the boot sequence
         await GraphService.initAsync();
 
-        // Assert the system sender plus core identities are present with correct types
         const system = await GraphService.getNode({id: '@system'});
         expect(system).toBeTruthy();
         expect(system.type).toBe('System');
 
-        const geminiPro = await GraphService.getNode({id: '@neo-gemini-julia'});
-        expect(geminiPro).toBeTruthy();
-        expect(geminiPro.type).toBe('AgentIdentity');
-
-        const claudeOpus = await GraphService.getNode({id: '@neo-opus-ada'});
-        expect(claudeOpus).toBeTruthy();
-        expect(claudeOpus.type).toBe('AgentIdentity');
-
-        const tobiu = await GraphService.getNode({id: '@tobiu'});
-        expect(tobiu).toBeTruthy();
-        expect(tobiu.type).toBe('AgentIdentity');
-
         const broadcast = await GraphService.getNode({id: 'AGENT:*'});
         expect(broadcast).toBeTruthy();
         expect(broadcast.type).toBe('BroadcastSentinel');
+
+        // a fresh plane holds no team identity: no agent, and not our owner either
+        expect(readAgentIdentityNodes(GraphService.db.storage.db)).toEqual([]);
+        expect(await GraphService.getNode({id: '@tobiu'})).toBeFalsy();
     });
 
-    test('boot provisioning adds missing identity roots without rewriting persisted state (#15431)', () => {
-        const
-            existingId       = '@boot-existing',
-            missingId        = '@boot-missing',
-            persistedCreated = '2026-07-19T19:15:34.000Z';
+    test('boot provisioning adds missing seeds without rewriting a persisted one', () => {
+        const persistedCreated = '2026-07-19T19:15:34.000Z';
 
-        // Simulate a graph projection that is newer than this process-local registry snapshot.
+        // Simulate a graph projection that is newer than this process's manifest.
         // Writing through storage keeps the falsifier on the persisted authority, not RAM alone.
         GraphService.db.storage.addNodes([{
-            id        : existingId,
-            label     : 'AgentIdentity',
-            properties: {
-                createdAt          : persistedCreated,
-                displayName        : 'Persisted Iris',
-                participationStatus: 'active',
-                runtimeWitness     : 'must-survive'
-            }
+            id        : 'AGENT:*',
+            label     : 'BroadcastSentinel',
+            properties: {createdAt: persistedCreated, runtimeWitness: 'must-survive'}
         }]);
 
         GraphService.db.nodes.clearSilent();
-        GraphService.db.vicinityLoadedNodes.delete(existingId);
-
-        const before  = GraphService.db.storage.db.prepare('SELECT data FROM Nodes WHERE id = ?').get(existingId).data;
-        const created = GraphService.provisionMissingIdentityRoots([{
-            id        : existingId,
-            type      : 'AgentIdentity',
-            name      : 'Stale local identity',
-            properties: {
-                createdAt          : '2026-07-19T09:40:49.000Z',
-                displayName        : 'Neo Kimi Iris',
-                participationStatus: 'temporarily_unreachable'
-            }
-        }, {
-            id        : missingId,
-            type      : 'AgentIdentity',
-            name      : 'Fresh identity',
-            properties: {
-                createdAt          : '2026-07-19T20:00:00.000Z',
-                participationStatus: 'temporarily_unreachable'
-            }
-        }]);
+        GraphService.db.vicinityLoadedNodes.delete('AGENT:*');
 
         const
-            after   = GraphService.db.storage.db.prepare('SELECT data FROM Nodes WHERE id = ?').get(existingId).data,
-            missing = JSON.parse(GraphService.db.storage.db.prepare('SELECT data FROM Nodes WHERE id = ?').get(missingId).data);
+            row     = id => GraphService.db.storage.db.prepare('SELECT data FROM Nodes WHERE id = ?').get(id)?.data,
+            before  = row('AGENT:*'),
+            created = GraphService.provisionMissingBootSeeds();
 
-        expect(created).toBe(1);
-        expect(after).toBe(before);
-        expect(JSON.parse(after).properties).toMatchObject({
-            createdAt          : persistedCreated,
-            displayName        : 'Persisted Iris',
-            participationStatus: 'active',
-            runtimeWitness     : 'must-survive'
-        });
-        expect(missing).toMatchObject({
-            id        : missingId,
-            label     : 'AgentIdentity',
-            properties: {participationStatus: 'temporarily_unreachable', userId: null}
-        });
+        expect(created.nodesCreated).toBe(createGraphBootSeedManifest().nodes.length - 1);
+        expect(row('AGENT:*')).toBe(before);
+        expect(JSON.parse(row('AGENT:*')).properties).toMatchObject({createdAt: persistedCreated, runtimeWitness: 'must-survive'});
+        expect(JSON.parse(row('@system'))).toMatchObject({id: '@system', label: 'System', properties: {userId: null}});
     });
 
     test('boot and recovery share one exact idempotent seed manifest', () => {
@@ -1892,13 +1848,13 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
     test('TestLifecycleHelper.cleanupGraphService(clear) and SystemLifecycleService.initAsync restore canonical boot seeds on warm workers', async () => {
         const
             {TestLifecycleHelper, resetMemoryCoreLifecycle} = await import('./util.mjs'),
-            seedAgentId = createGraphBootSeedManifest().nodes.find(node => node.type === 'AgentIdentity').id;
+            seedRootId                                      = createGraphBootSeedManifest().nodes.find(node => node.type === 'BroadcastSentinel').id;
 
-        expect(GraphService.db.nodes.get(seedAgentId)).toBeFalsy();
+        expect(GraphService.db.nodes.get(seedRootId)).toBeFalsy();
 
         await TestLifecycleHelper.cleanupGraphService(GraphService, SystemLifecycleService, null, null, 'clear');
 
-        expect(GraphService.db.nodes.get(seedAgentId)?.label).toBe('AgentIdentity');
+        expect(GraphService.db.nodes.get(seedRootId)?.label).toBe('BroadcastSentinel');
 
         GraphService.db.nodes.clear();
         GraphService.db.edges.clear();
@@ -1906,11 +1862,11 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         await GraphService.db.storage.clear();
         await resetMemoryCoreLifecycle();
 
-        expect(GraphService.db.nodes.get(seedAgentId)).toBeFalsy();
+        expect(GraphService.db.nodes.get(seedRootId)).toBeFalsy();
 
         await SystemLifecycleService.initAsync();
 
-        expect(GraphService.db.nodes.get(seedAgentId)?.label).toBe('AgentIdentity');
+        expect(GraphService.db.nodes.get(seedRootId)?.label).toBe('BroadcastSentinel');
     });
 });
 
