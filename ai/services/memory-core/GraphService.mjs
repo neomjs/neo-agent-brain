@@ -4,7 +4,6 @@ import logger                          from '../../mcp/server/memory-core/logger
 import Base                            from 'neo.mjs/src/core/Base.mjs';
 import CoreDatabase                    from '../../../ai/graph/Database.mjs';
 import SQLite                          from '../../../ai/graph/storage/SQLite.mjs';
-import { IDENTITIES }                  from '../../../ai/graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId}  from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {createGraphBootSeedManifest}   from '../../../ai/graph/bootSeedManifest.mjs';
 import {createGraphBootSeedNodeRecord} from '../../../ai/graph/bootSeedManifest.mjs';
@@ -331,34 +330,6 @@ class GraphService extends Base {
         }
 
         return {nodesCreated, edgesCreated}
-    }
-
-    /**
-     * @summary Add canonical AgentIdentity and BroadcastSentinel roots that are absent from the
-     * mounted graph, without rewriting records already owned by the persisted projection.
-     *
-     * This is the ordinary-boot half of the identity write-authority split. Existing records may
-     * contain a newer activation state, operator provenance, or runtime-added properties than the
-     * process-local registry snapshot. Leaving them byte-stable prevents a stale MCP checkout from
-     * making identity state last-boot-wins. Intentional registry updates remain the responsibility
-     * of `ai/scripts/setup/seedAgentIdentities.mjs`.
-     * @param {Object[]} [identities=IDENTITIES] Canonical roots to provision when missing.
-     * @returns {Number} Number of roots created during this pass.
-     */
-    provisionMissingIdentityRoots(identities = IDENTITIES) {
-        let created = 0;
-
-        for (const identity of identities) {
-            // Trigger the cache-coherent SQLite lazy load before deciding the root is absent.
-            this.db.getAdjacentNodes(identity.id, 'both');
-
-            if (!this.db.nodes.has(identity.id)) {
-                this.upsertGlobalNode(identity);
-                created++;
-            }
-        }
-
-        return created;
     }
 
     /**

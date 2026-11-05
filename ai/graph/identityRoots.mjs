@@ -1,5 +1,9 @@
+import {BROADCAST_SENTINEL, SYSTEM_SENDER} from './mailboxRoots.mjs';
+import {TRUST_TIERS}                       from './trustTiers.mjs';
+
 /**
- * @summary Neo-team identity seeds and system/sentinel root nodes for the Memory Core Graph.
+ * @summary Neo-team identity seeds for the Memory Core Graph, listed between the two mailbox roots
+ * every plane holds.
  *
  * This checked-in roster supplies Neo-team metadata; it is not an authentication or admission
  * authority. Provider-PAT admission can provision identities without an entry here, so other
@@ -27,64 +31,15 @@
  * hardcoded resident/root-introduction fact; import-time clocks would corrupt identity age on
  * every graph rehydration.
  *
- * It is used for both:
- * 1. Boot-time self-seeding in `GraphService.initAsync`
- * 2. Explicit manual recovery via `ai/scripts/setup/seedAgentIdentities.mjs`
+ * Boot seeds none of this roster: our team's plane receives it through
+ * `ai/scripts/setup/seedAgentIdentities.mjs`. The two mailbox roots listed first and last are
+ * every plane's, declared in `mailboxRoots.mjs`, which is what boot seeds.
  */
 
-/**
- * @summary Content-provenance trust taxonomy for AgentIdentity roots.
- *
- * Higher-level Memory Core query filtering and frontier weighting use these stable string
- * values; do not replace them with display labels.
- *
- * @member {Object}
- */
-export const TRUST_TIERS = Object.freeze({
-    SYSTEM           : 'system',
-    REPO_TRUSTED     : 'repo-trusted',
-    OWNER            : 'owner',
-    SELF             : 'self',
-    PEER_TRUSTED     : 'peer-trusted',
-    INTERNAL_AUTHORED: 'internal-authored',
-    EXTERNAL         : 'external',
-    UNCLASSIFIED     : 'unclassified'
-});
-
-/**
- * @summary Highest-to-lowest trust ordering for the provenance taxonomy.
- *
- * The order is intentionally exported next to the enum so query-path slices can compare tiers
- * without duplicating ranking tables.
- *
- * @member {String[]}
- */
-export const TRUST_TIER_ORDER = Object.freeze([
-    TRUST_TIERS.SYSTEM,
-    TRUST_TIERS.REPO_TRUSTED,
-    TRUST_TIERS.OWNER,
-    TRUST_TIERS.SELF,
-    TRUST_TIERS.PEER_TRUSTED,
-    TRUST_TIERS.INTERNAL_AUTHORED,
-    TRUST_TIERS.EXTERNAL,
-    TRUST_TIERS.UNCLASSIFIED
-]);
+export {TRUST_TIERS, TRUST_TIER_ORDER} from './trustTiers.mjs';
 
 export const IDENTITIES = [
-    {
-        id         : '@system',
-        type       : 'System',
-        name       : 'System Sender',
-        description: 'Non-human system sender used for lifecycle-generated mailbox messages.',
-        properties : {
-            githubLogin: null,
-            displayName: 'System',
-            modelFamily: null,
-            accountType: 'system',
-            trustTier  : TRUST_TIERS.SYSTEM,
-            createdAt  : '2026-05-27T12:33:17.000Z'
-        }
-    },
+    SYSTEM_SENDER,
     {
         id         : '@neo-opus-ada',
         type       : 'AgentIdentity',
@@ -534,18 +489,5 @@ export const IDENTITIES = [
             createdAt          : '2026-08-22T19:53:10.918Z'
         }
     },
-    {
-        id         : 'AGENT:*',
-        type       : 'BroadcastSentinel',
-        name       : 'Broadcast',
-        description: 'Mailbox broadcast sentinel. `SENT_TO` edges targeting this node preserve one semantic broadcast MESSAGE; current sends snapshot per-recipient unread state through `DELIVERED_TO` edges, with legacy SENT_TO-only visibility retained for old broadcasts. Must exist as a real graph node so GraphService.linkNodes FK-style guard does not cull broadcast edges — see #10174 and #11029.',
-        properties : {
-            githubLogin: null,
-            displayName: 'Broadcast',
-            modelFamily: null,
-            accountType: 'sentinel',
-            trustTier  : TRUST_TIERS.UNCLASSIFIED,
-            createdAt  : '2026-04-23T13:03:46.000Z'
-        }
-    }
+    BROADCAST_SENTINEL
 ];

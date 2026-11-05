@@ -671,7 +671,7 @@ export function surfaceResult(base, status, reason, updated = null) {
  * @returns {{surface: String, path: String, status: String, reason: String|null, anchor: String, snippet: String, updated: String|null}}
  */
 export function planRosterSurface(source, plan) {
-    const base = {surface: 'identityRoots', path: SURFACE_PATHS.identityRoots, anchor: `immediately before the 'AGENT:*' BroadcastSentinel entry`, snippet: renderRosterEntry(plan)};
+    const base = {surface: 'identityRoots', path: SURFACE_PATHS.identityRoots, anchor: 'immediately before the `BROADCAST_SENTINEL` entry that closes the roster', snippet: renderRosterEntry(plan)};
 
     if (typeof source !== 'string' || source === '') {
         return surfaceResult(base, SURFACE_STATES.DIVERGENT, 'identityRoots source must be a non-empty string');
@@ -715,10 +715,10 @@ export function planRosterSurface(source, plan) {
         );
     }
 
-    const sentinel = source.match(/\n    \{\n\s+id\s*:\s*'AGENT:\*'/);
+    const sentinel = source.match(/\n    BROADCAST_SENTINEL\n/);
 
     if (!sentinel) {
-        return surfaceResult(base, SURFACE_STATES.DIVERGENT, `insertion anchor not found: the 'AGENT:*' BroadcastSentinel entry is missing from ${SURFACE_PATHS.identityRoots}`);
+        return surfaceResult(base, SURFACE_STATES.DIVERGENT, `insertion anchor not found: the \`BROADCAST_SENTINEL\` entry is missing from ${SURFACE_PATHS.identityRoots}`);
     }
 
     const insertAt = sentinel.index + 1;

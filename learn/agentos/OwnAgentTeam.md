@@ -124,8 +124,8 @@ node ai/scripts/setup/seedAgentIdentities.mjs
 ```
 
 The script is idempotent. Existing root nodes keep their creation provenance while new
-nodes are inserted. A fresh Memory Core also self-seeds the roster on boot; running the
-script is the explicit refresh path after a roster change. A team without a roster skips
+nodes are inserted. Boot seeds no roster identity, so the script is how a roster reaches a
+fresh Memory Core, and how it is refreshed after a roster change. A team without a roster skips
 this section while its auth source is listed in `auth.autoProvisionIdentitySources` (the
 PAT modes by default): its teammates' nodes appear with their first authenticated request.
 Under an unlisted source (`oidc` / `seat-token` by default) the bind needs a node that
@@ -618,9 +618,10 @@ identity is an authenticated request contract.
   user identity.
 - `ai/graph/assertExpectedIdentity.mjs` is the GitHub workflow's write guard: it compares
   the reference identity with the authenticated login and reads no roster.
-- `ai/graph/identityRoots.mjs` is the optional roster — Neo's own team metadata — consumed
-  by boot-time self-seeding and the manual seed script; `ai/graph/agentCoAuthorEmails.mjs`
-  beside it maps rostered logins to their verified commit addresses.
+- `ai/graph/identityRoots.mjs` is the optional roster — Neo's own team metadata — seeded
+  by the manual seed script and never by boot (`ai/graph/bootSeedManifest.mjs` seeds only the
+  mailbox roots); `ai/graph/agentCoAuthorEmails.mjs` beside it maps rostered logins to their
+  verified commit addresses.
 - `ai/scripts/setup/seedAgentIdentities.mjs` inserts or refreshes those roster identities
   in the Native Edge Graph.
 - `learn/agentos/tooling/MemoryCoreMcpAuth.md` explains `NEO_AGENT_IDENTITY`, graph-node

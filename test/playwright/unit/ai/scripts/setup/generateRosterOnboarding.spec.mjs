@@ -13,14 +13,14 @@ setup({
     }
 });
 
-import {test, expect}            from '@playwright/test';
-import {execFileSync, spawnSync} from 'node:child_process';
-import fs                        from 'node:fs';
-import os                        from 'node:os';
-import path                      from 'node:path';
-import {fileURLToPath}           from 'node:url';
-import Neo                       from 'neo.mjs/src/Neo.mjs';
-import * as core                 from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}                 from '@playwright/test';
+import {execFileSync, spawnSync}      from 'node:child_process';
+import fs                             from 'node:fs';
+import os                             from 'node:os';
+import path                           from 'node:path';
+import {fileURLToPath, pathToFileURL} from 'node:url';
+import Neo                            from 'neo.mjs/src/Neo.mjs';
+import * as core                      from 'neo.mjs/src/core/_export.mjs';
 import {
     ENGINE_CLASS_KEYS,
     README_ROSTER_HEADER,
@@ -86,17 +86,15 @@ function readRealFiles() {
 
 const ROSTER_FIXTURE = `export const TRUST_TIERS = Object.freeze({PEER_TRUSTED: 'peer-trusted', UNCLASSIFIED: 'unclassified'});
 
+const BROADCAST_SENTINEL = {id: 'AGENT:*', type: 'BroadcastSentinel', properties: {}};
+
 export const IDENTITIES = [
     {
         id         : '@neo-existing',
         type       : 'AgentIdentity',
         properties : {}
     },
-    {
-        id         : 'AGENT:*',
-        type       : 'BroadcastSentinel',
-        properties : {}
-    }
+    BROADCAST_SENTINEL
 ];
 `;
 
@@ -154,7 +152,9 @@ const FIXTURE_FILES = Object.freeze({
 });
 
 const ROTATION_FILES = Object.freeze({
-    identityRoots: `export const IDENTITIES = [
+    identityRoots: `const BROADCAST_SENTINEL = {id: 'AGENT:*', type: 'BroadcastSentinel', properties: {}};
+
+export const IDENTITIES = [
     {
         id         : '@neo-gpt',
         type       : 'AgentIdentity',
@@ -167,11 +167,7 @@ const ROTATION_FILES = Object.freeze({
             participationStatus: 'active'
         }
     },
-    {
-        id         : 'AGENT:*',
-        type       : 'BroadcastSentinel',
-        properties : {}
-    }
+    BROADCAST_SENTINEL
 ];
 `,
     migration : MIGRATION_FIXTURE,
@@ -396,7 +392,7 @@ test.describe('generateRosterOnboarding — surface planning (anchors + converge
         expect(first.status).toBe(SURFACE_STATES.MISSING);
         expect(first.updated).toContain(`id         : '@neo-unit-probe',`);
         expect(first.updated.indexOf(`'@neo-unit-probe'`)).toBeGreaterThan(first.updated.indexOf(`'@neo-existing'`));
-        expect(first.updated.indexOf(`'@neo-unit-probe'`)).toBeLessThan(first.updated.indexOf(`'AGENT:*'`));
+        expect(first.updated.indexOf(`'@neo-unit-probe'`)).toBeLessThan(first.updated.indexOf('\n    BROADCAST_SENTINEL\n'));
 
         const laterPlan = buildPlan({now: '2026-07-11T12:00:00.000Z'}),
               second    = planRosterSurface(first.updated, laterPlan);
@@ -711,8 +707,10 @@ test.describe('generateRosterOnboarding — live-file anchoring (the anchors mus
 
         expect(result.status).toBe(SURFACE_STATES.MISSING);
 
-        const module_ = await import('data:text/javascript;base64,' + Buffer.from(result.updated, 'utf8').toString('base64'));
-        const entry   = module_.IDENTITIES.find(node => node.id === '@neo-unit-probe');
+        // a data: URL resolves no relative specifier, so the roster's sibling imports become absolute
+        const source  = result.updated.replace(/from '\.\/([\w-]+\.mjs)'/g, (match, file) => `from '${pathToFileURL(path.join(REPO_ROOT, 'ai/graph', file)).href}'`),
+              module_ = await import('data:text/javascript;base64,' + Buffer.from(source, 'utf8').toString('base64'));
+        const entry = module_.IDENTITIES.find(node => node.id === '@neo-unit-probe');
 
         expect(entry).toBeTruthy();
         expect(entry.type).toBe('AgentIdentity');
