@@ -66,7 +66,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             setAvatar            : payload  => { calls.push(['setAvatar', payload]); return {id: payload.id, metadata: {avatarUrl: payload.avatarUrl}}; },
             adoptAgent           : payload  => { calls.push(['adoptAgent', payload]);   return {id: payload.id, launchOwner: 'fleet'}; },
             releaseAgent         : payload  => { calls.push(['releaseAgent', payload]); return {id: payload.id, launchOwner: 'external'}; },
-            getLifecycleService  : ()       => ({startGateRefusal: () => null})
+            getLifecycleService  : ()       => ({startGate: () => null})
         };
 
         tenantServiceStub = {
@@ -1101,7 +1101,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         ];
         managerStub.fleetRepoStatus     = () => [];
         managerStub.fleetRuntimeStatus  = () => [];
-        managerStub.getLifecycleService = () => ({startGateRefusal: () => gate});
+        managerStub.getLifecycleService = () => ({startGate: () => gate && {state: 'booting', reason: gate}});
         FleetControlBridge.identityResolver = () => ({family: null, engineTag: null});
 
         const refusals = async () => (await FleetControlBridge.fleetRoster()).rows.map(({id, launchRefusal}) => [id, launchRefusal]);
@@ -1127,13 +1127,13 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         ];
         managerStub.fleetRepoStatus     = () => [];
         managerStub.fleetRuntimeStatus  = () => [];
-        managerStub.getLifecycleService = () => ({startGateRefusal: () => gate});
+        managerStub.getLifecycleService = () => ({startGate: () => gate && {state: 'booting', reason: gate}});
         FleetControlBridge.identityResolver = () => ({family: null, engineTag: null});
 
         const shut = await FleetControlBridge.fleetRoster();
 
         expect(shut.rows[0].launchRefusal).toBe('released to its own harness: adopt it to start it here');
-        expect(shut.startGate, 'the roster says why the whole Fleet refuses Start').toBe(gate);
+        expect(shut.startGate, 'the roster says why the whole Fleet refuses Start').toEqual({state: 'booting', reason: gate});
 
         gate = null;
         expect((await FleetControlBridge.fleetRoster()).startGate, 'an open gate reads null').toBeNull();
@@ -1189,7 +1189,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — fleetRoster joins th
     const rosterManager = ({wake, throttle} = {}) => ({
         fleetRepoStatus    : () => [],
         fleetRuntimeStatus : () => [],
-        getLifecycleService: () => ({startGateRefusal: () => null}),
+        getLifecycleService: () => ({startGate: () => null}),
         ...(wake     && {fleetWakeStatus    : async () => wake}),
         ...(throttle && {fleetThrottleStatus: async () => throttle})
     });
