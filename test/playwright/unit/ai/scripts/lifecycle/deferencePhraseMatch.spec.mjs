@@ -161,31 +161,81 @@ test.describe('ai/scripts/lifecycle/deferencePhraseMatch', () => {
         expect(DEFERENCE_PHRASES).not.toContain('unless you want');
         expect(DEFERENCE_PHRASES).not.toContain("unless you'd rather");
 
-        // Positive corpus: real agent turn-final deference slips.
-        expect(matchDeferencePhrase("Unless you'd rather I start #18455 now, I'll take the review-gate defect-note"))
-            .toBe('unless you');
-        expect(matchDeferencePhrase('Taking the parser lane next unless you want something else first.'))
-            .toBe('unless you');
-        expect(matchDeferencePhrase('I can take it unless you want me elsewhere.'))
-            .toBe('unless you');
-        expect(matchDeferencePhrase("I'll take the review-gate thread unless you object."))
-            .toBe('unless you');
-        expect(matchDeferencePhrase('Taking the parser lane next **unless you** prefer another order.'))
-            .toBe('unless you');
-        expect(matchDeferencePhrase('Taking the parser lane next unless\n    you redirect.'))
-            .toBe('unless you');
+        const realTurnFinalSlips = [
+            [
+                'Vega, 2026-08-02, session eb230051-9e42-4e6b-b540-112a79accc3a',
+                "That's next unless you'd rather I take something else."
+            ],
+            [
+                'Vega, 2026-08-17, stop-hook specimen',
+                "that is my next lane unless you'd rather I hold it until the client lane is green"
+            ],
+            [
+                'Ada, 2026-08-25, session be6b6eb4-dabe-4deb-9924-7c92335c69ff',
+                "I'll pick that up next unless you'd rather I go elsewhere."
+            ],
+            [
+                'Vega, 2026-09-08, session 3581aef4-0bb5-4cb4-b428-856e9e60c9b3, memory 6c9a76e1-1cf8-4102-bd6d-3f52ec8b13a2',
+                "Unless you'd rather I start #18455 now, I'll take the review-gate defect-note"
+            ]
+        ];
 
-        // Negative corpus: real autonomous turn-final text from Memory Core.
-        expect(matchDeferencePhrase(
-            "Euclid's R2 notice is already handled (#19449 merged, broadcast sent); marked it read. lane-state unchanged: next-lane (#14800 at the cut)."
-        )).toBeNull();
-        expect(matchDeferencePhrase(
-            '#731 is at the human merge gate: Emmy approved at 999d8af with no required actions, mergeable and clean, broadcast sent. lane-state: next-lane (the 09:37 reminder turn: the three operator-led lanes).'
-        )).toBeNull();
-        expect(matchDeferencePhrase(
-            'Stage #112 approved by Julia at 2dcd61d (review 5551096755), CI green, no seats pending — human-only merge for the operator. lane-state: next-lane (#112 at the human merge gate; lane 1 open; the camera leaf with Sophie).'
-        )).toBeNull();
-        expect(matchDeferencePhrase('Next: #16208. The merge is yours per critical_gates 1.')).toBeNull();
+        for (const [provenance, text] of realTurnFinalSlips) {
+            expect(matchDeferencePhrase(text), provenance).toBe('unless you');
+        }
+
+        const realAutonomousTurnFinalSilent = [
+            [
+                'Grace, 2026-10-07, session 9aa8aa9b-2502-458b-976b-eec8a223218e, memory eecd2959-23e3-46b8-927a-132719c73ae7',
+                "Euclid's R2 notice is already handled (#19449 merged, broadcast sent); marked it read. lane-state unchanged: next-lane (#14800 at the cut)."
+            ],
+            [
+                'Vega, 2026-10-16, session ef9b0731-d0a7-4cc1-8c52-33fb1817cfb0, memory 2616f012-052b-4c05-9d4b-4d57c0d87e72',
+                'Stage #112 approved by Julia at 2dcd61d (review 5551096755), CI green, no seats pending — human-only merge for the operator. lane-state: next-lane (#112 at the human merge gate; lane 1 open; the camera leaf with Sophie).'
+            ],
+            [
+                'Mnemosyne, 2026-10-17, session 830c2630-dbf5-47fb-9170-4cb6dee2b08c, memory 180f43fe-c53c-4ba7-b9cb-aeadcf729f40',
+                '#731 is at the human merge gate: Emmy approved at 999d8af with no required actions, mergeable and clean, broadcast sent. lane-state: next-lane (the 09:37 reminder turn: the three operator-led lanes).'
+            ],
+            [
+                'Ada, 2026-11-02, session 0d989353-6fbb-4ecc-86d1-419b3c8e80a4, memory eedd62c1-d0e5-4f30-96ad-4ed0e2eff935',
+                "#690 is re-approved at the current head and eligible for the operator's merge.\n\nlane-state: active (#24 film on his recordings ~13:00 CET; #692 queued)."
+            ]
+        ];
+
+        for (const [provenance, text] of realAutonomousTurnFinalSilent) {
+            expect(matchDeferencePhrase(text), provenance).toBeNull();
+        }
+    });
+
+    test('designed grammar and layout controls plus intentionally reclassified prior fixtures (#342)', () => {
+        const designedPositiveControls = [
+            ['indefinite object (Ada, 2026-08-19 genericized)', 'Taking the parser lane next unless you want something else first.'],
+            ['agent object me', 'I can take it unless you want me elsewhere.'],
+            ['preference verb object', "I'll take the review-gate thread unless you object."],
+            ['emphasis + preference verb prefer', 'Taking the parser lane next **unless you** prefer another order.'],
+            ['soft wrap + preference verb redirect', 'Taking the parser lane next unless\n    you redirect.']
+        ];
+
+        for (const [label, text] of designedPositiveControls) {
+            expect(matchDeferencePhrase(text), label).toBe('unless you');
+        }
+
+        const reclassifiedUnderOperatorRuling = [
+            'The test fails unless you mock the system clock.',
+            'The default is fine unless you want deterministic isolation.',
+            'Keep the current plan unless you want a smaller batch size.',
+            'Use the first parser unless you want the other parser.',
+            'Use the first parser unless you want another parser.',
+            'Idempotent unless you want another run to overwrite state.',
+            'Taking the parser lane next unless you want.',
+            'Keep the default unless you want\n    deterministic isolation.',
+            'Taking the parser lane next unless you want\n\nsomething else is available.'
+        ];
+
+        for (const text of reclassifiedUnderOperatorRuling) {
+            expect(matchDeferencePhrase(text), text).toBe('unless you');
+        }
     });
 
     test('matches each tight phrase case-insensitively', () => {
