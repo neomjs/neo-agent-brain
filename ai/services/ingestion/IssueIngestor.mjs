@@ -9,8 +9,11 @@ import {
     Memory_StorageRouter as StorageRouter
 } from '../../services.mjs';
 import logger                    from '../../mcp/server/memory-core/logger.mjs';
-import {IDENTITIES}              from '../../graph/identityRoots.mjs';
 import {CORPUS_PROJECTION_OWNER} from '../graph/corpusProjectionContract.mjs';
+import {
+    memberLoginsOf,
+    readAgentIdentityNodes
+} from '../../graph/agentIdentityParticipation.mjs';
 import {
     normalizeDiscussionRoutingProjection as normalizeSourceDiscussionRoutingProjection
 } from '../github-workflow/shared/discussionRoutingDisposition.mjs';
@@ -197,20 +200,22 @@ class IssueIngestor extends Base {
     }
 
     /**
-     * @summary Bare GitHub logins of registered internal authors (human owner + swarm maintainers),
-     * derived from the canonical identity registry — current logins and `formerLogins`, because a
-     * ticket authored before a handle rename keeps its old author string in the corpus. The `@`
-     * prefix is stripped to match GitHub issue-author logins. An empty set disables the community
-     * multiplier (safe degrade) instead of boosting every ticket.
-     * @member {Set<String>} internalAuthorLogins
+     * @summary Bare GitHub logins of the plane's internal authors, its agents and its people, read from
+     * their AgentIdentity nodes: current logins and `formerLogins`, because a ticket authored before a
+     * handle rename keeps its old author string in the corpus. Nodes that cannot be read answer an empty
+     * set, which disables the community multiplier (safe degrade) instead of boosting every ticket.
+     * @param {Object} [graphService=GraphService] Graph service whose store holds the identity nodes.
+     * @returns {Set<String>}
      * @static
      */
-    static internalAuthorLogins = new Set(
-        IDENTITIES
-            .flatMap(identity => [identity.properties?.githubLogin, ...(identity.properties?.formerLogins ?? [])])
-            .filter(Boolean)
-            .map(login => login.replace(/^@/, ''))
-    )
+    static readInternalAuthorLogins(graphService = GraphService) {
+        try {
+            return new Set(memberLoginsOf(readAgentIdentityNodes(graphService.db?.storage?.db), {formerLogins: true}))
+        } catch (error) {
+            logger.warn(`[IssueIngestor] the identity nodes did not answer, so the community multiplier is off for this run: ${error.message}`);
+            return new Set()
+        }
+    }
 
     /**
      * @summary Validates the source-owned Discussion routing projection as one atomic tuple. A
@@ -265,15 +270,15 @@ class IssueIngestor extends Base {
 
     /**
      * @summary Whether a ticket author qualifies for the community-multiplier boost: true when the
-     * author exists, the internal-author registry is non-empty, and the author is not a registered
-     * maintainer. The non-empty guard makes an unconfigured deployment degrade safely (multiplier
-     * off) rather than treating every ticket as community-authored.
+     * author exists, the internal-author set is non-empty, and the author is not in it. The non-empty
+     * guard makes an unread plane degrade safely (multiplier off) rather than treating every ticket as
+     * community-authored.
      * @param {String} author Ticket GitHub author login (bare form).
-     * @param {Set<String>} [internalAuthorLogins=IssueIngestor.internalAuthorLogins] Injectable internal-author set (test seam).
+     * @param {Set<String>} internalAuthorLogins The run's internal authors ({@link IssueIngestor.readInternalAuthorLogins}).
      * @returns {Boolean}
      * @static
      */
-    static isCommunityAuthor(author, internalAuthorLogins = IssueIngestor.internalAuthorLogins) {
+    static isCommunityAuthor(author, internalAuthorLogins) {
         return Boolean(author) && internalAuthorLogins.size > 0 && !internalAuthorLogins.has(author)
     }
 
@@ -346,9 +351,10 @@ class IssueIngestor extends Base {
             return [];
         }
 
-        const files        = filesRaw;
-        const openIssues   = [];
-        const parsedIssues = [];
+        const files                = filesRaw;
+        const openIssues           = [];
+        const parsedIssues         = [];
+        const internalAuthorLogins = IssueIngestor.readInternalAuthorLogins();
 
         const indexMap = await loadIndexMap(contentRoot, 'issues');
 
@@ -458,7 +464,7 @@ class IssueIngestor extends Base {
                             logger.debug(`[IssueIngestor] Discounting topological weight for ${issueId} because it is BLOCKED_BY an OPEN issue.`);
                         } else {
                             // Community Multiplier: boost externally-authored (non-maintainer) tickets that have been triaged.
-                            if (IssueIngestor.isCommunityAuthor(meta.author)) {
+                            if (IssueIngestor.isCommunityAuthor(meta.author, internalAuthorLogins)) {
                                 if (Array.isArray(meta.labels) && meta.labels.length > 0) {
                                     baseWeight += 0.5;
                                 }

@@ -131,27 +131,23 @@ test.describe('resolveTargets — deployment-portable swarm-heartbeat target res
         expect(result).toEqual(['@neo-opus-4-7']);
     });
 
-    test('active-local-team takes the team from identityRoots and participation from the nodes: a node bench excludes, a root bench the node contradicts does not', async () => {
-        const
-            roots = IDENTITIES.filter(i => i.type === 'AgentIdentity'),
-            team  = roots.map(i => i.id),
-            // one root of each status, found by status: which resident is benched is the roster's decision,
-            // not this arm's assumption
-            activeRoot  = roots.find(i => i.properties.participationStatus === 'active'),
-            benchedRoot = roots.find(i => i.properties.participationStatus === 'operator_benched');
-
-        expect(activeRoot).toBeDefined();
-        expect(benchedRoot).toBeDefined();
-
-        // the nodes say the opposite of both roots
+    test('active-local-team takes the team from the plane\'s agents and participation from their nodes: an agent outside our roster joins, a bench excludes', async () => {
+        // another operator's plane: none of these is in identityRoots, and no roster entry is a node here
         const result = await resolveTargets({
             selfIdentity         : '@neo-opus-4-7',
             targetSource         : 'active-local-team',
-            participationProvider: () => new Map([[activeRoot.id, 'operator_benched'], [benchedRoot.id, 'active']])
+            participationProvider: () => new Map([['@their-agent', 'active'], ['@their-benched', 'operator_benched']]),
+            teamProvider         : () => ['@their-agent', '@their-benched']
         });
 
-        expect(result).toEqual(team.filter(id => id !== activeRoot.id));
-        expect(result).toContain(benchedRoot.id)
+        expect(result).toEqual(['@their-agent'])
+    });
+
+    test('active-local-team without a team provider pulses only self and says so', async () => {
+        const logger = captureLogger();
+
+        expect(await resolveTargets({selfIdentity: '@neo-opus-4-7', targetSource: 'active-local-team', logger})).toEqual(['@neo-opus-4-7']);
+        expect(logger.calls).toEqual([expect.objectContaining({level: 'warn', msg: expect.stringContaining('requires teamProvider')})])
     });
 
     test('a participation read that cannot answer is named by the caller, never replaced by the roots; an explicit list and disabled never ask it', async () => {

@@ -1,4 +1,3 @@
-import {IDENTITIES}                   from '../../../graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId} from '../../../graph/normalizeAgentIdentityNodeId.mjs';
 
 /**
@@ -70,10 +69,9 @@ export function getDueTask({state, now, swarmHeartbeatIntervalMs}) {
  *
  * - **`'self'`** — pulses only the active harness owner (`selfIdentity`); deployment-
  *   portable minimal-fan-out shape.
- * - **`'active-local-team'`** — the team is `identityRoots.IDENTITIES`' AgentIdentity
- *   entries, kept to those the participation read lets through. Team-registry coupled for
- *   membership (suitable for Neo team workspace; external forks customize
- *   `identityRoots.mjs` to get their own team), never for participation.
+ * - **`'active-local-team'`** — the team is the plane's agents, from injected
+ *   `teamProvider` (the AgentIdentity nodes whose `accountType` is `agent`), kept to those
+ *   the participation read lets through. Every plane answers with its own agents.
  * - **`'active-subscribers'`** — delegates to injected `activeSubscribersProvider`
  *   (the existing `WAKE_SUBSCRIPTION` SQL discovery in
  *   `SwarmHeartbeatService.getWakeSubscriptionIdentities()`); union with `selfIdentity`.
@@ -96,9 +94,9 @@ export function getDueTask({state, now, swarmHeartbeatIntervalMs}) {
  *   (TTL sweep, all-agent-idle detection, liveness touch) still runs.
  *
  * Cloud/fork safety: external workspaces never silently fan out to maintainer identities.
- * `'active-a2a-participants'` and `'active-subscribers'` are per-MC-instance derived (each
- * deployment's MC has its own A2A activity and subscriptions); only `'active-local-team'`
- * has team-registry coupling and must be operator-opted-into.
+ * Every source is per-MC-instance derived (each deployment's MC has its own nodes, A2A
+ * activity and subscriptions). `'active-local-team'` pulses every agent the plane holds, so it
+ * stays operator-opted-into.
  *
  * Pure function: side effects limited to logger calls. Output is deduplicated and
  * order-preserving; each target is normalized via `normalizeAgentIdentityNodeId` so
@@ -111,6 +109,7 @@ export function getDueTask({state, now, swarmHeartbeatIntervalMs}) {
  * @param {Function}       [opts.activeSubscribersProvider]        Async `() => Promise<String[]>` for `'active-subscribers'`.
  * @param {Function}       [opts.activeA2aParticipantsProvider]    Async `() => Promise<String[]>` for `'active-a2a-participants'`.
  * @param {Function}       [opts.participationProvider]            `() => Map|Promise<Map>`: canonical identity → participation status.
+ * @param {Function}       [opts.teamProvider]                     `() => String[]|Promise<String[]>` for `'active-local-team'`: the plane's agents.
  * @param {Object}         [opts.logger=console]                   Logger; defaults to console.
  * @returns {Promise<String[]>}  Normalized canonical `@<identity>` strings (deduplicated, order-preserving).
  * @throws {Error} When the participation read cannot answer.
@@ -122,6 +121,7 @@ export async function resolveTargets({
     activeSubscribersProvider     = null,
     activeA2aParticipantsProvider = null,
     participationProvider         = null,
+    teamProvider                  = null,
     logger                        = console
 } = {}) {
     const log = (level, msg) => {
@@ -194,8 +194,13 @@ export async function resolveTargets({
             log('info', '[resolveSwarmHeartbeatTargets] disabled — no pulse targets');
             return [];
 
-        case 'active-local-team':
-            return eligibleTargets(IDENTITIES.filter(entry => entry.type === 'AgentIdentity').map(entry => entry.id));
+        case 'active-local-team': {
+            if (typeof teamProvider !== 'function') {
+                log('warn', `[resolveSwarmHeartbeatTargets] targetSource='active-local-team' requires teamProvider; falling back to 'self'`);
+                return selfFallback('active-local-team-missing-provider');
+            }
+            return eligibleTargets((await teamProvider()) || []);
+        }
 
         case 'active-subscribers': {
             if (typeof activeSubscribersProvider !== 'function') {

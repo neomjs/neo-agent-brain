@@ -213,16 +213,15 @@ class GoldenPathSynthesizer extends Base {
     }
 
     /**
-     * @summary Returns maintainer logins eligible for stale-assignment progress acknowledgements.
+     * @summary Returns maintainer logins eligible for stale-assignment progress acknowledgements: the plane's
+     * members, read from its AgentIdentity nodes. Assignee comments still qualify independently in
+     * `findLastQualifyingAssignmentActivity`.
      *
-     * Stale-assignment acknowledgements consume the same AgentIdentity registry as the
-     * active-PR surface, but include human owner identities as maintainers. Assignee
-     * comments still qualify independently in `findLastQualifyingAssignmentActivity`.
-     *
+     * @param {Object[]} nodes AgentIdentity node records.
      * @returns {String[]} Maintainer logins without leading `@`.
      */
-    static getStaleAssignmentMaintainers() {
-        return getIssueFocusStaleAssignmentMaintainers()
+    static getStaleAssignmentMaintainers(nodes) {
+        return getIssueFocusStaleAssignmentMaintainers(nodes)
     }
 
     /**
@@ -259,10 +258,10 @@ class GoldenPathSynthesizer extends Base {
      * @param {String[]} issue.assignees Current assignee logins.
      * @param {String} issue.createdAt Issue creation timestamp.
      * @param {String} issue.content Markdown body without frontmatter.
-     * @param {String[]} [maintainers=this.getStaleAssignmentMaintainers()] Maintainer logins.
+     * @param {String[]} [maintainers=[]] Maintainer logins whose progress comments qualify.
      * @returns {{createdAt: Date, author: String, reason: String}}
      */
-    static findLastQualifyingAssignmentActivity(issue, maintainers = this.getStaleAssignmentMaintainers()) {
+    static findLastQualifyingAssignmentActivity(issue, maintainers = []) {
         return findIssueFocusLastQualifyingAssignmentActivity(issue, maintainers)
     }
 
@@ -272,13 +271,12 @@ class GoldenPathSynthesizer extends Base {
      * @param {String} options.issuesDir Local synced issue directory.
      * @param {Date} [options.now=new Date()] Current clock for deterministic tests.
      * @param {Number} [options.thresholdMs=aiConfig.goldenPathStaleAssignmentThresholdMs] Stale threshold.
-     * @param {String[]} [options.maintainers=this.getStaleAssignmentMaintainers()] Maintainer logins.
+     * @param {String[]} [options.maintainers] Maintainer logins; read from the plane's identity nodes when omitted.
      * @returns {Array<Object>} Stale candidates sorted by oldest qualifying activity first.
      */
     static buildStaleAssignmentCandidates(options = {}) {
         return buildIssueFocusStaleAssignmentCandidates({
             ...options,
-            maintainers: options.maintainers || this.getStaleAssignmentMaintainers(),
             thresholdMs: options.thresholdMs ?? aiConfig.goldenPathStaleAssignmentThresholdMs
         })
     }

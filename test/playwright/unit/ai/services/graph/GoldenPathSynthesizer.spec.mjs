@@ -160,14 +160,12 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         ]));
         expect(Synthesizer.getAgentLogins()).not.toContain('tobiu');
 
-        expect(Synthesizer.getStaleAssignmentMaintainers()).toEqual(expect.arrayContaining([
-            'neo-opus-grace',
-            'neo-gemini-julia',
-            'neo-gpt-euclid',
-            'neo-opus-ada',
-            'neo-opus-vega',
-            'tobiu'
-        ]));
+        // another operator's plane: its members come from its nodes, and no roster entry is one of them
+        expect(Synthesizer.getStaleAssignmentMaintainers([
+            {id: '@their-agent',      properties: {accountType: 'agent'}},
+            {id: '@their-owner',      properties: {accountType: 'human', githubLogin: '@owner-login'}},
+            {id: '@fixture-leftover', properties: {}}
+        ])).toEqual(['their-agent', 'owner-login']);
     });
 
     test('scoreCurrentFocusIssue surfaces focused epic umbrellas without routing them (#14337)', () => {
@@ -359,7 +357,7 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
                 '',
                 'working on this'
             ].join('\n')
-        });
+        }, ['tobiu', 'neo-gpt-euclid']);
 
         expect(activity.author).toBe('tobiu');
         expect(activity.createdAt.toISOString()).toBe('2026-05-27T00:00:00.000Z');
