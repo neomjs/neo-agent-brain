@@ -676,6 +676,7 @@ paths:
         - **Target (`issue_number` xor `pr_number`):** Pass exactly one of `issue_number` or `pr_number`.
         - **Non-empty body (`EMPTY_BODY`):** Blank or whitespace-only `body` strings are refused before GitHub I/O.
         - **Authorship / assignment rule (`FOREIGN_BODY_FORBIDDEN`):** By default, only the issue/PR author or a current assignee may replace the body. When an intentional foreign-body edit is required (e.g. recording an `epic-review` prescription block or maintainer handoff), pass a non-empty `acknowledgedForeignBody` reason; the acknowledgement is echoed in the result.
+        - **Stale write (`BODY_CHANGED`):** For a body other seats also edit (a tracker), pass `expectedBodySha256` — the SHA-256 hex of the body you read. If the body changed since, the write is refused with `currentBodySha256`; re-read and re-apply. A guarded write returns `bodySha256` for the next one.
       tags: [Issues, Pull Requests]
       requestBody:
         required: true
@@ -704,6 +705,10 @@ paths:
                   type: string
                   description: Explicit reason required when the authenticated caller is neither the author nor a current assignee of the target issue or pull request.
                   example: "epic-review Stage 5 prescription block on parent epic"
+                expectedBodySha256:
+                  type: string
+                  description: SHA-256 hex of the body you read, over the exact `body` string the GitHub API returned (it may lack a trailing newline your local copy has). When it no longer matches, the write is refused with `BODY_CHANGED`.
+                  example: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
       responses:
         '200':
           description: Issue or pull request body updated successfully.
@@ -711,6 +716,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UpdateIssueBodyResponse'
+        '409':
+          description: The body changed since the caller's read (`BODY_CHANGED`); nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Bad Request (missing/ambiguous target or empty body).
           content:
@@ -2574,6 +2585,9 @@ components:
         acknowledgedForeignBody:
           type: string
           description: Present when a foreign-body override reason was supplied.
+        bodySha256:
+          type: string
+          description: SHA-256 hex of the body just written; present when `expectedBodySha256` was passed, ready for the next guarded write.
         author:
           type: string
           nullable: true

@@ -1,3 +1,4 @@
+import {createHash}                                                                                                                                                                                                                  from 'node:crypto';
 import aiConfig                                                                                                                                                                                                                      from '../../mcp/server/github-workflow/config.mjs';
 import Base                                                                                                                                                                                                                          from 'neo.mjs/src/core/Base.mjs';
 import GraphqlService                                                                                                                                                                                                                from './GraphqlService.mjs';
@@ -1119,16 +1120,22 @@ class IssueService extends Base {
      *    `viewer.login` in one GraphQL round-trip.
      * 4. If the authenticated caller is neither the author nor a current assignee, refuses with
      *    `FOREIGN_BODY_FORBIDDEN` unless a non-empty `acknowledgedForeignBody` reason is supplied.
+     * 5. With `expectedBodySha256`, refuses with `BODY_CHANGED` (and `currentBodySha256`) when the live
+     *    body no longer hashes to it. A shared body — a tracker several seats tick at once — otherwise
+     *    loses every edit made between the caller's read and this write, silently. The check reuses the
+     *    read of step 3, so it narrows that window to milliseconds; GitHub's mutation takes no precondition.
      *
      * @param {Object} options
      * @param {Number} [options.issue_number]            The issue number to update (mutually exclusive with `pr_number`).
      * @param {Number} [options.pr_number]               The pull request number to update (mutually exclusive with `issue_number`).
      * @param {String} options.body                      The complete replacement Markdown body (must be non-empty).
      * @param {String} [options.acknowledgedForeignBody] Explicit reason required when the caller is neither author nor assignee.
+     * @param {String} [options.expectedBodySha256]      SHA-256 hex of the body the caller read, over the exact string the API returned.
      * @param {String} [options.repo]                    Optional bare name or `owner/name` repository target.
-     * @returns {Promise<Object>} Updated metadata (`updatedAt`, `previousBytes`, `updatedBytes`, `byteDelta`, and optional `acknowledgedForeignBody`) or a structured error.
+     * @returns {Promise<Object>} Updated metadata (`updatedAt`, `previousBytes`, `updatedBytes`, `byteDelta`, optional
+     * `acknowledgedForeignBody`, and `bodySha256` when `expectedBodySha256` was passed) or a structured error.
      */
-    async updateIssueBody({issue_number, pr_number, body, acknowledgedForeignBody, repo}) {
+    async updateIssueBody({issue_number, pr_number, body, acknowledgedForeignBody, expectedBodySha256, repo}) {
         const target = resolveRepositoryTarget(repo, {owner: aiConfig.owner, repo: aiConfig.repo});
 
         if (target.error) return target;
@@ -1208,8 +1215,25 @@ class IssueService extends Base {
                 };
             }
 
-            const previousBody  = typeof targetNode.body === 'string' ? targetNode.body : '',
-                  previousBytes = Buffer.byteLength(previousBody, 'utf8'),
+            const previousBody = typeof targetNode.body === 'string' ? targetNode.body : '',
+                  expectedHash = typeof expectedBodySha256 === 'string' ? expectedBodySha256.trim().toLowerCase() : '';
+
+            if (expectedHash) {
+                const currentBodySha256 = createHash('sha256').update(previousBody, 'utf8').digest('hex');
+
+                if (currentBodySha256 !== expectedHash) {
+                    return {
+                        error  : 'Stale Body Refused',
+                        code   : 'BODY_CHANGED',
+                        message: `${kindLabel} #${number} in ${target.fullName} changed since your read (its body now hashes to ${currentBodySha256}). Re-read the body, re-apply your edit, and pass the new hash.`,
+                        number,
+                        kind   : isPR ? 'pull_request' : 'issue',
+                        currentBodySha256
+                    };
+                }
+            }
+
+            const previousBytes = Buffer.byteLength(previousBody, 'utf8'),
                   updatedBytes  = Buffer.byteLength(body, 'utf8'),
                   byteDelta     = updatedBytes - previousBytes,
                   mutation      = isPR ? UPDATE_PULL_REQUEST_BODY : UPDATE_ISSUE_BODY,
@@ -1243,6 +1267,11 @@ class IssueService extends Base {
 
             if (trimmedAck) {
                 result.acknowledgedForeignBody = trimmedAck;
+            }
+
+            if (expectedHash) {
+                // The next guarded write of this body can pass this hash without re-reading.
+                result.bodySha256 = createHash('sha256').update(body, 'utf8').digest('hex');
             }
 
             if (!isAuthor && !isAssignee) {
