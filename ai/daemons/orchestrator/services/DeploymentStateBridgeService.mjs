@@ -1411,9 +1411,7 @@ export class DeploymentStateBridgeService extends Base {
             return {
                 ...result,
                 ...disposition,
-                acknowledgeIntervention: result.acknowledgeIntervention !== undefined
-                    ? Boolean(result.acknowledgeIntervention)
-                    : Boolean(acknowledgeIntervention),
+                acknowledgeIntervention: Boolean(acknowledgeIntervention),
                 targetIdentity
             };
         } catch (error) {

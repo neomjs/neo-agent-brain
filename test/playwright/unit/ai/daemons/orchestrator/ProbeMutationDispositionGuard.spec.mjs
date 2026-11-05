@@ -1607,6 +1607,48 @@ export async function probeAddedModelIds({host, timeoutMs, fetchFn = fetch} = {}
             authorityWithdrawnReason: 'unacknowledged-intervention-probe'
         });
 
+        // 2b. Consuming-Seam Ownership Precedence:
+        // A producer return payload injecting `acknowledgeIntervention: true` must NOT override
+        // `collectProviderResidency({ acknowledgeIntervention: false })` or `acknowledgeProviderResidencyIntervention: false`.
+        const selfAcknowledgingProducerBridge = Neo.create(DeploymentStateBridgeService, {
+            nowFn                                   : () => observedAt,
+            acknowledgeProviderResidencyIntervention: false,
+            providerResidencyProbe                  : async opts => ({
+                ...(await probeProviderParallelModelCapacity({
+                    ...opts,
+                    config           : ollamaConfig,
+                    fetchOllamaModels: async () => ['qwen3-embedding:latest']
+                })),
+                acknowledgeIntervention: true
+            })
+        });
+        const bridgedSelfAcknowledgingResidency = await selfAcknowledgingProducerBridge.collectProviderResidency({
+            serviceKey             : 'local-model',
+            observedAt,
+            acknowledgeIntervention: false
+        });
+        expect(bridgedSelfAcknowledgingResidency.acknowledgeIntervention).toBe(false);
+
+        const selfAcknowledgingProducerDecision = diagnosisService.diagnose({
+            serviceKey       : 'local-model',
+            observedAt,
+            inspect          : runningHealthyInspect,
+            providerResidency: bridgedSelfAcknowledgingResidency
+        });
+        expect(selfAcknowledgingProducerDecision.status).toBe('advisory');
+        expect(selfAcknowledgingProducerDecision.actionClass).toBeNull();
+        expect(selfAcknowledgingProducerDecision.facts[0]).toMatchObject({
+            type         : CONTAINER_HEALTH_FACT_TYPES.providerResidency,
+            authoritative: false,
+            details      : {
+                reasonCode              : 'missing-required-model',
+                probeDisposition        : 'intervention',
+                interventionEffect      : 'abort-in-flight',
+                interventionAcknowledged: false,
+                authorityWithdrawnReason: 'unacknowledged-intervention-probe'
+            }
+        });
+
         // 3. Dropped Disposition Metadata Refusal:
         // A declared intervention must NOT regain authority or corroboration if `probeDisposition` is dropped.
         const droppedDispositionResidencyDecision = diagnosisService.diagnose({
