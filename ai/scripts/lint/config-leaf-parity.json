@@ -246,6 +246,7 @@
         "fleet.planeCredentialFd",
         "fleet.planeInternalHosts",
         "fleet.port",
+        "fleet.rosterAxisTimeoutMs",
         "fleet.shutdownBudgetMs",
         "fleet.signingKey",
         "fleet.tenantProbeTimeoutMs",

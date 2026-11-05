@@ -34,5 +34,38 @@ test.describe('planeWhoIsOnlineReader — the plane-mode presence read', () => {
         });
 
         await expect(reader()).rejects.toThrow('plane unreachable')
+    });
+
+    test('concurrent reads share one plane call, and a read after it settles makes its own (#1468)', async () => {
+        const
+            answers = [],
+            reader  = createPlaneWhoIsOnlineReader({callTool: () => new Promise(resolve => answers.push(resolve))}),
+            first   = reader(),
+            second  = reader();
+
+        expect(answers, 'the roster, open work and the wake routes read presence at once').toHaveLength(1);
+
+        answers[0]({agents: []});
+        expect(await second).toBe(await first);
+
+        const third = reader();
+
+        expect(answers).toHaveLength(2);
+        answers[1]({agents: [{identity: '@neo-fable-clio', state: 'online'}]});
+        expect((await third).agents).toHaveLength(1)
+    });
+
+    test('a rejection reaches every caller sharing the call (#1468)', async () => {
+        let calls = 0;
+
+        const
+            reader = createPlaneWhoIsOnlineReader({callTool: () => { calls++; return Promise.reject(new Error('plane unreachable')) }}),
+            reads  = [reader(), reader()];
+
+        expect(calls).toBe(1);
+
+        for (const read of reads) {
+            await expect(read).rejects.toThrow('plane unreachable')
+        }
     })
 });

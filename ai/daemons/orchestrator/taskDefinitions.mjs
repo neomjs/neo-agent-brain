@@ -24,6 +24,7 @@ const DEFAULT_CHROMA_HEALTH_TIMEOUT_MS        = 5000;
 
 /**
  * @summary Probes whether a local TCP port is accepting connections.
+ * @probeDisposition observation
  * @param {Object} options
  * @param {String|Number} options.port Port to probe.
  * @param {Number} [options.timeoutMs] Optional timeout in milliseconds.
@@ -106,6 +107,7 @@ export function buildChromaHealthUrl({
 
 /**
  * @summary Probes Chroma's HTTP API, not just PID or TCP liveness.
+ * @probeDisposition intervention (abort-in-flight)
  * @param {Object} options
  * @param {String} [options.host='localhost'] Configured Chroma host.
  * @param {String|Number} options.port Configured Chroma port.

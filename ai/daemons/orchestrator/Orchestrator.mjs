@@ -1028,6 +1028,7 @@ export class Orchestrator extends Base {
      * @param {Object} [options={}] Test-isolation seams; production callers omit this object.
      * @param {Function} [options.embedTexts] Embedding transport seam.
      * @param {Number} [options.timeoutMs] Deadline override for deterministic tests.
+     * @probeDisposition intervention (abort-in-flight, occupy-slot, advance-state)
      * @returns {Promise<{embedderHealthy: Boolean, dimensionConsistent: Boolean}>}
      */
     async probeFrozenCollectionHealth(collectionName, options = {}) {

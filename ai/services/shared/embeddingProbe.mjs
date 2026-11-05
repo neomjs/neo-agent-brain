@@ -28,10 +28,10 @@ const EMBEDDING_PROBE_FAILURE_CLASSIFICATIONS = Object.freeze({
     // fine once it does. These four mean the connection came up, the request was accepted, and the
     // process went away mid-answer: an OOM kill leaves exactly this trace. That is direct evidence
     // the lane cannot serve THIS input, which is the one conclusion a recovery probe exists to draw.
-    ECONNRESET                       : 'provider-died',
-    EPIPE                            : 'provider-died',
-    ERR_STREAM_PREMATURE_CLOSE       : 'provider-died',
-    UND_ERR_SOCKET                   : 'provider-died'
+    ECONNRESET                : 'provider-died',
+    EPIPE                     : 'provider-died',
+    ERR_STREAM_PREMATURE_CLOSE: 'provider-died',
+    UND_ERR_SOCKET            : 'provider-died'
 });
 
 /**
@@ -169,6 +169,7 @@ export function projectProbeCoverage(result) {
 
 /**
  * @summary Probes one explicitly supplied embedding path and returns a health-safe result block.
+ * @probeDisposition intervention (abort-in-flight, occupy-slot, advance-state)
  *
  * This module owns only the attempt boundary: deadline, abort propagation, dimension validation,
  * and bounded failure classification. Consumers own provider/config selection, scheduling,

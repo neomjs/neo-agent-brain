@@ -207,6 +207,7 @@ export const NeoWakeEnvelope = async (ctx) => {
      * @param {Object} options
      * @param {Number} options.port The resolved server port written into the envelope.
      * @param {String} options.sessionId The exact session id from the qualifying session event.
+     * @probeDisposition intervention (abort-in-flight)
      * @returns {Promise<Object>} Resolves with the server's own session payload; throws (with the cause) otherwise.
      */
     const getSession = async ({port, sessionId}) => {

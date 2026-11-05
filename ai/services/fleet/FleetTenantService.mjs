@@ -1150,6 +1150,7 @@ async function notifyMcpInitialized({url, credential, sessionId, protocolVersion
  * @param {String|null} [options.expectedIdentity] Memory Core caller identity to prove.
  * @param {Boolean} [options.servedPlane=false] Also read which plane serves the resource.
  * @param {AbortSignal} [options.signal] Overall proof budget.
+ * @probeDisposition intervention (abort-in-flight, advance-state)
  * @returns {Promise<Object>} `{ok,status,verdict,identity?,anotherIdentity?,plane?}` with no remote prose.
  */
 async function initializeMcpResource({url, credential, expectedIdentity=null, servedPlane=false, signal}) {
@@ -1276,6 +1277,7 @@ async function initializeMcpResource({url, credential, expectedIdentity=null, se
  * @param {Boolean} [options.servedPlane=false] Also read the plane each ready resource names; it
  *     never treats dependency health as identity proof.
  * @param {AbortSignal} [options.signal] Overall proof budget; every request also obeys its configured ceiling.
+ * @probeDisposition intervention (abort-in-flight, advance-state)
  * @returns {Promise<Object>} `{ok, status, verdict, resources}`. A refused resource outranks an unanswered one.
  */
 export async function probeTenantEndpoint({endpoint, credential, expectedIdentity=null, servedPlane=false, signal}) {
@@ -1311,6 +1313,7 @@ export async function probeTenantEndpoint({endpoint, credential, expectedIdentit
 
 /**
  * @summary A request may use the configured probe timeout only within its caller's proof budget.
+ * @probeDisposition intervention (abort-in-flight)
  * @param {AbortSignal} [signal] Issuer proof deadline/cancellation; absent for ordinary readiness callers.
  * @returns {AbortSignal}
  */

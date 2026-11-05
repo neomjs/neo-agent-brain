@@ -1,4 +1,5 @@
 import Base                                                                          from 'neo.mjs/src/core/Base.mjs';
+import AiConfig                                                                      from '../../config.mjs';
 import FleetLifecycleService                                                         from './FleetLifecycleService.mjs';
 import {armFleetSeatWake}                                                            from './armFleetSeatWake.mjs';
 import {ensureAgentRepos}                                                            from './ensureAgentRepo.mjs';
@@ -27,6 +28,37 @@ import {REPLACE_SEAT_CREDENTIAL_SCOPES} from '../../../src/fleet/contract/wire.m
 import path                             from 'node:path';
 
 export {REPLACE_SEAT_CREDENTIAL_SCOPES};
+
+/**
+ * @summary Bounds one of the roster's plane-sourced reads: past `timeoutMs` it rejects with a reason naming the
+ * wait, which the axis adapter's own fail-honest path reports as pending, while the call runs on. A call that
+ * settles after the bound logs its duration once, the one witness of how slow the plane was.
+ * @param {Function} read `() => Promise`, the axis's reader
+ * @param {String} axis `'presence'` or `'wake'`, named in the reason and the log line
+ * @param {Number} timeoutMs
+ * @returns {Function} The bounded reader
+ * @private
+ */
+function boundRosterRead(read, axis, timeoutMs) {
+    return () => {
+        const startedAt = Date.now(), call = Promise.resolve().then(read);
+        let late = false, timerId;
+
+        const settled = outcome => late && console.log(`[fleet] roster ${axis} read ${outcome} after ${Date.now() - startedAt} ms (bound ${timeoutMs} ms)`);
+
+        call.then(() => settled('answered'), () => settled('failed'));
+
+        return Promise.race([
+            call.finally(() => clearTimeout(timerId)),
+            new Promise((resolve, reject) => {
+                timerId = setTimeout(() => {
+                    late = true;
+                    reject(new Error(`${axis} read still pending after ${timeoutMs} ms`))
+                }, timeoutMs)
+            })
+        ])
+    }
+}
 
 /**
  * @summary Build a non-secret replacement receipt distinguishing persisted authority, carrier preparation,
@@ -719,15 +751,21 @@ class FleetManager extends Base {
      * verb mutates state this view independently observes.
      * Fail-honest: with no injected options every row reads `unknown` under a `degraded/none`
      * capability — "we cannot see" stays distinguishable from "the fleet is off"; the state is never
-     * invented.
+     * invented. The roster reads this view, so its subscription scan, a plane call in plane mode, is
+     * bounded: a scan still out at `timeoutMs` reads `unknown` with the wait as its reason.
+     * @param {Object} [options={}]
+     * @param {Number} [options.timeoutMs=AiConfig.fleet.rosterAxisTimeoutMs]
      * @returns {Promise<{capability: Object, states: Object[]}>} Adapter snapshot: per-agent
      * `{agentId, wake, confidence, source}` rows (+ a reason/receipt on degraded delivery) and the
      * capability envelope.
      */
-    fleetWakeStatus() {
+    fleetWakeStatus({timeoutMs = AiConfig.fleet.rosterAxisTimeoutMs} = {}) {
+        const options = this.wakeStateOptions || {}, {listActiveSubscriptionIdentities: scan} = options;
+
         return readFleetWakeStateSnapshot({
             agents: this.getLifecycleService().getRegistry().listAgents(),
-            ...(this.wakeStateOptions || {})
+            ...options,
+            ...(scan && {listActiveSubscriptionIdentities: boundRosterRead(scan, 'wake', timeoutMs)})
         });
     }
 
@@ -786,15 +824,22 @@ class FleetManager extends Base {
      * (one row per REGISTERED agent, the sibling views' one-agent-set rule) plus the injected
      * {@link #member-presenceStateOptions}. Fail-honest: with no injected reader every row reads
      * `unknown` under a `degraded/none` capability — "we cannot see presence" stays distinguishable
-     * from "the fleet is dark"; a band is never invented.
+     * from "the fleet is dark"; a band is never invented. The roster reads this view, so its reader,
+     * a plane call in plane mode, is bounded: a read still out at `timeoutMs` leaves every seat
+     * `unknown` and its participation unread, with the wait as the reason.
+     * @param {Object} [options={}]
+     * @param {Number} [options.timeoutMs=AiConfig.fleet.rosterAxisTimeoutMs]
      * @returns {Promise<{capability: Object, states: Object[]}>} Adapter snapshot: per-agent
      * `{agentId, presence, lastSeenAt, confidence, source}` rows (+ `reason` on `unknown`) and the
      * capability envelope.
      */
-    fleetPresenceStatus() {
+    fleetPresenceStatus({timeoutMs = AiConfig.fleet.rosterAxisTimeoutMs} = {}) {
+        const options = this.presenceStateOptions || {}, {readPresence} = options;
+
         return readFleetPresenceSnapshot({
             agents: this.getLifecycleService().getRegistry().listAgents(),
-            ...(this.presenceStateOptions || {})
+            ...options,
+            ...(readPresence && {readPresence: boundRosterRead(readPresence, 'presence', timeoutMs)})
         });
     }
 
