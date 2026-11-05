@@ -5401,6 +5401,10 @@ components:
         count:
           type: integer
           example: 5
+        reRanked:
+          type: boolean
+          description: "True when the primary vector pass ran through StorageRouter's hybrid graph-gravity re-ranker; false when re-ranking was bypassed."
+          example: true
         results:
           type: array
           items:
@@ -5462,6 +5466,10 @@ components:
               type: number
               description: Normalized relevance score (0-1, higher is more relevant)
               example: 0.8766
+            compositeScore:
+              type: number
+              description: "Hybrid sort key (semanticScore * topologyMultiplier) used by StorageRouter to order re-ranked results. Present only on re-ranked rows; absent when reRanked is false or on via='concept-walk' rows."
+              example: 0.9643
             via:
               type: string
               description: "Present only on a concept-walk-derived result — the retrieval-path marker 'concept-walk'. Absent on embedding results."
@@ -5634,6 +5642,10 @@ components:
         count:
           type: integer
           example: 3
+        reRanked:
+          type: boolean
+          description: "True when the primary vector pass ran through StorageRouter's hybrid graph-gravity re-ranker; false when re-ranking was bypassed."
+          example: true
         results:
           type: array
           items:
@@ -5671,6 +5683,10 @@ components:
               type: number
               description: Normalized relevance score (0-1, higher is more relevant)
               example: 0.9013
+            compositeScore:
+              type: number
+              description: "Hybrid sort key (semanticScore * topologyMultiplier) used by StorageRouter to order re-ranked results. Present only on re-ranked rows; absent when reRanked is false."
+              example: 0.9914
 
     SummarizeSessionRequest:
       type: object
