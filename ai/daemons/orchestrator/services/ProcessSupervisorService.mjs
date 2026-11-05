@@ -96,7 +96,7 @@ export class ProcessSupervisorService extends Base {
          * Resolved V8 old-space ceiling, in MiB, applied to each supervised child.
          *
          * INJECTED by the Orchestrator from `AiConfig.orchestrator.supervisedTaskHeapMb`. This
-         * service never reads the env var — ADR-0019 assigns that resolution to the leaf, and the // ticket-ref-ok: names the decision that forbids reading env here
+         * service never reads the env var — ADR-0019 [not-ticket-ref: decision-record authority] assigns that resolution to the leaf, and the
          * Orchestrator construction seam is the narrow bootstrap boundary its sanctioned patterns
          * allow. An earlier revision read it here with `Number(env) || 384`, which is the A1
          * antipattern and additionally accepted `-1`.
@@ -580,6 +580,7 @@ export class ProcessSupervisorService extends Base {
 
     /**
      * Runs the task readiness hook after an out-of-band service passes liveness.
+     * @probeDisposition intervention (abort-in-flight, occupy-slot, warm-or-evict, advance-state)
      *
      * Fire-and-exit launchers such as `lms server start` can leave the HTTP endpoint healthy
      * while their model-residency contract is stale. Reusing the task-owned readiness hook here
@@ -1058,6 +1059,7 @@ export class ProcessSupervisorService extends Base {
      * @param {Object} task Task definition (carries `healthProbe`).
      * @param {Number} now Epoch ms (poll timestamp).
      * @param {Number} cooldownMs Minimum gap between probes / recycle attempts.
+     * @probeDisposition intervention (abort-in-flight)
      * @returns {void}
      */
     gateRecycleOnHealthProbe(taskName, task, now, cooldownMs) {
@@ -1084,6 +1086,7 @@ export class ProcessSupervisorService extends Base {
 
     /**
      * @summary Probe-gated restart for a fire-and-exit lane (see `superviseTask`).
+     * @probeDisposition intervention (abort-in-flight, occupy-slot, warm-or-evict, advance-state)
      *
      * Stays provider-agnostic: the task owns the actual check via `livenessProbe()` (e.g. an
      * HTTP poll of an OpenAI-compatible endpoint); this method only schedules and de-dupes it.

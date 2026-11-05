@@ -46,6 +46,98 @@ function isConfiguredComposeOllamaHost({configuredHost, observedHost, serviceKey
 export const SERVICE_CLASSES = Object.freeze({store: 'store', transient: 'transient'});
 
 /**
+ * @summary Closed probe-mutation disposition vocabulary.
+ *
+ * A probe is either a read-only `observation` of its subject or an `intervention` that can mutate
+ * what it observes (`abort-in-flight`, `occupy-slot`, `warm-or-evict`, `advance-state`).
+ */
+export const PROBE_DISPOSITIONS = Object.freeze({
+    observation : 'observation',
+    intervention: 'intervention'
+});
+
+/**
+ * @summary Named side-effect classes for probes declared `intervention`.
+ */
+export const PROBE_INTERVENTION_EFFECTS = Object.freeze([
+    'abort-in-flight',
+    'occupy-slot',
+    'warm-or-evict',
+    'advance-state'
+]);
+
+/**
+ * @summary Evaluates whether a probe envelope may back or corroborate an authoritative diagnosis fact.
+ *
+ * A probe declared `intervention` is a write disguised as a read: its result cannot
+ * silently back an `authoritative: true` fact or corroborate an unhealthy restart unless the
+ * consuming seam explicitly acknowledges the intervention (`acknowledgeIntervention: true` or
+ * `interventionAcknowledged: true`) and records the disposition and named effect on `fact.details`.
+ *
+ * @param {Object} [options={}]
+ * @param {Object|null} [options.probe] Probe result envelope (`endpointProbe`, `providerResidency`).
+ * @param {Boolean} [options.defaultAuthoritative=true] Baseline authority before disposition gating.
+ * @returns {{authoritative: Boolean, corroborationAdmitted: Boolean, details: Object}}
+ */
+export function resolveConsumedProbeAuthority({probe, defaultAuthoritative = true} = {}) {
+    const rawDisposition = typeof probe?.probeDisposition === 'string'
+        ? probe.probeDisposition.trim()
+        : typeof probe?.disposition === 'string'
+            ? probe.disposition.trim()
+            : null;
+
+    if (!rawDisposition) {
+        return {
+            authoritative        : Boolean(defaultAuthoritative),
+            corroborationAdmitted: true,
+            details              : {}
+        };
+    }
+
+    const rawEffect        = probe?.interventionEffect ?? probe?.probeEffects ?? probe?.effects ?? null,
+          normalizedEffect = Array.isArray(rawEffect)
+              ? toSafeArray(rawEffect).join(', ') || null
+              : toSafeScalar(rawEffect);
+
+    if (rawDisposition === PROBE_DISPOSITIONS.observation) {
+        return {
+            authoritative        : Boolean(defaultAuthoritative),
+            corroborationAdmitted: true,
+            details              : {
+                probeDisposition: PROBE_DISPOSITIONS.observation
+            }
+        };
+    }
+
+    if (rawDisposition === PROBE_DISPOSITIONS.intervention) {
+        const acknowledged = probe?.acknowledgeIntervention === true ||
+            probe?.interventionAcknowledged === true;
+
+        return {
+            authoritative        : Boolean(defaultAuthoritative) && acknowledged,
+            corroborationAdmitted: acknowledged,
+            details              : {
+                probeDisposition        : PROBE_DISPOSITIONS.intervention,
+                interventionEffect      : normalizedEffect,
+                interventionAcknowledged: acknowledged,
+                ...(!acknowledged ? {authorityWithdrawnReason: 'unacknowledged-intervention-probe'} : {})
+            }
+        };
+    }
+
+    return {
+        authoritative        : false,
+        corroborationAdmitted: false,
+        details              : {
+            probeDisposition        : toSafeScalar(rawDisposition),
+            interventionEffect      : normalizedEffect,
+            interventionAcknowledged: false,
+            authorityWithdrawnReason: 'invalid-probe-disposition'
+        }
+    };
+}
+
+/**
  * @summary The V8 fatal line that NAMES a heap exhaustion, on one line, strictly.
  *
  * Both shapes V8 emits — `Reached heap limit` and `Ineffective mark-compacts near heap limit` —
@@ -969,11 +1061,20 @@ export class ContainerHealthDiagnosisService extends Base {
 
     /**
      * Collects advisory direct-probe facts.
+     *
+     * When `endpointProbe` declares `probeDisposition: 'intervention'`, its failure cannot
+     * silently corroborate `hasAuthoritativeEvidence` unless `acknowledgeIntervention: true` is
+     * supplied, and `details` records the disposition and effect at the consuming seam.
      * @param {Object} options
      * @returns {Object[]}
      */
     collectEndpointProbeFacts({serviceKey, endpointProbe, observedAt}) {
         if (!endpointProbe || typeof endpointProbe !== 'object' || endpointProbe.ok !== false) return [];
+
+        const probeAuthority = resolveConsumedProbeAuthority({
+            probe               : endpointProbe,
+            defaultAuthoritative: false
+        });
 
         return [this.createFact({
             type         : CONTAINER_HEALTH_FACT_TYPES.endpointProbeFailed,
@@ -983,7 +1084,8 @@ export class ContainerHealthDiagnosisService extends Base {
             authoritative: false,
             details      : {
                 name   : typeof endpointProbe.name === 'string' ? endpointProbe.name : 'endpoint-probe',
-                message: typeof endpointProbe.message === 'string' ? endpointProbe.message : null
+                message: typeof endpointProbe.message === 'string' ? endpointProbe.message : null,
+                ...probeAuthority.details
             }
         })];
     }
@@ -1099,18 +1201,35 @@ export class ContainerHealthDiagnosisService extends Base {
         })];
     }
 
+    /**
+     * @summary Collects active-provider residency facts and enforces probe-disposition authority gating.
+     *
+     * A `providerResidency` input declared `probeDisposition: 'intervention'` cannot silently back
+     * an `authoritative: true` fact (or license `warm-provider` / `restart`) unless
+     * `acknowledgeIntervention: true` is supplied, and its disposition/effect is always visible on
+     * `fact.details`.
+     *
+     * @param {Object} options
+     * @returns {Object[]}
+     */
     collectProviderResidencyFacts({serviceKey, providerResidency, observedAt}) {
         if (!providerResidency || typeof providerResidency !== 'object') return [];
 
         const reasonCode = this.getProviderResidencyReasonCode(providerResidency);
         if (!reasonCode) return [];
 
+        const baseAuthoritative = !['extra-residents', 'provider-probe-failed'].includes(reasonCode),
+              probeAuthority    = resolveConsumedProbeAuthority({
+                  probe               : providerResidency,
+                  defaultAuthoritative: baseAuthoritative
+              });
+
         return [this.createFact({
             type         : CONTAINER_HEALTH_FACT_TYPES.providerResidency,
             serviceKey,
             observedAt,
             severity     : ['extra-residents', 'provider-probe-failed'].includes(reasonCode) ? 'warning' : 'critical',
-            authoritative: !['extra-residents', 'provider-probe-failed'].includes(reasonCode),
+            authoritative: probeAuthority.authoritative,
             details      : {
                 provider                 : typeof providerResidency.provider === 'string' ? providerResidency.provider : null,
                 host                     : typeof providerResidency.host === 'string' ? providerResidency.host : null,
@@ -1130,7 +1249,8 @@ export class ContainerHealthDiagnosisService extends Base {
                 loadedContexts           : toSafeObject(providerResidency.loadedContexts),
                 observedRequiredCount    : toSafeNumber(providerResidency.observedRequiredCount),
                 requiredResidentModels   : toSafeNumber(providerResidency.requiredResidentModels),
-                residentButNotServing    : providerResidency.residentButNotServing === true
+                residentButNotServing    : providerResidency.residentButNotServing === true,
+                ...probeAuthority.details
             }
         })];
     }
@@ -1224,6 +1344,16 @@ export class ContainerHealthDiagnosisService extends Base {
             return advisory('provider-residency-service-not-configured');
         }
         if (!providerResidency) return advisory('provider-residency-unavailable');
+        const residencyAuthority = resolveConsumedProbeAuthority({
+            probe               : providerResidency,
+            defaultAuthoritative: true
+        });
+        if (!residencyAuthority.corroborationAdmitted) {
+            return advisory(
+                residencyAuthority.details.authorityWithdrawnReason || 'unacknowledged-intervention-probe',
+                residencyAuthority.details
+            );
+        }
         if (providerResidency?.provider !== 'ollama') return advisory('provider-not-ollama');
         if (!isConfiguredComposeOllamaHost({configuredHost, observedHost: providerResidency.host, serviceKey})) {
             return advisory('provider-endpoint-target-mismatch');
@@ -1325,12 +1455,13 @@ export class ContainerHealthDiagnosisService extends Base {
             serviceKey,
             observedAt,
             severity     : 'critical',
-            authoritative: true,
+            authoritative: residencyAuthority.authoritative,
             details      : {
                 ...baseDetails,
                 reasonCode   : 'sustained-unexplained-ollama-load',
                 projectionAgeMs,
-                totalInFlight: providerActivity.totalInFlight
+                totalInFlight: providerActivity.totalInFlight,
+                ...residencyAuthority.details
             }
         })];
     }
@@ -1581,7 +1712,10 @@ export class ContainerHealthDiagnosisService extends Base {
         if (!primaryFacts.some(fact => fact.authoritative)) return false;
 
         return this.countAuthoritativeFacts(allFacts) >= this.configValues.minAuthoritativeFacts ||
-            allFacts.some(fact => fact.type === CONTAINER_HEALTH_FACT_TYPES.endpointProbeFailed);
+            allFacts.some(fact =>
+                fact.type === CONTAINER_HEALTH_FACT_TYPES.endpointProbeFailed &&
+                fact.details?.authorityWithdrawnReason === undefined
+            );
     }
 
     /**
@@ -1729,7 +1863,8 @@ export class ContainerHealthDiagnosisService extends Base {
      * @returns {Boolean}
      */
     isProviderResidencyConfigDrift(fact) {
-        return fact.type === CONTAINER_HEALTH_FACT_TYPES.providerResidency && [
+        return fact.type === CONTAINER_HEALTH_FACT_TYPES.providerResidency &&
+            fact.authoritative === true && [
             'insufficient-context',
             'provider-not-ready',
             'provider-warmup-failed',
@@ -1744,6 +1879,7 @@ export class ContainerHealthDiagnosisService extends Base {
      */
     isProviderRoleResidencyRecoverable(fact) {
         return fact.type === CONTAINER_HEALTH_FACT_TYPES.providerResidency &&
+            fact.authoritative === true &&
             fact.details?.reasonCode === 'missing-required-model';
     }
 
@@ -1754,6 +1890,7 @@ export class ContainerHealthDiagnosisService extends Base {
      */
     isProviderResidentButNotServing(fact) {
         return fact.type === CONTAINER_HEALTH_FACT_TYPES.providerResidency &&
+            fact.authoritative === true &&
             fact.details?.reasonCode === 'resident-not-serving';
     }
 

@@ -360,6 +360,7 @@ export function parseExpectedStatuses(expectedStatus) {
  * @param {Number} [options.timeoutMs=DEFAULT_TIMEOUT_MS]
  * @param {Function} [options.ClientClass=Client] Injectable SDK client constructor for tests.
  * @param {Function} [options.TransportClass=StreamableHTTPClientTransport] Injectable transport constructor for tests.
+ * @probeDisposition intervention (abort-in-flight, advance-state)
  * @returns {Promise<Object>}
  */
 export async function runHealthcheck({
