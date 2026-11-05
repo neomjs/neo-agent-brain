@@ -1115,7 +1115,8 @@ class IssueService extends Base {
      *
      * **Guards:**
      * 1. Requires `issue_number` XOR `pr_number`.
-     * 2. Refuses empty or whitespace-only `body` strings (`EMPTY_BODY`) before any GitHub I/O.
+     * 2. Before any GitHub I/O, refuses an empty or whitespace-only `body` (`EMPTY_BODY`) and a supplied
+     *    `expectedBodySha256` that is not 64 hex characters, blank included (`INVALID_EXPECTED_BODY_SHA256`).
      * 3. Fetches the target's `id`, current `body`, `author`, `assignees`, and the authenticated
      *    `viewer.login` in one GraphQL round-trip.
      * 4. If the authenticated caller is neither the author nor a current assignee, refuses with
@@ -1130,7 +1131,7 @@ class IssueService extends Base {
      * @param {Number} [options.pr_number]               The pull request number to update (mutually exclusive with `issue_number`).
      * @param {String} options.body                      The complete replacement Markdown body (must be non-empty).
      * @param {String} [options.acknowledgedForeignBody] Explicit reason required when the caller is neither author nor assignee.
-     * @param {String} [options.expectedBodySha256]      SHA-256 hex of the body the caller read, over the exact string the API returned.
+     * @param {String} [options.expectedBodySha256]      SHA-256 hex of the body the caller read, over the exact string the API returned. Omit it for an unconditional write.
      * @param {String} [options.repo]                    Optional bare name or `owner/name` repository target.
      * @returns {Promise<Object>} Updated metadata (`updatedAt`, `previousBytes`, `updatedBytes`, `byteDelta`, optional
      * `acknowledgedForeignBody`, and `bodySha256` when `expectedBodySha256` was passed) or a structured error.
@@ -1161,6 +1162,19 @@ class IssueService extends Base {
                 error  : 'Bad Request',
                 message: 'Refusing to replace an issue or pull request body with an empty string.',
                 code   : 'EMPTY_BODY'
+            };
+        }
+
+        // Only omission keeps the write unconditional: a supplied value opts in, so it must be usable.
+        const expectedHash = expectedBodySha256 === undefined
+            ? null
+            : typeof expectedBodySha256 === 'string' ? expectedBodySha256.trim().toLowerCase() : '';
+
+        if (expectedHash !== null && !/^[0-9a-f]{64}$/.test(expectedHash)) {
+            return {
+                error  : 'Bad Request',
+                message: '`expectedBodySha256` must be the 64-character SHA-256 hex of the body you read. Omit it for an unconditional write.',
+                code   : 'INVALID_EXPECTED_BODY_SHA256'
             };
         }
 
@@ -1215,8 +1229,7 @@ class IssueService extends Base {
                 };
             }
 
-            const previousBody = typeof targetNode.body === 'string' ? targetNode.body : '',
-                  expectedHash = typeof expectedBodySha256 === 'string' ? expectedBodySha256.trim().toLowerCase() : '';
+            const previousBody = typeof targetNode.body === 'string' ? targetNode.body : '';
 
             if (expectedHash) {
                 const currentBodySha256 = createHash('sha256').update(previousBody, 'utf8').digest('hex');

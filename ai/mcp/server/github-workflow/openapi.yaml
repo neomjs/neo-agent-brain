@@ -666,17 +666,15 @@ paths:
       x-annotations:
         readOnlyHint: false
       description: |
-        Replaces the Markdown body of a GitHub issue or pull request in place and returns `updatedAt` plus the UTF-8 byte delta (`previousBytes`, `updatedBytes`, `byteDelta`).
+        Replaces an issue or pull request body in place; returns `updatedAt` and the UTF-8 byte delta (`previousBytes`, `updatedBytes`, `byteDelta`).
 
-        **When to Use:**
-        - To fold current state, revised acceptance criteria, or scope updates directly into the issue or PR body instead of appending correction comments (`BODY = state`, `COMMENT = dialogue`).
-        - Preferred over `gh issue edit` / `gh pr edit` so seats whose harness blocks shell body edits can maintain issue and PR bodies natively over MCP.
+        **When to Use:** fold state or revised ACs into the body instead of correction comments (`BODY = state`, `COMMENT = dialogue`). Works where a harness blocks `gh issue edit` / `gh pr edit`.
 
         **Guards:**
-        - **Target (`issue_number` xor `pr_number`):** Pass exactly one of `issue_number` or `pr_number`.
-        - **Non-empty body (`EMPTY_BODY`):** Blank or whitespace-only `body` strings are refused before GitHub I/O.
-        - **Authorship / assignment rule (`FOREIGN_BODY_FORBIDDEN`):** By default, only the issue/PR author or a current assignee may replace the body. When an intentional foreign-body edit is required (e.g. recording an `epic-review` prescription block or maintainer handoff), pass a non-empty `acknowledgedForeignBody` reason; the acknowledgement is echoed in the result.
-        - **Stale write (`BODY_CHANGED`):** For a body other seats also edit (a tracker), pass `expectedBodySha256` — the SHA-256 hex of the body you read. If the body changed since, the write is refused with `currentBodySha256`; re-read and re-apply. A guarded write returns `bodySha256` for the next one.
+        - **Target:** pass exactly one of `issue_number` or `pr_number`.
+        - **`EMPTY_BODY`:** a blank `body` is refused before any GitHub I/O.
+        - **`FOREIGN_BODY_FORBIDDEN`:** only the author or a current assignee may replace the body, unless a non-empty `acknowledgedForeignBody` reason is passed (echoed in the result).
+        - **`BODY_CHANGED`:** for a body other seats also edit, pass `expectedBodySha256`. A body changed since your read is refused with `currentBodySha256`: re-read, re-apply, retry. A guarded write returns `bodySha256` for the next one. The check reuses this call's read, so it narrows the race but is not atomic.
       tags: [Issues, Pull Requests]
       requestBody:
         required: true
@@ -707,7 +705,7 @@ paths:
                   example: "epic-review Stage 5 prescription block on parent epic"
                 expectedBodySha256:
                   type: string
-                  description: SHA-256 hex of the body you read, over the exact `body` string the GitHub API returned (it may lack a trailing newline your local copy has). When it no longer matches, the write is refused with `BODY_CHANGED`.
+                  description: SHA-256 hex of the body you read, over the exact `body` string the GitHub API returned (it may lack a trailing newline your local copy has). A mismatch is refused with `BODY_CHANGED`. A supplied value that is not 64 hex characters, blank included, is refused with `INVALID_EXPECTED_BODY_SHA256`; omit the field for an unconditional write.
                   example: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
       responses:
         '200':
@@ -723,7 +721,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '400':
-          description: Bad Request (missing/ambiguous target or empty body).
+          description: Bad Request (missing/ambiguous target, empty body, or a malformed `expectedBodySha256`).
           content:
             application/json:
               schema:
