@@ -1,6 +1,11 @@
-import {test, expect}                                    from '@playwright/test';
-import Database                                          from 'better-sqlite3';
-import {participationByIdentity, readAgentIdentityNodes} from '../../../../../ai/graph/agentIdentityParticipation.mjs';
+import {test, expect} from '@playwright/test';
+import Database       from 'better-sqlite3';
+import {
+    agentIdentitiesOf,
+    memberLoginsOf,
+    participationByIdentity,
+    readAgentIdentityNodes
+} from '../../../../../ai/graph/agentIdentityParticipation.mjs';
 
 /**
  * @summary The one participation read every plane-side reader shares: the AgentIdentity node rows `who_is_online`
@@ -56,5 +61,17 @@ test.describe('ai/graph/agentIdentityParticipation', () => {
             {id: 'neo-gpt', properties: {participationStatus: 'operator_benched'}},
             {id: '@neo-kimi-iris', properties: {}}
         ])]).toEqual([['@neo-gpt', 'operator_benched'], ['@neo-kimi-iris', 'active']])
+    });
+
+    test('membership is the node\'s account type: agents are agents, members are agents and people, a node without one is neither', () => {
+        const nodes = [
+            {id: 'their-agent',       properties: {accountType: 'agent', formerLogins: ['@their-old-handle']}},
+            {id: '@their-owner',      properties: {accountType: 'human', githubLogin: '@owner-login'}},
+            {id: '@fixture-leftover', properties: {}}
+        ];
+
+        expect(agentIdentitiesOf(nodes)).toEqual(['@their-agent']);
+        expect(memberLoginsOf(nodes)).toEqual(['their-agent', 'owner-login']);
+        expect(memberLoginsOf(nodes, {formerLogins: true})).toEqual(['their-agent', 'their-old-handle', 'owner-login'])
     })
 });

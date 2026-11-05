@@ -18,18 +18,22 @@
  *     "details": { [identity]: { "lastMemTime": string, "lastActivityAt": string, "lastActivitySource": string, "ageMs": number } }
  *   }
  */
-import Neo                                               from 'neo.mjs/src/Neo.mjs';
-import * as core                                         from 'neo.mjs/src/core/_export.mjs';
-import { createHash }                                    from 'crypto';
-import LifecycleService                                  from '../../services/memory-core/lifecycle/SystemLifecycleService.mjs';
-import GraphService                                      from '../../services/memory-core/GraphService.mjs';
-import AiConfig                                          from '../../config.mjs';
-import memoryCoreConfig                                  from '../../mcp/server/memory-core/config.mjs';
-import {resolveTargets}                                  from '../../daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
-import { checkInflightLock }                             from './inflightLock.mjs';
-import {readLastKnownActivity}                           from './lastKnownActivity.mjs';
-import {participationByIdentity, readAgentIdentityNodes} from '../../graph/agentIdentityParticipation.mjs';
-import {isEntryModule}                                   from '../../services/shared/isEntryModule.mjs';
+import Neo                     from 'neo.mjs/src/Neo.mjs';
+import * as core               from 'neo.mjs/src/core/_export.mjs';
+import { createHash }          from 'crypto';
+import LifecycleService        from '../../services/memory-core/lifecycle/SystemLifecycleService.mjs';
+import GraphService            from '../../services/memory-core/GraphService.mjs';
+import AiConfig                from '../../config.mjs';
+import memoryCoreConfig        from '../../mcp/server/memory-core/config.mjs';
+import {resolveTargets}        from '../../daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
+import { checkInflightLock }   from './inflightLock.mjs';
+import {readLastKnownActivity} from './lastKnownActivity.mjs';
+import {isEntryModule}         from '../../services/shared/isEntryModule.mjs';
+import {
+    agentIdentitiesOf,
+    participationByIdentity,
+    readAgentIdentityNodes
+} from '../../graph/agentIdentityParticipation.mjs';
 
 /**
  * @summary Derive a logical all-agent-idle cycle id from the observed identity state.
@@ -63,15 +67,15 @@ export async function checkAllAgentIdle({wakeDaemonDir}={}) {
     await GraphService.ready();
     const db = GraphService.db.storage.db;
 
-    // All-idle check set: the registered team (deployment-portable via `identityRoots`), kept to
-    // the seats whose identity node lets them participate, overridable by the `NEO_SWARM_IDENTITIES`
-    // leaf. Distinct from swarm-heartbeat PULSE targets — idle detection needs the full team, not
-    // the recently-A2A-active subset. A participation read that cannot answer fails the check
-    // rather than judge an unread team idle.
+    // All-idle check set: the plane's agents, from its identity nodes, kept to the seats whose node
+    // lets them participate, overridable by the `NEO_SWARM_IDENTITIES` leaf. Distinct from
+    // swarm-heartbeat PULSE targets — idle detection needs the full team, not the recently-A2A-active
+    // subset. A node read that cannot answer fails the check rather than judge an unread team idle.
     const identities = await resolveTargets({
         targetSource         : 'active-local-team',
         explicitTargets      : AiConfig.orchestrator.swarmHeartbeat.allIdleIdentities,
-        participationProvider: () => participationByIdentity(readAgentIdentityNodes(db))
+        participationProvider: () => participationByIdentity(readAgentIdentityNodes(db)),
+        teamProvider         : () => agentIdentitiesOf(readAgentIdentityNodes(db))
     });
 
     const thresholdMs = AiConfig.orchestrator.swarmHeartbeat.idleThresholdMs;

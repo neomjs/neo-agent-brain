@@ -98,16 +98,15 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
         expect(githubSlugsOf(definitions)).toEqual(['acme/app', 'acme/lib'])
     });
 
-    test('a login resolves from the registry first, then the roots; a social name from the roots', () => {
-        const identities = seatIdentities(() => definitions, [
-            {id: '@neo-gpt', name: 'Euclid', properties: {githubLogin: '@neo-gpt'}}
-        ]);
+    test('a login resolves from the registry first, then the plane\'s identity rows; a social name from the rows', () => {
+        // another operator's plane: its member is in no roster of ours, and our residents are no rows of its
+        const identities = seatIdentities(() => definitions, () => [{identity: '@their-agent', name: 'Theirs'}]);
 
         expect(identities.byLogin('lab-seat')).toBe('@lab-seat');
-        expect(identities.byLogin('neo-gpt')).toBe('@neo-gpt');
-        expect(identities.byLogin('stranger')).toBeNull();
-        expect(identities.byName('Euclid')).toBe('@neo-gpt');
-        expect(identities.byName('Nobody')).toBeNull()
+        expect(identities.byLogin('their-agent')).toBe('@their-agent');
+        expect(identities.byLogin('neo-gpt-euclid')).toBeNull();
+        expect(identities.byName('Theirs')).toBe('@their-agent');
+        expect(identities.byName('Euclid')).toBeNull()
     });
 
     test('no token, an HTTP failure or a GraphQL error throws for the producer to record; data comes back as data', async () => {
@@ -271,7 +270,14 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
             bridge  = {};
 
         try {
-            const wired = wireFleetOpenWorkSource({registry: {listAgents: () => definitions, getDataDir: () => dataDir}, bridge, query, pulseMs: 3600000});
+            // the pulse's presence read is what names "Ada", the author line's seat
+            const wired = wireFleetOpenWorkSource({
+                registry    : {listAgents: () => definitions, getDataDir: () => dataDir},
+                bridge,
+                query,
+                readPresence: async () => ({agents: [{identity: '@neo-opus-ada', name: 'Ada', signals: {}}]}),
+                pulseMs     : 3600000
+            });
 
             await wired.producer.pulse();
             wired.stop();

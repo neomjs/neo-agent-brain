@@ -14,19 +14,18 @@ setup({
     }
 });
 
-import {test, expect}                                    from '@playwright/test';
-import {execFileSync}                                    from 'child_process';
-import {mkdtempSync, rmSync}                             from 'fs';
-import os                                                from 'os';
-import path                                              from 'path';
-import Neo                                               from 'neo.mjs/src/Neo.mjs';
-import * as core                                         from 'neo.mjs/src/core/_export.mjs';
-import {deriveAllAgentIdleCycleId, checkAllAgentIdle}    from '../../../../../../ai/scripts/lifecycle/checkAllAgentIdle.mjs';
-import {getLockPath, writeInflightLock}                  from '../../../../../../ai/scripts/lifecycle/inflightLock.mjs';
-import {resolveTargets}                                  from '../../../../../../ai/daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
-import {participationByIdentity, readAgentIdentityNodes} from '../../../../../../ai/graph/agentIdentityParticipation.mjs';
-import SQLite                                            from '../../../../../../ai/graph/storage/SQLite.mjs';
-import AiConfig                                          from '../../../../../../ai/config.template.mjs';
+import {test, expect}                                 from '@playwright/test';
+import {execFileSync}                                 from 'child_process';
+import {mkdtempSync, rmSync}                          from 'fs';
+import os                                             from 'os';
+import path                                           from 'path';
+import Neo                                            from 'neo.mjs/src/Neo.mjs';
+import * as core                                      from 'neo.mjs/src/core/_export.mjs';
+import {deriveAllAgentIdleCycleId, checkAllAgentIdle} from '../../../../../../ai/scripts/lifecycle/checkAllAgentIdle.mjs';
+import {getLockPath, writeInflightLock}               from '../../../../../../ai/scripts/lifecycle/inflightLock.mjs';
+import {readAgentIdentityNodes}                       from '../../../../../../ai/graph/agentIdentityParticipation.mjs';
+import SQLite                                         from '../../../../../../ai/graph/storage/SQLite.mjs';
+import AiConfig                                       from '../../../../../../ai/config.template.mjs';
 
 /**
  * @summary Creates one disposable file-backed graph that a fresh detector process can reopen.
@@ -286,35 +285,43 @@ test.describe('ai/scripts/checkAllAgentIdle', () => {
         expect(parsed.details['@neo-ghost-agent-1'].ageMs).toBe(null); // Infinity JSON encodes to null
     });
 
-    test('checkAllAgentIdle.mjs default identity set resolves via active-local-team (no hardcoded roster)', async () => {
-        // With NEO_SWARM_IDENTITIES UNSET, the all-idle check set must come from the
-        // resolveTargets({targetSource:'active-local-team'}) registry path — deployment-portable,
-        // NOT the retired hardcoded `@neo-gemini-pro,@neo-opus-ada,@neo-gpt` fallback — kept to
-        // the seats the test graph's identity nodes let participate, as the script reads them.
-        const GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
-        await GraphService.initAsync();
+    test('checkAllAgentIdle.mjs default identity set is the plane\'s agents, gated by participation', async () => {
+        // With NEO_SWARM_IDENTITIES UNSET, the all-idle check set is active-local-team: the graph's
+        // AgentIdentity nodes whose accountType is `agent`, kept to those whose node lets them participate.
+        const scenario = await createGraphScenario();
 
-        const expected = await resolveTargets({
-            targetSource         : 'active-local-team',
-            participationProvider: () => participationByIdentity(readAgentIdentityNodes(GraphService.db.storage.db))
-        });
-        expect(expected.length).toBeGreaterThan(0);
+        try {
+            const insertStmt = scenario.db.prepare(`INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?)`);
 
-        const scriptPath = path.resolve(process.cwd(), 'ai/scripts/lifecycle/checkAllAgentIdle.mjs');
-        const output     = execFileSync('node', [scriptPath], {
-            encoding: 'utf-8',
-            env     : {
-                ...process.env,
-                NEO_UNIT_TEST_MODE   : 'true',
-                NEO_IDLE_THRESHOLD_MS: '600000'
-                // NEO_SWARM_IDENTITIES intentionally UNSET → exercises the active-local-team default.
+            for (const [id, properties] of [
+                ['@their-agent',      {accountType: 'agent'}],
+                ['@their-benched',    {accountType: 'agent', participationStatus: 'operator_benched'}],
+                ['@their-owner',      {accountType: 'human'}],
+                ['@fixture-leftover', {}]
+            ]) {
+                insertStmt.run(id, null, JSON.stringify({id, label: 'AgentIdentity', properties: {...properties, userId: null}}))
             }
-        });
-        const parsed = JSON.parse(output);
 
-        // The script's default set equals the resolver's active-local-team, and is NOT the old hardcoded roster.
-        expect(parsed.identities).toEqual(expected);
-        expect(parsed.identities).not.toEqual(['@neo-gemini-pro', '@neo-opus-ada', '@neo-gpt']);
+            const scriptPath = path.resolve(process.cwd(), 'ai/scripts/lifecycle/checkAllAgentIdle.mjs');
+            const parsed     = JSON.parse(execFileSync('node', [scriptPath], {
+                encoding: 'utf-8',
+                env     : {...scenario.env, NEO_IDLE_THRESHOLD_MS: '600000'}
+                // NEO_SWARM_IDENTITIES intentionally UNSET → exercises the active-local-team default.
+            }));
+
+            const agents = new Set(readAgentIdentityNodes(scenario.db)
+                .filter(node => node.properties?.accountType === 'agent' && node.properties?.participationStatus !== 'operator_benched')
+                .map(node => node.id));
+
+            expect(parsed.identities).toContain('@their-agent');
+            expect(parsed.identities).not.toContain('@their-benched');
+            expect(parsed.identities).not.toContain('@their-owner');
+            expect(parsed.identities).not.toContain('@fixture-leftover');
+            // whatever else the graph holds, every member is one of its participating agents
+            expect(parsed.identities.every(id => agents.has(id))).toBe(true)
+        } finally {
+            scenario.cleanup()
+        }
     });
 
     test('honors a non-default NEO_IDLE_THRESHOLD_MS through the AiConfig leaf', async () => {
@@ -325,16 +332,18 @@ test.describe('ai/scripts/checkAllAgentIdle', () => {
         const GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
         await GraphService.initAsync();
 
-        // Seed one active-local-team member with 5s-old memory; the rest have none (Infinity age → idle),
+        // Seed one agent with 5s-old memory; any other agent the graph holds has none (Infinity age → idle),
         // so all-idle hinges solely on whether THIS member's 5s age clears the threshold.
-        const team = await resolveTargets({targetSource: 'active-local-team'});
-        expect(team.length).toBeGreaterThan(0);
-        const fiveSecondsAgo = new Date(Date.now() - 5000).toISOString();
-        GraphService.db.storage.db.prepare(
-            `INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`
-        ).run('memory-threshold-probe', team[0], JSON.stringify({
+        const probe          = '@threshold-probe-agent',
+              fiveSecondsAgo = new Date(Date.now() - 5000).toISOString(),
+              upsert         = GraphService.db.storage.db.prepare(
+                  `INSERT INTO Nodes (id, user_id, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`
+              );
+
+        upsert.run(probe, null, JSON.stringify({id: probe, label: 'AgentIdentity', properties: {accountType: 'agent', userId: null}}));
+        upsert.run('memory-threshold-probe', probe, JSON.stringify({
             id        : 'memory-threshold-probe', label: 'AGENT_MEMORY', type: 'AGENT_MEMORY',
-            properties: {agentIdentity: team[0], timestamp: fiveSecondsAgo}
+            properties: {agentIdentity: probe, timestamp: fiveSecondsAgo}
         }));
 
         // `setEnvOverride` takes the DECODED leaf type (a Number here, not the raw env string).

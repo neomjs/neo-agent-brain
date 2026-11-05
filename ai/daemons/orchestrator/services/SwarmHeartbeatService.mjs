@@ -24,9 +24,13 @@ import {
     inspectHeartbeatLock,
     releaseHeartbeatLock
 } from '../../../scripts/lifecycle/heartbeatLock.mjs';
-import {checkSunsetted as checkSunsettedScript}          from '../../../scripts/lifecycle/checkSunsetted.mjs';
-import {normalizeAgentIdentityNodeId}                    from '../../../graph/normalizeAgentIdentityNodeId.mjs';
-import {participationByIdentity, readAgentIdentityNodes} from '../../../graph/agentIdentityParticipation.mjs';
+import {checkSunsetted as checkSunsettedScript} from '../../../scripts/lifecycle/checkSunsetted.mjs';
+import {normalizeAgentIdentityNodeId}           from '../../../graph/normalizeAgentIdentityNodeId.mjs';
+import {
+    agentIdentitiesOf,
+    participationByIdentity,
+    readAgentIdentityNodes
+} from '../../../graph/agentIdentityParticipation.mjs';
 import {
     resumeHarness as resumeHarnessScript
 } from '../../../scripts/lifecycle/resumeHarness.mjs';
@@ -222,7 +226,7 @@ class SwarmHeartbeatService extends Base {
          * Target-resolver source enum consumed by `getPulseIdentities()` per pulse.
          * Controls which identity set the lane pulses for. `'self'` (default) is
          * deployment-portable — external workspaces pulse only the harness owner.
-         * `'active-local-team'` reads `identityRoots` (team profile). `'active-subscribers'`
+         * `'active-local-team'` reads the plane's agents (team profile). `'active-subscribers'`
          * unions self with active `WAKE_SUBSCRIPTION` identities. `'disabled'` skips
          * all per-identity pulse work (substrate maintenance still runs). Parent
          * (Orchestrator) sets this via reactive assignment from
@@ -699,6 +703,7 @@ class SwarmHeartbeatService extends Base {
                 activeSubscribersProvider    : () => this.getWakeSubscriptionIdentities(),
                 activeA2aParticipantsProvider: () => this.getActiveA2aParticipants(),
                 participationProvider        : () => participationByIdentity(readAgentIdentityNodes(this.getGraphDb())),
+                teamProvider                 : () => agentIdentitiesOf(readAgentIdentityNodes(this.getGraphDb())),
                 logger
             });
         } catch (err) {

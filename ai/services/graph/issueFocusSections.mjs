@@ -1,12 +1,15 @@
-import fs                                              from 'fs';
-import matter                                          from 'gray-matter';
-import path                                            from 'path';
-import {qualifyOriginId}                               from './corpusProjectionContract.mjs';
-import {Memory_Config as aiConfig}                     from '../../services.mjs';
-import {Memory_GraphService as GraphService}           from '../../services.mjs';
-import logger                                          from '../../mcp/server/memory-core/logger.mjs';
-import {IDENTITIES}                                    from '../../graph/identityRoots.mjs';
-import {participationStatusOf, readAgentIdentityNodes} from '../../graph/agentIdentityParticipation.mjs';
+import fs                                    from 'fs';
+import matter                                from 'gray-matter';
+import path                                  from 'path';
+import {qualifyOriginId}                     from './corpusProjectionContract.mjs';
+import {Memory_Config as aiConfig}           from '../../services.mjs';
+import {Memory_GraphService as GraphService} from '../../services.mjs';
+import logger                                from '../../mcp/server/memory-core/logger.mjs';
+import {
+    memberLoginsOf,
+    participationStatusOf,
+    readAgentIdentityNodes
+} from '../../graph/agentIdentityParticipation.mjs';
 
 /**
  * @module ai/services/graph/issueFocusSections
@@ -68,25 +71,16 @@ function getIdentityGithubLogin(identity) {
 }
 
 /**
- * @summary Returns maintainer logins eligible for stale-assignment progress acknowledgements.
+ * @summary Returns maintainer logins eligible for stale-assignment progress acknowledgements: the plane's members,
+ * its agents and its people, as their AgentIdentity nodes record them.
  *
- * Stale-assignment acknowledgements consume the AgentIdentity registry and include
- * human owner identities. Assignee comments still qualify independently in
- * `findLastQualifyingAssignmentActivity`.
+ * Assignee comments still qualify independently in `findLastQualifyingAssignmentActivity`.
  *
+ * @param {Object[]} nodes AgentIdentity node records (`ai/graph/agentIdentityParticipation.mjs`).
  * @returns {String[]} Maintainer logins without leading `@`.
  */
-export function getStaleAssignmentMaintainers() {
-    return [...new Set(
-        IDENTITIES
-            .filter(identity =>
-                identity.type === 'AgentIdentity' &&
-                ['agent', 'human'].includes(identity.properties?.accountType) &&
-                identity.properties?.githubLogin
-            )
-            .map(identity => getIdentityGithubLogin(identity))
-            .filter(Boolean)
-    )]
+export function getStaleAssignmentMaintainers(nodes) {
+    return memberLoginsOf(nodes)
 }
 
 /**
@@ -257,10 +251,10 @@ export function extractAssignmentEvents(content, assignees = []) {
  * @param {String[]} issue.assignees Current assignee logins.
  * @param {String} issue.createdAt Issue creation timestamp.
  * @param {String} issue.content Markdown body without frontmatter.
- * @param {String[]} [maintainers=getStaleAssignmentMaintainers()] Maintainer logins.
+ * @param {String[]} [maintainers=[]] Maintainer logins whose progress comments qualify ({@link getStaleAssignmentMaintainers}).
  * @returns {{createdAt: Date, author: String, reason: String}}
  */
-export function findLastQualifyingAssignmentActivity(issue, maintainers = getStaleAssignmentMaintainers()) {
+export function findLastQualifyingAssignmentActivity(issue, maintainers = []) {
     const assigneeSet   = new Set(issue.assignees || []);
     const maintainerSet = new Set(maintainers);
     const candidates    = [];
@@ -300,17 +294,29 @@ export function findLastQualifyingAssignmentActivity(issue, maintainers = getSta
  * @param {String} options.issuesDir Local synced issue directory.
  * @param {Date} [options.now=new Date()] Current clock for deterministic tests.
  * @param {Number} options.thresholdMs Stale threshold.
- * @param {String[]} [options.maintainers=getStaleAssignmentMaintainers()] Maintainer logins.
+ * @param {String[]} [options.maintainers] Maintainer logins; read from the plane's identity nodes when omitted.
+ * @param {Object} [options.graphService=GraphService] Graph service whose store holds the identity nodes.
  * @returns {Array<Object>} Stale candidates sorted by oldest qualifying activity first.
  */
 export function buildStaleAssignmentCandidates({
     issuesDir,
     now = new Date(),
     thresholdMs,
-    maintainers = getStaleAssignmentMaintainers()
+    maintainers = null,
+    graphService = GraphService
 }) {
     const candidates = [];
     const nowDate    = now instanceof Date ? now : new Date(now);
+
+    if (!maintainers) {
+        try {
+            maintainers = getStaleAssignmentMaintainers(readAgentIdentityNodes(graphService.db?.storage?.db))
+        } catch (error) {
+            // unread nodes name no maintainer, so only assignee comments and assignments qualify
+            logger.warn(`[issueFocusSections] the identity nodes did not answer, so no maintainer acknowledgement qualifies: ${error.message}`);
+            maintainers = []
+        }
+    }
 
     for (const filePath of collectIssueMarkdownFiles(issuesDir)) {
         let parsed;

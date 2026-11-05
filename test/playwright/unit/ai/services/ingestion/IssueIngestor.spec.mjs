@@ -859,50 +859,49 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
 
 /**
  * Community-multiplier internal-author resolution. Replaces the prior hardcoded
- * `meta.author !== 'tobiu'` check with a set derived from the canonical identity registry
- * (`ai/graph/identityRoots.mjs`). The empty-registry case must degrade safely (multiplier OFF),
- * not invert into boosting every ticket.
+ * `meta.author !== 'tobiu'` check with a set read from the plane's AgentIdentity nodes. An unread
+ * plane must degrade safely (multiplier OFF), not invert into boosting every ticket.
  */
 test.describe('Neo.ai.daemons.services.IssueIngestor — community-multiplier internal-author set', () => {
     let IssueIngestorClass;
+
+    // a graph service whose store answers these AgentIdentity nodes
+    const graphOf  = nodes => ({db: {storage: {db: {prepare: () => ({all: () => nodes.map(node => ({data: JSON.stringify(node)}))})}}}}),
+          internal = new Set(['owner-login', 'their-agent']);
 
     test.beforeAll(async () => {
         // The default export is the singleton instance; the static set + decision live on its class.
         IssueIngestorClass = (await import('../../../../../../ai/services/ingestion/IssueIngestor.mjs')).default.constructor;
     });
 
-    test('internalAuthorLogins is derived from the identity registry as bare logins (no @, no nulls)', () => {
-        const logins = IssueIngestorClass.internalAuthorLogins;
+    test('readInternalAuthorLogins reads the plane\'s members as bare logins, former logins included', () => {
+        // another operator's plane: its agents and people count, a node without an account type does not
+        const logins = IssueIngestorClass.readInternalAuthorLogins(graphOf([
+            {id: '@their-agent',      label: 'AgentIdentity', properties: {accountType: 'agent', formerLogins: ['@their-old-handle']}},
+            {id: '@their-owner',      label: 'AgentIdentity', properties: {accountType: 'human', githubLogin: '@owner-login'}},
+            {id: '@fixture-leftover', label: 'AgentIdentity', properties: {}}
+        ]));
 
-        expect(logins).toBeInstanceOf(Set);
-        expect(logins.size).toBeGreaterThan(0);
-        // Owner + a known agent maintainer, normalized to bare form (matches GitHub issue authors).
-        expect(logins.has('tobiu')).toBe(true);
-        expect(logins.has('neo-opus-ada')).toBe(true);
-        // Former logins count too: a ticket authored before a handle rename keeps its old author
-        // string in the corpus, and the community multiplier must not fire on a maintainer's history.
-        expect(logins.has('neo-fable-mnemosyne')).toBe(true);
-        expect(logins.has('neo-fable')).toBe(true);
-        expect(logins.has('neo-opus-4-7')).toBe(true);
-        // The leading-@ registry form and null/empty entries must NOT leak through.
-        expect(logins.has('@tobiu')).toBe(false);
-        expect(logins.has('')).toBe(false);
-        expect([...logins].every(Boolean)).toBe(true);
+        expect([...logins]).toEqual(['their-agent', 'their-old-handle', 'owner-login']);
     });
 
-    test('isCommunityAuthor: a registered maintainer is NOT a community author (no boost)', () => {
-        expect(IssueIngestorClass.isCommunityAuthor('tobiu')).toBe(false);
-        expect(IssueIngestorClass.isCommunityAuthor('neo-opus-ada')).toBe(false);
+    test('readInternalAuthorLogins answers an empty set when the plane cannot be read', () => {
+        expect(IssueIngestorClass.readInternalAuthorLogins({db: null}).size).toBe(0);
+    });
+
+    test('isCommunityAuthor: an internal author is NOT a community author (no boost)', () => {
+        expect(IssueIngestorClass.isCommunityAuthor('owner-login', internal)).toBe(false);
+        expect(IssueIngestorClass.isCommunityAuthor('their-agent', internal)).toBe(false);
     });
 
     test('isCommunityAuthor: an external author IS a community author (boost eligible)', () => {
-        expect(IssueIngestorClass.isCommunityAuthor('some-external-contributor')).toBe(true);
+        expect(IssueIngestorClass.isCommunityAuthor('some-external-contributor', internal)).toBe(true);
     });
 
     test('isCommunityAuthor: a missing author is never a community author', () => {
-        expect(IssueIngestorClass.isCommunityAuthor('')).toBe(false);
-        expect(IssueIngestorClass.isCommunityAuthor(undefined)).toBe(false);
-        expect(IssueIngestorClass.isCommunityAuthor(null)).toBe(false);
+        expect(IssueIngestorClass.isCommunityAuthor('', internal)).toBe(false);
+        expect(IssueIngestorClass.isCommunityAuthor(undefined, internal)).toBe(false);
+        expect(IssueIngestorClass.isCommunityAuthor(null, internal)).toBe(false);
     });
 
     test('isCommunityAuthor: an empty internal-author registry disables the multiplier (safe degrade, not boost-all)', () => {

@@ -9,18 +9,17 @@
  * explicit override for headless and dev runs: every seat then reads with it. A seat without a
  * readable PAT still wires, and the pulse names it with its next step.
  *
- * A login resolves to a seat from the registry first (`@<githubUsername>`), then from `identityRoots`,
- * so another operator's seats resolve from their own registry. The PR body's social name resolves
- * through `identityRoots`.
+ * A login resolves to a seat from the registry first (`@<githubUsername>`), then from the plane's
+ * identity rows, so another operator's seats resolve from their own registry and plane. The PR body's
+ * social name resolves through the same rows.
  *
  * A seat's participation is its identity node's, read through the roster's presence read: a benched
- * seat owes the pulse no coverage.
+ * seat owes the pulse no coverage. That one read per pulse also supplies the identity rows.
  */
 
 import fs                                          from 'fs';
 import path                                        from 'path';
 import FleetControlBridge                          from './FleetControlBridge.mjs';
-import {IDENTITIES}                                from '../../graph/identityRoots.mjs';
 import {createFleetOpenWorkSource}                 from './fleetOpenWorkSource.mjs';
 import {createOpenWorkProducer}                    from './openWorkProducer.mjs';
 import {participationOf, presenceIdentityForAgent} from './fleetPresenceStateAdapter.mjs';
@@ -30,19 +29,20 @@ import {writeFileAtomicSync}                       from '../shared/atomicFileWri
 const PULSE_MS = 60 * 1000;
 
 /**
- * @summary Resolve a social name (through `roots`) or a login (the registry's seats, then `roots`) to a seat.
+ * @summary Resolve a social name (through the plane's identity rows) or a login (the registry's seats, then the
+ * rows) to a seat.
  * @param {Function} listDefinitions `() → Object[]`, read at each lookup.
- * @param {Object[]} [roots=IDENTITIES]
+ * @param {Function} [identityRows] `() → Object[]`: the plane's `who_is_online` rows (`{identity, name}`), read at each lookup.
  * @returns {{byName: Function, byLogin: Function}}
  */
-export function seatIdentities(listDefinitions, roots = IDENTITIES) {
+export function seatIdentities(listDefinitions, identityRows = () => []) {
     const bare = login => String(login ?? '').replace(/^@/, '');
 
     return {
-        byName : name  => roots.find(root => root.name === name)?.id ?? null,
+        byName : name  => identityRows().find(row => row.name === name)?.identity ?? null,
         byLogin: login => listDefinitions().some(definition => bare(definition.githubUsername) === login)
             ? `@${login}`
-            : roots.find(root => bare(root.properties?.githubLogin) === login)?.id ?? null
+            : identityRows().find(row => bare(row.identity) === login)?.identity ?? null
     }
 }
 
@@ -195,20 +195,28 @@ export function wireFleetOpenWorkSource({token = null, registry, pulseMs = PULSE
         return null
     }
 
-    let running = null, stopped = false;
+    // the pulse's presence read keeps its rows for the identity lookups that follow it; a read that
+    // fails leaves the last answered rows in place
+    let running = null, stopped = false, identityRows = [];
     const
         listDefinitions = () => registry.listAgents(),
+        readRows        = readPresence && (async () => {
+            const report = await readPresence();
+
+            if (Array.isArray(report?.agents)) identityRows = report.agents;
+            return report
+        }),
         producer        = createOpenWorkProducer({
             readers   : seatReaders({
                 listDefinitions,
                 resolveCredential: id => query ? 'injected' : registry.resolveCredential?.(id) ?? null,
                 override         : token,
                 apiBase,
-                readPresence,
+                readPresence     : readRows,
                 ...(query ? {createQuery: () => query} : createQuery ? {createQuery} : {})
             }),
             repos     : async () => githubSlugsOf(listDefinitions()),
-            identities: seatIdentities(listDefinitions),
+            identities: seatIdentities(listDefinitions, () => identityRows),
             store     : fileStore(path.join(registry.getDataDir(), 'open-work.json')),
             intervalMs: pulseMs,
             ...(now ? {now} : {})
