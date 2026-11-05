@@ -606,7 +606,7 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — manageDiscu
         expect(callCount).toBe(2);
     });
 
-    test('rejects invalid action (must be update_body)', async () => {
+    test('rejects invalid action (must be update_body or close)', async () => {
         let callCount = 0;
         GraphqlService.query = async () => { callCount++; return null; };
 
@@ -687,5 +687,141 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — manageDiscu
         expect(result.error).toBe('GraphQL API request failed');
         expect(result.code).toBe('GRAPHQL_API_ERROR');
         expect(result.message).toContain('not accessible');
+    });
+
+    test.describe('close action', () => {
+        const DISCUSSION_NODE_ID = 'D_kwDODSospM4AmXzO';
+        const DISCUSSION_URL     = 'https://github.com/neomjs/neo/discussions/11314';
+
+        /**
+         * Builds a GraphqlService.query stub: call 1 answers the close-target lookup, call 2 the
+         * closeDiscussion mutation. Every call is recorded so a test can prove a mutation never ran.
+         */
+        function stubClose({author = 'neo-opus-ada', viewer = 'neo-opus-ada', closed = false, stateReason = null} = {}) {
+            const calls = [];
+
+            GraphqlService.query = async (query, variables) => {
+                calls.push({query, variables});
+
+                if (calls.length === 1) {
+                    expect(query).toContain('GetDiscussionCloseTarget');
+                    expect(variables.number).toBe(11314);
+                    return {
+                        viewer    : {login: viewer},
+                        repository: {discussion: {id: DISCUSSION_NODE_ID, url: DISCUSSION_URL, closed, stateReason, author: {login: author}}}
+                    };
+                }
+
+                if (calls.length === 2) {
+                    expect(query).toContain('CloseDiscussion');
+                    return {
+                        closeDiscussion: {
+                            discussion: {id: DISCUSSION_NODE_ID, url: DISCUSSION_URL, closed: true, stateReason: variables.reason}
+                        }
+                    };
+                }
+
+                throw new Error(`Unexpected additional GraphqlService.query call: ${calls.length}`);
+            };
+
+            return calls;
+        }
+
+        test('the author closes with the given reason', async () => {
+            const calls  = stubClose(),
+                  result = await DiscussionService.manageDiscussion({action: 'close', discussion_number: 11314, reason: 'RESOLVED'});
+
+            expect(result).toEqual({discussionId: DISCUSSION_NODE_ID, url: DISCUSSION_URL, closed: true, stateReason: 'RESOLVED'});
+            expect(calls).toHaveLength(2);
+            expect(calls[1].variables).toEqual({discussionId: DISCUSSION_NODE_ID, reason: 'RESOLVED'});
+        });
+
+        test('the author check ignores login case', async () => {
+            const calls  = stubClose({author: 'Neo-Opus-Ada'}),
+                  result = await DiscussionService.manageDiscussion({action: 'close', discussion_number: 11314, reason: 'OUTDATED'});
+
+            expect(result.stateReason).toBe('OUTDATED');
+            expect(calls).toHaveLength(2);
+        });
+
+        test('a non-author is refused with FOREIGN_CLOSE_FORBIDDEN and nothing is closed', async () => {
+            const calls  = stubClose({author: 'neo-opus-vega'}),
+                  result = await DiscussionService.manageDiscussion({action: 'close', discussion_number: 11314, reason: 'RESOLVED'});
+
+            expect(result.code).toBe('FOREIGN_CLOSE_FORBIDDEN');
+            expect(result.author).toBe('neo-opus-vega');
+            expect(result.viewerLogin).toBe('neo-opus-ada');
+            expect(calls).toHaveLength(1);
+        });
+
+        test('a blank acknowledgedForeignClose does not lift the refusal', async () => {
+            const calls  = stubClose({author: 'neo-opus-vega'}),
+                  result = await DiscussionService.manageDiscussion({
+                      action                  : 'close',
+                      discussion_number       : 11314,
+                      reason                  : 'RESOLVED',
+                      acknowledgedForeignClose: '   '
+                  });
+
+            expect(result.code).toBe('FOREIGN_CLOSE_FORBIDDEN');
+            expect(calls).toHaveLength(1);
+        });
+
+        test('a stated acknowledgedForeignClose closes a foreign discussion and echoes the reason', async () => {
+            const calls  = stubClose({author: 'neo-opus-vega'}),
+                  result = await DiscussionService.manageDiscussion({
+                      action                  : 'close',
+                      discussion_number       : 11314,
+                      reason                  : 'RESOLVED',
+                      acknowledgedForeignClose: '  author asked on the thread  '
+                  });
+
+            expect(result).toEqual({
+                discussionId            : DISCUSSION_NODE_ID,
+                url                     : DISCUSSION_URL,
+                closed                  : true,
+                stateReason             : 'RESOLVED',
+                acknowledgedForeignClose: 'author asked on the thread'
+            });
+            expect(calls).toHaveLength(2);
+        });
+
+        test('an already-closed discussion returns its state without mutating', async () => {
+            const calls  = stubClose({author: 'neo-opus-vega', closed: true, stateReason: 'OUTDATED'}),
+                  result = await DiscussionService.manageDiscussion({action: 'close', discussion_number: 11314, reason: 'RESOLVED'});
+
+            expect(result).toEqual({
+                discussionId : DISCUSSION_NODE_ID,
+                url          : DISCUSSION_URL,
+                closed       : true,
+                stateReason  : 'OUTDATED',
+                alreadyClosed: true
+            });
+            expect(calls).toHaveLength(1);
+        });
+
+        test('a missing reason is refused before any GraphQL call', async () => {
+            const calls  = stubClose(),
+                  result = await DiscussionService.manageDiscussion({action: 'close', discussion_number: 11314});
+
+            expect(result.code).toBe('MISSING_ARGUMENTS');
+            expect(calls).toHaveLength(0);
+        });
+
+        test('an unknown reason is refused before any GraphQL call', async () => {
+            const calls  = stubClose(),
+                  result = await DiscussionService.manageDiscussion({action: 'close', discussion_number: 11314, reason: 'resolved'});
+
+            expect(result.code).toBe('INVALID_ARGUMENTS');
+            expect(calls).toHaveLength(0);
+        });
+
+        test('a missing discussion returns NOT_FOUND', async () => {
+            GraphqlService.query = async () => ({viewer: {login: 'neo-opus-ada'}, repository: {discussion: null}});
+
+            const result = await DiscussionService.manageDiscussion({action: 'close', discussion_number: 999999, reason: 'RESOLVED'});
+
+            expect(result.code).toBe('NOT_FOUND');
+        });
     });
 });

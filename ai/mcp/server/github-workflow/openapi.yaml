@@ -1561,7 +1561,7 @@ paths:
 
   /discussions/manage:
     post:
-      summary: Manage GitHub Discussions (Update Body)
+      summary: Manage GitHub Discussions (Update Body, Close)
       operationId: manage_discussion
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -1573,6 +1573,11 @@ paths:
         **Action: 'update_body'**
         - Replaces the body of an existing discussion in place (e.g. post-publication corrections to an Ideation Sandbox entry, keeping the body as the single source of truth instead of accumulating correction comments).
         - Requires `discussion_number` and `body`.
+
+        **Action: 'close'**
+        - Closes a discussion with `reason` RESOLVED, OUTDATED or DUPLICATE, once its verdict has been posted as a comment.
+        - The author closes their own discussion: closing one you did not author is refused unless `acknowledgedForeignClose` states why.
+        - An already-closed discussion returns its current state unchanged.
       tags: [Issues]
       requestBody:
         required: true
@@ -1583,25 +1588,32 @@ paths:
               required:
                 - action
                 - discussion_number
-                - body
               properties:
                 repo:
                   $ref: '#/components/schemas/RepositoryTarget'
                 action:
                   type: string
-                  enum: [update_body]
+                  enum: [update_body, close]
                   description: The action to perform.
                   example: update_body
                 discussion_number:
                   type: integer
-                  description: The number of the discussion to update.
+                  description: The number of the discussion to update or close.
                   example: 10137
                 body:
                   type: string
-                  description: The new Markdown body for the discussion.
+                  description: The new Markdown body for the discussion. Required for 'update_body'.
+                reason:
+                  type: string
+                  enum: [RESOLVED, OUTDATED, DUPLICATE]
+                  description: Why the discussion closes. Required for 'close'.
+                  example: RESOLVED
+                acknowledgedForeignClose:
+                  type: string
+                  description: For 'close' only — the reason for closing a discussion you did not author.
       responses:
         '200':
-          description: Discussion body updated successfully.
+          description: Discussion body updated, or discussion closed.
           content:
             application/json:
               schema:
@@ -1618,8 +1630,20 @@ paths:
                   updatedAt:
                     type: string
                     format: date-time
-                    description: The last-modified timestamp (ISO-8601).
+                    description: "'update_body' — the last-modified timestamp (ISO-8601)."
                     example: "2026-05-16T02:49:38Z"
+                  closed:
+                    type: boolean
+                    description: "'close' — whether the discussion is now closed."
+                  stateReason:
+                    type: string
+                    description: "'close' — the close reason GitHub records (RESOLVED, OUTDATED or DUPLICATE)."
+                  alreadyClosed:
+                    type: boolean
+                    description: "'close' — true when the discussion was already closed and nothing was changed."
+                  acknowledgedForeignClose:
+                    type: string
+                    description: "'close' — the stated reason, echoed when a non-author closed the discussion."
         '400':
           description: Bad Request.
           content:

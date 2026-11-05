@@ -48,6 +48,35 @@ export const GET_DISCUSSION_ID = `
 `;
 
 /**
+ * Query to resolve what a close needs before it mutates anything: the discussion's node ID, URL,
+ * author and current closed state, plus the authenticated viewer's login. The author-closes rule
+ * compares the two logins; an already-closed discussion is answered from this read alone.
+ *
+ * Variables required:
+ * - $owner: String!
+ * - $repo: String!
+ * - $number: Int!
+ */
+export const GET_DISCUSSION_CLOSE_TARGET = `
+  query GetDiscussionCloseTarget($owner: String!, $repo: String!, $number: Int!) {
+    viewer {
+      login
+    }
+    repository(owner: $owner, name: $repo) {
+      discussion(number: $number) {
+        id
+        url
+        closed
+        stateReason
+        author {
+          login
+        }
+      }
+    }
+  }
+`;
+
+/**
  * Query to fetch a discussion conversation, including top-level comments and replies.
  *
  * Variables required:
