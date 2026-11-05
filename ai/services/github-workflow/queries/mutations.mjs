@@ -503,6 +503,26 @@ export const UPDATE_DISCUSSION = `
 `;
 
 /**
+ * Mutation to close a discussion with a reason.
+ *
+ * Variables required:
+ * - $discussionId: ID! - The global node ID of the discussion to close
+ * - $reason: DiscussionCloseReason! - RESOLVED, OUTDATED or DUPLICATE
+ */
+export const CLOSE_DISCUSSION = `
+  mutation CloseDiscussion($discussionId: ID!, $reason: DiscussionCloseReason!) {
+    closeDiscussion(input: {discussionId: $discussionId, reason: $reason}) {
+      discussion {
+        id
+        url
+        closed
+        stateReason
+      }
+    }
+  }
+`;
+
+/**
  * Query to fetch an org-level ProjectV2's GraphQL node ID and its field schema.
  *
  * GitHub Projects v2 uses opaque node IDs (PVT_*) that the GraphQL mutations require —

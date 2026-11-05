@@ -7,17 +7,25 @@ import {commentMatches, isSelectorPresent, malformedCommentIdError, omitScopedBo
 import {projectConversationTrust} from './shared/conversationTrust.mjs';
 import {resolveRepositoryTarget}  from './shared/repositoryTarget.mjs';
 import {
+    GET_DISCUSSION_CLOSE_TARGET,
     GET_DISCUSSION_CONVERSATION,
     GET_REPO_AND_DISCUSSION_CATEGORIES,
     GET_DISCUSSION_ID
 } from './queries/discussionQueries.mjs';
 import {
+    CLOSE_DISCUSSION,
     CREATE_DISCUSSION,
     ADD_DISCUSSION_COMMENT,
     UPDATE_DISCUSSION,
     UPDATE_DISCUSSION_COMMENT,
     GET_DISCUSSION_COMMENT_TARGET
 } from './queries/mutations.mjs';
+
+/**
+ * The reasons GitHub's `closeDiscussion` accepts (`DiscussionCloseReason`).
+ * @type {String[]}
+ */
+const CLOSE_REASONS = ['RESOLVED', 'OUTDATED', 'DUPLICATE'];
 
 /**
  * @summary Service for interacting with GitHub Discussions via the GraphQL API.
@@ -28,6 +36,7 @@ import {
  * - Reading discussion conversations
  * - Managing discussion comments
  * - Updating discussion bodies
+ * - Closing discussions with a reason, by their author unless a foreign close is acknowledged
  *
  * @class Neo.ai.services.github-workflow.DiscussionService
  * @extends Neo.core.Base
@@ -421,24 +430,33 @@ class DiscussionService extends Base {
     }
 
     /**
-     * Manages discussion-level operations. Currently supports updating the discussion body,
-     * enabling post-publication corrections without accumulating correction comments.
-     * @param {object} options                    The options object
-     * @param {string} options.action             The action to perform: 'update_body'.
-     * @param {number} options.discussion_number  The number of the discussion to update.
-     * @param {string} options.body               The new Markdown body for the discussion.
-     * @param {String} [options.repo]             Optional bare name or owner/name repository target.
-     * @returns {Promise<object>} A promise that resolves to {discussionId, url, updatedAt} or a structured error.
+     * Manages discussion-level operations:
+     * - `update_body` replaces the body in place, enabling post-publication corrections without
+     *   accumulating correction comments;
+     * - `close` closes the discussion with a reason, see {@link #closeDiscussion}.
+     * @param {object} options                              The options object
+     * @param {string} options.action                       The action to perform: 'update_body' or 'close'.
+     * @param {number} options.discussion_number            The number of the discussion to update or close.
+     * @param {string} [options.body]                       'update_body': the new Markdown body for the discussion.
+     * @param {string} [options.reason]                     'close': RESOLVED, OUTDATED or DUPLICATE.
+     * @param {string} [options.acknowledgedForeignClose]   'close': why a non-author closes the discussion.
+     * @param {String} [options.repo]                       Optional bare name or owner/name repository target.
+     * @returns {Promise<object>} 'update_body' resolves to {discussionId, url, updatedAt}, 'close' to the
+     * shape {@link #closeDiscussion} returns, or a structured error.
      */
-    async manageDiscussion({action, discussion_number, body, repo}) {
+    async manageDiscussion({action, discussion_number, body, reason, acknowledgedForeignClose, repo}) {
         const target = resolveRepositoryTarget(repo, {owner: aiConfig.owner, repo: aiConfig.repo});
 
         if (target.error) return target;
 
+        if (action === 'close') {
+            return this.closeDiscussion({discussion_number, reason, acknowledgedForeignClose, target})
+        }
+
         if (action !== 'update_body') {
             return {
                 error  : 'Bad Request',
-                message: "Invalid action. Must be 'update_body'.",
+                message: "Invalid action. Must be 'update_body' or 'close'.",
                 code   : 'INVALID_ARGUMENTS'
             };
         }
@@ -480,6 +498,112 @@ class DiscussionService extends Base {
             };
         } catch (error) {
             logger.error(`Error updating ${target.fullName} discussion #${discussion_number} body via GraphQL:`, error);
+            return {
+                error  : 'GraphQL API request failed',
+                message: error.message,
+                code   : 'GRAPHQL_API_ERROR'
+            };
+        }
+    }
+
+    /**
+     * @summary Closes a discussion with a reason, honouring the rule that its author closes it.
+     *
+     * One read resolves the discussion and the authenticated viewer before anything mutates:
+     * 1. An already-closed discussion returns its current state with `alreadyClosed: true` and no mutation.
+     * 2. A caller who is not the author is refused with `FOREIGN_CLOSE_FORBIDDEN`, unless a non-empty
+     *    `acknowledgedForeignClose` states why. The same shape as `IssueService#updateIssueBody`'s
+     *    `acknowledgedForeignBody`: the default protects authorship, the override is explicit and echoed.
+     * 3. Otherwise `closeDiscussion` runs with the given reason.
+     *
+     * @param {Object} options
+     * @param {Number} options.discussion_number          The number of the discussion to close.
+     * @param {String} options.reason                     RESOLVED, OUTDATED or DUPLICATE.
+     * @param {String} [options.acknowledgedForeignClose] Explicit reason required when the caller is not the author.
+     * @param {Object} options.target                     The resolved repository target.
+     * @returns {Promise<Object>} {discussionId, url, closed, stateReason} plus `alreadyClosed` or the echoed
+     * `acknowledgedForeignClose` where they apply, or a structured error.
+     * @protected
+     */
+    async closeDiscussion({discussion_number, reason, acknowledgedForeignClose, target}) {
+        if (!discussion_number || !reason) {
+            return {
+                error  : 'Bad Request',
+                message: "Missing required argument: 'discussion_number' and 'reason' are required for closing a discussion.",
+                code   : 'MISSING_ARGUMENTS'
+            };
+        }
+
+        if (!CLOSE_REASONS.includes(reason)) {
+            return {
+                error  : 'Bad Request',
+                message: `Invalid reason '${reason}'. Must be one of ${CLOSE_REASONS.join(', ')}.`,
+                code   : 'INVALID_ARGUMENTS'
+            };
+        }
+
+        try {
+            const lookupData = await GraphqlService.query(GET_DISCUSSION_CLOSE_TARGET, {
+                      owner : target.owner,
+                      repo  : target.repo,
+                      number: discussion_number
+                  }),
+                  discussion  = lookupData?.repository?.discussion,
+                  viewerLogin = lookupData?.viewer?.login || null;
+
+            if (!discussion?.id) {
+                return {
+                    error  : 'Not Found',
+                    message: `Could not find discussion #${discussion_number} in ${target.fullName}.`,
+                    code   : 'NOT_FOUND'
+                };
+            }
+
+            if (discussion.closed) {
+                return {
+                    discussionId : discussion.id,
+                    url          : discussion.url,
+                    closed       : true,
+                    stateReason  : discussion.stateReason,
+                    alreadyClosed: true
+                };
+            }
+
+            const authorLogin = discussion.author?.login || null,
+                  isAuthor    = Boolean(viewerLogin && authorLogin && authorLogin.toLowerCase() === viewerLogin.toLowerCase()),
+                  trimmedAck  = typeof acknowledgedForeignClose === 'string' ? acknowledgedForeignClose.trim() : '';
+
+            if (!isAuthor && !trimmedAck) {
+                return {
+                    error  : 'Foreign Close Refused',
+                    code   : 'FOREIGN_CLOSE_FORBIDDEN',
+                    message: [
+                        `Discussion #${discussion_number} in ${target.fullName} is authored by ${authorLogin ? `@${authorLogin}` : 'an unknown author'}; `,
+                        `caller ${viewerLogin ? `@${viewerLogin}` : '(unresolved viewer)'} is not its author. `,
+                        `Under the authorship rule, the author closes their own discussion: post the verdict as a comment. `,
+                        `For an intentional foreign close (such as the author asking you to close it), `,
+                        `pass \`acknowledgedForeignClose: '<reason>'\`.`
+                    ].join(''),
+                    number: discussion_number,
+                    author: authorLogin,
+                    viewerLogin
+                };
+            }
+
+            const result = await GraphqlService.query(CLOSE_DISCUSSION, {discussionId: discussion.id, reason}),
+                  closed = result.closeDiscussion.discussion;
+
+            logger.info(`Closed GitHub Discussion ${target.fullName}#${discussion_number} as ${reason}: ${closed.url}`);
+
+            return {
+                discussionId: closed.id,
+                url         : closed.url,
+                closed      : closed.closed,
+                stateReason : closed.stateReason,
+                ...(isAuthor ? {} : {acknowledgedForeignClose: trimmedAck})
+            };
+        } catch (error) {
+            logger.error(`Error closing ${target.fullName} discussion #${discussion_number} via GraphQL:`, error);
             return {
                 error  : 'GraphQL API request failed',
                 message: error.message,
