@@ -14,6 +14,7 @@ setup({
 });
 
 import {test, expect}  from '@playwright/test';
+import {createHash}    from 'node:crypto';
 import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
@@ -2352,6 +2353,122 @@ test.describe('Neo.ai.services.github-workflow.IssueService — updateIssueBody 
             acknowledgedForeignBody: ackReason,
             author                 : 'neo-fable-mnemosyne',
             assignees              : ['neo-opus-vega']
+        });
+    });
+
+    test.describe('expectedBodySha256 stale-write guard (#1491)', () => {
+        const sha256 = text => createHash('sha256').update(text, 'utf8').digest('hex');
+
+        const READ_BODY = '## Rows\n- [ ] #1\n- [ ] #2',
+              LIVE_BODY = '## Rows\n- [x] #1 · close · resolved\n- [ ] #2', // another seat ticked the first row after our read
+              NEXT_BODY = '## Rows\n- [ ] #1\n- [x] #2 · park';
+
+        /**
+         * Call 1 answers the body-target read with `liveBody`, call 2 the update mutation, for an issue or,
+         * with `isPR`, a pull request. Every call is recorded so a test can prove the mutation never ran.
+         */
+        function stubBodyUpdate(liveBody, {isPR = false} = {}) {
+            const calls  = [],
+                  target = isPR
+                      ? {id: 'PR_kwDOABcD_1493', url: 'https://github.com/neomjs/neo-agent-brain/pull/1493'}
+                      : {id: 'I_kwDOABcD_20358', url: 'https://github.com/neomjs/neo/issues/20358'};
+
+            GraphqlService.query = async (query, variables) => {
+                calls.push({query, variables});
+
+                if (calls.length === 1) {
+                    const node = {...target, number: isPR ? 1493 : 20358, body: liveBody, author: {login: 'neo-opus-ada'}, assignees: {nodes: []}};
+
+                    return {viewer: {login: 'neo-opus-ada'}, repository: isPR ? {pullRequest: node} : {issue: node}};
+                }
+
+                if (calls.length === 2) {
+                    const updated = {...target, updatedAt: '2026-11-05T19:50:00Z'};
+
+                    expect(query).toContain(isPR ? 'UpdatePullRequestBody' : 'UpdateIssueBody');
+                    return isPR ? {updatePullRequest: {pullRequest: updated}} : {updateIssue: {issue: updated}};
+                }
+
+                throw new Error(`Unexpected GraphqlService.query call #${calls.length}`);
+            };
+
+            return calls;
+        }
+
+        test('a body changed since the read is refused with BODY_CHANGED and nothing is written', async () => {
+            const calls  = stubBodyUpdate(LIVE_BODY),
+                  result = await IssueService.updateIssueBody({issue_number: 20358, body: NEXT_BODY, expectedBodySha256: sha256(READ_BODY)});
+
+            expect(result.code).toBe('BODY_CHANGED');
+            expect(result.currentBodySha256).toBe(sha256(LIVE_BODY));
+            expect(calls).toHaveLength(1);
+        });
+
+        test('an unchanged body is written and the result carries the new body hash', async () => {
+            const calls  = stubBodyUpdate(READ_BODY),
+                  result = await IssueService.updateIssueBody({issue_number: 20358, body: NEXT_BODY, expectedBodySha256: sha256(READ_BODY)});
+
+            expect(calls).toHaveLength(2);
+            expect(calls[1].variables).toEqual({id: 'I_kwDOABcD_20358', body: NEXT_BODY});
+            expect(result.bodySha256).toBe(sha256(NEXT_BODY));
+        });
+
+        test('the expected hash is compared case-insensitively and trimmed', async () => {
+            const calls  = stubBodyUpdate(READ_BODY),
+                  result = await IssueService.updateIssueBody({issue_number: 20358, body: NEXT_BODY, expectedBodySha256: `  ${sha256(READ_BODY).toUpperCase()}  `});
+
+            expect(calls).toHaveLength(2);
+            expect(result.bodySha256).toBe(sha256(NEXT_BODY));
+        });
+
+        test('without expectedBodySha256 the write is unconditional and the result carries no hash', async () => {
+            const calls  = stubBodyUpdate(LIVE_BODY),
+                  result = await IssueService.updateIssueBody({issue_number: 20358, body: NEXT_BODY});
+
+            expect(calls).toHaveLength(2);
+            expect(result.bodySha256).toBeUndefined();
+            expect(result.updatedAt).toBe('2026-11-05T19:50:00Z');
+        });
+
+        test('a supplied blank or whitespace hash is refused before any GitHub call, not read as omitted', async () => {
+            for (const expectedBodySha256 of ['', '   ']) {
+                const calls  = stubBodyUpdate(LIVE_BODY),
+                      result = await IssueService.updateIssueBody({issue_number: 20358, body: NEXT_BODY, expectedBodySha256});
+
+                expect(result.code, JSON.stringify(expectedBodySha256)).toBe('INVALID_EXPECTED_BODY_SHA256');
+                expect(calls, JSON.stringify(expectedBodySha256)).toHaveLength(0);
+            }
+        });
+
+        test('a supplied hash that is not 64 hex characters is refused, and so is a non-string', async () => {
+            for (const expectedBodySha256 of ['abc', sha256(READ_BODY).slice(1), 'g'.repeat(64), null, 42]) {
+                const calls  = stubBodyUpdate(LIVE_BODY),
+                      result = await IssueService.updateIssueBody({issue_number: 20358, body: NEXT_BODY, expectedBodySha256});
+
+                expect(result.code, JSON.stringify(expectedBodySha256)).toBe('INVALID_EXPECTED_BODY_SHA256');
+                expect(calls, JSON.stringify(expectedBodySha256)).toHaveLength(0);
+            }
+        });
+
+        test('the guard covers pull request bodies too', async () => {
+            const staleCalls = stubBodyUpdate(LIVE_BODY, {isPR: true}),
+                  stale      = await IssueService.updateIssueBody({pr_number: 1493, body: NEXT_BODY, expectedBodySha256: sha256(READ_BODY)});
+
+            expect(stale.code).toBe('BODY_CHANGED');
+            expect(stale.kind).toBe('pull_request');
+            expect(staleCalls).toHaveLength(1);
+
+            const blankCalls = stubBodyUpdate(LIVE_BODY, {isPR: true}),
+                  blank      = await IssueService.updateIssueBody({pr_number: 1493, body: NEXT_BODY, expectedBodySha256: ''});
+
+            expect(blank.code).toBe('INVALID_EXPECTED_BODY_SHA256');
+            expect(blankCalls).toHaveLength(0);
+
+            const freshCalls = stubBodyUpdate(READ_BODY, {isPR: true}),
+                  fresh      = await IssueService.updateIssueBody({pr_number: 1493, body: NEXT_BODY, expectedBodySha256: sha256(READ_BODY)});
+
+            expect(freshCalls).toHaveLength(2);
+            expect(fresh.bodySha256).toBe(sha256(NEXT_BODY));
         });
     });
 });
