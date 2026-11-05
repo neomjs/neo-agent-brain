@@ -1261,7 +1261,13 @@ components:
       properties:
         ingested:
           type: integer
-          description: Count of embeddable chunks accepted for this ingestion run.
+          description: Count of normalized embeddable inputs accepted before VectorService expansion.
+        acceptedEmbeddingChunks:
+          type: integer
+          nullable: true
+          description: >-
+            Unique post-expansion embedding IDs accepted across repository groups, in the same
+            units as settled and remaining. Null for a legacy/unobservable or invalid producer.
         deleted:
           type: integer
           description: Count of Chroma rows removed via deletion signaling.

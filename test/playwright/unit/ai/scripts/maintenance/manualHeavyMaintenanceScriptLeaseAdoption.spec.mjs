@@ -16,6 +16,7 @@ setup({
 import {test, expect} from '@playwright/test';
 import fs             from 'fs/promises';
 import path           from 'path';
+import {parse}        from 'acorn';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 
@@ -35,6 +36,93 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 test.describe('Manual heavy-maintenance script lease adoption', () => {
     const scriptsRoot = path.resolve(process.cwd(), 'ai/scripts');
     const scriptPath  = file => path.join(scriptsRoot, file);
+
+    // A census, not an exemption: review-required means the holder still needs a measured
+    // checkpoint or bound. The corpus lock is intentionally not the deployment-wide lease.
+    const LEASE_IMPORT_DISPOSITIONS = {
+        'lifecycle/backfill-memory-summaries.mjs'     : 'checkpoint-fixture',
+        'maintenance/ingestTenant.mjs'                : 'checkpoint-fixture',
+        'maintenance/syncGithubWorkflow.mjs'          : 'corpus-local',
+        'maintenance/syncKnowledgeBase.mjs'           : 'checkpoint-fixture',
+        'maintenance/syncTenantRepos.mjs'             : 'checkpoint-fixture',
+        'migrations/repairStaleEmbeddings.mjs'        : 'checkpoint-fixture',
+        'maintenance/backup.mjs'                      : 'review-required',
+        'maintenance/defragChromaDB.mjs'              : 'review-required',
+        'maintenance/projectCoreCorpus.mjs'           : 'review-required',
+        'maintenance/retireLegacyConversationRows.mjs': 'review-required',
+        'runners/runSandman.mjs'                      : 'review-required'
+    };
+
+    const visit = (node, callback) => {
+        if (!node || typeof node !== 'object') return;
+        if (node.type) callback(node);
+        for (const value of Object.values(node)) {
+            if (Array.isArray(value)) value.forEach(child => visit(child, callback));
+            else if (value && typeof value === 'object') visit(value, callback)
+        }
+    };
+    const tree  = source => parse(source, {ecmaVersion: 'latest', sourceType: 'module'});
+    const calls = (node, name) => {
+        const found = [];
+        visit(node, child => {
+            if (child.type === 'CallExpression' && child.callee.type === 'Identifier' && child.callee.name === name) found.push(child)
+        });
+        return found
+    };
+    const importsLeaseService = source => {
+        let found = false;
+        visit(tree(source), node => {
+            if ((node.type === 'ImportDeclaration' || node.type === 'ImportExpression') &&
+                /\/(?:HeavyMaintenanceLeaseService|heavyMaintenanceLeasePrimitives)\.mjs$/.test(node.source?.value || '')) found = true
+        });
+        return found
+    };
+
+    test('every direct lease-service importing script has an explicit disposition', async () => {
+        const discover = async (dir, prefix = '') => {
+            const found = [];
+            for (const entry of await fs.readdir(dir, {withFileTypes: true})) {
+                const relative = path.posix.join(prefix, entry.name), absolute = path.join(dir, entry.name);
+                if (entry.isDirectory()) found.push(...await discover(absolute, relative));
+                else if (entry.isFile() && entry.name.endsWith('.mjs') && importsLeaseService(await fs.readFile(absolute, 'utf8'))) found.push(relative)
+            }
+            return found
+        };
+        expect((await discover(scriptsRoot)).sort()).toEqual(Object.keys(LEASE_IMPORT_DISPOSITIONS).sort());
+        // A new importer cannot disappear merely because its holder was not added to the table.
+        expect(importsLeaseService("import {withHeavyMaintenanceLease} from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';")).toBe(true);
+        expect(importsLeaseService("// HeavyMaintenanceLeaseService.mjs\nconst x = 1;")).toBe(false)
+    });
+
+    for (const [file, task] of [
+        ['lifecycle/backfill-memory-summaries.mjs', 'runMemorySummaryTask'],
+        ['maintenance/ingestTenant.mjs', 'runIngestTask']
+    ]) {
+        test(`${file}: forwards the wrapper acquisition into its checkpoint task`, async () => {
+            const ast    = tree(await fs.readFile(scriptPath(file), 'utf8')),
+                wrappers = calls(ast, 'withHeavyMaintenanceLease'),
+                wrapper  = wrappers.find(call => calls(call.arguments[0], task).length),
+                callback = wrapper?.arguments[0],
+                taskCall = callback && calls(callback, task)[0];
+            expect(wrapper).toBeTruthy();
+            expect(callback.params[0]).toMatchObject({type: 'Identifier', name: 'acquisition'});
+            expect(taskCall.arguments.at(-1)).toMatchObject({type: 'Identifier', name: 'acquisition'});
+            let declaration;
+            visit(ast, node => { if (node.type === 'FunctionDeclaration' && node.id?.name === task) declaration = node });
+            const voter = calls(declaration, 'createLeaseYieldVoter');
+            expect(voter).toHaveLength(1);
+            expect(voter[0].arguments[0]).toMatchObject({type: 'Identifier', name: 'acquisition'});
+            const forwarded = [];
+            visit(declaration, node => {
+                const value = node.value?.type === 'ChainExpression' ? node.value.expression : node.value;
+                if (node.type === 'Property' && node.key?.name === 'shouldYield' &&
+                    value?.type === 'MemberExpression' && value.object?.name === 'voter' &&
+                    value.property?.name === 'vote') forwarded.push(node)
+            });
+            expect(forwarded).toHaveLength(1);
+            // Behavior is established by the holder fixtures, not by this structural census.
+        });
+    }
 
     /**
      * The `leasePath` every script declares unless its entry says otherwise: the shared heavy-maintenance lease.
@@ -79,9 +167,9 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
             heldExitPattern: /process\.exit\(0\)/
         },
         {
-            file           : 'maintenance/syncGithubWorkflow.mjs',
-            owner          : 'syncGithubWorkflow',
-            invocation     : 'withHeavyMaintenanceLease(',
+            file      : 'maintenance/syncGithubWorkflow.mjs',
+            owner     : 'syncGithubWorkflow',
+            invocation: 'withHeavyMaintenanceLease(',
             // Corpus emission writes an external corpus, so it serializes on that corpus's own lease
             // and never resolves the shared one. A held corpus lease fails the run, because a nonzero
             // exit is what forbids the publisher from publishing the attempt.

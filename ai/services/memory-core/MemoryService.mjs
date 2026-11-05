@@ -2343,9 +2343,10 @@ class MemoryService extends Base {
      * @param {Object} options
      * @param {String[]} options.ids One to one hundred exact memory ids.
      * @param {Boolean} [options.apply=false] Apply the eligible repairs instead of reporting them.
+     * @param {Function} [options.shouldYield] Cooperative lease-bound vote; remaining candidates are reported unprocessed.
      * @returns {Promise<Object>} Owner scope, per-id dispositions and repaired count; no raw content.
      */
-    async reconcileNoContentArchives({ids, apply = false} = {}) {
+    async reconcileNoContentArchives({ids, apply = false, shouldYield} = {}) {
         if (!Array.isArray(ids) || ids.length < 1 || ids.length > 100 ||
             ids.some(id => typeof id !== 'string' || !id.trim() || id !== id.trim()) || typeof apply !== 'boolean') {
             throw new TypeError('Reconciliation requires 1–100 exact memory ids and a boolean apply flag');
@@ -2375,7 +2376,8 @@ class MemoryService extends Base {
         let   walById            = new Map(), chromaById = new Map();
         const unavailableSources = [];
 
-        if (candidates.length && !readArchive.get(archiveId)) {
+        let yielded = Boolean(shouldYield?.());
+        if (candidates.length && !yielded && !readArchive.get(archiveId)) {
             const candidateIds = candidates.map(row => row.id);
             try {
                 walById = await withTimeout(this._readWalMetadataByIds(candidateIds, {strict: true}),
@@ -2403,6 +2405,7 @@ class MemoryService extends Base {
         sqlite.transaction(() => {
             const identityArchived = Boolean(readArchive.get(archiveId));
             for (const row of candidates) {
+                if (yielded || shouldYield?.()) { yielded = true; row.status = 'unprocessed'; continue }
                 if (identityArchived) { row.status = 'identity-archived'; continue }
                 if (readOwned.get(row.id, userId, agentIdentity)?.data !== row.snapshot) { row.status = 'changed'; continue }
                 const evidence = [chromaById.get(row.id), walById.get(row.id)].filter(Boolean);
@@ -2427,6 +2430,7 @@ class MemoryService extends Base {
             }
         }
         return {userId, agentIdentity, apply, unavailableSources, restored: results.filter(row => row.status === 'restored').length,
+            ...(yielded ? {yielded: true, reason: 'heavy-maintenance-lease-bound', unprocessed: results.filter(row => row.status === 'unprocessed').length} : {}),
             results: results.map(({id, status}) => ({id, status}))};
     }
 
@@ -2455,6 +2459,7 @@ class MemoryService extends Base {
      *     `aiConfig.memoryService.miniSummaryBackfillMaxRunMs`. The loop stops starting new rows once reached and defers
      *     the remainder to the next sweep, keeping the supervised child under its watchdog.
      * @param {Function} [options.now] Clock seam (defaults to `Date.now`) for deterministic budget tests.
+     * @param {Function} [options.shouldYield] Cooperative lease-bound vote at persisted-row boundaries.
      * @param {Number} [options.outerTimeoutMs] Outer per-item window; defaults to
      * `aiConfig.memoryService.miniSummaryTimeoutMs`. Exposed so a spec can make the REAL outer wrapper
      * reject inside a test budget — witnessing `timeout-outer` any other way times a different wrapper.
@@ -2473,7 +2478,7 @@ class MemoryService extends Base {
      *          Present on **every** exit — including the no-SQLite and zero-row early returns — so a
      *          caller never sees a shape that sometimes lacks it.
      */
-    async backfillMiniSummaries({limit, freshReserve, buildMiniSummary, maxRunMs, outerTimeoutMs = aiConfig.memoryService.miniSummaryTimeoutMs, now = () => Date.now()} = {}) {
+    async backfillMiniSummaries({limit, freshReserve, buildMiniSummary, maxRunMs, shouldYield, outerTimeoutMs = aiConfig.memoryService.miniSummaryTimeoutMs, now = () => Date.now()} = {}) {
         const sqlite = GraphService.db?.storage?.db;
         if (!sqlite) {
             return {processed: 0, updated: 0, deferred: 0, missingContent: 0, exhausted: 0, runBudgetHit: false, failedInner: 0, failedOuter: 0, failureCauses: {}};
@@ -2528,6 +2533,12 @@ class MemoryService extends Base {
             return {processed: 0, updated: 0, deferred: 0, missingContent: 0, exhausted: 0, runBudgetHit: false, failedInner: 0, failedOuter: 0, failureCauses: {}};
         }
 
+        if (shouldYield?.()) {
+            return {processed: 0, updated: 0, deferred: 0, missingContent: 0, exhausted: 0, runBudgetHit: false,
+                failedInner: 0, failedOuter: 0, failureCauses: {}, yielded: true,
+                reason     : 'heavy-maintenance-lease-bound', unprocessed: rows.length};
+        }
+
         let byId;
         try {
             // Snapshot before Chroma: an embed marker may retire the WAL fallback during the read.
@@ -2565,7 +2576,7 @@ class MemoryService extends Base {
         // provider and an exceeded window land on it identically — so a consumer that reads a branch as
         // a timeout verdict is asserting something no counter here measured. Causes are reported by the
         // summarizer and tallied verbatim; nothing is inferred from a branch.
-        let updated     = 0, deferred = 0, missingContent = 0, processed = 0, exhausted = 0, runBudgetHit = false,
+        let updated     = 0, deferred = 0, missingContent = 0, processed = 0, exhausted = 0, runBudgetHit = false, yielded = false,
             failedInner = 0, failedOuter = 0;
 
         const failureCauses = {};
@@ -2580,6 +2591,10 @@ class MemoryService extends Base {
         };
 
         for (const row of rows) {
+            if (shouldYield?.()) {
+                yielded = true;
+                break;
+            }
             // Bound the run safely under the ProcessSupervisor watchdog: stop starting new rows once
             // the wall-clock budget is reached and defer the unprocessed remainder to the next
             // scheduled sweep, rather than risk a watchdog SIGKILL that makes zero forward progress.
@@ -2686,9 +2701,10 @@ class MemoryService extends Base {
                   ? ` [causes: ${causeEntries.map(([cause, count]) => `${cause}=${count}`).join(', ')}]`
                   : '';
 
-        console.error(`[INFO] [MemoryService] miniSummary backfill complete: ${processed}/${rows.length} processed (${updated} updated, ${deferred} deferred, ${missingContent} missing-content, ${exhausted} exhausted)${causeSuffix}`);
+        console.error(`[INFO] [MemoryService] miniSummary backfill ${yielded ? 'yielded' : 'complete'}: ${processed}/${rows.length} processed (${updated} updated, ${deferred} deferred, ${missingContent} missing-content, ${exhausted} exhausted)${causeSuffix}`);
 
-        return {processed, updated, deferred, missingContent, exhausted, runBudgetHit, failedInner, failedOuter, failureCauses};
+        return {processed, updated, deferred, missingContent, exhausted, runBudgetHit, failedInner, failedOuter, failureCauses,
+            ...(yielded ? {yielded: true, reason: 'heavy-maintenance-lease-bound', unprocessed: rows.length - processed} : {})};
     }
 
     /**

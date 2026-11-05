@@ -26,6 +26,7 @@ import Neo       from 'neo.mjs/src/Neo.mjs';
 import AiConfig  from '../../config.mjs';
 import * as core from 'neo.mjs/src/core/_export.mjs';
 import {
+    createLeaseYieldVoter,
     resolveHeavyMaintenanceLeasePath,
     withHeavyMaintenanceLease
 } from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
@@ -59,23 +60,25 @@ export function parseReconciliationArgs(argv) {
 /**
  * @summary Runs the existing backfill or an explicitly owner-scoped operator reconciliation.
  * @param {Object|null} reconciliation Parsed operator selection, not an authenticated remote identity.
+ * @param {Object} [acquisition] The original fresh or inherited lease descriptor.
  * @returns {Promise<Object>} The service outcome.
  */
-export async function runMemorySummaryTask(reconciliation) {
+export async function runMemorySummaryTask(reconciliation, acquisition) {
     await LifecycleService.ready();
+    const voter = createLeaseYieldVoter(acquisition), controls = voter ? {shouldYield: voter.vote} : {};
     return reconciliation ? RequestContextService.run({
         userId             : reconciliation.userId,
         agentIdentityNodeId: reconciliation.agentIdentity,
         source             : 'operator-memory-reconciliation'
-    }, () => MemoryService.reconcileNoContentArchives({ids: reconciliation.ids, apply: reconciliation.apply})) :
-        MemoryService.backfillMiniSummaries();
+    }, () => MemoryService.reconcileNoContentArchives({ids: reconciliation.ids, apply: reconciliation.apply, ...controls})) :
+        MemoryService.backfillMiniSummaries(controls);
 }
 
 /** @summary Holds the existing maintenance lease and prints the selected task's result. */
 async function main() {
     const reconciliation = parseReconciliationArgs(process.argv.slice(2));
     const outcome        = await withHeavyMaintenanceLease(
-        () => runMemorySummaryTask(reconciliation),
+        acquisition => runMemorySummaryTask(reconciliation, acquisition),
         {
             leasePath   : resolveHeavyMaintenanceLeasePath({dataDir: AiConfig.orchestrator.dataDir}),
             owner       : 'memory-summary-backfill',
@@ -101,7 +104,15 @@ async function main() {
         process.exit(0)
     }
 
-    console.log(JSON.stringify({success: true, ...(outcome.result || {})}));
+    const result = outcome.result || {};
+    // The supervisor recognizes a boolean deferred envelope. Preserve the backfill's numeric
+    // failure tally separately so a cooperative yield cannot be reported as a completed run.
+    if (result.yielded) {
+        const {deferred, ...rest} = result;
+        console.log(JSON.stringify({success: true, ...rest, deferredRows: deferred, deferred: true}));
+    } else {
+        console.log(JSON.stringify({success: true, ...result}));
+    }
     process.exit(0)
 }
 
