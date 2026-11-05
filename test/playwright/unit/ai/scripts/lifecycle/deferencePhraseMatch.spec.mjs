@@ -2,7 +2,6 @@ import {test, expect} from '@playwright/test';
 
 import {DEFERENCE_PHRASES,
         DEFERENCE_REMINDER,
-        INDEFINITE_DEFERENCE_OBJECTS,
         buildDeferenceReminder,
         detectDeferencePhrase,
         matchDeferencePhrase} from '../../../../../../ai/scripts/lifecycle/deferencePhraseMatch.mjs';
@@ -141,73 +140,61 @@ test.describe('ai/scripts/lifecycle/deferencePhraseMatch', () => {
         expect(matchDeferencePhrase('So - which do you want me driving next?')).toBe('do you want me');
     });
 
-    test("matches the operator-flagged lane-handback slip (#16325)", () => {
-        // The list already carried "if you'd rather" and "unless you want me", so this composition read
-        // as covered while returning null - on the autonomous path too, not just under the operator carve.
+    test("matches the operator-flagged lane-handback slip (#16325, #342)", () => {
         expect(matchDeferencePhrase("That's next unless you'd rather I take something else."))
-            .toBe("unless you'd rather");
+            .toBe('unless you');
 
         // The negative control that keeps the addition honest: a decisive authority-boundary statement
         // is not deference, and must stay silent.
         expect(matchDeferencePhrase('Next: #16208. The merge is yours per critical_gates 1.')).toBeNull();
 
-        // The near-miss guard that already existed for "unless you ..." must survive.
-        expect(matchDeferencePhrase('The test fails unless you mock the system clock.')).toBeNull();
-
         // Reporting the phrase is not using it - this ticket's own body does exactly that.
         expect(matchDeferencePhrase("The phrase unless you'd rather is part of the deference register."))
             .toBeNull();
+        expect(matchDeferencePhrase('The phrase unless you is part of the deference register.'))
+            .toBeNull();
     });
 
-    test('unless you want matches only the closed indefinite-object vocabulary', () => {
-        expect(INDEFINITE_DEFERENCE_OBJECTS).toEqual([
-            'something',
-            'anything',
-            'otherwise'
-        ]);
+    test('unless you matches as a stem across the real turn-final corpus (#342)', () => {
+        expect(DEFERENCE_PHRASES).toContain('unless you');
+        expect(DEFERENCE_PHRASES).not.toContain('unless you want me');
+        expect(DEFERENCE_PHRASES).not.toContain('unless you want');
+        expect(DEFERENCE_PHRASES).not.toContain("unless you'd rather");
 
+        // Positive corpus: real agent turn-final deference slips.
+        expect(matchDeferencePhrase("Unless you'd rather I start #18455 now, I'll take the review-gate defect-note"))
+            .toBe('unless you');
         expect(matchDeferencePhrase('Taking the parser lane next unless you want something else first.'))
-            .toBe('unless you want');
-        expect(matchDeferencePhrase('Taking the parser lane next unless you want anything else.'))
-            .toBe('unless you want');
-        expect(matchDeferencePhrase('Taking the parser lane next unless you want otherwise.'))
-            .toBe('unless you want');
-        expect(matchDeferencePhrase('Taking the parser lane next UNLESS YOU WANT ANYTHING else.'))
-            .toBe('unless you want');
+            .toBe('unless you');
+        expect(matchDeferencePhrase('I can take it unless you want me elsewhere.'))
+            .toBe('unless you');
+        expect(matchDeferencePhrase("I'll take the review-gate thread unless you object."))
+            .toBe('unless you');
+        expect(matchDeferencePhrase('Taking the parser lane next **unless you** prefer another order.'))
+            .toBe('unless you');
+        expect(matchDeferencePhrase('Taking the parser lane next unless\n    you redirect.'))
+            .toBe('unless you');
 
-        expect(matchDeferencePhrase('The default is fine unless you want deterministic isolation.')).toBeNull();
-        expect(matchDeferencePhrase('Keep the current plan unless you want a smaller batch size.')).toBeNull();
-        expect(matchDeferencePhrase('Use the first parser unless you want the other parser.')).toBeNull();
-        expect(matchDeferencePhrase('Use the first parser unless you want another parser.')).toBeNull();
-        expect(matchDeferencePhrase('Idempotent unless you want another run to overwrite state.')).toBeNull();
-        expect(matchDeferencePhrase('Taking the parser lane next unless you want.')).toBeNull();
-
-        // The longer existing entry stays independently reachable rather than being shadowed by
-        // the new prefix phrase.
-        expect(matchDeferencePhrase('I can take it unless you want me elsewhere.')).toBe('unless you want me')
-    });
-
-    test('indefinite-object matching reads grammar rather than Markdown layout', () => {
-        expect(matchDeferencePhrase('Taking the parser lane next **unless you want** something else first.'))
-            .toBe('unless you want');
-        expect(matchDeferencePhrase('Taking the parser lane next unless you want\n    anything else first.'))
-            .toBe('unless you want');
-
-        // A concrete object remains ordinary prose across the same soft-wrap path.
-        expect(matchDeferencePhrase('Keep the default unless you want\n    deterministic isolation.')).toBeNull();
-
-        // A paragraph break ends the clause. The next paragraph cannot be recruited as the object.
-        expect(matchDeferencePhrase('Taking the parser lane next unless you want\n\nsomething else is available.'))
-            .toBeNull()
+        // Negative corpus: real autonomous turn-final text from Memory Core.
+        expect(matchDeferencePhrase(
+            "Euclid's R2 notice is already handled (#19449 merged, broadcast sent); marked it read. lane-state unchanged: next-lane (#14800 at the cut)."
+        )).toBeNull();
+        expect(matchDeferencePhrase(
+            '#731 is at the human merge gate: Emmy approved at 999d8af with no required actions, mergeable and clean, broadcast sent. lane-state: next-lane (the 09:37 reminder turn: the three operator-led lanes).'
+        )).toBeNull();
+        expect(matchDeferencePhrase(
+            'Stage #112 approved by Julia at 2dcd61d (review 5551096755), CI green, no seats pending — human-only merge for the operator. lane-state: next-lane (#112 at the human merge gate; lane 1 open; the camera leaf with Sophie).'
+        )).toBeNull();
+        expect(matchDeferencePhrase('Next: #16208. The merge is yours per critical_gates 1.')).toBeNull();
     });
 
     test('matches each tight phrase case-insensitively', () => {
         expect(matchDeferencePhrase('WOULD YOU LIKE ME TO open the PR?')).toBe('would you like me to');
-        expect(matchDeferencePhrase('I can take it unless you want me elsewhere.')).toBe('unless you want me');
+        expect(matchDeferencePhrase('I can take it UNLESS YOU want me elsewhere.')).toBe('unless you');
         expect(matchDeferencePhrase('Want me to start the refactor?')).toBe('want me to');
         expect(matchDeferencePhrase('Your steer on the next lane.')).toBe('Your steer on');
         expect(matchDeferencePhrase("IF YOU'D RATHER, I can leave this parked.")).toBe("if you'd rather");
-        expect(matchDeferencePhrase("I can take it UNLESS YOU'D RATHER I picked another.")).toBe("unless you'd rather");
+        expect(matchDeferencePhrase("I can take it UNLESS YOU'D RATHER I picked another.")).toBe('unless you');
         expect(matchDeferencePhrase('I can do this, or steer me elsewhere.')).toBe('or steer me elsewhere');
         expect(matchDeferencePhrase('Your call on the branch cut.')).toBe('your call');
         expect(matchDeferencePhrase('Your move.')).toBe('your move');
@@ -224,7 +211,6 @@ test.describe('ai/scripts/lifecycle/deferencePhraseMatch', () => {
 
     test('does not match technical substring collisions', () => {
         expect(matchDeferencePhrase('The fix routes through your callback handler.')).toBeNull();
-        expect(matchDeferencePhrase('The test fails unless you mock the system clock.')).toBeNull();
         expect(matchDeferencePhrase('Restored your moved files to their original paths.')).toBeNull();
     });
 
@@ -310,7 +296,7 @@ test.describe('ai/scripts/lifecycle/deferencePhraseMatch', () => {
         expect(DEFERENCE_PHRASES).toContain('do you want me');
         expect(DEFERENCE_PHRASES).toContain('Your steer on');
         expect(DEFERENCE_PHRASES).toContain("if you'd rather");
-        expect(DEFERENCE_PHRASES).toContain("unless you'd rather");
+        expect(DEFERENCE_PHRASES).toContain('unless you');
         expect(DEFERENCE_PHRASES).toContain('or steer me elsewhere');
         expect(DEFERENCE_REMINDER).toContain('helpful assistant');
         expect(reminder).toContain('equal peer');
