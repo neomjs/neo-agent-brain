@@ -160,16 +160,16 @@ function isUsableValue(value) {
  * from the census**, which already declares each one's replacement guidance — re-authoring it here
  * would create a second copy free to drift from the authority it paraphrases.
  *
- * `declaredScope` is the set of env keys that service's own config template declares. The census
+ * `declaredScope` is the set of env keys that service consumes in the target profile. The census
  * classifies keys per *profile*, not per service, and the profile's required list is not uniform across
- * its services: four of the canonical profile's thirteen required inputs are declared by one service
- * only. Judging every key against every service therefore invents obligations — and unioning the
- * observations across services invents satisfactions. A key outside the scope is not this service's to
- * carry and is skipped; a key inside no service's scope is reported by {@link buildMigrationPlan} as
- * unattributable rather than assigned to a default.
+ * its services: leaves declared in the shared `ai/configBase.mjs` are inherited by every template but wired
+ * only onto the service(s) that read them. Judging every key against every service therefore invents
+ * obligations — and unioning the observations across services invents satisfactions. A key outside the
+ * scope is not this service's to carry and is skipped; a key inside no service's scope is reported by
+ * {@link buildMigrationPlan} as unattributable rather than assigned to a default.
  * @param {Map<String,String>} observedEnv     Output of {@link parseObservedEnv} for ONE service.
  * @param {Object}             census          Output of {@link resolveCensus}.
- * @param {Set<String>|null}   [declaredScope] Env keys the service declares; `null` evaluates the whole census.
+ * @param {Set<String>|null}   [declaredScope] Env keys the service consumes in the profile; `null` evaluates the whole census.
  * @returns {Object} `{missingRequired, setButEmpty, presentForbidden, missingSecrets, optionalPresent}`
  */
 export function deriveContractDelta(observedEnv, census, declaredScope = null) {

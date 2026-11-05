@@ -24,7 +24,7 @@ const execFileAsync = promisify(execFile),
  * @param {Boolean} options.dirty Whether the observed env should be missing a required input.
  * @returns {Promise<Object>} `{code, stdout, calls}` — `calls` is the ordered interleaving of all stubs.
  */
-async function runApply({dirty}) {
+async function runApply({dirty, configFiles = '/x/docker-compose.yml,/x/docker-compose.local-agent-os.yml'}) {
     const workDir = await fs.mkdtemp(path.join(repoRoot, 'test/playwright/test-results/apply-refusal-')),
           binDir  = path.join(workDir, 'bin'),
           callLog = path.join(workDir, 'calls.log');
@@ -54,7 +54,7 @@ async function runApply({dirty}) {
         Env   : declared.map(key => `${key}=fixture-value`),
         Labels: {
             'com.docker.compose.project'             : 'probe-project',
-            'com.docker.compose.project.config_files': '/x/base.yml,/x/overlay.yml'
+            'com.docker.compose.project.config_files': configFiles
         }
     });
 
@@ -67,7 +67,7 @@ case "$1" in
     elif [[ "$*" == *'com.docker.compose.service'* ]]; then
       # The config cohort is DISCOVERED from these labels, so the stub must answer as a real plane does:
       # the Neo services plus a compose-owned proxy that carries the ingress-owned hostname.
-      printf '%s\\n' mc-server orchestrator kb-server ingress
+      printf '%s\\n' mc-server orchestrator kb-server fleet-server ingress
     else
       echo "probe-project"
     fi ;;
@@ -181,5 +181,18 @@ test.describe('migrateDeployment apply refuses a dirty plan BEFORE touching cont
         const fragment = await fs.readJson(fragmentPath);
 
         expect(fragment.services.ingress.environment.NEO_DEPLOY_HOSTNAME).toBe('fixture-value')
+    });
+
+    test('an unresolved discovered overlay in composeIdentity.configFiles refuses apply with service-scope-unresolved', async () => {
+        const {code, stdout, calls} = await runApply({
+            dirty      : false,
+            configFiles: '/x/docker-compose.yml,/x/unresolved-auth-overlay.yml'
+        });
+
+        expect(code, stdout.slice(-1200)).not.toBe(0);
+        expect(stdout).toContain('service-scope-unresolved');
+        expect(stdout).toContain('unresolved-auth-overlay.yml');
+        expect(stdout).toContain('apply refused');
+        expect(calls.filter(line => line.includes('deploy-pipeline.sh'))).toEqual([])
     })
 });

@@ -1412,7 +1412,7 @@ function reportConfigLeafParity(parity) {
  * @param {Map<String,*>} [out] Accumulator.
  * @returns {Map<String,*>}
  */
-function collectComposeEnvironment(environment, out = new Map()) {
+export function collectComposeEnvironment(environment, out = new Map()) {
     if (Array.isArray(environment)) {
         environment.forEach(entry => collectComposeEnvironment(entry, out));
         return out

@@ -9,7 +9,14 @@ import {
     parseObservedEnv,
     resolveCensus
 } from '../../../../../../ai/scripts/maintenance/deploymentMigrationCore.mjs';
-import {buildComposeFragment, buildPipelineEnv, parseArgs} from '../../../../../../ai/scripts/maintenance/migrateDeployment.mjs';
+import {
+    buildComposeFragment,
+    buildPipelineEnv,
+    parseArgs,
+    resolveDiscoveredComposeFiles,
+    resolveServiceScopes
+} from '../../../../../../ai/scripts/maintenance/migrateDeployment.mjs';
+import {buildConfigEnvDefaultsForTemplate} from '../../../../../../ai/scripts/lint/lint-config-template-ssot.mjs';
 
 const repoRoot   = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..'),
       PARITY_REL = 'ai/scripts/lint/config-leaf-parity.json',
@@ -696,5 +703,301 @@ test.describe('parseArgs', () => {
 
     test('--services splits, trims and drops empties', () => {
         expect(parseArgs(['plan', '--services', ' a , b ,, c ']).services).toEqual(['a', 'b', 'c'])
+    });
+});
+
+test.describe('resolveServiceScopes — per-service consumption attribution (#216)', () => {
+    test('one leaf declared by all three service templates via configBase but consumed by one blocks only that one', async () => {
+        const parity   = await fs.readJson(path.join(repoRoot, PARITY_REL)),
+              census   = resolveCensus(parity, PROFILE),
+              services = ['kb-server', 'mc-server', 'orchestrator'];
+
+        // 1. Premise: all three service config templates inherit `ai/configBase.mjs` and therefore DECLARE
+        // `NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE` and `NEO_BACKUP_PATH`.
+        for (const service of services) {
+            const template = parity.$composeDefaultParity.profiles[PROFILE].services[service],
+                  defaults = await buildConfigEnvDefaultsForTemplate({rootDir: repoRoot, template});
+
+            expect(defaults, `${service} template declares ${AUTHORITY}`).toHaveProperty(AUTHORITY);
+            expect(defaults, `${service} template declares NEO_BACKUP_PATH`).toHaveProperty('NEO_BACKUP_PATH')
+        }
+
+        // 2. Consumption attribution: only `orchestrator` consumes `NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE`
+        // and `NEO_BACKUP_PATH` in the canonical Compose profile.
+        const {serviceScopes, errors} = await resolveServiceScopes(parity, PROFILE, services, {}, census);
+
+        expect(errors).toEqual([]);
+        expect(serviceScopes.orchestrator.has(AUTHORITY)).toBe(true);
+        expect(serviceScopes['kb-server'].has(AUTHORITY)).toBe(false);
+        expect(serviceScopes['mc-server'].has(AUTHORITY)).toBe(false);
+
+        expect(serviceScopes.orchestrator.has('NEO_BACKUP_PATH')).toBe(true);
+        expect(serviceScopes['kb-server'].has('NEO_BACKUP_PATH')).toBe(false);
+        expect(serviceScopes['mc-server'].has('NEO_BACKUP_PATH')).toBe(false);
+
+        // 3. Distinguishing plan verdict: when each service carries every key in its scope EXCEPT
+        // `NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE` and `NEO_BACKUP_PATH`, only `orchestrator` blocks.
+        const observedEnvByService = Object.fromEntries(services.map(service => [
+            service,
+            parseObservedEnv(
+                [...serviceScopes[service]]
+                    .filter(key => key !== AUTHORITY && key !== 'NEO_BACKUP_PATH')
+                    .map(key => `${key}=satisfied`)
+            )
+        ]));
+
+        const plan = buildMigrationPlan({
+            observedEnvByService,
+            observationByService: createObservation(services),
+            serviceScopes,
+            census              : createCensus({requiredDeploymentInputs: [AUTHORITY, 'NEO_BACKUP_PATH'], forbiddenEnv: {}}),
+            composeIdentity     : {project: 'neo-local-agent-os', configFiles: ['/x/base.yml']},
+            deployedRevisions   : Object.fromEntries(services.map(service => [service, OLD_SHA])),
+            targetRevision      : TARGET_SHA
+        });
+
+        expect(plan.clean).toBe(false);
+        expect(plan.blockers.map(entry => ({kind: entry.kind, key: entry.key}))).toEqual([
+            {kind: 'missing-required-input-boot-blocking', key: `orchestrator.${AUTHORITY}`},
+            {kind: 'missing-required-input',               key: 'orchestrator.NEO_BACKUP_PATH'}
+        ])
+    });
+
+    test('attributes the full live 22-key requiredDeploymentInputs census across the profile cohort with zero false blockers', async () => {
+        const parity       = await fs.readJson(path.join(repoRoot, PARITY_REL)),
+              census       = resolveCensus(parity, PROFILE),
+              profileBlock = parity.$composeDefaultParity.profiles[PROFILE],
+              neoServices  = Object.keys(profileBlock.services),
+              cohort       = ['chroma', ...neoServices, 'ingress'];
+
+        const {serviceScopes, errors} = await resolveServiceScopes(parity, PROFILE, cohort, {}, census);
+
+        expect(errors).toEqual([]);
+
+        // Every required input and secret in the live census is attributed to at least one service in the profile.
+        const attributed = new Set(Object.values(serviceScopes).flatMap(scope => [...scope]));
+
+        for (const key of [...census.requiredDeploymentInputs, ...census.secrets]) {
+            expect(attributed.has(key), `live census key ${key} must be attributed`).toBe(true)
+        }
+
+        // Orchestrator also receives the Memory Core keys (`NEO_HANDOFF_FILE_PATH`, `NEO_MEMORY_DB_PATH`,
+        // `NEO_MEMORY_WAL_DIR`) that its supervised child lanes consume in `deploy/cloud/docker-compose.yml`.
+        for (const key of ['NEO_HANDOFF_FILE_PATH', 'NEO_MEMORY_DB_PATH', 'NEO_MEMORY_WAL_DIR']) {
+            expect(serviceScopes.orchestrator.has(key), `orchestrator scope must include ${key}`).toBe(true)
+        }
+
+        // When each service carries ONLY the keys in its own resolved scope, the plan is CLEAN with zero
+        // false `missing-required-input*` or `missing-secret` blockers.
+        const observedEnvByService = Object.fromEntries(cohort.map(service => [
+            service,
+            parseObservedEnv([...serviceScopes[service]].map(key => `${key}=satisfied`))
+        ]));
+
+        const plan = buildMigrationPlan({
+            observedEnvByService,
+            observationByService: createObservation(cohort),
+            serviceScopes,
+            census,
+            composeIdentity     : {project: 'neo-local-agent-os', configFiles: ['/x/base.yml', '/x/overlay.yml']},
+            deployedRevisions   : Object.fromEntries(neoServices.map(service => [service, OLD_SHA])),
+            targetRevision      : TARGET_SHA
+        });
+
+        expect(plan.blockers).toEqual([]);
+        expect(plan.clean).toBe(true)
+    });
+
+    test('fails closed when a required key is declared in configBase but consumed by no service in the profile', async () => {
+        const parity   = await fs.readJson(path.join(repoRoot, PARITY_REL)),
+              census   = resolveCensus(parity, PROFILE),
+              services = ['kb-server', 'mc-server', 'orchestrator'];
+
+        // Strip `NEO_BACKUP_PATH` from the profile's service environments while keeping it in the census:
+        // even though `ai/configBase.mjs` declares `NEO_BACKUP_PATH`, no service consumes it in this document,
+        // so `resolveServiceScopes` must not attribute it and `buildMigrationPlan` must block as unattributable.
+        const composeDocument = {
+            services: {
+                'kb-server' : {environment: ['NEO_TRANSPORT=streamable-http']},
+                'mc-server' : {environment: ['NEO_TRANSPORT=streamable-http']},
+                orchestrator: {environment: [`${AUTHORITY}=container-plane`]}
+            }
+        };
+
+        const {serviceScopes, errors} = await resolveServiceScopes(
+            parity, PROFILE, services, {}, census, {rootDir: repoRoot, composeDocument}
+        );
+
+        expect(errors).toEqual([]);
+
+        const plan = buildMigrationPlan({
+            observedEnvByService: Object.fromEntries(services.map(service => [
+                service,
+                parseObservedEnv([...serviceScopes[service]].map(key => `${key}=satisfied`))
+            ])),
+            observationByService: createObservation(services),
+            serviceScopes,
+            census              : createCensus({
+                requiredDeploymentInputs: ['NEO_TRANSPORT', AUTHORITY, 'NEO_BACKUP_PATH'],
+                forbiddenEnv            : {}
+            }),
+            composeIdentity     : {project: 'neo-local-agent-os', configFiles: ['/x/base.yml']},
+            deployedRevisions   : Object.fromEntries(services.map(service => [service, OLD_SHA])),
+            targetRevision      : TARGET_SHA
+        });
+
+        expect(plan.clean).toBe(false);
+        expect(plan.blockers).toEqual([
+            expect.objectContaining({kind: 'required-input-unattributable', key: 'NEO_BACKUP_PATH'})
+        ])
+    });
+
+    test('fails closed when a declared service entry or template cannot be resolved', async () => {
+        const parity   = await fs.readJson(path.join(repoRoot, PARITY_REL)),
+              census   = resolveCensus(parity, PROFILE),
+              services = ['kb-server', 'mc-server', 'orchestrator'];
+
+        // Omit `orchestrator` from the Compose document while keeping it declared in `$composeDefaultParity`:
+        // `resolveServiceScopes` must record an error and leave `orchestrator` unresolved rather than narrowing.
+        const composeDocument = {
+            services: {
+                'kb-server': {environment: ['NEO_TRANSPORT=streamable-http']},
+                'mc-server': {environment: ['NEO_TRANSPORT=streamable-http']}
+            }
+        };
+
+        const {serviceScopes, errors} = await resolveServiceScopes(
+            parity, PROFILE, services, {}, census, {rootDir: repoRoot, composeDocument}
+        );
+
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toContain("service 'orchestrator'");
+        expect(serviceScopes.orchestrator).toBeUndefined();
+
+        const plan = buildMigrationPlan(createPlanInput({serviceScopes}));
+
+        expect(plan.clean).toBe(false);
+        expect(plan.blockers.find(entry => entry.kind === 'service-scope-unresolved')?.key).toBe('orchestrator')
+    });
+
+    test('blocks kb-server and mc-server when their canonical local-overlay auth inputs are absent even while fleet-server retains them', async () => {
+        const parity       = await fs.readJson(path.join(repoRoot, PARITY_REL)),
+              census       = resolveCensus(parity, PROFILE),
+              localOverlay = 'deploy/cloud/docker-compose.local-agent-os.yml',
+              neoServices  = ['fleet-server', 'kb-server', 'mc-server', 'orchestrator'],
+              cohort       = ['chroma', ...neoServices, 'ingress'];
+
+        const {serviceScopes, errors} = await resolveServiceScopes(
+            parity, PROFILE, cohort, {}, census, {composeFiles: [PROFILE, localOverlay]}
+        );
+
+        expect(errors).toEqual([]);
+
+        // `deploy/cloud/docker-compose.local-agent-os.yml` merges `*local-auth` (`NEO_AUTH_MODE`,
+        // `NEO_MCP_HEALTHCHECK_TOKEN_FILE`) into `kb-server`, `mc-server`, and `fleet-server`, while
+        // `orchestrator` does not consume them.
+        for (const authKey of ['NEO_AUTH_MODE', 'NEO_MCP_HEALTHCHECK_TOKEN_FILE']) {
+            expect(serviceScopes['fleet-server'].has(authKey), `fleet-server must require ${authKey}`).toBe(true);
+            expect(serviceScopes['kb-server'].has(authKey), `kb-server must require ${authKey}`).toBe(true);
+            expect(serviceScopes['mc-server'].has(authKey), `mc-server must require ${authKey}`).toBe(true);
+            expect(serviceScopes.orchestrator.has(authKey), `orchestrator must not require ${authKey}`).toBe(false)
+        }
+
+        // Independent observation oracle (not derived from `serviceScopes`): `fleet-server` retains
+        // `NEO_AUTH_MODE` and `NEO_MCP_HEALTHCHECK_TOKEN_FILE` (satisfying global attribution), while
+        // `kb-server` and `mc-server` carry only their base-profile inputs and omit the local-overlay
+        // authentication keys.
+        const observedEnvByService = {
+            chroma        : new Map(),
+            ingress       : parseObservedEnv(['NEO_DEPLOY_HOSTNAME=localhost']),
+            'fleet-server': parseObservedEnv([
+                'NEO_AUTH_MODE=github-pat',
+                'NEO_AUTH_PROVIDER_BOOTSTRAP_PAT_FILE=/run/secrets/mcp-auth-token',
+                'NEO_FLEET_DATA_DIR=/app/.neo-ai-data/fleet',
+                'NEO_MCP_HEALTHCHECK_TOKEN_FILE=/run/secrets/mcp-auth-token',
+                'NEO_MCP_LISTEN_HOST=0.0.0.0',
+                'NEO_PUBLIC_URL=http://127.0.0.1:3102/fleet'
+            ]),
+            'kb-server'   : parseObservedEnv([
+                'NEO_CHROMA_HOST=chroma',
+                'NEO_KB_ASK_API_KEY=secret',
+                'NEO_MEMORY_DB_PATH=/app/.neo-ai-data/sqlite/memory-core-graph.sqlite',
+                'NEO_OPENAI_COMPATIBLE_API_KEY=secret',
+                'NEO_TRANSPORT=streamable-http'
+            ]),
+            'mc-server'   : parseObservedEnv([
+                'NEO_CHROMA_HOST=chroma',
+                'NEO_HANDOFF_FILE_PATH=/app/.neo-ai-data/handoff/sandman_handoff.md',
+                'NEO_MEMORY_DB_PATH=/app/.neo-ai-data/sqlite/memory-core-graph.sqlite',
+                'NEO_MEMORY_WAL_DIR=/app/.neo-ai-data/sqlite/memory-wal',
+                'NEO_MEMORY_WAL_IN_PROCESS_DRAIN=true',
+                'NEO_MESSAGE_WAL_IN_PROCESS_DRAIN=true',
+                'NEO_OPENAI_COMPATIBLE_API_KEY=secret',
+                'NEO_ORCHESTRATOR_CORPUS_PROJECTION_ENABLED=true',
+                'NEO_ORCHESTRATOR_CORPUS_SOURCE_REF=refs/heads/dev',
+                'NEO_ORCHESTRATOR_CORPUS_SOURCE_REPOSITORY=https://github.com/neomjs/github-content-sync.git',
+                'NEO_TRANSPORT=streamable-http'
+            ]),
+            orchestrator  : parseObservedEnv([
+                `${AUTHORITY}=container-plane`,
+                'NEO_BACKUP_PATH=/app/.neo-ai-data/backups',
+                'NEO_CHROMA_HOST=chroma',
+                'NEO_HANDOFF_FILE_PATH=/app/.neo-ai-data/handoff/sandman_handoff.md',
+                'NEO_MEMORY_DB_PATH=/app/.neo-ai-data/sqlite/memory-core-graph.sqlite',
+                'NEO_MEMORY_WAL_DIR=/app/.neo-ai-data/sqlite/memory-wal',
+                'NEO_OPENAI_COMPATIBLE_API_KEY=secret',
+                'NEO_ORCHESTRATOR_CORPUS_PROJECTION_ENABLED=true',
+                'NEO_ORCHESTRATOR_CORPUS_SOURCE_REF=refs/heads/dev',
+                'NEO_ORCHESTRATOR_CORPUS_SOURCE_REPOSITORY=https://github.com/neomjs/github-content-sync.git',
+                'NEO_ORCHESTRATOR_RUNTIME_ACCESS_ALLOWED_SERVICES=chroma,kb-server,mc-server,fleet-server,orchestrator',
+                'NEO_ORCHESTRATOR_RUNTIME_ACCESS_COMPOSE_PROJECT=neo-local-agent-os',
+                'NEO_ORCHESTRATOR_RUNTIME_ACCESS_ENABLED=true'
+            ])
+        };
+
+        const plan = buildMigrationPlan({
+            observedEnvByService,
+            observationByService: createObservation(cohort),
+            serviceScopes,
+            census,
+            composeIdentity     : {project: 'neo-local-agent-os', configFiles: [PROFILE, localOverlay]},
+            deployedRevisions   : Object.fromEntries(neoServices.map(service => [service, OLD_SHA])),
+            targetRevision      : TARGET_SHA
+        });
+
+        expect(plan.clean).toBe(false);
+        expect(plan.blockers.map(entry => ({kind: entry.kind, key: entry.key}))).toEqual([
+            {kind: 'missing-required-input', key: 'kb-server.NEO_AUTH_MODE'},
+            {kind: 'missing-required-input', key: 'kb-server.NEO_MCP_HEALTHCHECK_TOKEN_FILE'},
+            {kind: 'missing-required-input', key: 'mc-server.NEO_AUTH_MODE'},
+            {kind: 'missing-required-input', key: 'mc-server.NEO_MCP_HEALTHCHECK_TOKEN_FILE'}
+        ])
+    });
+
+    test('fails closed when a discovered overlay in composeFiles cannot be read rather than narrowing to the base profile', async () => {
+        const parity          = await fs.readJson(path.join(repoRoot, PARITY_REL)),
+              census          = resolveCensus(parity, PROFILE),
+              services        = ['kb-server', 'mc-server', 'orchestrator'],
+              composeIdentity = {
+                  project    : 'neo-local-agent-os',
+                  configFiles: ['/x/docker-compose.yml', '/x/nonexistent-overlay.yml']
+              },
+              composeFiles    = await resolveDiscoveredComposeFiles(PROFILE, composeIdentity, repoRoot);
+
+        expect(composeFiles).toContain('/x/nonexistent-overlay.yml');
+
+        const {serviceScopes, errors} = await resolveServiceScopes(
+            parity, PROFILE, services, {}, census, {composeFiles}
+        );
+
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toContain('nonexistent-overlay.yml');
+        expect(serviceScopes).toEqual({});
+
+        const plan = buildMigrationPlan(createPlanInput({serviceScopes}));
+
+        expect(plan.clean).toBe(false);
+        expect(plan.blockers.filter(entry => entry.kind === 'service-scope-unresolved').map(entry => entry.key))
+            .toEqual(['kb-server', 'mc-server', 'orchestrator'])
     });
 });
