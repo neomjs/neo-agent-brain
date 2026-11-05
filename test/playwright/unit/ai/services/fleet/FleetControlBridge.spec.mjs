@@ -1088,7 +1088,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
                 resolveDeliveryLiveness         : () => ({alive: true}),
                 resolveTerminalDeliveryFailures : () => ({state: 'observed', byIdentity: new Map()})
             },
-            getLifecycleService: () => ({startGateRefusal: () => null, getRegistry: () => registryStub}),
+            getLifecycleService: () => ({startGate: () => null, getRegistry: () => registryStub}),
             fleetPresenceStatus() { return FleetManager.fleetPresenceStatus.call(this, {timeoutMs: 50}) },
             fleetWakeStatus    () { return FleetManager.fleetWakeStatus.call(this, {timeoutMs: 50}) }
         });
