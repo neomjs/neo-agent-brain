@@ -58,12 +58,14 @@ import {isEntryModule}                                                   from '.
  * suspicion.
  */
 
-const execFileAsync = promisify(execFile),
-      scriptDir     = path.dirname(fileURLToPath(import.meta.url)),
-      repoRoot      = path.resolve(scriptDir, '../../..'),
-      PARITY_REL    = 'ai/scripts/lint/config-leaf-parity.json',
-      PIPELINE_REL  = 'ai/examples/cloud-deployment/deploy-pipeline.sh',
-      DEFAULT_REPO  = 'https://github.com/neomjs/neo.git',
+const execFileAsync           = promisify(execFile),
+      scriptDir               = path.dirname(fileURLToPath(import.meta.url)),
+      repoRoot                = path.resolve(scriptDir, '../../..'),
+      PARITY_REL              = 'ai/scripts/lint/config-leaf-parity.json',
+      PIPELINE_REL            = 'ai/examples/cloud-deployment/deploy-pipeline.sh',
+      DEFAULT_PROFILE         = 'deploy/cloud/docker-compose.yml',
+      CANONICAL_LOCAL_OVERLAY = 'deploy/cloud/docker-compose.local-agent-os.yml',
+      DEFAULT_REPO            = 'https://github.com/neomjs/neo.git',
       /**
        * The env keys that DEFINE the transaction rather than the config being repaired: the pinned
        * revision and the discovered plane identity. A repair carrier that could set these would let the
@@ -439,23 +441,25 @@ async function discoverConfigCohort(project) {
 }
 
 /**
- * @summary Resolves each service's consumed env surface in the target profile, so the census is judged per service.
+ * @summary Resolves each service's consumed env surface across the selected target deployment's Compose files.
  *
  * Every Neo service config template inherits `ai/configBase.mjs`, so `buildConfigEnvDefaultsForTemplate`
  * returns the shared root leaves for every service while omitting sibling-template leaves a container consumes
- * through child tasks. The target Compose profile (`profile`) is the per-service placement authority that
- * `lint-config-template-ssot.mjs` parses via `collectComposeEnvironment` to enforce the census: each
- * template-backed service's scope is the set of `NEO_*`/`MCP_*` keys wired on that service in `profile` and
- * backed by the profile's declared templates. Unresolvable profiles, templates, or declared services fail
- * closed in `errors`.
+ * through child tasks. The target deployment's Compose composition (`profile` plus any discovered or canonical
+ * overlay files such as `deploy/cloud/docker-compose.local-agent-os.yml`) is the per-service placement
+ * authority: each template-backed service's scope is the set of `NEO_*`/`MCP_*` keys wired on that service
+ * across the selected Compose files and backed by the profile's declared templates. Unresolvable profiles,
+ * overlays, templates, or declared services fail closed in `errors`.
  * @param {Object}   parity                     The parsed parity document.
- * @param {String}   profile                    Repo-relative Compose path.
+ * @param {String}   profile                    Repo-relative base Compose path.
  * @param {String[]} services                   Service names to resolve.
  * @param {Object}   [observedEnvByService={}]  Service name → observed env `Map`.
  * @param {Object}   [census=null]              Output of `resolveCensus`.
- * @param {Object}   [options={}]               Optional injection hooks for testing.
+ * @param {Object}   [options={}]               Optional injection hooks for testing and overlay discovery.
  * @param {String}   [options.rootDir]          Repository root directory.
- * @param {Object}   [options.composeDocument]  Pre-parsed Compose profile document.
+ * @param {Object}   [options.composeDocument]  Pre-parsed single Compose document for isolated unit tests.
+ * @param {Object[]} [options.composeDocuments] Pre-parsed ordered Compose documents for multi-file unit tests.
+ * @param {String[]} [options.composeFiles]     Ordered Compose file paths for the selected target deployment.
  * @returns {Promise<Object>} `{serviceScopes, errors}` — scopes keyed by service, unresolved names in `errors`.
  */
 export async function resolveServiceScopes(
@@ -464,7 +468,7 @@ export async function resolveServiceScopes(
     services,
     observedEnvByService = {},
     census = null,
-    {rootDir = repoRoot, composeDocument} = {}
+    {rootDir = repoRoot, composeDocument, composeDocuments, composeFiles} = {}
 ) {
     const profileEntry  = parity?.$composeDefaultParity?.profiles?.[profile],
           declared      = profileEntry?.services || {},
@@ -476,21 +480,74 @@ export async function resolveServiceScopes(
         return {serviceScopes, errors}
     }
 
-    let document = composeDocument;
+    let documents = [];
 
-    if (document === undefined) {
-        try {
-            const raw = await fs.readFile(path.join(rootDir, profile), 'utf8');
-            document  = loadYaml(raw)
-        } catch (error) {
-            errors.push(`profile '${profile}': could not read Compose service definitions — ${error.message}`);
-            return {serviceScopes, errors}
+    if (Array.isArray(composeDocuments)) {
+        documents = composeDocuments.map((document, index) => ({
+            file: index === 0 ? profile : `${profile}[${index}]`,
+            document
+        }))
+    } else if (composeDocument !== undefined) {
+        documents = [{file: profile, document: composeDocument}]
+    } else {
+        const baseAbs       = path.resolve(rootDir, profile),
+              fileEntries   = [{file: profile, absPath: baseAbs}],
+              seenAbsPaths  = new Set([baseAbs]),
+              rawFiles      = Array.isArray(composeFiles) && composeFiles.length > 0
+                  ? composeFiles
+                  : (profile === DEFAULT_PROFILE ? [CANONICAL_LOCAL_OVERLAY] : []);
+
+        for (const rawFile of rawFiles) {
+            if (typeof rawFile !== 'string' || !rawFile.trim()) {
+                errors.push(`profile '${profile}': composeFiles contains an empty or non-string entry`);
+                return {serviceScopes, errors}
+            }
+
+            const normalizedRaw = rawFile.trim().replace(/\\/g, '/');
+
+            if (normalizedRaw === profile || normalizedRaw.endsWith(`/${profile}`)) {
+                continue
+            }
+
+            let absPath = path.isAbsolute(rawFile) ? path.resolve(rawFile) : path.resolve(rootDir, rawFile);
+
+            if (path.isAbsolute(rawFile) && !await fs.pathExists(absPath)) {
+                const repoSibling = path.resolve(rootDir, path.dirname(profile), path.basename(rawFile));
+
+                if (await fs.pathExists(repoSibling)) {
+                    absPath = repoSibling
+                }
+            }
+
+            if (seenAbsPaths.has(absPath)) {
+                continue
+            }
+
+            seenAbsPaths.add(absPath);
+            fileEntries.push({file: rawFile, absPath})
+        }
+
+        for (const {file, absPath} of fileEntries) {
+            try {
+                const raw = await fs.readFile(absPath, 'utf8');
+                documents.push({file, document: loadYaml(raw.replace(/!(?:override|reset)\b/g, ''))})
+            } catch (error) {
+                errors.push(`profile '${file}': could not read Compose service definitions — ${error.message}`);
+                return {serviceScopes, errors}
+            }
         }
     }
 
-    if (!document?.services || typeof document.services !== 'object') {
-        errors.push(`profile '${profile}': Compose document carries no 'services' map`);
+    if (documents.length === 0) {
+        errors.push(`profile '${profile}': no Compose documents resolved`);
         return {serviceScopes, errors}
+    }
+
+    for (const {file, document} of documents) {
+        if (!document?.services || typeof document.services !== 'object') {
+            errors.push(`profile '${file}': Compose document carries no 'services' map`);
+            return {serviceScopes, errors}
+        }
     }
 
     let buildConfigEnvDefaultsForTemplate, collectComposeEnvironment;
@@ -516,14 +573,19 @@ export async function resolveServiceScopes(
         }
     }
 
-    const classified = census
-        ? [...census.requiredDeploymentInputs, ...census.optionalOverrides, ...census.secrets]
-        : [];
+    const classified   = census
+              ? [...census.requiredDeploymentInputs, ...census.optionalOverrides, ...census.secrets]
+              : [],
+          forbiddenEnv = census?.forbiddenEnv || {},
+          baseServices = documents[0].document.services;
 
     for (const service of services) {
         const hasDeclaredTemplate = Object.prototype.hasOwnProperty.call(declared, service),
               template            = declared[service],
-              serviceConfig       = document.services[service];
+              baseServiceConfig   = baseServices[service],
+              serviceConfigs      = documents
+                  .map(({document}) => document.services?.[service])
+                  .filter(cfg => cfg && typeof cfg === 'object');
 
         if (hasDeclaredTemplate) {
             if (!template || typeof template !== 'string') {
@@ -536,7 +598,7 @@ export async function resolveServiceScopes(
                 continue
             }
 
-            if (!serviceConfig || typeof serviceConfig !== 'object') {
+            if (!baseServiceConfig || typeof baseServiceConfig !== 'object') {
                 errors.push(
                     `service '${service}' is declared under $composeDefaultParity.profiles['${profile}'].services ` +
                     `but has no service entry in '${profile}'`
@@ -544,17 +606,26 @@ export async function resolveServiceScopes(
                 continue
             }
 
-            const composeEnv = collectComposeEnvironment(serviceConfig.environment);
+            const composeEnv = new Map();
+
+            serviceConfigs.forEach(cfg => collectComposeEnvironment(cfg.environment, composeEnv));
 
             serviceScopes[service] = new Set(
-                [...composeEnv.keys()].filter(key => /^(?:NEO_|MCP_)/.test(key) && allTemplateKeys.has(key))
+                [...composeEnv.keys()].filter(
+                    key => /^(?:NEO_|MCP_)/.test(key) &&
+                        allTemplateKeys.has(key) &&
+                        !Object.prototype.hasOwnProperty.call(forbiddenEnv, key)
+                )
             );
             continue
         }
 
-        if (serviceConfig && typeof serviceConfig === 'object') {
-            const composeEnv = collectComposeEnvironment(serviceConfig.environment),
-                  scopedKeys = new Set([...composeEnv.keys()].filter(key => /^(?:NEO_|MCP_)/.test(key))),
+        if (serviceConfigs.length > 0) {
+            const composeEnv = new Map();
+
+            serviceConfigs.forEach(cfg => collectComposeEnvironment(cfg.environment, composeEnv));
+
+            const scopedKeys = new Set([...composeEnv.keys()].filter(key => /^(?:NEO_|MCP_)/.test(key))),
                   observed   = observedEnvByService[service];
 
             if (observed instanceof Map && classified.length) {
@@ -565,9 +636,8 @@ export async function resolveServiceScopes(
             continue
         }
 
-        // A service with neither a Neo config template nor a base-profile service entry (for example, a
-        // differently-named proxy defined in an overlay) is COMPOSE-owned: its obligation is read from its
-        // observed env narrowed to census-classified keys.
+        // A service with neither a Neo config template nor a service entry in the selected Compose files is
+        // COMPOSE-owned: its obligation is read from its observed env narrowed to census-classified keys.
         const observed = observedEnvByService[service];
 
         if (observed instanceof Map && census) {
@@ -823,8 +893,26 @@ async function main() {
         'different repair (overlay migration) from a missing key, and a clean env delta does not rule it out'
     );
 
+    const discoveredComposeFiles = [];
+
+    if (options.profile === DEFAULT_PROFILE) {
+        discoveredComposeFiles.push(CANONICAL_LOCAL_OVERLAY)
+    }
+
+    for (const configFile of composeIdentity?.configFiles || []) {
+        const candidate = path.isAbsolute(configFile) ? configFile : path.resolve(repoRoot, configFile),
+              sibling   = path.resolve(repoRoot, path.dirname(options.profile), path.basename(configFile));
+
+        if (await fs.pathExists(candidate)) {
+            discoveredComposeFiles.push(candidate)
+        } else if (await fs.pathExists(sibling)) {
+            discoveredComposeFiles.push(sibling)
+        }
+    }
+
     const {serviceScopes, errors: scopeErrors} = await resolveServiceScopes(
-        parity, options.profile, configServices, observedEnvByService, census
+        parity, options.profile, configServices, observedEnvByService, census,
+        {composeFiles: discoveredComposeFiles.length ? [options.profile, ...discoveredComposeFiles] : undefined}
     );
 
     // A scope that failed to resolve is reported, never defaulted. The plan gate blocks on the missing
