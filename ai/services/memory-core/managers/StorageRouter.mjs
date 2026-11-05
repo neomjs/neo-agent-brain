@@ -141,6 +141,9 @@ class StorageRouter extends Base {
      * collapsing it into a silent empty `{count:0}` — a degraded query path and a genuine
      * no-match must remain distinguishable to the caller.
      *
+     * On a successful Pass-2 re-rank, returns `compositeScores: [number[]]` (6-decimal rounded
+     * `semanticScore * topologyMultiplier` sort keys) alongside `_reRanked: true`.
+     *
      * @param {CollectionProxy} proxy
      * @param {String} collectionType
      */
@@ -239,11 +242,12 @@ class StorageRouter extends Base {
 
             // Re-pack into ChromaDB format
             return {
-                ids      : [topK.map(r => r.id)],
-                distances: [topK.map(r => r.distance)],
-                metadatas: [topK.map(r => r.metadata)],
-                documents: searchResult.documents ? [topK.map(r => r.document)] : undefined,
-                _reRanked: true
+                ids            : [topK.map(r => r.id)],
+                distances      : [topK.map(r => r.distance)],
+                metadatas      : [topK.map(r => r.metadata)],
+                documents      : searchResult.documents ? [topK.map(r => r.document)] : undefined,
+                compositeScores: [topK.map(r => Number(r.compositeScore.toFixed(6)))],
+                _reRanked      : true
             };
         };
     }
