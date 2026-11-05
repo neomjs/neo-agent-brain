@@ -23,6 +23,8 @@ import os                                                                       
 import path                                                                                           from 'node:path';
 import {appendWalMemory, appendWalEmbedMarker, appendWalGraphProjectionMarker, readPendingWalRecords} from '../../../../../../ai/services/memory-core/helpers/memoryWalStore.mjs';
 import RequestContextService                                                                          from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import {acquireHeavyMaintenanceLease, inspectHeavyMaintenanceLease, releaseHeavyMaintenanceLease,
+        withHeavyMaintenanceLease}                                                                    from '../../../../../../ai/daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
 
 
 /**
@@ -484,6 +486,11 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
                 userId: 'tenant-cli', agentIdentity: '@agent-cli'});
             MemoryService.backfillMiniSummaries = async () => ({normal: true});
             expect(await runMemorySummaryTask(null)).toEqual({normal: true});
+            MemoryService.backfillMiniSummaries = async ({shouldYield}) => ({yielded: shouldYield()});
+            const inherited = {status: 'inherited', acquired: false, lease: {acquiredAt: '2000-01-01T00:00:00.000Z'}};
+            expect(await runMemorySummaryTask(null, inherited)).toEqual({yielded: true});
+            MemoryService.reconcileNoContentArchives = async ({shouldYield}) => ({yielded: shouldYield()});
+            expect(await runMemorySummaryTask(options, inherited)).toEqual({yielded: true});
         } finally {
             MemoryService.reconcileNoContentArchives = originalRepair;
             MemoryService.backfillMiniSummaries = originalBackfill;
@@ -1034,6 +1041,121 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         // And the fixture genuinely carried a secret, so green means the boundary held rather than the
         // canary never having been written.
         expect(memStore.get('budget-thought').thought).toBe(secret);
+    });
+
+    test('lease yield preserves completed backfill rows and resumes the rest', async () => {
+        const ids = ['yield-backfill-a', 'yield-backfill-b', 'yield-backfill-c'];
+        for (const [i, id] of ids.entries()) {
+            memStore.set(id, {prompt: id, response: id});
+            GraphService.upsertNode({id, type: 'AGENT_MEMORY', name: id, properties: {
+                userId: 'tenant-a', agentIdentity: '@agent-a', timestamp: `9999-01-0${3-i}T00:00:00.000Z`
+            }});
+        }
+        try {
+            let   stop      = true;
+            const summarize = async ({prompt}) => { stop = true; return `summary:${prompt}` };
+            const expired   = await MemoryService.backfillMiniSummaries({limit: 3, freshReserve: 3, shouldYield: () => stop, buildMiniSummary: summarize});
+            expect(expired).toMatchObject({yielded: true, processed: 0, unprocessed: 3});
+            stop = false;
+            const partial = await MemoryService.backfillMiniSummaries({limit: 3, freshReserve: 3, shouldYield: () => stop, buildMiniSummary: summarize});
+            expect(partial).toMatchObject({yielded: true, processed: 1, updated: 1, unprocessed: 2});
+            const resumed = await MemoryService.backfillMiniSummaries({limit: 3, freshReserve: 3, buildMiniSummary: async () => 'resumed'});
+            expect(resumed.updated).toBe(2);
+        } finally {
+            for (const id of ids) {
+                GraphService.db.storage.db.prepare('DELETE FROM Nodes WHERE id = ?').run(id);
+                GraphService.db.nodes.remove(id);
+                memStore.delete(id);
+            }
+        }
+    });
+
+    test('a yielded backfill hands the temporary lease to a waiting peer; an inherited child keeps the parent lease', async () => {
+        const dir                    = await mkdtemp(path.join(os.tmpdir(), 'neo-backfill-lease-')),
+              leasePath              = path.join(dir, 'lease.json'), ids = ['lease-backfill-a', 'lease-backfill-b'],
+              originalToken          = process.env.NEO_HEAVY_MAINTENANCE_LEASE_INHERITED_TOKEN,
+              RealDate               = Date, start = RealDate.now(), originalBackfill = MemoryService.backfillMiniSummaries,
+              config                 = (await import('../../../../../../ai/config.template.mjs')).default,
+              bound                  = config.orchestrator.heavyMaintenance.maxActiveHoldMs,
+              {runMemorySummaryTask} = await import('../../../../../../ai/scripts/lifecycle/backfill-memory-summaries.mjs');
+        let clock = start, parent;
+        delete process.env.NEO_HEAVY_MAINTENANCE_LEASE_INHERITED_TOKEN;
+        for (const [i, id] of ids.entries()) {
+            memStore.set(id, {prompt: id, response: id});
+            GraphService.upsertNode({id, type: 'AGENT_MEMORY', name: id, properties: {
+                userId: 'tenant-a', agentIdentity: '@agent-a', timestamp: `9999-01-0${2-i}T00:00:00.000Z`
+            }});
+        }
+        const options   = {leasePath, staleAfterMs: bound * 4, now: new RealDate(start)},
+              contender = async () => withHeavyMaintenanceLease(() => 'peer-ran', {...options, owner: 'peer'});
+        try {
+            globalThis.Date = class extends RealDate {
+                constructor(...args) { super(...(args.length ? args : [clock])) }
+                static now() { return clock }
+            };
+            MemoryService.backfillMiniSummaries = controls => originalBackfill.call(MemoryService, {...controls, limit: 2, freshReserve: 2, maxRunMs: bound * 2,
+                buildMiniSummary: async () => {
+                    expect((await contender()).status).toBe('held');
+                    clock = start + bound + 1;
+                    return 'committed';
+                }});
+            const outcome = await withHeavyMaintenanceLease(async acquisition => {
+                return runMemorySummaryTask(null, acquisition);
+            }, {...options, owner: 'backfill'});
+            expect(outcome.result).toMatchObject({yielded: true, processed: 1, updated: 1, unprocessed: 1});
+            expect((await contender()).result).toBe('peer-ran');
+
+            parent = await acquireHeavyMaintenanceLease({...options, owner: 'parent', token: 'parent-token'});
+            process.env.NEO_HEAVY_MAINTENANCE_LEASE_INHERITED_TOKEN = 'parent-token';
+            const child = await withHeavyMaintenanceLease(acquisition => runMemorySummaryTask(null, acquisition), {...options, owner: 'child'});
+            expect(child).toMatchObject({status: 'inherited', result: {yielded: true, processed: 0, unprocessed: 1}});
+            delete process.env.NEO_HEAVY_MAINTENANCE_LEASE_INHERITED_TOKEN;
+            expect((await contender()).status).toBe('held');
+            expect((await inspectHeavyMaintenanceLease(options)).lease.token).toBe('parent-token');
+            await releaseHeavyMaintenanceLease({...options, token: parent.lease.token});
+            parent = null;
+            expect((await contender()).result).toBe('peer-ran');
+            globalThis.Date = RealDate;
+            MemoryService.backfillMiniSummaries = originalBackfill;
+            expect((await MemoryService.backfillMiniSummaries({limit: 2, freshReserve: 2, buildMiniSummary: async () => 'resumed'})).updated).toBe(1);
+        } finally {
+            globalThis.Date = RealDate;
+            MemoryService.backfillMiniSummaries = originalBackfill;
+            if (parent) await releaseHeavyMaintenanceLease({...options, token: parent.lease.token});
+            if (originalToken === undefined) delete process.env.NEO_HEAVY_MAINTENANCE_LEASE_INHERITED_TOKEN;
+            else process.env.NEO_HEAVY_MAINTENANCE_LEASE_INHERITED_TOKEN = originalToken;
+            for (const id of ids) {
+                GraphService.db.storage.db.prepare('DELETE FROM Nodes WHERE id = ?').run(id);
+                GraphService.db.nodes.remove(id);
+                memStore.delete(id);
+            }
+            await rm(dir, {recursive: true, force: true});
+        }
+    });
+
+    test('reconciliation lease yield reports unprocessed candidates and resumes', async () => {
+        const ctx = {userId: 'yield-tenant', agentIdentityNodeId: '@yield-agent'}, ids = ['yield-repair-a', 'yield-repair-b'];
+        for (const id of ids) {
+            GraphService.upsertNode({id, type: 'AGENT_MEMORY', name: id, properties: {
+                userId: ctx.userId, agentIdentity: ctx.agentIdentityNodeId, archivedAt: '2026-01-01', archivedReason: 'no-content'
+            }});
+            memStore.set(id, {userId: ctx.userId, agentIdentity: ctx.agentIdentityNodeId, prompt: id});
+        }
+        try {
+            const invoke  = shouldYield => RequestContextService.run(ctx, () => MemoryService.reconcileNoContentArchives({ids, apply: true, shouldYield}));
+            const expired = await invoke(() => true);
+            expect(expired).toMatchObject({yielded: true, restored: 0, unprocessed: 2});
+            let   votes   = 0;
+            const partial = await invoke(() => ++votes > 2);
+            expect(partial).toMatchObject({yielded: true, restored: 1, unprocessed: 1});
+            expect((await invoke(() => false)).restored).toBe(1);
+        } finally {
+            for (const id of ids) {
+                GraphService.db.storage.db.prepare('DELETE FROM Nodes WHERE id = ?').run(id);
+                GraphService.db.nodes.remove(id);
+                memStore.delete(id);
+            }
+        }
     });
 
     test('backfillMiniSummaries bounds a run by maxRunMs and defers the remainder to the next sweep', async () => {

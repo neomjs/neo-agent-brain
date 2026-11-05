@@ -423,6 +423,112 @@ test.describe('IngestionService.ingestSourceFiles', () => {
         expect(summary.settled + summary.remaining, 'the partition stays anchored to accepted').toBe(summary.ingested)
     });
 
+    test('yield custody emits only original records with unsettled descendants, once across groups', async () => {
+        const a = validParsedChunk({name: 'a', content: 'a'}),
+            b   = validParsedChunk({name: 'b', content: 'b'}),
+            c   = validParsedChunk({name: 'c', content: 'c', repoSlug: 'repo-b'}), seen = [];
+        Service.vectorService.embed = async (file, options) => {
+            const records = (await fs.readFile(file, 'utf8')).trim().split('\n').map(JSON.parse);
+            if (records[0].repoSlug === 'repo-a') {
+                await options.onYieldedInputIds([records[1].id]);
+                return {embedded: 1, settled: 1, remaining: 1, yielded: true}
+            }
+            return {embedded: 1, settled: 1, remaining: 0, yielded: false}
+        };
+        const summary = await Service.ingestSourceFiles({tenantId: 'tenant-a', files: [a, b, c]}, {
+            onYieldedRecords: async records => seen.push(records)
+        });
+        expect(summary.yielded).toBe(true);
+        expect(seen).toEqual([[b]]);
+        expect(summary).not.toHaveProperty('yieldedRecords');
+        await expect(Service.ingestSourceFiles({tenantId: 'tenant-a', files: [a, b]}, {
+            onYieldedRecords: async () => { throw new Error('retention failed') }
+        })).rejects.toThrow('retention failed')
+    });
+
+    test('custody maps an accepted ingestion split back to its original record', async () => {
+        const original = validParsedChunk({name: 'split', content: 'whole'}), seen = [],
+            previous   = Service.evaluateEmbeddingInputBudget;
+        try {
+            Service.evaluateEmbeddingInputBudget = chunk => chunk.content === 'whole'
+                ? {skip: true, estimateBandTokens: 10} : {skip: false};
+            Service.vectorService.splitOversizedEmbeddingChunk = ({chunk, createHash}) =>
+                ['part-a', 'part-b'].map(content => {
+                    const child = {...chunk, content};
+                    child.id = child.hash = createHash(child);
+                    return child
+                });
+            Service.vectorService.embed = async (file, options) => {
+                const children = (await fs.readFile(file, 'utf8')).trim().split('\n').map(JSON.parse);
+                await options.onYieldedInputIds([children[1].id]);
+                return {embedded: 1, settled: 1, remaining: 1, yielded: true}
+            };
+            const summary = await Service.ingestSourceFiles({tenantId: 'tenant-a', files: [original]}, {
+                onYieldedRecords: async records => seen.push(records)
+            });
+            expect(summary.yielded).toBe(true);
+            expect(seen).toEqual([[original]])
+        } finally {
+            Service.evaluateEmbeddingInputBudget = previous
+        }
+    });
+
+    test('vector expansion maps a yielded child to its parent and replay skips the landed sibling', async () => {
+        const vector = (await import('../../../../../../ai/services/knowledge-base/VectorService.mjs')).default,
+            chroma   = (await import('../../../../../../ai/services/knowledge-base/ChromaManager.mjs')).default,
+            saved    = {get: chroma.getKnowledgeBaseCollection, expand: vector.expandOversizedEmbeddingChunks,
+                embed: vector.embedChunks, dir: vector.resumeStateDir},
+            dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yield-ancestry-')),
+            original = validParsedChunk({name: 'parent', content: 'whole'}), seen = [], dispatched = [];
+        try {
+            chroma.getKnowledgeBaseCollection = async () => collection;
+            vector.resumeStateDir = dir;
+            Service.vectorService = vector;
+            vector.expandOversizedEmbeddingChunks = chunks => chunks.flatMap(chunk => [0, 1].map(index => ({
+                ...chunk, hash: `${chunk.hash}-${index}`, name: `${chunk.name}-${index}`
+            })));
+            vector.embedChunks = async options => {
+                dispatched.push(options.chunksToProcess.map(chunk => chunk.id));
+                const [first, second] = options.chunksToProcess;
+                await options.collection.upsert({ids: [first.id], metadatas: [first]});
+                if (second) {
+                    await options.onUnsettledIds([second.id]);
+                    return {embedded: 1, settled: 1, remaining: 1, yielded: true}
+                }
+                return {embedded: 1, settled: 1, remaining: 0, yielded: false}
+            };
+            const first = await Service.ingestSourceFiles({tenantId: 'tenant-a', files: [original]}, {
+                onYieldedRecords: async records => seen.push(records)
+            });
+            expect(first.yielded).toBe(true);
+            expect(first.errors).toEqual([]);
+            expect(first).toMatchObject({ingested: 1, acceptedEmbeddingChunks: 2, settled: 1, remaining: 1});
+            expect(seen).toEqual([[original]]);
+            const resumed = await Service.ingestSourceFiles({tenantId: 'tenant-a', files: seen[0]}, {
+                onYieldedRecords: async () => { throw new Error('unexpected yield') }
+            });
+            expect(resumed).toMatchObject({ingested: 1, acceptedEmbeddingChunks: 2, settled: 2, remaining: 0});
+            const complete = await Service.ingestSourceFiles({tenantId: 'tenant-a', files: [original]});
+            expect(complete).toMatchObject({ingested: 1, acceptedEmbeddingChunks: 2, settled: 2, remaining: 0});
+            expect(dispatched).toHaveLength(2);
+            expect(dispatched[0]).toHaveLength(2);
+            expect(dispatched[1]).toEqual([dispatched[0][1]])
+        } finally {
+            chroma.getKnowledgeBaseCollection = saved.get;
+            vector.expandOversizedEmbeddingChunks = saved.expand;
+            vector.embedChunks = saved.embed;
+            vector.resumeStateDir = saved.dir;
+            await fs.remove(dir)
+        }
+    });
+
+    test('a present malformed expanded population never falls back to input count', async () => {
+        Service.vectorService.embed = async () => ({accepted: -1, settled: 1, remaining: 0});
+        const summary = await Service.ingestSourceFiles({tenantId: 'tenant-a', files: [validParsedChunk()]});
+        expect(summary).toMatchObject({acceptedEmbeddingChunks: null, settled: null, remaining: null});
+        expect(summary.errors.map(error => error.code)).toContain('KB_VECTOR_EMBED_SETTLEMENT_INVALID')
+    });
+
     test('#17439 one missing legacy producer makes the multi-group aggregate unobserved without inventing an error', async () => {
         Service.vectorService.embed = async filePath => {
             const records = (await fs.readFile(filePath, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));

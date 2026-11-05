@@ -309,11 +309,16 @@ class IngestionService extends Base {
      * @param {Object} [controls={}] Internal non-MCP execution controls.
      * @param {AbortSignal} [controls.signal] Shared tenant-sweep provider circuit signal.
      * @param {Function} [controls.onProviderTimeout] Synchronous native-provider timeout hook.
-     * @returns {Promise<{ingested: Number, settled: Number|null, remaining: Number|null, deleted: Number, embeddingsGenerated: Number, errors: Array, tenantId: String, durationMs: Number}>}
+     * @param {Function} [controls.onYieldedRecords] Awaited process-local custody callback for original records with unsettled work.
+     * @returns {Promise<{ingested: Number, acceptedEmbeddingChunks: Number|null, settled: Number|null, remaining: Number|null, deleted: Number, embeddingsGenerated: Number, errors: Array, tenantId: String, durationMs: Number}>}
+     * `ingested` counts normalized inputs; acceptedEmbeddingChunks, settled and remaining count
+     * post-expansion embedding IDs when the vector producer supplies its accepted population.
      */
     async ingestSourceFiles(payload = {}, controls = {}) {
-        const startedAt = Date.now();
-        const summary   = this.createSummary({startedAt});
+        const startedAt  = Date.now();
+        const summary    = this.createSummary({startedAt});
+        const ancestry   = controls.onYieldedRecords ? new Map() : null;
+        const unfinished = new Set();
 
         try {
             const tenantContext = this.resolveTenantContext(payload);
@@ -347,6 +352,7 @@ class IngestionService extends Base {
                 files,
                 tenantContext,
                 summary,
+                ancestry,
                 trustedProfileEnvelope: trustBoundary.trusted
             });
             this.updateIngestionProgress({
@@ -355,7 +361,7 @@ class IngestionService extends Base {
                 totalChunks: chunks.length
             });
 
-            const embeddableChunks = this.filterEmbeddingInputBudget({chunks, tenantContext, summary});
+            const embeddableChunks = this.filterEmbeddingInputBudget({chunks, tenantContext, summary, ancestry});
 
             // The accepted corpus is known before provider work starts. Remaining begins as the
             // whole accepted set, then each observed group replaces its accepted contribution with
@@ -386,6 +392,8 @@ class IngestionService extends Base {
                     chunks                : embeddableChunks,
                     replaceSourceRevisions: trustBoundary.trusted && summary.errors.length === 0,
                     onProviderTimeout     : controls.onProviderTimeout,
+                    ancestry,
+                    unfinished,
                     replayEmbeddingPoison : controls.replayEmbeddingPoison === true,
                     // Fourth member of the control envelope, alongside signal / onProviderTimeout /
                     // poison replay. Optional by construction: an absent predicate leaves
@@ -412,12 +420,14 @@ class IngestionService extends Base {
                 summary
             });
 
+            if (summary.yielded && controls.onYieldedRecords) {
+                await controls.onYieldedRecords([...unfinished]);
+            }
             this.recordMetric(summary, tenantContext);
             this.finishIngestionProgress({
                 summary,
                 status: summary.errors.length > 0 ? 'completed_with_errors' : 'completed'
             });
-            return summary;
         } catch (error) {
             summary.errors.push(this.createError({
                 code   : this.classifyIngestionFailureCode(error),
@@ -429,8 +439,10 @@ class IngestionService extends Base {
                 repoSlug: aiConfig.defaultRepoSlug
             });
             this.finishIngestionProgress({summary, status: 'failed'});
+            if (ancestry) throw error;
             return summary;
         }
+        return summary;
     }
 
     /**
@@ -575,6 +587,9 @@ class IngestionService extends Base {
      * @param {Object}  options
      * @param {AbortSignal} [options.signal] Shared tenant-sweep provider circuit signal.
      * @param {Function} [options.onProviderTimeout] Synchronous native-provider timeout hook.
+     * @param {Function} [options.shouldYield] Cooperative lease-bound vote passed to the vector producer.
+     * @param {Map} [options.ancestry] Normalized chunk to original input record mapping.
+     * @param {Set} [options.unfinished] Original records with at least one unsettled child.
      * @param {Boolean} [options.replayEmbeddingPoison=false] Process-local operator replay control.
      * @param {Boolean} [options.replaceSourceRevisions=false] Clean, trusted profile input contains
      *                                                       every current chunk of each emitted source.
@@ -593,7 +608,9 @@ class IngestionService extends Base {
         onProviderTimeout,
         replaceSourceRevisions = false,
         replayEmbeddingPoison = false,
-        shouldYield
+        shouldYield,
+        ancestry,
+        unfinished
     }) {
         const groups               = new Map();
         let   settlementObservable = true;
@@ -607,12 +624,26 @@ class IngestionService extends Base {
         }
 
         for (const [repoSlug, group] of groups.entries()) {
-            const tempFile = await this.writeTempJsonl(group);
+            const tempFile      = await this.writeTempJsonl(group);
+            const originalsById = new Map();
+            if (ancestry) for (const chunk of group) {
+                if (!originalsById.has(chunk.id)) originalsById.set(chunk.id, new Set());
+                for (const record of ancestry.get(chunk) || []) originalsById.get(chunk.id).add(record);
+            }
+            let custodyObserved = false;
 
             try {
                 const result = await this.vectorService.embed(tempFile, {
                     deleteStale  : false,
                     onProviderTimeout,
+                    ...(ancestry && {onYieldedInputIds: ids => {
+                        custodyObserved = true;
+                        for (const id of ids) {
+                            const originals = originalsById.get(id);
+                            if (!originals?.size) throw new Error('Yielded input lacks original record ancestry');
+                            for (const record of originals) unfinished.add(record);
+                        }
+                    }}),
                     replaceSourceRevisions,
                     replayEmbeddingPoison,
                     shouldYield,
@@ -621,9 +652,15 @@ class IngestionService extends Base {
                     viaMcp
                 });
 
+                if (ancestry && result?.yielded === true && !custodyObserved) {
+                    throw new Error('Yielded vector work did not report unsettled input identities')
+                }
+
                 const
                     hasSettled   = Object.hasOwn(result || {}, 'settled'),
-                    hasRemaining = Object.hasOwn(result || {}, 'remaining');
+                    hasRemaining = Object.hasOwn(result || {}, 'remaining'),
+                    hasAccepted  = Object.hasOwn(result || {}, 'accepted'),
+                    accepted     = hasAccepted ? result.accepted : group.length;
 
                 if (!hasSettled && !hasRemaining) {
                     // Legacy producer: absence is unobserved, not a reassuring zero and not an
@@ -631,10 +668,11 @@ class IngestionService extends Base {
                     // honest corpus meaning.
                     settlementObservable = false;
                     summary.settled       = null;
-                    summary.remaining     = null
+                    summary.remaining     = null;
+                    summary.acceptedEmbeddingChunks = null
                 } else {
                     const counts = normalizeSettlementCounts({
-                        accepted : group.length,
+                        accepted,
                         settled  : result?.settled,
                         remaining: result?.remaining
                     });
@@ -643,17 +681,19 @@ class IngestionService extends Base {
                         settlementObservable = false;
                         summary.settled       = null;
                         summary.remaining     = null;
+                        summary.acceptedEmbeddingChunks = null;
                         summary.errors.push(this.createError({
                             code   : 'KB_VECTOR_EMBED_SETTLEMENT_INVALID',
                             message: 'VectorService returned a malformed or inconsistent settlement tuple.',
                             details: {
                                 repoSlug,
-                                accepted : group.length,
+                                accepted : Number.isSafeInteger(accepted) ? accepted : null,
                                 settled  : Number.isFinite(result?.settled) ? result.settled : null,
                                 remaining: Number.isFinite(result?.remaining) ? result.remaining : null
                             }
                         }))
                     } else if (settlementObservable) {
+                        summary.acceptedEmbeddingChunks += accepted;
                         summary.settled   += counts.settled;
                         summary.remaining += counts.remaining - group.length
                     }
@@ -748,9 +788,11 @@ class IngestionService extends Base {
                     settledChunks  : summary.settled
                 });
             } catch (error) {
+                if (ancestry) throw error;
                 settlementObservable = false;
                 summary.settled       = null;
                 summary.remaining     = null;
+                summary.acceptedEmbeddingChunks = null;
                 const residencyDisposition = classifyEmbedResidencyDisposition(error);
                 // The graduation receipt travels ON the original timeout rather than replacing it:
                 // the code below still names the timeout, and this bounded evidence — a hash and
@@ -799,7 +841,7 @@ class IngestionService extends Base {
      * @returns {Promise<Array<Object>>}
      * @protected
      */
-    async collectParsedChunks({files, tenantContext, summary, trustedProfileEnvelope = false}) {
+    async collectParsedChunks({files, tenantContext, summary, trustedProfileEnvelope = false, ancestry}) {
         const chunks = [];
 
         for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
@@ -825,6 +867,7 @@ class IngestionService extends Base {
                     });
 
                     if (normalized) {
+                        ancestry?.set(normalized, new Set([record]));
                         chunks.push(normalized);
                     }
                 }
@@ -943,12 +986,13 @@ class IngestionService extends Base {
      */
     createSummary({startedAt}) {
         return {
-            ingested           : 0,
-            settled            : 0,
-            remaining          : 0,
-            deleted            : 0,
-            embeddingsGenerated: 0,
-            skippedOversized   : 0,
+            ingested               : 0,
+            acceptedEmbeddingChunks: 0,
+            settled                : 0,
+            remaining              : 0,
+            deleted                : 0,
+            embeddingsGenerated    : 0,
+            skippedOversized       : 0,
             // False until an embed run reports it stopped on a budget rather than on exhaustion.
             // Initialised here rather than left undefined so consumers can distinguish "this run did
             // not yield" from "this summary predates the field" — an absent boolean reads as false
@@ -1881,7 +1925,7 @@ class IngestionService extends Base {
      * @returns {Array<Object>} Chunks safe to send to VectorService.
      * @protected
      */
-    filterEmbeddingInputBudget({chunks, tenantContext, summary}) {
+    filterEmbeddingInputBudget({chunks, tenantContext, summary, ancestry}) {
         const guardrail = this.resolveEmbeddingInputGuardrail();
 
         const embeddable = [];
@@ -1922,6 +1966,7 @@ class IngestionService extends Base {
             }
 
             for (const splitChunk of splitChunks) {
+                if (ancestry) ancestry.set(splitChunk, ancestry.get(chunk));
                 const splitBudget = this.evaluateEmbeddingInputBudget(splitChunk, guardrail);
 
                 if (!splitBudget.skip) {

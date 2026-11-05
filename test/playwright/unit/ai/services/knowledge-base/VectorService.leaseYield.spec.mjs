@@ -16,6 +16,8 @@ setup({
 });
 
 import fs                          from 'node:fs';
+import os                          from 'node:os';
+import path                        from 'node:path';
 import {fileURLToPath}             from 'node:url';
 import {test, expect}              from '@playwright/test';
 import Neo                         from 'neo.mjs/src/Neo.mjs';
@@ -148,6 +150,17 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
         expect(result).toMatchObject({settled: 50, remaining: 100});
         expect(spy.calls.upsert).toBe(1);
         expect(spy.upsertedIds).toHaveLength(50);
+    });
+
+    test('reports the actual unsettled IDs privately after a yield', async () => {
+        const chunks = makeChunks(150), seen = [];
+        const result = await KB_VectorService.embedChunks({
+            collection : createSpyCollection(), chunksToProcess: chunks,
+            shouldYield: () => true, onUnsettledIds: async ids => seen.push(...ids)
+        });
+        expect(result.yielded).toBe(true);
+        expect(seen).toEqual(chunks.slice(50).map(chunk => chunk.id));
+        expect(result).not.toHaveProperty('unsettledIds')
     });
 
     test('yields after N batches when the predicate flips mid-run', async () => {
@@ -496,4 +509,81 @@ test.describe('VectorService.embedChunks — cooperative lease yield-point', () 
     test('zero shared-config mutations (#1091)', () => {
         expect(findSharedConfigMutations(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8'))).toEqual([]);
     });
+});
+
+test('embed regenerates split identities and skips the landed prefix on replay', async () => {
+    const SDK                            = await import('../../../../../../ai/services.mjs'),
+          vector                         = (await import('../../../../../../ai/services/knowledge-base/VectorService.mjs')).default,
+          {EMBEDDING_BATCH_YIELDED_CODE} = await import('../../../../../../ai/services/memory-core/TextEmbeddingService.mjs'),
+          provider                       = SDK.Memory_TextEmbeddingService,
+          chroma                         = SDK.KB_ChromaManager,
+          dir                            = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-split-replay-')),
+          file                           = path.join(dir, 'input.jsonl'),
+          originals                      = {guardrail: vector.resolveEmbeddingGuardrail, resume: vector.getResumeStateDir,
+              getCollection: chroma.getKnowledgeBaseCollection, embedTexts: provider.embedTexts},
+          rows = new Map(), upserts = [], calls = [], yieldedInputs = [],
+          text = Array.from({length: 30}, (_, i) => `section-${i} ${'x'.repeat(24)}`).join('\n'),
+          input = {id: 'original', hash: 'original-hash', type: 'ticket', kind: 'ticket',
+              name: 'issue-1', content: text, description: text, source: 'issues/1.md'},
+          collection = {
+              name: 'split-replay-fixture',
+              async count() { return rows.size },
+              async get() { return {ids: [...rows.keys()]} },
+              async upsert({ids, embeddings, metadatas}) {
+                  upserts.push([...ids]);
+                  ids.forEach((id, i) => rows.set(id, {embedding: embeddings[i], metadata: metadatas[i]}))
+              }
+          };
+
+    try {
+        fs.writeFileSync(file, JSON.stringify(input));
+        vector.resolveEmbeddingGuardrail = () => ({enabled: true, contextLimitTokens: 100,
+            safeProcessingLimitTokens: 80, model: 'unit-test-embedding-model'});
+        vector.getResumeStateDir = () => dir;
+        chroma.getKnowledgeBaseCollection = async () => collection;
+        provider.embedTexts = async texts => {
+            calls.push([...texts]);
+            if (calls.length === 1) {
+                const error = new Error('fixture yields after one provider input');
+                error.code = EMBEDDING_BATCH_YIELDED_CODE;
+                error.completedChunkCount = 1;
+                error.totalChunkCount = 2;
+                error.completedTextCount = 1;
+                error.embeddings = [new Array(384).fill(1)];
+                throw error
+            }
+            return texts.map(() => new Array(384).fill(2))
+        };
+
+        const expanded = vector.expandOversizedEmbeddingChunks([input]);
+        expect(expanded.length).toBeGreaterThan(1);
+        const expectedIds = expanded.map(chunk => vector.createTenantAwareChunkId(chunk, vector.resolveTenantStamp()));
+        await expect(vector.embed(path.join(dir, 'absent'), {onYieldedInputIds: () => {}}))
+            .rejects.toThrow('Input replay custody requires deleteStale:false');
+        const first = await vector.embed(file, {deleteStale: false, onYieldedInputIds: ids => yieldedInputs.push(...ids)});
+        expect(first.yielded).toBe(true);
+        expect(first.accepted).toBe(expanded.length);
+        expect(first.settled).toBe(1);
+        expect(first.remaining).toBe(expanded.length - 1);
+        expect(yieldedInputs).toEqual(['original']);
+        expect(upserts.flat()).toHaveLength(1);
+        const landed = upserts[0][0], firstInput = calls[0][0];
+        expect(landed).toBe(expectedIds[0]);
+
+        expect(vector.expandOversizedEmbeddingChunks([input]).map(item => item.hash))
+            .toEqual(expanded.map(item => item.hash));
+        const second = await vector.embed(file, {deleteStale: false, onYieldedInputIds: () => { throw new Error('unexpected yield') }});
+        expect(second).toMatchObject({accepted: expanded.length, settled: expanded.length, remaining: 0});
+        expect(upserts.flat().filter(id => id === landed)).toHaveLength(1);
+        expect(calls.slice(1).flat()).not.toContain(firstInput);
+        expect(rows.size).toBe(expanded.length);
+        expect([...rows.keys()].sort()).toEqual([...expectedIds].sort());
+        expect(rows.get(landed).embedding[0]).toBe(1)
+    } finally {
+        vector.resolveEmbeddingGuardrail = originals.guardrail;
+        vector.getResumeStateDir = originals.resume;
+        chroma.getKnowledgeBaseCollection = originals.getCollection;
+        provider.embedTexts = originals.embedTexts;
+        fs.rmSync(dir, {recursive: true, force: true})
+    }
 });

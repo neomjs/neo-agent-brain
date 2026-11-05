@@ -1241,6 +1241,7 @@ class VectorService extends Base {
      *     through so one sweep's strikes, suspicions, and durable dispositions share one generation;
      *     absent, it is resolved once at entry from the same leaves.
      * @param {Function} [options.now] Clock seam for bounded poison receipts.
+     * @param {Function} [options.onUnsettledIds] Awaited process-local custody callback on a yield.
      * @returns {Promise<{embedded: Number, settled: Number, remaining: Number, skipped: Number, yielded: Boolean, failedBatches: Object[], poisonedChunks: Object[], deathGraduations: Object[], deathStrikeProgress: Object[]}>}
      *     `embedded` is newly landed work from THIS invocation. `settled` / `remaining` form the
      *     cumulative partition of the unique accepted ids offered here: durable vectors, durable
@@ -1270,7 +1271,8 @@ class VectorService extends Base {
         controlCandidates = chunksToProcess.map(chunk => ({chunk, alreadyLanded: false})),
         onPoisonEntries,
         poisonGenerationId,
-        now = Date.now
+        now = Date.now,
+        onUnsettledIds
     }) {
         const acceptedIds = new Set([
             ...chunksToProcess.map(chunk => chunk.id),
@@ -2055,6 +2057,10 @@ class VectorService extends Base {
             settled     = [...acceptedIds].reduce((count, id) => count + Number(settledIds.has(id)), 0),
             remaining   = acceptedIds.size - settled;
 
+        if (yielded && onUnsettledIds) {
+            await onUnsettledIds([...acceptedIds].filter(id => !settledIds.has(id)))
+        }
+
         return {
             embedded: embeddedCount,
             settled,
@@ -2451,8 +2457,11 @@ class VectorService extends Base {
      * @param {Function} [opts.onProviderTimeout]  Synchronous native-provider timeout hook.
      * @param {Boolean} [opts.replayEmbeddingPoison=false] Explicit operator replay clears the
      *                                             tenant/repository poison fence before diffing.
+     * @param {Function} [opts.onYieldedInputIds] Process-local callback naming inputs with unsettled descendants;
+     *     available only with deleteStale:false (incremental ingestion replay).
      * @returns {Promise<object>} A promise that resolves to a success message, OR a
-     *     `{error, code: 'KB_SYNC_VOLUME_EXCEEDED', ...}` shape when the MCP gate fires.
+     *     `{error, code: 'KB_SYNC_VOLUME_EXCEEDED', ...}` shape when the MCP gate fires. Successful
+     *     settlement reports `accepted`, `settled` and `remaining` in post-expansion chunk IDs.
      */
     async embed(knowledgeBasePath, {
         viaMcp = false,
@@ -2463,10 +2472,14 @@ class VectorService extends Base {
         shouldYield = () => false,
         signal,
         onProviderTimeout,
-        replayEmbeddingPoison = false
+        replayEmbeddingPoison = false,
+        onYieldedInputIds
     } = {}) {
         logger.log('Starting knowledge base embedding...');
         const resolvedStaleStrategy = this.resolveStaleStrategy({staleStrategy, deleteStale});
+        if (onYieldedInputIds && resolvedStaleStrategy !== STALE_STRATEGY_SKIP) {
+            throw new Error('Input replay custody requires deleteStale:false');
+        }
 
         if (!await fs.pathExists(knowledgeBasePath)) {
             throw new Error(`Knowledge base file not found at ${knowledgeBasePath}.`);
@@ -2487,9 +2500,18 @@ class VectorService extends Base {
         logger.log(`Loaded ${knowledgeBase.length} knowledge chunks from file.`);
 
         const tenantStamp           = this.resolveTenantStamp(tenantContext);
-        const expandedKnowledgeBase = this.expandOversizedEmbeddingChunks(knowledgeBase);
-        const poisonStateDir        = this.getResumeStateDir();
-        const poisonCoordinates     = this.resolveEmbeddingPoisonCoordinates(tenantStamp);
+        const ancestry              = onYieldedInputIds ? new Map() : null;
+        const expandedKnowledgeBase = ancestry ? knowledgeBase.flatMap(input => {
+                const children = this.expandOversizedEmbeddingChunks([input]);
+                for (const child of children) {
+                    const stampedId = this.createTenantAwareChunkId(child, tenantStamp);
+                    if (!ancestry.has(stampedId)) ancestry.set(stampedId, new Set());
+                    ancestry.get(stampedId).add(input.id);
+                }
+                return children;
+            }) : this.expandOversizedEmbeddingChunks(knowledgeBase);
+        const poisonStateDir    = this.getResumeStateDir();
+        const poisonCoordinates = this.resolveEmbeddingPoisonCoordinates(tenantStamp);
 
         if (replayEmbeddingPoison) {
             await clearEmbeddingPoisonState({dir: poisonStateDir, scopeId: poisonCoordinates.scopeId});
@@ -2662,6 +2684,7 @@ class VectorService extends Base {
             return {
                 message,
                 embedded      : 0,
+                accepted      : allIds.size,
                 settled       : allIds.size,
                 remaining     : 0,
                 deleted       : 0,
@@ -2671,7 +2694,7 @@ class VectorService extends Base {
         }
 
         if (shouldShadowSwap) {
-            return await this.embedViaShadowSwap({
+            const result = await this.embedViaShadowSwap({
                 liveCollection    : collection,
                 knowledgeBase     : expandedKnowledgeBase,
                 idsToDeleteCount  : idsToDelete.length,
@@ -2682,6 +2705,7 @@ class VectorService extends Base {
                 onPoisonEntries   : persistPoisonEntries,
                 poisonGenerationId: poisonCoordinates.generationId
             });
+            return {...result, accepted: allIds.size};
         }
 
         if (idsToDelete.length > 0) {
@@ -2703,7 +2727,15 @@ class VectorService extends Base {
             knownPoisonEntries,
             controlCandidates,
             onPoisonEntries   : persistPoisonEntries,
-            poisonGenerationId: poisonCoordinates.generationId
+            poisonGenerationId: poisonCoordinates.generationId,
+            onUnsettledIds    : onYieldedInputIds && (ids => {
+                const inputs = new Set();
+                for (const id of ids) {
+                    if (!ancestry.has(id)) throw new Error('Unsettled chunk lacks input ancestry');
+                    for (const input of ancestry.get(id)) inputs.add(input)
+                }
+                return onYieldedInputIds([...inputs])
+            })
         });
 
         const failedBatches  = embedResult.failedBatches || [];
@@ -2731,7 +2763,8 @@ class VectorService extends Base {
         // that cannot see it reports a clean sync over a corpus with a hole in it.
         return {
             message,
-            embedded : embedResult.embedded,
+            embedded: embedResult.embedded,
+            accepted: allIds.size,
             // `embedded` is this call's newly landed delta. These two are the cumulative corpus
             // partition: rows already in Chroma and durable poison fences were removed from
             // `chunksToProcess` before the provider call, but still count as settled here.
