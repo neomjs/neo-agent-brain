@@ -462,6 +462,47 @@ async function discoverConfigCohort(project) {
  * @param {String[]} [options.composeFiles]     Ordered Compose file paths for the selected target deployment.
  * @returns {Promise<Object>} `{serviceScopes, errors}` — scopes keyed by service, unresolved names in `errors`.
  */
+/**
+ * @summary Builds the ordered Compose file list for `resolveServiceScopes` from the selected base profile
+ * and any discovered `composeIdentity.configFiles`, preserving unresolved discovered paths so unreadable
+ * overlays fail closed in `resolveServiceScopes` rather than being dropped by the caller.
+ * @param {String} [profile=DEFAULT_PROFILE]
+ * @param {Object|null} [composeIdentity=null]
+ * @param {String} [rootDir=repoRoot]
+ * @returns {Promise<String[]>}
+ */
+export async function resolveDiscoveredComposeFiles(
+    profile = DEFAULT_PROFILE,
+    composeIdentity = null,
+    rootDir = repoRoot
+) {
+    const discoveredComposeFiles = [profile];
+
+    if (profile === DEFAULT_PROFILE) {
+        discoveredComposeFiles.push(CANONICAL_LOCAL_OVERLAY)
+    }
+
+    for (const configFile of composeIdentity?.configFiles || []) {
+        if (typeof configFile !== 'string' || !configFile.trim()) {
+            discoveredComposeFiles.push(configFile);
+            continue
+        }
+
+        const candidate = path.isAbsolute(configFile) ? configFile : path.resolve(rootDir, configFile),
+              sibling   = path.resolve(rootDir, path.dirname(profile), path.basename(configFile));
+
+        if (await fs.pathExists(candidate)) {
+            discoveredComposeFiles.push(candidate)
+        } else if (await fs.pathExists(sibling)) {
+            discoveredComposeFiles.push(sibling)
+        } else {
+            discoveredComposeFiles.push(candidate)
+        }
+    }
+
+    return discoveredComposeFiles
+}
+
 export async function resolveServiceScopes(
     parity,
     profile,
@@ -893,27 +934,11 @@ async function main() {
         'different repair (overlay migration) from a missing key, and a clean env delta does not rule it out'
     );
 
-    const discoveredComposeFiles = [];
-
-    if (options.profile === DEFAULT_PROFILE) {
-        discoveredComposeFiles.push(CANONICAL_LOCAL_OVERLAY)
-    }
-
-    for (const configFile of composeIdentity?.configFiles || []) {
-        const candidate = path.isAbsolute(configFile) ? configFile : path.resolve(repoRoot, configFile),
-              sibling   = path.resolve(repoRoot, path.dirname(options.profile), path.basename(configFile));
-
-        if (await fs.pathExists(candidate)) {
-            discoveredComposeFiles.push(candidate)
-        } else if (await fs.pathExists(sibling)) {
-            discoveredComposeFiles.push(sibling)
-        }
-    }
-
-    const {serviceScopes, errors: scopeErrors} = await resolveServiceScopes(
-        parity, options.profile, configServices, observedEnvByService, census,
-        {composeFiles: discoveredComposeFiles.length ? [options.profile, ...discoveredComposeFiles] : undefined}
-    );
+    const composeFiles                         = await resolveDiscoveredComposeFiles(options.profile, composeIdentity, repoRoot),
+          {serviceScopes, errors: scopeErrors} = await resolveServiceScopes(
+              parity, options.profile, configServices, observedEnvByService, census,
+              {composeFiles}
+          );
 
     // A scope that failed to resolve is reported, never defaulted. The plan gate blocks on the missing
     // scope itself, so this only needs to carry the reason an operator would otherwise have to guess at.

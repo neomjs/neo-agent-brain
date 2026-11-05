@@ -13,6 +13,7 @@ import {
     buildComposeFragment,
     buildPipelineEnv,
     parseArgs,
+    resolveDiscoveredComposeFiles,
     resolveServiceScopes
 } from '../../../../../../ai/scripts/maintenance/migrateDeployment.mjs';
 import {buildConfigEnvDefaultsForTemplate} from '../../../../../../ai/scripts/lint/lint-config-template-ssot.mjs';
@@ -974,12 +975,19 @@ test.describe('resolveServiceScopes — per-service consumption attribution (#21
     });
 
     test('fails closed when a discovered overlay in composeFiles cannot be read rather than narrowing to the base profile', async () => {
-        const parity   = await fs.readJson(path.join(repoRoot, PARITY_REL)),
-              census   = resolveCensus(parity, PROFILE),
-              services = ['kb-server', 'mc-server', 'orchestrator'];
+        const parity          = await fs.readJson(path.join(repoRoot, PARITY_REL)),
+              census          = resolveCensus(parity, PROFILE),
+              services        = ['kb-server', 'mc-server', 'orchestrator'],
+              composeIdentity = {
+                  project    : 'neo-local-agent-os',
+                  configFiles: ['/x/docker-compose.yml', '/x/nonexistent-overlay.yml']
+              },
+              composeFiles    = await resolveDiscoveredComposeFiles(PROFILE, composeIdentity, repoRoot);
+
+        expect(composeFiles).toContain('/x/nonexistent-overlay.yml');
 
         const {serviceScopes, errors} = await resolveServiceScopes(
-            parity, PROFILE, services, {}, census, {composeFiles: [PROFILE, 'deploy/cloud/nonexistent-overlay.yml']}
+            parity, PROFILE, services, {}, census, {composeFiles}
         );
 
         expect(errors).toHaveLength(1);
