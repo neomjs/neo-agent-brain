@@ -7,6 +7,7 @@ import {
     fetchEmbeddingLaneSlots,
     fetchOpenAiCompatibleModelIds,
     getOpenAiCompatibleHost,
+    PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION,
     probeProviderParallelModelCapacity,
     satisfiesRequiredModelIdOnOpenAiCompatibleLane
 }                                          from '../../../services/graph/providerReadinessHelper.mjs';
@@ -19,7 +20,10 @@ import {
     foldMemoryPressureIntoStatus
 }                                          from './memoryPressureDisposition.mjs';
 import {readSecretCarrier}   from '../../../services/shared/secretCarrier.mjs';
-import {runHealthcheck}      from '../../../scripts/diagnostics/mcpHealthcheck.mjs';
+import {
+    RUN_HEALTHCHECK_PROBE_DISPOSITION,
+    runHealthcheck
+}                            from '../../../scripts/diagnostics/mcpHealthcheck.mjs';
 import {writeFileAtomicSync} from '../../../services/shared/atomicFileWrite.mjs';
 
 /**
@@ -30,6 +34,50 @@ import {writeFileAtomicSync} from '../../../services/shared/atomicFileWrite.mjs'
  * @member {RegExp} STATUS_MISMATCH_MESSAGE
  */
 const STATUS_MISMATCH_MESSAGE = /^Expected healthcheck status /;
+
+/**
+ * @summary Resolves definition-owned probe disposition metadata from a probe result, error, or function.
+ * @param {Object|Error|null} carrier Result or error carrier.
+ * @param {Function|null} probe Probe function definition.
+ * @param {Object} fallbackDisposition Canonical definition-owned disposition descriptor.
+ * @returns {{probeDisposition: *, interventionEffect: *, declaredProbeDisposition: String}}
+ * @private
+ */
+function resolveBridgeProbeDisposition(carrier, probe, fallbackDisposition) {
+    const hasCarrierDisposition = Boolean(
+        carrier && typeof carrier === 'object' &&
+        (Object.hasOwn(carrier, 'probeDisposition') || Object.hasOwn(carrier, 'disposition'))
+    );
+    const hasProbeDisposition = Boolean(
+        probe && (typeof probe === 'function' || typeof probe === 'object') &&
+        (Object.hasOwn(probe, 'probeDisposition') || Object.hasOwn(probe, 'disposition'))
+    );
+    const probeDisposition = hasCarrierDisposition
+        ? (carrier.probeDisposition ?? carrier.disposition)
+        : hasProbeDisposition
+            ? (probe.probeDisposition ?? probe.disposition)
+            : fallbackDisposition.probeDisposition;
+
+    const hasCarrierEffect = Boolean(
+        carrier && typeof carrier === 'object' &&
+        (Object.hasOwn(carrier, 'interventionEffect') || Object.hasOwn(carrier, 'probeEffects') || Object.hasOwn(carrier, 'effects'))
+    );
+    const hasProbeEffect = Boolean(
+        probe && (typeof probe === 'function' || typeof probe === 'object') &&
+        (Object.hasOwn(probe, 'interventionEffect') || Object.hasOwn(probe, 'probeEffects') || Object.hasOwn(probe, 'effects'))
+    );
+    const rawEffect = hasCarrierEffect
+        ? (carrier.interventionEffect ?? carrier.probeEffects ?? carrier.effects)
+        : hasProbeEffect
+            ? (probe.interventionEffect ?? probe.probeEffects ?? probe.effects)
+            : fallbackDisposition.interventionEffect;
+
+    return {
+        probeDisposition,
+        interventionEffect      : Array.isArray(rawEffect) ? [...rawEffect] : rawEffect,
+        declaredProbeDisposition: fallbackDisposition.probeDisposition
+    };
+}
 
 /**
  * @summary Decides whether a failed direct probe is evidence about the SERVICE or about the PROBE.
@@ -53,13 +101,29 @@ const STATUS_MISMATCH_MESSAGE = /^Expected healthcheck status /;
  * complete the evidence pair on every sweep and restart a container that was never unwell.
  *
  * @param {Error} error The rejection from the probe.
+ * @param {Object} [options={}]
+ * @param {Function} [options.probe=runHealthcheck] Probe definition for disposition inheritance.
+ * @param {Boolean} [options.acknowledgeIntervention] Explicit consuming-seam acknowledgement override.
  * @returns {Object|null} A failed-probe descriptor, or `null` when the failure is not service evidence.
  */
-export function classifyDirectProbeOutcome(error) {
-    const verdict = error?.probeTiming?.verdict;
+export function classifyDirectProbeOutcome(error, {
+    probe = runHealthcheck,
+    acknowledgeIntervention
+} = {}) {
+    const verdict     = error?.probeTiming?.verdict,
+          disposition = resolveBridgeProbeDisposition(error, probe, RUN_HEALTHCHECK_PROBE_DISPOSITION),
+          ackEnvelope = acknowledgeIntervention === undefined
+              ? {}
+              : {acknowledgeIntervention: Boolean(acknowledgeIntervention)};
 
     if (verdict === 'service-unresponsive') {
-        return {ok: false, name: 'direct-endpoint-probe', message: 'service-unresponsive'};
+        return {
+            ok     : false,
+            name   : 'direct-endpoint-probe',
+            message: 'service-unresponsive',
+            ...disposition,
+            ...ackEnvelope
+        };
     }
 
     if (verdict === 'probe-starved') {
@@ -67,7 +131,13 @@ export function classifyDirectProbeOutcome(error) {
     }
 
     return STATUS_MISMATCH_MESSAGE.test(error?.message || '')
-        ? {ok: false, name: 'direct-endpoint-probe', message: 'status-not-accepted'}
+        ? {
+            ok     : false,
+            name   : 'direct-endpoint-probe',
+            message: 'status-not-accepted',
+            ...disposition,
+            ...ackEnvelope
+        }
         : null
 }
 import {
@@ -348,7 +418,23 @@ export class DeploymentStateBridgeService extends Base {
          * @member {Function|null} writeLog=null
          * @protected
          */
-        writeLog: null
+        writeLog: null,
+        /**
+         * Explicit consuming-seam acknowledgement that the direct endpoint probe (`runHealthcheck`)
+         * is an `intervention` probe (`abort-in-flight`, `advance-state`) whose bounded result is
+         * intentionally admitted to corroborate container-health diagnosis.
+         * @member {Boolean} acknowledgeDirectProbeIntervention=true
+         * @protected
+         */
+        acknowledgeDirectProbeIntervention: true,
+        /**
+         * Explicit consuming-seam acknowledgement that the provider residency probe
+         * (`probeProviderParallelModelCapacity`) is an `intervention` probe (`abort-in-flight`)
+         * whose bounded result is intentionally admitted into container-health diagnosis.
+         * @member {Boolean} acknowledgeProviderResidencyIntervention=true
+         * @protected
+         */
+        acknowledgeProviderResidencyIntervention: true
     }
 
     lastWriteAt           = 0
@@ -621,7 +707,10 @@ export class DeploymentStateBridgeService extends Base {
      * @returns {Promise<Object|null>} `{ok, name, message}`, or `null` when no probe is declared for the
      * service or the probe itself could not run.
      */
-    async collectDirectProbe({serviceKey}) {
+    async collectDirectProbe({
+        serviceKey,
+        acknowledgeIntervention = this.acknowledgeDirectProbeIntervention
+    }) {
         const bridgeConfig = AiConfig.orchestrator.deploymentStateBridge,
               urls         = Array.isArray(bridgeConfig.directProbeUrls) ? bridgeConfig.directProbeUrls : [],
               // The URL's hostname IS the compose service key, so the declared list is self-describing
@@ -638,7 +727,8 @@ export class DeploymentStateBridgeService extends Base {
             return null;
         }
 
-        const probe = this.directProbeFn || runHealthcheck;
+        const probe       = this.directProbeFn || runHealthcheck,
+              disposition = resolveBridgeProbeDisposition(null, probe, RUN_HEALTHCHECK_PROBE_DISPOSITION);
 
         // The probe targets reject unauthenticated healthchecks. A configured-but-unreadable
         // token file is a loud, NAMED warn — evidence that cannot authenticate must not render
@@ -663,9 +753,18 @@ export class DeploymentStateBridgeService extends Base {
                 bearerToken
             });
 
-            return {ok: true, name: 'direct-endpoint-probe', message: null};
+            return {
+                ok     : true,
+                name   : 'direct-endpoint-probe',
+                message: null,
+                ...disposition,
+                acknowledgeIntervention: Boolean(acknowledgeIntervention)
+            };
         } catch (error) {
-            const outcome = classifyDirectProbeOutcome(error);
+            const outcome = classifyDirectProbeOutcome(error, {
+                probe,
+                acknowledgeIntervention
+            });
 
             if (!outcome) {
                 this.writeLog?.('WARN', `[DeploymentStateBridge] direct probe for ${serviceKey} produced no service evidence: ${error.message}`);
@@ -1269,20 +1368,24 @@ export class DeploymentStateBridgeService extends Base {
      * @param {Number} options.observedAt Epoch ms.
      * @returns {Promise<Object|null>}
      */
-    async collectProviderResidency({serviceKey, observedAt}) {
+    async collectProviderResidency({
+        serviceKey,
+        observedAt,
+        acknowledgeIntervention = this.acknowledgeProviderResidencyIntervention
+    }) {
         if (!this.isProviderResidencyServiceKey(serviceKey)) {
             return null;
         }
 
-        const targetIdentity = {kind: 'compose-service', id: serviceKey};
+        const targetIdentity = {kind: 'compose-service', id: serviceKey},
+              probe          = this.providerResidencyProbe || probeProviderParallelModelCapacity;
 
         try {
-            const probe  = this.providerResidencyProbe || probeProviderParallelModelCapacity,
-                  result = await probe({
-                      timeoutMs: AiConfig.orchestrator.providerReadiness.timeoutMs,
-                      serviceKey,
-                      observedAt
-                  });
+            const result = await probe({
+                timeoutMs: AiConfig.orchestrator.providerReadiness.timeoutMs,
+                serviceKey,
+                observedAt
+            });
 
             // Reachable ONLY through the injected seam. `probeProviderParallelModelCapacity` has
             // five exits — three `throw`s and two object literals — so the SHIPPED probe cannot
@@ -1299,17 +1402,35 @@ export class DeploymentStateBridgeService extends Base {
                 return null;
             }
 
+            const disposition = resolveBridgeProbeDisposition(
+                result,
+                probe,
+                PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION
+            );
+
             return {
                 ...result,
+                ...disposition,
+                acknowledgeIntervention: result.acknowledgeIntervention !== undefined
+                    ? Boolean(result.acknowledgeIntervention)
+                    : Boolean(acknowledgeIntervention),
                 targetIdentity
             };
         } catch (error) {
+            const disposition = resolveBridgeProbeDisposition(
+                error,
+                probe,
+                PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION
+            );
+
             return {
                 ready      : null,
                 degraded   : true,
                 provider   : 'unknown',
                 probeFailed: true,
                 message    : error.message,
+                ...disposition,
+                acknowledgeIntervention: Boolean(acknowledgeIntervention),
                 targetIdentity
             };
         }

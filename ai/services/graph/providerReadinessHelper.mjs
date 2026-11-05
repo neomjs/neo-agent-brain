@@ -3085,6 +3085,15 @@ export function createParallelModelCapacityWarning({
 }
 
 /**
+ * Definition-owned probe disposition metadata for {@link probeProviderParallelModelCapacity}.
+ * @type {Readonly<{probeDisposition: 'intervention', interventionEffect: ReadonlyArray<String>}>}
+ */
+export const PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION = Object.freeze({
+    probeDisposition  : 'intervention',
+    interventionEffect: Object.freeze(['abort-in-flight'])
+});
+
+/**
  * @summary Probes whether the configured graph provider has its active role models resident together.
  * @probeDisposition intervention (abort-in-flight)
  *
@@ -3120,11 +3129,13 @@ export async function probeProviderParallelModelCapacity({
 
     if (!target.supported || !target.host) {
         return {
-            ready    : true,
-            skipped  : true,
-            provider : target.provider,
-            supported: target.supported,
-            reason   : target.supported ? 'missing-host' : 'unsupported-provider'
+            ready             : true,
+            skipped           : true,
+            provider          : target.provider,
+            supported         : target.supported,
+            reason            : target.supported ? 'missing-host' : 'unsupported-provider',
+            probeDisposition  : PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION.probeDisposition,
+            interventionEffect: [...PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION.interventionEffect]
         };
     }
 
@@ -3161,19 +3172,21 @@ export async function probeProviderParallelModelCapacity({
 
     return {
         ready,
-        provider       : target.provider,
-        host           : target.host,
-        model          : target.model,
-        embeddingModel : target.embeddingModel,
+        provider          : target.provider,
+        host              : target.host,
+        model             : target.model,
+        embeddingModel    : target.embeddingModel,
         requireParallelModels,
         requiredModels,
-        availableModels: uniqueAvailable,
+        availableModels   : uniqueAvailable,
         extraModels,
         missingModels,
         observedCount,
         observedRequiredCount,
         requiredResidentModels,
-        warning        : ready ? null : createParallelModelCapacityWarning({
+        probeDisposition  : PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION.probeDisposition,
+        interventionEffect: [...PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION.interventionEffect],
+        warning           : ready ? null : createParallelModelCapacityWarning({
             provider             : target.provider,
             model                : target.model,
             embeddingModel       : target.embeddingModel,
@@ -3187,6 +3200,8 @@ export async function probeProviderParallelModelCapacity({
         })
     };
 }
+
+Object.assign(probeProviderParallelModelCapacity, PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION);
 
 /**
  * @summary Emits a non-blocking warning when provider model residency cannot satisfy the REM cycle.

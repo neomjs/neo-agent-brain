@@ -171,6 +171,24 @@ const
     ]),
 
     /**
+     * Explicit allowlist of non-probe functions inside probe-surface modules that arm an execution
+     * deadline (`daemons/wake/localWakeAdapters.mjs` shares wake-delivery adapters with
+     * `probeOpenCodeSession`, and `opencodeWakeEnvelopePlugin.mjs` wraps `getSession` inside the
+     * `NeoWakeEnvelope` plugin factory). Any other deadline-abort or probe-helper function added to
+     * a probe-surface module is treated as a probe site and must be declared in `PROBE_POPULATION_CENSUS`.
+     */
+    NON_PROBE_ABORT_SITES_IN_PROBE_MODULES = Object.freeze({
+        'daemons/wake/localWakeAdapters.mjs'           : Object.freeze(['dispatchLocalWake', 'postOpenCodeDigest', 'deliverKimiServer']),
+        'services/fleet/opencodeWakeEnvelopePlugin.mjs': Object.freeze(['NeoWakeEnvelope'])
+    }),
+
+    JS_CONTROL_KEYWORDS = new Set([
+        'if', 'for', 'while', 'switch', 'catch', 'function', 'return', 'throw',
+        'new', 'delete', 'typeof', 'void', 'yield', 'await', 'class', 'constructor',
+        'super', 'import', 'export', 'try', 'finally', 'else', 'do', 'with'
+    ]),
+
+    /**
      * Checked-in enumeration of the intersection between "issues a request / actuates state" and
      * "is used as a probe / canary / liveness / readiness / residency check" across `ai/`.
      */
@@ -458,32 +476,215 @@ const
     ]);
 
 /**
+ * Replaces JS comments, string literals, regex literals, and template literal text chunks with
+ * spaces of identical length (preserving line breaks and executable `${...}` template expressions)
+ * so lexical scanning and brace-balanced function extraction never treat comment/string/regex
+ * tokens or braces as executable syntax.
+ *
+ * @param {String} sourceText
+ * @returns {String}
+ */
+function stripNonExecutableJs(sourceText) {
+    const length        = sourceText.length,
+          out           = new Array(length),
+          templateStack = [];
+
+    let i             = 0,
+        prevTokenChar = '';
+
+    const canStartRegex = () => {
+        if (!prevTokenChar) return true;
+        return '(!%&*+,-.:;<=>?[^{|~'.includes(prevTokenChar);
+    };
+
+    const blankChar = ch => (ch === '\n' || ch === '\r' ? ch : ' ');
+
+    while (i < length) {
+        const ch   = sourceText[i],
+              next = sourceText[i + 1];
+
+        // 1. Single-line comment `// ...`
+        if (ch === '/' && next === '/') {
+            out[i]     = ' ';
+            out[i + 1] = ' ';
+            i += 2;
+            while (i < length && sourceText[i] !== '\n' && sourceText[i] !== '\r') {
+                out[i] = ' ';
+                i++;
+            }
+            continue;
+        }
+
+        // 2. Block comment `/* ... */`
+        if (ch === '/' && next === '*') {
+            out[i]     = ' ';
+            out[i + 1] = ' ';
+            i += 2;
+            while (i < length && !(sourceText[i] === '*' && sourceText[i + 1] === '/')) {
+                out[i] = blankChar(sourceText[i]);
+                i++;
+            }
+            if (i < length) {
+                out[i]     = ' ';
+                out[i + 1] = ' ';
+                i += 2;
+            }
+            continue;
+        }
+
+        // 3. Single- or double-quoted string literal
+        if (ch === '\'' || ch === '"') {
+            const quote = ch;
+            out[i++] = ' ';
+            while (i < length) {
+                const c = sourceText[i];
+                out[i++] = blankChar(c);
+                if (c === '\\' && i < length) {
+                    out[i] = blankChar(sourceText[i]);
+                    i++;
+                    continue;
+                }
+                if (c === quote) break;
+            }
+            prevTokenChar = '"';
+            continue;
+        }
+
+        // 4. Template literal start or continuation after `${ ... }`
+        if (ch === '`') {
+            out[i++] = ' ';
+            while (i < length) {
+                const c = sourceText[i];
+                if (c === '\\' && i + 1 < length) {
+                    out[i]     = blankChar(c);
+                    out[i + 1] = blankChar(sourceText[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                if (c === '$' && sourceText[i + 1] === '{') {
+                    out[i]     = ' ';
+                    out[i + 1] = ' ';
+                    i += 2;
+                    templateStack.push({braceDepth: 0});
+                    prevTokenChar = '(';
+                    break;
+                }
+                out[i++] = blankChar(c);
+                if (c === '`') {
+                    prevTokenChar = '"';
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // 5. Inside `${ ... }` template expression: closing `}` at braceDepth 0 resumes template text
+        if (templateStack.length > 0) {
+            const top = templateStack[templateStack.length - 1];
+            if (ch === '{') {
+                top.braceDepth++;
+            } else if (ch === '}') {
+                if (top.braceDepth === 0) {
+                    templateStack.pop();
+                    out[i++] = ' ';
+                    while (i < length) {
+                        const c = sourceText[i];
+                        if (c === '\\' && i + 1 < length) {
+                            out[i]     = blankChar(c);
+                            out[i + 1] = blankChar(sourceText[i + 1]);
+                            i += 2;
+                            continue;
+                        }
+                        if (c === '$' && sourceText[i + 1] === '{') {
+                            out[i]     = ' ';
+                            out[i + 1] = ' ';
+                            i += 2;
+                            templateStack.push({braceDepth: 0});
+                            prevTokenChar = '(';
+                            break;
+                        }
+                        out[i++] = blankChar(c);
+                        if (c === '`') {
+                            prevTokenChar = '"';
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                top.braceDepth--;
+            }
+        }
+
+        // 6. Regex literal `/.../`
+        if (ch === '/' && canStartRegex()) {
+            out[i++] = ' ';
+            let inCharClass = false;
+            while (i < length) {
+                const c = sourceText[i];
+                if (c === '\n' || c === '\r') {
+                    out[i++] = c;
+                    break;
+                }
+                out[i++] = ' ';
+                if (c === '\\' && i < length) {
+                    out[i] = blankChar(sourceText[i]);
+                    i++;
+                    continue;
+                }
+                if (c === '[') inCharClass = true;
+                else if (c === ']') inCharClass = false;
+                else if (c === '/' && !inCharClass) {
+                    while (i < length && /[a-z]/i.test(sourceText[i])) {
+                        out[i++] = ' ';
+                    }
+                    break;
+                }
+            }
+            prevTokenChar = '/';
+            continue;
+        }
+
+        out[i++] = ch;
+        if (!/\s/.test(ch)) {
+            prevTokenChar = ch;
+        }
+    }
+
+    return out.join('');
+}
+
+/**
  * Walks a directory tree and returns every `.mjs` file that arms `new AbortController()` or
- * `AbortSignal.timeout()`, along with which deadline spellings appear in the file.
+ * `AbortSignal.timeout()` in executable code, along with which deadline spellings appear in the file.
  * @param {String} rootDir
+ * @param {Object<String, String>} [sourceOverrides={}]
  * @returns {Array<{module: String, deadlineSpellings: String[]}>}
  */
-function scanAbortDeadlineModules(rootDir) {
+function scanAbortDeadlineModules(rootDir, sourceOverrides = {}) {
     const entries = fs.readdirSync(rootDir, {recursive: true, withFileTypes: true});
     const matches = [];
 
     for (const entry of entries) {
         if (!entry.isFile() || !entry.name.endsWith('.mjs')) continue;
 
-        const fullPath  = path.join(entry.parentPath, entry.name),
-              source    = fs.readFileSync(fullPath, 'utf8'),
-              spellings = [];
+        const fullPath   = path.join(entry.parentPath, entry.name),
+              modulePath = path.relative(rootDir, fullPath).split(path.sep).join('/'),
+              source     = Object.hasOwn(sourceOverrides, modulePath)
+                  ? sourceOverrides[modulePath]
+                  : fs.readFileSync(fullPath, 'utf8'),
+              executableSource = stripNonExecutableJs(source),
+              spellings        = [];
 
-        if (DEADLINE_ABORT_PATTERNS.abortController.test(source)) {
+        if (DEADLINE_ABORT_PATTERNS.abortController.test(executableSource)) {
             spellings.push('new AbortController()');
         }
-        if (DEADLINE_ABORT_PATTERNS.abortSignalTimeout.test(source)) {
+        if (DEADLINE_ABORT_PATTERNS.abortSignalTimeout.test(executableSource)) {
             spellings.push('AbortSignal.timeout()');
         }
 
         if (spellings.length > 0) {
             matches.push({
-                module           : path.relative(rootDir, fullPath).split(path.sep).join('/'),
+                module           : modulePath,
                 deadlineSpellings: spellings
             });
         }
@@ -493,22 +694,25 @@ function scanAbortDeadlineModules(rootDir) {
 }
 
 /**
- * Extracts a function or method's immediately preceding JSDoc comment and brace-balanced body.
+ * Extracts a function or method's immediately preceding JSDoc comment and brace-balanced body
+ * using lexical-stripped executable boundaries so comment/string/regex braces cannot truncate
+ * or extend the function body.
  * @param {String} sourceText
  * @param {String} symbol
- * @returns {{jsdoc: String|null, body: String}}
+ * @returns {{jsdoc: String|null, body: String, executableBody: String}}
  */
 function extractSymbolInspectionUnit(sourceText, symbol) {
-    const escaped  = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
-          patterns = [
+    const executableText = stripNonExecutableJs(sourceText),
+          escaped        = symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+          patterns       = [
               new RegExp(`^[ \\t]*(?:export\\s+)?(?:async\\s+)?function\\s+${escaped}\\b`, 'm'),
-              new RegExp(`^[ \\t]*(?:const|let|var)\\s+${escaped}\\s*=\\s*(?:async\\s*)?(?:function\\b|\\([^)]*\\)\\s*=>|[A-Za-z0-9_$]+\\s*=>)`, 'm'),
-              new RegExp(`^[ \\t]*(?:async\\s+)?${escaped}\\s*\\([^)]*\\)\\s*\\{`, 'm')
+              new RegExp(`^[ \\t]*(?:export\\s+)?(?:const|let|var)\\s+${escaped}\\s*=\\s*(?:async\\s*)?(?:function\\b|\\([^)]*\\)\\s*=>|[A-Za-z0-9_$]+\\s*=>)`, 'm'),
+              new RegExp(`^[ \\t]*(?:static\\s+)?(?:async\\s+)?${escaped}\\s*\\([^)]*\\)\\s*\\{`, 'm')
           ];
 
     let match = null;
     for (const pattern of patterns) {
-        const candidate = pattern.exec(sourceText);
+        const candidate = pattern.exec(executableText);
         if (candidate && (!match || candidate.index < match.index)) {
             match = candidate;
         }
@@ -530,7 +734,7 @@ function extractSymbolInspectionUnit(sourceText, symbol) {
         }
     }
 
-    const openParenIndex = sourceText.indexOf('(', declarationStart);
+    const openParenIndex = executableText.indexOf('(', declarationStart);
     if (openParenIndex === -1) {
         throw new Error(`Could not locate parameter list for symbol '${symbol}'`);
     }
@@ -538,8 +742,8 @@ function extractSymbolInspectionUnit(sourceText, symbol) {
     let parenDepth      = 0,
         closeParenIndex = openParenIndex;
 
-    for (let i = openParenIndex; i < sourceText.length; i++) {
-        const ch = sourceText[i];
+    for (let i = openParenIndex; i < executableText.length; i++) {
+        const ch = executableText[i];
         if (ch === '(') parenDepth++;
         else if (ch === ')') {
             parenDepth--;
@@ -550,7 +754,7 @@ function extractSymbolInspectionUnit(sourceText, symbol) {
         }
     }
 
-    const openBraceIndex = sourceText.indexOf('{', closeParenIndex);
+    const openBraceIndex = executableText.indexOf('{', closeParenIndex);
     if (openBraceIndex === -1) {
         throw new Error(`Could not locate opening brace for symbol '${symbol}'`);
     }
@@ -558,8 +762,8 @@ function extractSymbolInspectionUnit(sourceText, symbol) {
     let depth    = 0,
         endIndex = openBraceIndex;
 
-    for (let i = openBraceIndex; i < sourceText.length; i++) {
-        const ch = sourceText[i];
+    for (let i = openBraceIndex; i < executableText.length; i++) {
+        const ch = executableText[i];
         if (ch === '{') depth++;
         else if (ch === '}') {
             depth--;
@@ -572,8 +776,66 @@ function extractSymbolInspectionUnit(sourceText, symbol) {
 
     return {
         jsdoc,
-        body: sourceText.slice(declarationStart, endIndex)
+        body          : sourceText.slice(declarationStart, endIndex),
+        executableBody: executableText.slice(declarationStart, endIndex)
     };
+}
+
+/**
+ * Discovers probe symbols inside a probe-surface module by scanning all function and method
+ * declarations in `executableText` (in addition to `censusSymbolsForModule`) so newly added
+ * intra-module probe functions or deadline-abort/probe-helper call sites cannot escape the guard.
+ *
+ * @param {String} modulePath
+ * @param {String} sourceText
+ * @param {Set<String>} censusSymbolsForModule
+ * @returns {String[]}
+ */
+function discoverModuleProbeSymbols(modulePath, sourceText, censusSymbolsForModule = new Set()) {
+    const executableText    = stripNonExecutableJs(sourceText),
+          discovered        = new Set(censusSymbolsForModule),
+          nonProbeAllowlist = NON_PROBE_ABORT_SITES_IN_PROBE_MODULES[modulePath] || [],
+          declPatterns      = [
+              /^[ \t]*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\(/gm,
+              /^[ \t]*(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z0-9_$]+\s*=>)/gm,
+              /^[ \t]*(?:static\s+)?(?:async\s+)?([A-Za-z0-9_$]+)\s*\([^)]*\)\s*\{/gm
+          ],
+          candidateNames = new Set();
+
+    for (const pattern of declPatterns) {
+        let match;
+        while ((match = pattern.exec(executableText)) !== null) {
+            const symbol = match[1];
+            if (!symbol || JS_CONTROL_KEYWORDS.has(symbol)) continue;
+            candidateNames.add(symbol);
+        }
+    }
+
+    for (const symbol of candidateNames) {
+        if (discovered.has(symbol) || nonProbeAllowlist.includes(symbol)) continue;
+
+        let unit;
+        try {
+            unit = extractSymbolInspectionUnit(sourceText, symbol);
+        } catch {
+            continue;
+        }
+
+        const openBraceOffset    = unit.executableBody.indexOf('{'),
+              bodyAfterOpenBrace = openBraceOffset === -1
+                  ? unit.executableBody
+                  : unit.executableBody.slice(openBraceOffset + 1),
+              hasDispositionTag   = parseProbeDispositionTag(unit.jsdoc) !== null,
+              armsDeadlineAbort   = DEADLINE_ABORT_PATTERNS.abortController.test(unit.executableBody) ||
+                  DEADLINE_ABORT_PATTERNS.abortSignalTimeout.test(unit.executableBody),
+              callsDiscoveryProbe = /\brunProviderDiscoveryProbe\s*\(/.test(bodyAfterOpenBrace);
+
+        if (hasDispositionTag || armsDeadlineAbort || callsDiscoveryProbe) {
+            discovered.add(symbol);
+        }
+    }
+
+    return [...discovered];
 }
 
 /**
@@ -611,8 +873,8 @@ function parseProbeDispositionTag(jsdoc) {
  * - `observation` naming intervention effects fails (`observation-declares-effects`).
  * - `intervention` without named effects fails (`missing-intervention-effect`) or with unknown
  *   effects fails (`invalid-intervention-effect`).
- * - `observation` arming `new AbortController()` or `AbortSignal.timeout()` in its body fails
- *   (`observation-arms-deadline-abort`).
+ * - `observation` arming `new AbortController()` or `AbortSignal.timeout()` in its executable body
+ *   fails (`observation-arms-deadline-abort`).
  *
  * @param {Object} options
  * @param {String|null} options.jsdoc
@@ -622,8 +884,9 @@ function parseProbeDispositionTag(jsdoc) {
  */
 function auditProbeInspectionUnit({jsdoc, body, allowedEffects}) {
     const parsed            = parseProbeDispositionTag(jsdoc),
-          armsDeadlineAbort = DEADLINE_ABORT_PATTERNS.abortController.test(body) ||
-              DEADLINE_ABORT_PATTERNS.abortSignalTimeout.test(body);
+          executableBody    = stripNonExecutableJs(body),
+          armsDeadlineAbort = DEADLINE_ABORT_PATTERNS.abortController.test(executableBody) ||
+              DEADLINE_ABORT_PATTERNS.abortSignalTimeout.test(executableBody);
 
     if (!parsed) {
         return {
@@ -717,13 +980,162 @@ function assertNonVacuousProbeScan({abortModules, probeUnits}) {
     }
 }
 
+/**
+ * Executes the full population + intra-module probe disposition guard across `ai/`.
+ *
+ * - Direction A (must fail):
+ *   1. An `observation` probe arms `new AbortController()` or `AbortSignal.timeout()` (including when
+ *      hidden behind comment/string/regex closing braces).
+ *   2. A newly introduced undeclared probe function or deadline-abort/probe-helper call site is added
+ *      inside an existing probe-surface module or an unenumerated module under `ai/`.
+ *   3. A probe omits `@probeDisposition` or an `intervention` probe omits a valid named effect.
+ * - Direction B (must pass):
+ *   Removing an existing deadline abort (`new AbortController()` / `AbortSignal.timeout()`) from a
+ *   declared `intervention` probe passes the full guard without failure.
+ *
+ * @param {Object} [options={}]
+ * @param {String} [options.rootDir=aiRoot]
+ * @param {Object<String, String>} [options.sourceOverrides={}]
+ * @param {Array} [options.census=PROBE_POPULATION_CENSUS]
+ * @param {String[]} [options.allowedEffects]
+ * @returns {{ok: Boolean, failures: Array<{module: String, symbol: String|null, reason: String}>, liveScan: Array}}
+ */
+function evaluateProbePopulationGuard({
+    rootDir         = aiRoot,
+    sourceOverrides = {},
+    census          = PROBE_POPULATION_CENSUS,
+    allowedEffects  = []
+} = {}) {
+    const liveScan = scanAbortDeadlineModules(rootDir, sourceOverrides);
+    assertNonVacuousProbeScan({abortModules: liveScan, probeUnits: census});
+
+    const failures = [];
+
+    for (const item of liveScan) {
+        const censusEntry = ABORT_DEADLINE_MODULE_CENSUS[item.module];
+        if (!censusEntry) {
+            failures.push({
+                module: item.module,
+                symbol: null,
+                reason: 'unenumerated-abort-deadline-module'
+            });
+            continue;
+        }
+
+        for (const spelling of item.deadlineSpellings) {
+            if (!censusEntry.deadlineSpellings.includes(spelling)) {
+                failures.push({
+                    module: item.module,
+                    symbol: null,
+                    reason: `undeclared-module-deadline-spelling:${spelling}`
+                });
+            }
+        }
+    }
+
+    const expectedProbeSurfaceModules = [
+        ...Object.entries(ABORT_DEADLINE_MODULE_CENSUS)
+            .filter(([, entry]) => entry.probeSurface)
+            .map(([modulePath]) => modulePath),
+        ...NON_ABORT_RESIDENCY_AND_PROBE_HOOK_MODULES
+    ].sort();
+
+    for (const modulePath of expectedProbeSurfaceModules) {
+        const sourceText = Object.hasOwn(sourceOverrides, modulePath)
+            ? sourceOverrides[modulePath]
+            : fs.readFileSync(path.join(rootDir, modulePath), 'utf8');
+
+        const moduleCensusEntries    = census.filter(entry => entry.module === modulePath),
+              censusSymbolsForModule = new Set(moduleCensusEntries.map(entry => entry.symbol)),
+              discoveredSymbols      = discoverModuleProbeSymbols(modulePath, sourceText, censusSymbolsForModule);
+
+        for (const symbol of discoveredSymbols) {
+            let unit;
+            try {
+                unit = extractSymbolInspectionUnit(sourceText, symbol);
+            } catch (error) {
+                failures.push({
+                    module: modulePath,
+                    symbol,
+                    reason: `missing-symbol:${error.message}`
+                });
+                continue;
+            }
+
+            const audit = auditProbeInspectionUnit({
+                jsdoc: unit.jsdoc,
+                body : unit.body,
+                allowedEffects
+            });
+
+            if (!audit.ok) {
+                failures.push({
+                    module: modulePath,
+                    symbol,
+                    reason: audit.reason
+                });
+            }
+
+            const censusEntry = moduleCensusEntries.find(entry => entry.symbol === symbol);
+            if (!censusEntry) {
+                failures.push({
+                    module: modulePath,
+                    symbol,
+                    reason: 'undeclared-in-probe-census'
+                });
+                continue;
+            }
+
+            if (audit.ok) {
+                if (audit.parsed.disposition !== censusEntry.disposition) {
+                    failures.push({
+                        module: modulePath,
+                        symbol,
+                        reason: 'census-disposition-mismatch'
+                    });
+                }
+                if (JSON.stringify(audit.parsed.effects) !== JSON.stringify(censusEntry.effects)) {
+                    failures.push({
+                        module: modulePath,
+                        symbol,
+                        reason: 'census-effects-mismatch'
+                    });
+                }
+                if (audit.armsDeadlineAbort && (
+                    !censusEntry.armsDeadlineAbort ||
+                    censusEntry.disposition !== 'intervention' ||
+                    !censusEntry.effects.includes('abort-in-flight')
+                )) {
+                    failures.push({
+                        module: modulePath,
+                        symbol,
+                        reason: 'undeclared-deadline-abort'
+                    });
+                }
+            }
+        }
+    }
+
+    return {
+        ok      : failures.length === 0,
+        failures,
+        liveScan
+    };
+}
+
 test.describe('Probe mutation disposition census and mechanical guard', () => {
     let ContainerHealthDiagnosisService,
         CONTAINER_HEALTH_ACTION_CLASSES,
         CONTAINER_HEALTH_FACT_TYPES,
         PROBE_DISPOSITIONS,
         PROBE_INTERVENTION_EFFECTS,
-        resolveConsumedProbeAuthority;
+        resolveConsumedProbeAuthority,
+        DeploymentStateBridgeService,
+        classifyDirectProbeOutcome,
+        RUN_HEALTHCHECK_PROBE_DISPOSITION,
+        runHealthcheck,
+        PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION,
+        probeProviderParallelModelCapacity;
 
     test.beforeAll(async () => {
         ({
@@ -734,13 +1146,31 @@ test.describe('Probe mutation disposition census and mechanical guard', () => {
             PROBE_INTERVENTION_EFFECTS,
             resolveConsumedProbeAuthority
         } = await import('../../../../../../ai/daemons/orchestrator/services/ContainerHealthDiagnosisService.mjs'));
+
+        ({
+            default: DeploymentStateBridgeService,
+            classifyDirectProbeOutcome
+        } = await import('../../../../../../ai/daemons/orchestrator/services/DeploymentStateBridgeService.mjs'));
+
+        ({
+            RUN_HEALTHCHECK_PROBE_DISPOSITION,
+            runHealthcheck
+        } = await import('../../../../../../ai/scripts/diagnostics/mcpHealthcheck.mjs'));
+
+        ({
+            PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION,
+            probeProviderParallelModelCapacity
+        } = await import('../../../../../../ai/services/graph/providerReadinessHelper.mjs'));
     });
 
     test('AC-1 TOTALITY: all 25 abort-deadline modules and residency hook seams under ai/ are enumerated', () => {
-        const liveScan      = scanAbortDeadlineModules(aiRoot),
+        const guardResult   = evaluateProbePopulationGuard({allowedEffects: PROBE_INTERVENTION_EFFECTS}),
+              liveScan      = guardResult.liveScan,
               liveModules   = liveScan.map(item => item.module),
               censusModules = Object.keys(ABORT_DEADLINE_MODULE_CENSUS).sort();
 
+        expect(guardResult.ok, `live probe population guard failed: ${JSON.stringify(guardResult.failures)}`)
+            .toBe(true);
         expect(liveModules, 'a module under ai/ added or removed new AbortController() / AbortSignal.timeout() without updating ABORT_DEADLINE_MODULE_CENSUS')
             .toEqual(censusModules);
         expect(liveModules.length).toBe(25);
@@ -781,28 +1211,16 @@ test.describe('Probe mutation disposition census and mechanical guard', () => {
                 .toBe(entry.disposition);
             expect(audit.parsed.effects, `${entry.module}#${entry.symbol} effects mismatch`)
                 .toEqual(entry.effects);
-            expect(audit.armsDeadlineAbort, `${entry.module}#${entry.symbol} armsDeadlineAbort mismatch`)
+            expect(audit.armsDeadlineAbort, `${entry.module}#${entry.symbol} baseline armsDeadlineAbort mismatch`)
                 .toBe(entry.armsDeadlineAbort);
         }
     });
 
-    test('AC-3 GUARD & BIDIRECTIONAL MUTATION CONVICTION: observation probes cannot arm deadline aborts; ollamaStuckRunnerLiveness fixture convicts', () => {
-        // 1. Live observation population passes.
-        const liveObservations = PROBE_POPULATION_CENSUS.filter(entry => entry.disposition === 'observation');
-        expect(liveObservations.length).toBeGreaterThan(0);
-
-        for (const entry of liveObservations) {
-            const sourceText = fs.readFileSync(path.join(aiRoot, entry.module), 'utf8'),
-                  unit       = extractSymbolInspectionUnit(sourceText, entry.symbol),
-                  audit      = auditProbeInspectionUnit({
-                      jsdoc         : unit.jsdoc,
-                      body          : unit.body,
-                      allowedEffects: PROBE_INTERVENTION_EFFECTS
-                  });
-
-            expect(audit.ok).toBe(true);
-            expect(audit.armsDeadlineAbort).toBe(false);
-        }
+    test('AC-3 GUARD & BIDIRECTIONAL MUTATION CONVICTION: full guard convicts observation aborts, comment/string brace hiding, and reachable same-module additions while passing abort removal', () => {
+        // 1. Live population passes the full guard.
+        const baselineGuard = evaluateProbePopulationGuard({allowedEffects: PROBE_INTERVENTION_EFFECTS});
+        expect(baselineGuard.ok).toBe(true);
+        expect(baselineGuard.failures).toEqual([]);
 
         // 2. Direction A (Positive Control 1): Reproduce the deleted `ollamaStuckRunnerLiveness.mjs`
         // `probeOllamaServing` pattern (`new AbortController()` + `setTimeout(() => controller.abort(), canaryTimeoutMs)`)
@@ -838,44 +1256,109 @@ test.describe('Probe mutation disposition census and mechanical guard', () => {
         expect(stuckRunnerAudit.reason).toBe('observation-arms-deadline-abort');
         expect(stuckRunnerAudit.armsDeadlineAbort).toBe(true);
 
-        // 3. Direction A (Positive Control 2): Mutate a live `observation` probe (`probeTcpPort`) to arm
-        // `AbortSignal.timeout(timeoutMs)` -> MUST FAIL the guard (proving both spellings are caught).
-        const taskDefsSource     = fs.readFileSync(path.join(aiRoot, 'daemons/orchestrator/taskDefinitions.mjs'), 'utf8'),
-              probeTcpPortUnit   = extractSymbolInspectionUnit(taskDefsSource, 'probeTcpPort'),
-              mutatedObservation = auditProbeInspectionUnit({
-                  jsdoc: probeTcpPortUnit.jsdoc,
-                  body : probeTcpPortUnit.body.replace(
-                      'socket.setTimeout(Number(timeoutMs));',
-                      'const signal = AbortSignal.timeout(Number(timeoutMs));'
-                  ),
-                  allowedEffects: PROBE_INTERVENTION_EFFECTS
+        // 3. Direction A (Positive Control 2): Mutate a live `observation` probe (`probeTcpPort` in
+        // `daemons/orchestrator/taskDefinitions.mjs`) to arm `new AbortController()` -> MUST FAIL the full guard.
+        const taskDefsModule  = 'daemons/orchestrator/taskDefinitions.mjs',
+              taskDefsSource  = fs.readFileSync(path.join(aiRoot, taskDefsModule), 'utf8'),
+              mutatedTcpGuard = evaluateProbePopulationGuard({
+                  allowedEffects : PROBE_INTERVENTION_EFFECTS,
+                  sourceOverrides: {
+                      [taskDefsModule]: taskDefsSource.replace(
+                          'socket.setTimeout(Number(timeoutMs));',
+                          'const controller = new AbortController(); socket.setTimeout(Number(timeoutMs));'
+                      )
+                  }
               });
 
-        expect(mutatedObservation.ok).toBe(false);
-        expect(mutatedObservation.reason).toBe('observation-arms-deadline-abort');
+        expect(mutatedTcpGuard.ok).toBe(false);
+        expect(mutatedTcpGuard.failures).toContainEqual({
+            module: taskDefsModule,
+            symbol: 'probeTcpPort',
+            reason: 'observation-arms-deadline-abort'
+        });
 
-        // 4. Direction B (Inverse Control): Removing an abort from a declared `intervention` probe
-        // (`probeChromaHttpHealth` and `fetchOpenAiCompatibleModelIds`) does NOT fail the guard.
-        const chromaUnit           = extractSymbolInspectionUnit(taskDefsSource, 'probeChromaHttpHealth'),
-              disarmedIntervention = auditProbeInspectionUnit({
-                  jsdoc         : chromaUnit.jsdoc,
-                  body          : chromaUnit.body.replace('new AbortController()', '({signal: undefined})'),
-                  allowedEffects: PROBE_INTERVENTION_EFFECTS
+        // 4. Direction A (Positive Control 3 — Comment / String / Regex Brace Hiding Control):
+        // Insert a closing brace inside a line comment (`// }`), a string (`"}"`), and a regex (`/\}/`)
+        // before `AbortSignal.timeout(timeoutMs)` inside `fetchLmsLoadedModels` (`@probeDisposition observation`).
+        // A naive brace counter would terminate the body early at `// }` and miss the abort; the lexical
+        // scanner keeps the full executable body intact and convicts through the full guard.
+        const readinessModule          = 'services/graph/providerReadinessHelper.mjs',
+              readinessSource          = fs.readFileSync(path.join(aiRoot, readinessModule), 'utf8'),
+              commentBraceHidingSource = readinessSource.replace(
+                  "if (typeof timeoutMs !== 'number') {",
+                  "// }\n    const braceString = '}';\n    const braceRegex = /\\}/;\n    const hiddenAbortSignal = AbortSignal.timeout(timeoutMs);\n    if (typeof timeoutMs !== 'number') {"
+              ),
+              commentBraceGuard = evaluateProbePopulationGuard({
+                  allowedEffects : PROBE_INTERVENTION_EFFECTS,
+                  sourceOverrides: {
+                      [readinessModule]: commentBraceHidingSource
+                  }
               });
 
-        expect(disarmedIntervention.ok).toBe(true);
-        expect(disarmedIntervention.armsDeadlineAbort).toBe(false);
+        expect(commentBraceGuard.ok).toBe(false);
+        expect(commentBraceGuard.failures).toContainEqual({
+            module: readinessModule,
+            symbol: 'fetchLmsLoadedModels',
+            reason: 'observation-arms-deadline-abort'
+        });
 
-        const readinessSource       = fs.readFileSync(path.join(aiRoot, 'services/graph/providerReadinessHelper.mjs'), 'utf8'),
-              openAiModelsUnit      = extractSymbolInspectionUnit(readinessSource, 'fetchOpenAiCompatibleModelIds'),
-              disarmedTimeoutSignal = auditProbeInspectionUnit({
-                  jsdoc         : openAiModelsUnit.jsdoc,
-                  body          : openAiModelsUnit.body.replace('AbortSignal.timeout(timeoutMs)', 'undefined'),
-                  allowedEffects: PROBE_INTERVENTION_EFFECTS
+        // 5. Direction A (Positive Control 4 — Reachable Same-Module Undeclared Probe Addition):
+        // Append a newly introduced undeclared probe function inside `services/graph/providerReadinessHelper.mjs`
+        // (both one arming `AbortSignal.timeout(timeoutMs)` and one delegating through `runProviderDiscoveryProbe`).
+        // Even though the module-level spelling set for `providerReadinessHelper.mjs` is unchanged, intra-module
+        // discovery catches both undeclared probe functions and fails the full guard.
+        const sameModuleAddedSource = `${readinessSource}\n
+export async function probeAddedModelIds({host, timeoutMs, fetchFn = fetch} = {}) {
+    return runProviderDiscoveryProbe({
+        key: \`added:\${host}:\${timeoutMs}\`,
+        caller: 'probeAddedModelIds',
+        async runProbe() {
+            const response = await fetchFn(host, {signal: AbortSignal.timeout(timeoutMs)});
+            return response.ok;
+        }
+    });
+}
+`,
+              sameModuleAddedGuard = evaluateProbePopulationGuard({
+                  allowedEffects : PROBE_INTERVENTION_EFFECTS,
+                  sourceOverrides: {
+                      [readinessModule]: sameModuleAddedSource
+                  }
               });
 
-        expect(disarmedTimeoutSignal.ok).toBe(true);
-        expect(disarmedTimeoutSignal.armsDeadlineAbort).toBe(false);
+        expect(sameModuleAddedGuard.ok).toBe(false);
+        expect(sameModuleAddedGuard.failures).toContainEqual({
+            module: readinessModule,
+            symbol: 'probeAddedModelIds',
+            reason: 'missing-probe-disposition'
+        });
+        expect(sameModuleAddedGuard.failures).toContainEqual({
+            module: readinessModule,
+            symbol: 'probeAddedModelIds',
+            reason: 'undeclared-in-probe-census'
+        });
+
+        // 6. Direction B (Inverse Control): Removing the existing deadline abort from declared `intervention`
+        // probes (`fetchOpenAiCompatibleModelIds` in `providerReadinessHelper.mjs` and `probeChromaHttpHealth`
+        // in `taskDefinitions.mjs`) PASSES the full guard (`evaluateProbePopulationGuard`).
+        const disarmedReadinessSource = readinessSource.replace(
+                  'signal: AbortSignal.timeout(timeoutMs)',
+                  'signal: undefined'
+              ),
+              disarmedTaskDefsSource = taskDefsSource.replace(
+                  'const controller = new AbortController();',
+                  'const controller = {abort() {}, signal: undefined};'
+              ),
+              directionBGuard = evaluateProbePopulationGuard({
+                  allowedEffects : PROBE_INTERVENTION_EFFECTS,
+                  sourceOverrides: {
+                      [readinessModule]: disarmedReadinessSource,
+                      [taskDefsModule] : disarmedTaskDefsSource
+                  }
+              });
+
+        expect(directionBGuard.ok).toBe(true);
+        expect(directionBGuard.failures).toEqual([]);
     });
 
     test('AC-4 NON-VACUITY CONTROL: the live scan finds known members and an empty scan fails loudly', () => {
@@ -910,17 +1393,21 @@ test.describe('Probe mutation disposition census and mechanical guard', () => {
     });
 
     test('AC-5 UNDECLARED PROBE FAILS: omitting @probeDisposition or omitting an intervention effect fails instead of defaulting to observation', () => {
-        const taskDefsSource   = fs.readFileSync(path.join(aiRoot, 'daemons/orchestrator/taskDefinitions.mjs'), 'utf8'),
-              probeTcpPortUnit = extractSymbolInspectionUnit(taskDefsSource, 'probeTcpPort');
+        const taskDefsModule = 'daemons/orchestrator/taskDefinitions.mjs',
+              taskDefsSource = fs.readFileSync(path.join(aiRoot, taskDefsModule), 'utf8'),
+              strippedGuard  = evaluateProbePopulationGuard({
+                  allowedEffects : PROBE_INTERVENTION_EFFECTS,
+                  sourceOverrides: {
+                      [taskDefsModule]: taskDefsSource.replace(/\s*\*\s*@probeDisposition\s+observation/, '')
+                  }
+              });
 
-        const strippedDisposition = auditProbeInspectionUnit({
-            jsdoc         : probeTcpPortUnit.jsdoc.replace(/\s*\*\s*@probeDisposition[^\n\r]*/, ''),
-            body          : probeTcpPortUnit.body,
-            allowedEffects: PROBE_INTERVENTION_EFFECTS
+        expect(strippedGuard.ok).toBe(false);
+        expect(strippedGuard.failures).toContainEqual({
+            module: taskDefsModule,
+            symbol: 'probeTcpPort',
+            reason: 'missing-probe-disposition'
         });
-
-        expect(strippedDisposition.ok).toBe(false);
-        expect(strippedDisposition.reason).toBe('missing-probe-disposition');
 
         const missingEffect = auditProbeInspectionUnit({
             jsdoc         : '/**\n * @summary Canary.\n * @probeDisposition intervention\n */',
@@ -950,68 +1437,59 @@ test.describe('Probe mutation disposition census and mechanical guard', () => {
         expect(unknownEffect.reason).toBe('invalid-intervention-effect:invented-effect');
     });
 
-    test('AC-6 DIAGNOSIS CONSUMING SEAM: a probe declared intervention cannot silently back or corroborate an authoritative diagnosis fact', () => {
-        const observedAt = 1_760_000_000_000,
-              service    = Neo.create(ContainerHealthDiagnosisService, {
+    test('AC-6 DIAGNOSIS CONSUMING SEAM: composed producer -> bridge -> diagnosis path enforces disposition, named effect, and explicit acknowledgement', async () => {
+        const observedAt   = 1_760_000_000_000,
+              ollamaConfig = {
+                  modelProvider    : 'ollama',
+                  graphProvider    : 'ollama',
+                  embeddingProvider: 'ollama',
+                  ollama           : {
+                      host                 : 'http://ollama:11434',
+                      model                : 'qwen2.5-coder:14b',
+                      embeddingModel       : 'qwen3-embedding',
+                      requireParallelModels: 2
+                  }
+              },
+              runningHealthyInspect   = {State: {Status: 'running', Running: true, Health: {Status: 'healthy'}}},
+              runningUnhealthyInspect = {State: {Status: 'running', Running: true, Health: {Status: 'unhealthy', FailingStreak: 3}}},
+              diagnosisService        = Neo.create(ContainerHealthDiagnosisService, {
                   nowFn           : () => observedAt,
                   ollamaHostReader: () => 'http://ollama:11434'
               });
 
-        // 1. Unacknowledged intervention on `providerResidency` withdraws `authoritative: true` and blocks recovery.
-        const unacknowledgedResidencyDecision = service.diagnose({
-            serviceKey       : 'ollama',
-            observedAt,
-            inspect          : {State: {Status: 'running', Running: true, Health: {Status: 'healthy'}}},
-            providerResidency: {
-                provider          : 'ollama',
-                host              : 'http://ollama:11434',
-                model             : 'qwen2.5-coder:14b',
-                ready             : false,
-                degraded          : true,
-                missingModels     : ['qwen2.5-coder:14b'],
-                requiredModels    : ['qwen2.5-coder:14b'],
-                availableModels   : [],
-                targetIdentity    : {kind: 'compose-service', id: 'ollama'},
-                probeDisposition  : PROBE_DISPOSITIONS.intervention,
-                interventionEffect: ['abort-in-flight', 'warm-or-evict']
-            }
+        // 1. Composed Producer -> Bridge -> Diagnosis (Acknowledged Intervention):
+        // `probeProviderParallelModelCapacity` and `runHealthcheck` attach definition-owned disposition
+        // metadata, `DeploymentStateBridgeService` threads it with explicit acknowledgement, and
+        // `ContainerHealthDiagnosisService` preserves `authoritative: true` / restart corroboration.
+        const acknowledgedBridge = Neo.create(DeploymentStateBridgeService, {
+            nowFn                 : () => observedAt,
+            providerResidencyProbe: opts => probeProviderParallelModelCapacity({
+                ...opts,
+                config           : ollamaConfig,
+                fetchOllamaModels: async () => ['qwen3-embedding:latest']
+            })
         });
 
-        expect(unacknowledgedResidencyDecision.status).toBe('advisory');
-        expect(unacknowledgedResidencyDecision.actionClass).toBeNull();
-        expect(unacknowledgedResidencyDecision.facts).toHaveLength(1);
-        expect(unacknowledgedResidencyDecision.facts[0]).toMatchObject({
-            type         : CONTAINER_HEALTH_FACT_TYPES.providerResidency,
-            authoritative: false,
-            details      : {
-                reasonCode              : 'missing-required-model',
-                probeDisposition        : 'intervention',
-                interventionEffect      : 'abort-in-flight, warm-or-evict',
-                interventionAcknowledged: false,
-                authorityWithdrawnReason: 'unacknowledged-intervention-probe'
-            }
+        const bridgedAcknowledgedResidency = await acknowledgedBridge.collectProviderResidency({
+            serviceKey: 'local-model',
+            observedAt
         });
 
-        // 2. Explicitly acknowledged intervention preserves `authoritative: true` while keeping the
-        // intervention disposition and effect visible on `fact.details` at the consuming seam.
-        const acknowledgedResidencyDecision = service.diagnose({
-            serviceKey       : 'ollama',
+        expect(bridgedAcknowledgedResidency).toMatchObject({
+            provider                : 'ollama',
+            ready                   : false,
+            missingModels           : ['qwen2.5-coder:14b'],
+            probeDisposition        : PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION.probeDisposition,
+            interventionEffect      : [...PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION.interventionEffect],
+            declaredProbeDisposition: 'intervention',
+            acknowledgeIntervention : true
+        });
+
+        const acknowledgedResidencyDecision = diagnosisService.diagnose({
+            serviceKey       : 'local-model',
             observedAt,
-            inspect          : {State: {Status: 'running', Running: true, Health: {Status: 'healthy'}}},
-            providerResidency: {
-                provider               : 'ollama',
-                host                   : 'http://ollama:11434',
-                model                  : 'qwen2.5-coder:14b',
-                ready                  : false,
-                degraded               : true,
-                missingModels          : ['qwen2.5-coder:14b'],
-                requiredModels         : ['qwen2.5-coder:14b'],
-                availableModels        : [],
-                targetIdentity         : {kind: 'compose-service', id: 'ollama'},
-                probeDisposition       : PROBE_DISPOSITIONS.intervention,
-                interventionEffect     : ['abort-in-flight', 'warm-or-evict'],
-                acknowledgeIntervention: true
-            }
+            inspect          : runningHealthyInspect,
+            providerResidency: bridgedAcknowledgedResidency
         });
 
         expect(acknowledgedResidencyDecision.status).toBe('diagnosed');
@@ -1022,38 +1500,199 @@ test.describe('Probe mutation disposition census and mechanical guard', () => {
             details      : {
                 reasonCode              : 'missing-required-model',
                 probeDisposition        : 'intervention',
-                interventionEffect      : 'abort-in-flight, warm-or-evict',
+                interventionEffect      : 'abort-in-flight',
                 interventionAcknowledged: true
             }
         });
 
-        // 3. Unacknowledged intervention on `endpointProbe` cannot silently corroborate `container-unhealthy` into a restart.
-        const unacknowledgedEndpointDecision = service.diagnose({
+        const directProbeTimeoutError = Object.assign(
+            new Error('MCP healthcheck timed out after 2500ms'),
+            {
+                code       : 'ETIMEDOUT',
+                probeTiming: {verdict: 'service-unresponsive'},
+                ...RUN_HEALTHCHECK_PROBE_DISPOSITION
+            }
+        );
+
+        const bridgedAcknowledgedEndpoint = classifyDirectProbeOutcome(directProbeTimeoutError, {
+            probe                  : runHealthcheck,
+            acknowledgeIntervention: acknowledgedBridge.acknowledgeDirectProbeIntervention
+        });
+
+        expect(bridgedAcknowledgedEndpoint).toMatchObject({
+            ok                      : false,
+            name                    : 'direct-endpoint-probe',
+            message                 : 'service-unresponsive',
+            probeDisposition        : RUN_HEALTHCHECK_PROBE_DISPOSITION.probeDisposition,
+            interventionEffect      : [...RUN_HEALTHCHECK_PROBE_DISPOSITION.interventionEffect],
+            declaredProbeDisposition: 'intervention',
+            acknowledgeIntervention : true
+        });
+
+        const acknowledgedEndpointDecision = diagnosisService.diagnose({
             serviceKey   : 'memory-core',
             observedAt,
-            inspect      : {State: {Status: 'running', Running: true, Health: {Status: 'unhealthy', FailingStreak: 3}}},
-            endpointProbe: {
-                ok                : false,
-                name              : 'mcp-healthcheck',
-                message           : 'timed out after 5000ms',
-                probeDisposition  : PROBE_DISPOSITIONS.intervention,
-                interventionEffect: 'abort-in-flight'
+            inspect      : runningUnhealthyInspect,
+            endpointProbe: bridgedAcknowledgedEndpoint
+        });
+
+        expect(acknowledgedEndpointDecision.status).toBe('diagnosed');
+        expect(acknowledgedEndpointDecision.actionClass).toBe(CONTAINER_HEALTH_ACTION_CLASSES.restart);
+        expect(acknowledgedEndpointDecision.facts.find(
+            fact => fact.type === CONTAINER_HEALTH_FACT_TYPES.endpointProbeFailed
+        ).details).toMatchObject({
+            probeDisposition        : 'intervention',
+            interventionEffect      : 'abort-in-flight, advance-state',
+            interventionAcknowledged: true
+        });
+
+        // 2. Composed Producer -> Bridge -> Diagnosis (Unacknowledged Intervention Refusal):
+        // When the bridge seam does not acknowledge the intervention (`acknowledge*Intervention: false`),
+        // `ContainerHealthDiagnosisService` withdraws `authoritative: true` and refuses restart corroboration.
+        const unacknowledgedBridge = Neo.create(DeploymentStateBridgeService, {
+            nowFn                                   : () => observedAt,
+            acknowledgeProviderResidencyIntervention: false,
+            acknowledgeDirectProbeIntervention      : false,
+            providerResidencyProbe                  : opts => probeProviderParallelModelCapacity({
+                ...opts,
+                config           : ollamaConfig,
+                fetchOllamaModels: async () => ['qwen3-embedding:latest']
+            })
+        });
+
+        const bridgedUnacknowledgedResidency = await unacknowledgedBridge.collectProviderResidency({
+            serviceKey: 'local-model',
+            observedAt
+        });
+        const unacknowledgedResidencyDecision = diagnosisService.diagnose({
+            serviceKey       : 'local-model',
+            observedAt,
+            inspect          : runningHealthyInspect,
+            providerResidency: bridgedUnacknowledgedResidency
+        });
+
+        expect(unacknowledgedResidencyDecision.status).toBe('advisory');
+        expect(unacknowledgedResidencyDecision.actionClass).toBeNull();
+        expect(unacknowledgedResidencyDecision.facts[0]).toMatchObject({
+            type         : CONTAINER_HEALTH_FACT_TYPES.providerResidency,
+            authoritative: false,
+            details      : {
+                reasonCode              : 'missing-required-model',
+                probeDisposition        : 'intervention',
+                interventionEffect      : 'abort-in-flight',
+                interventionAcknowledged: false,
+                authorityWithdrawnReason: 'unacknowledged-intervention-probe'
             }
+        });
+
+        const bridgedUnacknowledgedEndpoint = classifyDirectProbeOutcome(directProbeTimeoutError, {
+            probe                  : runHealthcheck,
+            acknowledgeIntervention: unacknowledgedBridge.acknowledgeDirectProbeIntervention
+        });
+        const unacknowledgedEndpointDecision = diagnosisService.diagnose({
+            serviceKey   : 'memory-core',
+            observedAt,
+            inspect      : runningUnhealthyInspect,
+            endpointProbe: bridgedUnacknowledgedEndpoint
         });
 
         expect(unacknowledgedEndpointDecision.status).toBe('advisory');
         expect(unacknowledgedEndpointDecision.actionClass).toBeNull();
-        const endpointFact = unacknowledgedEndpointDecision.facts.find(
+        expect(unacknowledgedEndpointDecision.facts.find(
             fact => fact.type === CONTAINER_HEALTH_FACT_TYPES.endpointProbeFailed
-        );
-        expect(endpointFact.details).toMatchObject({
+        ).details).toMatchObject({
             probeDisposition        : 'intervention',
-            interventionEffect      : 'abort-in-flight',
+            interventionEffect      : 'abort-in-flight, advance-state',
             interventionAcknowledged: false,
             authorityWithdrawnReason: 'unacknowledged-intervention-probe'
         });
 
-        // 4. `resolveConsumedProbeAuthority` admits `observation` without withdrawal.
+        // 3. Dropped Disposition Metadata Refusal:
+        // A declared intervention must NOT regain authority or corroboration if `probeDisposition` is dropped.
+        const droppedDispositionResidencyDecision = diagnosisService.diagnose({
+            serviceKey       : 'ollama',
+            observedAt,
+            inspect          : runningHealthyInspect,
+            providerResidency: {
+                ...bridgedAcknowledgedResidency,
+                probeDisposition: undefined
+            }
+        });
+
+        expect(droppedDispositionResidencyDecision.status).toBe('advisory');
+        expect(droppedDispositionResidencyDecision.actionClass).toBeNull();
+        expect(droppedDispositionResidencyDecision.facts[0]).toMatchObject({
+            type         : CONTAINER_HEALTH_FACT_TYPES.providerResidency,
+            authoritative: false,
+            details      : {
+                authorityWithdrawnReason: 'missing-probe-disposition'
+            }
+        });
+
+        const droppedDispositionEndpointDecision = diagnosisService.diagnose({
+            serviceKey   : 'memory-core',
+            observedAt,
+            inspect      : runningUnhealthyInspect,
+            endpointProbe: {
+                ...bridgedAcknowledgedEndpoint,
+                probeDisposition: undefined
+            }
+        });
+
+        expect(droppedDispositionEndpointDecision.status).toBe('advisory');
+        expect(droppedDispositionEndpointDecision.actionClass).toBeNull();
+        expect(droppedDispositionEndpointDecision.facts.find(
+            fact => fact.type === CONTAINER_HEALTH_FACT_TYPES.endpointProbeFailed
+        ).details).toMatchObject({
+            authorityWithdrawnReason: 'missing-probe-disposition'
+        });
+
+        // 4. Missing or Invalid Named Effect Refusal on Acknowledged Intervention:
+        const missingEffectDecision = diagnosisService.diagnose({
+            serviceKey       : 'ollama',
+            observedAt,
+            inspect          : runningHealthyInspect,
+            providerResidency: {
+                ...bridgedAcknowledgedResidency,
+                interventionEffect: []
+            }
+        });
+
+        expect(missingEffectDecision.status).toBe('advisory');
+        expect(missingEffectDecision.actionClass).toBeNull();
+        expect(missingEffectDecision.facts[0]).toMatchObject({
+            type         : CONTAINER_HEALTH_FACT_TYPES.providerResidency,
+            authoritative: false,
+            details      : {
+                probeDisposition        : 'intervention',
+                interventionAcknowledged: false,
+                authorityWithdrawnReason: 'missing-intervention-effect'
+            }
+        });
+
+        const invalidEffectDecision = diagnosisService.diagnose({
+            serviceKey       : 'ollama',
+            observedAt,
+            inspect          : runningHealthyInspect,
+            providerResidency: {
+                ...bridgedAcknowledgedResidency,
+                interventionEffect: ['invented-effect']
+            }
+        });
+
+        expect(invalidEffectDecision.status).toBe('advisory');
+        expect(invalidEffectDecision.actionClass).toBeNull();
+        expect(invalidEffectDecision.facts[0]).toMatchObject({
+            type         : CONTAINER_HEALTH_FACT_TYPES.providerResidency,
+            authoritative: false,
+            details      : {
+                probeDisposition        : 'intervention',
+                interventionAcknowledged: false,
+                authorityWithdrawnReason: 'invalid-intervention-effect:invented-effect'
+            }
+        });
+
+        // 5. Legitimate `observation` Probe Preserves Authority Without Intervention Acknowledgement:
         expect(resolveConsumedProbeAuthority({
             probe               : {probeDisposition: PROBE_DISPOSITIONS.observation},
             defaultAuthoritative: true

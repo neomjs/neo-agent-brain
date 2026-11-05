@@ -23,6 +23,15 @@ export const DEFAULT_URL = 'http://127.0.0.1:3000';
 export const DEFAULT_TIMEOUT_MS = 8000;
 
 /**
+ * Definition-owned probe disposition metadata for {@link runHealthcheck}.
+ * @type {Readonly<{probeDisposition: 'intervention', interventionEffect: ReadonlyArray<String>}>}
+ */
+export const RUN_HEALTHCHECK_PROBE_DISPOSITION = Object.freeze({
+    probeDisposition  : 'intervention',
+    interventionEffect: Object.freeze(['abort-in-flight', 'advance-state'])
+});
+
+/**
  * @summary Separates the two incompatible meanings a probe timeout currently carries: the SERVICE
  * did not answer, or this PROBE never got enough CPU to ask.
  *
@@ -98,8 +107,10 @@ export function annotateTimeout(error, {startupMs, timeoutMs, phase}) {
 
     const timing = classifyProbeFailure({startupMs, timeoutMs, phase});
 
-    error.probeTiming = timing;
-    error.message     = `${error.message}\n[${timing.verdict}] ${timing.reason}`;
+    error.probeTiming        = timing;
+    error.probeDisposition   = RUN_HEALTHCHECK_PROBE_DISPOSITION.probeDisposition;
+    error.interventionEffect = RUN_HEALTHCHECK_PROBE_DISPOSITION.interventionEffect;
+    error.message            = `${error.message}\n[${timing.verdict}] ${timing.reason}`;
 
     return error
 }
@@ -427,16 +438,19 @@ export async function runHealthcheck({
         ).catch(error => { throw annotateTimeout(error, {startupMs, timeoutMs, phase: 'tool call'}) });
 
         if (result?.isError) {
-            throw new Error('MCP healthcheck tool returned isError=true.');
+            throw Object.assign(new Error('MCP healthcheck tool returned isError=true.'), RUN_HEALTHCHECK_PROBE_DISPOSITION);
         }
 
         const health   = readToolJson(result),
               accepted = parseExpectedStatuses(expectedStatus);
 
         if (!accepted.includes(health.status)) {
-            throw new Error(
-                `Expected healthcheck status ${accepted.map(status => `'${status}'`).join(' or ')}, ` +
-                `got '${health.status || '<missing>'}'.`
+            throw Object.assign(
+                new Error(
+                    `Expected healthcheck status ${accepted.map(status => `'${status}'`).join(' or ')}, ` +
+                    `got '${health.status || '<missing>'}'.`
+                ),
+                RUN_HEALTHCHECK_PROBE_DISPOSITION
             );
         }
 
@@ -458,6 +472,8 @@ export async function runHealthcheck({
         await client.close?.();
     }
 }
+
+Object.assign(runHealthcheck, RUN_HEALTHCHECK_PROBE_DISPOSITION);
 
 /**
  * @summary Augments a healthcheck failure message with an actionable bearer-token hint when

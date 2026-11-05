@@ -86,7 +86,42 @@ export function resolveConsumedProbeAuthority({probe, defaultAuthoritative = tru
             ? probe.disposition.trim()
             : null;
 
+    const rawEffect  = probe?.interventionEffect ?? probe?.probeEffects ?? probe?.effects ?? null,
+          effectList = Array.isArray(rawEffect)
+              ? toSafeArray(rawEffect).map(item => String(item).trim()).filter(Boolean)
+              : typeof rawEffect === 'string'
+                  ? rawEffect.split(',').map(item => item.trim()).filter(Boolean)
+                  : [],
+          normalizedEffect = effectList.length > 0 ? effectList.join(', ') : null;
+
     if (!rawDisposition) {
+        const metadataDropped = Boolean(
+            probe && typeof probe === 'object' && (
+                Object.hasOwn(probe, 'probeDisposition') ||
+                Object.hasOwn(probe, 'disposition') ||
+                probe.declaredProbeDisposition === PROBE_DISPOSITIONS.intervention ||
+                probe.name === 'direct-endpoint-probe' ||
+                probe.acknowledgeIntervention !== undefined ||
+                probe.interventionAcknowledged !== undefined ||
+                probe.interventionEffect !== undefined ||
+                probe.probeEffects !== undefined ||
+                probe.effects !== undefined
+            )
+        );
+
+        if (metadataDropped) {
+            return {
+                authoritative        : false,
+                corroborationAdmitted: false,
+                details              : {
+                    probeDisposition        : null,
+                    interventionEffect      : normalizedEffect,
+                    interventionAcknowledged: false,
+                    authorityWithdrawnReason: 'missing-probe-disposition'
+                }
+            };
+        }
+
         return {
             authoritative        : Boolean(defaultAuthoritative),
             corroborationAdmitted: true,
@@ -94,12 +129,20 @@ export function resolveConsumedProbeAuthority({probe, defaultAuthoritative = tru
         };
     }
 
-    const rawEffect        = probe?.interventionEffect ?? probe?.probeEffects ?? probe?.effects ?? null,
-          normalizedEffect = Array.isArray(rawEffect)
-              ? toSafeArray(rawEffect).join(', ') || null
-              : toSafeScalar(rawEffect);
-
     if (rawDisposition === PROBE_DISPOSITIONS.observation) {
+        if (effectList.length > 0) {
+            return {
+                authoritative        : false,
+                corroborationAdmitted: false,
+                details              : {
+                    probeDisposition        : PROBE_DISPOSITIONS.observation,
+                    interventionEffect      : normalizedEffect,
+                    interventionAcknowledged: false,
+                    authorityWithdrawnReason: 'observation-declares-effects'
+                }
+            };
+        }
+
         return {
             authoritative        : Boolean(defaultAuthoritative),
             corroborationAdmitted: true,
@@ -111,16 +154,28 @@ export function resolveConsumedProbeAuthority({probe, defaultAuthoritative = tru
 
     if (rawDisposition === PROBE_DISPOSITIONS.intervention) {
         const acknowledged = probe?.acknowledgeIntervention === true ||
-            probe?.interventionAcknowledged === true;
+                  probe?.interventionAcknowledged === true,
+              invalidEffect = effectList.find(effect => !PROBE_INTERVENTION_EFFECTS.includes(effect)),
+              effectValid   = effectList.length > 0 && !invalidEffect,
+              admitted      = acknowledged && effectValid;
+
+        let authorityWithdrawnReason = null;
+        if (!effectList.length) {
+            authorityWithdrawnReason = 'missing-intervention-effect';
+        } else if (invalidEffect) {
+            authorityWithdrawnReason = `invalid-intervention-effect:${invalidEffect}`;
+        } else if (!acknowledged) {
+            authorityWithdrawnReason = 'unacknowledged-intervention-probe';
+        }
 
         return {
-            authoritative        : Boolean(defaultAuthoritative) && acknowledged,
-            corroborationAdmitted: acknowledged,
+            authoritative        : Boolean(defaultAuthoritative) && admitted,
+            corroborationAdmitted: admitted,
             details              : {
                 probeDisposition        : PROBE_DISPOSITIONS.intervention,
                 interventionEffect      : normalizedEffect,
-                interventionAcknowledged: acknowledged,
-                ...(!acknowledged ? {authorityWithdrawnReason: 'unacknowledged-intervention-probe'} : {})
+                interventionAcknowledged: admitted,
+                ...(authorityWithdrawnReason ? {authorityWithdrawnReason} : {})
             }
         };
     }
