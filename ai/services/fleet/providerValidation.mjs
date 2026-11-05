@@ -94,6 +94,15 @@ export function validationPlan(preset, {providerKey = ''} = {}) {
     return {chat, embedding: null, refusal: `preset '${preset?.id}' declares an embedding lane this probe does not speak (${env.NEO_EMBEDDING_PROVIDER ?? 'none'})`};
 }
 
+/**
+ * @summary Posts one bounded validation canary request and parses its JSON response.
+ * @probeDisposition intervention (abort-in-flight, occupy-slot, advance-state)
+ * @param {Function} fetchFn Fetch implementation.
+ * @param {{url: String, headers: Object}} endpoint Resolved target endpoint and headers.
+ * @param {Object} body Request payload.
+ * @param {Number} timeoutMs Request deadline in milliseconds.
+ * @returns {Promise<Object>}
+ */
 async function post(fetchFn, {url, headers}, body, timeoutMs) {
     const response = await fetchFn(url, {method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs)});
 
@@ -109,6 +118,7 @@ async function post(fetchFn, {url, headers}, body, timeoutMs) {
 /**
  * @summary Performs the two calls. Each failure is a reason, never a throw: the recipe reads a refusing
  * call as `failed` with that reason.
+ * @probeDisposition intervention (abort-in-flight, occupy-slot, advance-state)
  * @param {Object} options
  * @param {Object}   options.preset
  * @param {String}   [options.providerKey='']

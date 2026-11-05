@@ -573,6 +573,7 @@ export function getLmsLoadedModels(payload, {strict = false} = {}) {
 
 /**
  * @summary Fetches loaded LM Studio model metadata using the CLI's JSON surface.
+ * @probeDisposition observation
  * @param {Object} options
  * @param {Number} options.timeoutMs CLI timeout. Required; no module-level default.
  * @param {Function} [options.execFileFn=execFile] Child-process seam for tests.
@@ -705,6 +706,7 @@ export function getOllamaRunningModels(payload) {
 
 /**
  * @summary Fetches model ids from an OpenAI-compatible provider.
+ * @probeDisposition intervention (abort-in-flight)
  *
  * @param {Object} options
  * @param {String} options.host Provider host.
@@ -764,6 +766,7 @@ export async function fetchOpenAiCompatibleModelIds({
 
 /**
  * @summary Checks OpenAI-compatible embedding readiness through metadata or one tiny canary.
+ * @probeDisposition intervention (abort-in-flight, occupy-slot, advance-state)
  *
  * Metadata-only mode evaluates authoritative LM Studio resident-context rows and performs no
  * embedding request or input-suffix work. Canary mode verifies `/v1/embeddings` can serve the
@@ -951,6 +954,7 @@ export async function checkOpenAiCompatibleEmbeddingServing({
 
 /**
  * @summary Reads the embedding engine's live slot shape from `/slots` — ONE SHOT, never per request.
+ * @probeDisposition intervention (abort-in-flight)
  *
  * The path and field names come from `PROVIDER_LANE_ENDPOINT_CONTRACT.embedding.slotContext` rather
  * than being spelled here, so the endpoint has one owner.
@@ -1008,6 +1012,7 @@ export async function fetchOllamaRunningModelIds({host, timeoutMs, fetchFn = fet
 
 /**
  * @summary Fetches resident native Ollama model metadata from `/api/ps`.
+ * @probeDisposition intervention (abort-in-flight)
  * @param {Object} options
  * @param {String} options.host Provider host.
  * @param {Number} options.timeoutMs HTTP timeout. Required; no module-level default.
@@ -1038,6 +1043,7 @@ export async function fetchOllamaRunningModels({host, timeoutMs, fetchFn = fetch
 
 /**
  * @summary Warms one native Ollama model without abandoning dispatched provider work.
+ * @probeDisposition intervention (occupy-slot, warm-or-evict, advance-state)
  *
  * Native Ollama is not an OpenAI-compatible provider behind a different selector:
  * chat/generation work is warmed through `/api/chat`, while vector work is warmed
@@ -1230,6 +1236,7 @@ export async function warmOllamaRoleModel({
  * concurrent demand is 1 (the chat model) to reclaim the idle KV-cache multiplier.
  * @param {String} [options.identifier] Stable LM Studio loaded-model identifier.
  * @param {Number} options.timeoutMs Bounded child lifetime.
+ * @probeDisposition intervention (warm-or-evict, advance-state)
  * @returns {Promise<{stdout: String, stderr: String}>}
  */
 export function loadLmsModel(model, {execFileFn = execFile, contextLength, parallel, identifier, timeoutMs} = {}) {
@@ -1288,6 +1295,7 @@ export function getLmsSelectedRuntimeRows(output) {
 
 /**
  * @summary Observes LM Studio's selected runtime rows without interpreting the vendor table schema.
+ * @probeDisposition observation
  * @param {Object} [options]
  * @param {Function} [options.execFileFn=execFile] Child-process seam for tests.
  * @param {Number} options.timeoutMs Bounded child lifetime.
@@ -1787,6 +1795,7 @@ function describeLmsReplacement(insufficient = [], rows = []) {
  * @param {Function|null} [options.isAuthorityHeld] Optional live recovery-authority oracle.
  * @param {Function|null} [options.isEffectStillAdmitted] Optional demand oracle checked immediately
  *     before each additive load.
+ * @probeDisposition intervention (abort-in-flight, occupy-slot, warm-or-evict, advance-state)
  * @returns {Promise<Object>}
  */
 export function ensureLmsModelsLoaded(options = {}) {
@@ -2356,6 +2365,7 @@ async function ensureLmsModelsLoadedOnce({
 
 /**
  * @summary Ensures native Ollama has all configured role models resident.
+ * @probeDisposition intervention (abort-in-flight, occupy-slot, warm-or-evict, advance-state)
  *
  * Ollama has no `lms load` equivalent and must be warmed through its native API.
  * This helper probes `/api/ps`, warms missing or under-context role/model pairs through
@@ -2812,6 +2822,7 @@ export async function ensureOllamaModelsReady({
 
 /**
  * @summary Restores the active provider role-set residency before higher-cost recovery actions.
+ * @probeDisposition intervention (abort-in-flight, occupy-slot, warm-or-evict, advance-state)
  *
  * This is the bounded recovery companion to the read-only parallel-capacity probe:
  * LM Studio is repaired through the orchestrator-owned `lms load` path, while
@@ -3074,7 +3085,17 @@ export function createParallelModelCapacityWarning({
 }
 
 /**
+ * Definition-owned probe disposition metadata for {@link probeProviderParallelModelCapacity}.
+ * @type {Readonly<{probeDisposition: 'intervention', interventionEffect: ReadonlyArray<String>}>}
+ */
+export const PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION = Object.freeze({
+    probeDisposition  : 'intervention',
+    interventionEffect: Object.freeze(['abort-in-flight'])
+});
+
+/**
  * @summary Probes whether the configured graph provider has its active role models resident together.
+ * @probeDisposition intervention (abort-in-flight)
  *
  * This is an observability check only. It never mutates provider state and it does
  * not substitute defaults for missing config leaves; callers decide whether to warn
@@ -3108,11 +3129,13 @@ export async function probeProviderParallelModelCapacity({
 
     if (!target.supported || !target.host) {
         return {
-            ready    : true,
-            skipped  : true,
-            provider : target.provider,
-            supported: target.supported,
-            reason   : target.supported ? 'missing-host' : 'unsupported-provider'
+            ready             : true,
+            skipped           : true,
+            provider          : target.provider,
+            supported         : target.supported,
+            reason            : target.supported ? 'missing-host' : 'unsupported-provider',
+            probeDisposition  : PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION.probeDisposition,
+            interventionEffect: [...PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION.interventionEffect]
         };
     }
 
@@ -3149,19 +3172,21 @@ export async function probeProviderParallelModelCapacity({
 
     return {
         ready,
-        provider       : target.provider,
-        host           : target.host,
-        model          : target.model,
-        embeddingModel : target.embeddingModel,
+        provider          : target.provider,
+        host              : target.host,
+        model             : target.model,
+        embeddingModel    : target.embeddingModel,
         requireParallelModels,
         requiredModels,
-        availableModels: uniqueAvailable,
+        availableModels   : uniqueAvailable,
         extraModels,
         missingModels,
         observedCount,
         observedRequiredCount,
         requiredResidentModels,
-        warning        : ready ? null : createParallelModelCapacityWarning({
+        probeDisposition  : PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION.probeDisposition,
+        interventionEffect: [...PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION.interventionEffect],
+        warning           : ready ? null : createParallelModelCapacityWarning({
             provider             : target.provider,
             model                : target.model,
             embeddingModel       : target.embeddingModel,
@@ -3175,6 +3200,8 @@ export async function probeProviderParallelModelCapacity({
         })
     };
 }
+
+Object.assign(probeProviderParallelModelCapacity, PROBE_PROVIDER_PARALLEL_MODEL_CAPACITY_DISPOSITION);
 
 /**
  * @summary Emits a non-blocking warning when provider model residency cannot satisfy the REM cycle.
@@ -3223,6 +3250,7 @@ export async function warnProviderParallelModelCapacity({
 
 /**
  * @summary Probes the configured graph provider used by the REM pipeline.
+ * @probeDisposition intervention (abort-in-flight)
  * @param {Object} options
  * @param {Object} options.config Provider-source config (aiConfig-shaped).
  * @param {Number} options.timeoutMs HTTP probe abandon threshold. Required; no module-level default.
@@ -3289,6 +3317,7 @@ export function checkProvider({
 
 /**
  * @summary Waits for the local graph provider readiness loop while exposing deterministic test seams.
+ * @probeDisposition intervention (abort-in-flight)
  *
  * Probe parameters are required arguments; callers read
  * `AiConfig.orchestrator.providerReadiness` and pass the values explicitly so

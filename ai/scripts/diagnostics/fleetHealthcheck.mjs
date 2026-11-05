@@ -85,6 +85,7 @@ export function parseFleetHealthcheckArgs(argv=[], env=process.env) {
 
 /**
  * @summary Execute and validate one authenticated Fleet readiness request.
+ * @probeDisposition intervention (abort-in-flight)
  * @param {Object} options
  * @param {String} options.url Exact `/fleet/probe` URL.
  * @param {String} options.bearerToken Provider bearer, retained only in the request header.

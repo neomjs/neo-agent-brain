@@ -987,6 +987,7 @@ class McpLaunchAdmissionService extends Base {
      * @param {String} name The name the value goes under.
      * @param {String} value
      * @param {Number|null} port Port captured for this child, relevant only to the Bridge token owner.
+     * @probeDisposition intervention (abort-in-flight, advance-state)
      * @returns {Promise<{verdict: String, reason: (String|undefined)}>}
      * @protected
      */

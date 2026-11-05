@@ -1,7 +1,7 @@
-import path             from 'path';
-import AiConfig         from '../../../config.mjs';
+import path                from 'path';
+import AiConfig            from '../../../config.mjs';
 import {readSecretCarrier} from '../../../services/shared/secretCarrier.mjs';
-import neuralLinkConfig from '../../../mcp/server/neural-link/config.mjs';
+import neuralLinkConfig    from '../../../mcp/server/neural-link/config.mjs';
 import {
     buildLmsPreloadConfig,
     buildOllamaReadinessConfig,
@@ -17,6 +17,7 @@ import {attachTaskAuthority} from '../taskAuthority.mjs';
 
 /**
  * @summary Builds the orchestrator's config-backed child-process task table.
+ * @probeDisposition intervention (abort-in-flight, occupy-slot, warm-or-evict, advance-state)
  *
  * `taskDefinitions.mjs` remains the pure descriptor/default layer. This service
  * is the daemon-side use site for config-backed task composition, so it reads
@@ -95,6 +96,7 @@ function applyConfiguredMlxTask(tasks, {scriptDir}) {
 
 /**
  * @summary Adds the orchestrator-owned LM Studio server task when enabled.
+ * @probeDisposition intervention (abort-in-flight, occupy-slot, warm-or-evict, advance-state)
  * @param {Object} tasks Task table.
  * @param {Object} options
  * @param {Function|null} options.ensureLmsModelsLoadedFn Optional process-free unit-test seam.
@@ -185,6 +187,7 @@ function applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn}) {
 
 /**
  * @summary Adds the orchestrator-owned native Ollama server task when enabled.
+ * @probeDisposition intervention (abort-in-flight, occupy-slot, warm-or-evict, advance-state)
  * @param {Object} tasks Task table.
  * @returns {void}
  */

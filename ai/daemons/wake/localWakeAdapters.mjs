@@ -1028,6 +1028,7 @@ export async function probeSessionContext(record, dependencies = {}) {
  * @summary Reads the OpenCode session's context size through its own loopback server — the same
  * 0600 envelope authority the delivery path uses, so a session rotation automatically re-points
  * the probe at the fresh (cheap) session.
+ * @probeDisposition intervention (abort-in-flight)
  * @private
  */
 async function probeOpenCodeSession({effects, meta, record}) {

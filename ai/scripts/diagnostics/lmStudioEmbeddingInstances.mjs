@@ -213,6 +213,7 @@ export function analyzeEmbeddingInstances(payload, {
 
 /**
  * @summary Fetches and parses the LM Studio model-list response.
+ * @probeDisposition intervention (abort-in-flight)
  * @param {Object} options
  * @param {String} options.url LM Studio models endpoint.
  * @param {Number} [options.timeoutMs=DEFAULT_TIMEOUT_MS] Timeout in milliseconds.
