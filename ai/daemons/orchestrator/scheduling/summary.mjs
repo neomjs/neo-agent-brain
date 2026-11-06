@@ -333,14 +333,17 @@ export function getDueTask({
         return {
             ...trigger,
             onSuccess: async ({signal} = {}) => {
-                for (const handover of handovers) {
-                    signal?.throwIfAborted();
-                    const receipt = parseFocusItemsReceipt(handover.properties?.subject),
-                          defect  = buildFocusItemsDefect(handover, receipt);
-
-                    // Persist admission before the asynchronous write: a recipient marking the message read
-                    // must not remove a failed publication from the next attempt's pending handovers.
+                signal?.throwIfAborted();
+                // Admit the captured batch before yielding: failure on an earlier publication must not
+                // let a recipient read discard a later handover that has not reached publication yet.
+                const admitted = handovers.map(handover => {
+                    const receipt = parseFocusItemsReceipt(handover.properties?.subject);
                     writeSunsetFocusItemsReceiptFn(db, handover.id, receipt || 'missing');
+                    return {handover, defect: buildFocusItemsDefect(handover, receipt)};
+                });
+
+                for (const {handover, defect} of admitted) {
+                    signal?.throwIfAborted();
                     if (defect) await publishFocusItemsDefect(defect);
                     signal?.throwIfAborted();
                     markSunsetHandoversSummaryProcessedFn(db, [handover]);

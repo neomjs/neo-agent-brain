@@ -1,4 +1,5 @@
 import {test, expect} from '@playwright/test';
+import Database       from 'better-sqlite3';
 import {
     buildSummaryTrigger,
     buildFocusItemsDefect,
@@ -9,6 +10,7 @@ import {
     getDueTask
 } from '../../../../../../../ai/daemons/orchestrator/scheduling/summary.mjs';
 import {foldDefectObservations, parseDefectNote} from '../../../../../../../ai/services/memory-core/helpers/defectObservationFold.mjs';
+import {getUnreadSunsetHandovers}                from '../../../../../../../ai/daemons/wake/queries.mjs';
 
 test.describe('orchestrator/scheduling/summary (#11864 / Epic #11831)', () => {
     test('buildSummaryTrigger prioritizes unread sunset handovers over the periodic sweep', () => {
@@ -204,6 +206,46 @@ test.describe('orchestrator/scheduling/summary (#11864 / Epic #11831)', () => {
         publication.resolve();
         await expect(completing).rejects.toThrow('completion expired');
         expect(marked).toEqual([]);
+    });
+
+    test('a failed first publication keeps a later read handover admitted for retry', async () => {
+        const db = new Database(':memory:');
+
+        try {
+            db.exec('CREATE TABLE Nodes (id TEXT PRIMARY KEY, data TEXT)');
+            for (const id of ['MESSAGE:A', 'MESSAGE:B']) {
+                db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(id, JSON.stringify({
+                    id, type: 'MESSAGE', properties: {
+                        subject: '[sunset]', taggedConcepts: ['sunset-protocol-handover']
+                    }
+                }));
+            }
+
+            const options = {db, state: {summary: {}}, now: 100, summarySweepIntervalMs: 1000},
+                  trigger = getDueTask({...options, publishFocusItemsDefect: async () => {
+                      throw new Error('first publication rejected')
+                  }});
+
+            await expect(trigger.onSuccess()).rejects.toThrow('first publication rejected');
+            db.prepare("UPDATE Nodes SET data = json_set(data, '$.properties.readAt', ?) WHERE id = ?")
+                .run('2026-11-06T07:00:00Z', 'MESSAGE:B');
+
+            const pending = getUnreadSunsetHandovers(db);
+
+            expect(pending.map(node => node.id).sort()).toEqual(['MESSAGE:A', 'MESSAGE:B']);
+            expect(pending.every(node => node.properties.focusItemsReceipt === 'missing')).toBe(true);
+            expect(pending.every(node => !node.properties.handoverSummaryProcessedAt)).toBe(true);
+
+            const published = [];
+            await getDueTask({...options, publishFocusItemsDefect: async note => published.push(note)}).onSuccess();
+
+            expect(published).toHaveLength(2);
+            expect(getUnreadSunsetHandovers(db)).toEqual([]);
+            expect(JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get('MESSAGE:B').data)
+                .properties.readAt).toBe('2026-11-06T07:00:00Z');
+        } finally {
+            db.close()
+        }
     });
 
     test('#12199: getPendingSummarizationJobs reads pending session ids only', () => {
