@@ -5,6 +5,7 @@ import fs                                 from 'node:fs/promises';
 import os                                 from 'node:os';
 import path                               from 'node:path';
 import {randomUUID}                       from 'node:crypto';
+import {spawnSync}                        from 'node:child_process';
 import {runCoreRetirement, createCommand} from '../../../../../../ai/scripts/maintenance/retireLegacyCoreRows.mjs';
 import {fingerprint, metadataFingerprint} from '../../../../../../ai/scripts/maintenance/coreRowRetirementPlan.mjs';
 import {writeFileAtomic}                  from '../../../../../../ai/services/shared/atomicFileWrite.mjs';
@@ -181,6 +182,47 @@ test('a changed selected scope during revalidation refuses before deletion', asy
 test('the command defaults to preview and requires an explicit plan path', () => {
     const options = createCommand().parse(['node', 'test', '--plan-file', '/private/plan.json']).opts();
     expect(options).toMatchObject({apply: false, confirm: '', pageSize: '2000', planFile: '/private/plan.json'});
+});
+
+test('the runtime entrypoint selects the configured Brain root without loading real services', async () => {
+    const cliUrl   = new URL('../../../../../../ai/scripts/maintenance/retireLegacyCoreRows.mjs', import.meta.url).href;
+    const planPath = path.join(directory, 'runtime-plan.json');
+    const script   = `
+        import assert from 'node:assert/strict';
+        import {registerHooks} from 'node:module';
+        const cliUrl = ${JSON.stringify(cliUrl)};
+        const selectedRoot = ${JSON.stringify(path.join(directory, 'selected-root'))};
+        const dataPath = ${JSON.stringify(path.join(directory, 'selected-data.jsonl'))};
+        const intercepted = [];
+        globalThis.retirementRootProbe = null;
+        const modules = new Map([
+            ['../../config.mjs', 'export default {orchestrator: {dataDir: "unused", heavyMaintenanceLease: {staleAfterMs: 1}}};'],
+            ['../../mcp/server/knowledge-base/config.mjs', 'export default ' + JSON.stringify({neoRootDir: selectedRoot, dataPath, collectionName: 'fixture', dummyEmbeddingFunction: null})],
+            ['../../services/knowledge-base/VectorService.mjs', 'export default {async ready() {}, resolveTenantStamp() {return {tenantId: "fixture", repoSlug: "neo"};}};'],
+            ['../../services/knowledge-base/ChromaManager.mjs', 'export default {client: {async getCollection() {return {id: "fixture"};}}};'],
+            ['./coreRowRetirementInputs.mjs', 'export function prepareCoreRowRetirementInputs(options) {globalThis.retirementRootProbe = options; throw Object.assign(new Error("captured"), {code: "CAPTURED"});}'],
+            ['../../daemons/orchestrator/services/heavyMaintenanceLeasePrimitives.mjs', 'export function resolveHeavyMaintenanceLeasePath() {return "unused";} export async function withHeavyMaintenanceLease(callback) {return {status: "completed", result: await callback()};}']
+        ]);
+        const hooks = registerHooks({resolve(specifier, context, nextResolve) {
+            if (context.parentURL === cliUrl && modules.has(specifier)) {
+                intercepted.push(specifier);
+                return {url: 'data:text/javascript,' + encodeURIComponent(modules.get(specifier)), shortCircuit: true};
+            }
+            return nextResolve(specifier, context);
+        }});
+        try {
+            const {runCli} = await import(cliUrl);
+            await assert.rejects(runCli([process.execPath, 'probe', '--plan-file', ${JSON.stringify(planPath)}]), {code: 'CAPTURED'});
+            assert.deepEqual(new Set(intercepted), new Set(modules.keys()));
+            assert.equal(globalThis.retirementRootProbe.dataPath, dataPath);
+            assert.equal(globalThis.retirementRootProbe.brainRoot, selectedRoot);
+        } finally {hooks.deregister();}
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {encoding: 'utf8', timeout: 15000});
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    await expect(fs.stat(planPath)).rejects.toHaveProperty('code', 'ENOENT');
+    await expect(fs.stat(planPath + '.progress.json')).rejects.toHaveProperty('code', 'ENOENT');
 });
 
 test('native Chroma applies exact captured IDs and preserves target and foreign metadata across a retry', async () => {

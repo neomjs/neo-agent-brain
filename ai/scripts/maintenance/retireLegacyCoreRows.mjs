@@ -1,6 +1,5 @@
 import fs                                                   from 'node:fs/promises';
 import path                                                 from 'node:path';
-import {fileURLToPath}                                      from 'node:url';
 import Neo                                                  from 'neo.mjs/src/Neo.mjs';
 import * as core                                            from 'neo.mjs/src/core/_export.mjs';
 import {Command}                                            from 'commander';
@@ -222,7 +221,7 @@ export async function runCli(argv = process.argv) {
                 collection, vectorService: VectorService,
                 scope        : {tenantId: scope.tenantId, repoSlug: scope.repoSlug},
                 dataPath     : kbConfig.dataPath,
-                brainRoot    : fileURLToPath(new URL('../../../', import.meta.url)),
+                brainRoot    : kbConfig.neoRootDir,
                 brainRevision: options.brainRevision, pageSize
             })
         });
