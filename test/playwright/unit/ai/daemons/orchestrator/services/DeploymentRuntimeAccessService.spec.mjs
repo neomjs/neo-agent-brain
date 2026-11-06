@@ -462,6 +462,82 @@ test.describe('Neo.ai.daemons.services.DeploymentRuntimeAccessService', () => {
         });
     });
 
+    /**
+     * @summary One Docker stream frame: stream byte, three zero bytes, big-endian size, then the payload.
+     * @param {Number} stream
+     * @param {String} text
+     * @returns {Buffer}
+     */
+    const frame = (stream, text) => {
+        const payload = Buffer.from(text, 'utf8'),
+              header  = Buffer.alloc(8);
+
+        header[0] = stream;
+        header.writeUInt32BE(payload.length, 4);
+
+        return Buffer.concat([header, payload])
+    };
+
+    /**
+     * @summary Runs a real `readObserve` logs read against a fake Docker socket that answers `/logs` with `body`.
+     * @param {Buffer} body
+     * @param {Object} [headers={}] Response headers for the logs response
+     * @returns {Promise<Object>} The read result; rejects as the read does
+     */
+    async function readLogsOverSocket(body, headers = {}) {
+        const socketPath = path.join(tmpdir(), `neo-docker-logs-${process.pid}-${Date.now()}.sock`),
+              server     = createServer((request, response) => {
+                  if (request.url.startsWith('/containers/json')) {
+                      response.end(JSON.stringify([makeContainer()]))
+                  } else if (request.url.includes('/logs?')) {
+                      Object.entries(headers).forEach(([name, value]) => response.setHeader(name, value));
+                      response.end(body)
+                  } else {
+                      response.statusCode = 404;
+                      response.end('{}')
+                  }
+              });
+
+        await new Promise((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(socketPath, resolve)
+        });
+
+        try {
+            const service = Neo.create(DeploymentRuntimeAccessService, {
+                runtimeAccessConfig: {...BASE_CONFIG, socketPath},
+                nowFn              : () => 1710000000000
+            });
+
+            return await service.readObserve({serviceKey: 'mc-server', operation: 'logs', tail: 25})
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+            await rm(socketPath, {force: true})
+        }
+    }
+
+    test('a logs read over the socket comes back as log text, without the stream frame headers', async () => {
+        // 200 bytes: the frame's size byte 0xC8 is no valid UTF-8 on its own
+        const line = `${'x'.repeat(199)}\n`,
+              logs = await readLogsOverSocket(Buffer.concat([frame(1, 'booted\n'), frame(2, line), frame(1, 'ready\n')]));
+
+        expect(logs.data.logs).toBe(`booted\n${line}ready\n`)
+    });
+
+    test('a daemon-error frame in the logs response fails the read', async () => {
+        const body = Buffer.concat([frame(1, 'booted\n'), frame(3, 'error from daemon in stream: log file rotated\n')]);
+
+        await expect(readLogsOverSocket(body, {'Api-Version': '1.47', 'Content-Type': 'application/vnd.docker.multiplexed-stream'}))
+            .rejects.toThrow('Docker log stream failed: error from daemon in stream: log file rotated')
+    });
+
+    test('a declared raw logs response keeps every byte, even when its bytes form a frame chain', async () => {
+        const raw  = frame(1, 'tty output that happens to look framed\n'),
+              logs = await readLogsOverSocket(raw, {'Api-Version': '1.47', 'Content-Type': 'application/vnd.docker.raw-stream'});
+
+        expect(Buffer.from(logs.data.logs, 'utf8').equals(raw)).toBe(true)
+    });
+
     test('generic post-dispatch transport loss is uncertain, not only the timeout subtype', async () => {
         const resetError = Object.assign(new Error('socket hang up'), {
             code                  : 'ECONNRESET',
