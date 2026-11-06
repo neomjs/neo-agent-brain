@@ -1,12 +1,13 @@
-import {assertRoot, deriveAgentRepoPath} from './deriveAgentRepoPath.mjs';
-import {ensureSeatRoot}                  from './ensureSeatRoot.mjs';
-import {inspectAgentRepo}                from './inspectAgentRepo.mjs';
-import {provisionAgentRepo}              from './provisionAgentRepo.mjs';
-import {redactReadFailure}               from './redactReadFailure.mjs';
-import {execFile}                        from 'node:child_process';
-import fs                                from 'node:fs/promises';
-import path                              from 'node:path';
-import {promisify}                       from 'node:util';
+import {assertRoot, deriveAgentRepoPath}      from './deriveAgentRepoPath.mjs';
+import {ensureSeatRoot}                       from './ensureSeatRoot.mjs';
+import {inspectAgentRepo}                     from './inspectAgentRepo.mjs';
+import {gitRemoteCommand, provisionAgentRepo} from './provisionAgentRepo.mjs';
+import {redactReadFailure}                    from './redactReadFailure.mjs';
+import {execFile}                             from 'node:child_process';
+import fs                                     from 'node:fs/promises';
+import os                                     from 'node:os';
+import path                                   from 'node:path';
+import {promisify}                            from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
@@ -165,6 +166,92 @@ export async function verifyAgentRepoTrust({repoPath, cloneUrl, execute = execFi
         return {state: 'verified', root}
     } catch {
         return refused('the checkout identity could not be verified')
+    }
+}
+
+/**
+ * The only variables a fast-forward's `git` inherits from the Fleet, whose environment carries plane, forge and
+ * bridge credentials. `PATH` finds `git` itself.
+ * @type {String[]}
+ * @private
+ */
+const FAST_FORWARD_ENV = ['HOME', 'LANG', 'LOGNAME', 'PATH', 'TMPDIR', 'USER'];
+
+/**
+ * The bound on a fast-forward's fetch. Past it `git` is stopped and the checkout stays where it was.
+ * @type {Number}
+ */
+export const FETCH_TIMEOUT_MS = 120_000;
+
+/**
+ * @summary Moves a reused checkout to its remote's default branch before the harness starts, when that moves nothing
+ * a seat wrote.
+ *
+ * The checkout must pass {@link verifyAgentRepoTrust}, sit on the branch `origin/HEAD` names, carry no change to a
+ * tracked file and hold no commit its remote lacks. Anything else is `skipped`, with the reason. Untracked files need
+ * no check, because `git merge --ff-only` refuses to overwrite one. The fetch goes to the declared `cloneUrl`, and the
+ * seat's PAT reaches it only the way a clone carries it (`provisionAgentRepo.gitCloneCommand`). The checkout is the
+ * seat's to write and the Fleet's credentials are not, so its hooks and filesystem monitor never run, and `git` reads
+ * no host config and inherits only {@link FAST_FORWARD_ENV}.
+ *
+ * The outcome is data, never a throw, and a failure's reason is credential-redacted and bounded.
+ * @param {Object}      options
+ * @param {String}      options.repoPath           The checkout's absolute path.
+ * @param {String}      options.cloneUrl           Its declared remote.
+ * @param {String}      [options.credential]       The seat's PAT
+ * @param {String}      [options.credentialOrigin] The origin the PAT was stored for; omitted means GitHub's.
+ * @param {AbortSignal} [options.signal]           The Start's signal; aborting it stops `git`.
+ * @param {Object}      [options.env=process.env]  The Fleet's environment.
+ * @param {Function}    [options.execute=execFileAsync] Node's promisified subprocess boundary.
+ * @param {Function}    [options.verifyTrust=verifyAgentRepoTrust]
+ * @returns {Promise<{state: 'fast-forwarded'|'up-to-date'|'skipped'|'failed', reason?: String, from?: String, to?: String}>}
+ */
+export async function fastForwardAgentRepo({repoPath, cloneUrl, credential, credentialOrigin, signal, env = process.env,
+    execute = execFileAsync, verifyTrust = verifyAgentRepoTrust}) {
+    const trust = await verifyTrust({repoPath, cloneUrl});
+
+    if (trust.state !== 'verified') return {state: 'skipped', reason: trust.reason};
+
+    const
+        childEnv = {
+            ...Object.fromEntries(FAST_FORWARD_ENV.filter(name => env[name] != null).map(name => [name, env[name]])),
+            GIT_CONFIG_GLOBAL  : os.devNull,
+            GIT_CONFIG_NOSYSTEM: '1',
+            GIT_TERMINAL_PROMPT: '0'
+        },
+        noSeatPrograms = ['-c', `core.hooksPath=${os.devNull}`, '-c', 'core.fsmonitor=false'],
+        git            = async (args, {env: commandEnv = childEnv, timeout = 10000} = {}) => (await execute('git',
+            [...noSeatPrograms, ...args], {cwd: trust.root, env: commandEnv, signal, timeout, maxBuffer: 1 << 20})).stdout.trim(),
+        optional       = args => git(args).catch(() => '');
+
+    try {
+        const
+            branch   = (await optional(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'])).replace(/^refs\/remotes\/origin\//, ''),
+            current  = await optional(['symbolic-ref', '--quiet', '--short', 'HEAD']),
+            tracking = `refs/remotes/origin/${branch}`;
+
+        if (!branch)            return {state: 'skipped', reason: 'the checkout records no default branch'};
+        if (current !== branch) return {state: 'skipped', reason: current ? `on ${current}, not ${branch}` : 'a detached HEAD'};
+
+        if (await git(['status', '--porcelain', '--untracked-files=no'])) return {state: 'skipped', reason: 'tracked files have changes'};
+
+        const fetch = gitRemoteCommand(['fetch', '--quiet', '--no-tags', '--', cloneUrl, `+refs/heads/${branch}:${tracking}`],
+            cloneUrl, credential, childEnv, credentialOrigin);
+
+        await git(fetch.args, {env: fetch.env ?? childEnv, timeout: FETCH_TIMEOUT_MS});
+
+        const [ahead, behind] = (await git(['rev-list', '--left-right', '--count', `HEAD...${tracking}`])).split(/\s+/).map(Number);
+
+        if (ahead)   return {state: 'skipped', reason: `${ahead} local commit${ahead === 1 ? '' : 's'} its remote lacks`};
+        if (!behind) return {state: 'up-to-date'};
+
+        const from = await git(['rev-parse', '--short', 'HEAD']);
+
+        await git(['merge', '--ff-only', '--quiet', tracking]);
+
+        return {state: 'fast-forwarded', from, to: await git(['rev-parse', '--short', 'HEAD'])}
+    } catch (error) {
+        return {state: 'failed', reason: redactReadFailure(error) ?? 'git failed with no legible error'}
     }
 }
 

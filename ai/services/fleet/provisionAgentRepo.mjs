@@ -42,15 +42,29 @@ const GITHUB_ORIGIN = 'https://github.com';
  * @returns {{args: String[], env: Object|undefined}}
  */
 export function gitCloneCommand(cloneUrl, repoPath, credential, env = process.env, credentialOrigin = GITHUB_ORIGIN) {
-    if (!credential || !isOriginOf(cloneUrl, credentialOrigin)) {
-        return {args: ['clone', '--', cloneUrl, repoPath], env: undefined}
+    return gitRemoteCommand(['clone', '--', cloneUrl, repoPath], cloneUrl, credential, env, credentialOrigin)
+}
+
+/**
+ * @summary The `git` invocation of any command that talks to a seat's remote, a clone or a fetch, carrying the seat's
+ * credential exactly as {@link gitCloneCommand} describes.
+ * @param {String[]} gitArgs   The subcommand and its arguments, with `--` before any URL or path.
+ * @param {String}   remoteUrl The URL the command talks to.
+ * @param {String}   [credential] The seat's PAT
+ * @param {Object}   [env=process.env] The environment the command would inherit
+ * @param {String}   [credentialOrigin='https://github.com'] The origin the PAT was stored for
+ * @returns {{args: String[], env: Object|undefined}}
+ */
+export function gitRemoteCommand(gitArgs, remoteUrl, credential, env = process.env, credentialOrigin = GITHUB_ORIGIN) {
+    if (!credential || !isOriginOf(remoteUrl, credentialOrigin)) {
+        return {args: gitArgs, env: undefined}
     }
 
     return {
         args: [
             '-c', 'credential.helper=',
             '-c', `credential.${credentialOrigin}.helper=!f() { echo username=x-access-token; echo "password=$NEO_SEAT_FORGE_TOKEN"; }; f`,
-            'clone', '--', cloneUrl, repoPath
+            ...gitArgs
         ],
         env : {
             ...Object.fromEntries(Object.entries(env).filter(([name]) => !HOST_GIT_ENV.test(name))),

@@ -43,6 +43,7 @@ function startAgentProvisioned(options) {
     return startProvisioned({
         resolveGitIdentity   : async () => SEAT_GIT_IDENTITY,
         convergeGitIdentity  : async () => ({state: 'converged', scope: 'local', action: 'kept'}),
+        fastForwardRepo      : async () => null,
         installDependencies  : async ({checkouts}) => checkouts.map(({repoSlug}) => ({repoSlug, state: 'present'})),
         importMemory         : async () => ({state: 'none'}),
         excludeWorkspaceFiles: ({targetRepoRoot}) => ({repoRoot: targetRepoRoot, paths: [], verified: true}),
@@ -575,6 +576,54 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(status.dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installed'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'present'}]);
         // the install's answer is this attempt's outcome on the seat's status, also when its installer reported nothing
         expect(lifecycle.calls.pendingDependencies).toEqual([{id: 'a', signal: lifecycle.calls.signals[0], rows: status.dependencies}]);
+    });
+
+    test("every checkout fast-forwards after its identity and before its install, and the outcome rides on its row", async () => {
+        const events    = [],
+              lifecycle = makeLifecycle({agents: repoAgent('a'), events}),
+              forwarded = [],
+              update    = {state: 'fast-forwarded', from: 'aaaaaaa', to: 'bbbbbbb'},
+              status    = await startAgentProvisioned({
+                  lifecycleService   : lifecycle,
+                  agentId            : 'a',
+                  managedRoot        : '/managed',
+                  ensureRepo         : makeEnsureRepo('/managed/a/neomjs/neo'),
+                  convergeGitIdentity: async () => { events.push('identity'); return {state: 'converged', scope: 'local', action: 'kept'} },
+                  fastForwardRepo    : async args => { events.push('fast-forward'); forwarded.push(args); return update },
+                  installDependencies: async ({checkouts, onRows}) => {
+                      events.push('install');
+                      onRows([{repoSlug: 'neomjs/neo', state: 'installing'}]);
+                      return checkouts.map(({repoSlug}) => ({repoSlug, state: 'installed'}))
+                  },
+                  prepareWorkspace   : makePrepareWorkspace(events),
+                  agentosRuntimeRoot : '/installed/neo'
+              });
+
+        expect(events.filter(event => ['identity', 'fast-forward', 'install', 'start'].includes(event))).toEqual(['identity', 'fast-forward', 'install', 'start']);
+        // the declared remote and the seat's own PAT, under the Start's signal
+        expect(forwarded).toEqual([{repoPath: '/managed/a/neomjs/neo', cloneUrl: REPO.cloneUrl, credential: FIXTURE_PAT,
+            credentialOrigin: undefined, signal: lifecycle.calls.signals[0]}]);
+        expect(lifecycle.calls.pendingDependencies[0].rows).toEqual([{repoSlug: 'neomjs/neo', state: 'installing', update}]);
+        expect(status.dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installed', update}]);
+    });
+
+    test('a failed fast-forward is reported on the row, and the seat still installs and starts', async () => {
+        const lifecycle = makeLifecycle({agents: repoAgent('a')}),
+              failed    = {state: 'failed', reason: 'fatal: unable to access the remote'},
+              status    = await startAgentProvisioned({
+                  lifecycleService   : lifecycle,
+                  agentId            : 'a',
+                  managedRoot        : '/managed',
+                  ensureRepo         : makeEnsureRepo('/managed/a/neomjs/neo'),
+                  fastForwardRepo    : async () => failed,
+                  installDependencies: async ({checkouts}) => checkouts.map(({repoSlug}) => ({repoSlug, state: 'present'})),
+                  prepareWorkspace   : makePrepareWorkspace(),
+                  agentosRuntimeRoot : '/installed/neo'
+              });
+
+        expect(lifecycle.calls.start).toHaveLength(1);
+        expect(status.state).toBe('running');
+        expect(status.dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'present', update: failed}]);
     });
 
     test('a failed install is reported on the status, and the seat still starts', async () => {

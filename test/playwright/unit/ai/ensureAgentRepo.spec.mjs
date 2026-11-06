@@ -1,10 +1,10 @@
-import {test, expect}                          from '@playwright/test';
-import {execFileSync}                          from 'node:child_process';
-import fs                                      from 'fs';
-import os                                      from 'os';
-import path                                    from 'path';
-import {deriveAgentRepoPath}                   from '../../../../ai/services/fleet/deriveAgentRepoPath.mjs';
-import {ensureAgentRepo, verifyAgentRepoTrust} from '../../../../ai/services/fleet/ensureAgentRepo.mjs';
+import {test, expect}                                                from '@playwright/test';
+import {execFileSync}                                                from 'node:child_process';
+import fs                                                            from 'fs';
+import os                                                            from 'os';
+import path                                                          from 'path';
+import {deriveAgentRepoPath}                                         from '../../../../ai/services/fleet/deriveAgentRepoPath.mjs';
+import {ensureAgentRepo, fastForwardAgentRepo, verifyAgentRepoTrust} from '../../../../ai/services/fleet/ensureAgentRepo.mjs';
 
 // Integration of the provisioning trio (derive → inspect → provision) over real temp-dir fixtures, with
 // the clone executor injected as a recording stub (no git binary) — inspectAgentRepo.spec's temp-dir
@@ -224,5 +224,60 @@ test.describe('ensureAgentRepo (Fleet Manager derive → inspect → provision o
 
         expect(ra.repoPath).not.toBe(rb.repoPath);
         expect(clone.calls).toHaveLength(2) // both absent → both cloned, into distinct paths
+    });
+});
+
+test.describe('fastForwardAgentRepo — what reaches git', () => {
+    const REMOTE  = 'https://github.com/neomjs/neo.git',
+          SEAT    = '/seat/neomjs/neo',
+          trusted = async ({repoPath}) => ({state: 'verified', root: repoPath});
+
+    /** A recording git that answers as a clean checkout on `dev`, two commits behind its remote. */
+    function recordingGit() {
+        const calls   = [],
+              execute = async (file, args, {cwd, env}) => {
+                  calls.push({args, cwd, env});
+
+                  const command = args.slice(args.findIndex((arg, index) => arg !== '-c' && args[index - 1] !== '-c'));
+
+                  switch (command[0]) {
+                      case 'symbolic-ref': return {stdout: command.at(-1) === 'HEAD' ? 'dev\n' : 'refs/remotes/origin/dev\n'};
+                      case 'rev-list'    : return {stdout: '0\t2\n'};
+                      case 'rev-parse'   : return {stdout: calls.filter(call => call.args.includes('rev-parse')).length === 1 ? 'aaaaaaa\n' : 'bbbbbbb\n'};
+                      default            : return {stdout: ''}
+                  }
+              };
+
+        return {calls, execute}
+    }
+
+    test("git inherits none of the Fleet's variables, runs none of the checkout's programs, and only the fetch carries the PAT", async () => {
+        const {calls, execute} = recordingGit(),
+              outcome          = await fastForwardAgentRepo({repoPath: SEAT, cloneUrl: REMOTE, credential: 'ghp_seat_only', execute,
+                  env: {HOME: '/Users/seat', PATH: '/usr/bin', NEO_PLANE_TOKEN: 'plane-secret'}, verifyTrust: trusted}),
+              fetch            = calls.find(call => call.args.includes('fetch'));
+
+        expect(outcome).toEqual({state: 'fast-forwarded', from: 'aaaaaaa', to: 'bbbbbbb'});
+        // the declared remote, by URL, into its tracking ref
+        expect(fetch.args.slice(fetch.args.indexOf('--'))).toEqual(['--', REMOTE, '+refs/heads/dev:refs/remotes/origin/dev']);
+        expect(fetch.env.NEO_SEAT_FORGE_TOKEN).toBe('ghp_seat_only');
+
+        for (const {args, cwd, env} of calls) {
+            expect(cwd).toBe(SEAT);
+            expect(args.slice(0, 4)).toEqual(['-c', `core.hooksPath=${os.devNull}`, '-c', 'core.fsmonitor=false']);
+            expect(args.join(' ')).not.toContain('ghp_seat_only');
+            expect(env.NEO_PLANE_TOKEN).toBeUndefined();
+            expect(env.GIT_CONFIG_GLOBAL).toBe(os.devNull);
+            if (env !== fetch.env) expect(env.NEO_SEAT_FORGE_TOKEN).toBeUndefined()
+        }
+    });
+
+    test('a checkout that fails its trust proof is never touched', async () => {
+        const {calls, execute} = recordingGit();
+
+        expect(await fastForwardAgentRepo({repoPath: SEAT, cloneUrl: REMOTE, execute,
+            verifyTrust: async () => ({state: 'unverified', reason: 'the checkout origin differs from the assignment'})}))
+            .toEqual({state: 'skipped', reason: 'the checkout origin differs from the assignment'});
+        expect(calls).toEqual([])
     });
 });
