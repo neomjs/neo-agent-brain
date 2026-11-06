@@ -1,8 +1,9 @@
-import fs               from 'fs';
-import http             from 'http';
-import Base             from 'neo.mjs/src/core/Base.mjs';
-import AiConfig         from '../../../config.mjs';
-import {RECOVERY_KNOBS} from '../../../services/memory-core/helpers/recoveryKnobRegistry.mjs';
+import fs                      from 'fs';
+import http                    from 'http';
+import Base                    from 'neo.mjs/src/core/Base.mjs';
+import AiConfig                from '../../../config.mjs';
+import {RECOVERY_KNOBS}        from '../../../services/memory-core/helpers/recoveryKnobRegistry.mjs';
+import {demultiplexDockerLogs} from './dockerLogStream.mjs';
 
 export const DEPLOYMENT_RUNTIME_MECHANISMS = Object.freeze([
     'docker-socket',
@@ -70,7 +71,8 @@ const DOCKER_SOCKET_UNAVAILABLE_CODES = new Set(['ENOENT', 'ECONNREFUSED']);
  *     declare it; header-free requests stay byte-identical to before this parameter existed.
  * @param {Number} [options.timeoutMs=5000] Request timeout.
  * @param {Number} [options.maxBytes=1048576] Response byte cap.
- * @returns {Promise<{statusCode: Number, headers: Object, body: String}>}
+ * @param {Boolean} [options.binary=false] Resolve the body as its raw bytes instead of UTF-8 text.
+ * @returns {Promise<{statusCode: Number, headers: Object, body: String|Buffer}>}
  */
 export function dockerSocketRequest({
     socketPath,
@@ -79,7 +81,8 @@ export function dockerSocketRequest({
     body = null,
     headers = null,
     timeoutMs = 5000,
-    maxBytes = DEFAULT_RESPONSE_MAX_BYTES
+    maxBytes = DEFAULT_RESPONSE_MAX_BYTES,
+    binary = false
 }) {
     return new Promise((resolve, reject) => {
         let requestFinished     = false,
@@ -122,7 +125,8 @@ export function dockerSocketRequest({
             });
 
             res.on('end', () => {
-                const responseBody = Buffer.concat(chunks).toString('utf8');
+                const responseBytes = Buffer.concat(chunks),
+                      responseBody  = responseBytes.toString('utf8');
 
                 if (res.statusCode >= 400) {
                     reject(new Error(`Docker API ${method} ${path} failed with HTTP ${res.statusCode}: ${responseBody.slice(0, 512)}`));
@@ -132,7 +136,7 @@ export function dockerSocketRequest({
                 resolve({
                     statusCode: res.statusCode,
                     headers   : res.headers,
-                    body      : responseBody
+                    body      : binary ? responseBytes : responseBody
                 });
             });
             res.on('aborted', () => {
@@ -833,7 +837,9 @@ export class DeploymentRuntimeAccessService extends Base {
                     `until=${encodeURIComponent(toDockerQueryTime(untilStamp))}`
                 ] : [])
             ].join('&'),
+            // Bytes, because a container without a TTY multiplexes its logs into binary-headed frames
             response      = await this.dockerRequest({
+                binary: true,
                 method: 'GET',
                 path  : `/containers/${encodeURIComponent(target.containerId)}/logs?${query}`
             });
@@ -854,7 +860,7 @@ export class DeploymentRuntimeAccessService extends Base {
                 // without this the consumer cannot tell whether the interval was applied to the
                 // container whose death it is attributing.
                 containerId: target.containerId ?? null,
-                logs       : response.body,
+                logs       : demultiplexDockerLogs(response.body),
                 tail       : tailCount
             },
             proof     : this.createProofMetadata({envelope: 'read-observe', operation: 'logs', target}),
@@ -1531,7 +1537,7 @@ export class DeploymentRuntimeAccessService extends Base {
     /**
      * Performs a runtime request through the injected seam or Docker socket implementation.
      * @param {Object} request Request descriptor.
-     * @returns {Promise<{statusCode: Number, headers: Object, body: String}>}
+     * @returns {Promise<{statusCode: Number, headers: Object, body: String|Buffer}>}
      */
     async dockerRequest(request) {
         const fn = this.dockerRequestFn || dockerSocketRequest;

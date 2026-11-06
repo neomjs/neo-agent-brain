@@ -462,6 +462,53 @@ test.describe('Neo.ai.daemons.services.DeploymentRuntimeAccessService', () => {
         });
     });
 
+    test('a logs read over the socket comes back as log text, without the stream frame headers', async () => {
+        const frame = (stream, text) => {
+            const payload = Buffer.from(text, 'utf8'),
+                  header  = Buffer.alloc(8);
+
+            header[0] = stream;
+            header.writeUInt32BE(payload.length, 4);
+
+            return Buffer.concat([header, payload])
+        };
+
+        // 200 bytes: the frame's size byte 0xC8 is no valid UTF-8 on its own
+        const line       = `${'x'.repeat(199)}\n`,
+              socketPath = path.join(tmpdir(), `neo-docker-logs-${process.pid}-${Date.now()}.sock`),
+              server     = createServer((request, response) => {
+                  if (request.url.startsWith('/containers/json')) {
+                      response.end(JSON.stringify([makeContainer()]))
+                  } else if (request.url.includes('/logs?')) {
+                      response.end(Buffer.concat([frame(1, 'booted\n'), frame(2, line), frame(1, 'ready\n')]))
+                  } else {
+                      response.statusCode = 404;
+                      response.end('{}')
+                  }
+              });
+
+        await new Promise((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(socketPath, resolve)
+        });
+
+        let logs;
+
+        try {
+            const service = Neo.create(DeploymentRuntimeAccessService, {
+                runtimeAccessConfig: {...BASE_CONFIG, socketPath},
+                nowFn              : () => 1710000000000
+            });
+
+            logs = await service.readObserve({serviceKey: 'mc-server', operation: 'logs', tail: 25})
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+            await rm(socketPath, {force: true})
+        }
+
+        expect(logs.data.logs).toBe(`booted\n${line}ready\n`)
+    });
+
     test('generic post-dispatch transport loss is uncertain, not only the timeout subtype', async () => {
         const resetError = Object.assign(new Error('socket hang up'), {
             code                  : 'ECONNRESET',
