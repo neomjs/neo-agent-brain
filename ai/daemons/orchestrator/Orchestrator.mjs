@@ -386,6 +386,19 @@ export class Orchestrator extends Base {
     }
 
     /**
+     * @summary Publishes a handover defect through the mailbox; rejection keeps the receipt retryable.
+     * @param {{subject: String, body: String}} note Counts and source-message identity, never the private handover body.
+     * @returns {Promise<Object>} The accepted mailbox write receipt.
+     */
+    async publishFocusItemsDefect(note) {
+        const identity = this.swarmHeartbeatIdentity;
+
+        return RequestContextService.run({
+            agentIdentityNodeId: identity ? normalizeAgentIdentityNodeId(identity) : '@system'
+        }, () => MailboxService.addMessage({...note, to: 'AGENT:*', priority: 'normal', wakeSuppressed: true}, {deferProjection: true}));
+    }
+
+    /**
      * @summary One-shot active alarm dispatcher for the REM consolidation-liveness watchdog.
      *
      * The watchdog's passive leg is the health record plus WARN log. This active leg mirrors

@@ -10,6 +10,7 @@ import {
     getUnreadSunsetHandovers,
     markNodesAsRead,
     markSunsetHandoversSummaryProcessed,
+    writeSunsetFocusItemsReceipt,
     writeLastSyncId
 } from '../../../../../../ai/daemons/wake/queries.mjs';
 
@@ -105,6 +106,42 @@ test.describe('ai/daemons/wake/queries', () => {
     });
 
     test.describe('markSunsetHandoversSummaryProcessed', () => {
+        test('receipt and completion preserve intervening recipient and other property writes', () => {
+            const node = {id: 'msg-stale', type: 'MESSAGE', properties: {
+                readAt: null, taggedConcepts: ['sunset-protocol-handover'], extra: 'before'
+            }};
+            db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(node.id, JSON.stringify(node));
+            const stale = getUnreadSunsetHandovers(db)[0];
+            db.prepare("UPDATE Nodes SET data = json_set(data, '$.properties.readAt', ?, '$.properties.extra', ?) WHERE id = ?")
+                .run('2026-11-06T00:00:00Z', 'after', node.id);
+
+            writeSunsetFocusItemsReceipt(db, node.id, {named: 2, placed: 1});
+            let stored = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(node.id).data);
+            expect(stored.properties).toMatchObject({readAt: '2026-11-06T00:00:00Z', extra: 'after', focusItemsReceipt: {named: 2, placed: 1}});
+            expect(getUnreadSunsetHandovers(db).map(item => item.id)).toEqual([node.id]);
+
+            markSunsetHandoversSummaryProcessed(db, [stale]);
+            stored = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get(node.id).data);
+            expect(stored.properties).toMatchObject({readAt: '2026-11-06T00:00:00Z', extra: 'after', focusItemsReceipt: {named: 2, placed: 1}});
+            expect(stored.properties.handoverSummaryProcessedAt).toEqual(expect.any(String));
+            expect(getUnreadSunsetHandovers(db)).toEqual([])
+        });
+
+        test('missing receipt remains pending after read; a historical read without a receipt stays excluded', () => {
+            const insert = db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)');
+            for (const id of ['pending', 'historical']) {
+                insert.run(id, JSON.stringify({id, type: 'MESSAGE', properties: {
+                    readAt: '2026-11-06T00:00:00Z', taggedConcepts: ['sunset-protocol-handover']
+                }}));
+            }
+            writeSunsetFocusItemsReceipt(db, 'pending', 'missing');
+            const stored = JSON.parse(db.prepare('SELECT data FROM Nodes WHERE id = ?').get('pending').data);
+            expect(stored.properties.focusItemsReceipt).toBe('missing');
+            expect(getUnreadSunsetHandovers(db).map(item => item.id)).toEqual(['pending']);
+            markSunsetHandoversSummaryProcessed(db, [stored]);
+            expect(getUnreadSunsetHandovers(db)).toEqual([])
+        });
+
         test('sets the summary-processed marker without consuming the inbox read state', () => {
             const node = {
                 id        : 'msg-1',

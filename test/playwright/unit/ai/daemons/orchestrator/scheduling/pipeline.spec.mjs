@@ -118,6 +118,7 @@ function makeOrchestratorAdapterFixture(overrides = {}) {
         },
         writeLog                               : () => {},
         summaryGetDueTask                      : () => null,
+        publishFocusItemsDefect                : () => Promise.resolve(),
         backupGetDueTask                       : () => null,
         graphLogCompactionGetDueTask           : () => null,
         primaryDevSyncGetDueTask               : () => null,
@@ -188,6 +189,22 @@ function makeAdapterConfig({dreamMs = 3_600_000, remBacklogCatchupCooldownMs = 3
 }
 
 test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
+    test('the summary descriptor receives the owning orchestrator mailbox method', async () => {
+        const calls        = [], note = {subject: 'defect-note: handover is wrong missing receipt', body: 'source'},
+              orchestrator = makeOrchestratorAdapterFixture({
+                  publishFocusItemsDefect(value) {calls.push({owner: this, value}); return Promise.resolve('accepted');}
+              }),
+              options = buildOrchestratorSchedulingOptions({orchestrator, config: makeAdapterConfig(), now: 10, registry: []}),
+              descriptor = TASK_REGISTRY.find(item => item.taskName === 'summary');
+        let publisher;
+
+        descriptor.getDueTask({...options.context, hooks: {...options.context.hooks,
+            summaryGetDueTask(value) {publisher = value.publishFocusItemsDefect; return null;}
+        }});
+        expect(await publisher(note)).toBe('accepted');
+        expect(calls).toEqual([{owner: orchestrator, value: note}]);
+    });
+
     test('buildOrchestratorSchedulingOptions wires the REM liveness active alarm and dream-ownership gate (#13839)', () => {
         const remDispatcher = () => {};
         const orchestrator  = makeOrchestratorAdapterFixture({

@@ -1,12 +1,14 @@
-import {test, expect} from '@playwright/test';
-import {spawnSync}    from 'node:child_process';
-import Database       from 'better-sqlite3';
-import fs             from 'fs-extra';
-import path           from 'path';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import AiConfig       from '../../../../../../ai/config.template.mjs';
-import {Orchestrator} from '../../../../../../ai/daemons/orchestrator/Orchestrator.mjs';
+import {test, expect}        from '@playwright/test';
+import {spawnSync}           from 'node:child_process';
+import Database              from 'better-sqlite3';
+import fs                    from 'fs-extra';
+import path                  from 'path';
+import Neo                   from 'neo.mjs/src/Neo.mjs';
+import * as core             from 'neo.mjs/src/core/_export.mjs';
+import AiConfig              from '../../../../../../ai/config.template.mjs';
+import {Orchestrator}        from '../../../../../../ai/daemons/orchestrator/Orchestrator.mjs';
+import MailboxService        from '../../../../../../ai/services/memory-core/MailboxService.mjs';
+import RequestContextService from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 import {
     buildSupervisedTaskEnv,
     ProcessSupervisorService
@@ -243,6 +245,24 @@ function restoreConfigObject(target, prior) {
 }
 
 test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
+    test('focus defects use the supported quiet mailbox writer and propagate publication failure', async () => {
+        const original = MailboxService.addMessage, calls = [],
+              owner    = {swarmHeartbeatIdentity: '@neo-gpt-emmy'},
+              note     = {subject: 'defect-note: sunset handover from @peer is wrong lacks focus items', body: 'Source handover: MESSAGE:fixture.'};
+        try {
+            MailboxService.addMessage = async (value, options) => {
+                calls.push({value, options, identity: RequestContextService.getAgentIdentityNodeId()});
+                return {messageId: 'MESSAGE:accepted'};
+            };
+            expect(await Orchestrator.prototype.publishFocusItemsDefect.call(owner, note)).toEqual({messageId: 'MESSAGE:accepted'});
+            expect(calls).toEqual([{identity: '@neo-gpt-emmy', options: {deferProjection: true}, value: {...note, to: 'AGENT:*', priority: 'normal', wakeSuppressed: true}}]);
+            MailboxService.addMessage = async () => {throw new Error('writer rejected')};
+            await expect(Orchestrator.prototype.publishFocusItemsDefect.call(owner, note)).rejects.toThrow('writer rejected');
+        } finally {
+            MailboxService.addMessage = original;
+        }
+    });
+
     test('authority profiles filter continuous supervision, scheduled work, and PID recovery (#16166)', () => {
         const hostEdge = createTestOrchestrator({
             authorityProfile     : ORCHESTRATOR_AUTHORITY_PROFILE.hostEdge,
