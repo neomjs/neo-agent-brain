@@ -1,6 +1,7 @@
 import {writeFileAtomic}   from '../shared/atomicFileWrite.mjs';
 import {redactReadFailure} from './redactReadFailure.mjs';
 import {execFile, spawn}   from 'node:child_process';
+import crypto              from 'node:crypto';
 import fs                  from 'node:fs';
 import path                from 'node:path';
 import {promisify}         from 'node:util';
@@ -8,11 +9,21 @@ import {promisify}         from 'node:util';
 const execFileAsync = promisify(execFile);
 
 /**
- * The seat-home receipt of the installs this Fleet started: `{[repoSlug]: {state, at, reason?}}`, where `state` is
- * `installing`, `installed` or `failed`. Beside the memory import's receipt, outside every checkout.
+ * The seat-home receipt of the installs this Fleet started: `{[repoSlug]: {state, at, lock?, adoptedFrom?, reason?}}`,
+ * where `state` is `installing`, `installed` or `failed`, `lock` is the {@link lockDigest} an `installed` tree was
+ * built from, and `adoptedFrom: 'unverified'` marks a tree the Fleet took over instead of cloning. Beside the memory
+ * import's receipt, outside every checkout.
  * @type {String}
  */
 export const DEPENDENCY_RECEIPT = '.neo-fleet-seat-dependencies.json';
+
+/**
+ * The fast-forward outcomes that leave a checkout at its remote's tip, trusted, on its default branch, with no tracked
+ * change and no local commit: the only checkouts whose unowned tree the Fleet adopts.
+ * @type {String[]}
+ * @private
+ */
+const CURRENT = ['fast-forwarded', 'up-to-date'];
 
 /**
  * The bound on one checkout's `npm ci`. Past it `npm` is stopped and the checkout's row reads `failed`.
@@ -174,14 +185,55 @@ export function runToExit(file, args, {cwd, env, signal, timeout = INSTALL_TIMEO
 }
 
 /**
+ * @summary The digest of a checkout's `package-lock.json`, which an owned install records so a changed lockfile
+ * installs again.
+ * @param {String} repoPath
+ * @returns {String}
+ */
+export function lockDigest(repoPath) {
+    return crypto.createHash('sha256').update(fs.readFileSync(path.join(repoPath, 'package-lock.json'))).digest('hex').slice(0, 16)
+}
+
+/**
+ * @summary The packages in a checkout's `node_modules` that are symlinks its lockfile does not mark `link: true`.
+ * Such a link is an `npm link` to other work, which no `git status` sees and `npm ci` would remove; a declared one,
+ * such as a `file:` dependency, `npm ci` recreates.
+ * @param {String} repoPath
+ * @returns {String[]}
+ * @private
+ */
+function undeclaredLinks(repoPath) {
+    const
+        {packages = {}} = JSON.parse(fs.readFileSync(path.join(repoPath, 'package-lock.json'), 'utf8')),
+        root            = path.join(repoPath, 'node_modules'),
+        links           = [];
+
+    for (const entry of fs.readdirSync(root, {withFileTypes: true})) {
+        if (entry.isSymbolicLink()) links.push(entry.name);
+        else if (entry.isDirectory() && entry.name.startsWith('@')) {
+            for (const scoped of fs.readdirSync(path.join(root, entry.name), {withFileTypes: true})) {
+                scoped.isSymbolicLink() && links.push(`${entry.name}/${scoped.name}`)
+            }
+        }
+    }
+
+    return links.filter(name => packages[`node_modules/${name}`]?.link !== true)
+}
+
+/**
  * @summary Installs one seat checkout's locked dependencies before the harness that works in it starts.
  *
  * A fresh managed clone has no `node_modules`, and in the Engine that is where the skills every instruction file
  * names come from: `npm ci` runs `prepare`, which materializes them. The rule is absence-based, like clone-or-reuse.
- * A checkout without a `package-lock.json` is `not-applicable`. A tree this Fleet finished installing is `present`.
- * A tree it did not install is `unverified` and stays untouched: `npm ci` deletes `node_modules` first, which could
- * pull files out from under a seat's own work. A tree whose owned install never finished (`installing` or `failed`
- * in the receipt) is the Fleet's own, so it installs again rather than reading a half-built tree as ready.
+ * A checkout without a `package-lock.json` is `not-applicable`. A tree this Fleet finished installing from the same
+ * lockfile is `present`; a changed lockfile, or an entry that predates the digest, installs again. A tree whose owned
+ * install never finished (`installing` or `failed` in the receipt) is the Fleet's own, so it installs again rather
+ * than reading a half-built tree as ready.
+ *
+ * A tree the Fleet did not install is `unverified` and stays untouched, because `npm ci` deletes `node_modules` first
+ * and could pull files out from under a seat's own work. The one exception is a checkout its fast-forward just left
+ * {@link CURRENT}, whose `node_modules` holds no undeclared link: nothing there is a seat's, so the Fleet adopts it,
+ * and the receipt records `adoptedFrom: 'unverified'`.
  *
  * The outcome is data, never a throw, and a failure's reason is credential-redacted and bounded
  * ({@link module:ai/services/fleet/redactReadFailure}). An install its signal stopped reads `failed` with
@@ -190,6 +242,8 @@ export function runToExit(file, args, {cwd, env, signal, timeout = INSTALL_TIMEO
  * @param {Object}      options
  * @param {String}      options.repoPath               The checkout's absolute path.
  * @param {Object|null} [options.prior=null]           This checkout's entry in the seat's {@link DEPENDENCY_RECEIPT}.
+ * @param {Object|null} [options.update=null]          This Start's fast-forward outcome for the checkout
+ *                                                     ({@link module:ai/services/fleet/ensureAgentRepo.fastForwardAgentRepo}).
  * @param {AbortSignal} [options.signal]               The Start's signal; aborting it stops `npm`.
  * @param {Object}      [options.env=process.env]      The Fleet's environment; `npm` inherits only {@link INHERITED_ENV} from it.
  * @param {Function}    [options.run=runToExit]        `(file, args, {cwd, env, signal}) => Promise<void>`.
@@ -204,6 +258,7 @@ export function runToExit(file, args, {cwd, env, signal, timeout = INSTALL_TIMEO
 export async function installAgentRepoDependencies({
     repoPath,
     prior      = null,
+    update     = null,
     signal,
     env        = process.env,
     run        = runToExit,
@@ -212,19 +267,44 @@ export async function installAgentRepoDependencies({
 }) {
     if (!fs.existsSync(path.join(repoPath, 'package-lock.json'))) return {state: 'not-applicable'};
 
-    if (fs.existsSync(path.join(repoPath, 'node_modules'))) {
-        if (prior?.state === 'installed')                               return {state: 'present'};
-        if (prior?.state !== 'installing' && prior?.state !== 'failed') return {state: 'unverified'}
+    let lock, adoptedFrom = prior?.adoptedFrom;
+
+    try {
+        lock = lockDigest(repoPath)
+    } catch (error) {
+        return {state: 'failed', reason: `the lockfile could not be read: ${redactReadFailure(error) ?? 'no legible error'}`}
     }
 
-    const resolution = await resolveNpm();
+    if (fs.existsSync(path.join(repoPath, 'node_modules'))) {
+        if (prior?.state === 'installed' && prior.lock === lock) return {state: 'present'};
+
+        if (!['installed', 'installing', 'failed'].includes(prior?.state)) {
+            if (!CURRENT.includes(update?.state)) return {state: 'unverified'};
+
+            let links;
+
+            try {
+                links = undeclaredLinks(repoPath)
+            } catch (error) {
+                return {state: 'unverified', reason: `its links could not be checked: ${redactReadFailure(error) ?? 'no legible error'}`}
+            }
+
+            if (links.length) return {state: 'unverified', reason: `node_modules holds links its lockfile does not declare: ${links.join(', ')}`};
+
+            adoptedFrom = 'unverified'
+        }
+    }
+
+    const
+        resolution = await resolveNpm(),
+        provenance = adoptedFrom ? {adoptedFrom} : {};
 
     if (!resolution.npm) return {state: 'failed', reason: resolution.reason};
 
     // `npm ci` rebuilds the tree, so the ownership must be on record first: a receipt still saying
     // `installed` would vouch for whatever a failed install leaves behind.
     try {
-        await record({state: 'installing'});
+        await record({state: 'installing', ...provenance});
     } catch (error) {
         return {state: 'failed', reason: `the seat receipt could not record the install, so npm did not run: ${redactReadFailure(error) ?? 'no legible error'}`}
     }
@@ -239,7 +319,8 @@ export async function installAgentRepoDependencies({
     }
 
     try {
-        await record(outcome.state === 'installed' ? {state: 'installed'} : {state: 'failed', reason: outcome.reason});
+        // the digest is written only once `npm ci` has exited 0, so a failed install never vouches for its lockfile
+        await record(outcome.state === 'installed' ? {state: 'installed', lock, ...provenance} : {state: 'failed', reason: outcome.reason, ...provenance});
     } catch (error) {
         if (outcome.state === 'installed') {
             return {state: 'installed', reason: `the seat receipt could not record it, so the next Start installs again: ${redactReadFailure(error) ?? 'no legible error'}`}
@@ -275,7 +356,8 @@ export function readDependencyReceipt(receiptPath) {
  * installs it interrupted read `canceled`: an operator's act, not a failure.
  *
  * @param {Object}      options
- * @param {Object[]}    options.checkouts    `[{repoSlug, repoPath}]`, the seat's working checkout first.
+ * @param {Object[]}    options.checkouts    `[{repoSlug, repoPath, update?}]`, the seat's working checkout first;
+ *                                           `update` is its fast-forward outcome, which its row carries.
  * @param {String}      options.seatRoot     The seat's folder, which holds the receipt.
  * @param {AbortSignal} [options.signal]     The Start's signal.
  * @param {AbortSignal} [options.skipSignal] The operator's Skip: stops the installs, never the Start.
@@ -284,7 +366,7 @@ export function readDependencyReceipt(receiptPath) {
  * @param {Function}    [options.resolveNpm=resolveLoginShellNpm]
  * @param {Function}    [options.now]        ISO timestamp source for the receipt.
  * @param {Function}    [options.write=writeFileAtomic] `(path, text) => Promise<void>`, the receipt's atomic write.
- * @returns {Promise<Object[]>} `[{repoSlug, state, reason?}]`, one row per checkout, in checkout order.
+ * @returns {Promise<Object[]>} `[{repoSlug, state, reason?, update?}]`, one row per checkout, in checkout order.
  */
 export async function installSeatDependencies({
     checkouts,
@@ -310,14 +392,17 @@ export async function installSeatDependencies({
     let resolution,
         writes = Promise.resolve();
 
-    await Promise.all(checkouts.map(async ({repoSlug, repoPath}, index) => {
+    await Promise.all(checkouts.map(async ({repoSlug, repoPath, update}, index) => {
+        const row = fields => update ? {repoSlug, ...fields, update} : {repoSlug, ...fields};
+
         const {canceled, ...outcome} = await install({
             repoPath,
             prior     : receipt[repoSlug] ?? null,
+            update    : update ?? null,
             signal    : stops.length > 1 ? AbortSignal.any(stops) : stops[0],
             resolveNpm: () => resolution ??= resolveNpm(),
             record    : entry => {
-                entry.state === 'installing' && report(index, {repoSlug, state: 'installing'});
+                entry.state === 'installing' && report(index, row({state: 'installing'}));
                 receipt[repoSlug] = {...entry, at: now()};
 
                 const written = writes.then(() => write(receiptPath, `${JSON.stringify(receipt, null, 4)}\n`));
@@ -327,9 +412,9 @@ export async function installSeatDependencies({
             }
         });
 
-        report(index, canceled && signal?.aborted     ? {repoSlug, state: 'canceled', reason: 'stopped during the install'}
-                    : canceled && skipSignal?.aborted ? {repoSlug, state: 'skipped',  reason: 'skipped during the install'}
-                    :                                   {repoSlug, ...outcome})
+        report(index, canceled && signal?.aborted     ? row({state: 'canceled', reason: 'stopped during the install'})
+                    : canceled && skipSignal?.aborted ? row({state: 'skipped',  reason: 'skipped during the install'})
+                    :                                   row(outcome))
     }));
 
     await writes;

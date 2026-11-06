@@ -578,10 +578,11 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(lifecycle.calls.pendingDependencies).toEqual([{id: 'a', signal: lifecycle.calls.signals[0], rows: status.dependencies}]);
     });
 
-    test("every checkout fast-forwards after its identity and before its install, and the outcome rides on its row", async () => {
+    test("every checkout fast-forwards after its identity and before its install, which gets the outcome", async () => {
         const events    = [],
               lifecycle = makeLifecycle({agents: repoAgent('a'), events}),
               forwarded = [],
+              installs  = [],
               update    = {state: 'fast-forwarded', from: 'aaaaaaa', to: 'bbbbbbb'},
               status    = await startAgentProvisioned({
                   lifecycleService   : lifecycle,
@@ -590,10 +591,10 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                   ensureRepo         : makeEnsureRepo('/managed/a/neomjs/neo'),
                   convergeGitIdentity: async () => { events.push('identity'); return {state: 'converged', scope: 'local', action: 'kept'} },
                   fastForwardRepo    : async args => { events.push('fast-forward'); forwarded.push(args); return update },
-                  installDependencies: async ({checkouts, onRows}) => {
+                  installDependencies: async ({checkouts}) => {
                       events.push('install');
-                      onRows([{repoSlug: 'neomjs/neo', state: 'installing'}]);
-                      return checkouts.map(({repoSlug}) => ({repoSlug, state: 'installed'}))
+                      installs.push(checkouts);
+                      return checkouts.map(({repoSlug, update}) => ({repoSlug, state: 'installed', update}))
                   },
                   prepareWorkspace   : makePrepareWorkspace(events),
                   agentosRuntimeRoot : '/installed/neo'
@@ -603,11 +604,11 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         // the declared remote and the seat's own PAT, under the Start's signal
         expect(forwarded).toEqual([{repoPath: '/managed/a/neomjs/neo', cloneUrl: REPO.cloneUrl, credential: FIXTURE_PAT,
             credentialOrigin: undefined, signal: lifecycle.calls.signals[0]}]);
-        expect(lifecycle.calls.pendingDependencies[0].rows).toEqual([{repoSlug: 'neomjs/neo', state: 'installing', update}]);
+        expect(installs).toEqual([[{...REPO, repoPath: '/managed/a/neomjs/neo', update}]]);
         expect(status.dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installed', update}]);
     });
 
-    test('a failed fast-forward is reported on the row, and the seat still installs and starts', async () => {
+    test('a failed fast-forward still reaches the install, and the seat still starts', async () => {
         const lifecycle = makeLifecycle({agents: repoAgent('a')}),
               failed    = {state: 'failed', reason: 'fatal: unable to access the remote'},
               status    = await startAgentProvisioned({
@@ -616,7 +617,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                   managedRoot        : '/managed',
                   ensureRepo         : makeEnsureRepo('/managed/a/neomjs/neo'),
                   fastForwardRepo    : async () => failed,
-                  installDependencies: async ({checkouts}) => checkouts.map(({repoSlug}) => ({repoSlug, state: 'present'})),
+                  installDependencies: async ({checkouts}) => checkouts.map(({repoSlug, update}) => ({repoSlug, state: 'present', update})),
                   prepareWorkspace   : makePrepareWorkspace(),
                   agentosRuntimeRoot : '/installed/neo'
               });

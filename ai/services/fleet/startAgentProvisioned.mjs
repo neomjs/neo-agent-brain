@@ -695,29 +695,24 @@ async function provisionAgent({
     lifecycleService.setGitIdentity?.(agentId, gitIdentity);
 
     // Each checkout first moves to its remote's default branch, when that moves nothing a seat wrote, so the install
-    // below reads the lockfile its session will work with. Its outcome rides on the checkout's dependency row as
-    // `update`, and, like the install's, none stops the launch.
-    const
-        updates     = await Promise.all(checkouts.map(({repoPath, cloneUrl}) => fastForwardRepo({repoPath, cloneUrl,
-            credential: resolvedCredential, credentialOrigin, signal: startSignal}))),
-        withUpdates = rows => rows.map(row => {
-            const update = updates[checkouts.findIndex(({repoSlug}) => repoSlug === row.repoSlug)];
-
-            return update ? {...row, update} : row
-        });
+    // below reads the lockfile its session will work with. The install gets each outcome, which its row carries as
+    // `update` and which decides whether a tree the Fleet did not install may be adopted. Like the install's, no
+    // outcome stops the launch.
+    const updates = await Promise.all(checkouts.map(({repoPath, cloneUrl}) => fastForwardRepo({repoPath, cloneUrl,
+        credential: resolvedCredential, credentialOrigin, signal: startSignal})));
     startSignal.throwIfAborted();
 
     // Each checkout's locked dependencies go in before anything runs there, so the seat's first session finds the
     // skills its instructions name. Like an other repository's clone, no outcome stops the launch, and neither does a
     // Skip; a Stop during the install does, after `npm` has exited. The rows reach the seat's status as they change,
     // and the final ones stay there as this attempt's outcome, launched or not.
-    const dependencyRows = withUpdates(await installDependencies({
-        checkouts,
+    const dependencyRows = await installDependencies({
+        checkouts : checkouts.map((checkout, index) => updates[index] ? {...checkout, update: updates[index]} : checkout),
         seatRoot  : path.resolve(managedRoot, agentId),
         signal    : startSignal,
         skipSignal: dependencySkipSignal,
-        onRows    : rows => lifecycleService.setPendingDependencies(agentId, startSignal, withUpdates(rows))
-    }));
+        onRows    : rows => lifecycleService.setPendingDependencies(agentId, startSignal, rows)
+    });
     lifecycleService.setPendingDependencies(agentId, startSignal, dependencyRows);
     startSignal.throwIfAborted();
 

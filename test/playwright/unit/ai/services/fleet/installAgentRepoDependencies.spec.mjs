@@ -6,6 +6,7 @@ import {
     DEPENDENCY_RECEIPT,
     installAgentRepoDependencies,
     installSeatDependencies,
+    lockDigest,
     resolveLoginShellNpm,
     runToExit
 } from '../../../../../../ai/services/fleet/installAgentRepoDependencies.mjs';
@@ -64,13 +65,70 @@ test.describe('installAgentRepoDependencies — a seat checkout gets its locked 
         expect([run.calls, resolveNpm.calls, record.calls]).toEqual([[], [], []]);
     });
 
-    test('a tree the Fleet finished is present, and one it did not install is unverified: both stay untouched', async () => {
+    test('a tree the Fleet finished from this lockfile is present, and one it did not install is unverified: both stay untouched', async () => {
         const run = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('lock', 'node_modules');
 
-        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installed'}, env: FLEET_ENV, run, resolveNpm, record})).toEqual({state: 'present'});
+        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installed', lock: lockDigest(repoPath)}, env: FLEET_ENV, run, resolveNpm, record}))
+            .toEqual({state: 'present'});
         // npm ci deletes node_modules first, so a tree the Fleet cannot vouch for is only reported
         expect(await installAgentRepoDependencies({repoPath, prior: null, env: FLEET_ENV, run, resolveNpm, record})).toEqual({state: 'unverified'});
         expect([run.calls, resolveNpm.calls, record.calls]).toEqual([[], [], []]);
+    });
+
+    test('an owned tree whose lockfile changed, or whose entry predates the digest, installs again and records the new digest', async () => {
+        const run = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('lock', 'node_modules'),
+              lock = lockDigest(repoPath);
+
+        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installed', lock: 'an-older-lockfile'}, env: FLEET_ENV, run, resolveNpm, record}))
+            .toEqual({state: 'installed'});
+        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installed'}, env: FLEET_ENV, run, resolveNpm, record}))
+            .toEqual({state: 'installed'});
+        expect(run.calls).toHaveLength(2);
+        expect(record.calls).toEqual([[{state: 'installing'}], [{state: 'installed', lock}], [{state: 'installing'}], [{state: 'installed', lock}]]);
+    });
+
+    test('an unowned tree is adopted only after its fast-forward left it current and with no link its lockfile does not declare', async () => {
+        const run = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('node_modules'),
+              linked = fs.mkdtempSync(path.join(root, 'sibling-'));
+
+        // a `file:` dependency the lockfile declares, which npm ci recreates
+        fs.writeFileSync(path.join(repoPath, 'package-lock.json'), JSON.stringify({lockfileVersion: 3, packages: {'node_modules/neo.mjs': {resolved: '../neo', link: true}}}));
+        fs.symlinkSync(linked, path.join(repoPath, 'node_modules', 'neo.mjs'));
+
+        const lock      = lockDigest(repoPath),
+              install   = update => installAgentRepoDependencies({repoPath, prior: null, update, env: FLEET_ENV, run, resolveNpm, record});
+
+        // a checkout the fast-forward could not vouch for keeps its tree
+        expect(await install({state: 'skipped', reason: 'tracked files have changes'})).toEqual({state: 'unverified'});
+        expect(await install(null)).toEqual({state: 'unverified'});
+        expect(run.calls).toEqual([]);
+
+        expect(await install({state: 'up-to-date'})).toEqual({state: 'installed'});
+        expect(record.calls).toEqual([[{state: 'installing', adoptedFrom: 'unverified'}], [{state: 'installed', lock, adoptedFrom: 'unverified'}]]);
+
+        // an `npm link` no git status shows, which npm ci would wipe
+        fs.mkdirSync(path.join(repoPath, 'node_modules', '@scope'));
+        fs.symlinkSync(linked, path.join(repoPath, 'node_modules', '@scope', 'tool'));
+
+        expect(await install({state: 'fast-forwarded', from: 'aaaaaaa', to: 'bbbbbbb'}))
+            .toEqual({state: 'unverified', reason: 'node_modules holds links its lockfile does not declare: @scope/tool'});
+        expect(run.calls).toHaveLength(1);
+    });
+
+    test('an adopted tree keeps its provenance through a failed install and the retry after it', async () => {
+        let attempts = 0;
+
+        const run = recorder(async () => { if (++attempts === 1) throw new Error('npm ci exited 1') }), resolveNpm = recorder(async () => RESOLVED),
+              record = recorder(), repoPath = checkout('lock', 'node_modules'), adopted = {adoptedFrom: 'unverified'};
+
+        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installing', ...adopted}, env: FLEET_ENV, run, resolveNpm, record}))
+            .toEqual({state: 'failed', reason: 'npm ci exited 1'});
+        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'failed', reason: 'npm ci exited 1', ...adopted}, env: FLEET_ENV, run, resolveNpm, record}))
+            .toEqual({state: 'installed'});
+        expect(record.calls).toEqual([
+            [{state: 'installing', ...adopted}], [{state: 'failed', reason: 'npm ci exited 1', ...adopted}],
+            [{state: 'installing', ...adopted}], [{state: 'installed', lock: lockDigest(repoPath), ...adopted}]
+        ]);
     });
 
     test("a fresh checkout runs the login shell's npm ci with that shell's PATH and none of the Fleet's credentials, receipted", async () => {
@@ -85,7 +143,7 @@ test.describe('installAgentRepoDependencies — a seat checkout gets its locked 
             env: {...SHELL_ENV, PATH: RESOLVED.PATH},
             signal
         }]]);
-        expect(record.calls).toEqual([[{state: 'installing'}], [{state: 'installed'}]]);
+        expect(record.calls).toEqual([[{state: 'installing'}], [{state: 'installed', lock: lockDigest(repoPath)}]]);
     });
 
     test('a tree left by an owned install that never finished installs again instead of reading as ready', async () => {
