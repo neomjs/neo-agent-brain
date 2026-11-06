@@ -26,9 +26,9 @@ const
      * Complete production census of every module under `ai/` that constructs `new AbortController()`
      * or arms `AbortSignal.timeout()`.
      *
-     * Keying on one spelling misses the other. Every module in this 25-module population is
+     * Keying on one spelling misses the other. Every module in this 26-module population is
      * accounted for here and partitioned into:
-     * - `probeSurface: true` (12 modules): modules carrying probe / canary / liveness / readiness
+     * - `probeSurface: true` (13 modules): modules carrying probe / canary / liveness / readiness
      *   entry points that must declare `@probeDisposition` in `PROBE_POPULATION_CENSUS`.
      * - `probeSurface: false` (13 modules): workload request transports, OAuth/PAT verification,
      *   daemon lifecycle shutdown signals, or outbound delivery clients that are not probes.
@@ -38,6 +38,11 @@ const
             probeSurface     : true,
             deadlineSpellings: ['new AbortController()'],
             role             : 'Orchestrator freeze re-probe embedding canary (`probeFrozenCollectionHealth`).'
+        },
+        'daemons/orchestrator/services/ProcessSupervisorService.mjs': {
+            probeSurface     : true,
+            deadlineSpellings: ['new AbortController()'],
+            role             : 'Task success-hook cancellation alongside the declared supervision readiness hooks.'
         },
         'daemons/orchestrator/services/TenantRepoSyncService.mjs': {
             probeSurface     : false,
@@ -166,8 +171,7 @@ const
      * and `postSpawn` residency hooks without directly constructing `AbortController`.
      */
     NON_ABORT_RESIDENCY_AND_PROBE_HOOK_MODULES = Object.freeze([
-        'daemons/orchestrator/services/ConfiguredTaskDefinitionsService.mjs',
-        'daemons/orchestrator/services/ProcessSupervisorService.mjs'
+        'daemons/orchestrator/services/ConfiguredTaskDefinitionsService.mjs'
     ]),
 
     /**
@@ -178,8 +182,10 @@ const
      * a probe-surface module is treated as a probe site and must be declared in `PROBE_POPULATION_CENSUS`.
      */
     NON_PROBE_ABORT_SITES_IN_PROBE_MODULES = Object.freeze({
-        'daemons/wake/localWakeAdapters.mjs'           : Object.freeze(['dispatchLocalWake', 'postOpenCodeDigest', 'deliverKimiServer']),
-        'services/fleet/opencodeWakeEnvelopePlugin.mjs': Object.freeze(['NeoWakeEnvelope'])
+        // runTask fences its own lifecycle completion; the supervisor's readiness probes remain declared below.
+        'daemons/orchestrator/services/ProcessSupervisorService.mjs': Object.freeze(['runTask']),
+        'daemons/wake/localWakeAdapters.mjs'                        : Object.freeze(['dispatchLocalWake', 'postOpenCodeDigest', 'deliverKimiServer']),
+        'services/fleet/opencodeWakeEnvelopePlugin.mjs'             : Object.freeze(['NeoWakeEnvelope'])
     }),
 
     JS_CONTROL_KEYWORDS = new Set([
@@ -1163,7 +1169,7 @@ test.describe('Probe mutation disposition census and mechanical guard', () => {
         } = await import('../../../../../../ai/services/graph/providerReadinessHelper.mjs'));
     });
 
-    test('AC-1 TOTALITY: all 25 abort-deadline modules and residency hook seams under ai/ are enumerated', () => {
+    test('AC-1 TOTALITY: all 26 abort-deadline modules and residency hook seams under ai/ are enumerated', () => {
         const guardResult   = evaluateProbePopulationGuard({allowedEffects: PROBE_INTERVENTION_EFFECTS}),
               liveScan      = guardResult.liveScan,
               liveModules   = liveScan.map(item => item.module),
@@ -1173,7 +1179,7 @@ test.describe('Probe mutation disposition census and mechanical guard', () => {
             .toBe(true);
         expect(liveModules, 'a module under ai/ added or removed new AbortController() / AbortSignal.timeout() without updating ABORT_DEADLINE_MODULE_CENSUS')
             .toEqual(censusModules);
-        expect(liveModules.length).toBe(25);
+        expect(liveModules.length).toBe(26);
 
         for (const item of liveScan) {
             const censusEntry = ABORT_DEADLINE_MODULE_CENSUS[item.module];
