@@ -69,8 +69,9 @@ const taskRegistry = [
                 db,
                 state,
                 now,
-                summarySweepIntervalMs: intervals.summarySweep,
-                log                   : hooks.log
+                summarySweepIntervalMs : intervals.summarySweep,
+                publishFocusItemsDefect: hooks.publishFocusItemsDefect,
+                log                    : hooks.log
             });
         }
     },

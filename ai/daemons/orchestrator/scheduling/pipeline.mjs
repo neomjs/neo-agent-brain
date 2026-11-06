@@ -165,6 +165,7 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
             hooks: {
                 log                                 : orchestrator.writeLog.bind(orchestrator),
                 summaryGetDueTask                   : orchestrator.summaryGetDueTask,
+                publishFocusItemsDefect             : orchestrator.publishFocusItemsDefect.bind(orchestrator),
                 backupGetDueTask                    : orchestrator.backupGetDueTask,
                 graphLogCompactionGetDueTask        : orchestrator.graphLogCompactionGetDueTask,
                 primaryDevSyncGetDueTask            : orchestrator.primaryDevSyncGetDueTask,

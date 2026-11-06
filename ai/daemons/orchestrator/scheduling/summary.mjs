@@ -1,11 +1,53 @@
 import {
     getUnreadSunsetHandovers,
-    markSunsetHandoversSummaryProcessed
+    markSunsetHandoversSummaryProcessed,
+    writeSunsetFocusItemsReceipt
 } from '../../wake/queries.mjs';
 import {
     getPendingMemorySummaryBackfillJobs,
     isNoProgressBackoffActive as isMemorySummaryBackfillBackoffActive
 } from './memorySummaryBackfill.mjs';
+
+/**
+ * @summary Parses the sunset subject's focus count without accepting truncated or unsafe numbers.
+ * @param {String} subject
+ * @returns {{named: Number, placed: Number}|null}
+ */
+export function parseFocusItemsReceipt(subject) {
+    const match = typeof subject === 'string' && subject.match(/\bfocus items: (\d+), (\d+) placed\b/);
+
+    if (!match) return null;
+
+    const named = Number(match[1]), placed = Number(match[2]);
+
+    return Number.isSafeInteger(named) && Number.isSafeInteger(placed) && placed <= named
+        ? {named, placed}
+        : null;
+}
+
+/**
+ * @summary Describes an unexplained missing focus receipt using the existing defect-fold grammar.
+ * The original handover body stays private; the observation carries its id and counts only.
+ * @param {Object} handover Message graph node.
+ * @param {{named: Number, placed: Number}|null} receipt Parsed subject counts.
+ * @returns {{subject: String, body: String}|null}
+ */
+export function buildFocusItemsDefect(handover, receipt) {
+    const properties = handover.properties || {};
+
+    if (receipt && (receipt.placed === receipt.named || /^\s*(?:[-*]\s*)?not placed:\s*\S/im.test(properties.bodyText || ''))) {
+        return null;
+    }
+
+    const sender = properties.from || 'unknown',
+          reason = receipt ? 'has unexplained unplaced focus items' : 'lacks focus items',
+          counts = receipt ? `names ${receipt.named}, places ${receipt.placed}` : 'is missing';
+
+    return {
+        subject: `defect-note: sunset handover from ${sender} is wrong ${reason}`,
+        body   : `Source handover: ${handover.id}. Its focus-items receipt ${counts}.`
+    };
+}
 
 /**
  * Reads pending low-latency summarization markers from the coordinator table.
@@ -186,8 +228,8 @@ export function hasDrainableMemorySummaryBackfill({
 export function buildSummaryTrigger({now, lastRunAt, intervalMs, handovers = [], pendingJobs = [], totalPending, unsummarizedCount}) {
     if (handovers.length > 0) {
         return {
-            taskName: 'summary',
-            source  : 'sunset-handover',
+            taskName     : 'summary',
+            source       : 'sunset-handover',
             reason       : `sunset-handover:${handovers.length}`,
             handoverCount: handovers.length
         };
@@ -197,8 +239,8 @@ export function buildSummaryTrigger({now, lastRunAt, intervalMs, handovers = [],
         const backlog = Number.isInteger(totalPending) ? totalPending : pendingJobs.length;
 
         return {
-            taskName: 'summary',
-            source  : 'pending-summarization',
+            taskName    : 'summary',
+            source      : 'pending-summarization',
             reason      : `pending-summarization:${backlog}`,
             pendingCount: pendingJobs.length
         };
@@ -232,6 +274,8 @@ export function buildSummaryTrigger({now, lastRunAt, intervalMs, handovers = [],
  * @param {Function} [options.isMemorySummaryBackfillBackoffActiveFn] Test seam for miniSummary backoff.
  * @param {Function} [options.markSunsetHandoversSummaryProcessedFn] Test seam for handover
  *     summary-consumed writes.
+ * @param {Function} [options.writeSunsetFocusItemsReceiptFn] Field-only receipt persistence.
+ * @param {Function} options.publishFocusItemsDefect Awaited supported mailbox writer for an invalid receipt.
  * @param {Function} [options.log] Optional orchestrator log function.
  * @returns {Object|null} Task trigger with optional `onSuccess` callback, or null.
  */
@@ -247,6 +291,8 @@ export function getDueTask({
     getPendingMemorySummaryBackfillJobsFn = getPendingMemorySummaryBackfillJobs,
     isMemorySummaryBackfillBackoffActiveFn = isMemorySummaryBackfillBackoffActive,
     markSunsetHandoversSummaryProcessedFn = markSunsetHandoversSummaryProcessed,
+    writeSunsetFocusItemsReceiptFn = writeSunsetFocusItemsReceipt,
+    publishFocusItemsDefect,
     log
 }) {
     const handovers   = getUnreadSunsetHandoversFn(db);
@@ -286,8 +332,22 @@ export function getDueTask({
     if (trigger.source === 'sunset-handover') {
         return {
             ...trigger,
-            onSuccess: () => {
-                markSunsetHandoversSummaryProcessedFn(db, handovers);
+            onSuccess: async ({signal} = {}) => {
+                signal?.throwIfAborted();
+                // Admit the captured batch before yielding: failure on an earlier publication must not
+                // let a recipient read discard a later handover that has not reached publication yet.
+                const admitted = handovers.map(handover => {
+                    const receipt = parseFocusItemsReceipt(handover.properties?.subject);
+                    writeSunsetFocusItemsReceiptFn(db, handover.id, receipt || 'missing');
+                    return {handover, defect: buildFocusItemsDefect(handover, receipt)};
+                });
+
+                for (const {handover, defect} of admitted) {
+                    signal?.throwIfAborted();
+                    if (defect) await publishFocusItemsDefect(defect);
+                    signal?.throwIfAborted();
+                    markSunsetHandoversSummaryProcessedFn(db, [handover]);
+                }
                 log?.('INFO', `[Orchestrator] Marked ${handovers.length} sunset handovers as summary-processed.`);
             }
         };

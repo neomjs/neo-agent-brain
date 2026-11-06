@@ -78,6 +78,7 @@ function createTestService() {
 
 function createManualChild() {
     let closeHandler;
+    let errorHandler;
     let stdoutHandler;
 
     return {
@@ -95,10 +96,14 @@ function createManualChild() {
                 if (eventName === 'close') {
                     closeHandler = handler;
                 }
+                if (eventName === 'error') errorHandler = handler;
             }
         },
         close(code = 0) {
             closeHandler?.(code);
+        },
+        error(error) {
+            errorHandler?.(error);
         },
         writeStdout(payload) {
             stdoutHandler?.(Buffer.from(payload));
@@ -204,6 +209,98 @@ test.describe('Neo.ai.daemons.services.ProcessSupervisorService', () => {
         expect(result).toBe(true);
         expect(spawnCalled).toBe(true);
         expect(markSpawnedCalled).toBe(true);
+    });
+
+    for (const rejectHook of [false, true]) {
+        test(`runTask holds completion until the success hook ${rejectHook ? 'rejects' : 'resolves'}`, async () => {
+            const {service, stateCalls, taskOutcomes, logEntries} = createTestService(),
+                  manualChild                                     = createManualChild(),
+                  hookError                                       = new Error('success hook unavailable');
+            let resolveHook, rejectPending, resolveCompleted, releases = 0, failures = 0;
+            const pending   = new Promise((resolve, reject) => {resolveHook = resolve; rejectPending = reject}),
+                  completed = new Promise(resolve => {resolveCompleted = resolve});
+
+            service.spawnFn = () => manualChild.child;
+            service.taskStateService.markFailed = () => { failures++ };
+            expect(service.runTask('mockTask', 'hook-witness', () => pending, {
+                onComplete() { releases++; resolveCompleted() }
+            })).toBe(true);
+
+            manualChild.close(0);
+            manualChild.error(new Error('late child event after exit'));
+            await Promise.resolve();
+            expect(stateCalls).toEqual([]);
+            expect(taskOutcomes.filter(entry => ['completed', 'failed'].includes(entry.status))).toEqual([]);
+            expect(failures).toBe(0);
+            expect(releases).toBe(0);
+
+            rejectHook ? rejectPending(hookError) : resolveHook();
+            await completed;
+            expect(releases).toBe(1);
+
+            if (rejectHook) {
+                expect(failures).toBe(1);
+                expect(stateCalls).toEqual([]);
+                expect(taskOutcomes.filter(entry => entry.status === 'failed')).toEqual([
+                    expect.objectContaining({taskName: 'mockTask', details: expect.objectContaining({
+                        phase: 'success-hook', error: hookError.message
+                    })})
+                ]);
+                expect(logEntries.some(entry => entry.message.includes('success hook failed'))).toBe(true)
+            } else {
+                expect(failures).toBe(0);
+                expect(stateCalls).toEqual([{action: 'completed', taskName: 'mockTask'}]);
+                expect(taskOutcomes.filter(entry => entry.status === 'completed')).toHaveLength(1)
+            }
+        })
+    }
+
+    test('runTask preserves synchronous success-hook completion', () => {
+        const {service, stateCalls} = createTestService(), manualChild = createManualChild(), events = [];
+        service.spawnFn = () => manualChild.child;
+
+        expect(service.runTask('mockTask', 'sync-hook', () => events.push('success'), {
+            onComplete() { events.push('release') }
+        })).toBe(true);
+        manualChild.close(0);
+
+        expect(events).toEqual(['success', 'release']);
+        expect(stateCalls).toEqual([{action: 'completed', taskName: 'mockTask'}])
+    });
+
+    test('watchdog aborts a stalled success hook without killing the closed child or finalizing twice', async () => {
+        const {service, stateCalls, taskOutcomes} = createTestService(), manualChild = createManualChild();
+        let resolveHook, signal, kills = 0, releases = 0, failures = 0;
+        const pending = new Promise(resolve => {resolveHook = resolve});
+
+        service.taskDefinitions.mockTask.maxRuntimeMs = 40;
+        manualChild.child.kill = () => { kills++ };
+        service.spawnFn = () => manualChild.child;
+        service.taskStateService.markFailed = () => { failures++ };
+
+        expect(service.runTask('mockTask', 'stalled-hook', context => {
+            signal = context.signal;
+            return pending
+        }, {onComplete() { releases++ }})).toBe(true);
+        manualChild.close(0);
+
+        expect(signal.aborted).toBe(false);
+        expect(releases).toBe(0);
+        await expect.poll(() => releases).toBe(1);
+        expect(signal.aborted).toBe(true);
+        expect(kills).toBe(0);
+        expect(failures).toBe(1);
+        expect(stateCalls).toEqual([]);
+        expect(taskOutcomes.filter(entry => entry.status === 'failed')).toEqual([
+            expect.objectContaining({taskName: 'mockTask', details: expect.objectContaining({phase: 'watchdog-timeout'})})
+        ]);
+
+        resolveHook();
+        await new Promise(resolve => setImmediate(resolve));
+        expect(releases).toBe(1);
+        expect(failures).toBe(1);
+        expect(stateCalls).toEqual([]);
+        expect(taskOutcomes.filter(entry => ['failed', 'completed'].includes(entry.status))).toHaveLength(1)
     });
 
     test('runTask watchdog kills a child that exceeds maxRuntimeMs and finalizes it as failed', async () => {

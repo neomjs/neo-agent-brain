@@ -312,11 +312,18 @@ export function getDbNode(db, id) {
     }
 }
 
+/**
+ * @summary Reads unread handovers and admitted receipt retries, until summary consumption finishes.
+ * A recipient read does not discard a receipt whose mailbox publication is still pending.
+ * @param {Object} db
+ * @returns {Object[]}
+ */
 export function getUnreadSunsetHandovers(db) {
     const stmt = db.prepare(`
         SELECT id, data FROM Nodes
         WHERE json_extract(data, '$.type') = 'MESSAGE'
-          AND json_extract(data, '$.properties.readAt') IS NULL
+          AND (json_extract(data, '$.properties.readAt') IS NULL
+               OR json_extract(data, '$.properties.focusItemsReceipt') IS NOT NULL)
           AND json_extract(data, '$.properties.handoverSummaryProcessedAt') IS NULL
           AND json_extract(data, '$.properties.taggedConcepts') LIKE '%"sunset-protocol-handover"%'
     `);
@@ -339,14 +346,30 @@ export function getUnreadSunsetHandovers(db) {
     return unreadMessages;
 }
 
+/**
+ * @summary Records receipt admission without replacing concurrent message properties.
+ * @param {Object} db
+ * @param {String} id Message node id.
+ * @param {{named: Number, placed: Number}|String} receipt Parsed counts or 'missing'.
+ */
+export function writeSunsetFocusItemsReceipt(db, id, receipt) {
+    db.prepare("UPDATE Nodes SET data = json_set(data, '$.properties.focusItemsReceipt', json(?)) WHERE id = ?")
+        .run(JSON.stringify(receipt), id);
+}
+
+/**
+ * @summary Completes handover consumption while retaining intervening recipient and receipt writes.
+ * @param {Object} db
+ * @param {Object[]} nodes
+ */
 export function markSunsetHandoversSummaryProcessed(db, nodes) {
     if (nodes.length === 0) return;
-    const stmt = db.prepare('UPDATE Nodes SET data = ? WHERE id = ?');
+    const stmt = db.prepare("UPDATE Nodes SET data = json_set(data, '$.properties.handoverSummaryProcessedAt', ?) WHERE id = ?");
     db.transaction(() => {
         for (const node of nodes) {
             node.properties ??= {};
             node.properties.handoverSummaryProcessedAt = new Date().toISOString();
-            stmt.run(JSON.stringify(node), node.id);
+            stmt.run(node.properties.handoverSummaryProcessedAt, node.id);
         }
     })();
 }

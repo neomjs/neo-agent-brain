@@ -648,7 +648,7 @@ export class ProcessSupervisorService extends Base {
      * Starts a child task and wires completion status back into task state and HealthService.
      * @param {String} taskName Task key.
      * @param {String} reason Scheduling reason.
-     * @param {Function} [onSuccess] Optional success hook.
+     * @param {Function} [onSuccess] Success hook receiving `{signal}`; its promise settles before completion and lease release.
      * @param {Object} [options] Optional configuration.
      * @param {Function} [options.onComplete] Optional completion hook called on both success and failure.
      * @param {Object} [options.env] Optional call-site environment variables to merge after task env.
@@ -709,18 +709,25 @@ export class ProcessSupervisorService extends Base {
 
         this.recordTaskOutcome(taskName, 'running', {reason, pid: child.pid || null, startedAt: new Date().toISOString()});
 
-        let cleared          = false;
-        let deferredClear    = null;
-        let readinessPending = typeof task.postSpawn === 'function';
-        let readinessOutcome = null;
-        let watchdog         = null;
+        let   cleared              = false;
+        let   childClosed          = false;
+        let   completing           = false;
+        let   deferredClear        = null;
+        let   readinessPending     = typeof task.postSpawn === 'function';
+        let   readinessOutcome     = null;
+        let   watchdog             = null;
+        const completionController = new AbortController();
 
-        const executeClear = (code, error, phase = 'start') => {
-            if (cleared) {
+        const executeClear = async (code, error, phase = 'start') => {
+            if (cleared || (completing && phase !== 'watchdog-timeout')) {
                 return;
             }
-            cleared = true;
-            clearTimeout(watchdog);
+            if (error || code !== 0) {
+                cleared = true;
+                completionController.abort(error || new Error(`Child exited with code ${code}`));
+            } else {
+                completing = true;
+            }
 
             try {
                 if (fs.existsSync(pidFile)) {
@@ -735,11 +742,20 @@ export class ProcessSupervisorService extends Base {
                 this.recordTaskOutcome(taskName, 'failed', {reason, phase, error: error.message});
             } else if (code === 0) {
                 try {
-                    const completedAt   = new Date().toISOString();
                     const stdoutOutcome = this.parseCapturedStdoutJson(stdoutCapture);
                     const disposition   = this.classifySuccessfulChildOutcome(taskName, stdoutOutcome.outcome);
 
-                    onSuccess?.();
+                    const completion = onSuccess?.({signal: completionController.signal});
+
+                    // Synchronous hooks keep their existing ordering. Async persistence owns completion until
+                    // it settles, so a failed write is retried instead of being reported as successful work.
+                    if (completion && typeof completion.then === 'function') {
+                        await completion;
+                    }
+
+                    if (cleared) return;
+
+                    const completedAt = new Date().toISOString();
 
                     if (disposition.status === 'skipped') {
                         this.taskStateService.markSkipped(taskName);
@@ -764,6 +780,7 @@ export class ProcessSupervisorService extends Base {
                         }
                     }
                 } catch (e) {
+                    if (cleared) return;
                     this.taskStateService.markFailed(taskName, null);
                     this.writeLog?.('ERROR', `[ProcessSupervisor] ${task.label} success hook failed: ${e.message}`);
                     this.recordTaskOutcome(taskName, 'failed', {reason, phase: 'success-hook', error: e.message});
@@ -774,6 +791,8 @@ export class ProcessSupervisorService extends Base {
                 this.recordTaskOutcome(taskName, 'failed', {reason, code, failedAt: new Date().toISOString()});
             }
 
+            cleared = true;
+            clearTimeout(watchdog);
             try {
                 options.onComplete?.({code, error});
             } catch (e) {
@@ -808,7 +827,7 @@ export class ProcessSupervisorService extends Base {
             }
         });
 
-        child.on('close', code => clear(code));
+        child.on('close', code => {childClosed = true; clear(code)});
         child.on('error', err => clear(null, err, 'child-process'));
 
         // Max-runtime watchdog (opt-in via task.maxRuntimeMs): a child that hangs — e.g. a
@@ -820,9 +839,10 @@ export class ProcessSupervisorService extends Base {
                 if (cleared) {
                     return;
                 }
-                this.writeLog?.('ERROR', `[ProcessSupervisor] ${task.label} exceeded max runtime (${task.maxRuntimeMs}ms) — killing child (watchdog).`);
+                this.writeLog?.('ERROR', `[ProcessSupervisor] ${task.label} exceeded max runtime (${task.maxRuntimeMs}ms) — ${childClosed ? 'finalizing after child exit' : 'killing child'} (watchdog).`);
                 try {
-                    child.kill?.('SIGTERM');
+                    // Once the child closed, only its completion hook remains; never signal a recycled PID.
+                    if (!childClosed) child.kill?.('SIGTERM');
                 } catch (e) {}
                 clear(null, new Error(`max runtime ${task.maxRuntimeMs}ms exceeded`), 'watchdog-timeout');
             }, task.maxRuntimeMs);
