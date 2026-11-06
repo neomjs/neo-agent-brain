@@ -6,7 +6,9 @@ import {
     DEPENDENCY_RECEIPT,
     installAgentRepoDependencies,
     installSeatDependencies,
+    lockDigest,
     resolveLoginShellNpm,
+    runSeatStart,
     runToExit
 } from '../../../../../../ai/services/fleet/installAgentRepoDependencies.mjs';
 
@@ -64,13 +66,120 @@ test.describe('installAgentRepoDependencies — a seat checkout gets its locked 
         expect([run.calls, resolveNpm.calls, record.calls]).toEqual([[], [], []]);
     });
 
-    test('a tree the Fleet finished is present, and one it did not install is unverified: both stay untouched', async () => {
+    test('a tree the Fleet finished from this lockfile is present, and one it did not install is unverified: both stay untouched', async () => {
         const run = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('lock', 'node_modules');
 
-        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installed'}, env: FLEET_ENV, run, resolveNpm, record})).toEqual({state: 'present'});
+        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installed', lock: lockDigest(repoPath)}, env: FLEET_ENV, run, resolveNpm, record}))
+            .toEqual({state: 'present'});
         // npm ci deletes node_modules first, so a tree the Fleet cannot vouch for is only reported
         expect(await installAgentRepoDependencies({repoPath, prior: null, env: FLEET_ENV, run, resolveNpm, record})).toEqual({state: 'unverified'});
         expect([run.calls, resolveNpm.calls, record.calls]).toEqual([[], [], []]);
+    });
+
+    test('an owned tree whose lockfile changed, or whose entry predates the digest, installs again and records the new digest', async () => {
+        const run  = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('lock', 'node_modules'),
+              lock = lockDigest(repoPath);
+
+        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installed', lock: 'an-older-lockfile'}, env: FLEET_ENV, run, resolveNpm, record}))
+            .toEqual({state: 'installed'});
+        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installed'}, env: FLEET_ENV, run, resolveNpm, record}))
+            .toEqual({state: 'installed'});
+        expect(run.calls).toHaveLength(2);
+        expect(record.calls).toEqual([[{state: 'installing'}], [{state: 'installed', lock}], [{state: 'installing'}], [{state: 'installed', lock}]]);
+    });
+
+    test('an unowned tree is adopted only after its fast-forward left it current and with no link its lockfile does not declare', async () => {
+        const run    = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('node_modules'),
+              linked = fs.mkdtempSync(path.join(root, 'sibling-'));
+
+        // a `file:` dependency the lockfile declares, which npm ci recreates
+        fs.writeFileSync(path.join(repoPath, 'package-lock.json'), JSON.stringify({lockfileVersion: 3, packages: {'node_modules/neo.mjs': {resolved: '../neo', link: true}}}));
+        fs.symlinkSync(linked, path.join(repoPath, 'node_modules', 'neo.mjs'));
+
+        const lock    = lockDigest(repoPath),
+              install = update => installAgentRepoDependencies({repoPath, prior: null, update, env: FLEET_ENV, run, resolveNpm, record});
+
+        // a checkout the fast-forward could not vouch for keeps its tree
+        expect(await install({state: 'skipped', reason: 'tracked files have changes'})).toEqual({state: 'unverified'});
+        expect(await install(null)).toEqual({state: 'unverified'});
+        expect(run.calls).toEqual([]);
+
+        expect(await install({state: 'up-to-date'})).toEqual({state: 'installed'});
+        expect(record.calls).toEqual([[{state: 'installing', adoptedFrom: 'unverified'}], [{state: 'installed', lock, adoptedFrom: 'unverified'}]]);
+
+        // an `npm link` no git status shows, which npm ci would wipe
+        fs.mkdirSync(path.join(repoPath, 'node_modules', '@scope'));
+        fs.symlinkSync(linked, path.join(repoPath, 'node_modules', '@scope', 'tool'));
+
+        expect(await install({state: 'fast-forwarded', from: 'aaaaaaa', to: 'bbbbbbb'}))
+            .toEqual({state: 'unverified', reason: 'node_modules holds links its lockfile does not declare: @scope/tool'});
+        expect(run.calls).toHaveLength(1);
+    });
+
+    test('a link nested in a package of its own also keeps the tree unverified, while .bin links and declared nested links do not', async () => {
+        const run     = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('node_modules'),
+              sibling = fs.mkdtempSync(path.join(root, 'sibling-')),
+              nested  = path.join(repoPath, 'node_modules', 'outer', 'node_modules');
+
+        fs.writeFileSync(path.join(repoPath, 'package-lock.json'), JSON.stringify({lockfileVersion: 3, packages: {
+            'node_modules/outer/node_modules/declared': {resolved: '../declared', link: true}
+        }}));
+        fs.mkdirSync(path.join(nested, '.bin'), {recursive: true});
+        // npm's own executable link, and a nested link the lockfile declares
+        fs.symlinkSync(sibling, path.join(nested, '.bin', 'tool'));
+        fs.symlinkSync(sibling, path.join(nested, 'declared'));
+
+        const install = () => installAgentRepoDependencies({repoPath, prior: null, update: {state: 'up-to-date'}, env: FLEET_ENV, run, resolveNpm, record});
+
+        expect(await install()).toEqual({state: 'installed'});
+
+        // an `npm link` inside a package's own node_modules
+        fs.symlinkSync(sibling, path.join(nested, 'local-tool'));
+
+        expect(await install()).toEqual({state: 'unverified', reason: 'node_modules holds links its lockfile does not declare: outer/node_modules/local-tool'});
+        expect(run.calls).toHaveLength(1);
+    });
+
+    test("a declared seat:start runs on the login shell's npm with none of the Fleet's credentials, and an undeclared one is untouched", async () => {
+        const run      = recorder(), resolveNpm = recorder(async () => RESOLVED), signal = new AbortController().signal,
+              declared = checkout(), undeclared = checkout(), absent = checkout();
+
+        fs.writeFileSync(path.join(declared, 'package.json'), JSON.stringify({scripts: {'seat:start': 'node build.mjs'}}));
+        fs.writeFileSync(path.join(undeclared, 'package.json'), JSON.stringify({scripts: {test: 'node test.mjs'}}));
+
+        expect(await runSeatStart({repoPath: undeclared, env: FLEET_ENV, run, resolveNpm})).toBeNull();
+        expect(await runSeatStart({repoPath: absent, env: FLEET_ENV, run, resolveNpm})).toBeNull();
+        expect([run.calls, resolveNpm.calls]).toEqual([[], []]);
+
+        expect(await runSeatStart({repoPath: declared, signal, env: FLEET_ENV, run, resolveNpm})).toEqual({state: 'ran'});
+        expect(run.calls).toEqual([[RESOLVED.npm, ['run', 'seat:start'], {cwd: declared, env: {...SHELL_ENV, PATH: RESOLVED.PATH}, signal}]]);
+    });
+
+    test('a failing seat:start, or no npm to run it with, answers failed with its reason instead of throwing', async () => {
+        const repoPath = checkout();
+
+        fs.writeFileSync(path.join(repoPath, 'package.json'), JSON.stringify({scripts: {'seat:start': 'node build.mjs'}}));
+
+        expect(await runSeatStart({repoPath, env: FLEET_ENV, run: async () => { throw new Error('npm run seat:start exited 1') }, resolveNpm: async () => RESOLVED}))
+            .toEqual({state: 'failed', reason: 'npm run seat:start exited 1'});
+        expect(await runSeatStart({repoPath, env: FLEET_ENV, run: recorder(), resolveNpm: async () => ({reason: 'npm is not on the PATH of the login shell /bin/zsh'})}))
+            .toEqual({state: 'failed', reason: 'npm is not on the PATH of the login shell /bin/zsh'});
+    });
+
+    test('an adopted tree keeps its provenance through a failed install and the retry after it', async () => {
+        let attempts = 0;
+
+        const run    = recorder(async () => { if (++attempts === 1) throw new Error('npm ci exited 1') }), resolveNpm = recorder(async () => RESOLVED),
+              record = recorder(), repoPath = checkout('lock', 'node_modules'), adopted = {adoptedFrom: 'unverified'};
+
+        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installing', ...adopted}, env: FLEET_ENV, run, resolveNpm, record}))
+            .toEqual({state: 'failed', reason: 'npm ci exited 1'});
+        expect(await installAgentRepoDependencies({repoPath, prior: {state: 'failed', reason: 'npm ci exited 1', ...adopted}, env: FLEET_ENV, run, resolveNpm, record}))
+            .toEqual({state: 'installed'});
+        expect(record.calls).toEqual([
+            [{state: 'installing', ...adopted}], [{state: 'failed', reason: 'npm ci exited 1', ...adopted}],
+            [{state: 'installing', ...adopted}], [{state: 'installed', lock: lockDigest(repoPath), ...adopted}]
+        ]);
     });
 
     test("a fresh checkout runs the login shell's npm ci with that shell's PATH and none of the Fleet's credentials, receipted", async () => {
@@ -85,7 +194,7 @@ test.describe('installAgentRepoDependencies — a seat checkout gets its locked 
             env: {...SHELL_ENV, PATH: RESOLVED.PATH},
             signal
         }]]);
-        expect(record.calls).toEqual([[{state: 'installing'}], [{state: 'installed'}]]);
+        expect(record.calls).toEqual([[{state: 'installing'}], [{state: 'installed', lock: lockDigest(repoPath)}]]);
     });
 
     test('a tree left by an owned install that never finished installs again instead of reading as ready', async () => {
@@ -299,6 +408,44 @@ test.describe('installSeatDependencies — one row per checkout, the receipt kep
             'neomjs/neo-agent-brain'      : {state: 'installed', at: '2026-10-08T19:40:00.000Z'},
             'neomjs/neo-agent-institution': {state: 'failed', reason: 'npm ci exited 1', at: '2026-10-08T19:40:00.000Z'}
         });
+    });
+
+    test("every install that leaves a tree runs its repository's seat:start next, on the shared npm, and the row carries it", async () => {
+        const resolveNpm = recorder(async () => RESOLVED),
+              order      = [],
+              install    = async ({repoPath, resolveNpm: resolveOnce}) => {
+                  order.push(`install ${repoPath}`);
+                  await resolveOnce();
+                  return repoPath.endsWith('institution') ? {state: 'failed', reason: 'npm ci exited 1'} : {state: 'present'}
+              },
+              seatStart  = recorder(async ({repoPath, resolveNpm: resolveOnce}) => {
+                  order.push(`start ${repoPath}`);
+                  await resolveOnce();
+                  return repoPath.endsWith('brain') ? null : {state: 'ran'}
+              });
+
+        expect(await installSeatDependencies({checkouts, seatRoot, install, seatStart, resolveNpm})).toEqual([
+            {repoSlug: 'neomjs/neo',                   state: 'present', seatStart: {state: 'ran'}},
+            {repoSlug: 'neomjs/neo-agent-brain',       state: 'present'},
+            {repoSlug: 'neomjs/neo-agent-institution', state: 'failed', reason: 'npm ci exited 1'}
+        ]);
+        // a failed install leaves no tree to start on, and each start follows its own install
+        expect(seatStart.calls.map(([{repoPath}]) => repoPath).sort()).toEqual(['/seat/neomjs/neo', '/seat/neomjs/neo-agent-brain']);
+        expect(order.indexOf('start /seat/neomjs/neo')).toBeGreaterThan(order.indexOf('install /seat/neomjs/neo'));
+        expect(resolveNpm.calls).toHaveLength(1);
+    });
+
+    test('a Skip that lands during seat:start reads skipped on its row, and the install outcome stays', async () => {
+        const skip      = new AbortController(),
+              seatStart = async ({signal}) => {
+                  skip.abort();
+                  expect(signal.aborted).toBe(true);
+                  return {state: 'failed', reason: 'npm run seat:start exited 143', canceled: true}
+              };
+
+        expect(await installSeatDependencies({checkouts: checkouts.slice(0, 1), seatRoot, skipSignal: skip.signal, install: async () => ({state: 'installed'}),
+            seatStart, resolveNpm: async () => RESOLVED}))
+            .toEqual([{repoSlug: 'neomjs/neo', state: 'installed', seatStart: {state: 'skipped', reason: 'skipped during seat:start'}}]);
     });
 
     test("the next Start hands each checkout its receipt entry, so a failed install's leftover tree is retried", async () => {

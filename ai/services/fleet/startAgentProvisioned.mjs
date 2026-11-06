@@ -1,7 +1,8 @@
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR}     from './mcpServers.mjs';
-import {ensureAgentRepo, ensureAgentRepos} from './ensureAgentRepo.mjs';
-import {installSeatDependencies}           from './installAgentRepoDependencies.mjs';
-import {LAUNCH_ADMISSION_REASONS}          from '../../../src/fleet/contract/launchAdmission.mjs';
+import {ensureAgentRepo, ensureAgentRepos, fastForwardAgentRepo}
+    from './ensureAgentRepo.mjs';
+import {installSeatDependencies}  from './installAgentRepoDependencies.mjs';
+import {LAUNCH_ADMISSION_REASONS} from '../../../src/fleet/contract/launchAdmission.mjs';
 import {createSeatPatOwner, createSeatPlaneOwner, createTenantBearerOwner, servedPlaneBinding, tenantProvesSeat}
     from './launchCredentialOwners.mjs';
 import {launchRefusalOf}                      from '../../../src/fleet/contract/launchAuthority.mjs';
@@ -171,6 +172,9 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * @param {Function} [options.ensureRepo]      The repo-provisioning composer; defaults to
  *                                             {@link Neo.ai.services.fleet.ensureAgentRepo}, injectable
  *                                             for tests.
+ * @param {Function} [options.fastForwardRepo] `({repoPath, cloneUrl, credential, credentialOrigin, signal}) => Promise<Object>`,
+ *                                             one checkout's fast-forward before its install; defaults to
+ *                                             {@link module:ai/services/fleet/ensureAgentRepo.fastForwardAgentRepo}.
  * @param {Function} [options.prepareWorkspace] The post-provisioning workspace/home composer; defaults
  *                                              to {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}.
  * @param {Function} [options.importMemory]     The adopted seat's memory convergence before preparation;
@@ -218,7 +222,10 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   carries `repos`: `[{repoSlug, state: 'prepared' | 'failed', reason?}]`, where a failed entry's
  *   `reason` is the failure's credential-redacted, bounded diagnostic. A repo-bearing seat's status carries
  *   `dependencies`, one row per checkout it works in, the working one first:
- *   `[{repoSlug, state: 'installed' | 'present' | 'unverified' | 'not-applicable' | 'skipped' | 'failed', reason?}]`. Stop returns a finite
+ *   `[{repoSlug, state: 'installed' | 'present' | 'unverified' | 'not-applicable' | 'skipped' | 'failed', reason?, update?, seatStart?}]`,
+ *   where `update` is the checkout's fast-forward before its install (`{state: 'fast-forwarded' | 'up-to-date' |
+ *   'skipped' | 'failed', reason?, from?, to?}`) and `seatStart` its repository's own start step after it
+ *   (`{state: 'ran' | 'failed' | 'skipped' | 'canceled', reason?}`). Stop returns a finite
  *   `{id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}` for this attempt;
  *   it never replaces a newer launch's record.
  *   Claude preparation may also return `repoTrust`: per-assignment file-projection observations
@@ -268,6 +275,7 @@ async function provisionAgent({
     planeBase = null,
     cloneRepo,
     ensureRepo = ensureAgentRepo,
+    fastForwardRepo = fastForwardAgentRepo,
     prepareWorkspace = prepareManagedAgentWorkspace,
     importMemory = importSeatMemory,
     installDependencies = installSeatDependencies,
@@ -687,12 +695,20 @@ async function provisionAgent({
 
     lifecycleService.setGitIdentity?.(agentId, gitIdentity);
 
+    // Each checkout first moves to its remote's default branch, when that moves nothing a seat wrote, so the install
+    // below reads the lockfile its session will work with. The install gets each outcome, which its row carries as
+    // `update` and which decides whether a tree the Fleet did not install may be adopted. Like the install's, no
+    // outcome stops the launch.
+    const updates = await Promise.all(checkouts.map(({repoPath, cloneUrl}) => fastForwardRepo({repoPath, cloneUrl,
+        credential: resolvedCredential, credentialOrigin, signal: startSignal})));
+    startSignal.throwIfAborted();
+
     // Each checkout's locked dependencies go in before anything runs there, so the seat's first session finds the
     // skills its instructions name. Like an other repository's clone, no outcome stops the launch, and neither does a
     // Skip; a Stop during the install does, after `npm` has exited. The rows reach the seat's status as they change,
     // and the final ones stay there as this attempt's outcome, launched or not.
     const dependencyRows = await installDependencies({
-        checkouts,
+        checkouts : checkouts.map((checkout, index) => updates[index] ? {...checkout, update: updates[index]} : checkout),
         seatRoot  : path.resolve(managedRoot, agentId),
         signal    : startSignal,
         skipSignal: dependencySkipSignal,

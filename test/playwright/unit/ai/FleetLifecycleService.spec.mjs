@@ -4008,8 +4008,10 @@ test.describe('FleetLifecycleService.setPendingDependencies — a Start\'s depen
             expect(FleetLifecycleService.setPendingDependencies('seat', new AbortController().signal, live)).toBe(false);
             expect(FleetLifecycleService.status('seat').dependencies).toBeNull();
 
-            expect(FleetLifecycleService.setPendingDependencies('seat', attempt, [{...live[0], repoPath: '/seat/neomjs/neo'}])).toBe(true);
-            expect(FleetLifecycleService.status('seat').dependencies).toEqual([live[0]])
+            const update = {state: 'fast-forwarded', from: 'aaaaaaa', to: 'bbbbbbb'}, seatStart = {state: 'ran'};
+
+            expect(FleetLifecycleService.setPendingDependencies('seat', attempt, [{...live[0], repoPath: '/seat/neomjs/neo', update, seatStart}])).toBe(true);
+            expect(FleetLifecycleService.status('seat').dependencies).toEqual([{...live[0], update, seatStart}])
         } finally {
             FleetLifecycleService.finishStart('seat', attempt)
         }
