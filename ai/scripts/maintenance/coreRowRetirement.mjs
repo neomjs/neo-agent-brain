@@ -267,6 +267,13 @@ export async function applyCoreRowRetirement({
         stage = 'preservation';
         const after = await readCollectionIds(collection, pageSize);
         if (!sameIds(after, plan.preservation.ids)) throw refuse('KB_CORE_RETIRE_PRESERVATION_CHANGED');
+        stage = 'replacement-preservation';
+        const finalTargets = await readRetirementRows(collection, [...replacements.keys()], pageSize);
+        for (const [id, digest] of replacements) {
+            if (!finalTargets.has(id) || metadataFingerprint(finalTargets.get(id)) !== digest) {
+                throw refuse('KB_CORE_RETIRE_REPLACEMENT_CHANGED');
+            }
+        }
         progress = {...progress, complete: true};
         await writeProgress(frozenSnapshot(progress));
         return {...receipt(), alreadyComplete, preservation: {count: after.length, digest: fingerprint(after)}};

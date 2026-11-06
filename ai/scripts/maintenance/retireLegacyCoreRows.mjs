@@ -26,6 +26,9 @@ import {buildCoreRowRetirementPlan, fingerprint}            from './coreRowRetir
  * The private plan holds full metadata snapshots and the exact ID preview; publish only the bounded
  * stdout receipt. A retry uses the same plan and adjacent progress journal. Runtime service loading
  * may initialize recorder telemetry after lease acquisition; dry run never embeds or mutates KB rows.
+ * The shared lease serializes orchestrator maintenance, not every direct KB writer. Before applying,
+ * require a verified admission block and drained writers for the whole window. Boundary checks can
+ * detect a moving population or changed replacement, but Chroma provides no rollback or transaction.
  */
 
 const PLAN_SCHEMA = 'neo.legacy-core-retirement-file/v1';

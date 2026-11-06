@@ -261,6 +261,18 @@ test('post-delete preservation failure is explicit and never triggers an automat
     expect(f.progress.complete).toBe(false);
 });
 
+test('replacement metadata changing during deletion cannot produce a completed receipt from equal ID populations', async () => {
+    const f = fixture({onDelete({store, ids, calls}) {
+        ids.forEach(id => store.delete(id));
+        if (calls === 2) store.get('replacement').content = 'changed while applying';
+    }});
+    await expect(applyCoreRowRetirement(f.options)).rejects.toMatchObject({
+        code: 'KB_CORE_RETIRE_REPLACEMENT_CHANGED', receipt: {stage: 'replacement-preservation', complete: false}
+    });
+    expect([...f.store.keys()].sort()).toEqual(f.plan.preservation.ids);
+    expect(f.progress.complete).toBe(false);
+});
+
 test('a completed retry performs no delete; a resurrected confirmed ID refuses', async () => {
     const f = fixture();
     await applyCoreRowRetirement(f.options);
