@@ -1917,14 +1917,14 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * @summary Copies `[{repoSlug, state, reason?, update?}]` rows, keeping only those fields.
+     * @summary Copies `[{repoSlug, state, reason?, update?, seatStart?}]` rows, keeping only those fields.
      * @param {Object[]} rows
      * @returns {Object[]}
      * @private
      */
     outcomeRows(rows) {
-        return rows.map(({reason, repoSlug, state, update}) => ({repoSlug, state, ...(reason != null ? {reason} : {}),
-            ...(update ? {update: {...update}} : {})}))
+        return rows.map(({reason, repoSlug, seatStart, state, update}) => ({repoSlug, state, ...(reason != null ? {reason} : {}),
+            ...(update ? {update: {...update}} : {}), ...(seatStart ? {seatStart: {...seatStart}} : {})}))
     }
 
     /**

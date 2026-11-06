@@ -222,9 +222,10 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   carries `repos`: `[{repoSlug, state: 'prepared' | 'failed', reason?}]`, where a failed entry's
  *   `reason` is the failure's credential-redacted, bounded diagnostic. A repo-bearing seat's status carries
  *   `dependencies`, one row per checkout it works in, the working one first:
- *   `[{repoSlug, state: 'installed' | 'present' | 'unverified' | 'not-applicable' | 'skipped' | 'failed', reason?, update?}]`,
+ *   `[{repoSlug, state: 'installed' | 'present' | 'unverified' | 'not-applicable' | 'skipped' | 'failed', reason?, update?, seatStart?}]`,
  *   where `update` is the checkout's fast-forward before its install (`{state: 'fast-forwarded' | 'up-to-date' |
- *   'skipped' | 'failed', reason?, from?, to?}`). Stop returns a finite
+ *   'skipped' | 'failed', reason?, from?, to?}`) and `seatStart` its repository's own start step after it
+ *   (`{state: 'ran' | 'failed' | 'skipped' | 'canceled', reason?}`). Stop returns a finite
  *   `{id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}` for this attempt;
  *   it never replaces a newer launch's record.
  *   Claude preparation may also return `repoTrust`: per-assignment file-projection observations

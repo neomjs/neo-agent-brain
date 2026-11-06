@@ -26,6 +26,13 @@ export const DEPENDENCY_RECEIPT = '.neo-fleet-seat-dependencies.json';
 const CURRENT = ['fast-forwarded', 'up-to-date'];
 
 /**
+ * The install outcomes that leave a checkout a tree its {@link SEAT_START_SCRIPT} can run on.
+ * @type {String[]}
+ * @private
+ */
+const READY = ['installed', 'present', 'unverified', 'not-applicable'];
+
+/**
  * The bound on one checkout's `npm ci`. Past it `npm` is stopped and the checkout's row reads `failed`.
  * @type {Number}
  */
@@ -331,6 +338,51 @@ export async function installAgentRepoDependencies({
 }
 
 /**
+ * The npm script in which a repository declares what a fresh Start needs beyond its dependencies, such as built assets
+ * or a config migration. Fleet runs it after the checkout's install, so Fleet itself names no repository's build.
+ * @type {String}
+ */
+export const SEAT_START_SCRIPT = 'seat:start';
+
+/**
+ * @summary Runs a checkout's {@link SEAT_START_SCRIPT} when its `package.json` declares one, with the install's own
+ * login-shell `npm`, `PATH` and environment.
+ *
+ * The outcome is data, never a throw: `null` when the checkout declares no such script, otherwise `{state: 'ran'}` or
+ * `{state: 'failed', reason, canceled?}`.
+ * @param {Object}      options
+ * @param {String}      options.repoPath              The checkout's absolute path.
+ * @param {AbortSignal} [options.signal]              The Start's signal; aborting it stops the script.
+ * @param {Object}      [options.env=process.env]     The Fleet's environment; the script inherits only {@link INHERITED_ENV}.
+ * @param {Function}    [options.run=runToExit]
+ * @param {Function}    [options.resolveNpm]          Called only when the script is declared.
+ * @returns {Promise<Object|null>}
+ */
+export async function runSeatStart({repoPath, signal, env = process.env, run = runToExit, resolveNpm = () => resolveLoginShellNpm({env})}) {
+    let scripts;
+
+    try {
+        ({scripts} = JSON.parse(fs.readFileSync(path.join(repoPath, 'package.json'), 'utf8')))
+    } catch {
+        return null
+    }
+
+    if (typeof scripts?.[SEAT_START_SCRIPT] !== 'string') return null;
+
+    const resolution = await resolveNpm();
+
+    if (!resolution.npm) return {state: 'failed', reason: resolution.reason};
+
+    try {
+        await run(resolution.npm, ['run', SEAT_START_SCRIPT], {cwd: repoPath, env: {...inheritedEnv(env), PATH: resolution.PATH}, signal});
+        return {state: 'ran'}
+    } catch (error) {
+        return {state: 'failed', reason: redactReadFailure(error) ?? `npm run ${SEAT_START_SCRIPT} failed with no legible error`,
+            ...(error?.canceled ? {canceled: true} : {})}
+    }
+}
+
+/**
  * @summary Reads the seat's dependency receipt; a missing or unreadable one reads as no owned install at all.
  * @param {String} receiptPath
  * @returns {Object}
@@ -351,9 +403,11 @@ export function readDependencyReceipt(receiptPath) {
  * its failure reaches the install that asked for it ({@link installAgentRepoDependencies} `record`).
  *
  * Each row is reported as it changes (`installing`, then its outcome), so a pending Start can show its install
- * phase. A Skip stops every running `npm` and waits for its exit: an install it interrupted reads `skipped`, one
- * that had already finished keeps its outcome, and the caller goes on to launch. A Stop wins over a Skip, and the
- * installs it interrupted read `canceled`: an operator's act, not a failure.
+ * phase. Every install that leaves a tree is followed by the checkout's {@link SEAT_START_SCRIPT}
+ * ({@link runSeatStart}), whose outcome the row carries as `seatStart`. A Skip stops every running `npm` and waits for
+ * its exit: an install or start step it interrupted reads `skipped`, one that had already finished keeps its outcome,
+ * and the caller goes on to launch. A Stop wins over a Skip, and what it interrupted reads `canceled`: an operator's
+ * act, not a failure.
  *
  * @param {Object}      options
  * @param {Object[]}    options.checkouts    `[{repoSlug, repoPath, update?}]`, the seat's working checkout first;
@@ -363,10 +417,11 @@ export function readDependencyReceipt(receiptPath) {
  * @param {AbortSignal} [options.skipSignal] The operator's Skip: stops the installs, never the Start.
  * @param {Function}    [options.onRows]     `rows => void`, each change's rows in checkout order, undecided ones left out.
  * @param {Function}    [options.install=installAgentRepoDependencies]
+ * @param {Function}    [options.seatStart=runSeatStart]
  * @param {Function}    [options.resolveNpm=resolveLoginShellNpm]
  * @param {Function}    [options.now]        ISO timestamp source for the receipt.
  * @param {Function}    [options.write=writeFileAtomic] `(path, text) => Promise<void>`, the receipt's atomic write.
- * @returns {Promise<Object[]>} `[{repoSlug, state, reason?, update?}]`, one row per checkout, in checkout order.
+ * @returns {Promise<Object[]>} `[{repoSlug, state, reason?, update?, seatStart?}]`, one row per checkout, in checkout order.
  */
 export async function installSeatDependencies({
     checkouts,
@@ -375,6 +430,7 @@ export async function installSeatDependencies({
     skipSignal,
     onRows     = () => {},
     install    = installAgentRepoDependencies,
+    seatStart  = runSeatStart,
     resolveNpm = resolveLoginShellNpm,
     now        = () => new Date().toISOString(),
     write      = writeFileAtomic
@@ -393,14 +449,20 @@ export async function installSeatDependencies({
         writes = Promise.resolve();
 
     await Promise.all(checkouts.map(async ({repoSlug, repoPath, update}, index) => {
-        const row = fields => update ? {repoSlug, ...fields, update} : {repoSlug, ...fields};
+        const
+            row      = fields => update ? {repoSlug, ...fields, update} : {repoSlug, ...fields},
+            stop     = stops.length > 1 ? AbortSignal.any(stops) : stops[0],
+            stopped  = (phase, fields) => signal?.aborted     ? {state: 'canceled', reason: `stopped during ${phase}`}
+                                        : skipSignal?.aborted ? {state: 'skipped',  reason: `skipped during ${phase}`}
+                                        :                       fields,
+            npm      = () => resolution ??= resolveNpm();
 
         const {canceled, ...outcome} = await install({
             repoPath,
             prior     : receipt[repoSlug] ?? null,
             update    : update ?? null,
-            signal    : stops.length > 1 ? AbortSignal.any(stops) : stops[0],
-            resolveNpm: () => resolution ??= resolveNpm(),
+            signal    : stop,
+            resolveNpm: npm,
             record    : entry => {
                 entry.state === 'installing' && report(index, row({state: 'installing'}));
                 receipt[repoSlug] = {...entry, at: now()};
@@ -412,9 +474,20 @@ export async function installSeatDependencies({
             }
         });
 
-        report(index, canceled && signal?.aborted     ? row({state: 'canceled', reason: 'stopped during the install'})
-                    : canceled && skipSignal?.aborted ? row({state: 'skipped',  reason: 'skipped during the install'})
-                    :                                   row(outcome))
+        const installed = row(canceled ? stopped('the install', outcome) : outcome);
+
+        report(index, installed);
+
+        // the repository's own start step needs a tree, so it follows every install that left one
+        if (!READY.includes(installed.state) || stop?.aborted) return;
+
+        const started = await seatStart({repoPath, signal: stop, resolveNpm: npm});
+
+        if (started) {
+            const {canceled: interrupted, ...ran} = started;
+
+            report(index, {...installed, seatStart: interrupted ? stopped(SEAT_START_SCRIPT, ran) : ran})
+        }
     }));
 
     await writes;
