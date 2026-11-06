@@ -1,8 +1,12 @@
 import {test, expect} from '@playwright/test';
 import {
     demultiplexDockerLogs,
+    dockerLogFraming,
     isMultiplexedDockerStream
 } from '../../../../../../../ai/daemons/orchestrator/services/dockerLogStream.mjs';
+
+const MULTIPLEXED = {'api-version': '1.47', 'content-type': 'application/vnd.docker.multiplexed-stream'},
+      RAW         = {'api-version': '1.47', 'content-type': 'application/vnd.docker.raw-stream'};
 
 /**
  * @summary One Docker stream frame: the 8-byte header (stream byte, three zero bytes, big-endian size), then the payload.
@@ -70,6 +74,37 @@ test.describe('ai/daemons/orchestrator/services/dockerLogStream', () => {
     test('an already decoded string passes through, and an empty body reads as no text', () => {
         expect(demultiplexDockerLogs('service booted')).toBe('service booted');
         expect(demultiplexDockerLogs(Buffer.alloc(0))).toBe('');
+        expect(demultiplexDockerLogs(Buffer.alloc(0), {headers: MULTIPLEXED})).toBe('');
         expect(demultiplexDockerLogs(null)).toBe('')
+    });
+
+    test('the declared framing decides; a raw label counts only from API 1.42', () => {
+        expect(dockerLogFraming(MULTIPLEXED)).toBe('multiplexed');
+        expect(dockerLogFraming(RAW)).toBe('raw');
+        expect(dockerLogFraming({'api-version': '1.41', 'content-type': 'application/vnd.docker.raw-stream'})).toBeNull();
+        expect(dockerLogFraming({})).toBeNull();
+        expect(dockerLogFraming()).toBeNull()
+    });
+
+    test('a declared raw stream keeps every byte, even when its bytes form a frame chain', () => {
+        const chainLike = frame(1, 'tty text that happens to look framed\n');
+
+        expect(isMultiplexedDockerStream(chainLike)).toBe(true);
+        expect(Buffer.from(demultiplexDockerLogs(chainLike, {headers: RAW}), 'utf8').equals(chainLike)).toBe(true);
+        expect(demultiplexDockerLogs(chainLike, {headers: {'api-version': '1.41', 'content-type': 'application/vnd.docker.raw-stream'}}))
+            .toBe('tty text that happens to look framed\n')
+    });
+
+    test('a daemon-error frame (stream 3) fails the read with its message', () => {
+        const body = Buffer.concat([frame(1, 'booted\n'), frame(3, 'error from daemon in stream: log file rotated\n')]);
+
+        expect(isMultiplexedDockerStream(body)).toBe(true);
+        expect(() => demultiplexDockerLogs(body, {headers: MULTIPLEXED})).toThrow('Docker log stream failed: error from daemon in stream: log file rotated');
+        expect(() => demultiplexDockerLogs(body)).toThrow('Docker log stream failed')
+    });
+
+    test('a declared multiplexed stream that is not a frame chain fails the read', () => {
+        expect(() => demultiplexDockerLogs(Buffer.from('plain text\n'), {headers: MULTIPLEXED}))
+            .toThrow('not a complete frame chain')
     })
 });

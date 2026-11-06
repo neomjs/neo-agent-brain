@@ -860,7 +860,8 @@ export class DeploymentRuntimeAccessService extends Base {
                 // without this the consumer cannot tell whether the interval was applied to the
                 // container whose death it is attributing.
                 containerId: target.containerId ?? null,
-                logs       : demultiplexDockerLogs(response.body),
+                // A daemon-error frame throws here, so the read fails instead of passing as log text
+                logs       : demultiplexDockerLogs(response.body, {headers: response.headers}),
                 tail       : tailCount
             },
             proof     : this.createProofMetadata({envelope: 'read-observe', operation: 'logs', target}),
