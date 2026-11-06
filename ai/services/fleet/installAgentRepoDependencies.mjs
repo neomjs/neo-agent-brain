@@ -455,12 +455,12 @@ export async function installSeatDependencies({
 
     await Promise.all(checkouts.map(async ({repoSlug, repoPath, update}, index) => {
         const
-            row      = fields => update ? {repoSlug, ...fields, update} : {repoSlug, ...fields},
-            stop     = stops.length > 1 ? AbortSignal.any(stops) : stops[0],
-            stopped  = (phase, fields) => signal?.aborted     ? {state: 'canceled', reason: `stopped during ${phase}`}
-                                        : skipSignal?.aborted ? {state: 'skipped',  reason: `skipped during ${phase}`}
-                                        :                       fields,
-            npm      = () => resolution ??= resolveNpm();
+            row     = fields => update ? {repoSlug, ...fields, update} : {repoSlug, ...fields},
+            stop    = stops.length > 1 ? AbortSignal.any(stops) : stops[0],
+            stopped = (phase, fields) => signal?.aborted     ? {state: 'canceled', reason: `stopped during ${phase}`}
+                                       : skipSignal?.aborted ? {state: 'skipped',  reason: `skipped during ${phase}`}
+                                       :                       fields,
+            npm     = () => resolution ??= resolveNpm();
 
         const {canceled, ...outcome} = await install({
             repoPath,

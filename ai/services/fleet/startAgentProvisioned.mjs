@@ -1,8 +1,8 @@
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR}     from './mcpServers.mjs';
 import {ensureAgentRepo, ensureAgentRepos, fastForwardAgentRepo}
     from './ensureAgentRepo.mjs';
-import {installSeatDependencies}           from './installAgentRepoDependencies.mjs';
-import {LAUNCH_ADMISSION_REASONS}          from '../../../src/fleet/contract/launchAdmission.mjs';
+import {installSeatDependencies}  from './installAgentRepoDependencies.mjs';
+import {LAUNCH_ADMISSION_REASONS} from '../../../src/fleet/contract/launchAdmission.mjs';
 import {createSeatPatOwner, createSeatPlaneOwner, createTenantBearerOwner, servedPlaneBinding, tenantProvesSeat}
     from './launchCredentialOwners.mjs';
 import {launchRefusalOf}                      from '../../../src/fleet/contract/launchAuthority.mjs';

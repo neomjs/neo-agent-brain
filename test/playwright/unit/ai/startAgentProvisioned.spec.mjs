@@ -596,8 +596,8 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                       installs.push(checkouts);
                       return checkouts.map(({repoSlug, update}) => ({repoSlug, state: 'installed', update}))
                   },
-                  prepareWorkspace   : makePrepareWorkspace(events),
-                  agentosRuntimeRoot : '/installed/neo'
+                  prepareWorkspace  : makePrepareWorkspace(events),
+                  agentosRuntimeRoot: '/installed/neo'
               });
 
         expect(events.filter(event => ['identity', 'fast-forward', 'install', 'start'].includes(event))).toEqual(['identity', 'fast-forward', 'install', 'start']);

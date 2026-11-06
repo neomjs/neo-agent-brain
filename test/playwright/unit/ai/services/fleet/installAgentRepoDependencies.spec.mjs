@@ -77,7 +77,7 @@ test.describe('installAgentRepoDependencies — a seat checkout gets its locked 
     });
 
     test('an owned tree whose lockfile changed, or whose entry predates the digest, installs again and records the new digest', async () => {
-        const run = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('lock', 'node_modules'),
+        const run  = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('lock', 'node_modules'),
               lock = lockDigest(repoPath);
 
         expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installed', lock: 'an-older-lockfile'}, env: FLEET_ENV, run, resolveNpm, record}))
@@ -89,15 +89,15 @@ test.describe('installAgentRepoDependencies — a seat checkout gets its locked 
     });
 
     test('an unowned tree is adopted only after its fast-forward left it current and with no link its lockfile does not declare', async () => {
-        const run = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('node_modules'),
+        const run    = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('node_modules'),
               linked = fs.mkdtempSync(path.join(root, 'sibling-'));
 
         // a `file:` dependency the lockfile declares, which npm ci recreates
         fs.writeFileSync(path.join(repoPath, 'package-lock.json'), JSON.stringify({lockfileVersion: 3, packages: {'node_modules/neo.mjs': {resolved: '../neo', link: true}}}));
         fs.symlinkSync(linked, path.join(repoPath, 'node_modules', 'neo.mjs'));
 
-        const lock      = lockDigest(repoPath),
-              install   = update => installAgentRepoDependencies({repoPath, prior: null, update, env: FLEET_ENV, run, resolveNpm, record});
+        const lock    = lockDigest(repoPath),
+              install = update => installAgentRepoDependencies({repoPath, prior: null, update, env: FLEET_ENV, run, resolveNpm, record});
 
         // a checkout the fast-forward could not vouch for keeps its tree
         expect(await install({state: 'skipped', reason: 'tracked files have changes'})).toEqual({state: 'unverified'});
@@ -117,7 +117,7 @@ test.describe('installAgentRepoDependencies — a seat checkout gets its locked 
     });
 
     test('a link nested in a package of its own also keeps the tree unverified, while .bin links and declared nested links do not', async () => {
-        const run = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('node_modules'),
+        const run     = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('node_modules'),
               sibling = fs.mkdtempSync(path.join(root, 'sibling-')),
               nested  = path.join(repoPath, 'node_modules', 'outer', 'node_modules');
 
@@ -141,7 +141,7 @@ test.describe('installAgentRepoDependencies — a seat checkout gets its locked 
     });
 
     test("a declared seat:start runs on the login shell's npm with none of the Fleet's credentials, and an undeclared one is untouched", async () => {
-        const run = recorder(), resolveNpm = recorder(async () => RESOLVED), signal = new AbortController().signal,
+        const run      = recorder(), resolveNpm = recorder(async () => RESOLVED), signal = new AbortController().signal,
               declared = checkout(), undeclared = checkout(), absent = checkout();
 
         fs.writeFileSync(path.join(declared, 'package.json'), JSON.stringify({scripts: {'seat:start': 'node build.mjs'}}));
@@ -169,7 +169,7 @@ test.describe('installAgentRepoDependencies — a seat checkout gets its locked 
     test('an adopted tree keeps its provenance through a failed install and the retry after it', async () => {
         let attempts = 0;
 
-        const run = recorder(async () => { if (++attempts === 1) throw new Error('npm ci exited 1') }), resolveNpm = recorder(async () => RESOLVED),
+        const run    = recorder(async () => { if (++attempts === 1) throw new Error('npm ci exited 1') }), resolveNpm = recorder(async () => RESOLVED),
               record = recorder(), repoPath = checkout('lock', 'node_modules'), adopted = {adoptedFrom: 'unverified'};
 
         expect(await installAgentRepoDependencies({repoPath, prior: {state: 'installing', ...adopted}, env: FLEET_ENV, run, resolveNpm, record}))
