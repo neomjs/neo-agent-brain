@@ -50,6 +50,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
         'maintenance/defragChromaDB.mjs'              : 'review-required',
         'maintenance/projectCoreCorpus.mjs'           : 'review-required',
         'maintenance/retireLegacyConversationRows.mjs': 'review-required',
+        'maintenance/retireLegacyCoreRows.mjs'        : 'review-required',
         'runners/runSandman.mjs'                      : 'review-required'
     };
 
