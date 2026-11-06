@@ -116,6 +116,30 @@ test.describe('installAgentRepoDependencies — a seat checkout gets its locked 
         expect(run.calls).toHaveLength(1);
     });
 
+    test('a link nested in a package of its own also keeps the tree unverified, while .bin links and declared nested links do not', async () => {
+        const run = recorder(), resolveNpm = recorder(async () => RESOLVED), record = recorder(), repoPath = checkout('node_modules'),
+              sibling = fs.mkdtempSync(path.join(root, 'sibling-')),
+              nested  = path.join(repoPath, 'node_modules', 'outer', 'node_modules');
+
+        fs.writeFileSync(path.join(repoPath, 'package-lock.json'), JSON.stringify({lockfileVersion: 3, packages: {
+            'node_modules/outer/node_modules/declared': {resolved: '../declared', link: true}
+        }}));
+        fs.mkdirSync(path.join(nested, '.bin'), {recursive: true});
+        // npm's own executable link, and a nested link the lockfile declares
+        fs.symlinkSync(sibling, path.join(nested, '.bin', 'tool'));
+        fs.symlinkSync(sibling, path.join(nested, 'declared'));
+
+        const install = () => installAgentRepoDependencies({repoPath, prior: null, update: {state: 'up-to-date'}, env: FLEET_ENV, run, resolveNpm, record});
+
+        expect(await install()).toEqual({state: 'installed'});
+
+        // an `npm link` inside a package's own node_modules
+        fs.symlinkSync(sibling, path.join(nested, 'local-tool'));
+
+        expect(await install()).toEqual({state: 'unverified', reason: 'node_modules holds links its lockfile does not declare: outer/node_modules/local-tool'});
+        expect(run.calls).toHaveLength(1);
+    });
+
     test("a declared seat:start runs on the login shell's npm with none of the Fleet's credentials, and an undeclared one is untouched", async () => {
         const run = recorder(), resolveNpm = recorder(async () => RESOLVED), signal = new AbortController().signal,
               declared = checkout(), undeclared = checkout(), absent = checkout();

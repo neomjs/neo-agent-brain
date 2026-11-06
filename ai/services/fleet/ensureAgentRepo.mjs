@@ -189,7 +189,8 @@ export const FETCH_TIMEOUT_MS = 120_000;
  *
  * The checkout must pass {@link verifyAgentRepoTrust}, sit on the branch `origin/HEAD` names, carry no change to a
  * tracked file and hold no commit its remote lacks. Anything else is `skipped`, with the reason. Untracked files need
- * no check, because `git merge --ff-only` refuses to overwrite one. The fetch goes to the declared `cloneUrl`, and the
+ * no check of their own: the merge runs with `--no-overwrite-ignore`, so it refuses to replace a seat's file, ignored
+ * or not, and the checkout stays where it was. The fetch goes to the declared `cloneUrl`, and the
  * seat's PAT reaches it only the way a clone carries it (`provisionAgentRepo.gitCloneCommand`). The checkout is the
  * seat's to write and the Fleet's credentials are not, so its hooks and filesystem monitor never run, and `git` reads
  * no host config and inherits only {@link FAST_FORWARD_ENV}.
@@ -247,7 +248,7 @@ export async function fastForwardAgentRepo({repoPath, cloneUrl, credential, cred
 
         const from = await git(['rev-parse', '--short', 'HEAD']);
 
-        await git(['merge', '--ff-only', '--quiet', tracking]);
+        await git(['merge', '--ff-only', '--no-overwrite-ignore', '--quiet', tracking]);
 
         return {state: 'fast-forwarded', from, to: await git(['rev-parse', '--short', 'HEAD'])}
     } catch (error) {

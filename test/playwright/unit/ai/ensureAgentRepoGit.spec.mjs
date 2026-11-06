@@ -197,4 +197,29 @@ test.describe('fastForwardAgentRepo — real git against a local remote', () => 
         expect((await forward(seat)).state).toBe('fast-forwarded');
         expect(fs.existsSync(marker)).toBe(false)
     });
+
+    test("an ignored seat file the remote starts tracking is never replaced, though a plain merge replaces it", async () => {
+        const control = behindCheckout(),
+              seat    = behindCheckout(),
+              ignore  = repoPath => {
+                  fs.appendFileSync(path.join(repoPath, '.git', 'info', 'exclude'), 'notes.local\n');
+                  fs.writeFileSync(path.join(repoPath, 'notes.local'), "the seat's own work")
+              };
+
+        ignore(control);
+        ignore(seat);
+        commitOnRemote('notes.local');
+
+        // the control: git's default merge silently replaces an ignored file the incoming commit tracks
+        hostless(control, 'fetch', '-q', 'origin');
+        hostless(control, 'merge', '--ff-only', '-q', 'origin/dev');
+        expect(fs.readFileSync(path.join(control, 'notes.local'), 'utf8')).toBe('notes.local');
+
+        const before  = head(seat),
+              outcome = await forward(seat);
+
+        expect(outcome.state).toBe('failed');
+        expect(head(seat)).toBe(before);
+        expect(fs.readFileSync(path.join(seat, 'notes.local'), 'utf8')).toBe("the seat's own work")
+    });
 });

@@ -202,29 +202,34 @@ export function lockDigest(repoPath) {
 }
 
 /**
- * @summary The packages in a checkout's `node_modules` that are symlinks its lockfile does not mark `link: true`.
- * Such a link is an `npm link` to other work, which no `git status` sees and `npm ci` would remove; a declared one,
- * such as a `file:` dependency, `npm ci` recreates.
+ * @summary The packages anywhere in a checkout's `node_modules` tree, nested ones included, that are symlinks its
+ * lockfile does not mark `link: true`. Such a link is an `npm link` to other work, which no `git status` sees and
+ * `npm ci` would remove; a declared one, such as a `file:` dependency, `npm ci` recreates. `.bin` holds npm's own
+ * executable links, and a linked package is not entered.
  * @param {String} repoPath
- * @returns {String[]}
+ * @returns {String[]} Each link's path below the top-level `node_modules`.
  * @private
  */
 function undeclaredLinks(repoPath) {
     const
         {packages = {}} = JSON.parse(fs.readFileSync(path.join(repoPath, 'package-lock.json'), 'utf8')),
-        root            = path.join(repoPath, 'node_modules'),
-        links           = [];
+        links           = [],
+        walk            = relative => {
+            for (const entry of fs.readdirSync(path.join(repoPath, relative), {withFileTypes: true})) {
+                const name = `${relative}/${entry.name}`;
 
-    for (const entry of fs.readdirSync(root, {withFileTypes: true})) {
-        if (entry.isSymbolicLink()) links.push(entry.name);
-        else if (entry.isDirectory() && entry.name.startsWith('@')) {
-            for (const scoped of fs.readdirSync(path.join(root, entry.name), {withFileTypes: true})) {
-                scoped.isSymbolicLink() && links.push(`${entry.name}/${scoped.name}`)
+                if (entry.name === '.bin')     continue;
+                if (entry.isSymbolicLink())    links.push(name);
+                else if (entry.isDirectory()) {
+                    if (entry.name.startsWith('@')) walk(name);
+                    else if (fs.existsSync(path.join(repoPath, name, 'node_modules'))) walk(`${name}/node_modules`)
+                }
             }
-        }
-    }
+        };
 
-    return links.filter(name => packages[`node_modules/${name}`]?.link !== true)
+    walk('node_modules');
+
+    return links.filter(name => packages[name]?.link !== true).map(name => name.replace(/^node_modules\//, ''))
 }
 
 /**
