@@ -356,15 +356,19 @@ class SearchService extends Base {
     /**
      * Resolves the best available source content for RAG synthesis.
      *
-     * Curated legacy references hydrate from their owning Brain or primary-repository root. Tenant-
-     * ingested references and revision-bound Engine profile rows use Chroma metadata content instead:
-     * an additive migration can retain an old vector after the installed Engine package advances,
-     * and reading the new package would attach different bytes to that old vector.
+     * Curated legacy references hydrate from their owning Brain or primary-repository root, falling
+     * back to the installed Engine package (`node_modules/neo.mjs/`) when an unprefixed Engine path
+     * is absent at the Brain root. Tenant-ingested references and revision-bound Engine profile rows
+     * use Chroma metadata content instead: an additive migration can retain an old vector after the
+     * installed Engine package advances, and reading the new package would attach different bytes to
+     * that old vector.
      *
      * @param {Object} ref Query reference.
+     * @param {Object} [options={}] Hydration options.
+     * @param {String} [options.query=''] Active search query for oversized multi-section prioritization.
      * @returns {Promise<String>} Hydrated content or the standard placeholder.
      */
-    async hydrateReferenceContent(ref) {
+    async hydrateReferenceContent(ref, options = {}) {
         const metadata        = ref.metadata || {};
         const embeddedContent = this.getEmbeddedReferenceContent(metadata);
         let   content         = '';
@@ -372,7 +376,9 @@ class SearchService extends Base {
 
         if (this.isNonLocalTenantReference(metadata)) {
             if (embeddedContent) {
-                return embeddedContent;
+                return this.prioritizeOversizedDocumentSections(embeddedContent, {
+                    query: options.query
+                });
             }
 
             logger.warn(`[SearchService] Missing metadata.content for non-local tenant ref.source="${ref.source}" (tenantId="${metadata.tenantId}", repoSlug="${metadata.repoSlug || ''}") — refusing local filesystem fallback.`);
@@ -382,7 +388,9 @@ class SearchService extends Base {
 
         if (metadata.rootKind === 'neo-workspace' && metadata.extractionIdentity) {
             if (embeddedContent) {
-                return embeddedContent;
+                return this.prioritizeOversizedDocumentSections(embeddedContent, {
+                    query: options.query
+                });
             }
 
             logger.warn(`[SearchService] Missing metadata.content for revision-bound Engine ref.source="${ref.source}" — refusing current-package fallback.`);
@@ -396,6 +404,23 @@ class SearchService extends Base {
             ? ref.source
             : path.resolve(localRoot, ref.source || '');
 
+        if (
+            ref.source
+            && !path.isAbsolute(ref.source)
+            && !(absoluteSource && await fs.pathExists(absoluteSource))
+        ) {
+            const
+                engineRoot      = path.resolve(aiConfig.neoRootDir, 'node_modules/neo.mjs'),
+                engineCandidate = path.resolve(engineRoot, ref.source);
+
+            if (
+                (engineCandidate === engineRoot || engineCandidate.startsWith(`${engineRoot}${path.sep}`))
+                && await fs.pathExists(engineCandidate)
+            ) {
+                absoluteSource = engineCandidate;
+            }
+        }
+
         if (absoluteSource && await fs.pathExists(absoluteSource)) {
             try {
                 content = await fs.readFile(absoluteSource, 'utf8');
@@ -405,15 +430,166 @@ class SearchService extends Base {
         }
 
         if (!content && embeddedContent) {
-            return embeddedContent;
+            return this.prioritizeOversizedDocumentSections(embeddedContent, {
+                query: options.query
+            });
         }
 
         if (!content) {
             content = 'No Content (File missing or empty)';
             logger.warn(`[SearchService] Empty context for ref.source="${ref.source}" (resolved to "${absoluteSource}") — chunk content will not reach the synthesis LLM.`);
+            return content;
         }
 
-        return content;
+        return this.prioritizeOversizedDocumentSections(content, {
+            query: options.query,
+            embeddedContent
+        });
+    }
+
+    /**
+     * @summary Prioritizes query-relevant Markdown sections when a document exceeds `contextMaxCharsPerDocument`.
+     * @param {String} content Raw hydrated document content.
+     * @param {Object} [options={}] Prioritization options.
+     * @param {String} [options.query=''] Active search query.
+     * @param {String} [options.embeddedContent=''] Matched chunk content from QueryService.
+     * @returns {String} Content with query-relevant sections prioritized when oversized.
+     */
+    prioritizeOversizedDocumentSections(content, {query = '', embeddedContent = ''} = {}) {
+        const maxCharsPerDocument = aiConfig.askSynthesis.contextMaxCharsPerDocument;
+
+        if (typeof content !== 'string' || !(maxCharsPerDocument > 0) || content.length <= maxCharsPerDocument) {
+            return content;
+        }
+
+        const sections = this.splitMarkdownSections(content);
+
+        if (sections.length <= 1) {
+            return content;
+        }
+
+        const stopWords = new Set([
+            'about', 'after', 'all', 'also', 'and', 'any', 'are', 'can', 'does', 'for', 'from',
+            'has', 'have', 'how', 'into', 'its', 'list', 'more', 'not', 'only', 'our', 'should',
+            'that', 'the', 'their', 'them', 'then', 'there', 'these', 'they', 'this', 'what',
+            'when', 'where', 'which', 'who', 'why', 'will', 'with', 'would', 'your'
+        ]);
+        const queryWords = [...new Set(
+            String(query || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9 ]/g, ' ')
+                .split(' ')
+                .filter(word => word.length > 2 && !stopWords.has(word))
+        )];
+
+        if (queryWords.length === 0 && !embeddedContent) {
+            return content;
+        }
+
+        const scored = sections.map((section, index) => {
+            const trimmed = section.trim();
+
+            if (!trimmed) {
+                return {index, score: -1, section};
+            }
+
+            const
+                firstLine = (trimmed.split('\n')[0] || '').toLowerCase(),
+                lower     = trimmed.toLowerCase();
+            let score = 0;
+
+            if (embeddedContent && trimmed.length >= 32 && embeddedContent.includes(trimmed)) {
+                score += 15;
+            }
+
+            for (const word of queryWords) {
+                const stem = word.endsWith('s') && word.length > 3 ? word.slice(0, -1) : word;
+
+                if (firstLine.includes(stem)) {
+                    score += 30;
+                }
+                if (lower.includes(stem)) {
+                    score += 10;
+                }
+            }
+
+            return {index, score, section};
+        });
+
+        if (!scored.some(item => item.score > 0)) {
+            return content;
+        }
+
+        scored.sort((left, right) => right.score - left.score || left.index - right.index);
+
+        return scored.map(item => item.section).join('');
+    }
+
+    /**
+     * @summary Splits Markdown content into heading sections without splitting inside fenced code blocks.
+     * @param {String} content Raw Markdown content.
+     * @returns {String[]} Ordered Markdown sections whose concatenation equals `content`.
+     */
+    splitMarkdownSections(content) {
+        if (typeof content !== 'string' || !content) {
+            return [];
+        }
+
+        const
+            lines    = content.match(/[^\n]*\n|[^\n]+/g) || [],
+            sections = [];
+        let current    = '',
+            fenceChar  = '',
+            fenceCount = 0;
+
+        for (const line of lines) {
+            const
+                stripped   = line.replace(/\r?\n$/, ''),
+                fenceMatch = stripped.match(/^ {0,3}(\x60{3,}|~{3,})(.*)$/);
+
+            if (fenceChar) {
+                current += line;
+
+                if (
+                    fenceMatch
+                    && fenceMatch[1][0] === fenceChar
+                    && fenceMatch[1].length >= fenceCount
+                    && fenceMatch[2].trim() === ''
+                ) {
+                    fenceChar  = '';
+                    fenceCount = 0;
+                }
+                continue;
+            }
+
+            if (fenceMatch) {
+                const
+                    marker = fenceMatch[1],
+                    rest   = fenceMatch[2] || '';
+
+                if (marker[0] !== '\x60' || !rest.includes('\x60')) {
+                    fenceChar  = marker[0];
+                    fenceCount = marker.length;
+                }
+
+                current += line;
+                continue;
+            }
+
+            if (/^ {0,3}#{1,6}\s/.test(stripped) && current) {
+                sections.push(current);
+                current = line;
+                continue;
+            }
+
+            current += line;
+        }
+
+        if (current) {
+            sections.push(current);
+        }
+
+        return sections;
     }
 
     /**
@@ -634,7 +810,7 @@ class SearchService extends Base {
         const contextPromises = contextReferences.map(async ref => ({
             name   : ref.name,
             source : ref.source,
-            content: await this.hydrateReferenceContent(ref)
+            content: await this.hydrateReferenceContent(ref, {query: retrievalQuery})
         }));
 
         // The budget leaves are read HERE, at the use site, with NO local fallback.
