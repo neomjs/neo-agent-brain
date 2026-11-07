@@ -530,4 +530,114 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
         expect(QueryService.inferSourceType('resources/content/discussions/discussion-1.md')).toBe('raw');
         expect(QueryService.inferSourceType('resources/content/pulls/pr-1.md')).toBe('raw');
     });
+
+    test('aggregates distinct matched chunk contents in relevance order for multi-chunk sources (#1515)', async () => {
+        const capture = {};
+        installQueryStub([{
+            source          : 'learn/guides/fundamentals/CodebaseOverview.md',
+            type            : 'guide',
+            name            : 'Codebase Overview - Why This Matters for You',
+            content         : '### Why This Matters for You\nIntroductory section.',
+            repoSlug        : 'neo',
+            tenantId        : 'neo-shared',
+            inheritanceChain: '[]'
+        }, {
+            source          : 'learn/guides/fundamentals/CodebaseOverview.md',
+            type            : 'guide',
+            name            : 'Codebase Overview - Component Library (The "Batteries")',
+            content         : '### Component Library (The "Batteries")\nGrid, Form Fields, Calendar, Dashboard.',
+            repoSlug        : 'neo',
+            tenantId        : 'neo-shared',
+            inheritanceChain: '[]'
+        }, {
+            source          : 'learn/guides/fundamentals/CodebaseOverview.md',
+            type            : 'guide',
+            name            : 'Codebase Overview - Duplicate Section',
+            content         : '### Component Library (The "Batteries")\nGrid, Form Fields, Calendar, Dashboard.',
+            repoSlug        : 'neo',
+            tenantId        : 'neo-shared',
+            inheritanceChain: '[]'
+        }, {
+            source          : 'learn/guides/fundamentals/CodebaseOverview.md',
+            type            : 'guide',
+            name            : 'Codebase Overview - Layout System',
+            content         : '### Layout System\nCard, Fit, Flexbox, HBox, VBox, Grid, Form.',
+            repoSlug        : 'neo',
+            tenantId        : 'neo-shared',
+            inheritanceChain: '[]'
+        }], capture);
+
+        const result = await QueryService.queryDocuments({
+            query          : 'component families grid form fields layouts',
+            type           : 'guide',
+            limit          : 5,
+            includeMetadata: true
+        });
+
+        expect(result.results).toHaveLength(1);
+        expect(result.results[0].metadata.name).toBe('Codebase Overview - Why This Matters for You');
+        expect(result.results[0].metadata.content).toBe([
+            '### Why This Matters for You\nIntroductory section.',
+            '### Component Library (The "Batteries")\nGrid, Form Fields, Calendar, Dashboard.',
+            '### Layout System\nCard, Fit, Flexbox, HBox, VBox, Grid, Form.'
+        ].join('\n\n'));
+    });
+
+    test('binds aggregated chunk content to the selected document provenance across repo, revision, and tenant collisions (#1515)', async () => {
+        const collisionCases = [
+            {repoSlug: 'other-repo'},
+            {extractionIdentity: 'neo.mjs@13.2.0'},
+            {tenantId: 'neo-shared'}
+        ];
+
+        for (const collisionOverride of collisionCases) {
+            const rowA1 = {
+                source            : 'learn/Overview.md',
+                type              : 'guide',
+                name              : 'Overview - Part 1',
+                content           : 'A1',
+                tenantId          : 'tenant-alpha',
+                repoSlug          : 'neo',
+                rootKind          : 'neo-workspace',
+                extractionIdentity: 'neo.mjs@13.3.0',
+                inheritanceChain  : '[]'
+            };
+            const rowA2 = {
+                source            : 'learn/Overview.md',
+                type              : 'guide',
+                name              : 'Overview - Part 2',
+                content           : 'A2',
+                tenantId          : 'tenant-alpha',
+                repoSlug          : 'neo',
+                rootKind          : 'neo-workspace',
+                extractionIdentity: 'neo.mjs@13.3.0',
+                inheritanceChain  : '[]'
+            };
+            const rowB = {
+                ...rowA1,
+                name   : 'Overview - Foreign Provenance',
+                content: 'B',
+                ...collisionOverride
+            };
+
+            const capture = {};
+            installQueryStub([rowA1, rowA2, rowB], capture);
+
+            const result = await QueryService.queryDocuments({
+                query          : 'overview',
+                type           : 'guide',
+                limit          : 5,
+                includeMetadata: true
+            });
+
+            expect(result.results).toHaveLength(1);
+            expect(result.results[0].metadata.content).toBe('A1\n\nA2');
+            expect(result.results[0].metadata.tenantId).toBe('tenant-alpha');
+            expect(result.results[0].metadata.repoSlug).toBe('neo');
+            expect(result.results[0].metadata.extractionIdentity).toBe('neo.mjs@13.3.0');
+            expect(rowA1.content).toBe('A1');
+            expect(rowA2.content).toBe('A2');
+            expect(rowB.content).toBe('B');
+        }
+    });
 });
