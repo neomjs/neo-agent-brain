@@ -70,7 +70,8 @@ test.describe('github-workflow 18-operation repository-target boundary (#17420)'
             ['get_discussion_conversation', () => DiscussionService.getConversation({...invalid, discussion_number: 1})],
             ['manage_discussion_comment',   () => DiscussionService.manageDiscussionComment({...invalid, action: 'create', discussion_number: 1, body: 'x'})],
             ['update_issue_relationship',   () => IssueService.updateIssueRelationship({...invalid, child_issue: 1})],
-            ['get_viewer_permission',       () => RepositoryService.getViewerPermission(invalid)]
+            ['get_viewer_permission',       () => RepositoryService.getViewerPermission(invalid)],
+            ['validate_pr_review_body',     () => PullRequestService.validatePrReviewBody({...invalid, body: 'x', pr_number: 1})]
         ];
 
         for (const [operation, invoke] of operations) {
@@ -83,7 +84,7 @@ test.describe('github-workflow 18-operation repository-target boundary (#17420)'
             });
         }
 
-        expect(operations).toHaveLength(19);
+        expect(operations).toHaveLength(20);
         expect(githubCalls).toBe(0);
         expect(execCalls).toBe(0);
     });

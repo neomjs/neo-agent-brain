@@ -428,7 +428,7 @@ test.describe('Neo.ai.services.github-workflow.toolService — write identity gu
         )).toBe(true);
     });
 
-    test('#17420: exactly the 19 remote-forge operations advertise the shared repository target', async () => {
+    test('#17420: exactly the 20 remote-forge operations advertise the shared repository target', async () => {
         const {listTools} = await import('../../../../../../ai/mcp/server/github-workflow/toolService.mjs');
         const tools       = new Map(listTools().tools.map(tool => [tool.name, tool]));
         const targeted    = [
@@ -450,12 +450,12 @@ test.describe('Neo.ai.services.github-workflow.toolService — write identity gu
             'get_discussion_conversation',
             'manage_discussion_comment',
             'update_issue_relationship',
-            'get_viewer_permission'
+            'get_viewer_permission',
+            'validate_pr_review_body'
         ];
         const excluded = [
             'checkout_pull_request',
             'get_local_issue_by_id',
-            'validate_pr_review_body',
             'signal_state_transition',
             'healthcheck',
             'get_mcp_tool_handbook'
@@ -471,12 +471,12 @@ test.describe('Neo.ai.services.github-workflow.toolService — write identity gu
             expect(tools.get(toolName)?.inputSchema?.properties?.repo, toolName).toBeUndefined();
         }
 
-        expect(targeted).toHaveLength(19);
+        expect(targeted).toHaveLength(20);
         expect([...REPOSITORY_TARGET_TOOLS].sort()).toEqual([...targeted].sort());
         const openApiSource = readFileSync('ai/mcp/server/github-workflow/openapi.yaml', 'utf8'),
               sharedRefs    = openApiSource.match(/\$ref: '#\/components\/schemas\/RepositoryTarget'/g) || [];
 
-        expect(sharedRefs).toHaveLength(19);
+        expect(sharedRefs).toHaveLength(20);
     });
 
     test('classifies the public GitHub write boundary explicitly', () => {
