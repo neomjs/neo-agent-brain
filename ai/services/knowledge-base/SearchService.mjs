@@ -545,7 +545,7 @@ class SearchService extends Base {
         for (const line of lines) {
             const
                 stripped   = line.replace(/\r?\n$/, ''),
-                fenceMatch = stripped.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+                fenceMatch = stripped.match(/^ {0,3}(\x60{3,}|~{3,})(.*)$/);
 
             if (fenceChar) {
                 current += line;
@@ -567,7 +567,7 @@ class SearchService extends Base {
                     marker = fenceMatch[1],
                     rest   = fenceMatch[2] || '';
 
-                if (marker[0] !== '`' || !rest.includes('`')) {
+                if (marker[0] !== '\x60' || !rest.includes('\x60')) {
                     fenceChar  = marker[0];
                     fenceCount = marker.length;
                 }
