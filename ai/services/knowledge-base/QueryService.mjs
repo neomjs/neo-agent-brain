@@ -162,6 +162,7 @@ class QueryService extends Base {
         const queryResults      = await Promise.all(queryOptions.map(options => collection.query(options)));
         const sourceScores      = {};
         const sourceMetadata    = {};
+        const sourceChunks      = {};
         const metadatas         = this.dedupeCandidateMetadatas(queryResults.flatMap(result => result.metadatas?.[0] || []));
         const queryWords        = this.getQueryWords(queryLower);
 
@@ -175,10 +176,23 @@ class QueryService extends Base {
             const nameLower       = (metadata.name || '').toLowerCase();
 
             // Chroma returns chunk metadata in relevance order. Keep the highest-ranked
-            // source metadata available for SearchService hydration without changing the
-            // public queryDocuments result shape unless explicitly requested.
+            // source metadata available for SearchService hydration and aggregate distinct
+            // matched chunk contents in relevance order for multi-chunk sources.
             if (!sourceMetadata[sourcePath]) {
-                sourceMetadata[sourcePath] = metadata;
+                sourceMetadata[sourcePath] = {...metadata};
+            }
+
+            const chunkContent = typeof metadata.content === 'string' && metadata.content.trim()
+                ? metadata.content
+                : '';
+
+            if (chunkContent) {
+                if (!sourceChunks[sourcePath]) {
+                    sourceChunks[sourcePath] = [];
+                }
+                if (!sourceChunks[sourcePath].includes(chunkContent)) {
+                    sourceChunks[sourcePath].push(chunkContent);
+                }
             }
 
             queryWords.forEach(queryWord => {
@@ -265,7 +279,14 @@ class QueryService extends Base {
                 const result = {source, score: score.toFixed(0)};
 
                 if (includeMetadata) {
-                    result.metadata = sourceMetadata[source] || {};
+                    const metadata = sourceMetadata[source] ? {...sourceMetadata[source]} : {};
+                    const chunks   = sourceChunks[source];
+
+                    if (Array.isArray(chunks) && chunks.length > 1) {
+                        metadata.content = chunks.join('\n\n');
+                    }
+
+                    result.metadata = metadata;
                 }
 
                 return result;

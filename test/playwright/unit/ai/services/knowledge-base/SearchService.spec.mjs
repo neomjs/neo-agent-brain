@@ -737,5 +737,85 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
             notice      : '@neo-fable resolved to @neo-fable-mnemosyne (Mnemosyne)'
         }]);
     });
+
+    test('#1515 hydrates unprefixed default-tenant Engine references from node_modules/neo.mjs when absent at neoRootDir', async () => {
+        const engineGlossaryPath = path.join(aiConfig.neoRootDir, 'node_modules/neo.mjs/learn/Glossary.md');
+        const rootGlossaryPath   = path.join(aiConfig.neoRootDir, 'learn/Glossary.md');
+        const engineGlossaryText = await fs.readFile(engineGlossaryPath, 'utf8');
+
+        expect(await fs.pathExists(rootGlossaryPath)).toBe(false);
+
+        const hydrated = await SearchService.hydrateReferenceContent({
+            source  : 'learn/Glossary.md',
+            metadata: {
+                type    : 'guide',
+                tenantId: 'neo-shared',
+                repoSlug: 'neo',
+                content : 'SINGLE_CHUNK_FALLBACK_ONLY'
+            }
+        });
+
+        expect(hydrated).toBe(engineGlossaryText);
+        expect(hydrated).not.toBe('SINGLE_CHUNK_FALLBACK_ONLY');
+    });
+
+    test('#1515 prioritizes query-relevant sections ahead of preamble when an oversized guide exceeds contextMaxCharsPerDocument', async () => {
+        let capturedPrompt = null;
+
+        const preambleSection  = `# Codebase Overview\n\n${'Introductory architectural background paragraph. '.repeat(260)}\n`;
+        const batteriesSection = [
+            '### Component Library (The "Batteries")',
+            '',
+            '- **Containers**: `Base`, `Panel`, `Viewport`, `Accordion`',
+            '- **Forms** (20+ field types): `Text`, `Number`, `Date`, `Time`, `Picker`, `ComboBox`',
+            '- **Data Display**: `Grid`, `Table`, `List`, `Tree`, `Gallery`, `Helix`',
+            '- **Layouts**: `Card`, `Fit`, `Flexbox`, `HBox`, `VBox`, `Grid`, `Form`',
+            ''
+        ].join('\n');
+        const trailingSection = `### Additional Notes\n\n${'Further details on deployment. '.repeat(60)}\n`;
+        const oversizedGuide  = `${preambleSection}\n${batteriesSection}\n${trailingSection}`;
+
+        expect(preambleSection.length).toBeGreaterThan(aiConfig.askSynthesis.contextMaxCharsPerDocument);
+
+        const guideFile = path.join(path.dirname(tmpFilePath), 'oversized-guide.md');
+        await fs.writeFile(guideFile, oversizedGuide, 'utf8');
+        const guideRelative = path.relative(aiConfig.neoRootDir, guideFile);
+
+        QueryService.queryDocuments = async () => ({
+            topResult: guideRelative,
+            results  : [{
+                source  : guideRelative,
+                score   : '18390',
+                metadata: {
+                    type    : 'guide',
+                    tenantId: 'neo-shared',
+                    repoSlug: 'neo',
+                    content : '### Why This Matters\nShort chunk.'
+                }
+            }]
+        });
+
+        SearchService.model = {
+            generateContent: async prompt => {
+                capturedPrompt = prompt;
+                return {response: {text: () => 'Synthesized component families answer.'}};
+            }
+        };
+
+        try {
+            const result = await SearchService.ask({
+                query: 'Which component families and classes does Neo.mjs ship — grid, form fields, calendar, dashboard, layouts? List them with counts.',
+                type : 'guide'
+            });
+
+            expect(capturedPrompt).toContain('### Component Library (The "Batteries")');
+            expect(capturedPrompt).toContain('`Grid`, `Table`, `List`, `Tree`, `Gallery`, `Helix`');
+            expect(result.answer).toContain('Synthesized component families answer.');
+            expect(result.answer, 'truncation notice must still be emitted for the oversized guide').toContain('Context note:');
+            expect(result.answer).toContain('were shortened');
+        } finally {
+            await fs.remove(guideFile).catch(() => {});
+        }
+    });
 });
 

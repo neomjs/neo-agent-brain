@@ -530,4 +530,56 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
         expect(QueryService.inferSourceType('resources/content/discussions/discussion-1.md')).toBe('raw');
         expect(QueryService.inferSourceType('resources/content/pulls/pr-1.md')).toBe('raw');
     });
+
+    test('aggregates distinct matched chunk contents in relevance order for multi-chunk sources (#1515)', async () => {
+        const capture = {};
+        installQueryStub([{
+            source          : 'learn/guides/fundamentals/CodebaseOverview.md',
+            type            : 'guide',
+            name            : 'Codebase Overview - Why This Matters for You',
+            content         : '### Why This Matters for You\nIntroductory section.',
+            repoSlug        : 'neo',
+            tenantId        : 'neo-shared',
+            inheritanceChain: '[]'
+        }, {
+            source          : 'learn/guides/fundamentals/CodebaseOverview.md',
+            type            : 'guide',
+            name            : 'Codebase Overview - Component Library (The "Batteries")',
+            content         : '### Component Library (The "Batteries")\nGrid, Form Fields, Calendar, Dashboard.',
+            repoSlug        : 'neo',
+            tenantId        : 'neo-shared',
+            inheritanceChain: '[]'
+        }, {
+            source          : 'learn/guides/fundamentals/CodebaseOverview.md',
+            type            : 'guide',
+            name            : 'Codebase Overview - Duplicate Section',
+            content         : '### Component Library (The "Batteries")\nGrid, Form Fields, Calendar, Dashboard.',
+            repoSlug        : 'neo',
+            tenantId        : 'neo-shared',
+            inheritanceChain: '[]'
+        }, {
+            source          : 'learn/guides/fundamentals/CodebaseOverview.md',
+            type            : 'guide',
+            name            : 'Codebase Overview - Layout System',
+            content         : '### Layout System\nCard, Fit, Flexbox, HBox, VBox, Grid, Form.',
+            repoSlug        : 'neo',
+            tenantId        : 'neo-shared',
+            inheritanceChain: '[]'
+        }], capture);
+
+        const result = await QueryService.queryDocuments({
+            query          : 'component families grid form fields layouts',
+            type           : 'guide',
+            limit          : 5,
+            includeMetadata: true
+        });
+
+        expect(result.results).toHaveLength(1);
+        expect(result.results[0].metadata.name).toBe('Codebase Overview - Why This Matters for You');
+        expect(result.results[0].metadata.content).toBe([
+            '### Why This Matters for You\nIntroductory section.',
+            '### Component Library (The "Batteries")\nGrid, Form Fields, Calendar, Dashboard.',
+            '### Layout System\nCard, Fit, Flexbox, HBox, VBox, Grid, Form.'
+        ].join('\n\n'));
+    });
 });
