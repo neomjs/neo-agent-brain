@@ -938,12 +938,12 @@ paths:
       summary: Validate PR Review Body
       operationId: validate_pr_review_body
       x-neo-tool-tier: read
-      x-neo-tool-summary: Read-only shape check for a PR review body; does not predict the submit gate.
+      x-neo-tool-summary: Read-only shape and optional Round-2 carry check for a PR review body.
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
       description: |
-        Read-only review-body shape check. Does not resolve a PR or predict `manage_pr_review`, which additionally compares the body against the pull request's prior-review state. Use while composing, then submit through `manage_pr_review`.
+        Read-only review-body shape and coherence check. When `pr_number` is supplied for a Round-2 disposition body, also fetches the pull request's submitted reviews and checks the Round-2 disposition table against the cited Round-1 Required Actions (`getRound2DispositionRelationFailure`). Without `pr_number`, performs only body-local checks with no GitHub I/O. Does not predict the review-budget gate; submit through `manage_pr_review`.
       tags: [PullRequests]
       requestBody:
         required: true
@@ -954,6 +954,13 @@ paths:
               required:
                 - body
               properties:
+                repo:
+                  $ref: '#/components/schemas/RepositoryTarget'
+                pr_number:
+                  type: integer
+                  minimum: 1
+                  description: Optional pull request number. When supplied with a Round-2 review body, fetches the pull request's prior reviews to validate verbatim Required-Action carry.
+                  example: 11273
                 body:
                   type: string
                   description: Candidate PR review body to validate before posting.

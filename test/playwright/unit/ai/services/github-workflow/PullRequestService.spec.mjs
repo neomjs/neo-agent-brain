@@ -2612,6 +2612,87 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         expect(graphqlCallCount).toBe(0);
     });
 
+    test('#1492: validatePrReviewBody with pr_number validates Round-2 Required-Action carry against the cited Round-1 review', async () => {
+        let queriedVariables = null;
+
+        GraphqlService.query = async (queryString, variables) => {
+            if (queryString.includes('GetPullRequestId')) {
+                queriedVariables = variables;
+                return pullRequestLookup({
+                    reviewDecision: 'CHANGES_REQUESTED',
+                    reviews       : {
+                        nodes: [priorRequestChanges({
+                            body: ['# PR Review Summary', '', '### 📋 Required Actions', '', '- [ ] **RA-1:** Keep the exact bold prefix'].join('\n')
+                        })],
+                        pageInfo: {hasPreviousPage: false}
+                    }
+                });
+            }
+
+            throw new Error('validatePrReviewBody must never issue a mutation');
+        };
+
+        const nonVerbatimBody = VALID_ROUND_2_REVIEW_BODY.replace(
+            '| RA-1 | prior template miss | ADDRESSED | current body keeps canonical headings |',
+            '| RA-1 | Keep the exact bold prefix | ADDRESSED | dropped bold RA-1 prefix |'
+        );
+
+        const refused = await PullRequestService.validatePrReviewBody({
+            body     : nonVerbatimBody,
+            pr_number: 11273,
+            repo     : 'devindex'
+        });
+
+        expect(refused.valid, 'non-verbatim carry is refused when pr_number is supplied').toBe(false);
+        expect(refused.code).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
+        expect(refused.message).toContain('**RA-1:** Keep the exact bold prefix');
+        expect(queriedVariables).toMatchObject({
+            owner   : 'neomjs',
+            repo    : 'devindex',
+            prNumber: 11273
+        });
+
+        const verbatimBody = VALID_ROUND_2_REVIEW_BODY.replace(
+            '| RA-1 | prior template miss | ADDRESSED | current body keeps canonical headings |',
+            '| RA-1 | **RA-1:** Keep the exact bold prefix | ADDRESSED | carried verbatim |'
+        );
+
+        const accepted = await PullRequestService.validatePrReviewBody({
+            body     : verbatimBody,
+            pr_number: 11273,
+            repo     : 'devindex'
+        });
+
+        expect(accepted).toEqual({
+            valid   : true,
+            message : 'Review body matches the pr-review template structure.',
+            skill   : '.agents/skills/pr-review/SKILL.md',
+            template: '.agents/skills/pr-review/assets/pr-review-round-2-template.md'
+        });
+    });
+
+    test('#1492: validatePrReviewBody without pr_number, or on a non-Round-2 body with pr_number, stays synchronous and performs zero GraphQL calls', () => {
+        let graphqlCallCount = 0;
+        GraphqlService.query = async () => {
+            graphqlCallCount++;
+            throw new Error('unexpected GraphQL query');
+        };
+
+        const round2WithoutPr = PullRequestService.validatePrReviewBody({
+            body: VALID_ROUND_2_REVIEW_BODY
+        });
+        expect(round2WithoutPr.valid).toBe(true);
+        expect(round2WithoutPr instanceof Promise).toBe(false);
+
+        const round1WithPr = PullRequestService.validatePrReviewBody({
+            body     : VALID_REVIEW_BODY,
+            pr_number: 11273
+        });
+        expect(round1WithPr.valid).toBe(true);
+        expect(round1WithPr instanceof Promise).toBe(false);
+        expect(graphqlCallCount).toBe(0);
+    });
+
     test('#14688: PullRequestService import stays total when template files are absent at projectRoot', () => {
         const tmpDir      = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-pr-review-missing-template-')),
               neoPath     = import.meta.resolve('neo.mjs/src/Neo.mjs'),

@@ -53,7 +53,8 @@ const REPOSITORY_TARGET_TOOLS = Object.freeze(new Set([
     'get_discussion_conversation',
     'manage_discussion_comment',
     'update_issue_relationship',
-    'get_viewer_permission'
+    'get_viewer_permission',
+    'validate_pr_review_body'
 ]));
 
 /**

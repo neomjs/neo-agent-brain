@@ -4078,20 +4078,31 @@ class PullRequestService extends Base {
     }
 
     /**
-     * @summary Dry-run validates a PR review body against the canonical review templates.
+     * @summary Dry-run validates a PR review body against the canonical review templates and, when
+     * `pr_number` is supplied on a Round-2 body, against the pull request's cited Round-1 review.
      *
-     * This is the pre-post lint companion for {@link #managePrReview}: it performs the same
-     * mechanical body-shape validation without resolving a PR id or sending a GitHub review
-     * mutation. The read-only path may return exact template-skeleton misses so composers can
-     * repair the body before the formal `manage_pr_review` call; the mutation path keeps its
-     * anti-stuffing response narrower.
+     * This is the pre-post lint companion for {@link #managePrReview}: it performs the mechanical
+     * body-shape and Round-2 state-coherence validation synchronously when `pr_number` is omitted or
+     * the body is not a Round 2, and performs one read-only reviews fetch (`GET_PULL_REQUEST_ID`) to
+     * run `getRound2DispositionRelationFailure` when `pr_number` is supplied for a Round-2 body.
      *
      * @param {Object} options
-     * @param {String} options.body Candidate PR review body.
-     * @returns {Object} `{valid: true}` on success, or the structured validation failure with
-     *                   `valid: false` and exact read-only diagnostics where safe.
+     * @param {String} options.body        Candidate PR review body.
+     * @param {Number} [options.pr_number] Optional pull request number for Round-2 carry validation.
+     * @param {String} [options.repo]      Optional bare name or `owner/name` repository target.
+     * @returns {Object|Promise<Object>} `{valid: true}` on success, or the structured validation
+     *                                   failure with `valid: false` and read-only diagnostics.
      */
-    validatePrReviewBody({body} = {}) {
+    validatePrReviewBody({body, pr_number, repo} = {}) {
+        const target = resolveRepositoryTarget(repo, {owner: aiConfig.owner, repo: aiConfig.repo});
+
+        if (target.error) {
+            return {
+                valid: false,
+                ...target
+            };
+        }
+
         if (!body) {
             return {
                 valid  : false,
@@ -4129,12 +4140,89 @@ class PullRequestService extends Base {
         // so a Round-2 or micro-delta body was told it matched the canonical template — sending an
         // author who then hit a rejection to the wrong file to find out why. A validator that
         // misreports which contract it applied is worse than one that reports nothing.
-        return {
+        const success = {
             valid   : true,
             message : 'Review body matches the pr-review template structure.',
             skill   : '.agents/skills/pr-review/SKILL.md',
             template: selectedPrReviewTemplatePath(body)
         };
+
+        if (pr_number === undefined || pr_number === null) {
+            return success;
+        }
+
+        if (!Number.isInteger(pr_number) || pr_number < 1) {
+            return {
+                valid  : false,
+                error  : 'Bad Request',
+                message: "Invalid argument: 'pr_number' must be a positive integer.",
+                code   : 'INVALID_ARGUMENTS'
+            };
+        }
+
+        if (!isRound2PrReview(body)) {
+            return success;
+        }
+
+        return this.#validateRound2PrReviewCarry({body, pr_number, success, target});
+    }
+
+    /**
+     * @summary Fetches the PR's submitted reviews and validates Round-2 Required-Action carry.
+     * @param {Object} options
+     * @param {String} options.body      Validated Round-2 review body.
+     * @param {Number} options.pr_number Pull request number.
+     * @param {Object} options.success   Pre-computed success payload.
+     * @param {Object} options.target    Resolved repository target.
+     * @returns {Promise<Object>}
+     */
+    async #validateRound2PrReviewCarry({body, pr_number, success, target}) {
+        const declared = String(body).match(ROUND_2_STATUS_PATTERN)?.[1]?.replace(/[*_`]/g, '').trim().toLowerCase(),
+              state    = declared === 'comment' ? 'COMMENT' : 'APPROVED';
+
+        try {
+            const idData      = await GraphqlService.query(GET_PULL_REQUEST_ID, {
+                      activationIssueNumber: this.reviewBudgetActivationIssueNumber,
+                      homeOwner            : aiConfig.owner,
+                      homeRepo             : aiConfig.repo,
+                      owner                : target.owner,
+                      repo                 : target.repo,
+                      prNumber             : pr_number
+                  }),
+                  pullRequest = idData?.targetRepository?.pullRequest ?? idData?.repository?.pullRequest;
+
+            if (!pullRequest?.id) {
+                return {
+                    valid  : false,
+                    error  : 'Not Found',
+                    message: `Pull request #${pr_number} not found or returned no id.`,
+                    code   : 'PR_NOT_FOUND'
+                };
+            }
+
+            const relationFailure = getRound2DispositionRelationFailure({
+                body,
+                reviews: pullRequest.reviews?.nodes,
+                state
+            });
+
+            if (relationFailure) {
+                return {
+                    valid: false,
+                    ...relationFailure
+                };
+            }
+
+            return success;
+        } catch (error) {
+            logger.error(`Error validating PR review on ${target.fullName} PR #${pr_number}:`, error);
+            return {
+                valid  : false,
+                error  : 'GraphQL API request failed',
+                message: error.message,
+                code   : 'GRAPHQL_API_ERROR'
+            };
+        }
     }
 
     /**
