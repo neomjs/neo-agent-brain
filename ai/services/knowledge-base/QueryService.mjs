@@ -177,7 +177,7 @@ class QueryService extends Base {
 
             // Chroma returns chunk metadata in relevance order. Keep the highest-ranked
             // source metadata available for SearchService hydration and aggregate distinct
-            // matched chunk contents in relevance order for multi-chunk sources.
+            // matched chunk contents in relevance order for the selected document's provenance.
             if (!sourceMetadata[sourcePath]) {
                 sourceMetadata[sourcePath] = {...metadata};
             }
@@ -186,7 +186,7 @@ class QueryService extends Base {
                 ? metadata.content
                 : '';
 
-            if (chunkContent) {
+            if (chunkContent && this.isSameSourceDocument(sourceMetadata[sourcePath], metadata)) {
                 if (!sourceChunks[sourcePath]) {
                     sourceChunks[sourcePath] = [];
                 }
@@ -415,6 +415,8 @@ class QueryService extends Base {
             const key = [
                 metadata?.tenantId || '',
                 metadata?.repoSlug || '',
+                metadata?.rootKind || '',
+                metadata?.extractionIdentity || '',
                 metadata?.source || '',
                 metadata?.type || '',
                 metadata?.name || '',
@@ -430,6 +432,26 @@ class QueryService extends Base {
             seen.add(key);
             return true;
         });
+    }
+
+    /**
+     * @summary Checks whether a candidate chunk belongs to the selected source document provenance.
+     * @param {Object} anchorMetadata Selected top-ranked metadata for a source path.
+     * @param {Object} candidateMetadata Candidate chunk metadata for the same source path.
+     * @returns {Boolean} True when source, tenant, repository, rootKind, and extractionIdentity match.
+     */
+    isSameSourceDocument(anchorMetadata, candidateMetadata) {
+        if (!anchorMetadata || !candidateMetadata) {
+            return false;
+        }
+
+        return (
+            String(anchorMetadata.source || '') === String(candidateMetadata.source || '')
+            && String(anchorMetadata.tenantId || '') === String(candidateMetadata.tenantId || '')
+            && String(anchorMetadata.repoSlug || '') === String(candidateMetadata.repoSlug || '')
+            && String(anchorMetadata.rootKind || '') === String(candidateMetadata.rootKind || '')
+            && String(anchorMetadata.extractionIdentity || '') === String(candidateMetadata.extractionIdentity || '')
+        );
     }
 
     /**

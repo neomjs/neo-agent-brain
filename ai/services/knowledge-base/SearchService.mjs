@@ -462,7 +462,7 @@ class SearchService extends Base {
             return content;
         }
 
-        const sections = content.split(/(?=^#+\s)/m);
+        const sections = this.splitMarkdownSections(content);
 
         if (sections.length <= 1) {
             return content;
@@ -523,6 +523,73 @@ class SearchService extends Base {
         scored.sort((left, right) => right.score - left.score || left.index - right.index);
 
         return scored.map(item => item.section).join('');
+    }
+
+    /**
+     * @summary Splits Markdown content into heading sections without splitting inside fenced code blocks.
+     * @param {String} content Raw Markdown content.
+     * @returns {String[]} Ordered Markdown sections whose concatenation equals `content`.
+     */
+    splitMarkdownSections(content) {
+        if (typeof content !== 'string' || !content) {
+            return [];
+        }
+
+        const
+            lines    = content.match(/[^\n]*\n|[^\n]+/g) || [],
+            sections = [];
+        let current    = '',
+            fenceChar  = '',
+            fenceCount = 0;
+
+        for (const line of lines) {
+            const
+                stripped   = line.replace(/\r?\n$/, ''),
+                fenceMatch = stripped.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+
+            if (fenceChar) {
+                current += line;
+
+                if (
+                    fenceMatch
+                    && fenceMatch[1][0] === fenceChar
+                    && fenceMatch[1].length >= fenceCount
+                    && fenceMatch[2].trim() === ''
+                ) {
+                    fenceChar  = '';
+                    fenceCount = 0;
+                }
+                continue;
+            }
+
+            if (fenceMatch) {
+                const
+                    marker = fenceMatch[1],
+                    rest   = fenceMatch[2] || '';
+
+                if (marker[0] !== '`' || !rest.includes('`')) {
+                    fenceChar  = marker[0];
+                    fenceCount = marker.length;
+                }
+
+                current += line;
+                continue;
+            }
+
+            if (/^ {0,3}#{1,6}\s/.test(stripped) && current) {
+                sections.push(current);
+                current = line;
+                continue;
+            }
+
+            current += line;
+        }
+
+        if (current) {
+            sections.push(current);
+        }
+
+        return sections;
     }
 
     /**

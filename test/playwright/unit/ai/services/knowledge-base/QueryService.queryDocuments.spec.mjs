@@ -582,4 +582,62 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
             '### Layout System\nCard, Fit, Flexbox, HBox, VBox, Grid, Form.'
         ].join('\n\n'));
     });
+
+    test('binds aggregated chunk content to the selected document provenance across repo, revision, and tenant collisions (#1515)', async () => {
+        const collisionCases = [
+            {repoSlug: 'other-repo'},
+            {extractionIdentity: 'neo.mjs@13.2.0'},
+            {tenantId: 'neo-shared'}
+        ];
+
+        for (const collisionOverride of collisionCases) {
+            const rowA1 = {
+                source            : 'learn/Overview.md',
+                type              : 'guide',
+                name              : 'Overview - Part 1',
+                content           : 'A1',
+                tenantId          : 'tenant-alpha',
+                repoSlug          : 'neo',
+                rootKind          : 'neo-workspace',
+                extractionIdentity: 'neo.mjs@13.3.0',
+                inheritanceChain  : '[]'
+            };
+            const rowA2 = {
+                source            : 'learn/Overview.md',
+                type              : 'guide',
+                name              : 'Overview - Part 2',
+                content           : 'A2',
+                tenantId          : 'tenant-alpha',
+                repoSlug          : 'neo',
+                rootKind          : 'neo-workspace',
+                extractionIdentity: 'neo.mjs@13.3.0',
+                inheritanceChain  : '[]'
+            };
+            const rowB = {
+                ...rowA1,
+                name   : 'Overview - Foreign Provenance',
+                content: 'B',
+                ...collisionOverride
+            };
+
+            const capture = {};
+            installQueryStub([rowA1, rowA2, rowB], capture);
+
+            const result = await QueryService.queryDocuments({
+                query          : 'overview',
+                type           : 'guide',
+                limit          : 5,
+                includeMetadata: true
+            });
+
+            expect(result.results).toHaveLength(1);
+            expect(result.results[0].metadata.content).toBe('A1\n\nA2');
+            expect(result.results[0].metadata.tenantId).toBe('tenant-alpha');
+            expect(result.results[0].metadata.repoSlug).toBe('neo');
+            expect(result.results[0].metadata.extractionIdentity).toBe('neo.mjs@13.3.0');
+            expect(rowA1.content).toBe('A1');
+            expect(rowA2.content).toBe('A2');
+            expect(rowB.content).toBe('B');
+        }
+    });
 });
