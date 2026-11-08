@@ -8,6 +8,9 @@
 # `github-actions` is here because nothing else updates the pinned action versions, or the Skills
 # release tag `shared-pr-baseline.yml` calls.
 #
+# EVERY DAY, by cron: `interval: daily` runs Monday to Friday, and our own packages also ship on weekends.
+# The hour is the one `daily` ran at, so the organization's Dependabot runs stay staggered.
+#
 # NOT FULL COVERAGE, deliberately recorded: `neo.mjs` is a tarball URL pinned to a commit, and
 # Dependabot's npm ecosystem cannot bump that form. It stays a manual move; a reader who mistakes
 # this file for complete coverage stops checking it by hand.
@@ -17,7 +20,8 @@ updates:
   - package-ecosystem: npm
     directory: "/"
     schedule:
-      interval: daily
+      interval: cron
+      cronjob: "30 4 * * *"
     # Our own Skills releases skip Dependabot's three-day default hold, so agents never read
     # superseded rules; every other update keeps it, made explicit.
     cooldown:
@@ -48,7 +52,8 @@ updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: daily
+      interval: cron
+      cronjob: "30 4 * * *"
     groups:
       actions:
         patterns: ["*"]
