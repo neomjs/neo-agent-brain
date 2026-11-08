@@ -298,6 +298,35 @@ function buildZodSchemaFromNode(doc, schema, opts = {}) {
 }
 
 /**
+ * @summary Lets a declared output shape also admit the structured error receipt.
+ *
+ * `BaseServer#formatToolResult` routes any object result carrying an `error` key to an
+ * `isError: true` envelope and keeps the complete object as `structuredContent`. The declared
+ * shape keeps its properties at the root, so every typed field is still checked; only its
+ * `required` list moves into an `anyOf`: a result must carry either every required success
+ * field, or the `error` key. A malformed success without an `error` key still fails.
+ * @param {z.ZodType} successSchema The declared success shape.
+ * @returns {z.ZodType}
+ */
+function withErrorReceipt(successSchema) {
+    // Only plain object shapes can be relaxed this way (nullable or defaulted wrappers cannot)
+    if (typeof successSchema.partial !== 'function') {
+        return successSchema;
+    }
+
+    const required = toOpenApiJsonSchema(successSchema).required || [];
+
+    // Nothing is required: the open object already admits an error receipt
+    if (required.length === 0) {
+        return successSchema;
+    }
+
+    return successSchema.partial()
+        .describe(successSchema.description || '')
+        .meta({anyOf: [{required}, {required: ['error']}]});
+}
+
+/**
  * Constructs a Zod schema for a tool's output based on its OpenAPI operation's
  * successful response (200, 201, or 202). This schema is used to describe the expected
  * output structure to clients.
@@ -354,7 +383,9 @@ function buildOutputZodSchema(doc, operation) {
                 .passthrough()
                 .describe(schema.description || '');
         }
-        return buildZodSchemaFromNode(doc, schema, outputOpts);
+
+        // An object result can also be a structured error receipt (`isError: true`): admit both.
+        return withErrorReceipt(buildZodSchemaFromNode(doc, schema, outputOpts));
     }
 
     if (response?.content?.['text/plain']) {

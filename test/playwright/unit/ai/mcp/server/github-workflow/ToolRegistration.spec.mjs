@@ -203,16 +203,20 @@ test.describe('GitHub Workflow MCP Server Tool Registration', () => {
             body                   : {type: 'string'},
             acknowledgedForeignBody: {type: 'string'}
         });
-        expect(listedTool.outputSchema.required).toEqual([
-            'message',
-            'id',
-            'number',
-            'kind',
-            'url',
-            'updatedAt',
-            'previousBytes',
-            'updatedBytes',
-            'byteDelta'
+         expect(listedTool.outputSchema.required).toBeUndefined();
+        expect(listedTool.outputSchema.anyOf).toEqual([
+            {required: [
+                'message',
+                'id',
+                'number',
+                'kind',
+                'url',
+                'updatedAt',
+                'previousBytes',
+                'updatedBytes',
+                'byteDelta'
+            ]},
+            {required: ['error']}
         ]);
 
         expect(handbook.found).toBe(true);
