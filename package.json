@@ -110,7 +110,7 @@
         "micromatch": "4.0.8",
         "neo-agent-skills": "^0.1.90",
         "neo.mjs": "https://github.com/neomjs/neo/archive/cc24c59e0d2470b75cfccaaa62b52cfd053bddb2.tar.gz",
-        "playwright": "1.64.1",
+        "playwright": "1.65.0",
         "semver": "^7.8.6",
         "smol-toml": "1.9.1",
         "ws": "^8.22.1",
@@ -118,7 +118,7 @@
         "zod": "^4.6.7"
     },
     "devDependencies": {
-        "@playwright/test": "^1.64.1",
+        "@playwright/test": "^1.65.0",
         "autoprefixer": "^10.6.2",
         "catharsis": "0.11.0",
         "chalk": "^6.0.1",
