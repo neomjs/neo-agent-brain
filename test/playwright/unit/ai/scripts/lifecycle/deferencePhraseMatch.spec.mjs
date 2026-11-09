@@ -43,6 +43,11 @@ test.describe('deferencePhraseMatch in operator dialogue (#78)', () => {
         expect(detectDeferencePhrase('I recommend a manual pass with human eyes before the tag. Your call.', dialogue)).toBeNull();
         expect(detectDeferencePhrase("I'd keep the old credentials until you rotate them, your call.", dialogue)).toBeNull();
         expect(detectDeferencePhrase("I'd run the migration on the live plane tonight, unless you want to watch it.", dialogue)).toBeNull();
+        // The Tier-4 domains Vega named on #78: taste and capacity, a design read, his machine
+        expect(detectDeferencePhrase("I'd pick the darker palette, unless you'd rather judge the aesthetics yourself.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase("I'd start the cloud run, unless you want to keep the budget for later.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase("I'd ship the frames as they are, unless you want the operator's read on them first.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase("I'd run the second Desktop session on his machine, unless you'd rather wait.", dialogue)).toBeNull();
         expect(detectDeferencePhrase('I recommend building it in a fresh session rather than here. The rule only lets me recommend ' +
             'a handoff, so it\'s your call.', dialogue)).toBeNull();
     });
@@ -68,7 +73,11 @@ test.describe('matchWrapUpAskDeference (#78)', () => {
             ["I'd fix it before the cut.", 'Fix #20599 now so it ships in 13.4?'],
             ["I'd post a short peer-role read.", 'Should I post a peer-role review on Discussion #20169?'],
             ["I'll clean up after myself.", 'Delete the leftover probe branch ada/20460-anchor-null-frame?'],
-            ['I recommend the narrow fix.', 'Would you like me to fix it now?']
+            ['I recommend the narrow fix.', 'Would you like me to fix it now?'],
+            // Vega's own asks from 2026-11-09, the three she named as the slip
+            ["I'd draft it today.", "Draft the next release's roadmap section now?"],
+            ["I'd reopen it with the new evidence.", 'Reopen #19827 after the cut, so prepare owns the bump?'],
+            ["I'd file it.", 'File a ticket so a local engine Portal lists the archive too?']
         ]) {
             expect(matchWrapUpAskDeference({ask, actions: buttons}, text)).toBe(ask);
         }
@@ -91,7 +100,11 @@ test.describe('matchWrapUpAskDeference (#78)', () => {
             ['File a Brain advisory, or ship it as a normal PR?', null],
             ['When is your next walk slot for the re-walk?', null],
             ['Start #843 in a fresh session?', null],
-            ['Should I go with A? We could not agree on A or B.', null]
+            ['Should I go with A? We could not agree on A or B.', null],
+            // Vega's three that are the human's: his dispatch, and two merges
+            ["Will you dispatch create-app's npm-publish workflow?", null],
+            ['Merge #20659 once its checks and CodeQL pass?', null],
+            ['Merge pages#70 after Julia approves?', null]
         ]) {
             expect(matchWrapUpAskDeference({ask, actions}, "I'd do it now.")).toBeNull();
         }

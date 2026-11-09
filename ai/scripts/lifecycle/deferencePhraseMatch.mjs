@@ -333,7 +333,7 @@ const STATED_PICK = /\b(?:i\s+would|i['’]d|i\s+will|i['’]ll|i\s+(?:recommend
  * the 2026-11-09 corpus of real wrap-up asks is the falsifier set that sized it.
  * @type {RegExp}
  */
-const OPERATOR_OWNED = /\b(?:(?:could|did)\s+not\s+agree|(?:could|did)n['’]t\s+agree|tie[-\s]?breaker|deadlock(?:ed)?|merg(?:e|es|ing)|human\s+eyes|manual\s+(?:pass|test|check)|credentials?|passwords?|keychain|sign[-\s]?in|log[-\s]?in|accounts?|provision(?:s|ing)?|payments?|purchases?|budgets?|credits|pricing|aesthetics?|live\s+plane|install(?:s|ing)?|advisory|disclosure|(?:fresh|new|separate)\s+session|your\s+(?:next\s+)?(?:display|screen|machine|slot|walk|recording|read|schedule))\b/i;
+const OPERATOR_OWNED = /\b(?:(?:could|did)\s+not\s+agree|(?:could|did)n['’]t\s+agree|tie[-\s]?breaker|deadlock(?:ed)?|merg(?:e|es|ing)|human\s+eyes|manual\s+(?:pass|test|check)|credentials?|passwords?|keychain|sign[-\s]?in|log[-\s]?in|accounts?|provision(?:s|ing)?|payments?|purchases?|budgets?|credits|pricing|aesthetics?|design\s+read|live\s+plane|install(?:s|ing)?|advisory|disclosure|(?:fresh|new|separate)\s+session|(?:the\s+)?operator['’]s\s+(?:read|machine|display|eyes)|his\s+(?:read|machine|display)|your\s+(?:next\s+)?(?:display|screen|machine|slot|walk|recording|read|schedule))\b/i;
 
 /**
  * The shapes of a question box that asks to go ahead with the agent's own next step: a first-person
@@ -341,7 +341,7 @@ const OPERATOR_OWNED = /\b(?:(?:could|did)\s+not\s+agree|(?:could|did)n['’]t\s
  * shape ("When is your next slot?", "How should these close?") is not read as a handback.
  * @type {RegExp}
  */
-const AGENT_STEP_ASK = /^\s*(?:(?:should|shall)\s+i|(?:do\s+you\s+)?want\s+me\s+to|would\s+you\s+like\s+me\s+to|(?:fix|run|file|open|build|take|start|review|post|push|apply|draft|write|close|move|retire|delete)\b)/i;
+const AGENT_STEP_ASK = /^\s*(?:(?:should|shall)\s+i|(?:do\s+you\s+)?want\s+me\s+to|would\s+you\s+like\s+me\s+to|(?:fix|run|file|open|reopen|build|take|start|review|post|push|apply|draft|write|close|move|retire|delete)\b)/i;
 
 /**
  * @summary Applies the operator-dialogue carve before phrase matching.
