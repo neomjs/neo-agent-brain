@@ -5,11 +5,15 @@
  * An admitted attempt is never proof of delivery, and an ambiguous send is never replayed.
  */
 import path                            from 'path';
-import {fileStore}                     from './wireFleetOpenWorkSource.mjs';
+import {OPEN_WORK_FAILED_CHECKS}       from '../github-workflow/queries/openWorkQueries.mjs';
+import {fileStore, seatReaders}        from './wireFleetOpenWorkSource.mjs';
 import {planOpenWorkWakes, wakeGateOf} from './openWorkWakes.mjs';
 import {openWorkFreshness}             from './fleetOpenWorkSource.mjs';
 
 const ROUTES_TTL_MS = 5 * 60 * 1000;
+
+/** @summary The check-run conclusions and status states that fail a head; pending, stale, neutral and skipped do not. */
+const FAILING = new Set(['ACTION_REQUIRED', 'CANCELLED', 'ERROR', 'FAILURE', 'STARTUP_FAILURE', 'TIMED_OUT']);
 
 const REFUSAL_REASONS = [
     ['the producer observation is not fresh', 'producer-not-fresh'],
@@ -48,16 +52,59 @@ function refusalCode(gate) {
 }
 
 /**
+ * @summary The failing checks in one {@link OPEN_WORK_FAILED_CHECKS} answer: check runs by name, commit
+ * statuses by context. A head keeps every run of a re-run check, and GitHub's rollup still counts a
+ * superseded failure, so only each check's latest run decides; a queued run, not yet started, is the latest.
+ * @param {Object|null} data
+ * @returns {String[]|null} The names; null when the answer holds no rollup or more checks than its page.
+ */
+export function failedChecksOf(data) {
+    const
+        contexts = data?.repository?.object?.statusCheckRollup?.contexts,
+        latest   = new Map(),
+        started  = node => node.startedAt ? Date.parse(node.startedAt) : Infinity;
+
+    if (!Array.isArray(contexts?.nodes) || contexts.pageInfo?.hasNextPage !== false) return null;
+
+    for (const node of contexts.nodes) {
+        const
+            key   = JSON.stringify([node?.checkSuite?.workflowRun?.workflow?.name ?? null, node?.name ?? node?.context]),
+            prior = latest.get(key);
+
+        if (!prior || started(node) >= started(prior)) latest.set(key, node)
+    }
+
+    return [...latest.values()].filter(node => FAILING.has(node?.conclusion ?? node?.state)).map(node => node.name ?? node.context)
+}
+
+/**
+ * @summary What a `repair-ci` wake says failed: the first three names in its subject, all of them in its body.
+ * @param {String[]|null} names The failing checks read at the send; null when they could not be read.
+ * @returns {{subject: String, body: String}}
+ * @private
+ */
+function failingOf(names) {
+    if (!names) return {subject: 'unknown', body: 'unknown; the names could not be read'};
+    if (!names.length) return {subject: 'none at send time', body: 'none when this wake was sent'};
+
+    return {subject: names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : ''), body: names.join(', ')}
+}
+
+/**
  * @summary Describe the observed action and retain its complete task identity for live revalidation.
+ * A `repair-ci` wake also names its head's failing checks.
  * @param {Object} wake The planner's admission.
+ * @param {String[]|null} [failedChecks] A `repair-ci` wake's failing checks; null when they could not be read.
  * @returns {Object} Payload for the injected same-plane add_message sender.
  */
-export function wakeMessageOf(wake) {
+export function wakeMessageOf(wake, failedChecks = null) {
+    const failing = wake.kind === 'repair-ci' ? failingOf(failedChecks) : null;
+
     return {
         to     : wake.to,
-        subject: `[open-work:${wake.kind}] ${wake.pr}: observed ${wake.reason}`,
+        subject: `[open-work:${wake.kind}] ${wake.pr}: observed ${wake.reason}${failing ? ` — failing: ${failing.subject}` : ''}`,
         body   : `https://github.com/${wake.repo}/pull/${wake.number}\nHead: ${wake.head}\n` +
-            `Observed action: ${wake.kind} — ${wake.reason}.\nEpisode: ${wake.episode}\n\n` +
+            `Observed action: ${wake.kind} — ${wake.reason}.\n${failing ? `Failing checks: ${failing.body}.\n` : ''}Episode: ${wake.episode}\n\n` +
             'Re-check the live pull request, head, checks and review state before acting. ' +
             'This message describes a producer observation, not a guarantee of the current state.',
         relatedTickets: [wake.pr],
@@ -206,12 +253,19 @@ function freshWake(wake, state, now) {
  * @param {Function} [options.gateOf] Test seam; production uses wakeGateOf's measured observation gate.
  * @param {Function} [options.isEnabled] The entrypoint's live permission to send; no config is read here.
  * @param {Array<String|Object>|Function} [options.rotationSeats] Participating native seats for rotation actions.
+ * @param {Function} [options.readFailedChecks] `(wake) → Promise<String[]|null>`: a `repair-ci` wake's failing
+ *     checks, read once before its send. A throw or null sends the wake with the names unknown.
  * @param {Object} [options.log] Bounded diagnostics; sender error contents are never logged.
  * @returns {Function} Post-pulse callback with an async stop() method; persistence errors reject.
  */
 export function createOpenWorkWakeRound({store, sendMessage, readUndeliverable = async () => null,
-    now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true, rotationSeats, log = console}) {
+    now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true, rotationSeats, readFailedChecks = null, log = console}) {
     let running = null, queued = null, stopped = false, routes = null;
+
+    /** @summary A failed names read is names-unknown, never a lost wake. */
+    const failedChecksFor = async wake => {
+        try { return await readFailedChecks?.(wake) ?? null } catch { return null }
+    };
 
     /** @summary Read the existing route projection only when a plan has eligible work. */
     async function routeMap() {
@@ -298,6 +352,8 @@ export function createOpenWorkWakeRound({store, sendMessage, readUndeliverable =
 
         let sendErrors = 0, disabled = false;
         for (const wake of plan.wakes) {
+            // the names read awaits, so enablement and freshness are tested after it, at the send
+            const failedChecks = wake.kind === 'repair-ci' && isEnabled() === true ? await failedChecksFor(wake) : null;
             if (isEnabled() !== true) {
                 disabled = true;
                 break
@@ -306,7 +362,7 @@ export function createOpenWorkWakeRound({store, sendMessage, readUndeliverable =
                 expired++;
                 continue
             }
-            try { await sendMessage(wakeMessageOf(wake)) } catch {
+            try { await sendMessage(wakeMessageOf(wake, failedChecks)) } catch {
                 sendErrors++;
                 log.error?.('[fleet] open-work wake attempt failed or is ambiguous; admission retained',
                     {pr: wake.pr.slice(0, 160), kind: wake.kind.slice(0, 40)})
@@ -346,22 +402,51 @@ export function createOpenWorkWakeRound({store, sendMessage, readUndeliverable =
 }
 
 /**
+ * @summary Read a `repair-ci` wake's failing checks as its author seat, with that seat's own PAT from the
+ * producer's {@link seatReaders}: one {@link OPEN_WORK_FAILED_CHECKS} request per call.
+ * @param {Object} options
+ * @param {Function} options.listDefinitions `() → Object[]`, the registry's definitions.
+ * @param {Function} options.resolveCredential `(agentId) → String|null`, the seat's PAT.
+ * @param {Function} [options.createQuery] `(token) → query`; the GitHub call by default.
+ * @returns {Function} `(wake) → Promise<String[]|null>`; null for a seat without a readable PAT.
+ * @private
+ */
+function failedChecksReader({listDefinitions, resolveCredential, createQuery}) {
+    const readers = seatReaders({listDefinitions, resolveCredential, ...(createQuery ? {createQuery} : {})});
+
+    return async ({to, repo, head}) => {
+        const
+            query         = (await readers()).find(reader => reader.seat === to)?.query,
+            [owner, name] = repo.split('/');
+
+        return query ? failedChecksOf(await query(OPEN_WORK_FAILED_CHECKS, {owner, name, oid: head})) : null
+    }
+}
+
+/**
  * @summary Bind the existing producer callback to a ledger beside its state file; never start a poller.
  * @param {Object} options
- * @param {{getDataDir: Function}} options.registry Fleet-owned durable root.
+ * @param {{getDataDir: Function, listAgents: Function, resolveCredential: Function}} options.registry Fleet-owned
+ *     durable root, and the seats whose PATs read a `repair-ci` wake's failing checks.
  * @param {Function} options.sendMessage Already verified same-plane sender.
  * @param {Function} [options.readUndeliverable]
  * @param {Function} [options.now]
  * @param {Function} [options.gateOf] Test seam only.
  * @param {Function} [options.isEnabled] Live entrypoint enablement, checked at effect boundaries.
  * @param {Array<String|Object>|Function} [options.rotationSeats]
+ * @param {Function} [options.createQuery] `(token) → query`; replaces the GitHub call (tests).
  * @param {Object} [options.log]
  * @returns {Function|null} onPulse with stop(), or null without the required registry/sender.
  */
-export function wireFleetOpenWorkWakes({registry, sendMessage, readUndeliverable, now, gateOf, isEnabled, rotationSeats, log} = {}) {
+export function wireFleetOpenWorkWakes({registry, sendMessage, readUndeliverable, now, gateOf, isEnabled, rotationSeats, createQuery, log} = {}) {
     if (typeof registry?.getDataDir !== 'function' || typeof sendMessage !== 'function') return null;
     return createOpenWorkWakeRound({
-        store: fileStore(path.join(registry.getDataDir(), 'open-work-wakes.json')),
+        store           : fileStore(path.join(registry.getDataDir(), 'open-work-wakes.json')),
+        readFailedChecks: failedChecksReader({
+            listDefinitions  : () => registry.listAgents?.() ?? [],
+            resolveCredential: id => registry.resolveCredential?.(id) ?? null,
+            createQuery
+        }),
         sendMessage, readUndeliverable, now, gateOf, isEnabled, rotationSeats, log
     })
 }

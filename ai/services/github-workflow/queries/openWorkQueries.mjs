@@ -10,6 +10,9 @@
  * its unread prefix never makes current-work coverage partial.
  *
  * Variables: `$query` (a search string with `is:pr` and the `repo:` qualifiers), `$cursor`.
+ *
+ * A third read belongs to a `repair-ci` wake, not to the pulse: its head's checks, read once at the
+ * wake's send (`ai/services/fleet/wireFleetOpenWorkWakes.mjs`).
  */
 import {createHash} from 'node:crypto';
 
@@ -206,6 +209,49 @@ export const OPEN_WORK_TERMINAL = `
           }
           repository {
             nameWithOwner
+          }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * A `repair-ci` wake's read: each check on one head, a check run by name, conclusion, start and workflow
+ * (a re-run check keeps every run), a commit status by context and state. A head with more than one page
+ * of checks is not a complete list.
+ * Variables: `$owner`, `$name`, `$oid` (the full head).
+ * @type {String}
+ */
+export const OPEN_WORK_FAILED_CHECKS = `
+  query OpenWorkFailedChecks($owner: String!, $name: String!, $oid: GitObjectID!) {
+    repository(owner: $owner, name: $name) {
+      object(oid: $oid) {
+        ... on Commit {
+          statusCheckRollup {
+            contexts(first: 100) {
+              pageInfo {
+                hasNextPage
+              }
+              nodes {
+                ... on CheckRun {
+                  name
+                  conclusion
+                  startedAt
+                  checkSuite {
+                    workflowRun {
+                      workflow {
+                        name
+                      }
+                    }
+                  }
+                }
+                ... on StatusContext {
+                  context
+                  state
+                }
+              }
+            }
           }
         }
       }
