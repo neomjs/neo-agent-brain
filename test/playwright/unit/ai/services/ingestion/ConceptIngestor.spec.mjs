@@ -990,4 +990,92 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
         expect(typeof stats.orphansDetected).toBe('number');
         expect(Array.isArray(stats.errors)).toBe(true);
     });
+
+    test('should repair a CONCEPT node whose label, name, description, or summary_ semanticVectorId was clobbered while payloadHash remained unchanged (#1547)', async () => {
+        const conceptNode = {
+            id         : 'agent-os',
+            name       : 'AI-Native Architecture (Agent OS)',
+            tier       : 1,
+            description: 'The AI half of the organism.',
+            uniqueToNeo: true,
+            tags       : ['ai', 'architecture']
+        };
+
+        writeFixture(
+            [conceptNode],
+            [{source: 'agent-os', target: 'file:ai/services/ConceptService.mjs', type: 'IMPLEMENTED_BY'}]
+        );
+
+        const first = await ConceptIngestor.syncConceptsToGraph();
+        expect(first.conceptsUpserted).toBe(1);
+
+        // Simulate SemanticGraphExtractor overwriting the node's label, name, description,
+        // and semanticVectorId while GraphService.upsertNode shallow-merges properties.payloadHash.
+        GraphService.upsertNode({
+            id              : 'agent-os',
+            type            : 'CLASS',
+            name            : 'Neo Agent OS Memory Management',
+            description     : 'Investigation into RAM and disk overhead.',
+            semanticVectorId: 'summary_65ddc71f-04c4-4c7d-90f0-126e11f23681'
+        });
+
+        const clobbered = GraphService.db.nodes.get('agent-os');
+        expect(clobbered.label).toBe('CLASS');
+        expect(clobbered.properties.name).toBe('Neo Agent OS Memory Management');
+        expect(clobbered.properties.semanticVectorId).toBe('summary_65ddc71f-04c4-4c7d-90f0-126e11f23681');
+        expect(clobbered.properties.payloadHash).toBe(ConceptIngestor.computePayloadHash(conceptNode));
+
+        const second = await ConceptIngestor.syncConceptsToGraph();
+        expect(second.conceptsUpserted).toBe(1);
+        expect(second.conceptsSkipped).toBe(0);
+
+        const repaired = GraphService.db.nodes.get('agent-os');
+        expect(repaired.label).toBe('CONCEPT');
+        expect(repaired.properties.name).toBe('AI-Native Architecture (Agent OS)');
+        expect(repaired.properties.description).toBe('The AI half of the organism.');
+        expect(repaired.properties.semanticVectorId).toBeNull();
+        expect(repaired.properties.sourceOfTruth).toBe(true);
+    });
+
+    test('should idempotently reconcile the five identity concepts edges and eliminate their orphan, guide, and example gaps (#1547)', async () => {
+        const
+            GapInferenceEngine = (await import('../../../../../../ai/services/graph/GapInferenceEngine.mjs')).default,
+            freshVerifiedAt    = new Date().toISOString();
+
+        const identityNodes = [
+            {id: 'json-first-vdom', name: 'JSON-First VDOM',                      tier: 1, description: 'Declarative JSON VDOM.', uniqueToNeo: true,  tags: ['vdom'],   verifiedAt: freshVerifiedAt},
+            {id: 'agent-os',        name: 'AI-Native Architecture (Agent OS)',   tier: 1, description: 'Agent OS hemisphere.',   uniqueToNeo: true,  tags: ['ai'],     verifiedAt: freshVerifiedAt},
+            {id: 'multi-window',    name: 'Multi-Window Applications',            tier: 1, description: 'SharedWorker windows.',  uniqueToNeo: true,  tags: ['window'], verifiedAt: freshVerifiedAt},
+            {id: 'multi-threading', name: 'Multi-Threading Architecture',         tier: 1, description: 'Worker architecture.',   uniqueToNeo: true,  tags: ['worker'], verifiedAt: freshVerifiedAt},
+            {id: 'data-layer',      name: 'Data Layer (Stores, Models, Records)', tier: 1, description: 'Reactive data layer.',   uniqueToNeo: false, tags: ['data'],   verifiedAt: freshVerifiedAt}
+        ];
+
+        const initialEdges = [
+            {source: 'json-first-vdom', target: 'file:learn/benefits/body/JSONFirstUIs.md',               type: 'EXPLAINED_BY'},
+            {source: 'agent-os',        target: 'file:learn/agentos/StrategicWorkflows.md',               type: 'EXPLAINED_BY'},
+            {source: 'multi-window',    target: 'file:learn/benefits/body/MultiWindow.md',                type: 'EXPLAINED_BY'},
+            {source: 'multi-threading', target: 'file:learn/benefits/body/OffTheMainThread.md',           type: 'EXPLAINED_BY'}
+        ];
+
+        writeFixture(identityNodes, initialEdges);
+
+        const firstReconcile = await ConceptIngestor.reconcileIdentityConceptEdges();
+        expect(firstReconcile.edgesAdded).toBe(27);
+
+        // Idempotency: second call appends 0 duplicate edges
+        const secondReconcile = await ConceptIngestor.reconcileIdentityConceptEdges();
+        expect(secondReconcile.edgesAdded).toBe(0);
+
+        const syncStats = await ConceptIngestor.syncConceptsToGraph();
+        expect(syncStats.integrityFindings).toEqual([]);
+        expect(syncStats.orphansDetected).toBe(0);
+
+        await GapInferenceEngine.inferConceptGraphGaps();
+
+        for (const {id} of identityNodes) {
+            const node = GraphService.db.nodes.get(id);
+            expect(node.label).toBe('CONCEPT');
+            expect(node.properties.capabilityGap).toBeUndefined();
+        }
+    });
 });

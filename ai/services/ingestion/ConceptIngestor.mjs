@@ -1,8 +1,11 @@
 import crypto                                from 'crypto';
+import fs                                    from 'fs';
+import path                                  from 'path';
 import Base                                  from 'neo.mjs/src/core/Base.mjs';
 import ConceptService                        from '../../services/ConceptService.mjs';
 import {Memory_GraphService as GraphService} from '../../services.mjs';
 import FileSystemIngestor                    from '../memory-core/FileSystemIngestor.mjs';
+import {assertTestWriteIsolated}             from '../shared/storeWriteGuard.mjs';
 import logger                                from '../../mcp/server/memory-core/logger.mjs';
 
 /**
@@ -25,6 +28,49 @@ const
     CONCEPT_EDGE_TYPE_SET      = new Set(Object.values(CONCEPT_EDGE_TYPES)),
     CONCEPT_PROJECTION_SOURCE  = 'concept-ontology-jsonl',
     CONCEPT_PROJECTION_VERSION = 1;
+
+/**
+ * Canonical `IMPLEMENTED_BY`, `EXPLAINED_BY`, and `EXEMPLIFIED_BY` edges for the five core
+ * identity concepts (`json-first-vdom`, `agent-os`, `multi-window`, `multi-threading`,
+ * `data-layer`). Reconciled idempotently into `edges.jsonl` by
+ * {@link Neo.ai.daemons.services.ConceptIngestor#reconcileIdentityConceptEdges}.
+ * @type {Object[]}
+ * @private
+ */
+const IDENTITY_CONCEPT_EDGES = Object.freeze([
+    // json-first-vdom
+    Object.freeze({source: 'json-first-vdom', target: 'file:src/vdom/Helper.mjs',                                      type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'json-first-vdom', target: 'file:src/vdom/VNode.mjs',                                       type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'json-first-vdom', target: 'file:src/component/Base.mjs',                                   type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'json-first-vdom', target: 'file:examples/component/coronaHelix/MainContainer.mjs',         type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
+    Object.freeze({source: 'json-first-vdom', target: 'file:examples/grid/bigData/MainContainer.mjs',                  type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
+    // agent-os
+    Object.freeze({source: 'agent-os',        target: 'file:ai/services/ConceptService.mjs',                           type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'agent-os',        target: 'file:ai/services/memory-core/GraphService.mjs',                 type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'agent-os',        target: 'file:src/evolution/RemDigestion.mjs',                           type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'agent-os',        target: 'file:ai/scripts/diagnostics/validateConceptEdges.mjs',          type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
+    Object.freeze({source: 'agent-os',        target: 'file:ai/daemons/orchestrator/daemon.mjs',                       type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
+    // multi-window
+    Object.freeze({source: 'multi-window',    target: 'file:src/worker/App.mjs',                                       type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'multi-window',    target: 'file:src/main/addon/WindowPosition.mjs',                        type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'multi-window',    target: 'file:apps/sharedcovid/view/MainContainerController.mjs',        type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
+    Object.freeze({source: 'multi-window',    target: 'file:examples/component/multiWindowCoronaGallery/Viewport.mjs', type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
+    // multi-threading
+    Object.freeze({source: 'multi-threading', target: 'file:src/worker/Manager.mjs',                                   type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'multi-threading', target: 'file:src/worker/Base.mjs',                                      type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'multi-threading', target: 'file:src/worker/App.mjs',                                       type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'multi-threading', target: 'file:apps/sharedcovid/app.mjs',                                 type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
+    Object.freeze({source: 'multi-threading', target: 'file:examples/component/multiWindowCoronaGallery/app.mjs',      type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
+    // data-layer
+    Object.freeze({source: 'data-layer',      target: 'file:learn/guides/datahandling/Collections.md',                 type: CONCEPT_EDGE_TYPES.EXPLAINED_BY}),
+    Object.freeze({source: 'data-layer',      target: 'file:learn/guides/datahandling/Records.md',                     type: CONCEPT_EDGE_TYPES.EXPLAINED_BY}),
+    Object.freeze({source: 'data-layer',      target: 'file:learn/guides/datahandling/DataPipelines.md',               type: CONCEPT_EDGE_TYPES.EXPLAINED_BY}),
+    Object.freeze({source: 'data-layer',      target: 'file:src/data/Store.mjs',                                       type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'data-layer',      target: 'file:src/data/Model.mjs',                                       type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'data-layer',      target: 'file:src/data/RecordFactory.mjs',                               type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
+    Object.freeze({source: 'data-layer',      target: 'file:examples/grid/bigData/MainStore.mjs',                      type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
+    Object.freeze({source: 'data-layer',      target: 'file:examples/grid/bigData/MainModel.mjs',                      type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY})
+]);
 
 /**
  * Returns the four independent provenance/lifecycle axes carried by every
@@ -580,13 +626,15 @@ class ConceptIngestor extends Base {
     updateProjectionMetadata(conceptId, findings) {
         const
             node                     = GraphService.db.nodes.get(conceptId),
+            existingLabel            = node?.label || node?.get?.('label') || node?.type,
             properties               = node?.properties || {},
             currentProjectionVersion = Number.isInteger(properties.conceptProjectionVersion)
                 && properties.conceptProjectionVersion > CONCEPT_PROJECTION_VERSION
                     ? properties.conceptProjectionVersion
                     : CONCEPT_PROJECTION_VERSION;
 
-        if (properties.conceptProjectionVersion === currentProjectionVersion
+        if (existingLabel === 'CONCEPT'
+            && properties.conceptProjectionVersion === currentProjectionVersion
             && stableStringify(properties.conceptProjectionIntegrityFindings || []) === stableStringify(findings)) {
             return
         }
@@ -602,6 +650,78 @@ class ConceptIngestor extends Base {
                 conceptProjectionVersion          : currentProjectionVersion
             }
         })
+    }
+
+    /**
+     * @summary Idempotently ensures the five core identity concepts (`json-first-vdom`, `agent-os`,
+     * `multi-window`, `multi-threading`, `data-layer`) carry their `IMPLEMENTED_BY`, `EXPLAINED_BY`,
+     * and `EXEMPLIFIED_BY` edges in `edges.jsonl`.
+     *
+     * Appends only rows whose `source` concept exists in `nodes.jsonl`, whose `file:` target resolves
+     * with `valid: true` through `FileSystemIngestor.resolveSplitTreeReference`, and whose
+     * `(source, target, type)` tuple is not already present in `edges.jsonl`. Guarded by
+     * `assertTestWriteIsolated` so test runners cannot mutate a production concepts directory.
+     * @returns {Promise<{edgesAdded: Number, edgesSkipped: Number, edges: Object[]}>}
+     */
+    async reconcileIdentityConceptEdges() {
+        let conceptsDir;
+        try {
+            conceptsDir = ConceptService.getConceptsDir()
+        } catch {
+            return {edgesAdded: 0, edgesSkipped: 0, edges: []}
+        }
+
+        const
+            nodesPath = path.join(conceptsDir, 'nodes.jsonl'),
+            edgesPath = path.join(conceptsDir, 'edges.jsonl');
+
+        if (!fs.existsSync(nodesPath) || !fs.existsSync(edgesPath)) {
+            return {edgesAdded: 0, edgesSkipped: 0, edges: []}
+        }
+
+        assertTestWriteIsolated({storePath: conceptsDir, subsystem: 'concept-ontology'});
+
+        const
+            rawNodes       = ConceptService.parseJsonl(nodesPath),
+            rawEdges       = ConceptService.parseJsonl(edgesPath),
+            nodeIdSet      = new Set(rawNodes.map(n => n?.id).filter(Boolean)),
+            existingTuples = new Set(rawEdges.map(e => `${e?.source}|${e?.target}|${e?.type}`)),
+            toAdd          = [];
+
+        let edgesSkipped = 0;
+
+        for (const candidate of IDENTITY_CONCEPT_EDGES) {
+            const tupleKey = `${candidate.source}|${candidate.target}|${candidate.type}`;
+
+            if (!nodeIdSet.has(candidate.source) || existingTuples.has(tupleKey)) {
+                edgesSkipped++;
+                continue
+            }
+
+            if (candidate.target.startsWith('file:')) {
+                const resolution = FileSystemIngestor.resolveSplitTreeReference(candidate.target.slice('file:'.length));
+                if (!resolution.valid) {
+                    edgesSkipped++;
+                    continue
+                }
+            }
+
+            existingTuples.add(tupleKey);
+            toAdd.push({source: candidate.source, target: candidate.target, type: candidate.type})
+        }
+
+        if (toAdd.length > 0) {
+            const
+                existing            = await fs.promises.readFile(edgesPath, 'utf8'),
+                needsLeadingNewline = existing.length > 0 && !existing.endsWith('\n'),
+                serialized          = toAdd.map(e => JSON.stringify(e)).join('\n'),
+                toAppend            = (needsLeadingNewline ? '\n' : '') + serialized + '\n';
+
+            await fs.promises.appendFile(edgesPath, toAppend, 'utf8');
+            logger.info(`[ConceptIngestor] Appended ${toAdd.length} curated identity concept edge(s) to edges.jsonl.`)
+        }
+
+        return {edgesAdded: toAdd.length, edgesSkipped, edges: toAdd}
     }
 
     /**
@@ -656,23 +776,31 @@ class ConceptIngestor extends Base {
                     db.getAdjacentNodes(conceptId, 'outbound');
 
                     const
-                        payloadHash  = this.computePayloadHash(conceptNode),
-                        existingNode = db.nodes.get(conceptId),
-                        adoptLegacy  = !!existingNode
-                            && /^[a-f0-9]{64}$/.test(existingNode.properties?.payloadHash || '')
-                            && existingNode.properties?.conceptProjectionVersion == null,
+                        payloadHash      = this.computePayloadHash(conceptNode),
+                        existingNode     = db.nodes.get(conceptId),
+                        existingLabel    = existingNode?.label || existingNode?.get?.('label') || existingNode?.type,
+                        existingProps    = existingNode?.properties || {},
+                        hasSummaryVector = String(existingProps.semanticVectorId || existingNode?.semanticVectorId || '').startsWith('summary_'),
+                        adoptLegacy      = !!existingNode
+                            && /^[a-f0-9]{64}$/.test(existingProps.payloadHash || '')
+                            && existingProps.conceptProjectionVersion == null,
                         weight           = ConceptService.calculateWeight(conceptNode),
                         outboundEdges    = ConceptService.edgesBySource.get(conceptId) || [],
                         normalized       = this.normalizeOutboundEdges(conceptId, outboundEdges),
-                        nodePayloadMatch = existingNode?.properties?.payloadHash === payloadHash;
+                        nodePayloadMatch = existingLabel === 'CONCEPT'
+                            && existingProps.name === conceptNode.name
+                            && (existingProps.description ?? '') === (conceptNode.description ?? '')
+                            && !hasSummaryVector
+                            && existingProps.payloadHash === payloadHash;
 
                     if (nodePayloadMatch) {
                         stats.conceptsSkipped++
                     } else {
                         GraphService.upsertNode({
-                            id        : conceptId,
-                            type      : 'CONCEPT',
-                            name      : conceptNode.name,
+                            id  : conceptId,
+                            type: 'CONCEPT',
+                            name: conceptNode.name,
+                            ...(hasSummaryVector ? {semanticVectorId: null} : {}),
                             properties: {
                                 aliases          : conceptNode.aliases     ?? [],
                                 codeGapEligible  : conceptNode.codeGapEligible !== false,
@@ -680,6 +808,7 @@ class ConceptIngestor extends Base {
                                 isConceptEdgeStub: false,
                                 ontologyLayer    : conceptNode.ontologyLayer ?? 'code',
                                 payloadHash,
+                                sourceOfTruth    : true,
                                 tags             : conceptNode.tags        ?? [],
                                 tier             : conceptNode.tier        ?? 0,
                                 uniqueToNeo      : !!conceptNode.uniqueToNeo,

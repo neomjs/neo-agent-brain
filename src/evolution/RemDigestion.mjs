@@ -545,6 +545,7 @@ class RemDigestion extends Base {
                 // deterministically instead of regex-matching token lists against file paths.
                 const conceptIngestStart = this.nowFn();
                 try {
+                    await this.conceptIngestor.reconcileIdentityConceptEdges?.();
                     await this.conceptIngestor.syncConceptsToGraph();
                     perPhaseStates.push(this.finishPhase('conceptIngest', conceptIngestStart, 'completed'));
                 } catch (e) {
