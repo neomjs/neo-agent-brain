@@ -34,6 +34,17 @@ test.describe('deferencePhraseMatch in operator dialogue (#78)', () => {
         expect(detectDeferencePhrase("I'll keep watching CI.\n\nYour call on the exact color.", dialogue)).toBeNull();
     });
 
+    test('a pick quoted or in code arms nothing, and the carves keep the context before the pick', () => {
+        // Matching from a sliced prefix would orphan a closing delimiter, and would cut the first-person
+        // attribution the carve reads to the left of the phrase
+        expect(detectDeferencePhrase("Merged #1529: `I'd` arms `your call` in dialogue.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase('The user said "I\'d wait" and "your call" in the thread.', dialogue)).toBeNull();
+        expect(detectDeferencePhrase("I told you yesterday that I'd check the logs and that the fork-CI approval was your call; it was mine.",
+            dialogue)).toBeNull();
+        // Each of them carves autonomously too, so dialogue now agrees with the autonomous reading
+        expect(detectDeferencePhrase("Merged #1529: `I'd` arms `your call` in dialogue.", {operatorInLoop: false})).toBeNull();
+    });
+
     test('case 1: a peer deadlock leaves no agent decision to hand back', () => {
         expect(detectDeferencePhrase("We could not agree on A or B, so I'd say it is your call.", dialogue)).toBeNull();
     });
@@ -86,6 +97,11 @@ test.describe('matchWrapUpAskDeference (#78)', () => {
     test('without a stated pick the box is a question, not a handback', () => {
         expect(matchWrapUpAskDeference({ask: 'Fix #20599 now so it ships in 13.4?', actions: buttons}, 'The fix is ready.')).toBeNull();
         expect(matchWrapUpAskDeference({ask: 'Fix #20599 now so it ships in 13.4?', actions: buttons})).toBeNull();
+        // A pick that is only quoted or in code states nothing
+        expect(matchWrapUpAskDeference({ask: 'Fix #20599 now so it ships in 13.4?', actions: buttons},
+            "The matcher reads `I'd` as a pick.")).toBeNull();
+        expect(matchWrapUpAskDeference({ask: 'Fix #20599 now so it ships in 13.4?', actions: buttons},
+            'Grace wrote "I\'ll fix it" on the ticket.')).toBeNull();
     });
 
     test('operator-owned asks stay carved even after a stated pick', () => {

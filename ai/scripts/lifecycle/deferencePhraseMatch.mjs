@@ -155,6 +155,17 @@ function stripInlineEmphasis(text) {
 }
 
 /**
+ * @summary Removes what a text only mentions (code, quotes, emphasis markers), so matching reads the prose
+ * itself. Idempotent: a second pass changes nothing, so an index into its output stays valid when a caller
+ * strips first and `matchDeferencePhrase` strips again.
+ * @param {String} text
+ * @returns {String}
+ */
+function stripMentions(text) {
+    return stripInlineEmphasis(stripQuotedMentions(stripMarkdownCode(text)));
+}
+
+/**
  * @summary Checks whether a local match is a reported phrase rather than deference.
  * @param {String} text Searchable assistant final-turn text.
  * @param {Number} startIndex Match start index.
@@ -278,14 +289,17 @@ function isFirstPersonAttributionContext(phrase, text, startIndex) {
  * @summary Returns the first deference phrase found in text, using case-insensitive boundary match.
  * @param {String} text Assistant final-turn text.
  * @param {String[]} [phrases=DEFERENCE_PHRASES]
+ * @param {Object} [options]
+ * @param {Number} [options.fromIndex=0] Only a phrase that starts at or after this index of the stripped
+ * text counts. The text before it stays visible to the carves, which read to the left of a phrase.
  * @returns {String|null}
  */
-export function matchDeferencePhrase(text = '', phrases = DEFERENCE_PHRASES) {
+export function matchDeferencePhrase(text = '', phrases = DEFERENCE_PHRASES, {fromIndex = 0} = {}) {
     if (typeof text !== 'string' || !text) {
         return null;
     }
 
-    const searchableText = stripInlineEmphasis(stripQuotedMentions(stripMarkdownCode(text)));
+    const searchableText = stripMentions(text);
 
     return phrases.find(phrase => {
         const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+'),
@@ -299,6 +313,10 @@ export function matchDeferencePhrase(text = '', phrases = DEFERENCE_PHRASES) {
                 // ends that many characters later. Computed rather than using `phrase.length`, because
                 // the matcher collapses whitespace runs and the matched text can be longer.
                 endIndex   = startIndex + match[0].length - match[1].length;
+
+            if (startIndex < fromIndex) {
+                continue;
+            }
 
             if (CLAUSE_TERMINAL_PHRASES.has(phrase) && !isClauseTerminal(searchableText, endIndex)) {
                 continue;
@@ -360,12 +378,14 @@ export function detectDeferencePhrase(text = '', {
     if (!operatorInLoop) return matchDeferencePhrase(text);
     if (typeof text !== 'string') return null;
 
-    for (const paragraph of text.split(/\n\s*\n/)) {
+    // Strip first (a fence spans blank lines, a quoted pick arms nothing); match from the pick on, never in
+    // a slice: the carves read left of a phrase, and a slice can orphan a delimiter.
+    for (const paragraph of stripMentions(text).split(/\n\s*\n/)) {
         const pick = STATED_PICK.exec(paragraph);
 
         if (!pick || OPERATOR_OWNED.test(paragraph)) continue;
 
-        const phrase = matchDeferencePhrase(paragraph.slice(pick.index + pick[0].length));
+        const phrase = matchDeferencePhrase(paragraph, DEFERENCE_PHRASES, {fromIndex: pick.index + pick[0].length});
 
         if (phrase) return phrase;
     }
@@ -392,9 +412,9 @@ export function matchWrapUpAskDeference(wrapUpAsk = null, text = '') {
     if (typeof ask !== 'string' || !AGENT_STEP_ASK.test(ask) || OPERATOR_OWNED.test(ask)) return null;
     if (wrapUpAsk.actions?.[0]?.action === 'merge') return null;
 
-    const statedIn = typeof text === 'string' ? text : '';
+    const statedIn = typeof text === 'string' ? stripMentions(text) : '';
 
-    return (STATED_PICK.test(statedIn) && !OPERATOR_OWNED.test(statedIn)) || STATED_PICK.test(ask) ? ask : null;
+    return (STATED_PICK.test(statedIn) && !OPERATOR_OWNED.test(statedIn)) || STATED_PICK.test(stripMentions(ask)) ? ask : null;
 }
 
 /**
