@@ -27,6 +27,7 @@ import {
     resolveHarnessTargetForIdentity
 } from '../../../../../../ai/scripts/lifecycle/harnessRouting.mjs';
 import {
+    buildResumeOsascriptArgs,
     resolveResumeHarnessInstanceAddress,
     resolveResumeHarnessInstancePid
 } from '../../../../../../ai/scripts/lifecycle/resumeHarness.mjs';
@@ -238,6 +239,42 @@ test.describe('ai/scripts/resumeHarness', () => {
             instanceAddress: '12345',
             deploymentMode : 'cloud'
         })).rejects.toThrow(/instance targeting requires local deployment/);
+    });
+
+    test('addressed osascript resume targets targetAutomationId and asserts exact frontmost PID before each keystroke batch', () => {
+        const addressedScript = buildResumeOsascriptArgs({
+            appName             : 'Claude',
+            freshSessionShortcut: 'n',
+            instancePid         : 24680,
+            payload             : 'boot-prompt',
+            tabShortcut         : '3'
+        }).join('\n');
+
+        expect(addressedScript).toContain('set targetProcessId to "24680"');
+        expect(addressedScript).toContain('set targetAutomationId to id of candidate');
+        expect(addressedScript).toContain('if ((unix id of application process id targetAutomationId) as string) is not targetProcessId then error "Exact target process changed"');
+        expect(addressedScript).toContain('tell application "System Events" to set frontmost of application process id targetAutomationId to true');
+        expect(addressedScript).toContain('my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "after activation")');
+        expect(addressedScript).toContain('my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "before prompt clear")');
+        expect(addressedScript).toContain('my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "before wake clipboard set")');
+        expect(addressedScript).toContain('my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "before wake paste")');
+        expect(addressedScript).toContain('my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "before user input restore clipboard set")');
+        expect(addressedScript).toContain('my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "before user input restore paste")');
+        expect(addressedScript).toContain('tell application process id targetAutomationId');
+        expect(addressedScript).not.toContain('tell application "Claude" to activate');
+        expect(addressedScript).not.toContain('whose unix id is');
+
+        const unaddressedScript = buildResumeOsascriptArgs({
+            appName             : 'Claude',
+            freshSessionShortcut: 'n',
+            instancePid         : null,
+            payload             : 'boot-prompt',
+            tabShortcut         : '3'
+        }).join('\n');
+
+        expect(unaddressedScript).toContain('tell application "Claude" to activate');
+        expect(unaddressedScript).toContain('set frontmostProcess to first application process whose frontmost is true');
+        expect(unaddressedScript).not.toContain('set targetAutomationId to id of candidate');
     });
 
     test('normalizes GitHub-login identity form before harness dispatch (#11797)', async () => {

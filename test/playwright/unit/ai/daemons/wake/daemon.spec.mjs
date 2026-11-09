@@ -3678,15 +3678,15 @@ test.describe('Wake Daemon', () => {
         const rIndex                    = scriptContent.indexOf('keystroke "r"');
         const zIndex                    = scriptContent.indexOf('keystroke "z" using command down');
         const clearIndex                = scriptContent.indexOf('keystroke "a" using command down');
-        const guardAfterActivationIndex = scriptContent.indexOf('my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "after activation")');
-        const guardBeforeClearIndex     = scriptContent.indexOf('my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before prompt clear")');
-        const guardBeforeWakeSetIndex   = scriptContent.indexOf('my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before wake clipboard set")');
+        const guardAfterActivationIndex = scriptContent.indexOf('my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "after activation")');
+        const guardBeforeClearIndex     = scriptContent.indexOf('my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before prompt clear")');
+        const guardBeforeWakeSetIndex   = scriptContent.indexOf('my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before wake clipboard set")');
         const wakePayloadIndex          = scriptContent.indexOf('set the clipboard to wakePayload');
-        const guardBeforeWakePasteIndex = scriptContent.indexOf('my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before wake paste")');
+        const guardBeforeWakePasteIndex = scriptContent.indexOf('my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before wake paste")');
         const pasteIndex                = scriptContent.indexOf('keystroke "v" using command down');
 
         expect(activateIndex).toBeGreaterThan(-1);
-        expect(scriptContent).toContain('on assertTargetFrontmost(appName, targetBundleId, targetProcessId, phase)');
+        expect(scriptContent).toContain('on assertTargetFrontmost(appName, targetBundleId, targetProcessId, targetAutomationId, phase)');
         expect(scriptContent).toContain('set targetBundleId to id of application "Claude"');
         expect(scriptContent).toContain('bundle identifier of frontmostProcess');
         expect(scriptContent).toContain('set the clipboard to savedClipboard\n    error errMsg');
@@ -3754,7 +3754,10 @@ test.describe('Wake Daemon', () => {
         const scriptContent = args.filter((_, i) => args[i - 1] === '-e').join('\n');
 
         expect(scriptContent).toContain('set targetProcessId to "3778"');
-        expect(scriptContent).toContain('first process whose unix id is 3778')
+        expect(scriptContent).toContain('set frontmost of application process id targetAutomationId to true');
+        expect(scriptContent).toContain('tell application process id targetAutomationId');
+        expect(scriptContent).not.toContain('tell application "Codex" to activate');
+        expect(scriptContent).not.toContain('first process whose unix id is')
     });
 
     test('ambiguous Codex default route fails closed before osascript (#15054)', async () => {
@@ -3904,7 +3907,10 @@ test.describe('Wake Daemon', () => {
         const scriptContent = args.filter((_, i) => args[i - 1] === '-e').join('\n');
 
         expect(scriptContent).toContain('set targetProcessId to "4242"');
-        expect(scriptContent).toContain('first process whose unix id is 4242');
+        expect(scriptContent).toContain('set frontmost of application process id targetAutomationId to true');
+        expect(scriptContent).toContain('tell application process id targetAutomationId');
+        expect(scriptContent).not.toContain('tell application "Antigravity" to activate');
+        expect(scriptContent).not.toContain('first process whose unix id is');
     });
 
     test('stale HarnessPresence refuses targeted GUI delivery instead of falling through to app activate (#12422)', async () => {
@@ -4015,7 +4021,11 @@ test.describe('Wake Daemon', () => {
         const args          = JSON.parse(fs.readFileSync(mockOutPath, 'utf8'));
         const scriptContent = args.filter((_, i) => args[i - 1] === '-e').join('\n');
 
-        expect(scriptContent).toContain(`first process whose unix id is ${mainPid}`);
+        expect(scriptContent).toContain(`set targetProcessId to "${mainPid}"`);
+        expect(scriptContent).toContain('set frontmost of application process id targetAutomationId to true');
+        expect(scriptContent).toContain('tell application process id targetAutomationId');
+        expect(scriptContent).not.toContain('tell application "Claude" to activate');
+        expect(scriptContent).not.toContain('first process whose unix id is');
     });
 
     test('userDataDir still fails closed when no live process maps to the address (#12571)', async () => {

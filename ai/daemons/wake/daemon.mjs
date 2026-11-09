@@ -85,7 +85,7 @@ import {
     isHeavyDeltaPoll,
     shouldDeferFlush
 } from './flushDeferPolicy.mjs';
-import {openCodePromptRefusal} from './localWakeAdapters.mjs';
+import {openCodePromptRefusal, processAutomationIdLines} from './localWakeAdapters.mjs';
 import {
     claimUnwokenMessages,
     clampWatermark,
@@ -2333,37 +2333,33 @@ async function deliverDigest(subscription, digest, deliveryEvidence = {}, abortS
             // Antigravity. Pure-heartbeat digests for prompt-submitting adapters are filtered
             // before coalescing because a scheduler nudge must not submit into an interactive
             // composer.
-            // Instance-addressed wake raises the resolved pid's process to frontmost (verified
-            // addressable via System Events `whose unix id`); single-instance wakes keep the
-            // app-activate path unchanged.
+            // Instance-addressed wake raises the resolved pid's process to frontmost via its numeric
+            // System Events automation id (`application process id targetAutomationId`); single-instance
+            // wakes with no resolved pid keep the app-activate path unchanged.
             const appleScriptAppName = escapeAppleScriptString(appName),
-                  targetProcessId    = instancePid ? String(instancePid) : '';
-
-            // Foreground strategy: `activate` is the robust bundle-level foregrounding — it works from
-            // the headless daemon AND reclaims focus from a same-bundle sibling that holds the front.
-            // For a multi-instance harness we then set frontmost on the resolved instance pid to
-            // disambiguate. `set frontmost of unix id` ALONE loses to a frontmost same-bundle sibling:
-            // the daemon cannot switch between same-bundle instances without first foregrounding the
-            // bundle via `activate`. `AXRaise` was empirically rejected (it de-raises the target).
-            const appActivateLine       = `  tell application "${appleScriptAppName}" to activate`,
-                  instanceFrontmostLine = instancePid
-                      ? `  tell application "System Events" to set frontmost of (first process whose unix id is ${instancePid}) to true`
-                      : null;
+                  targetProcessId    = instancePid ? String(instancePid) : '',
+                  addressedProcess   = Boolean(instancePid),
+                  appActivateLine    = addressedProcess
+                      ? '    tell application "System Events" to set frontmost of application process id targetAutomationId to true'
+                      : `  tell application "${appleScriptAppName}" to activate`,
+                  targetProcessOpenLines = indent => addressedProcess
+                      ? ['-e', `${indent}tell application process id targetAutomationId`]
+                      : [
+                          '-e', `${indent}set frontmostProcess to first application process whose frontmost is true`,
+                          '-e', `${indent}tell frontmostProcess`
+                      ];
 
             const osascriptArgs = [
-                '-e', 'on assertTargetFrontmost(appName, targetBundleId, targetProcessId, phase)',
+                '-e', 'on assertTargetFrontmost(appName, targetBundleId, targetProcessId, targetAutomationId, phase)',
                 '-e', '  tell application "System Events"',
+                '-e', '    if targetAutomationId is not "" then',
+                '-e', '      if ((unix id of application process id targetAutomationId) as string) is not targetProcessId then error "Exact target process changed " & phase',
+                '-e', '      set currentPid to (unix id of (first application process whose frontmost is true)) as string',
+                '-e', '      if currentPid is not targetProcessId then error "Target app lost frontmost status " & phase & " (pid " & currentPid & " != " & targetProcessId & ")"',
+                '-e', '      return true',
+                '-e', '    end if',
                 '-e', '    set frontmostProcess to first application process whose frontmost is true',
-                '-e', '    if targetProcessId is not "" then',
-                '-e', '      set currentPid to (unix id of frontmostProcess) as string',
-                '-e', '      if currentPid is not targetProcessId then',
-                '-e', '        set currentBundleId to ""',
-                '-e', '        try',
-                '-e', '          set currentBundleId to (bundle identifier of frontmostProcess) as string',
-                '-e', '        end try',
-                '-e', '        if currentBundleId is not targetBundleId then error "Target app lost frontmost status " & phase & " (pid " & currentPid & " != " & targetProcessId & ", bundle " & currentBundleId & " != " & targetBundleId & ")"',
-                '-e', '      end if',
-                '-e', '    else if targetBundleId is not "" then',
+                '-e', '    if targetBundleId is not "" then',
                 '-e', '      set currentBundleId to ""',
                 '-e', '      try',
                 '-e', '        set currentBundleId to (bundle identifier of frontmostProcess) as string',
@@ -2379,10 +2375,13 @@ async function deliverDigest(subscription, digest, deliveryEvidence = {}, abortS
                 '-e', '  set wakePayload to (item 1 of argv)',
                 '-e', `  set targetAppName to "${appleScriptAppName}"`,
                 '-e', '  set targetBundleId to ""',
-                '-e', '  try',
-                '-e', `    set targetBundleId to id of application "${appleScriptAppName}"`,
-                '-e', '  end try',
                 '-e', `  set targetProcessId to "${targetProcessId}"`,
+                '-e', '  set targetAutomationId to ""',
+                ...(addressedProcess ? processAutomationIdLines('  ') : [
+                    '-e', '  try',
+                    '-e', `    set targetBundleId to id of application "${appleScriptAppName}"`,
+                    '-e', '  end try'
+                ]),
                 '-e', '  try',
                 '-e', '    set savedClipboard to the clipboard as string',
                 '-e', '  on error',
@@ -2392,18 +2391,16 @@ async function deliverDigest(subscription, digest, deliveryEvidence = {}, abortS
                 '-e', '  set targetRaised to false',
                 '-e', '  repeat 12 times',
                 '-e', appActivateLine,
-                ...(instanceFrontmostLine ? ['-e', instanceFrontmostLine] : []),
                 '-e', '    delay 0.25',
                 '-e', '    try',
-                '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "after activation")',
+                '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "after activation")',
                 '-e', '      set targetRaised to true',
                 '-e', '      exit repeat',
                 '-e', '    end try',
                 '-e', '  end repeat',
-                '-e', '  if not targetRaised then my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "after activation")',
+                '-e', '  if not targetRaised then my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "after activation")',
                 '-e', '  tell application "System Events"',
-                '-e', '    set frontmostProcess to first application process whose frontmost is true',
-                '-e', '    tell frontmostProcess'
+                ...targetProcessOpenLines('    ')
             ];
 
             if (tabShortcut) {
@@ -2439,7 +2436,7 @@ async function deliverDigest(subscription, digest, deliveryEvidence = {}, abortS
             }
 
             osascriptArgs.push(
-                '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before prompt clear")',
+                '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before prompt clear")',
                 '-e', '      set the clipboard to ""',
                 '-e', '      keystroke "a" using command down',
                 '-e', '      delay 0.2',
@@ -2452,13 +2449,12 @@ async function deliverDigest(subscription, digest, deliveryEvidence = {}, abortS
                 '-e', '  on error',
                 '-e', '    set userInput to ""',
                 '-e', '  end try',
-                '-e', '  my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before wake clipboard set")',
+                '-e', '  my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before wake clipboard set")',
                 '-e', '  set the clipboard to wakePayload',
                 '-e', '  delay 0.2',
-                '-e', '  my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before wake paste")',
+                '-e', '  my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before wake paste")',
                 '-e', '  tell application "System Events"',
-                '-e', '    set frontmostProcess to first application process whose frontmost is true',
-                '-e', '    tell frontmostProcess',
+                ...targetProcessOpenLines('    '),
                 '-e', '      keystroke "v" using command down',
                 '-e', '      delay 0.5',
                 // Codex Desktop can leave composer-side UI (mention/autocomplete/completion popovers)
@@ -2476,13 +2472,12 @@ async function deliverDigest(subscription, digest, deliveryEvidence = {}, abortS
                 '-e', '    end tell',
                 '-e', '  end tell',
                 '-e', '  if userInput is not "" then',
-                '-e', '    my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before user input restore clipboard set")',
+                '-e', '    my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before user input restore clipboard set")',
                 '-e', '    set the clipboard to userInput',
                 '-e', '    delay 0.2',
-                '-e', '    my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, "before user input restore paste")',
+                '-e', '    my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before user input restore paste")',
                 '-e', '    tell application "System Events"',
-                '-e', '      set frontmostProcess to first application process whose frontmost is true',
-                '-e', '      tell frontmostProcess',
+                ...targetProcessOpenLines('      '),
                 '-e', '        keystroke "v" using command down',
                 '-e', '      end tell',
                 '-e', '    end tell',

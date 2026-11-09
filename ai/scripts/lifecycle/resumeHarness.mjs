@@ -29,6 +29,7 @@ import {
     resolveGuiInstanceAddress,
     resolveGuiInstancePid
 } from '../../daemons/wake/instanceResolver.mjs';
+import {processAutomationIdLines} from '../../daemons/wake/localWakeAdapters.mjs';
 import {
     resolveHarnessTargetForIdentity
 } from './harnessRouting.mjs';
@@ -289,6 +290,129 @@ export async function resolveResumeHarnessInstancePid({
 }
 
 /**
+ * @summary Builds the fail-closed `osascript` argv for a fresh-session GUI harness resume.
+ *
+ * When `instancePid` is present, resolves its numeric `System Events` automation id via
+ * `processAutomationIdLines`, raises `application process id targetAutomationId` in a bounded retry
+ * loop, and asserts exact frontmost PID after activation and before every keystroke/clipboard batch
+ * so a missed raise cannot type `Cmd+N`, `Cmd+A`, `Cmd+X`, paste, or Enter into a sibling seat's window.
+ *
+ * @param {Object} options
+ * @param {String} options.appName Canonical harness application name.
+ * @param {String|null} [options.freshSessionShortcut] Optional shortcut to spawn a fresh chat (`'n'`).
+ * @param {Number|null} [options.instancePid] Resolved Unix PID when instance-addressed.
+ * @param {String} options.payload Boot-grounding prompt payload.
+ * @param {String|null} [options.tabShortcut] Optional tab shortcut (`'3'` for Claude Desktop Code tab).
+ * @returns {String[]} `osascript` argv fragments ending with `payload`.
+ */
+export function buildResumeOsascriptArgs({appName, freshSessionShortcut, instancePid, payload, tabShortcut}) {
+    const targetProcessId        = instancePid ? String(instancePid) : '',
+          addressedProcess       = Boolean(instancePid),
+          appActivateLine        = addressedProcess
+              ? '    tell application "System Events" to set frontmost of application process id targetAutomationId to true'
+              : `    tell application "${appName}" to activate`,
+          targetProcessOpenLines = indent => addressedProcess
+              ? ['-e', `${indent}tell application process id targetAutomationId`]
+              : [
+                  '-e', `${indent}set frontmostProcess to first application process whose frontmost is true`,
+                  '-e', `${indent}tell frontmostProcess`
+              ];
+
+    return [
+        '-e', 'on assertTargetFrontmost(appName, targetProcessId, targetAutomationId, phase)',
+        '-e', '  tell application "System Events"',
+        '-e', '    if targetAutomationId is not "" then',
+        '-e', '      if ((unix id of application process id targetAutomationId) as string) is not targetProcessId then error "Exact target process changed " & phase',
+        '-e', '      set currentPid to (unix id of (first application process whose frontmost is true)) as string',
+        '-e', '      if currentPid is not targetProcessId then error "Target app lost frontmost status " & phase & " (pid " & currentPid & " != " & targetProcessId & ")"',
+        '-e', '      return true',
+        '-e', '    end if',
+        '-e', '    set currentApp to name of (first application process whose frontmost is true)',
+        '-e', '    if currentApp is not appName then error "Target app lost frontmost status " & phase & " (" & currentApp & " != " & appName & ")"',
+        '-e', '  end tell',
+        '-e', 'end assertTargetFrontmost',
+        '-e', 'on run argv',
+        '-e', '  set wakePayload to (item 1 of argv)',
+        '-e', `  set targetAppName to "${appName}"`,
+        '-e', `  set targetProcessId to "${targetProcessId}"`,
+        '-e', '  set targetAutomationId to ""',
+        ...(addressedProcess ? processAutomationIdLines('  ') : []),
+        '-e', '  try',
+        '-e', '    set savedClipboard to the clipboard as string',
+        '-e', '  on error',
+        '-e', '    set savedClipboard to ""',
+        '-e', '  end try',
+        '-e', '  try',
+        '-e', '  set targetRaised to false',
+        '-e', '  repeat 12 times',
+        '-e', appActivateLine,
+        '-e', '    delay 0.25',
+        '-e', '    try',
+        '-e', '      my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "after activation")',
+        '-e', '      set targetRaised to true',
+        '-e', '      exit repeat',
+        '-e', '    end try',
+        '-e', '  end repeat',
+        '-e', '  if not targetRaised then my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "after activation")',
+        '-e', '  delay 0.25',
+        '-e', '  tell application "System Events"',
+        ...targetProcessOpenLines('    '),
+        ...(tabShortcut ? [
+        '-e', `      keystroke "${tabShortcut}" using command down`,
+        '-e', '      delay 0.2'
+        ] : []),
+        ...(freshSessionShortcut ? [
+        '-e', `      keystroke "${freshSessionShortcut}" using command down`,
+        '-e', '      delay 0.5'
+        ] : []),
+        '-e', '      my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "before prompt clear")',
+        '-e', '      set the clipboard to ""',
+        '-e', '      keystroke "a" using command down',
+        '-e', '      delay 0.2',
+        '-e', '      keystroke "x" using command down',
+        '-e', '      delay 0.2',
+        '-e', '    end tell',
+        '-e', '  end tell',
+        '-e', '  try',
+        '-e', '    set userInput to the clipboard as string',
+        '-e', '  on error',
+        '-e', '    set userInput to ""',
+        '-e', '  end try',
+        '-e', '  my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "before wake clipboard set")',
+        '-e', '  set the clipboard to wakePayload',
+        '-e', '  delay 0.2',
+        '-e', '  my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "before wake paste")',
+        '-e', '  tell application "System Events"',
+        ...targetProcessOpenLines('    '),
+        '-e', '      keystroke "v" using command down',
+        '-e', '      delay 0.5',
+        '-e', '      key code 36',
+        '-e', '      delay 1.0',
+        '-e', '    end tell',
+        '-e', '  end tell',
+        '-e', '  if userInput is not "" then',
+        '-e', '    my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "before user input restore clipboard set")',
+        '-e', '    set the clipboard to userInput',
+        '-e', '    delay 0.2',
+        '-e', '    my assertTargetFrontmost(targetAppName, targetProcessId, targetAutomationId, "before user input restore paste")',
+        '-e', '    tell application "System Events"',
+        ...targetProcessOpenLines('      '),
+        '-e', '        keystroke "v" using command down',
+        '-e', '      end tell',
+        '-e', '    end tell',
+        '-e', '  end if',
+        '-e', '  delay 0.5',
+        '-e', '  set the clipboard to savedClipboard',
+        '-e', '  on error errMsg',
+        '-e', '    set the clipboard to savedClipboard',
+        '-e', '    error errMsg',
+        '-e', '  end try',
+        '-e', 'end run',
+        payload
+    ];
+}
+
+/**
  * @summary Builds the fresh-session boot prompt used by resume recovery.
  *
  * Instructs the fresh agent to recover through the context-recovery skill, persist a
@@ -498,69 +622,13 @@ export async function resumeHarness(identity, reason, originSessionId, abandoned
             //   5. Paste the boot-grounding prompt
             //   6. Press Enter (Key Code 36) — established in bridge-daemon.mjs
             //   7. Restore user input + clipboard
-            const osascriptArgs = [
-                '-e', 'on run argv',
-                '-e', '  set wakePayload to (item 1 of argv)',
-                '-e', '  try',
-                '-e', '    set savedClipboard to the clipboard as string',
-                '-e', '  on error',
-                '-e', '    set savedClipboard to ""',
-                '-e', '  end try',
-                '-e', `  tell application "${appName}" to activate`,
-                ...(instancePid ? [
-                '-e', '  delay 0.2',
-                '-e', `  tell application "System Events" to set frontmost of (first process whose unix id is ${instancePid}) to true`
-                ] : []),
-                '-e', '  delay 0.5',
-                '-e', '  tell application "System Events"',
-                '-e', '    set frontmostProcess to first application process whose frontmost is true',
-                '-e', '    tell frontmostProcess',
-                ...(tabShortcut ? [
-                '-e', `      keystroke "${tabShortcut}" using command down`,
-                '-e', '      delay 0.2'
-                ] : []),
-                ...(freshSessionShortcut ? [
-                '-e', `      keystroke "${freshSessionShortcut}" using command down`,
-                '-e', '      delay 0.5'
-                ] : []),
-                '-e', '      set the clipboard to ""',
-                '-e', '      keystroke "a" using command down',
-                '-e', '      delay 0.2',
-                '-e', '      keystroke "x" using command down',
-                '-e', '      delay 0.2',
-                '-e', '    end tell',
-                '-e', '  end tell',
-                '-e', '  try',
-                '-e', '    set userInput to the clipboard as string',
-                '-e', '  on error',
-                '-e', '    set userInput to ""',
-                '-e', '  end try',
-                '-e', '  set the clipboard to wakePayload',
-                '-e', '  delay 0.2',
-                '-e', '  tell application "System Events"',
-                '-e', '    set frontmostProcess to first application process whose frontmost is true',
-                '-e', '    tell frontmostProcess',
-                '-e', '      keystroke "v" using command down',
-                '-e', '      delay 0.5',
-                '-e', '      key code 36',
-                '-e', '      delay 1.0',
-                '-e', '    end tell',
-                '-e', '  end tell',
-                '-e', '  if userInput is not "" then',
-                '-e', '    set the clipboard to userInput',
-                '-e', '    delay 0.2',
-                '-e', '    tell application "System Events"',
-                '-e', '      set frontmostProcess to first application process whose frontmost is true',
-                '-e', '      tell frontmostProcess',
-                '-e', '        keystroke "v" using command down',
-                '-e', '      end tell',
-                '-e', '    end tell',
-                '-e', '  end if',
-                '-e', '  delay 0.5',
-                '-e', '  set the clipboard to savedClipboard',
-                '-e', 'end run',
-                payload
-            ];
+            const osascriptArgs = buildResumeOsascriptArgs({
+                appName,
+                freshSessionShortcut,
+                instancePid,
+                payload,
+                tabShortcut
+            });
 
             await spawnAsync('osascript', osascriptArgs);
             console.log(`Successfully resumed ${identity} via osascript (${appName}${instancePid ? ` pid=${instancePid}` : ''})`);

@@ -618,22 +618,22 @@ async function deliverWebhook({digest, effects, meta, signal}) {
  * @private
  */
 function buildDialogGateArgs({appName, instancePid}) {
-    const escapedAppName = escapeAppleScript(appName);
-    const targetPid      = instancePid ? String(instancePid) : '';
-    const addressedCodex = appName === 'Codex' && Boolean(instancePid);
+    const escapedAppName   = escapeAppleScript(appName);
+    const targetPid        = instancePid ? String(instancePid) : '';
+    const addressedProcess = Boolean(instancePid);
 
     return [
         '-e', `  set targetAppName to "${escapedAppName}"`,
         '-e', '  set targetBundleId to ""',
         '-e', `  set targetProcessId to "${targetPid}"`,
-        ...(addressedCodex ? codexAutomationIdLines('  ') : [
+        ...(addressedProcess ? processAutomationIdLines('  ') : [
             '-e', '  try',
             '-e', `    set targetBundleId to id of application "${escapedAppName}"`,
             '-e', '  end try'
         ]),
         '-e', '  -- interactiveDialogProbe: readable non-text focus means a prompt owns the input path',
         '-e', '  tell application "System Events"',
-        ...resolveTargetProcessLines('    ', addressedCodex),
+        ...resolveTargetProcessLines('    ', addressedProcess),
         '-e', '      set focusedRole to missing value',
         '-e', '      try',
         '-e', '        set focusedRole to role of focused element of window 1',
@@ -740,12 +740,10 @@ async function deliverOsascript({adapterConfig, digest, effects, meta, record}) 
  * @returns {String[]} `osascript` argv fragments.
  * @private
  */
-function resolveTargetProcessLines(indent, addressedCodex = false) {
-    if (addressedCodex) return ['-e', `${indent}tell application process id targetAutomationId`];
+function resolveTargetProcessLines(indent, addressedProcess = false) {
+    if (addressedProcess) return ['-e', `${indent}tell application process id targetAutomationId`];
     return [
-        '-e', `${indent}if targetProcessId is not "" then`,
-        '-e', `${indent}  set targetProcess to first application process whose unix id is (targetProcessId as integer)`,
-        '-e', `${indent}else if targetBundleId is not "" then`,
+        '-e', `${indent}if targetBundleId is not "" then`,
         '-e', `${indent}  set targetProcess to first application process whose bundle identifier is targetBundleId`,
         '-e', `${indent}else`,
         '-e', `${indent}  set targetProcess to first application process whose name is targetAppName`,
@@ -755,12 +753,14 @@ function resolveTargetProcessLines(indent, addressedCodex = false) {
 }
 
 /**
- * @summary Resolve a Codex Unix PID to System Events' unique process id before any input mutation.
- * A filtered process result can become a name-based reference and select a same-named sibling.
- * Keep the numeric automation id instead, and recheck its Unix PID before using it.
- * @private
+ * @summary Resolve a GUI seat's Unix PID to System Events' unique process id before any input mutation.
+ * A filtered process result (`first application process whose unix id is ...`) serializes to a
+ * name-based reference and aliases a second instance of Antigravity, Claude, or Codex back to the
+ * first. Keep the numeric automation id instead, and recheck its Unix PID before using it.
+ * @param {String} [indent='  '] AppleScript indentation for the emitted block.
+ * @returns {String[]} `osascript` argv fragments.
  */
-function codexAutomationIdLines(indent) {
+export function processAutomationIdLines(indent = '  ') {
     return [
         '-e', `${indent}set targetAutomationId to ""`,
         '-e', `${indent}tell application "System Events"`,
@@ -781,15 +781,12 @@ function codexAutomationIdLines(indent) {
  * @private
  */
 function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, instancePid, tabShortcut}) {
-    const escapedAppName  = escapeAppleScript(appName);
-    const targetPid       = instancePid ? String(instancePid) : '';
-    const addressedCodex  = appName === 'Codex' && Boolean(instancePid);
-    const appActivateLine = addressedCodex
+    const escapedAppName   = escapeAppleScript(appName);
+    const targetPid        = instancePid ? String(instancePid) : '';
+    const addressedProcess = Boolean(instancePid);
+    const appActivateLine  = addressedProcess
         ? '  tell application "System Events" to set frontmost of application process id targetAutomationId to true'
         : `  tell application "${escapedAppName}" to activate`;
-    const instanceFrontmostLine = instancePid && !addressedCodex
-        ? `  tell application "System Events" to set frontmost of (first process whose unix id is ${instancePid}) to true`
-        : null;
     const args = [
         '-e', 'on assertTargetFrontmost(appName, targetBundleId, targetProcessId, targetAutomationId, phase)',
         '-e', '  tell application "System Events"',
@@ -800,16 +797,7 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         '-e', '      return true',
         '-e', '    end if',
         '-e', '    set frontmostProcess to first application process whose frontmost is true',
-        '-e', '    if targetProcessId is not "" then',
-        '-e', '      set currentPid to (unix id of frontmostProcess) as string',
-        '-e', '      if currentPid is not targetProcessId then',
-        '-e', '        set currentBundleId to ""',
-        '-e', '        try',
-        '-e', '          set currentBundleId to (bundle identifier of frontmostProcess) as string',
-        '-e', '        end try',
-        '-e', '        if currentBundleId is not targetBundleId then error "Target app lost frontmost status " & phase',
-        '-e', '      end if',
-        '-e', '    else if targetBundleId is not "" then',
+        '-e', '    if targetBundleId is not "" then',
         '-e', '      set currentBundleId to ""',
         '-e', '      try',
         '-e', '        set currentBundleId to (bundle identifier of frontmostProcess) as string',
@@ -826,7 +814,7 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         '-e', '  set targetBundleId to ""',
         '-e', `  set targetProcessId to "${targetPid}"`,
         '-e', '  set targetAutomationId to ""',
-        ...(addressedCodex ? codexAutomationIdLines('  ') : [
+        ...(addressedProcess ? processAutomationIdLines('  ') : [
             '-e', '  try',
             '-e', `    set targetBundleId to id of application "${escapedAppName}"`,
             '-e', '  end try'
@@ -840,7 +828,6 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         '-e', '  set targetRaised to false',
         '-e', '  repeat 12 times',
         '-e', appActivateLine,
-        ...(instanceFrontmostLine ? ['-e', instanceFrontmostLine] : []),
         '-e', '    delay 0.25',
         '-e', '    try',
         '-e', '      my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "after activation")',
@@ -850,7 +837,7 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         '-e', '  end repeat',
         '-e', '  if not targetRaised then my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "after activation")',
         '-e', '  tell application "System Events"',
-        ...resolveTargetProcessLines('    ', addressedCodex)
+        ...resolveTargetProcessLines('    ', addressedProcess)
     ];
 
     if (tabShortcut) {
@@ -892,7 +879,7 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         '-e', '  delay 0.2',
         '-e', '  my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before wake paste")',
         '-e', '  tell application "System Events"',
-        ...resolveTargetProcessLines('    ', addressedCodex),
+        ...resolveTargetProcessLines('    ', addressedProcess),
         '-e', '      keystroke "v" using command down',
         '-e', '      delay 0.5',
         ...(appName === 'Antigravity'
@@ -910,7 +897,7 @@ function buildOsascriptArgs({appName, digest, focusSeedKey, focusSeedSequence, i
         '-e', '    delay 0.2',
         '-e', '    my assertTargetFrontmost(targetAppName, targetBundleId, targetProcessId, targetAutomationId, "before user input restore paste")',
         '-e', '    tell application "System Events"',
-        ...resolveTargetProcessLines('      ', addressedCodex),
+        ...resolveTargetProcessLines('      ', addressedProcess),
         '-e', '        keystroke "v" using command down',
         '-e', '      end tell',
         '-e', '    end tell',
