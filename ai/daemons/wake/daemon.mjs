@@ -85,7 +85,7 @@ import {
     isHeavyDeltaPoll,
     shouldDeferFlush
 } from './flushDeferPolicy.mjs';
-import {openCodePromptRefusal} from './localWakeAdapters.mjs';
+import {openCodePromptRefusal, processAutomationIdLines} from './localWakeAdapters.mjs';
 import {
     claimUnwokenMessages,
     clampWatermark,
@@ -2377,18 +2377,7 @@ async function deliverDigest(subscription, digest, deliveryEvidence = {}, abortS
                 '-e', '  set targetBundleId to ""',
                 '-e', `  set targetProcessId to "${targetProcessId}"`,
                 '-e', '  set targetAutomationId to ""',
-                ...(addressedProcess ? [
-                    '-e', '  tell application "System Events"',
-                    '-e', '    repeat with candidate in application processes',
-                    '-e', '      if ((unix id of candidate) as string) is targetProcessId then',
-                    '-e', '        set targetAutomationId to id of candidate',
-                    '-e', '        exit repeat',
-                    '-e', '      end if',
-                    '-e', '    end repeat',
-                    '-e', '    if targetAutomationId is "" then error "Exact target process missing"',
-                    '-e', '    if ((unix id of application process id targetAutomationId) as string) is not targetProcessId then error "Exact target process changed"',
-                    '-e', '  end tell'
-                ] : [
+                ...(addressedProcess ? processAutomationIdLines('  ') : [
                     '-e', '  try',
                     '-e', `    set targetBundleId to id of application "${appleScriptAppName}"`,
                     '-e', '  end try'

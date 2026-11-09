@@ -757,9 +757,10 @@ function resolveTargetProcessLines(indent, addressedProcess = false) {
  * A filtered process result (`first application process whose unix id is ...`) serializes to a
  * name-based reference and aliases a second instance of Antigravity, Claude, or Codex back to the
  * first. Keep the numeric automation id instead, and recheck its Unix PID before using it.
- * @private
+ * @param {String} [indent='  '] AppleScript indentation for the emitted block.
+ * @returns {String[]} `osascript` argv fragments.
  */
-function processAutomationIdLines(indent) {
+export function processAutomationIdLines(indent = '  ') {
     return [
         '-e', `${indent}set targetAutomationId to ""`,
         '-e', `${indent}tell application "System Events"`,
