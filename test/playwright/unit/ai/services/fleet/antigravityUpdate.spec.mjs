@@ -203,6 +203,7 @@ test.describe('antigravityUpdate', () => {
             family      : 'antigravity',
             sourceBundle: installed,
             seams       : {
+                copyBundle      : (source, target) => fs.cpSync(source, target, {recursive: true}),
                 readBundleInfo  : () => ({
                     bundleId    : 'com.google.antigravity',
                     shortVersion: '2.29.1',
@@ -291,6 +292,7 @@ test.describe('antigravityUpdate', () => {
                     sourceBundle,
                     source,
                     seams: {
+                        copyBundle      : (src, target) => fs.cpSync(src, target, {recursive: true}),
                         readBundleInfo  : () => ({
                             bundleId    : 'com.google.antigravity',
                             shortVersion: '2.30.0',

@@ -28,7 +28,6 @@ const
     ANTIGRAVITY_FAMILY             = 'antigravity',
     ANTIGRAVITY_BUNDLE_ID          = HARNESS_GENERATION_FAMILIES[ANTIGRAVITY_FAMILY].bundleId,
     DEFAULT_ANTIGRAVITY_APP_BUNDLE = '/Applications/Antigravity.app',
-    FETCH_TIMEOUT_MS               = 10 * 60 * 1000,
     MAX_MANIFEST_BYTES             = 1024 * 1024,
     MAX_ARCHIVE_BYTES              = 1024 * 1024 * 1024,
     SHA512_BYTE_LENGTH             = 64,
@@ -432,8 +431,7 @@ export async function checkAntigravityUpdate({
             headers: {
                 'Accept'       : 'text/yaml, text/plain, */*',
                 'x-app-version': '0.0.0'
-            },
-            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+            }
         });
 
     if (!response?.ok) {
@@ -573,9 +571,7 @@ async function runAcquireAntigravityUpdate({
         }
     }
 
-    const response = await fetchImpl(candidate.archiveUrl, {
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
-    });
+    const response = await fetchImpl(candidate.archiveUrl);
 
     if (!response?.ok) {
         throw refusal('archive-fetch-failed', `HTTP ${response?.status ?? 'unknown'}`)
