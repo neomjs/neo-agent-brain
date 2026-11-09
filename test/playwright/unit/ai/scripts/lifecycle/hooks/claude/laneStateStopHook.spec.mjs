@@ -17,7 +17,7 @@ const ask     = 'Fix #20599 now so it ships in 13.4?',
 
 /**
  * @summary The Claude desktop app closes a turn through a wrap-up tool call whose `ask` becomes a question
- * with buttons. The deference mirror reads the current turn's newest call (#78), shaped as the real
+ * with buttons. The deference mirror reads the current turn's newest call, shaped as the real
  * transcript records are: the call, its tool result, then the closing text.
  */
 test.describe('extractTurnWrapUpAskFromJsonl (#78)', () => {

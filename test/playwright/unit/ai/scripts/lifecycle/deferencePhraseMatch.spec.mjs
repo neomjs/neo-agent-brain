@@ -8,7 +8,7 @@ import {DEFERENCE_PHRASES,
         matchWrapUpAskDeference} from '../../../../../../ai/scripts/lifecycle/deferencePhraseMatch.mjs';
 
 /**
- * @summary The operator's 2026-08-25 ruling on #78, in live dialogue: a stated pick followed by a hedge is
+ * @summary The operator's 2026-08-25 ruling, in live dialogue: a stated pick followed by a hedge is
  * the slip (case 3); a peer deadlock (case 1) and human-only work (case 2) stay carved. Autonomous turns
  * keep matching every registry phrase.
  */
@@ -43,7 +43,7 @@ test.describe('deferencePhraseMatch in operator dialogue (#78)', () => {
         expect(detectDeferencePhrase('I recommend a manual pass with human eyes before the tag. Your call.', dialogue)).toBeNull();
         expect(detectDeferencePhrase("I'd keep the old credentials until you rotate them, your call.", dialogue)).toBeNull();
         expect(detectDeferencePhrase("I'd run the migration on the live plane tonight, unless you want to watch it.", dialogue)).toBeNull();
-        // The Tier-4 domains Vega named on #78: taste and capacity, a design read, his machine
+        // The escalation ladder's other Tier-4 domains: taste and capacity, a design read, his machine
         expect(detectDeferencePhrase("I'd pick the darker palette, unless you'd rather judge the aesthetics yourself.", dialogue)).toBeNull();
         expect(detectDeferencePhrase("I'd start the cloud run, unless you want to keep the budget for later.", dialogue)).toBeNull();
         expect(detectDeferencePhrase("I'd ship the frames as they are, unless you want the operator's read on them first.", dialogue)).toBeNull();
@@ -59,7 +59,7 @@ test.describe('deferencePhraseMatch in operator dialogue (#78)', () => {
 });
 
 /**
- * @summary The Claude desktop wrap-up `ask` (#78). Case 3 needs both halves: the turn's text states the
+ * @summary The Claude desktop wrap-up `ask`. Case 3 needs both halves: the turn's text states the
  * agent's pick, and the box asks to go ahead with the agent's own step. Every ask below is a real one from
  * Ada's sessions (the 2026-11-09 corpus of 109 asks over 1,782 turns, 4 of which fire) or Mnemosyne's
  * specimen; the carved rows are the operator-owned asks the first, wider draft of this rule wrongly fired on.
