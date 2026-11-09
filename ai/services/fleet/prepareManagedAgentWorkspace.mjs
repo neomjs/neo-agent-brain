@@ -1723,7 +1723,61 @@ export async function prepareAntigravityArtifacts({agent, instanceHome, targetRe
         artifacts.push(observation)
     }
 
+    artifacts.push(await convergeAntigravityAppStorage({instanceHome, fileSystem}));
+
     return {artifacts, mcpServers: generated.mcpServers, projectMcpAllowRules: generated.projectMcpAllowRules, residuals, launchAdmissionBinding}
+}
+
+/**
+ * @summary Suppress Antigravity's in-seat electron-updater per profile (`<instanceHome>/app_storage.json`).
+ * Antigravity's `StorageManager` reads `app_storage.json` as a flat JSON map of string values and
+ * seeds `autoCheckForUpdates: "true"` on first launch alongside runtime UI settings (`hubSurfaceColor`,
+ * `wcv-*`). Fleet owns only the `autoCheckForUpdates` key (`"false"`), preserving every other profile
+ * key and failing closed on symlinks, non-object JSON, or non-boolean-string `autoCheckForUpdates` values.
+ * @param {Object} options
+ * @param {String} options.instanceHome Antigravity's isolated user-data directory.
+ * @param {Object} [options.fileSystem] Promise filesystem seam.
+ * @returns {Promise<Object>} Convergence observation for `<instanceHome>/app_storage.json`.
+ */
+export async function convergeAntigravityAppStorage({instanceHome, fileSystem = fs}) {
+    const
+        filePath   = path.join(instanceHome, 'app_storage.json'),
+        ownedLabel = 'Antigravity app_storage.json (autoCheckForUpdates)';
+
+    await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: filePath, fileSystem, label: ownedLabel});
+
+    const source = await readOptionalText(filePath, fileSystem);
+    let parsed;
+
+    try {
+        parsed = source === null ? {} : JSON.parse(source);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError()
+    } catch {
+        throw divergentArtifact(filePath, ownedLabel, 'invalid Antigravity app_storage.json')
+    }
+
+    const current = parsed.autoCheckForUpdates;
+    if (current !== undefined && current !== 'false' && current !== 'true') {
+        throw divergentArtifact(filePath, ownedLabel, 'unexpected autoCheckForUpdates value')
+    }
+
+    if (source !== null && current === 'false') {
+        return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: ownedLabel}
+    }
+
+    const desired = JSON.stringify({...parsed, autoCheckForUpdates: 'false'}, null, 2) + '\n';
+
+    await fileSystem.mkdir(instanceHome, {recursive: true});
+    await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: filePath, fileSystem, label: ownedLabel});
+
+    if (source === null) {
+        await fileSystem.writeFile(filePath, desired, {encoding: 'utf8', flag: 'wx', mode: 0o600});
+        await fileSystem.chmod(filePath, 0o600);
+        return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.CREATED, ownedKeys: ownedLabel}
+    }
+
+    await publishTextAtomically({filePath, content: desired, fileSystem});
+    return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.UPDATED, ownedKeys: ownedLabel}
 }
 
 /** @summary Retire only unchanged invokers whose content remains bound to Fleet's receipt. @private */
