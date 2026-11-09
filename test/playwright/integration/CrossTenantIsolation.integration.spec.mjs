@@ -43,21 +43,21 @@ test.describe('Dockerized MC cross-tenant isolation integration (#10895)', () =>
             await callJsonTool(alice, 'add_memory', {
                 amountToolCalls: 0,
                 agent          : 'alice',
+                decisionContext: `alice thought ${aliceSentinel}`,
                 model          : 'integration',
                 prompt         : `alice prompt ${aliceSentinel}`,
                 response       : `alice response ${aliceSentinel}`,
                 sessionId,
-                thought        : `alice thought ${aliceSentinel}`,
                 toolsUsed      : []
             });
             await callJsonTool(bob, 'add_memory', {
                 amountToolCalls: 0,
                 agent          : 'bob',
+                decisionContext: `bob thought ${bobSentinel}`,
                 model          : 'integration',
                 prompt         : `bob prompt ${bobSentinel}`,
                 response       : `bob response ${bobSentinel}`,
                 sessionId,
-                thought        : `bob thought ${bobSentinel}`,
                 toolsUsed      : []
             });
 

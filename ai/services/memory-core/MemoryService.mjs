@@ -604,9 +604,9 @@ class MemoryService extends Base {
      * that do not exist.
      *
      * @param {Object} options
-     * @param {String} options.prompt    Summarized task context, intended outcome and constraints.
-     * @param {String} options.response  Outcomes, artifact references and continuation.
-     * @param {String} options.thought   Authored retrospective of decisions, rationale, lessons and uncertainty.
+     * @param {String} options.prompt          Summarized task context, intended outcome and constraints.
+     * @param {String} options.response        Outcomes, artifact references and continuation.
+     * @param {String} options.decisionContext Decisions made in the turn, each paired with its deciding fact or source reference, plus what stays open.
      * @param {String} [options.sessionId] The ID of the session this memory belongs to. If omitted, resolves from the request-bound `Mcp-Session-Id` header when present.
      * @param {String} [options.agent]   The agent profile (e.g. 'antigravity').
      * @param {String} [options.model]   The model name (e.g. 'gemini-3.1-pro').
@@ -622,7 +622,7 @@ class MemoryService extends Base {
      *     latency contract, and callers use `list_messages` for the authoritative mailbox read.
      *     `stageTimings` names the omission and reports the bounded post-WAL disclosure stages.
      */
-    async addMemory({prompt, response, thought, sessionId, agent, model, amountToolCalls, toolsUsed}) {
+    async addMemory({prompt, response, decisionContext, sessionId, agent, model, amountToolCalls, toolsUsed}) {
         // Stale-overlay guard (caught + actionable): the gitignored config.mjs is a MATERIALIZED
         // template copy, so on a clone predating the memoryWal block these leaves resolve
         // undefined — and the validation gate's minFieldLength read below was an UNCAUGHT
@@ -642,7 +642,7 @@ class MemoryService extends Base {
             // The validation gate is a deliberate rejection — the ONE path that intentionally
             // returns a validation envelope. Living inside the try keeps enveloping uniform:
             // anything unexpected it throws still surfaces as MEMORY_ADD_ERROR, never uncaught.
-            const invalidFields = this.getInvalidMemoryFields({prompt, thought, response});
+            const invalidFields = this.getInvalidMemoryFields({prompt, decisionContext, response});
             if (invalidFields.length > 0) {
                 return {
                     error  : 'Invalid memory payload',
@@ -651,7 +651,7 @@ class MemoryService extends Base {
                 };
             }
 
-            const combinedText = composeTurnDocumentText({prompt, thought, response});
+            const combinedText = composeTurnDocumentText({prompt, thought: decisionContext, response});
             const now          = Date.now();
             const timestamp    = new Date(now).toISOString();
             const memoryId     = crypto.randomUUID();
@@ -663,7 +663,7 @@ class MemoryService extends Base {
             const metadata = {
                 prompt,
                 response,
-                thought,
+                thought: decisionContext,
                 sessionId,
                 // Deliberate dual timestamp representation: Chroma metadata.timestamp = epoch-ms
                 // (numeric where-range filtering); the graph row's properties.timestamp below =
@@ -1238,7 +1238,7 @@ class MemoryService extends Base {
      *
      * @param {Object} fields
      * @param {String} fields.prompt
-     * @param {String} fields.thought
+     * @param {String} fields.decisionContext
      * @param {String} fields.response
      * @returns {String[]} Invalid field names; empty array when the payload passes.
      */

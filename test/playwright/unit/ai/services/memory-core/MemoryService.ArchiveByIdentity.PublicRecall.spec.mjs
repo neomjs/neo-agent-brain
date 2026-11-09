@@ -145,7 +145,7 @@ test.describe('MemoryService — archive excludes identities from the PUBLIC gra
     // Seed one memory under @agent-arch, drained into the spy + projected to the real graph.
     async function seed(prompt) {
         return RequestContextService.run(CTX, async () => {
-            const r = await MemoryService.addMemory({prompt, response: 'r', thought: 't'});
+            const r = await MemoryService.addMemory({prompt, response: 'r', decisionContext: 't'});
             await drainMemoryWal({ids: [r.id]});
             return r.id;
         });

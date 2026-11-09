@@ -121,7 +121,7 @@ export function createPlaneWitnessClient({endpoint, credential = '', timeoutMs =
 
     return {
         /**
-         * @param {{prompt: String, thought: String, response: String}} content
+         * @param {{prompt: String, decisionContext: String, response: String}} content
          * @returns {Promise<{id: String, sessionId: String, timestamp: String, visibility: Object}>} what the plane answered.
          */
         addMemory: content => callTool('add_memory', {...content, toolsUsed: ['first-run-verify'], amountToolCalls: 0}),

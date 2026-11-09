@@ -149,9 +149,9 @@ test.describe('MemoryService — archiveMemoriesByAgentIdentity tombstone + reca
     // Seed one memory stamped to a distinct agent identity, drained into the spy collection.
     async function seedMemory({sessionId, agent}) {
         const r = await MemoryService.addMemory({
-            prompt  : `${agent} prompt`,
-            response: `${agent} response`,
-            thought : `${agent} thought`,
+            prompt         : `${agent} prompt`,
+            response       : `${agent} response`,
+            decisionContext: `${agent} thought`,
             sessionId,
             agent
         });

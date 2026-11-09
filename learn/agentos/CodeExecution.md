@@ -244,7 +244,7 @@ The script persists its reasoning to the Memory Core. This ensures that even if 
 // Plan: Save strategy to long-term memory
 await Memory_Service.addMemory({
     prompt: `Fix bug #${targetIssue.number}`,
-    thought: "Hypothesis: DomEvent manager double-firing on touch devices.",
+    decisionContext: "Hypothesis: DomEvent manager double-firing on touch devices.",
     response: "Plan: Propose investigation of DomEvent.mjs delegation logic.",
     sessionId: 'self-healing-bot'
 });

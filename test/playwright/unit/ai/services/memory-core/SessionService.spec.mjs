@@ -127,9 +127,9 @@ test.describe('SessionService setSessionId', () => {
             RequestContextService.run({ sessionId: sessionId1 }, async () => {
                 await new Promise(resolve => setTimeout(resolve, 10));
                 const memoryResult1 = await SDK.Memory_Service.addMemory({
-                    prompt  : 'test prompt 1',
-                    response: 'test response 1',
-                    thought : 'test thought 1'
+                    prompt         : 'test prompt 1',
+                    response       : 'test response 1',
+                    decisionContext: 'test thought 1'
                 });
                 expect(memoryResult1.sessionId).toBe(sessionId1);
 
@@ -143,9 +143,9 @@ test.describe('SessionService setSessionId', () => {
             RequestContextService.run({ sessionId: sessionId2 }, async () => {
                 await new Promise(resolve => setTimeout(resolve, 10));
                 const memoryResult2 = await SDK.Memory_Service.addMemory({
-                    prompt  : 'test prompt 2',
-                    response: 'test response 2',
-                    thought : 'test thought 2'
+                    prompt         : 'test prompt 2',
+                    response       : 'test response 2',
+                    decisionContext: 'test thought 2'
                 });
                 expect(memoryResult2.sessionId).toBe(sessionId2);
 
@@ -172,18 +172,18 @@ test.describe('SessionService setSessionId', () => {
 
         // Add memory to target session
         const targetAdd = await SDK.Memory_Service.addMemory({
-            prompt   : 'target prompt',
-            response : 'target response',
-            thought  : 'target thought',
-            sessionId: targetSessionId
+            prompt         : 'target prompt',
+            response       : 'target response',
+            decisionContext: 'target thought',
+            sessionId      : targetSessionId
         });
 
         // Add memory to other session
         const otherAdd = await SDK.Memory_Service.addMemory({
-            prompt   : 'other prompt',
-            response : 'other response',
-            thought  : 'other thought',
-            sessionId: otherSessionId
+            prompt         : 'other prompt',
+            response       : 'other response',
+            decisionContext: 'other thought',
+            sessionId      : otherSessionId
         });
 
         // Flush the WAL-pending records through the daemon drain path so BOTH memories are in
@@ -244,10 +244,10 @@ test.describe('SessionService setSessionId', () => {
         // Add memory to target session under test user
         await RequestContextService.run({ sessionId: targetSessionId, userId: testUserId }, async () => {
             await SDK.Memory_Service.addMemory({
-                prompt   : 'target prompt',
-                response : 'target response',
-                thought  : 'target thought',
-                sessionId: targetSessionId
+                prompt         : 'target prompt',
+                response       : 'target response',
+                decisionContext: 'target thought',
+                sessionId      : targetSessionId
             });
 
             // Purge the session from within the tenant context
@@ -266,10 +266,10 @@ test.describe('SessionService setSessionId', () => {
         // We'll create another memory under SHARED_USER_ID, then try to delete it from testUserId context.
         const sharedSessionId = crypto.randomUUID();
         const sharedAdd       = await SDK.Memory_Service.addMemory({
-            prompt   : 'shared prompt',
-            response : 'shared response',
-            thought  : 'shared thought',
-            sessionId: sharedSessionId
+            prompt         : 'shared prompt',
+            response       : 'shared response',
+            decisionContext: 'shared thought',
+            sessionId      : sharedSessionId
         });
 
         // Flush the WAL-pending record through the daemon drain path so the shared memory is IN

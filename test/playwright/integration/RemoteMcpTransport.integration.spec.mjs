@@ -60,7 +60,7 @@ test.describe('Remote MCP Transport (v13 Release Gate)', () => {
             // Call 1
             const addResult = await callJsonTool(client1, 'add_memory', {
                 prompt: testPrompt,
-                thought: 'Testing remote transport',
+                decisionContext: 'Testing remote transport',
                 response: 'Memory saved remotely',
                 toolsUsed: [],
                 amountToolCalls: 0,

@@ -40,7 +40,7 @@ function createEmbeddingVector() {
 }
 
 test.describe('Memory Core Offline Summarization', () => {
-    // Bucket A (#10903): heavy SLM (gemma4) dependency — no local LM Studio / Ollama in CI. ticket-ref-ok: bucket taxonomy is defined in that ticket
+    // Heavy SLM (gemma4) dependency — no local LM Studio / Ollama in CI.
     // The per-test `localModelActive` guard below stays as a defensive fallback for local-dev
     // without gemma4 running, but the CI-side skip is the early exit that prevents `beforeAll`
     // from probing a nonexistent endpoint.
@@ -224,12 +224,12 @@ test.describe('Memory Core Offline Summarization', () => {
         const seededIds = [];
         for (const turn of turns) {
             const addResult = await SDK.Memory_Service.addMemory({
-                prompt   : turn.prompt,
-                thought  : turn.thought,
-                response : turn.response,
-                agent    : turn.agent,
-                model    : turn.model,
-                sessionId: dummySessionId
+                prompt         : turn.prompt,
+                decisionContext: turn.thought,
+                response       : turn.response,
+                agent          : turn.agent,
+                model          : turn.model,
+                sessionId      : dummySessionId
             });
             if (addResult.error) {
                 console.error('ADD_MEMORY ERROR:', addResult);
@@ -294,12 +294,12 @@ test.describe('Memory Core Offline Summarization', () => {
         const hugeString = new Array(20000).fill('A').join('');
 
         const bigAdd = await SDK.Memory_Service.addMemory({
-            prompt   : "Massive text request",
-            thought  : "Thinking deeply...",
-            response : hugeString,
-            agent    : "developer",
-            model    : "gemini-3.1-pro",
-            sessionId: bigDummySessionId
+            prompt         : "Massive text request",
+            decisionContext: "Thinking deeply...",
+            response       : hugeString,
+            agent          : "developer",
+            model          : "gemini-3.1-pro",
+            sessionId      : bigDummySessionId
         });
 
         // Flush the WAL-pending record through the daemon drain path so the summarization
@@ -405,12 +405,12 @@ test.describe('Memory Core Offline Summarization', () => {
             };
 
             const qwenAdd = await SDK.Memory_Service.addMemory({
-                prompt   : "Validate Qwen3 chat summarization",
-                thought  : "Exercise the local OpenAI-compatible chat summary path.",
-                response : "The summary should preserve structured metadata.",
-                agent    : "developer",
-                model    : "qwen3-8b",
-                sessionId: qwenSessionId
+                prompt         : "Validate Qwen3 chat summarization",
+                decisionContext: "Exercise the local OpenAI-compatible chat summary path.",
+                response       : "The summary should preserve structured metadata.",
+                agent          : "developer",
+                model          : "qwen3-8b",
+                sessionId      : qwenSessionId
             });
 
             // Flush the WAL-pending record through the daemon drain path so the summarization
@@ -467,13 +467,13 @@ test.describe('Memory Core Offline Summarization', () => {
         })];
 
         const toolsAdd = await SDK.Memory_Service.addMemory({
-            prompt   : "Massive tools",
-            thought  : "Thinking...",
-            response : "Done",
-            agent    : "developer",
-            model    : "gemini-3.1-pro",
+            prompt         : "Massive tools",
+            decisionContext: "Thinking...",
+            response       : "Done",
+            agent          : "developer",
+            model          : "gemini-3.1-pro",
             toolsUsed,
-            sessionId: dummySessionId
+            sessionId      : dummySessionId
         });
 
         // Flush the WAL-pending record through the daemon drain path so summarizeSession's
@@ -522,21 +522,21 @@ test.describe('Memory Core Offline Summarization', () => {
 
         // Memory 1 is oldest
         const add1 = await SDK.Memory_Service.addMemory({
-            prompt: "Test s1", thought: "T1", response: "R1", agent: "dev", model: "gemini-3.1-pro", sessionId: s1
+            prompt: "Test s1", decisionContext: "T1", response: "R1", agent: "dev", model: "gemini-3.1-pro", sessionId: s1
         });
 
         await new Promise(r => setTimeout(r, 100)); // Sleep to ensure timestamp difference
 
         // Memory 2 is middle
         const add2 = await SDK.Memory_Service.addMemory({
-            prompt: "Test s2", thought: "T2", response: "R2", agent: "dev", model: "gemini-3.1-pro", sessionId: s2
+            prompt: "Test s2", decisionContext: "T2", response: "R2", agent: "dev", model: "gemini-3.1-pro", sessionId: s2
         });
 
         await new Promise(r => setTimeout(r, 100)); // Sleep
 
         // Memory 3 is newest
         const add3 = await SDK.Memory_Service.addMemory({
-            prompt: "Test s3", thought: "T3", response: "R3", agent: "dev", model: "gemini-3.1-pro", sessionId: s3
+            prompt: "Test s3", decisionContext: "T3", response: "R3", agent: "dev", model: "gemini-3.1-pro", sessionId: s3
         });
 
         // Flush the WAL-pending records through the daemon drain path so all three sessions are
@@ -583,12 +583,12 @@ test.describe('Memory Core Offline Summarization', () => {
 
         // Inject 1 typical turn
         const perfAdd = await SDK.Memory_Service.addMemory({
-            prompt   : "Quick performance test for remote API generation",
-            thought  : "Measuring true API latency, avoiding map-reduce overhead.",
-            response : "This is a brief response to establish baseline latency for 1 session generation.",
-            agent    : "developer",
-            model    : "gemini-3.1-pro",
-            sessionId: perfSessionId
+            prompt         : "Quick performance test for remote API generation",
+            decisionContext: "Measuring true API latency, avoiding map-reduce overhead.",
+            response       : "This is a brief response to establish baseline latency for 1 session generation.",
+            agent          : "developer",
+            model          : "gemini-3.1-pro",
+            sessionId      : perfSessionId
         });
 
         // Flush the WAL-pending record through the daemon drain path BEFORE the measurement

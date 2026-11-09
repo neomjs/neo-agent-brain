@@ -41,13 +41,13 @@ test.describe('planeWitnessClient', () => {
             }),
             client = createPlaneWitnessClient({endpoint: 'http://127.0.0.1:3102/', credential: 'pat', createSession});
 
-        expect(await client.addMemory({prompt: 'p', thought: 't', response: 'r'})).toEqual({id: 'mem-1', sessionId: 'sess-1', timestamp: 't', visibility: {recencyQueryable: true}});
+        expect(await client.addMemory({prompt: 'p', decisionContext: 't', response: 'r'})).toEqual({id: 'mem-1', sessionId: 'sess-1', timestamp: 't', visibility: {recencyQueryable: true}});
         expect(await client.recentTurns({limit: 20})).toEqual({count: 1, turns: [{id: 'mem-1'}], nextCursor: null});
         expect(await client.recall({query: 'mk', limit: 20})).toEqual({count: 1, results: [{id: 'mem-1'}]});
 
         expect(calls.connect).toBe(1);
         expect(calls.tools).toEqual([
-            {name: 'add_memory',         args: {prompt: 'p', thought: 't', response: 'r', toolsUsed: ['first-run-verify'], amountToolCalls: 0}},
+            {name: 'add_memory',         args: {prompt: 'p', decisionContext: 't', response: 'r', toolsUsed: ['first-run-verify'], amountToolCalls: 0}},
             {name: 'query_recent_turns', args: {agentIdentity: '@me', detail: 'full', limit: 20}},
             {name: 'query_raw_memories', args: {query: 'mk', nResults: 20}}
         ]);
@@ -65,7 +65,7 @@ test.describe('planeWitnessClient', () => {
             at       = answers => createPlaneWitnessClient({endpoint: 'http://127.0.0.1:3102', createSession: sessionDouble(answers).createSession});
 
         // the validation gate and the identity gate answer before any row exists: refused, settled
-        await expect(at({add_memory: envelope('MEMORY_VALIDATION_ERROR', 'Rejected empty/below-minimum field(s): thought')}).addMemory({prompt: 'p'})).rejects.toMatchObject({refused: true, code: 'MEMORY_VALIDATION_ERROR', message: 'plane add_memory refused (MEMORY_VALIDATION_ERROR): Rejected empty/below-minimum field(s): thought'});
+        await expect(at({add_memory: envelope('MEMORY_VALIDATION_ERROR', 'Rejected empty/below-minimum field(s): decisionContext')}).addMemory({prompt: 'p'})).rejects.toMatchObject({refused: true, code: 'MEMORY_VALIDATION_ERROR', message: 'plane add_memory refused (MEMORY_VALIDATION_ERROR): Rejected empty/below-minimum field(s): decisionContext'});
         await expect(at({add_memory: envelope('MISSING_AGENT_IDENTITY', 'no identity')}).addMemory({prompt: 'p'})).rejects.toMatchObject({refused: true, code: 'MISSING_AGENT_IDENTITY'});
         // the catch-all: a WAL append whose close rejected after the bytes landed reaches it — a row may exist, so it is ambiguous
         const catchAll = await at({add_memory: envelope('MEMORY_ADD_ERROR', 'EIO: close')}).addMemory({prompt: 'p'}).catch(error => error);

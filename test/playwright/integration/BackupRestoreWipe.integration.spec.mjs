@@ -254,11 +254,11 @@ test.describe('Dockerized MC backup -> wipe detection -> restore integration (#1
             const addResult = await callJsonTool(client, 'add_memory', {
                 amountToolCalls: 1,
                 agent          : 'backup-restore',
+                decisionContext: `seed thought ${sentinel}`,
                 model          : 'integration',
                 prompt         : `seed prompt ${sentinel}`,
                 response       : `seed response ${sentinel}`,
                 sessionId,
-                thought        : `seed thought ${sentinel}`,
                 toolsUsed      : ['integration-backup-restore']
             });
 

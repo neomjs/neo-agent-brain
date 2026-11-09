@@ -151,10 +151,10 @@ test.describe('MemoryService — tenant isolation (#10000)', () => {
     test('addMemory attaches userId metadata when a request context is active', async () => {
         const result = await RequestContextService.run({userId: 'u-alice'}, () =>
             MemoryService.addMemory({
-                prompt   : 'hello',
-                response : 'hi',
-                thought  : 'greeting',
-                sessionId: 'session-a'
+                prompt         : 'hello',
+                response       : 'hi',
+                decisionContext: 'greeting',
+                sessionId      : 'session-a'
             })
         );
 
@@ -169,10 +169,10 @@ test.describe('MemoryService — tenant isolation (#10000)', () => {
 
     test('addMemory omits userId when no request context is active (stdio fallback)', async () => {
         const result = await MemoryService.addMemory({
-            prompt   : 'hello',
-            response : 'hi',
-            thought  : 'greeting',
-            sessionId: 'session-solo'
+            prompt         : 'hello',
+            response       : 'hi',
+            decisionContext: 'greeting',
+            sessionId      : 'session-solo'
         });
 
         // addMemory leaves the record WAL-pending — flush it through the daemon drain path.
@@ -191,11 +191,11 @@ test.describe('MemoryService — tenant isolation (#10000)', () => {
         // corrupted-memory class), so seed fixtures must carry real content.
         const seeded = [];
         await RequestContextService.run({userId: 'u-alice'}, async () => {
-            seeded.push(await MemoryService.addMemory({prompt: 'a1', response: 'r-a1', thought: 't-a1', sessionId: 'session-shared'}));
-            seeded.push(await MemoryService.addMemory({prompt: 'a2', response: 'r-a2', thought: 't-a2', sessionId: 'session-shared'}));
+            seeded.push(await MemoryService.addMemory({prompt: 'a1', response: 'r-a1', decisionContext: 't-a1', sessionId: 'session-shared'}));
+            seeded.push(await MemoryService.addMemory({prompt: 'a2', response: 'r-a2', decisionContext: 't-a2', sessionId: 'session-shared'}));
         });
         seeded.push(await RequestContextService.run({userId: 'u-bob'}, () =>
-            MemoryService.addMemory({prompt: 'b1', response: 'r-b1', thought: 't-b1', sessionId: 'session-shared'})
+            MemoryService.addMemory({prompt: 'b1', response: 'r-b1', decisionContext: 't-b1', sessionId: 'session-shared'})
         ));
 
         // addMemory leaves the records WAL-pending — flush them through the daemon drain path.
@@ -219,8 +219,8 @@ test.describe('MemoryService — tenant isolation (#10000)', () => {
     });
 
     test('listMemories without a request context returns all session memories (stdio fallback)', async () => {
-        const solo1 = await MemoryService.addMemory({prompt: 'solo1', response: 'r-solo1', thought: 't-solo1', sessionId: 'session-local'});
-        const solo2 = await MemoryService.addMemory({prompt: 'solo2', response: 'r-solo2', thought: 't-solo2', sessionId: 'session-local'});
+        const solo1 = await MemoryService.addMemory({prompt: 'solo1', response: 'r-solo1', decisionContext: 't-solo1', sessionId: 'session-local'});
+        const solo2 = await MemoryService.addMemory({prompt: 'solo2', response: 'r-solo2', decisionContext: 't-solo2', sessionId: 'session-local'});
 
         // addMemory leaves the records WAL-pending — flush them through the daemon drain path.
         await drainMemoryWal({ids: [solo1.id, solo2.id]});
@@ -352,10 +352,10 @@ test.describe('MemoryService — additive shared-commons access (#10556)', () =>
         // so a future read filter using either form will always match.
         const result = await RequestContextService.run({userId: '@neo-test-agent'}, () =>
             MemoryService.addMemory({
-                sessionId: 'session-canonical',
-                prompt   : 'test',
-                thought  : 'test',
-                response : 'test'
+                sessionId      : 'session-canonical',
+                prompt         : 'test',
+                decisionContext: 'test',
+                response       : 'test'
             })
         );
 

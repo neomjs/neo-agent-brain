@@ -403,21 +403,21 @@ test.describe('Dockerized MC team/private retrieval integration (#10951)', () =>
             await callJsonTool(owner, 'add_memory', {
                 amountToolCalls: 0,
                 agent          : ownerIdentity,
+                decisionContext: `owner thought ${ownerMemorySentinel}`,
                 model          : 'integration',
                 prompt         : `owner prompt ${ownerMemorySentinel}`,
                 response       : `owner response ${ownerMemorySentinel}`,
                 sessionId,
-                thought        : `owner thought ${ownerMemorySentinel}`,
                 toolsUsed      : []
             });
             await callJsonTool(peer, 'add_memory', {
                 amountToolCalls: 0,
                 agent          : peerIdentity,
+                decisionContext: `peer thought ${peerMemorySentinel}`,
                 model          : 'integration',
                 prompt         : `peer prompt ${peerMemorySentinel}`,
                 response       : `peer response ${peerMemorySentinel}`,
                 sessionId,
-                thought        : `peer thought ${peerMemorySentinel}`,
                 toolsUsed      : []
             });
 

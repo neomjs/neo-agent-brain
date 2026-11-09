@@ -92,7 +92,7 @@ test.describe('OIDC Authentication Fixture', () => {
             // Alice adds a memory
             await callJsonTool(aliceClient, 'add_memory', {
                 prompt: 'What is the secret OIDC code?',
-                thought: 'Storing secret code',
+                decisionContext: 'Storing secret code',
                 response: 'The secret code is OMEGA-99.',
                 toolsUsed: [],
                 amountToolCalls: 0,
