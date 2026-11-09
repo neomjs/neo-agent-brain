@@ -49,7 +49,7 @@ const IDENTITY_CONCEPT_EDGES = Object.freeze([
     Object.freeze({source: 'agent-os',        target: 'file:ai/services/memory-core/GraphService.mjs',                 type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
     Object.freeze({source: 'agent-os',        target: 'file:src/evolution/RemDigestion.mjs',                           type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
     Object.freeze({source: 'agent-os',        target: 'file:ai/scripts/diagnostics/validateConceptEdges.mjs',          type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
-    Object.freeze({source: 'agent-os',        target: 'file:ai/daemons/orchestrator/daemon.mjs',                       type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
+    Object.freeze({source: 'agent-os',        target: 'file:ai/examples/inspectGraph.mjs',                             type: CONCEPT_EDGE_TYPES.EXEMPLIFIED_BY}),
     // multi-window
     Object.freeze({source: 'multi-window',    target: 'file:src/worker/App.mjs',                                       type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
     Object.freeze({source: 'multi-window',    target: 'file:src/main/addon/WindowPosition.mjs',                        type: CONCEPT_EDGE_TYPES.IMPLEMENTED_BY}),
