@@ -580,13 +580,15 @@ class ConceptIngestor extends Base {
     updateProjectionMetadata(conceptId, findings) {
         const
             node                     = GraphService.db.nodes.get(conceptId),
+            existingLabel            = node ? (node.isRecord ? node.get('label') : node.label) : null,
             properties               = node?.properties || {},
             currentProjectionVersion = Number.isInteger(properties.conceptProjectionVersion)
                 && properties.conceptProjectionVersion > CONCEPT_PROJECTION_VERSION
                     ? properties.conceptProjectionVersion
                     : CONCEPT_PROJECTION_VERSION;
 
-        if (properties.conceptProjectionVersion === currentProjectionVersion
+        if (existingLabel === 'CONCEPT'
+            && properties.conceptProjectionVersion === currentProjectionVersion
             && stableStringify(properties.conceptProjectionIntegrityFindings || []) === stableStringify(findings)) {
             return
         }
@@ -605,10 +607,15 @@ class ConceptIngestor extends Base {
     }
 
     /**
+     * @summary Projects Concept Ontology JSONL nodes and typed edges into the Native Edge Graph,
+     * repairing clobbered CONCEPT node labels, names, descriptions, and foreign summary_ vectors
+     * alongside sha256 differential sync.
+     *
      * Main entry point. Loads the concept graph from JSONL via `ConceptService`, then upserts
      * each concept as a CONCEPT-labelled node into the Native Edge Graph and independently
-     * reconciles its source-owned typed edges. Node payloads still use sha256 differential
-     * sync, but edge membership never depends on that skip path.
+     * reconciles its source-owned typed edges. Node payloads use sha256 differential sync
+     * guarded by field-integrity checks (`label === 'CONCEPT'`, `name`, `description`, and no
+     * foreign `summary_*` `semanticVectorId`), while edge membership never depends on that skip path.
      *
      * Orphan concepts (concepts with NO outbound IMPLEMENTED_BY edge) are counted in the
      * returned stats for the cycle-summary `logger.info` line. They are NOT written to the
@@ -656,23 +663,31 @@ class ConceptIngestor extends Base {
                     db.getAdjacentNodes(conceptId, 'outbound');
 
                     const
-                        payloadHash  = this.computePayloadHash(conceptNode),
-                        existingNode = db.nodes.get(conceptId),
-                        adoptLegacy  = !!existingNode
-                            && /^[a-f0-9]{64}$/.test(existingNode.properties?.payloadHash || '')
-                            && existingNode.properties?.conceptProjectionVersion == null,
+                        payloadHash      = this.computePayloadHash(conceptNode),
+                        existingNode     = db.nodes.get(conceptId),
+                        existingLabel    = existingNode ? (existingNode.isRecord ? existingNode.get('label') : existingNode.label) : null,
+                        existingProps    = existingNode?.properties || {},
+                        hasSummaryVector = String(existingProps.semanticVectorId || existingNode?.semanticVectorId || '').startsWith('summary_'),
+                        adoptLegacy      = !!existingNode
+                            && /^[a-f0-9]{64}$/.test(existingProps.payloadHash || '')
+                            && existingProps.conceptProjectionVersion == null,
                         weight           = ConceptService.calculateWeight(conceptNode),
                         outboundEdges    = ConceptService.edgesBySource.get(conceptId) || [],
                         normalized       = this.normalizeOutboundEdges(conceptId, outboundEdges),
-                        nodePayloadMatch = existingNode?.properties?.payloadHash === payloadHash;
+                        nodePayloadMatch = existingLabel === 'CONCEPT'
+                            && existingProps.name === conceptNode.name
+                            && (existingProps.description ?? '') === (conceptNode.description ?? '')
+                            && !hasSummaryVector
+                            && existingProps.payloadHash === payloadHash;
 
                     if (nodePayloadMatch) {
                         stats.conceptsSkipped++
                     } else {
                         GraphService.upsertNode({
-                            id        : conceptId,
-                            type      : 'CONCEPT',
-                            name      : conceptNode.name,
+                            id  : conceptId,
+                            type: 'CONCEPT',
+                            name: conceptNode.name,
+                            ...(hasSummaryVector ? {semanticVectorId: null} : {}),
                             properties: {
                                 aliases          : conceptNode.aliases     ?? [],
                                 codeGapEligible  : conceptNode.codeGapEligible !== false,

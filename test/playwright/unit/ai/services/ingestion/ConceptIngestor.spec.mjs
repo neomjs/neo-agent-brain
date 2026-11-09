@@ -990,4 +990,53 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
         expect(typeof stats.orphansDetected).toBe('number');
         expect(Array.isArray(stats.errors)).toBe(true);
     });
+
+    test('should repair a CONCEPT node whose label, name, description, or summary_ semanticVectorId was clobbered while payloadHash remained unchanged (#1547)', async () => {
+        const conceptNode = {
+            id         : 'agent-os',
+            name       : 'AI-Native Architecture (Agent OS)',
+            tier       : 1,
+            description: 'The AI half of the organism.',
+            uniqueToNeo: true,
+            tags       : ['ai', 'architecture']
+        };
+
+        writeFixture(
+            [conceptNode],
+            [{source: 'agent-os', target: 'file:ai/services/ConceptService.mjs', type: 'IMPLEMENTED_BY'}]
+        );
+
+        const first = await ConceptIngestor.syncConceptsToGraph();
+        expect(first.conceptsUpserted).toBe(1);
+
+        // Simulate SemanticGraphExtractor overwriting the node's label, name, description,
+        // and semanticVectorId while GraphService.upsertNode shallow-merges properties.payloadHash.
+        GraphService.upsertNode({
+            id              : 'agent-os',
+            type            : 'CLASS',
+            name            : 'Neo Agent OS Memory Management',
+            description     : 'Investigation into RAM and disk overhead.',
+            semanticVectorId: 'summary_65ddc71f-04c4-4c7d-90f0-126e11f23681'
+        });
+
+        const clobbered = GraphService.db.nodes.get('agent-os');
+        expect(clobbered.label).toBe('CLASS');
+        expect(clobbered.properties.name).toBe('Neo Agent OS Memory Management');
+        expect(clobbered.properties.semanticVectorId).toBe('summary_65ddc71f-04c4-4c7d-90f0-126e11f23681');
+        expect(clobbered.properties.payloadHash).toBe(ConceptIngestor.computePayloadHash(conceptNode));
+
+        const second = await ConceptIngestor.syncConceptsToGraph();
+        expect(second.conceptsUpserted).toBe(1);
+        expect(second.conceptsSkipped).toBe(0);
+
+        const repaired = GraphService.db.nodes.get('agent-os');
+        expect(repaired.label).toBe('CONCEPT');
+        expect(repaired.properties.name).toBe('AI-Native Architecture (Agent OS)');
+        expect(repaired.properties.description).toBe('The AI half of the organism.');
+        expect(repaired.properties.semanticVectorId).toBeNull();
+
+        const third = await ConceptIngestor.syncConceptsToGraph();
+        expect(third.conceptsUpserted).toBe(0);
+        expect(third.conceptsSkipped).toBe(1);
+    });
 });
