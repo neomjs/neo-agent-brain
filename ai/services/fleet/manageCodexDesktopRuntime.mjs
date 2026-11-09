@@ -6,19 +6,18 @@ import path            from 'node:path';
 const
     // Electron virtualizes ASAR paths; bundle inspection needs their physical bytes.
     bundleFs = process.versions.electron ? createRequire(import.meta.url)('original-fs') : fs,
+    SPARKLE_ENV_MARKER = 'CODEX_SPARKLE_ENABLED',
+    SPARKLE_WINDOW_RADIUS = 64,
     ASAR_MARKERS = Object.freeze([
         'CODEX_ELECTRON_USER_DATA_PATH',
         '--open-project',
-        'CODEX_SPARKLE_ENABLED',
+        SPARKLE_ENV_MARKER,
         'shouldIncludeSparkle',
         'enableUpdater'
     ]),
     FRAMEWORK_MARKERS = Object.freeze(['user-data-dir']),
-    UPDATER_DISABLE_PREDICATES = Object.freeze([
-        'CODEX_SPARKLE_ENABLED===`false`',
-        'CODEX_SPARKLE_ENABLED==="false"',
-        "CODEX_SPARKLE_ENABLED==='false'"
-    ]),
+    UPDATER_DISABLE_LHS_PATTERN = /(?<![\w$.])(?:[A-Za-z_$][\w$]*\.)*CODEX_SPARKLE_ENABLED(?![\w$])\s*[!=]==?\s*(['"`])false\1(?![\w$])/,
+    UPDATER_DISABLE_RHS_PATTERN = /(?<![\w$])(['"`])false\1\s*[!=]==?\s*(?:[A-Za-z_$][\w$]*\.)*CODEX_SPARKLE_ENABLED(?![\w$])/,
     CRASHPAD_BASENAME = 'browser_crashpad_handler';
 
 /**
@@ -82,13 +81,13 @@ export function probeCodexDesktopCapabilities({binaryPath, fsImpl = bundleFs} = 
         return unavailable('required-app-bundle-resource-unavailable', {binaryPath: mainBinary, appBundle});
     }
 
-    const asarMissing = missingMarkers(appAsar, ASAR_MARKERS, fsImpl);
+    const asarScan = scanAsarContracts(appAsar, ASAR_MARKERS, fsImpl);
 
-    if (asarMissing.length) {
-        return unavailable(`app-contract-marker-missing:${asarMissing.join(',')}`, {binaryPath: mainBinary, appBundle});
+    if (asarScan.missing.length) {
+        return unavailable(`app-contract-marker-missing:${asarScan.missing.join(',')}`, {binaryPath: mainBinary, appBundle});
     }
 
-    if (!containsAnyMarker(appAsar, UPDATER_DISABLE_PREDICATES, fsImpl)) {
+    if (!asarScan.hasUpdaterDisablePredicate) {
         return unavailable('updater-disable-predicate-missing', {binaryPath: mainBinary, appBundle});
     }
 
@@ -370,9 +369,77 @@ function missingMarkers(file, markers, fsImpl) {
     return markers.filter(marker => !found.has(marker));
 }
 
+/**
+ * Single-pass streaming scan of `app.asar` for required contract markers and a semantic
+ * `CODEX_SPARKLE_ENABLED` vs `false` comparison within a `±64`-byte window. Exits early as soon as
+ * all markers and at least one valid disable-predicate window are satisfied.
+ * @returns {{missing: String[], hasUpdaterDisablePredicate: Boolean}}
+ * @private
+ */
+function scanAsarContracts(file, markers, fsImpl) {
+    const
+        pending       = new Map(markers.map(marker => [marker, Buffer.from(marker)])),
+        sparkleMarker = Buffer.from(SPARKLE_ENV_MARKER),
+        found         = new Set(),
+        chunk         = Buffer.allocUnsafe(1024 * 1024),
+        maxMarkerLen  = Math.max(...[...pending.values()].map(marker => marker.length), 1),
+        tailSize      = Math.max(maxMarkerLen - 1, (2 * SPARKLE_WINDOW_RADIUS) + sparkleMarker.length - 1),
+        descriptor    = fsImpl.openSync(file, 'r');
+
+    let tail                       = Buffer.alloc(0),
+        position                   = 0,
+        hasUpdaterDisablePredicate = false;
+
+    try {
+        while (pending.size || !hasUpdaterDisablePredicate) {
+            const bytesRead = fsImpl.readSync(descriptor, chunk, 0, chunk.length, position);
+            if (!bytesRead) break;
+
+            position += bytesRead;
+
+            const haystack = Buffer.concat([tail, chunk.subarray(0, bytesRead)]);
+
+            for (const [text, marker] of pending) {
+                if (haystack.indexOf(marker) !== -1) {
+                    found.add(text);
+                    pending.delete(text);
+                }
+            }
+
+            if (!hasUpdaterDisablePredicate) {
+                for (
+                    let offset = haystack.indexOf(sparkleMarker);
+                    offset !== -1;
+                    offset = haystack.indexOf(sparkleMarker, offset + 1)
+                ) {
+                    const
+                        windowStart = Math.max(0, offset - SPARKLE_WINDOW_RADIUS),
+                        windowEnd   = Math.min(haystack.length, offset + sparkleMarker.length + SPARKLE_WINDOW_RADIUS),
+                        windowText  = haystack.subarray(windowStart, windowEnd).toString('utf8');
+
+                    if (matchesUpdaterDisablePredicate(windowText)) {
+                        hasUpdaterDisablePredicate = true;
+                        break;
+                    }
+                }
+            }
+
+            tail = tailSize ? haystack.subarray(Math.max(0, haystack.length - tailSize)) : Buffer.alloc(0);
+        }
+    } finally {
+        fsImpl.closeSync(descriptor);
+    }
+
+    return {
+        missing: markers.filter(marker => !found.has(marker)),
+        hasUpdaterDisablePredicate
+    };
+}
+
 /** @returns {Boolean} @private */
-function containsAnyMarker(file, markers, fsImpl) {
-    return scanMarkers(file, markers, fsImpl).size > 0;
+function matchesUpdaterDisablePredicate(windowText) {
+    return UPDATER_DISABLE_LHS_PATTERN.test(windowText)
+        || UPDATER_DISABLE_RHS_PATTERN.test(windowText);
 }
 
 /**
