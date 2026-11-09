@@ -8,7 +8,7 @@ import os                                                from 'os';
 import path                                              from 'path';
 import Neo                                               from 'neo.mjs/src/Neo.mjs';
 import * as core                                         from 'neo.mjs/src/core/_export.mjs';
-import {createOpenWorkWakeRound, wireFleetOpenWorkWakes} from '../../../../../../ai/services/fleet/wireFleetOpenWorkWakes.mjs';
+import {createOpenWorkWakeRound, failedChecksOf, wireFleetOpenWorkWakes} from '../../../../../../ai/services/fleet/wireFleetOpenWorkWakes.mjs';
 
 const START  = Date.parse('2026-10-13T12:00:00.000Z'), HEAD = 'a'.repeat(40), SEAT = '@neo-opus-ada',
     at       = minute => START + minute * 60000,
@@ -566,5 +566,98 @@ test.describe('wireFleetOpenWorkWakes — reserved attempts on the producer cade
         minute = 2;
         expect(await round(outside(2, 'green'))).toMatchObject({admitted: 0});
         await round.stop()
+    });
+});
+
+test.describe('wireFleetOpenWorkWakes — a repair-ci wake names the checks that failed (#1536)', () => {
+    /** @summary GitHub's answer to the failed-checks read for one head. */
+    const contexts = (nodes, hasNextPage = false) => ({repository: {object: {statusCheckRollup: {contexts: {pageInfo: {hasNextPage}, nodes}}}}});
+
+    test('failing check runs and statuses are named; a truncated or missing rollup is no complete list', () => {
+        expect(failedChecksOf(contexts([
+            {name: 'unit', conclusion: 'FAILURE'}, {name: 'lint', conclusion: 'SUCCESS'}, {name: 'e2e', conclusion: 'TIMED_OUT'},
+            {name: 'docs', conclusion: 'SKIPPED'}, {name: 'old', conclusion: 'STALE'}, {name: 'running', conclusion: null},
+            {name: 'boot', conclusion: 'STARTUP_FAILURE'}, {context: 'ci/legacy', state: 'ERROR'}, {context: 'ci/ok', state: 'SUCCESS'}
+        ]))).toEqual(['unit', 'e2e', 'boot', 'ci/legacy']);
+        expect(failedChecksOf(contexts([]))).toEqual([]);
+        expect(failedChecksOf(contexts([{name: 'unit', conclusion: 'FAILURE'}], true)), 'a second page may hold more').toBeNull();
+    });
+
+    test('only a check\'s latest run decides: a re-run that passed or is still running supersedes its failure, per workflow', () => {
+        const run = (name, conclusion, startedAt, workflow = 'Shared PR Baseline') => ({name, conclusion, startedAt, checkSuite: {workflowRun: {workflow: {name: workflow}}}});
+
+        // an edited PR body re-ran its check, and GitHub's rollup still reads FAILURE
+        expect(failedChecksOf(contexts([
+            run('PR body', 'FAILURE', '2026-11-06T12:59:31Z'), run('PR body', 'SUCCESS', '2026-11-06T04:34:32Z'), run('PR body', 'SUCCESS', '2026-11-06T13:49:23Z')
+        ]))).toEqual([]);
+        expect(failedChecksOf(contexts([run('e2e', 'FAILURE', '2026-11-06T10:00:00Z'), run('e2e', null, null)])), 'a queued re-run is the newest').toEqual([]);
+        expect(failedChecksOf(contexts([run('unit', 'FAILURE', '2026-11-06T10:00:00Z', 'Brain'), run('unit', 'SUCCESS', '2026-11-06T10:05:00Z', 'Skills')])),
+            'the same job name in another workflow is another check').toEqual(['unit']);
+        for (const unreadable of [{repository: {object: {statusCheckRollup: null}}}, {repository: null}, null]) {
+            expect(failedChecksOf(unreadable)).toBeNull()
+        }
+    });
+
+    test('a repair-ci wake carries its head\'s failing checks, read once per red episode and never per pulse or for another kind', async () => {
+        let   minute = 0;
+        const sends  = [], reads = [],
+            round    = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate, now: () => at(minute), sendMessage: async message => sends.push(message),
+                readFailedChecks: async wake => { reads.push([wake.to, wake.repo, wake.head]); return ['unit', 'lint', 'e2e-brain', 'substrate'] }});
+
+        await round(state(0));
+        for (const [next, ci] of [[1, 'red'], [2, 'red'], [3, 'red'], [4, 'green'], [5, 'red']]) {
+            minute = next;
+            await round(state(next, ci))
+        }
+
+        // two red episodes: two reads, both for the author's head; the green between them reads nothing
+        expect(reads).toEqual([[SEAT, 'acme/app', HEAD], [SEAT, 'acme/app', HEAD]]);
+        expect(sends.map(message => message.task.kind)).toEqual(['repair-ci', 'route-review', 'repair-ci']);
+        expect(sends[0].subject).toBe('[open-work:repair-ci] acme/app#7: observed CI is red on your head — failing: unit, lint, e2e-brain +1');
+        expect(sends[0].body).toContain('Failing checks: unit, lint, e2e-brain, substrate.');
+        expect(sends[1].subject).not.toContain('failing');
+        await round.stop()
+    });
+
+    test('a failed, unreadable or missing names read still sends the wake, marked names-unknown; an empty list says so', async () => {
+        const cases = [
+            [async () => { throw new Error('GitHub GraphQL answered 502: no data') }, 'unknown', 'unknown; the names could not be read'],
+            [async () => null, 'unknown', 'unknown; the names could not be read'],
+            [undefined, 'unknown', 'unknown; the names could not be read'],
+            [async () => [], 'none at send time', 'none when this wake was sent']
+        ];
+
+        for (const [readFailedChecks, subject, body] of cases) {
+            let   minute = 0;
+            const sends  = [], round = createOpenWorkWakeRound({store: memoryStore(), gateOf: openGate, now: () => at(minute),
+                sendMessage: async message => sends.push(message), ...(readFailedChecks ? {readFailedChecks} : {})});
+
+            await round(state(0)); minute = 1; await round(state(1, 'red'));
+            expect(sends).toHaveLength(1);
+            expect(sends[0].subject).toBe(`[open-work:repair-ci] acme/app#7: observed CI is red on your head — failing: ${subject}`);
+            expect(sends[0].body).toContain(`Failing checks: ${body}.`);
+            await round.stop()
+        }
+    });
+
+    test('the wired read runs as the author seat, with its own PAT, on that head; a seat without a PAT reads nothing', async () => {
+        const
+            directory   = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wake-checks-')),
+            calls       = [],
+            definitions = [{id: 'gpt', githubUsername: 'neo-gpt'}, {id: 'ada', githubUsername: 'neo-opus-ada'}],
+            createQuery = token => async (text, variables) => { calls.push([token, variables]); return contexts([{name: 'unit', conclusion: 'FAILURE'}]) };
+
+        try {
+            for (const [credential, failing] of [[id => `pat-${id}`, 'unit'], [() => null, 'unknown']]) {
+                let   minute = 0;
+                const sends  = [], registry = {getDataDir: () => fs.mkdtempSync(path.join(directory, 'r-')), listAgents: () => definitions, resolveCredential: credential},
+                    round    = wireFleetOpenWorkWakes({registry, createQuery, gateOf: openGate, now: () => at(minute), sendMessage: async message => sends.push(message)});
+
+                await round(state(0)); minute = 1; await round(state(1, 'red'));
+                expect(sends[0].subject).toContain(`— failing: ${failing}`);
+                await round.stop()
+            }
+            expect(calls).toEqual([['pat-ada', {owner: 'acme', name: 'app', oid: HEAD}]])
+        } finally { fs.rmSync(directory, {recursive: true, force: true}) }
     });
 });
