@@ -225,8 +225,29 @@ test.describe('ai/scripts/lifecycle/stopHookDecision — shared no-hold decision
         expect(decideDeferenceStopHookAction(text, {operatorInLoop: false, enforcing: true})).toBe(null);
     });
 
-    test('decideDeferenceStopHookAction: operator dialogue carves deference phrases before action', () => {
+    test('decideDeferenceStopHookAction: operator dialogue carves a phrase that follows no stated pick', () => {
         expect(decideDeferenceStopHookAction('Your call.', {operatorInLoop: true, enforcing: true})).toBe(null);
+    });
+
+    test('decideDeferenceStopHookAction: a wrap-up ask that gates the agent\'s own pick blocks in dialogue (#78)', () => {
+        const ask      = 'Fix #20599 now so it ships in 13.4?',
+              decision = decideDeferenceStopHookAction("Both PRs are open and green. I'd fix #20599 before the cut.", {
+                  operatorInLoop: true,
+                  enforcing     : true,
+                  wrapUpAsk     : {ask, actions: [{label: 'Yes, fix it now'}, {label: 'After the cut'}]}
+              });
+
+        expect(decision.action).toBe('block');
+        expect(decision.ask).toBe(ask);
+        expect(decision.reason).toContain(`the wrap-up ask "${ask}"`);
+    });
+
+    test('decideDeferenceStopHookAction: a wrap-up ask for human-only work stays allowed (#78)', () => {
+        expect(decideDeferenceStopHookAction('Approved and green.', {
+            operatorInLoop: true,
+            enforcing     : true,
+            wrapUpAsk     : {ask: 'Merge #20603 now?', actions: [{action: 'merge', label: 'Merge #20603'}]}
+        })).toBe(null);
     });
 
     test('decideDeferenceStopHookAction: dry-run autonomous phrase → would-block directive', () => {
@@ -292,11 +313,11 @@ test.describe('ai/scripts/lifecycle/stopHookDecision — #14440 mid-chain operat
         expect(context.midChainOperator).toBe(false);
     });
 
-    test('the lane-handback phrase blocks autonomously but stays carved in live dialogue (#16325 boundary)', () => {
+    test('the lane-handback slip blocks autonomously and in live dialogue (#16325, #78)', () => {
         // The registry entry and the operator-dialogue carve are TWO independent gates, and both were
-        // shut when this phrase was first observed. Proving the registry missed it says nothing about
-        // the carve; this crosses classifyPromptingContext into the decision so the reachable boundary
-        // is executable rather than asserted in prose.
+        // shut when this phrase was first observed. This crosses classifyPromptingContext into the
+        // decision, so the reachable boundary is executable rather than asserted in prose. The pick
+        // ("That's next") comes before the hedge, which is case 3 of the operator's 2026-08-25 ruling.
         const slip = "That's next unless you'd rather I take something else.";
 
         const autonomous = classifyPromptingContext({
@@ -311,9 +332,7 @@ test.describe('ai/scripts/lifecycle/stopHookDecision — #14440 mid-chain operat
             promptingText : 'please check messages, choose your lanes'
         });
         expect(liveDialogue.operatorInLoop).toBe(true);
-        // Deliberately pinned as the CURRENT boundary, not as desired behavior: the live-dialogue case
-        // that motivated the phrase is still uncaught, and ownership of that carve is a separate lane.
-        expect(decideDeferenceStopHookAction(slip, liveDialogue)).toBeNull();
+        expect(decideDeferenceStopHookAction(slip, liveDialogue)).not.toBeNull();
     });
 
     test('chained + attested + synthetic / handoff / empty candidates all fail closed', () => {

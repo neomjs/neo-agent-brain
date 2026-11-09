@@ -4,7 +4,134 @@ import {DEFERENCE_PHRASES,
         DEFERENCE_REMINDER,
         buildDeferenceReminder,
         detectDeferencePhrase,
-        matchDeferencePhrase} from '../../../../../../ai/scripts/lifecycle/deferencePhraseMatch.mjs';
+        matchDeferencePhrase,
+        matchWrapUpAskDeference} from '../../../../../../ai/scripts/lifecycle/deferencePhraseMatch.mjs';
+
+/**
+ * @summary The operator's 2026-08-25 ruling, in live dialogue: a stated pick followed by a hedge is
+ * the slip (case 3); a peer deadlock (case 1) and human-only work (case 2) stay carved. Autonomous turns
+ * keep matching every registry phrase.
+ */
+test.describe('deferencePhraseMatch in operator dialogue (#78)', () => {
+    const dialogue = {operatorInLoop: true};
+
+    test('case 3: a pick stated before the hedge, in the same paragraph, fires', () => {
+        expect(detectDeferencePhrase("That's next unless you'd rather I take something else.", dialogue)).toBe('unless you');
+        expect(detectDeferencePhrase("I'd take #20661 next. Your call.", dialogue)).toBe('your call');
+        expect(detectDeferencePhrase('I would file both unassigned and hand them off, unless you want them held.', dialogue))
+            .toBe('unless you');
+        expect(detectDeferencePhrase('I recommend the narrow fix. Want me to open it?', dialogue)).toBe('want me to');
+        // Real dialogue turn-ends from the 2026-11-09 corpus
+        expect(detectDeferencePhrase("I'd rather post a friendly check-in on #24 asking whether they're still on it. " +
+            "If they say they've stopped, I take it straight away. It's your call either way.", dialogue)).toBe('your call');
+        expect(detectDeferencePhrase('Next is beat 1 of the film. My backup take starts at 07:03 CET unless you\'d rather record it yourself.',
+            dialogue)).toBe('unless you');
+    });
+
+    test('no stated pick before the hedge: the phrase stays carved', () => {
+        expect(detectDeferencePhrase('Your call?', dialogue)).toBeNull();
+        expect(detectDeferencePhrase("If you'd rather, I can move it.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase("I'll keep watching CI.\n\nYour call on the exact color.", dialogue)).toBeNull();
+    });
+
+    test('a pick quoted or in code arms nothing, and the carves keep the context before the pick', () => {
+        // Matching from a sliced prefix would orphan a closing delimiter, and would cut the first-person
+        // attribution the carve reads to the left of the phrase
+        expect(detectDeferencePhrase("Merged #1529: `I'd` arms `your call` in dialogue.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase('The user said "I\'d wait" and "your call" in the thread.', dialogue)).toBeNull();
+        expect(detectDeferencePhrase("I told you yesterday that I'd check the logs and that the fork-CI approval was your call; it was mine.",
+            dialogue)).toBeNull();
+        // Each of them carves autonomously too, so dialogue now agrees with the autonomous reading
+        expect(detectDeferencePhrase("Merged #1529: `I'd` arms `your call` in dialogue.", {operatorInLoop: false})).toBeNull();
+    });
+
+    test('case 1: a peer deadlock leaves no agent decision to hand back', () => {
+        expect(detectDeferencePhrase("We could not agree on A or B, so I'd say it is your call.", dialogue)).toBeNull();
+    });
+
+    test('case 2: human-only work stays the operator\'s', () => {
+        expect(detectDeferencePhrase("I'd merge #20663 first, unless you want to wait.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase('I recommend a manual pass with human eyes before the tag. Your call.', dialogue)).toBeNull();
+        expect(detectDeferencePhrase("I'd keep the old credentials until you rotate them, your call.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase("I'd run the migration on the live plane tonight, unless you want to watch it.", dialogue)).toBeNull();
+        // The escalation ladder's other Tier-4 domains: taste and capacity, a design read, his machine
+        expect(detectDeferencePhrase("I'd pick the darker palette, unless you'd rather judge the aesthetics yourself.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase("I'd start the cloud run, unless you want to keep the budget for later.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase("I'd ship the frames as they are, unless you want the operator's read on them first.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase("I'd run the second Desktop session on his machine, unless you'd rather wait.", dialogue)).toBeNull();
+        expect(detectDeferencePhrase('I recommend building it in a fresh session rather than here. The rule only lets me recommend ' +
+            'a handoff, so it\'s your call.', dialogue)).toBeNull();
+    });
+
+    test('autonomous turns are unchanged: the case markers do not carve them', () => {
+        expect(detectDeferencePhrase('Your call?', {operatorInLoop: false})).toBe('your call');
+        expect(detectDeferencePhrase("I'd merge #20663 first, unless you want to wait.", {operatorInLoop: false})).toBe('unless you');
+    });
+});
+
+/**
+ * @summary The Claude desktop wrap-up `ask`. Case 3 needs both halves: the turn's text states the
+ * agent's pick, and the box asks to go ahead with the agent's own step. Every ask below is a real one from
+ * Ada's sessions (the 2026-11-09 corpus of 109 asks over 1,782 turns, 4 of which fire) or Mnemosyne's
+ * specimen; the carved rows are the operator-owned asks the first, wider draft of this rule wrongly fired on.
+ */
+test.describe('matchWrapUpAskDeference (#78)', () => {
+    const buttons = [{label: 'Yes'}, {label: 'Not now'}];
+
+    test('a stated pick plus a go-ahead on the agent\'s own step is returned as the hedge', () => {
+        for (const [text, ask] of [
+            ['I would file 1 and 2 unassigned and hand them off.', 'File the two defect tickets now?'],
+            ["I'd fix it before the cut.", 'Fix #20599 now so it ships in 13.4?'],
+            ["I'd post a short peer-role read.", 'Should I post a peer-role review on Discussion #20169?'],
+            ["I'll clean up after myself.", 'Delete the leftover probe branch ada/20460-anchor-null-frame?'],
+            ['I recommend the narrow fix.', 'Would you like me to fix it now?'],
+            // Vega's own asks from 2026-11-09, the three she named as the slip
+            ["I'd draft it today.", "Draft the next release's roadmap section now?"],
+            ["I'd reopen it with the new evidence.", 'Reopen #19827 after the cut, so prepare owns the bump?'],
+            ["I'd file it.", 'File a ticket so a local engine Portal lists the archive too?']
+        ]) {
+            expect(matchWrapUpAskDeference({ask, actions: buttons}, text)).toBe(ask);
+        }
+    });
+
+    test('without a stated pick the box is a question, not a handback', () => {
+        expect(matchWrapUpAskDeference({ask: 'Fix #20599 now so it ships in 13.4?', actions: buttons}, 'The fix is ready.')).toBeNull();
+        expect(matchWrapUpAskDeference({ask: 'Fix #20599 now so it ships in 13.4?', actions: buttons})).toBeNull();
+        // A pick that is only quoted or in code states nothing
+        expect(matchWrapUpAskDeference({ask: 'Fix #20599 now so it ships in 13.4?', actions: buttons},
+            "The matcher reads `I'd` as a pick.")).toBeNull();
+        expect(matchWrapUpAskDeference({ask: 'Fix #20599 now so it ships in 13.4?', actions: buttons},
+            'Grace wrote "I\'ll fix it" on the ticket.')).toBeNull();
+    });
+
+    test('operator-owned asks stay carved even after a stated pick', () => {
+        for (const [ask, actions] of [
+            ['Will you merge #20632 now so Grace can re-sync #20644?', null],
+            ['Merge #20603 now?', [{action: 'merge', label: 'Merge #20603'}]],
+            ['Will you do the manual pass on agent/20641-group-drag-live next?', null],
+            ['Run the #1441 turn-document migration on the live plane now?', null],
+            ['Install candidate 3 into /Applications now?', null],
+            ['May I run a held candidate-2 window on your display to re-check the walk steps?', null],
+            ["Provision the Gemini sibling's GitHub account as neo-gemini-maryam?", null],
+            ['File a Brain advisory, or ship it as a normal PR?', null],
+            ['When is your next walk slot for the re-walk?', null],
+            ['Start #843 in a fresh session?', null],
+            ['Should I go with A? We could not agree on A or B.', null],
+            // Vega's three that are the human's: his dispatch, and two merges
+            ["Will you dispatch create-app's npm-publish workflow?", null],
+            ['Merge #20659 once its checks and CodeQL pass?', null],
+            ['Merge pages#70 after Julia approves?', null]
+        ]) {
+            expect(matchWrapUpAskDeference({ask, actions}, "I'd do it now.")).toBeNull();
+        }
+    });
+
+    test('no ask, an empty ask or a malformed input matches nothing', () => {
+        for (const input of [null, undefined, {}, {ask: ''}, {ask: '   '}, {ask: 42}, 'Fix it now?']) {
+            expect(matchWrapUpAskDeference(input, "I'd fix it.")).toBeNull();
+        }
+    });
+});
 
 /**
  * @summary Distinguishes executed-decision reports from genuine operator handbacks.
