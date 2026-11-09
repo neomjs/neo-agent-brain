@@ -173,8 +173,8 @@ function countBySeat(transitions) {
 
 /**
  * @summary The coverage reason for the seats a pulse could not read, each with its next step. Only a
- * refused PAT (HTTP 401) asks for a new token; any other failure may pass on its own, so its next step
- * is the next pulse.
+ * PAT GitHub refused (HTTP 401) or that lacks a scope the read needs asks for a new token; any other
+ * failure may pass on its own, so its next step is the next pulse.
  * @param {String[]} unread Seats without a readable PAT.
  * @param {Object[]} [failed] `{seat, refused}` per seat whose read failed.
  * @returns {String|null}
@@ -198,7 +198,8 @@ function unreadReason(unread, failed = []) {
  * @summary Create the producer. Each seat reads its own work with its own PAT, the Fleet's observe
  * read: the open pull requests it authored or holds a review request on, and the
  * ones it authored that closed in its catch-up window. One seat's PAT never reads another seat's
- * work, so every row was read as the seat it belongs to. A seat without a readable PAT, or whose read
+ * work, so every row was read as the seat it belongs to. The PRs no seat authored are one search
+ * across every repository, on one participating seat's PAT. A seat without a readable PAT, or whose read
  * fails, leaves the pulse `partial` and is named with its next step; its rows carry, never vanish. A
  * benched seat owes no coverage: it reads when it can, and a read it misses only carries its rows.
  * @param {Object}   options
@@ -302,7 +303,7 @@ export function createOpenWorkProducer({
                 reads.push({seat, login, apiBase, mark, window, nodes: [...authored.nodes, ...held.nodes], complete: authored.complete && held.complete, ended})
             } catch (error) {
                 // a message-less error still failed: without the fallback it would count as answered
-                reads.push({seat, failure: redactReadFailure(error) ?? 'the read failed without a message', refused: error?.status === 401})
+                reads.push({seat, failure: redactReadFailure(error) ?? 'the read failed without a message', refused: error?.status === 401 || error?.code === 'INSUFFICIENT_SCOPES'})
             }
         }
 
@@ -326,26 +327,16 @@ export function createOpenWorkProducer({
             excluded      = [...new Set(seats.map(seat => seat.login).filter(Boolean))].map(login => `-author:${login}`).join(' '),
             outside       = {complete: false, rows: 0},
             outsideNodes  = [];
-        let outsideComplete = Boolean(outsideReader?.query);
 
-        for (const slug of outsideReader?.query ? slugs : []) {
-            const
-                progress = {complete: false, rows: 0},
-                search   = ['is:pr is:open archived:false', excluded, `repo:${slug}`].filter(Boolean).join(' ');
+        // one search across every repository, so the reading PAT pays one search a pulse, not one per repository
+        if (outsideReader?.query) {
             try {
-                const result = await readSearch({
-                    query: outsideReader.query, text: OPEN_WORK_SNAPSHOT, search,
-                    pageBudget, tally, apiBase: outsideReader.apiBase, stamp, progress
-                });
-                outsideNodes.push(...result.nodes);
-                outsideComplete &&= result.complete
-            } catch {
-                outsideComplete = false
-            } finally {
-                outside.rows += progress.rows
-            }
+                outsideNodes.push(...(await readSearch({
+                    query: outsideReader.query, text: OPEN_WORK_SNAPSHOT, search: ['is:pr is:open archived:false', excluded, scope].filter(Boolean).join(' '),
+                    pageBudget, tally, apiBase: outsideReader.apiBase, stamp, progress: outside
+                })).nodes)
+            } catch {}
         }
-        outside.complete = outsideComplete;
 
         const
             missed   = [...unread, ...reads.filter(read => read.failure || !read.complete || !read.ended.complete).map(read => read.seat)].filter(seat => !owes(seat)).concat(outside.complete ? [] : ['outside']),

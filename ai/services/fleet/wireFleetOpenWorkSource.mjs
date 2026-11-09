@@ -5,9 +5,9 @@
  * the registry, the pulse cadence, and the bridge's `fleetOpenWork` source.
  *
  * A seat's PAT comes from the Fleet's credential store (`resolveCredential`), the credential ledger's
- * declared observe read. A token the entrypoint passes in (the process's `GH_TOKEN`-class environment) is the
- * explicit override for headless and dev runs: every seat then reads with it. A seat without a
- * readable PAT still wires, and the pulse names it with its next step.
+ * declared observe read. No process-wide token reads for every seat: it would charge every seat's
+ * reads to one account's quota. A seat without a readable PAT still wires, and the pulse names it
+ * with its next step.
  *
  * A login resolves to a seat from the registry first (`@<githubUsername>`), then from the plane's
  * identity rows, so another operator's seats resolve from their own registry and plane. The PR body's
@@ -78,18 +78,17 @@ export async function benchedIdentities(readPresence) {
 
 /**
  * @summary The seats that read GitHub, each with its own GraphQL call: every GitHub seat in the
- * registry, reading with its PAT from the Fleet's credential store, or with the override when the
- * entrypoint passed one. A seat without either reads nothing, and its `query` is null.
+ * registry, reading with its PAT from the Fleet's credential store. A seat without one reads
+ * nothing, and its `query` is null.
  * @param {Object}   options
  * @param {Function} options.listDefinitions   `() → Object[]`, the registry's definitions.
  * @param {Function} options.resolveCredential `(agentId) → String|null`, the seat's PAT.
- * @param {String|null} [options.override]     The headless/dev token every seat then reads with.
  * @param {String} [options.apiBase] The endpoint represented by each reader's quota observations.
  * @param {Function} [options.createQuery]     `(token) → query`; the GitHub call by default.
  * @param {Function|null} [options.readPresence] The `who_is_online` read ({@link benchedIdentities}), each pulse.
  * @returns {Function} `() → Promise<{seat: String, login: String, apiBase: String, query: Function|null, benched: Boolean}[]>`
  */
-export function seatReaders({listDefinitions, resolveCredential, override = null, apiBase = 'https://api.github.com', createQuery = token => createGithubGraphqlQuery({token, apiBase}), readPresence = null}) {
+export function seatReaders({listDefinitions, resolveCredential, apiBase = 'https://api.github.com', createQuery = token => createGithubGraphqlQuery({token, apiBase}), readPresence = null}) {
     return async () => {
         const benched = await benchedIdentities(readPresence);
 
@@ -98,7 +97,7 @@ export function seatReaders({listDefinitions, resolveCredential, override = null
             .map(definition => {
                 const
                     login = String(definition.githubUsername).replace(/^@/, ''),
-                    token = override || resolveCredential(definition.id);
+                    token = resolveCredential(definition.id);
 
                 return {seat: `@${login}`, login, apiBase, query: token ? createQuery(token) : null, benched: benched.has(presenceIdentityForAgent(definition))}
             })
@@ -107,8 +106,9 @@ export function seatReaders({listDefinitions, resolveCredential, override = null
 
 /**
  * @summary One GitHub GraphQL call. A missing token, an HTTP failure or a GraphQL error throws, and
- * the producer records it as a failed read. An HTTP failure carries its `status`, so a refused PAT
- * (401) is told apart from a read that may pass on the next pulse.
+ * the producer records it as a failed read. The error carries its HTTP `status` and GitHub's error
+ * `type` as `code`, so a refused PAT (401) or one missing a scope (`INSUFFICIENT_SCOPES`, answered
+ * with 200) is told apart from a read that may pass on the next pulse.
  * @param {Object}   options
  * @param {String|null} options.token
  * @param {Function} [options.fetchImpl]
@@ -143,7 +143,7 @@ export function createGithubGraphqlQuery({token, fetchImpl = globalThis.fetch, a
                     remaining: rate?.remaining ?? value('x-ratelimit-remaining'),
                     resetAt  : rate?.resetAt ?? (reset !== null && Number.isFinite(new Date(reset * 1000).getTime()) ? new Date(reset * 1000).toISOString() : null)
                 }};
-            throw Object.assign(new Error(`GitHub GraphQL answered ${response.status}: ${payload?.errors?.[0]?.message ?? 'no data'}`), {status: response.status, quota})
+            throw Object.assign(new Error(`GitHub GraphQL answered ${response.status}: ${payload?.errors?.[0]?.message ?? 'no data'}`), {status: response.status, code: payload?.errors?.[0]?.type ?? null, quota})
         }
 
         return payload.data
@@ -177,8 +177,6 @@ export function fileStore(filePath) {
 /**
  * @summary Wire the producer and the bridge's source, take the first pulse, and keep pulsing.
  * @param {Object}   options
- * @param {String|null} [options.token]   The headless/dev override the entrypoint resolved from its
- *     environment; every seat reads with it. Null on an installed Fleet, where each seat reads with its own PAT.
  * @param {{listAgents: Function, getDataDir: Function, resolveCredential: Function}} options.registry
  * @param {Number}   [options.pulseMs]
  * @param {Object}   [options.bridge]
@@ -190,7 +188,7 @@ export function fileStore(filePath) {
  * @param {Function|null} [options.onPulse] Awaited after the existing pulse; concurrent rounds share it.
  * @returns {{producer: Object, source: Object, pulse: Function, stop: Function}|null} null without a registry.
  */
-export function wireFleetOpenWorkSource({token = null, registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, createQuery, readPresence = null, now, apiBase = 'https://api.github.com', onPulse = null} = {}) {
+export function wireFleetOpenWorkSource({registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, createQuery, readPresence = null, now, apiBase = 'https://api.github.com', onPulse = null} = {}) {
     if (typeof registry?.listAgents !== 'function' || typeof registry.getDataDir !== 'function') {
         return null
     }
@@ -210,7 +208,6 @@ export function wireFleetOpenWorkSource({token = null, registry, pulseMs = PULSE
             readers   : seatReaders({
                 listDefinitions,
                 resolveCredential: id => query ? 'injected' : registry.resolveCredential?.(id) ?? null,
-                override         : token,
                 apiBase,
                 readPresence     : readRows,
                 ...(query ? {createQuery: () => query} : createQuery ? {createQuery} : {})

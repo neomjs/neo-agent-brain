@@ -118,6 +118,9 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
         await expect(answering({ok: false, status: 401, body: {message: 'Bad credentials'}})('{x}', {}), 'a refused PAT carries its status for the producer')
             .rejects.toMatchObject({status: 401});
         await expect(answering({body: {errors: [{message: 'rate limited'}]}})('{x}', {})).rejects.toThrow(/rate limited/);
+        await expect(answering({body: {errors: [{type: 'INSUFFICIENT_SCOPES', message: "The 'login' field requires one of the following scopes: ['read:org']"}]}})('{x}', {}),
+            'a missing scope answers 200, so it carries GitHub\'s error type for the producer (#1535)')
+            .rejects.toMatchObject({status: 200, code: 'INSUFFICIENT_SCOPES'});
         expect(await answering({body: {data: {search: {nodes: []}}}})('{x}', {})).toEqual({search: {nodes: []}})
     });
 
@@ -127,7 +130,7 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
             bridge  = {};
 
         try {
-            const wired = wireFleetOpenWorkSource({token: null, registry: {listAgents: () => definitions, getDataDir: () => dataDir, resolveCredential: () => null}, bridge, pulseMs: 3600000});
+            const wired = wireFleetOpenWorkSource({registry: {listAgents: () => definitions, getDataDir: () => dataDir, resolveCredential: () => null}, bridge, pulseMs: 3600000});
 
             await wired.producer.pulse();
             wired.stop();
@@ -183,7 +186,7 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
         }
     });
 
-    test('with no token in the environment, each seat reads with its own PAT from the credential store (#823)', async () => {
+    test('each seat reads with its own PAT from the credential store, and no one token reads for every seat (#823, #1535)', async () => {
         const
             dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wire-')),
             tokens  = [],
@@ -210,14 +213,14 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
             expect([...new Set(tokens.map(([token, login]) => `${token}:${login}`))]).toEqual(['pat-ada:neo-opus-ada']);
             expect(wired.producer.getState().reason).toBe('@lab-seat, @idle-seat have no readable PAT: connect again with a current token for each');
 
-            // an explicit override is what every seat reads with
-            const overridden = wireFleetOpenWorkSource({token: 'override', registry: {...registry, getDataDir: () => fs.mkdtempSync(path.join(dataDir, 'o-'))}, bridge: {}, createQuery, pulseMs: 3600000});
+            // a process-wide token is no reader: offered one, every search still runs as its own seat
+            const offered = wireFleetOpenWorkSource({token: 'process-token', registry: {...registry, getDataDir: () => fs.mkdtempSync(path.join(dataDir, 'o-'))}, bridge: {}, createQuery, pulseMs: 3600000});
 
             tokens.length = 0;
-            await overridden.producer.pulse();
-            overridden.stop();
+            await offered.producer.pulse();
+            offered.stop();
 
-            expect([...new Set(tokens.map(([token]) => token))]).toEqual(['override'])
+            expect([...new Set(tokens.map(([token]) => token))]).toEqual(['pat-ada'])
         } finally {
             fs.rmSync(dataDir, {recursive: true, force: true})
         }

@@ -63,7 +63,6 @@ import FleetManager                                                    from './F
 import FleetRegistryService                                            from './FleetRegistryService.mjs';
 import {FLEET_BRIDGE_STATES, settleFleetBridge, superviseFleetBridge}  from './settleFleetBridge.mjs';
 import {detectMemoryCandidates}                                        from './seatMemoryImport.mjs';
-import {readGithubToken}                                               from '../ingestion/githubActions.mjs';
 import {describeOperatorSeatConflation, operatorSeatConflationWarning} from './operatorSeatConflation.mjs';
 import {startFleetBridgeServer}                                        from './fleetBridgeServer.mjs';
 import {probeExistingFleetServer, resolveFleetBearer, resolveFleetViewer,
@@ -735,15 +734,15 @@ async function boot() {
             console.warn(`[fleet] Neural Link Bridge ${bridgeState.state} on port ${bridgeState.port} (${bridgeState.reason}): ${bridgeState.summary} Next step: ${bridgeState.nextStep}`);
         }
 
-        // Each seat reads with its own PAT; a process token is the explicit headless/dev override.
-        // This entrypoint owns the one enable switch after the plane proved the sending viewer.
+        // Each seat reads with its own PAT. This entrypoint owns the one enable switch after the
+        // plane proved the sending viewer.
         wakeRound = AiConfig.fleet.openWorkWakes && planeClient ? wireFleetOpenWorkWakes({
             registry         : FleetRegistryService,
             isEnabled        : () => AiConfig.fleet.openWorkWakes,
             sendMessage      : args => planeClient.addMessage(args),
             readUndeliverable: async () => (await readPresence())?.undeliverable ?? null
         }) : null;
-        openWork = wireFleetOpenWorkSource({token: readGithubToken(), registry: FleetRegistryService, readPresence, onPulse: wakeRound});
+        openWork = wireFleetOpenWorkSource({registry: FleetRegistryService, readPresence, onPulse: wakeRound});
 
         AiConfig.fleet.openWorkWakes && console.log(wakeRound
             ? '[fleet] open-work wakes wired; rounds stay quiet until measured admission holds'
