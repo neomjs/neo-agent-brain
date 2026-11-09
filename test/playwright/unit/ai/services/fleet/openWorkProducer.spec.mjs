@@ -490,12 +490,14 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
         expect(state).toMatchObject({coverage: 'complete', reason: null})
     });
 
-    test('unassigned outside contributor PRs are discovered per repository, and a failed outside read stays partial while keeping carried outside rows (#1008)', async () => {
+    test('unassigned outside contributor PRs are discovered by one search across every repository, and a failed outside read stays partial while keeping carried outside rows (#1008, #1535)', async () => {
         let failOutside = false;
         const
-            outsidePr = {...pr({number: 42, author: 'external-dev', name: 'External'}), body: 'External fix', reviewRequests: {pageInfo: {hasNextPage: false}, nodes: []}},
+            outsidePr = {...pr({number: 42, author: 'external-dev', name: 'External'}), body: 'External fix', repository: {nameWithOwner: 'acme/lib'}, reviewRequests: {pageInfo: {hasNextPage: false}, nodes: []}},
+            searches  = [],
             query     = async (text, {query: search}) => {
                 if (kindOf(search) === 'outside') {
+                    searches.push(search);
                     if (failOutside) throw new Error('outside search failed');
                     return {rateLimit: {cost: 1}, search: {nodes: [outsidePr], pageInfo: {hasNextPage: false}}}
                 }
@@ -503,21 +505,23 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
             },
             producer  = createOpenWorkProducer({
                 readers: async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', query}],
-                repos  : async () => ['acme/app'],
+                repos  : async () => ['acme/lib', 'acme/app'],
                 identities,
                 now    : clock('2026-10-02T10:00:00Z')
             }),
             first     = await producer.pulse();
 
+        // the reading PAT pays one search a pulse, however many repositories the seats work on
+        expect(searches).toEqual(['is:pr is:open archived:false -author:neo-opus-ada repo:acme/app repo:acme/lib']);
         expect(first.coverage).toBe('complete');
         expect(first.pulses.at(-1).outside).toEqual({complete: true, rows: 1});
-        expect(first.snapshot.rows['acme/app#42']?.owner).toEqual({kind: 'outside', seat: null, login: 'external-dev'});
+        expect(first.snapshot.rows['acme/lib#42']?.owner).toEqual({kind: 'outside', seat: null, login: 'external-dev'});
 
         failOutside = true;
         const second = await producer.pulse();
         expect(second.coverage).toBe('partial');
         expect(second.pulses.at(-1).outside).toEqual({complete: false, rows: 0});
-        expect(second.snapshot.rows['acme/app#42']?.observedAt).toBe(first.observedAt);
+        expect(second.snapshot.rows['acme/lib#42']?.observedAt).toBe(first.observedAt);
     });
 
     test('a seat without a readable PAT is named with its next step, never "set GH_TOKEN", and the others still read', async () => {
@@ -637,14 +641,18 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
         expect(back.transitions.filter(({kind, pulse}) => kind === 'opened' && pulse === back.observedAt).map(({key}) => key)).toEqual(['acme/app#22'])
     });
 
-    test('only a PAT GitHub refused (401) asks for a new token; any other failed read names the next pulse', async () => {
+    test('only a PAT GitHub refused (401) or one missing a scope asks for a new token; any other failed read names the next pulse (#1535)', async () => {
         const
             refused = async () => { throw Object.assign(new Error('GitHub GraphQL answered 401: Bad credentials'), {status: 401}) },
+            // GitHub answers a missing scope with 200 and an error; the next pulse fails the same way
+            scoped  = async () => { throw Object.assign(new Error('GitHub GraphQL answered 200: Your token has not been granted the required scopes to execute this query.'), {status: 200, code: 'INSUFFICIENT_SCOPES'}) },
             flaky   = async () => { throw Object.assign(new Error('GitHub GraphQL answered 502: no data'), {status: 502}) },
             pulse   = readers => createOpenWorkProducer({readers: async () => readers, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')}).pulse(),
             adaSeat = {seat: '@neo-opus-ada', login: 'neo-opus-ada', query: asSeat({authored: [pr()]}).query};
 
         expect(await pulse([adaSeat, {seat: '@neo-gpt', login: 'neo-gpt', query: refused}]))
+            .toMatchObject({coverage: 'partial', reason: 'GitHub refused the PAT of @neo-gpt: connect again with a current token for it'});
+        expect(await pulse([adaSeat, {seat: '@neo-gpt', login: 'neo-gpt', query: scoped}]))
             .toMatchObject({coverage: 'partial', reason: 'GitHub refused the PAT of @neo-gpt: connect again with a current token for it'});
         expect(await pulse([adaSeat, {seat: '@neo-gpt', login: 'neo-gpt', query: flaky}]))
             .toMatchObject({coverage: 'partial', reason: 'the GitHub read failed for @neo-gpt: the next pulse reads again'});
