@@ -1730,10 +1730,10 @@ export async function prepareAntigravityArtifacts({agent, instanceHome, targetRe
 
 /**
  * @summary Suppress Antigravity's in-seat electron-updater per profile (`<instanceHome>/app_storage.json`).
- * Antigravity's `StorageManager` reads `app_storage.json` as a flat JSON map of string values and
- * seeds `autoCheckForUpdates: "true"` on first launch alongside runtime UI settings (`hubSurfaceColor`,
- * `wcv-*`). Fleet owns only the `autoCheckForUpdates` key (`"false"`), preserving every other profile
- * key and failing closed on symlinks, non-object JSON, or non-boolean-string `autoCheckForUpdates` values.
+ * Antigravity's `StorageManager` reads `app_storage.json` as a flat JSON map of string values alongside
+ * runtime UI settings (`hubSurfaceColor`, `wcv-*`) and treats an absent `autoCheckForUpdates` key as
+ * enabled (`"true"`). Fleet owns only the `autoCheckForUpdates` key (`"false"`), preserving every other
+ * profile key and failing closed on symlinks, non-object JSON, or non-boolean-string `autoCheckForUpdates` values.
  * @param {Object} options
  * @param {String} options.instanceHome Antigravity's isolated user-data directory.
  * @param {Object} [options.fileSystem] Promise filesystem seam.

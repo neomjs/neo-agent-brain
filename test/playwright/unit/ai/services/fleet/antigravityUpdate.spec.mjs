@@ -187,7 +187,7 @@ test.describe('antigravityUpdate', () => {
         })).toThrow(/sha512-mismatch/)
     });
 
-    test('sends x-app-version: 0.0.0 when checking feed and short-circuits when version is already admitted', async () => {
+    test('checks feed and short-circuits when version is already admitted', async () => {
         const
             storeRoot = path.join(root, 'generations'),
             installed = makeAntigravityBundle(path.join(root, 'installed'), {
@@ -238,13 +238,12 @@ test.describe('antigravityUpdate', () => {
         expect(observedCalls).toEqual([{
             url    : MANIFEST_URL,
             headers: {
-                'Accept'       : 'text/yaml, text/plain, */*',
-                'x-app-version': '0.0.0'
+                'Accept': 'text/yaml, text/plain, */*'
             }
         }])
     });
 
-    test('downloads, verifies SHA-512, extracts, admits a new Antigravity generation, and cleans staging', async () => {
+    test('streams archive to disk, verifies SHA-512, extracts, admits a new Antigravity generation, and cleans staging', async () => {
         const
             storeRoot = path.join(root, 'generations'),
             installed = makeAntigravityBundle(path.join(root, 'installed'), {
@@ -260,14 +259,13 @@ test.describe('antigravityUpdate', () => {
                 return {ok: true, status: 200, text: async () => yaml}
             }
             if (url === ARCHIVE_URL) {
-                return {
-                    ok         : true,
-                    status     : 200,
-                    arrayBuffer: async () => archiveBytes.buffer.slice(
-                        archiveBytes.byteOffset,
-                        archiveBytes.byteOffset + archiveBytes.byteLength
-                    )
-                }
+                return new Response(new ReadableStream({
+                    start(controller) {
+                        controller.enqueue(archiveBytes.subarray(0, 14));
+                        controller.enqueue(archiveBytes.subarray(14));
+                        controller.close()
+                    }
+                }), {status: 200})
             }
             throw new Error(`unexpected URL ${url}`)
         };
@@ -349,6 +347,33 @@ test.describe('antigravityUpdate', () => {
             materializeGeneration: async () => { materializeCalled = true }
         })).rejects.toMatchObject({code: 'sha512-mismatch'});
 
+        expect(extractCalled).toBe(false);
+        expect(materializeCalled).toBe(false);
+
+        let streamCancelled = false;
+        await expect(acquireAntigravityUpdate({
+            root        : storeRoot,
+            appBundle   : installed,
+            architecture: 'arm64',
+            readPlistKey: readFakePlistKey,
+            fetchImpl   : async url => {
+                if (url === MANIFEST_URL) {
+                    return {ok: true, status: 200, text: async () => yaml}
+                }
+                return new Response(new ReadableStream({
+                     pull(controller) {
+                        controller.enqueue(Buffer.alloc(validBytes.length + 1, 0x41))
+                    },
+                    cancel() {
+                        streamCancelled = true
+                    }
+                }), {status: 200})
+            },
+            extractArchive       : () => { extractCalled = true },
+            materializeGeneration: async () => { materializeCalled = true }
+        })).rejects.toMatchObject({code: 'archive-size-mismatch'});
+
+        expect(streamCancelled).toBe(true);
         expect(extractCalled).toBe(false);
         expect(materializeCalled).toBe(false);
 

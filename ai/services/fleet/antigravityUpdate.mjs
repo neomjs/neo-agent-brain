@@ -3,6 +3,8 @@ import {createHash, randomUUID, timingSafeEqual} from 'node:crypto';
 import nodeFs                                    from 'node:fs';
 import {createRequire}                           from 'node:module';
 import path                                      from 'node:path';
+import {Readable, Transform}                     from 'node:stream';
+import {pipeline}                                from 'node:stream/promises';
 import {fileURLToPath}                           from 'node:url';
 import {
     HARNESS_GENERATION_FAMILIES,
@@ -379,6 +381,88 @@ export function verifyAntigravityArchive(archiveBuffer, {expectedSha512, expecte
 }
 
 /**
+ * @summary Stream a fetched archive response to `destination` through a bounded byte-length
+ * limiter and incremental SHA-512 hash, verifying both exact byte length and `timingSafeEqual`
+ * SHA-512 digest before extraction.
+ * @param {Object} options
+ * @param {Object} options.response Fetch `Response` carrying `body` (Web `ReadableStream` or iterable) or `arrayBuffer()`.
+ * @param {String} options.destination Absolute path where the archive bytes are streamed.
+ * @param {String} options.expectedSha512 Base64-encoded SHA-512 digest from `latest-${arch}-mac.yml`.
+ * @param {Number|null} [options.expectedSize=null] Expected byte length from `latest-${arch}-mac.yml`.
+ * @param {Object} [options.fsImpl]
+ * @returns {Promise<{verified: Boolean, sha512: String, byteLength: Number}>}
+ */
+async function streamAndVerifyAntigravityArchive({
+    response,
+    destination,
+    expectedSha512,
+    expectedSize = null,
+    fsImpl = fs
+}) {
+    if (expectedSize !== null && expectedSize !== undefined) {
+        if (!Number.isSafeInteger(expectedSize) || expectedSize <= 0) {
+            throw refusal('manifest-size-invalid', String(expectedSize))
+        }
+        if (expectedSize > MAX_ARCHIVE_BYTES) {
+            throw refusal('archive-too-large', String(expectedSize))
+        }
+    }
+
+    const
+        expectedDigest = decodeSha512Base64(expectedSha512),
+        maxAllowed     = expectedSize ?? MAX_ARCHIVE_BYTES,
+        hash           = createHash('sha512');
+
+    let sourceStream;
+    if (response?.body && typeof response.body.getReader === 'function') {
+        sourceStream = Readable.fromWeb(response.body)
+    } else if (response?.body && (typeof response.body[Symbol.asyncIterator] === 'function' || typeof response.body.pipe === 'function')) {
+        sourceStream = Readable.from(response.body)
+    } else if (typeof response?.arrayBuffer === 'function') {
+        sourceStream = Readable.from([Buffer.from(await response.arrayBuffer())])
+    } else {
+        throw refusal('archive-fetch-failed', 'missing response body')
+    }
+
+    let byteLength = 0;
+    const limiter = new Transform({
+        transform(chunk, _encoding, callback) {
+            byteLength += chunk.length;
+            if (byteLength > maxAllowed) {
+                const code   = expectedSize !== null && expectedSize !== undefined ? 'archive-size-mismatch' : 'archive-too-large';
+                const detail = expectedSize !== null && expectedSize !== undefined
+                    ? `expected ${expectedSize}, exceeded at ${byteLength}`
+                    : String(byteLength);
+                callback(refusal(code, detail));
+                return
+            }
+            hash.update(chunk);
+            callback(null, chunk)
+        }
+    });
+
+    await pipeline(sourceStream, limiter, fsImpl.createWriteStream(destination, {mode: 0o600}));
+
+    if (byteLength === 0) {
+        throw refusal('archive-empty')
+    }
+    if (expectedSize !== null && expectedSize !== undefined && byteLength !== expectedSize) {
+        throw refusal('archive-size-mismatch', `expected ${expectedSize}, got ${byteLength}`)
+    }
+
+    const actualDigest = hash.digest();
+    if (!timingSafeEqual(actualDigest, expectedDigest)) {
+        throw refusal('sha512-mismatch')
+    }
+
+    return {
+        verified: true,
+        sha512  : actualDigest.toString('base64'),
+        byteLength
+    }
+}
+
+/**
  * @summary Compare two dotted numeric version strings (`2.29.1` vs `2.28.0`).
  * @param {String} left
  * @param {String} right
@@ -399,8 +483,7 @@ export function compareDottedVersions(left, right) {
 
 /**
  * @summary Check Antigravity's `electron-updater` feed for a newer build than the currently admitted
- * or installed `Antigravity.app` bundle. Sends `x-app-version: 0.0.0` so the Cloud Run updater
- * always returns the full manifest with `files`, `sha512`, and `size`.
+ * or installed `Antigravity.app` bundle.
  * @param {Object} [options]
  * @param {String|null} [options.root=null] Optional harness generation store root to inspect admitted versions.
  * @param {String} [options.appBundle='/Applications/Antigravity.app'] Reference bundle providing `app-update.yml`.
@@ -429,8 +512,7 @@ export async function checkAntigravityUpdate({
         config   = readAntigravityUpdateConfig(appBundle, {fsImpl, architecture, readPlistKey}),
         response = await fetchImpl(config.manifestUrl, {
             headers: {
-                'Accept'       : 'text/yaml, text/plain, */*',
-                'x-app-version': '0.0.0'
+                'Accept': 'text/yaml, text/plain, */*'
             }
         });
 
@@ -578,20 +660,22 @@ async function runAcquireAntigravityUpdate({
     }
 
     const
-        archiveBuffer = Buffer.from(await response.arrayBuffer()),
-        verification  = verifyAntigravityArchive(archiveBuffer, {
-            expectedSha512: candidate.sha512,
-            expectedSize  : candidate.size
-        }),
-        familyRoot    = path.join(root, ANTIGRAVITY_FAMILY),
-        stagingRoot   = path.join(familyRoot, `.update-staging-${randomUUID()}`),
-        archivePath   = path.join(stagingRoot, 'update.zip'),
-        extractDir    = path.join(stagingRoot, 'extracted');
+        familyRoot  = path.join(root, ANTIGRAVITY_FAMILY),
+        stagingRoot = path.join(familyRoot, `.update-staging-${randomUUID()}`),
+        archivePath = path.join(stagingRoot, 'update.zip'),
+        extractDir  = path.join(stagingRoot, 'extracted');
 
-    fsImpl.mkdirSync(extractDir, {recursive: true});
+    fsImpl.mkdirSync(extractDir, {recursive: true, mode: 0o700});
 
     try {
-        fsImpl.writeFileSync(archivePath, archiveBuffer);
+        const verification = await streamAndVerifyAntigravityArchive({
+            response,
+            destination   : archivePath,
+            expectedSha512: candidate.sha512,
+            expectedSize  : candidate.size,
+            fsImpl
+        });
+
         extractArchive(archivePath, extractDir);
 
         const
