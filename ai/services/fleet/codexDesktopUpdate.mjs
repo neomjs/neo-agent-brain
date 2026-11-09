@@ -1,11 +1,16 @@
-import {spawnSync}                                             from 'node:child_process';
-import {createPublicKey, randomUUID, verify}                   from 'node:crypto';
-import nodeFs                                                  from 'node:fs';
-import {createRequire}                                         from 'node:module';
-import path                                                    from 'node:path';
-import { Readable }                                            from 'node:stream';
-import { pipeline }                                            from 'node:stream/promises';
-import {materializeHarnessGeneration, selectHarnessGeneration} from './harnessGeneration.mjs';
+import {spawnSync}                                       from 'node:child_process';
+import {createHash, createPublicKey, randomUUID, verify} from 'node:crypto';
+import nodeFs                                            from 'node:fs';
+import {createRequire}                                   from 'node:module';
+import path                                              from 'node:path';
+import {Readable, Transform}                             from 'node:stream';
+import {pipeline}                                        from 'node:stream/promises';
+import {fileURLToPath}                                   from 'node:url';
+import {
+    materializeHarnessGeneration,
+    readHarnessGenerationLedger,
+    selectHarnessGeneration
+} from './harnessGeneration.mjs';
 
 /**
  * @module ai/services/fleet/codexDesktopUpdate
@@ -24,12 +29,56 @@ const
     CODEX_FAMILY        = 'codex-desktop',
     CODEX_APP_NAME      = 'ChatGPT.app',
     ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex'),
-    LEDGER_FILE         = 'ledger.json',
-    PLIST_BUDDY         = '/usr/libexec/PlistBuddy';
+    PLIST_BUDDY         = '/usr/libexec/PlistBuddy',
+    SW_VERS             = '/usr/bin/sw_vers',
+    MODULE_DIR          = path.dirname(fileURLToPath(import.meta.url)),
+    acquireChains       = new Map(),
+    inProcessRejections = new Map();
+
+let cachedHostSystemVersion,
+    cachedDefaultAdmitterId;
 
 /** @summary Creates a named refusal Error with a stable `code` property. */
 function refusal(code, detail = '') {
     return Object.assign(new Error(`codexDesktopUpdate: ${code}${detail ? ` — ${detail}` : ''}`), {code});
+}
+
+/**
+ * @summary Computes the SHA-256 fingerprint of the active Codex admission & probe modules so an
+ * in-process `already-rejected` guard automatically expires whenever the admitting code changes.
+ * @returns {String}
+ */
+function defaultAdmitterId() {
+    if (cachedDefaultAdmitterId) return cachedDefaultAdmitterId;
+
+    const hash = createHash('sha256');
+    for (const file of ['harnessGeneration.mjs', 'manageCodexDesktopRuntime.mjs', 'codexDesktopUpdate.mjs']) {
+        try {
+            hash.update(bundleFs.readFileSync(path.join(MODULE_DIR, file)));
+        } catch {
+            hash.update(file);
+        }
+    }
+
+    cachedDefaultAdmitterId = hash.digest('hex');
+    return cachedDefaultAdmitterId;
+}
+
+/**
+ * @summary Reads the host macOS product version (`sw_vers -productVersion`) once per process.
+ * @returns {String|null}
+ */
+function defaultHostSystemVersion() {
+    if (cachedHostSystemVersion !== undefined) return cachedHostSystemVersion;
+
+    const res = spawnSync(SW_VERS, ['-productVersion'], {
+        encoding : 'utf8',
+        maxBuffer: 4096,
+        timeout  : 5000
+    });
+
+    cachedHostSystemVersion = res.status === 0 && res.stdout?.trim() ? res.stdout.trim() : null;
+    return cachedHostSystemVersion;
 }
 
 /** @summary Decodes strict standard base64 and verifies exact decoded byte length. */
@@ -205,28 +254,53 @@ function extractXmlAttribute(attributes, attrName) {
     return match ? match[2].trim() : null;
 }
 
-/** @summary Compares two `buildVersion` strings newest-first (numeric when digits-only, else lexical). */
+/**
+ * @summary Compares two dotted numeric version strings (`14.2.1` vs `13.0`).
+ * @param {String} left
+ * @param {String} right
+ * @returns {Number} `1` if `left > right`, `-1` if `left < right`, `0` if equal.
+ */
+function compareDottedVersions(left, right) {
+    const
+        a = String(left ?? '').split(/[^0-9]+/).filter(Boolean).map(Number),
+        b = String(right ?? '').split(/[^0-9]+/).filter(Boolean).map(Number),
+        n = Math.max(a.length, b.length);
+
+    for (let i = 0; i < n; i++) {
+        const av = a[i] ?? 0, bv = b[i] ?? 0;
+        if (av !== bv) return av > bv ? 1 : -1;
+    }
+
+    return 0;
+}
+
+/** @summary Compares two `buildVersion` strings newest-first (numeric when digits-only, else dotted numeric). */
 function compareBuildVersionsDesc(left, right) {
     if (/^\d+$/.test(left) && /^\d+$/.test(right)) {
         const diff = BigInt(right) - BigInt(left);
         return diff > 0n ? 1 : diff < 0n ? -1 : 0;
     }
 
-    return right.localeCompare(left);
+    return compareDottedVersions(right, left) || right.localeCompare(left);
 }
 
 /**
- * @summary Parses a Sparkle 2 RSS appcast XML document and returns compatible full-archive
- * release items ordered newest-first by `buildVersion`. Nested `<sparkle:deltas>` blocks and
- * `sparkle:deltaFrom` enclosures are stripped so binary deltas are never selected as full bundles.
+ * @summary Parses a Sparkle 2 RSS appcast XML document and returns full-archive release items
+ * compatible with both `hardwareRequirements` and the host macOS version (`minimumSystemVersion`),
+ * ordered newest-first by `buildVersion`. Nested `<sparkle:deltas>` blocks and `sparkle:deltaFrom`
+ * enclosures are stripped so binary deltas are never selected as full bundles.
  * @param {String} xml Raw `appcast.xml` string.
  * @param {Object} [options]
  * @param {String} [options.hardwareRequirements='arm64'] Required hardware architecture tag when present on an item.
+ * @param {String|null} [options.hostSystemVersion] Host macOS version (`sw_vers -productVersion`) compared against `<sparkle:minimumSystemVersion>`.
  * @returns {Array<{shortVersion: String, buildVersion: String, minimumSystemVersion: String|null,
  *                  hardwareRequirements: String|null, pubDate: String|null, archiveUrl: String,
  *                  length: Number, edSignature: String}>}
  */
-export function parseCodexSparkleAppcast(xml, {hardwareRequirements = 'arm64'} = {}) {
+export function parseCodexSparkleAppcast(xml, {
+    hardwareRequirements = 'arm64',
+    hostSystemVersion = defaultHostSystemVersion()
+} = {}) {
     if (typeof xml !== 'string' || !xml.trim()) {
         throw refusal('appcast-invalid', 'empty-xml');
     }
@@ -249,6 +323,10 @@ export function parseCodexSparkleAppcast(xml, {hardwareRequirements = 'arm64'} =
             pubDate              = extractXmlTag(bodyWithoutDeltas, 'pubDate');
 
         if (hardwareRequirements && itemHardware && itemHardware !== hardwareRequirements) {
+            continue;
+        }
+
+        if (minimumSystemVersion && hostSystemVersion && compareDottedVersions(hostSystemVersion, minimumSystemVersion) < 0) {
             continue;
         }
 
@@ -367,20 +445,6 @@ export function verifySparkleEdSignature({
     }
 }
 
-/** @summary Reads the family ledger if present so acquisition can skip already-admitted or already-rejected builds. */
-function readFamilyLedger(familyDir, fsImpl) {
-    try {
-        const parsed = JSON.parse(fsImpl.readFileSync(path.join(familyDir, LEDGER_FILE), 'utf8'));
-        return {
-            admitted: Array.isArray(parsed?.admitted) ? parsed.admitted : [],
-            rejected: Array.isArray(parsed?.rejected) ? parsed.rejected : []
-        };
-    } catch (error) {
-        if (error?.code === 'ENOENT') return {admitted: [], rejected: []};
-        throw refusal('ledger-invalid', familyDir);
-    }
-}
-
 /** @summary Default HTTPS appcast fetcher. */
 async function defaultFetchAppcast(feedUrl) {
     const response = await fetch(feedUrl, {headers: {'Accept': 'application/rss+xml, application/xml, text/xml'}});
@@ -390,14 +454,27 @@ async function defaultFetchAppcast(feedUrl) {
     return response.text();
 }
 
-/** @summary Default streaming HTTPS archive downloader. */
-async function defaultDownloadArchive({url, destination, fsImpl = bundleFs}) {
+/** @summary Default streaming HTTPS archive downloader with bounded byte-length guard. */
+async function defaultDownloadArchive({url, destination, expectedLength, fsImpl = bundleFs}) {
     const response = await fetch(url);
     if (!response.ok || !response.body) {
         throw refusal('archive-download-failed', `HTTP ${response.status}`);
     }
+
+    let   bytes   = 0;
+    const limiter = new Transform({
+        transform(chunk, _encoding, callback) {
+            bytes += chunk.length;
+            if (Number.isSafeInteger(expectedLength) && expectedLength > 0 && bytes > expectedLength) {
+                callback(refusal('archive-length-mismatch', 'response-exceeds-expected-length'));
+                return;
+            }
+            callback(null, chunk);
+        }
+    });
+
     const writer = fsImpl.createWriteStream(destination, {mode: 0o600});
-    await pipeline(Readable.fromWeb(response.body), writer);
+    await pipeline(Readable.fromWeb(response.body), limiter, writer);
 }
 
 /** @summary Default macOS `.zip` extractor using `/usr/bin/ditto -x -k`. */
@@ -420,39 +497,54 @@ function defaultExtractArchive({archivePath, extractDir}) {
  * @param {String} options.root Absolute store root for harness generations.
  * @param {String} [options.appBundle='/Applications/ChatGPT.app'] Fallback Codex `.app` bundle when no generation is selected yet.
  * @param {Boolean} [options.checkOnly=false] When `true`, parses the appcast and reports availability without downloading.
- * @param {Boolean} [options.retryRejected=false] When `false`, skips re-downloading a build already recorded in `ledger.rejected`.
- * @param {Object} [options.seams] Injectable test seams (`fsImpl`, `readConfig`, `fetchAppcast`, `downloadArchive`, `extractArchive`, `materialize`, `select`).
+ * @param {Boolean} [options.retryRejected=false] When `false`, skips re-downloading a build already rejected by the current admitter identity in this process.
+ * @param {Object} [options.seams] Injectable test seams (`fsImpl`, `readConfig`, `fetchAppcast`, `downloadArchive`, `extractArchive`, `materialize`, `select`, `readLedger`, `admitterId`, `hostSystemVersion`).
  * @returns {Promise<{status: String, admitted: Boolean, candidate: Object, selected: Object|null, generation: Object|null, reason: String|null}>}
  */
-export async function acquireCodexDesktopUpdate({
+export function acquireCodexDesktopUpdate(options = {}) {
+    const root = options?.root;
+    if (typeof root !== 'string' || !path.isAbsolute(root)) {
+        return Promise.reject(refusal('root-must-be-absolute', String(root)));
+    }
+
+    const
+        familyDir = path.join(root, CODEX_FAMILY),
+        key       = `${familyDir}\0`,
+        next      = (acquireChains.get(key) ?? Promise.resolve()).then(() => runAcquireCodexDesktopUpdate(options));
+
+    acquireChains.set(key, next.catch(() => {}));
+    return next;
+}
+
+/** @summary One serialized acquisition run for `codex-desktop`; see {@link acquireCodexDesktopUpdate}. */
+async function runAcquireCodexDesktopUpdate({
     root,
     appBundle = '/Applications/ChatGPT.app',
     checkOnly = false,
     retryRejected = false,
     seams = {}
 } = {}) {
-    if (typeof root !== 'string' || !path.isAbsolute(root)) {
-        throw refusal('root-must-be-absolute', String(root));
-    }
-
     const
-        fsImpl          = seams.fsImpl ?? bundleFs,
-        readConfig      = seams.readConfig ?? (bundle => readCodexSparkleConfig({appBundle: bundle, fsImpl})),
-        fetchAppcast    = seams.fetchAppcast ?? defaultFetchAppcast,
-        downloadArchive = seams.downloadArchive ?? (args => defaultDownloadArchive({...args, fsImpl})),
-        extractArchive  = seams.extractArchive ?? defaultExtractArchive,
-        materialize     = seams.materialize ?? materializeHarnessGeneration,
-        select          = seams.select ?? selectHarnessGeneration,
-        familyDir       = path.join(root, CODEX_FAMILY);
+        fsImpl            = seams.fsImpl ?? bundleFs,
+        readConfig        = seams.readConfig ?? (bundle => readCodexSparkleConfig({appBundle: bundle, fsImpl})),
+        fetchAppcast      = seams.fetchAppcast ?? defaultFetchAppcast,
+        downloadArchive   = seams.downloadArchive ?? (args => defaultDownloadArchive({...args, fsImpl})),
+        extractArchive    = seams.extractArchive ?? defaultExtractArchive,
+        materialize       = seams.materialize ?? materializeHarnessGeneration,
+        select            = seams.select ?? selectHarnessGeneration,
+        readLedger        = seams.readLedger ?? readHarnessGenerationLedger,
+        admitterId        = seams.admitterId ?? defaultAdmitterId(),
+        hostSystemVersion = seams.hostSystemVersion !== undefined ? seams.hostSystemVersion : defaultHostSystemVersion(),
+        familyDir         = path.join(root, CODEX_FAMILY);
 
     const
         selected        = select({root, family: CODEX_FAMILY}),
         referenceBundle = selected?.appBundle ?? appBundle,
         config          = readConfig(referenceBundle),
         appcastXml      = await fetchAppcast(config.feedUrl),
-        releases        = parseCodexSparkleAppcast(appcastXml),
+        releases        = parseCodexSparkleAppcast(appcastXml, {hostSystemVersion}),
         candidate       = releases[0],
-        ledger          = readFamilyLedger(familyDir, fsImpl);
+        ledger          = readLedger({root, family: CODEX_FAMILY});
 
     const alreadyAdmitted = ledger.admitted.some(
         entry => entry.shortVersion === candidate.shortVersion && entry.buildVersion === candidate.buildVersion
@@ -469,19 +561,27 @@ export async function acquireCodexDesktopUpdate({
         };
     }
 
-    if (!retryRejected) {
-        const priorRejection = [...ledger.rejected]
-            .reverse()
-            .find(entry => entry.shortVersion === candidate.shortVersion && entry.buildVersion === candidate.buildVersion);
+    const rejectionKey = `${path.resolve(root)}\0${candidate.shortVersion}\0${candidate.buildVersion}\0${admitterId}`;
 
-        if (priorRejection) {
+    if (!retryRejected) {
+        const inProcessReason = inProcessRejections.get(rejectionKey);
+        const ledgerMatch     = [...ledger.rejected]
+            .reverse()
+            .find(entry =>
+                entry.shortVersion === candidate.shortVersion &&
+                entry.buildVersion === candidate.buildVersion &&
+                entry.admitterId === admitterId
+            );
+        const priorReason = inProcessReason ?? ledgerMatch?.reason ?? null;
+
+        if (priorReason) {
             return {
                 status    : 'already-rejected',
                 admitted  : false,
                 candidate,
                 selected,
                 generation: null,
-                reason    : priorRejection.reason ?? 'rejected'
+                reason    : priorReason
             };
         }
     }
@@ -588,6 +688,12 @@ export async function acquireCodexDesktopUpdate({
             sourceBundle: extractedBundle,
             source      : candidate.archiveUrl
         });
+
+        if (!generation.admitted) {
+            inProcessRejections.set(rejectionKey, generation.reason ?? 'rejected');
+        } else {
+            inProcessRejections.delete(rejectionKey);
+        }
 
         return {
             status  : generation.admitted ? 'admitted' : 'rejected',

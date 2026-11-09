@@ -11,6 +11,7 @@ import {
 } from '../../../../../../ai/services/fleet/codexDesktopUpdate.mjs';
 import {
     materializeHarnessGeneration,
+    readHarnessGenerationLedger,
     selectHarnessGeneration
 } from '../../../../../../ai/services/fleet/harnessGeneration.mjs';
 
@@ -87,6 +88,7 @@ function makeCodexBundle(roots, {
 function makeAppcastXml({
     shortVersion = '26.1110.10000',
     buildVersion = '26000',
+    minimumSystemVersion = '13.0',
     archiveUrl = 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.1110.10000.zip',
     length = 128,
     edSignature = Buffer.alloc(64, 7).toString('base64')
@@ -109,7 +111,7 @@ function makeAppcastXml({
             <pubDate>Mon, 09 Nov 2026 19:00:00 +0000</pubDate>
             <sparkle:version>${buildVersion}</sparkle:version>
             <sparkle:shortVersionString>${shortVersion}</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:minimumSystemVersion>${minimumSystemVersion}</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <sparkle:deltas>
                 <enclosure url="https://persistent.oaistatic.com/codex-app-prod/ChatGPT${buildVersion}-25894-arm64.delta" sparkle:deltaFrom="25894" length="7506786" type="application/octet-stream" sparkle:edSignature="${Buffer.alloc(64, 9).toString('base64')}" />
@@ -196,18 +198,27 @@ test.describe('codexDesktopUpdate', () => {
         })).toThrow(/feed-url-must-be-https/);
     });
 
-    test('parseCodexSparkleAppcast ignores delta enclosures, filters architecture, and orders newest buildVersion first', () => {
-        const xml      = makeAppcastXml({shortVersion: '26.1110.10000', buildVersion: '26000'});
-        const releases = parseCodexSparkleAppcast(xml);
+    test('parseCodexSparkleAppcast ignores delta enclosures, filters architecture and minimumSystemVersion, and orders newest buildVersion first', () => {
+        const xml      = makeAppcastXml({shortVersion: '26.1110.10000', buildVersion: '26000', minimumSystemVersion: '15.2'});
+        const releases = parseCodexSparkleAppcast(xml, {hostSystemVersion: '15.4.1'});
 
         expect(releases).toHaveLength(2);
         expect(releases[0]).toMatchObject({
-            shortVersion: '26.1110.10000',
-            buildVersion: '26000',
-            archiveUrl  : 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.1110.10000.zip',
-            length      : 128
+            shortVersion        : '26.1110.10000',
+            buildVersion        : '26000',
+            minimumSystemVersion: '15.2',
+            archiveUrl          : 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.1110.10000.zip',
+            length              : 128
         });
         expect(releases[1].buildVersion).toBe('25679');
+
+        // When hostSystemVersion is older than 26000's minimumSystemVersion (15.2) but >= 25679's (13.0),
+        // 26000 is skipped and 25679 is selected as the newest compatible release.
+        const olderHostReleases = parseCodexSparkleAppcast(xml, {hostSystemVersion: '14.6'});
+        expect(olderHostReleases).toHaveLength(1);
+        expect(olderHostReleases[0].buildVersion).toBe('25679');
+
+        expect(() => parseCodexSparkleAppcast(xml, {hostSystemVersion: '12.0'})).toThrow(/no-compatible-release/);
         expect(() => parseCodexSparkleAppcast(xml, {hardwareRequirements: 'x86_64'})).toThrow(/no-compatible-release/);
     });
 
@@ -250,7 +261,7 @@ test.describe('codexDesktopUpdate', () => {
         })).toEqual({verified: false, reason: 'sparkle-signature-invalid'});
     });
 
-    test('acquireCodexDesktopUpdate admits a verified release, short-circuits up-to-date and already-rejected builds, and refuses tampered downloads before extraction', async () => {
+    test('acquireCodexDesktopUpdate admits a verified release, short-circuits up-to-date and same-admitter rejections, and retries when admitting code changes', async () => {
         const keys          = makeEd25519Keys();
         const initialBundle = makeCodexBundle(roots, {publicKey: keys.publicKeyBase64});
 
@@ -260,6 +271,8 @@ test.describe('codexDesktopUpdate', () => {
             sourceBundle: initialBundle,
             seams       : makeMaterializeSeams({shortVersion: '26.1103.60933', buildVersion: '25894', cdhash: 'a'.repeat(64)})
         });
+
+        expect(readHarnessGenerationLedger({root, family: 'codex-desktop'}).admitted).toHaveLength(1);
 
         const archivePayload = Buffer.from('codex-26.1110.10000-zip-payload');
         const validSignature = keys.signBytes(archivePayload);
@@ -356,7 +369,8 @@ test.describe('codexDesktopUpdate', () => {
         expect(upToDateResult.status).toBe('up-to-date');
         expect(downloaded).toBe(0);
 
-        // 5. A build that failed admission and sits in ledger.rejected is skipped unless retryRejected: true.
+        // 5. A build rejected by the current admitterId is skipped on repeat polls with the same admitterId,
+        //    but automatically retried and admitted when the admitting code (admitterId) changes.
         const brokenXml = makeAppcastXml({
             shortVersion: '26.1120.1',
             buildVersion: '27000',
@@ -368,6 +382,7 @@ test.describe('codexDesktopUpdate', () => {
             root,
             seams: {
                 ...baseSeams,
+                admitterId     : 'probe-pre-1533',
                 fetchAppcast   : async () => brokenXml,
                 downloadArchive: async ({destination}) => fs.writeFileSync(destination, archivePayload),
                 extractArchive : async ({extractDir}) => {
@@ -394,19 +409,55 @@ test.describe('codexDesktopUpdate', () => {
         });
 
         downloaded = 0;
-        const skippedBroken = await acquireCodexDesktopUpdate({
+        const skippedSameAdmitter = await acquireCodexDesktopUpdate({
             root,
             seams: {
                 ...baseSeams,
+                admitterId     : 'probe-pre-1533',
                 fetchAppcast   : async () => brokenXml,
                 downloadArchive: async () => { downloaded++; }
             }
         });
-        expect(skippedBroken).toMatchObject({
+        expect(skippedSameAdmitter).toMatchObject({
             status  : 'already-rejected',
             admitted: false,
             reason  : 'probe-refused:updater-disable-predicate-missing'
         });
         expect(downloaded).toBe(0);
+
+        // Once the admitting code changes (probe-post-1533), the prior rejection in ledger.rejected
+        // does not block retrying and admitting build 27000.
+        const recoveredAfterFix = await acquireCodexDesktopUpdate({
+            root,
+            seams: {
+                ...baseSeams,
+                admitterId     : 'probe-post-1533',
+                fetchAppcast   : async () => brokenXml,
+                downloadArchive: async ({destination}) => {
+                    downloaded++;
+                    fs.writeFileSync(destination, archivePayload);
+                },
+                extractArchive : async ({extractDir}) => {
+                    const extractedMain = path.join(extractDir, 'ChatGPT.app', 'Contents', 'MacOS', 'ChatGPT');
+                    fs.mkdirSync(path.dirname(extractedMain), {recursive: true});
+                    fs.writeFileSync(extractedMain, '#!/bin/sh\n', {mode: 0o755});
+                },
+                materialize    : options => materializeHarnessGeneration({
+                    ...options,
+                    seams: makeMaterializeSeams({
+                        shortVersion: '26.1120.1',
+                        buildVersion: '27000',
+                        cdhash      : 'c'.repeat(64),
+                        available   : true,
+                        reason      : null
+                    })
+                })
+            }
+        });
+        expect(recoveredAfterFix).toMatchObject({
+            status  : 'admitted',
+            admitted: true
+        });
+        expect(downloaded).toBe(1);
     });
 });
