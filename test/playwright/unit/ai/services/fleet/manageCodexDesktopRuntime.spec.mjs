@@ -89,15 +89,117 @@ test.describe('manageCodexDesktopRuntime', () => {
     });
 
     test('capability probe fails closed when updater env presence lacks the falsifiable false predicate', () => {
-        const fixture = makeBundle({
-            asar: REQUIRED_ASAR_MARKERS.replace('CODEX_SPARKLE_ENABLED===`false`', 'CODEX_SPARKLE_ENABLED')
-        });
-        roots.push(fixture.appBundle);
+        const invalidPredicates = [
+            'CODEX_SPARKLE_ENABLED',
+            '"true"!==a.CODEX_SPARKLE_ENABLED',
+            'a.CODEX_SPARKLE_ENABLED==="true"',
+            '"false"!==a.CODEX_SPARKLE_ENABLED_X',
+            '"false"!==a.X_CODEX_SPARKLE_ENABLED',
+            '"false"!==X_CODEX_SPARKLE_ENABLED',
+            'a.X_CODEX_SPARKLE_ENABLED==="false"',
+            'a.CODEX_SPARKLE_ENABLED_X==="false"',
+            '"falsex"!==a.CODEX_SPARKLE_ENABLED',
+            '\'false"!==a.CODEX_SPARKLE_ENABLED'
+        ];
 
-        expect(probeCodexDesktopCapabilities({binaryPath: fixture.main})).toMatchObject({
-            available: false,
-            reason   : 'updater-disable-predicate-missing'
-        });
+        for (const invalidPredicate of invalidPredicates) {
+            const fixture = makeBundle({
+                asar: [
+                    'CODEX_ELECTRON_USER_DATA_PATH',
+                    '--open-project',
+                    'CODEX_SPARKLE_ENABLED',
+                    invalidPredicate,
+                    'shouldIncludeSparkle',
+                    'enableUpdater'
+                ].join('\n')
+            });
+            roots.push(fixture.appBundle);
+
+            expect(probeCodexDesktopCapabilities({binaryPath: fixture.main}), invalidPredicate).toMatchObject({
+                available: false,
+                reason   : 'updater-disable-predicate-missing'
+            });
+        }
+    });
+
+    test('capability probe accepts both LHS and minified Yoda RHS updater-disable predicates across quote styles', () => {
+        const validPredicates = [
+            'CODEX_SPARKLE_ENABLED===`false`',
+            'CODEX_SPARKLE_ENABLED==="false"',
+            "CODEX_SPARKLE_ENABLED==='false'",
+            'process.env.CODEX_SPARKLE_ENABLED !== "false"',
+            '(e,t,n,a)=>"false"!==a.CODEX_SPARKLE_ENABLED&&s.includes(e)',
+            "SG=(e,t,r,n)=>'false'===n.CODEX_SPARKLE_ENABLED&&S$.includes(e)",
+            '`false` != process.env.CODEX_SPARKLE_ENABLED',
+            '(0,e.env).CODEX_SPARKLE_ENABLED==="false"'
+        ];
+
+        for (const validPredicate of validPredicates) {
+            const fixture = makeBundle({
+                asar: REQUIRED_ASAR_MARKERS.replace('CODEX_SPARKLE_ENABLED===`false`', validPredicate)
+            });
+            roots.push(fixture.appBundle);
+
+            expect(probeCodexDesktopCapabilities({binaryPath: fixture.main}), validPredicate).toMatchObject({
+                available: true,
+                reason   : null
+            });
+        }
+    });
+
+    test('capability probe preserves updater-disable predicate windows across 1 MiB chunk boundaries and exits early', () => {
+        const
+            sizingPayload = ';'.repeat(3 * 1024 * 1024),
+            headerBytes   = makeArchive(sizingPayload).length - sizingPayload.length,
+            chunkBoundary = (1024 * 1024) - headerBytes,
+            prefixMarkers = [
+                'CODEX_ELECTRON_USER_DATA_PATH',
+                '--open-project',
+                'shouldIncludeSparkle',
+                'enableUpdater\n'
+            ].join('\n'),
+            predicates = [
+                {
+                    text      : '"false"!==a.CODEX_SPARKLE_ENABLED',
+                    splitAfter: '"false"!==a.CODEX_'.length
+                },
+                {
+                    text      : 'process.env.CODEX_SPARKLE_ENABLED !== "false"',
+                    splitAfter: 'process.env.CODEX_SPARKLE_ENABLED'.length
+                }
+            ];
+
+        for (const predicate of predicates) {
+            const
+                padLength      = chunkBoundary - prefixMarkers.length - predicate.splitAfter,
+                straddlingAsar = `${prefixMarkers}${';'.repeat(padLength)}${predicate.text}${';'.repeat(2 * 1024 * 1024)}`,
+                fixture        = makeBundle({asar: straddlingAsar});
+
+            roots.push(fixture.appBundle);
+
+            let   asarReadCalls = 0;
+            const realAsarPath  = fs.realpathSync(fixture.appAsar);
+            const countingFs    = {
+                ...fs,
+                openSync(targetPath, flags) {
+                    const fd = fs.openSync(targetPath, flags);
+                    countingFs._asarFd = targetPath === realAsarPath ? fd : null;
+                    return fd;
+                },
+                readSync(fd, buffer, offset, length, position) {
+                    if (fd === countingFs._asarFd) {
+                        asarReadCalls += 1;
+                    }
+                    return fs.readSync(fd, buffer, offset, length, position);
+                }
+            };
+
+            expect(probeCodexDesktopCapabilities({binaryPath: fixture.main, fsImpl: countingFs}), predicate.text).toMatchObject({
+                available: true,
+                reason   : null
+            });
+            expect(asarReadCalls, predicate.text).toBe(2);
+        }
     });
 
     test('capability probe names every missing project/profile contract before any launch', () => {

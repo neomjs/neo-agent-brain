@@ -6,19 +6,18 @@ import path            from 'node:path';
 const
     // Electron virtualizes ASAR paths; bundle inspection needs their physical bytes.
     bundleFs = process.versions.electron ? createRequire(import.meta.url)('original-fs') : fs,
+    SPARKLE_ENV_MARKER = 'CODEX_SPARKLE_ENABLED',
+    SPARKLE_WINDOW_RADIUS = 64,
     ASAR_MARKERS = Object.freeze([
         'CODEX_ELECTRON_USER_DATA_PATH',
         '--open-project',
-        'CODEX_SPARKLE_ENABLED',
+        SPARKLE_ENV_MARKER,
         'shouldIncludeSparkle',
         'enableUpdater'
     ]),
     FRAMEWORK_MARKERS = Object.freeze(['user-data-dir']),
-    UPDATER_DISABLE_PREDICATES = Object.freeze([
-        'CODEX_SPARKLE_ENABLED===`false`',
-        'CODEX_SPARKLE_ENABLED==="false"',
-        "CODEX_SPARKLE_ENABLED==='false'"
-    ]),
+    UPDATER_DISABLE_LHS_PATTERN = /(?<![\w$])(?:[A-Za-z_$][\w$]*\.)*CODEX_SPARKLE_ENABLED(?![\w$])\s*[!=]==?\s*(['"`])false\1(?![\w$])/,
+    UPDATER_DISABLE_RHS_PATTERN = /(?<![\w$])(['"`])false\1\s*[!=]==?\s*(?:[A-Za-z_$][\w$]*\.)*CODEX_SPARKLE_ENABLED(?![\w$])/,
     CRASHPAD_BASENAME = 'browser_crashpad_handler';
 
 /**
@@ -27,11 +26,13 @@ const
  *
  * The app's profile mirror, project-open route, and updater-disable predicate are private packaged
  * contracts rather than public CLI guarantees. Presence of an env-var string alone is therefore
- * insufficient: the probe requires the app-side profile/open-project markers AND the explicit
- * `CODEX_SPARKLE_ENABLED === 'false'` predicate feeding the packaged updater path. Native profile
- * isolation is independently pinned by the embedded Chromium framework's `user-data-dir` marker.
- * Any bundle reshuffle or minifier change fails CLOSED with a named missing capability; that is the
- * revalidation trigger after an app update, never a reason to guess from the version number.
+ * insufficient: the probe requires the app-side profile/open-project markers AND a comparison of
+ * `CODEX_SPARKLE_ENABLED` against the literal `false` in either operand order (`==`/`===`/`!=`/`!==`,
+ * any quote style, optional identifier chain) within a `±64`-byte window around the marker. Native
+ * profile isolation is independently pinned by the embedded Chromium framework's `user-data-dir`
+ * marker. Minifier identifier re-lettering and operand-order flips are tolerated; a dropped or
+ * semantically changed comparison fails CLOSED with a named missing capability as the revalidation
+ * trigger after an app update, never a reason to guess from the version number.
  *
  * The packaged Crashpad helper is derived through the framework's stable `Helpers` symlink and
  * resolved to its exact executable identity. The observed Chromium-version directory is never
@@ -82,13 +83,13 @@ export function probeCodexDesktopCapabilities({binaryPath, fsImpl = bundleFs} = 
         return unavailable('required-app-bundle-resource-unavailable', {binaryPath: mainBinary, appBundle});
     }
 
-    const asarMissing = missingMarkers(appAsar, ASAR_MARKERS, fsImpl);
+    const asarScan = scanAsarContracts(appAsar, ASAR_MARKERS, fsImpl);
 
-    if (asarMissing.length) {
-        return unavailable(`app-contract-marker-missing:${asarMissing.join(',')}`, {binaryPath: mainBinary, appBundle});
+    if (asarScan.missing.length) {
+        return unavailable(`app-contract-marker-missing:${asarScan.missing.join(',')}`, {binaryPath: mainBinary, appBundle});
     }
 
-    if (!containsAnyMarker(appAsar, UPDATER_DISABLE_PREDICATES, fsImpl)) {
+    if (!asarScan.hasUpdaterDisablePredicate) {
         return unavailable('updater-disable-predicate-missing', {binaryPath: mainBinary, appBundle});
     }
 
@@ -366,32 +367,58 @@ function isStrictlyContained(root, target) {
 
 /** @returns {String[]} @private */
 function missingMarkers(file, markers, fsImpl) {
-    const found = scanMarkers(file, markers, fsImpl);
-    return markers.filter(marker => !found.has(marker));
-}
-
-/** @returns {Boolean} @private */
-function containsAnyMarker(file, markers, fsImpl) {
-    return scanMarkers(file, markers, fsImpl).size > 0;
+    return scanMarkers(file, markers, fsImpl).missing;
 }
 
 /**
- * Memory-bounded binary marker scan. A tail preserves matches split across 1 MiB chunk boundaries.
- * @returns {Set<String>}
+ * Single-pass streaming scan of `app.asar` for required contract markers and a semantic
+ * `CODEX_SPARKLE_ENABLED` vs `false` comparison within a `±64`-byte window. Exits early as soon as
+ * all markers and at least one valid disable-predicate window are satisfied.
+ * @returns {{missing: String[], hasUpdaterDisablePredicate: Boolean}}
  * @private
  */
-function scanMarkers(file, markers, fsImpl) {
-    const
-        pending    = new Map(markers.map(marker => [marker, Buffer.from(marker)])),
-        found      = new Set(),
-        chunk      = Buffer.allocUnsafe(1024 * 1024),
-        tailSize   = Math.max(...[...pending.values()].map(marker => marker.length), 1) - 1,
-        descriptor = fsImpl.openSync(file, 'r');
+function scanAsarContracts(file, markers, fsImpl) {
+    const scan = scanMarkers(file, markers, fsImpl, {
+        windowMarker   : SPARKLE_ENV_MARKER,
+        windowRadius   : SPARKLE_WINDOW_RADIUS,
+        windowPredicate: matchesUpdaterDisablePredicate
+    });
 
-    let tail = Buffer.alloc(0), position = 0;
+    return {
+        missing                   : scan.missing,
+        hasUpdaterDisablePredicate: scan.windowMatched
+    };
+}
+
+/** @returns {Boolean} @private */
+function matchesUpdaterDisablePredicate(windowText) {
+    return UPDATER_DISABLE_LHS_PATTERN.test(windowText)
+        || UPDATER_DISABLE_RHS_PATTERN.test(windowText);
+}
+
+/**
+ * Memory-bounded binary marker scan with optional bounded-window predicate matching.
+ * A tail preserves marker and window matches split across 1 MiB chunk boundaries.
+ * @returns {{missing: String[], windowMatched: Boolean}}
+ * @private
+ */
+function scanMarkers(file, markers, fsImpl, {windowMarker = null, windowRadius = 0, windowPredicate = null} = {}) {
+    const
+        pending          = new Map(markers.map(marker => [marker, Buffer.from(marker)])),
+        windowMarkerBuf  = windowMarker ? Buffer.from(windowMarker) : null,
+        found            = new Set(),
+        chunk            = Buffer.allocUnsafe(1024 * 1024),
+        maxMarkerLen     = Math.max(...[...pending.values()].map(marker => marker.length), 1),
+        windowTailLength = windowMarkerBuf ? (2 * windowRadius) + windowMarkerBuf.length - 1 : 0,
+        tailSize         = Math.max(maxMarkerLen - 1, windowTailLength),
+        descriptor       = fsImpl.openSync(file, 'r');
+
+    let tail          = Buffer.alloc(0),
+        position      = 0,
+        windowMatched = !windowMarkerBuf;
 
     try {
-        while (pending.size) {
+        while (pending.size || !windowMatched) {
             const bytesRead = fsImpl.readSync(descriptor, chunk, 0, chunk.length, position);
             if (!bytesRead) break;
 
@@ -406,13 +433,34 @@ function scanMarkers(file, markers, fsImpl) {
                 }
             }
 
+            if (!windowMatched) {
+                for (
+                    let offset = haystack.indexOf(windowMarkerBuf);
+                    offset !== -1;
+                    offset = haystack.indexOf(windowMarkerBuf, offset + 1)
+                ) {
+                    const
+                        windowStart = Math.max(0, offset - windowRadius),
+                        windowEnd   = Math.min(haystack.length, offset + windowMarkerBuf.length + windowRadius),
+                        windowText  = haystack.subarray(windowStart, windowEnd).toString('utf8');
+
+                    if (windowPredicate(windowText)) {
+                        windowMatched = true;
+                        break;
+                    }
+                }
+            }
+
             tail = tailSize ? haystack.subarray(Math.max(0, haystack.length - tailSize)) : Buffer.alloc(0);
         }
     } finally {
         fsImpl.closeSync(descriptor);
     }
 
-    return found;
+    return {
+        missing: markers.filter(marker => !found.has(marker)),
+        windowMatched
+    };
 }
 
 /** @private */
