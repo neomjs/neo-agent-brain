@@ -153,6 +153,25 @@ function readLedger(directory) {
 }
 
 /**
+ * @summary Reads one family's generation ledger (`{version, admitted, rejected}`), returning
+ * an empty ledger when absent and throwing `ledger-invalid` when malformed.
+ * @param {Object} options
+ * @param {String} options.root Absolute store root.
+ * @param {String} options.family A key of {@link HARNESS_GENERATION_FAMILIES}.
+ * @returns {{version: Number, admitted: Object[], rejected: Object[]}}
+ * @throws {Error} `root-must-be-absolute`, `unknown-family`, or `ledger-invalid`.
+ */
+export function readHarnessGenerationLedger({root, family} = {}) {
+    const ledger = readLedger(familyDirectory(root, family));
+
+    return {
+        version : ledger.version,
+        admitted: ledger.admitted.map(entry => ({...entry})),
+        rejected: ledger.rejected.map(entry => ({...entry}))
+    }
+}
+
+/**
  * @summary The family's selected generation: the most recently admitted build whose copy is present.
  * Re-admitting a known build never reorders the ledger, so an older bundle seen again (for example
  * the untouched `/Applications` copy) cannot displace a newer admitted one.
