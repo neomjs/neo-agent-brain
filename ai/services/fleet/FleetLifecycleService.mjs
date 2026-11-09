@@ -2505,8 +2505,9 @@ class FleetLifecycleService extends Base {
     /**
      * @summary Verify surviving runtime pins and current original-owner inputs before the issuer seals succession.
      *
-     * A pending Start or a legacy seat refuses the handoff without preventing ordinary Quit. Any other unprovable
-     * fact removes only the authority it would have carried, so one seat never blocks the update:
+     * A pending Start or a legacy seat refuses the handoff without preventing ordinary Quit, while a record that claims
+     * no process, as a Start refused or failed before spawn leaves, holds nothing and is passed over. Any other
+     * unprovable fact removes only the authority it would have carried, so one seat never blocks the update:
      * - a server that cannot prove loses its grant;
      * - a seat that cannot prove its original Start loses its generation and is carried unresolved;
      * - a stale generation is carried stale.
@@ -2529,6 +2530,7 @@ class FleetLifecycleService extends Base {
             for (const record of this.processes.values()) {
                 if (record.state === 'stopped' && !record.ownershipUnresolved && !record.cleanupUnresolved) continue;
                 const start = record.runtimeStart;
+                if (!start && record.pid == null && !record.child && !record.adopted && !record.ownershipUnresolved && !record.cleanupUnresolved) continue;
                 if (!start) throw new Error(`seat ${record.id} is not a live original Start`);
                 const verdict = await this.verifySurvivor(record, start, {admission, verified, tenantService, verifyRuntime, readGrants})
                     .catch(error => ({unproved: error?.message || 'unproved'}));
