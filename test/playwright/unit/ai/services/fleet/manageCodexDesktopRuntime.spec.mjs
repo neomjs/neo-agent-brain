@@ -130,7 +130,8 @@ test.describe('manageCodexDesktopRuntime', () => {
             'process.env.CODEX_SPARKLE_ENABLED !== "false"',
             '(e,t,n,a)=>"false"!==a.CODEX_SPARKLE_ENABLED&&s.includes(e)',
             "SG=(e,t,r,n)=>'false'===n.CODEX_SPARKLE_ENABLED&&S$.includes(e)",
-            '`false` != process.env.CODEX_SPARKLE_ENABLED'
+            '`false` != process.env.CODEX_SPARKLE_ENABLED',
+            '(0,e.env).CODEX_SPARKLE_ENABLED==="false"'
         ];
 
         for (const validPredicate of validPredicates) {
@@ -148,8 +149,8 @@ test.describe('manageCodexDesktopRuntime', () => {
 
     test('capability probe preserves updater-disable predicate windows across 1 MiB chunk boundaries and exits early', () => {
         const
-            headerProbe   = makeArchive('x'),
-            headerBytes   = headerProbe.length - 1,
+            sizingPayload = ';'.repeat(3 * 1024 * 1024),
+            headerBytes   = makeArchive(sizingPayload).length - sizingPayload.length,
             chunkBoundary = (1024 * 1024) - headerBytes,
             prefixMarkers = [
                 'CODEX_ELECTRON_USER_DATA_PATH',

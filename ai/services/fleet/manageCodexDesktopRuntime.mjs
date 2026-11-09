@@ -16,7 +16,7 @@ const
         'enableUpdater'
     ]),
     FRAMEWORK_MARKERS = Object.freeze(['user-data-dir']),
-    UPDATER_DISABLE_LHS_PATTERN = /(?<![\w$.])(?:[A-Za-z_$][\w$]*\.)*CODEX_SPARKLE_ENABLED(?![\w$])\s*[!=]==?\s*(['"`])false\1(?![\w$])/,
+    UPDATER_DISABLE_LHS_PATTERN = /(?<![\w$])(?:[A-Za-z_$][\w$]*\.)*CODEX_SPARKLE_ENABLED(?![\w$])\s*[!=]==?\s*(['"`])false\1(?![\w$])/,
     UPDATER_DISABLE_RHS_PATTERN = /(?<![\w$])(['"`])false\1\s*[!=]==?\s*(?:[A-Za-z_$][\w$]*\.)*CODEX_SPARKLE_ENABLED(?![\w$])/,
     CRASHPAD_BASENAME = 'browser_crashpad_handler';
 
@@ -26,11 +26,13 @@ const
  *
  * The app's profile mirror, project-open route, and updater-disable predicate are private packaged
  * contracts rather than public CLI guarantees. Presence of an env-var string alone is therefore
- * insufficient: the probe requires the app-side profile/open-project markers AND the explicit
- * `CODEX_SPARKLE_ENABLED === 'false'` predicate feeding the packaged updater path. Native profile
- * isolation is independently pinned by the embedded Chromium framework's `user-data-dir` marker.
- * Any bundle reshuffle or minifier change fails CLOSED with a named missing capability; that is the
- * revalidation trigger after an app update, never a reason to guess from the version number.
+ * insufficient: the probe requires the app-side profile/open-project markers AND a comparison of
+ * `CODEX_SPARKLE_ENABLED` against the literal `false` in either operand order (`==`/`===`/`!=`/`!==`,
+ * any quote style, optional identifier chain) within a `±64`-byte window around the marker. Native
+ * profile isolation is independently pinned by the embedded Chromium framework's `user-data-dir`
+ * marker. Minifier identifier re-lettering and operand-order flips are tolerated; a dropped or
+ * semantically changed comparison fails CLOSED with a named missing capability as the revalidation
+ * trigger after an app update, never a reason to guess from the version number.
  *
  * The packaged Crashpad helper is derived through the framework's stable `Helpers` symlink and
  * resolved to its exact executable identity. The observed Chromium-version directory is never
@@ -365,8 +367,7 @@ function isStrictlyContained(root, target) {
 
 /** @returns {String[]} @private */
 function missingMarkers(file, markers, fsImpl) {
-    const found = scanMarkers(file, markers, fsImpl);
-    return markers.filter(marker => !found.has(marker));
+    return scanMarkers(file, markers, fsImpl).missing;
 }
 
 /**
@@ -377,21 +378,47 @@ function missingMarkers(file, markers, fsImpl) {
  * @private
  */
 function scanAsarContracts(file, markers, fsImpl) {
-    const
-        pending       = new Map(markers.map(marker => [marker, Buffer.from(marker)])),
-        sparkleMarker = Buffer.from(SPARKLE_ENV_MARKER),
-        found         = new Set(),
-        chunk         = Buffer.allocUnsafe(1024 * 1024),
-        maxMarkerLen  = Math.max(...[...pending.values()].map(marker => marker.length), 1),
-        tailSize      = Math.max(maxMarkerLen - 1, (2 * SPARKLE_WINDOW_RADIUS) + sparkleMarker.length - 1),
-        descriptor    = fsImpl.openSync(file, 'r');
+    const scan = scanMarkers(file, markers, fsImpl, {
+        windowMarker   : SPARKLE_ENV_MARKER,
+        windowRadius   : SPARKLE_WINDOW_RADIUS,
+        windowPredicate: matchesUpdaterDisablePredicate
+    });
 
-    let tail                       = Buffer.alloc(0),
-        position                   = 0,
-        hasUpdaterDisablePredicate = false;
+    return {
+        missing                   : scan.missing,
+        hasUpdaterDisablePredicate: scan.windowMatched
+    };
+}
+
+/** @returns {Boolean} @private */
+function matchesUpdaterDisablePredicate(windowText) {
+    return UPDATER_DISABLE_LHS_PATTERN.test(windowText)
+        || UPDATER_DISABLE_RHS_PATTERN.test(windowText);
+}
+
+/**
+ * Memory-bounded binary marker scan with optional bounded-window predicate matching.
+ * A tail preserves marker and window matches split across 1 MiB chunk boundaries.
+ * @returns {{missing: String[], windowMatched: Boolean}}
+ * @private
+ */
+function scanMarkers(file, markers, fsImpl, {windowMarker = null, windowRadius = 0, windowPredicate = null} = {}) {
+    const
+        pending          = new Map(markers.map(marker => [marker, Buffer.from(marker)])),
+        windowMarkerBuf  = windowMarker ? Buffer.from(windowMarker) : null,
+        found            = new Set(),
+        chunk            = Buffer.allocUnsafe(1024 * 1024),
+        maxMarkerLen     = Math.max(...[...pending.values()].map(marker => marker.length), 1),
+        windowTailLength = windowMarkerBuf ? (2 * windowRadius) + windowMarkerBuf.length - 1 : 0,
+        tailSize         = Math.max(maxMarkerLen - 1, windowTailLength),
+        descriptor       = fsImpl.openSync(file, 'r');
+
+    let tail          = Buffer.alloc(0),
+        position      = 0,
+        windowMatched = !windowMarkerBuf;
 
     try {
-        while (pending.size || !hasUpdaterDisablePredicate) {
+        while (pending.size || !windowMatched) {
             const bytesRead = fsImpl.readSync(descriptor, chunk, 0, chunk.length, position);
             if (!bytesRead) break;
 
@@ -406,19 +433,19 @@ function scanAsarContracts(file, markers, fsImpl) {
                 }
             }
 
-            if (!hasUpdaterDisablePredicate) {
+            if (!windowMatched) {
                 for (
-                    let offset = haystack.indexOf(sparkleMarker);
+                    let offset = haystack.indexOf(windowMarkerBuf);
                     offset !== -1;
-                    offset = haystack.indexOf(sparkleMarker, offset + 1)
+                    offset = haystack.indexOf(windowMarkerBuf, offset + 1)
                 ) {
                     const
-                        windowStart = Math.max(0, offset - SPARKLE_WINDOW_RADIUS),
-                        windowEnd   = Math.min(haystack.length, offset + sparkleMarker.length + SPARKLE_WINDOW_RADIUS),
+                        windowStart = Math.max(0, offset - windowRadius),
+                        windowEnd   = Math.min(haystack.length, offset + windowMarkerBuf.length + windowRadius),
                         windowText  = haystack.subarray(windowStart, windowEnd).toString('utf8');
 
-                    if (matchesUpdaterDisablePredicate(windowText)) {
-                        hasUpdaterDisablePredicate = true;
+                    if (windowPredicate(windowText)) {
+                        windowMatched = true;
                         break;
                     }
                 }
@@ -432,54 +459,8 @@ function scanAsarContracts(file, markers, fsImpl) {
 
     return {
         missing: markers.filter(marker => !found.has(marker)),
-        hasUpdaterDisablePredicate
+        windowMatched
     };
-}
-
-/** @returns {Boolean} @private */
-function matchesUpdaterDisablePredicate(windowText) {
-    return UPDATER_DISABLE_LHS_PATTERN.test(windowText)
-        || UPDATER_DISABLE_RHS_PATTERN.test(windowText);
-}
-
-/**
- * Memory-bounded binary marker scan. A tail preserves matches split across 1 MiB chunk boundaries.
- * @returns {Set<String>}
- * @private
- */
-function scanMarkers(file, markers, fsImpl) {
-    const
-        pending    = new Map(markers.map(marker => [marker, Buffer.from(marker)])),
-        found      = new Set(),
-        chunk      = Buffer.allocUnsafe(1024 * 1024),
-        tailSize   = Math.max(...[...pending.values()].map(marker => marker.length), 1) - 1,
-        descriptor = fsImpl.openSync(file, 'r');
-
-    let tail = Buffer.alloc(0), position = 0;
-
-    try {
-        while (pending.size) {
-            const bytesRead = fsImpl.readSync(descriptor, chunk, 0, chunk.length, position);
-            if (!bytesRead) break;
-
-            position += bytesRead;
-
-            const haystack = Buffer.concat([tail, chunk.subarray(0, bytesRead)]);
-
-            for (const [text, marker] of pending) {
-                if (haystack.indexOf(marker) !== -1) {
-                    found.add(text);
-                    pending.delete(text);
-                }
-            }
-
-            tail = tailSize ? haystack.subarray(Math.max(0, haystack.length - tailSize)) : Buffer.alloc(0);
-        }
-    } finally {
-        fsImpl.closeSync(descriptor);
-    }
-
-    return found;
 }
 
 /** @private */
