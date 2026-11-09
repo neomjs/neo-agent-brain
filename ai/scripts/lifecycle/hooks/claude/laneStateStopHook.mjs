@@ -601,6 +601,55 @@ export function extractLastUserTextFromJsonl(jsonl = '') {
 }
 
 /**
+ * @summary The Claude desktop app's turn-closing tool. Its `ask` becomes a question with buttons, the
+ * agent's own pick first, so the deference mirror reads it beside the final text.
+ * @type {String}
+ */
+export const WRAP_UP_TOOL_NAME = 'mcp__ccd_turn__wrap_up';
+
+/**
+ * @summary Extracts the current turn's newest wrap-up call from a Claude Code JSONL transcript as
+ * `{ask, actions}`, or `null` when the turn has none or the newest one asks nothing.
+ *
+ * Walks records backward and stops at the first user record that carries text: the prompt that opened
+ * the turn, or a harness injection after it such as this hook's own feedback, so an ask the mirror has
+ * already answered is never read twice. Tool-result records carry no text and do not stop the walk;
+ * malformed lines are skipped.
+ * @param {String} jsonl
+ * @returns {{ask: String, actions: (Object[]|null)}|null}
+ * @protected
+ */
+export function extractTurnWrapUpAskFromJsonl(jsonl = '') {
+    const lines = jsonl.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        let record;
+        try { record = JSON.parse(line); } catch { continue; }
+
+        const message = record.message || record,
+              role    = message.role || record.type;
+
+        if (role === 'user') {
+            if (extractTextFromContent(message.content)) return null;
+            continue;
+        }
+
+        if (role !== 'assistant' || !Array.isArray(message.content)) continue;
+
+        const call = message.content.findLast(block => block?.type === 'tool_use' && block.name === WRAP_UP_TOOL_NAME);
+
+        if (call) {
+            const {ask, actions} = call.input || {};
+
+            return typeof ask === 'string' && ask.trim() ? {ask, actions: Array.isArray(actions) ? actions : null} : null;
+        }
+    }
+    return null;
+}
+
+/**
  * @summary Harness-marker user records — prose the harness authors ABOUT an operator action (an
  * interrupt), not operator dialogue itself. Skipped by the human-filtered walk: the marker's paired
  * real message (when the operator typed one) is its own adjacent record and is found on its own.
@@ -806,10 +855,13 @@ async function main() {
     const deferenceDecision = decideDeferenceStopHookAction(finalText, {
         operatorInLoop,
         enforcing             : ENFORCING,
-        deferenceMirrorEnabled: DEFERENCE_MIRROR
+        deferenceMirrorEnabled: DEFERENCE_MIRROR,
+        wrapUpAsk             : extractTurnWrapUpAskFromJsonl(transcriptJsonl)
     });
     if (deferenceDecision) {
-        const reason   = `deference phrase "${deferenceDecision.phrase}" at turn-terminal`,
+        const reason   = deferenceDecision.ask
+                  ? `the wrap-up ask "${deferenceDecision.ask}" at turn-terminal`
+                  : `deference phrase "${deferenceDecision.phrase}" at turn-terminal`,
               session  = input.session_id || '?',
               identity = process.env.NEO_AGENT_IDENTITY || '?';
 

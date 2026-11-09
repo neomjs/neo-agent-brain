@@ -6,8 +6,11 @@
  * hand maintainer-owned judgment back to the operator. The structural / phraseless half is not
  * catchable by phrase matching; that remains the no-hold gate and value-floor domain.
  *
- * Consumed by Stop hooks on autonomous turn-ends only. A deference phrase in live operator dialogue
- * can be a legitimate Tier-4 operator ask; the same phrase on an autonomous turn is the slip.
+ * Consumed by Stop hooks at every turn-end. On an autonomous turn any registry phrase is the slip. In
+ * live operator dialogue a phrase can be a legitimate Tier-4 ask, so it fires only after a pick the
+ * agent stated itself (case 3 of the operator's 2026-08-25 ruling); a peer deadlock (case 1) and
+ * human-only work (case 2) stay carved. A harness question box (the Claude desktop wrap-up `ask`) is
+ * read the same way: its first button executes the agent's own pick unless the step is the human's.
  */
 
 /**
@@ -96,7 +99,7 @@ function isClauseTerminal(text, endIndex) {
 }
 
 /**
- * The peer-identity reminder injected when a deference phrase matches on an autonomous turn-end.
+ * The peer-identity reminder injected when a deference phrase or a handback ask fires at a turn-end.
  * Self-explaining at point of contact: it names the slip, the peer identity, the peer-input recovery
  * route, and the friction->gold path for false positives.
  * @type {String}
@@ -314,7 +317,38 @@ export function matchDeferencePhrase(text = '', phrases = DEFERENCE_PHRASES) {
 }
 
 /**
- * @summary Applies the autonomous-turn carve before phrase matching.
+ * Case 3 of the operator's 2026-08-25 ruling: the agent states its own pick. A registry phrase after it
+ * hands back a decision the agent has already made, so in live dialogue the pick arms the phrase.
+ * @type {RegExp}
+ */
+const STATED_PICK = /\b(?:i\s+would|i['’]d|i\s+will|i['’]ll|i\s+(?:recommend|suggest)|my\s+(?:pick|plan|recommendation|suggestion)\s+is|that['’]s\s+next|next\s+(?:is|up))\b/i;
+
+/**
+ * Cases 1 and 2 of the same ruling stay the operator's: a deadlock between peers leaves no agent decision
+ * to hand back, and human-only work is his to do or decide. That covers a merge, human eyes, money and
+ * taste, and the steps the team's own rules reserve for his yes: the live plane, his machine or display,
+ * accounts and credentials, a security disclosure, and the harness's session controls, which the app
+ * leaves to the user. Present-tense `merge` only, so a merge already
+ * done does not carve. A match silences the mirror for its paragraph or ask, so it errs toward silence;
+ * the 2026-11-09 corpus of real wrap-up asks is the falsifier set that sized it.
+ * @type {RegExp}
+ */
+const OPERATOR_OWNED = /\b(?:(?:could|did)\s+not\s+agree|(?:could|did)n['’]t\s+agree|tie[-\s]?breaker|deadlock(?:ed)?|merg(?:e|es|ing)|human\s+eyes|manual\s+(?:pass|test|check)|credentials?|passwords?|keychain|sign[-\s]?in|log[-\s]?in|accounts?|provision(?:s|ing)?|payments?|purchases?|budgets?|credits|pricing|aesthetics?|live\s+plane|install(?:s|ing)?|advisory|disclosure|(?:fresh|new|separate)\s+session|your\s+(?:next\s+)?(?:display|screen|machine|slot|walk|recording|read|schedule))\b/i;
+
+/**
+ * The shapes of a question box that asks to go ahead with the agent's own next step: a first-person
+ * permission question, or an imperative naming repository work the agent does itself. A box in no such
+ * shape ("When is your next slot?", "How should these close?") is not read as a handback.
+ * @type {RegExp}
+ */
+const AGENT_STEP_ASK = /^\s*(?:(?:should|shall)\s+i|(?:do\s+you\s+)?want\s+me\s+to|would\s+you\s+like\s+me\s+to|(?:fix|run|file|open|build|take|start|review|post|push|apply|draft|write|close|move|retire|delete)\b)/i;
+
+/**
+ * @summary Applies the operator-dialogue carve before phrase matching.
+ *
+ * On an autonomous turn every registry phrase counts. In live dialogue a phrase counts only when a
+ * stated pick precedes it in the same paragraph, and that paragraph names no deadlock or human-only
+ * work: the pick is what turns a question into a handback.
  * @param {String} text Assistant final-turn text.
  * @param {Object} [options]
  * @param {Boolean} [options.operatorInLoop=false]
@@ -323,16 +357,56 @@ export function matchDeferencePhrase(text = '', phrases = DEFERENCE_PHRASES) {
 export function detectDeferencePhrase(text = '', {
     operatorInLoop = false
 } = {}) {
-    return operatorInLoop ? null : matchDeferencePhrase(text);
+    if (!operatorInLoop) return matchDeferencePhrase(text);
+    if (typeof text !== 'string') return null;
+
+    for (const paragraph of text.split(/\n\s*\n/)) {
+        const pick = STATED_PICK.exec(paragraph);
+
+        if (!pick || OPERATOR_OWNED.test(paragraph)) continue;
+
+        const phrase = matchDeferencePhrase(paragraph.slice(pick.index + pick[0].length));
+
+        if (phrase) return phrase;
+    }
+
+    return null;
+}
+
+/**
+ * @summary Reads a harness question box as a deference hedge (the Claude desktop wrap-up `ask`).
+ *
+ * Case 3 needs both halves: the turn's text states the agent's pick, and the box asks to go ahead with
+ * the agent's own step, so its first button executes a decision already made. Both contexts read it the
+ * same way. A box that asks for anything else, names operator-owned work, or starts with a `merge` app
+ * action stays the human's.
+ * @param {Object|null} wrapUpAsk
+ * @param {String} wrapUpAsk.ask The question shown to the user.
+ * @param {Object[]|null} [wrapUpAsk.actions] Its buttons, the agent's pick first.
+ * @param {String} [text=''] The turn's final text, where the pick is stated.
+ * @returns {String|null} The ask when it hands back the agent's pick.
+ */
+export function matchWrapUpAskDeference(wrapUpAsk = null, text = '') {
+    const ask = wrapUpAsk?.ask;
+
+    if (typeof ask !== 'string' || !AGENT_STEP_ASK.test(ask) || OPERATOR_OWNED.test(ask)) return null;
+    if (wrapUpAsk.actions?.[0]?.action === 'merge') return null;
+
+    const statedIn = typeof text === 'string' ? text : '';
+
+    return (STATED_PICK.test(statedIn) && !OPERATOR_OWNED.test(statedIn)) || STATED_PICK.test(ask) ? ask : null;
 }
 
 /**
  * @summary Builds the Stop-hook directive for a deference-register block.
  * @param {String|null} phrase Matched deference phrase, if known.
+ * @param {Object} [options]
+ * @param {String|null} [options.ask=null] The wrap-up ask that hands back the agent's pick, if that fired.
  * @returns {String}
  */
-export function buildDeferenceReminder(phrase = null) {
-    const trigger = phrase ? `\n\n(Stop-hook trigger: deference phrase "${phrase}" at turn-terminal)` : '';
+export function buildDeferenceReminder(phrase = null, {ask = null} = {}) {
+    const trigger = ask    ? `\n\n(Stop-hook trigger: the wrap-up ask "${ask}" at turn-terminal)` :
+                    phrase ? `\n\n(Stop-hook trigger: deference phrase "${phrase}" at turn-terminal)` : '';
 
     return `${DEFERENCE_REMINDER}${trigger}`;
 }

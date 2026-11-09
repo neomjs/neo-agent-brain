@@ -6,7 +6,7 @@
  *
  * @module Neo.ai.scripts.lifecycle.stopHookDecision
  */
-import {buildDeferenceReminder, detectDeferencePhrase} from './deferencePhraseMatch.mjs';
+import {buildDeferenceReminder, detectDeferencePhrase, matchWrapUpAskDeference} from './deferencePhraseMatch.mjs';
 
 /**
  * Compact runtime hint for the fenced JSON block consumed by `parseLaneState`. Prose `lane-state:`
@@ -342,45 +342,52 @@ export function decideStopHookAction(verdict, {
 }
 
 /**
- * @summary Builds the shared Stop-hook directive for autonomous deference-register slips.
+ * @summary Builds the shared Stop-hook directive for deference-register slips.
  * @param {String|null} phrase Matched deference phrase, if known.
+ * @param {Object} [options]
+ * @param {String|null} [options.ask=null] The wrap-up ask that fired, if any.
  * @returns {String}
  */
-export function buildDeferenceStopHookDirective(phrase = null) {
-    return buildDeferenceReminder(phrase);
+export function buildDeferenceStopHookDirective(phrase = null, {ask = null} = {}) {
+    return buildDeferenceReminder(phrase, {ask});
 }
 
 /**
- * @summary Shared deference-register Stop-hook decision. Returns `null` when no autonomous
- * deference slip exists; otherwise maps the match to the same non-enforcing/enforcing action for every
- * Stop-hook adapter. Operator dialogue is carved before matching, so adapters cannot drift on that
- * business rule.
+ * @summary Shared deference-register Stop-hook decision. Returns `null` when no deference slip exists;
+ * otherwise maps it to the same non-enforcing/enforcing action for every Stop-hook adapter. The
+ * operator-dialogue carve and the question-box rule live in `deferencePhraseMatch`, so adapters cannot
+ * drift on that business rule; an adapter only supplies what its harness shows.
  * @param {String} text Assistant final-turn text.
  * @param {Object} [options]
  * @param {Boolean} [options.enforcing=false]
  * @param {Boolean} [options.operatorInLoop=false]
+ * @param {Object|null} [options.wrapUpAsk=null] The turn's question box (`{ask, actions}`), for an
+ * adapter whose harness closes turns through one.
  * @param {Boolean} [options.deferenceMirrorEnabled=true] The `stopHook.deferenceMirror` policy leaf.
  * When `false`, the mirror is off and this returns `null` (no deference action) regardless of the
  * text. Independent of `laneContinuation` on purpose: the mirror is one injected paragraph with no
  * continuation chain behind it, so it survives the continuation apparatus being switched off — the
  * exact split the single legacy `NEO_LANE_STATE_ENFORCE` flag could not express.
- * @returns {{action: ('block'|'would-block'), reason: String, phrase: String}|null}
+ * @returns {{action: ('block'|'would-block'), reason: String, phrase: (String|null), ask: (String|null)}|null}
  */
 export function decideDeferenceStopHookAction(text = '', {
     enforcing              = false,
     operatorInLoop         = false,
-    deferenceMirrorEnabled = true
+    deferenceMirrorEnabled = true,
+    wrapUpAsk              = null
 } = {}) {
     if (!deferenceMirrorEnabled) return null;
 
-    const phrase = detectDeferencePhrase(text, {operatorInLoop});
+    const phrase = detectDeferencePhrase(text, {operatorInLoop}),
+          ask    = phrase ? null : matchWrapUpAskDeference(wrapUpAsk, text);
 
-    if (!phrase) return null;
+    if (!phrase && !ask) return null;
 
     return {
         action: enforcing ? 'block' : 'would-block',
-        reason: buildDeferenceStopHookDirective(phrase),
-        phrase
+        reason: buildDeferenceStopHookDirective(phrase, {ask}),
+        phrase,
+        ask
     };
 }
 
