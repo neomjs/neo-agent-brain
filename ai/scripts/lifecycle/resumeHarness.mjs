@@ -498,23 +498,42 @@ export async function resumeHarness(identity, reason, originSessionId, abandoned
             //   5. Paste the boot-grounding prompt
             //   6. Press Enter (Key Code 36) — established in bridge-daemon.mjs
             //   7. Restore user input + clipboard
+            const targetProcessId        = instancePid ? String(instancePid) : '',
+                  addressedProcess       = Boolean(instancePid),
+                  targetProcessOpenLines = indent => addressedProcess
+                      ? ['-e', `${indent}tell application process id targetAutomationId`]
+                      : [
+                          '-e', `${indent}set frontmostProcess to first application process whose frontmost is true`,
+                          '-e', `${indent}tell frontmostProcess`
+                      ];
             const osascriptArgs = [
                 '-e', 'on run argv',
                 '-e', '  set wakePayload to (item 1 of argv)',
+                '-e', `  set targetProcessId to "${targetProcessId}"`,
+                '-e', '  set targetAutomationId to ""',
+                ...(addressedProcess ? [
+                '-e', '  tell application "System Events"',
+                '-e', '    repeat with candidate in application processes',
+                '-e', '      if ((unix id of candidate) as string) is targetProcessId then',
+                '-e', '        set targetAutomationId to id of candidate',
+                '-e', '        exit repeat',
+                '-e', '      end if',
+                '-e', '    end repeat',
+                '-e', '    if targetAutomationId is "" then error "Exact target process missing"',
+                '-e', '    if ((unix id of application process id targetAutomationId) as string) is not targetProcessId then error "Exact target process changed"',
+                '-e', '    set frontmost of application process id targetAutomationId to true',
+                '-e', '  end tell'
+                ] : [
+                '-e', `  tell application "${appName}" to activate`
+                ]),
                 '-e', '  try',
                 '-e', '    set savedClipboard to the clipboard as string',
                 '-e', '  on error',
                 '-e', '    set savedClipboard to ""',
                 '-e', '  end try',
-                '-e', `  tell application "${appName}" to activate`,
-                ...(instancePid ? [
-                '-e', '  delay 0.2',
-                '-e', `  tell application "System Events" to set frontmost of (first process whose unix id is ${instancePid}) to true`
-                ] : []),
                 '-e', '  delay 0.5',
                 '-e', '  tell application "System Events"',
-                '-e', '    set frontmostProcess to first application process whose frontmost is true',
-                '-e', '    tell frontmostProcess',
+                ...targetProcessOpenLines('    '),
                 ...(tabShortcut ? [
                 '-e', `      keystroke "${tabShortcut}" using command down`,
                 '-e', '      delay 0.2'
@@ -538,8 +557,7 @@ export async function resumeHarness(identity, reason, originSessionId, abandoned
                 '-e', '  set the clipboard to wakePayload',
                 '-e', '  delay 0.2',
                 '-e', '  tell application "System Events"',
-                '-e', '    set frontmostProcess to first application process whose frontmost is true',
-                '-e', '    tell frontmostProcess',
+                ...targetProcessOpenLines('    '),
                 '-e', '      keystroke "v" using command down',
                 '-e', '      delay 0.5',
                 '-e', '      key code 36',
@@ -550,8 +568,7 @@ export async function resumeHarness(identity, reason, originSessionId, abandoned
                 '-e', '    set the clipboard to userInput',
                 '-e', '    delay 0.2',
                 '-e', '    tell application "System Events"',
-                '-e', '      set frontmostProcess to first application process whose frontmost is true',
-                '-e', '      tell frontmostProcess',
+                ...targetProcessOpenLines('      '),
                 '-e', '        keystroke "v" using command down',
                 '-e', '      end tell',
                 '-e', '    end tell',

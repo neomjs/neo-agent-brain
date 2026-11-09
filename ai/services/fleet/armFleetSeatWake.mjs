@@ -29,10 +29,11 @@ import {resolveSeatPlaneTarget}     from './resolveSeatPlaneTarget.mjs';
  */
 
 /**
- * The receiver dispatch per GUI family the Fleet arms: the automation `appName` the `osascript`
- * adapter targets, plus the focus seed Codex requires. Claude Desktop has no entry: its seat retires
- * every route that types into its window when it arms its pull route, so one armed here would only
- * come back stale.
+ * The receiver dispatch per GUI family the Fleet arms: `appName` selects the family's composer
+ * keystroke dialect and process-identity lookup while the OS target is the seat's `userDataDir`-resolved
+ * running process (`instancePid` -> `System Events` `application process id`), plus the focus seed
+ * Codex requires. Claude Desktop has no entry: its seat retires every route that types into its window
+ * when it arms its pull route, so one armed here would only come back stale.
  * @type {Object}
  */
 export const GUI_WAKE_DISPATCH = Object.freeze({

@@ -217,8 +217,8 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
         expect(await dispatchLocalWake(uiRecord, {
             platform        : 'darwin',
             getDefaultTarget: async () => ({
-                status       : 'resolved',
-                pid          : 4321,
+                status       : 'single-instance',
+                pid          : null,
                 instanceCount: 1,
                 bundleName   : 'Claude'
             }),
@@ -254,7 +254,7 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
         expect(tells.length, 'the delivery has keystroke blocks to check').toBeGreaterThan(0);
         expect(tells.every(line => line === 'tell targetProcess'),
             `no keystroke block may tell a re-read frontmost process — saw ${tells.join(', ')}`).toBe(true);
-        expect(script).toContain('set targetProcess to first application process whose unix id is');
+        expect(script).not.toContain('first application process whose unix id is');
         expect(script).toContain('whose bundle identifier is targetBundleId');
         // The assertion itself still reads whoever is frontmost — that is the comparison, not a
         // delivery target. Without this the arm would pass on a build that deleted the check.
@@ -264,12 +264,12 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
 
 
     test('addressed Codex resolves one automation process and never falls back to a sibling', async () => {
-        const scripts = [], targetPid = 44567;
+        const scripts   = [], targetPid = 44567;
         const addressed = record('osascript', {
             route: {
                 agentIdentity,
                 harnessTargetMetadata: {
-                    adapter: 'osascript', appName: 'Codex', addressType: 'pid',
+                    adapter        : 'osascript', appName: 'Codex', addressType: 'pid',
                     instanceAddress: String(targetPid), focusSeedKey: 'r'
                 },
                 adapterConfig: {attemptTimeoutMs: 1000}
@@ -592,17 +592,24 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
 
         const script = osascriptArgs.join('\n');
 
-        // The generic Electron-safe path: activate, frontmost assert on the RESOLVED pid, clear and
-        // preserve the prompt, paste the payload, submit with Return, restore the user's draft.
-        expect(script).toContain('tell application "OpenCode" to activate');
-        expect(script).toContain('first process whose unix id is 5719');
+        // Process-addressed path: resolves the exact System Events automation id for the
+        // resolved pid (5719), never calling LaunchServices `tell application "OpenCode" to activate`,
+        // `id of application "OpenCode"`, or `first process whose unix id is 5719`.
+        expect(script).toContain('set targetProcessId to "5719"');
+        expect(script).toContain('set frontmost of application process id targetAutomationId to true');
+        expect(script).toContain('tell application process id targetAutomationId');
+        expect(script).not.toContain('tell application "OpenCode" to activate');
+        expect(script).not.toContain('id of application "OpenCode"');
+        expect(script).not.toContain('first process whose unix id is 5719');
+        expect(script).not.toContain('first application process whose unix id is');
         expect(script).toContain('set the clipboard to wakePayload');
         expect(script).toContain('key code 36');
         // …and no Codex-only Esc prelude: the OpenCode route gets the generic submit, not a quirk.
         expect(script).not.toContain('key code 53');
     });
 
-    test('an Antigravity userDataDir route focuses the composer with Cmd+I, dismisses autocomplete with Space before Return, and fails closed on wrong instance (#1035)', async () => {
+    test('an Antigravity userDataDir route focuses the composer with Cmd+I, dismisses autocomplete with Space before Return, and fails closed on wrong instance (#1035, #1542)', async () => {
+        const scripts = [];
         let osascriptArgs;
         let resolvedQuery;
         const antigravityRecord = record('osascript', {
@@ -627,6 +634,7 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
             spawnAsync: async (command, args) => {
                 expect(command).toBe('osascript');
                 osascriptArgs = args;
+                scripts.push(args.join('\n'));
             }
         })).toBe('delivered');
 
@@ -636,10 +644,21 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
             instanceAddress: '/agents/neo-gemini-pro/harness/antigravity'
         });
 
+        expect(scripts).toHaveLength(2);
+        for (const candidateScript of scripts) {
+            expect(candidateScript).toContain('set targetProcessId to "92475"');
+            expect(candidateScript).toContain('set targetAutomationId to id of candidate');
+            expect(candidateScript).toContain('tell application process id targetAutomationId');
+            expect(candidateScript).not.toContain('tell application "Antigravity" to activate');
+            expect(candidateScript).not.toContain('id of application "Antigravity"');
+            expect(candidateScript).not.toContain('first process whose unix id is 92475');
+            expect(candidateScript).not.toContain('first application process whose unix id is');
+        }
+
         const script = osascriptArgs.join('\n');
 
-        expect(script).toContain('tell application "Antigravity" to activate');
-        expect(script).toContain('first process whose unix id is 92475');
+        expect(script).toContain('set frontmost of application process id targetAutomationId to true');
+        expect((script.match(/tell application process id targetAutomationId/g) ?? [])).toHaveLength(3);
         // Antigravity 2.x binds focusInput to Cmd+I (idempotent composer focus, not Cmd+Shift+I).
         expect(script).toContain('keystroke "i" using command down');
         expect(script).not.toContain('using {command down, shift down}');
