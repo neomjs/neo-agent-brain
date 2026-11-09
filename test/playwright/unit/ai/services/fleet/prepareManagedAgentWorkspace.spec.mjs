@@ -2512,7 +2512,14 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
         await fs.mkdir(options.instanceHome, {recursive: true});
         const first = await prepareAntigravityArtifacts(options);
-        expect(first.artifacts.map(({status}) => status)).toEqual([WORKSPACE_ARTIFACT_STATES.CREATED, WORKSPACE_ARTIFACT_STATES.CREATED]);
+        expect(first.artifacts.map(({status}) => status)).toEqual([
+            WORKSPACE_ARTIFACT_STATES.CREATED,
+            WORKSPACE_ARTIFACT_STATES.CREATED,
+            WORKSPACE_ARTIFACT_STATES.CREATED
+        ]);
+        expect(JSON.parse(await read(path.join(options.instanceHome, 'app_storage.json')))).toEqual({
+            autoCheckForUpdates: 'false'
+        });
         expect(Object.keys(first.mcpServers).sort()).toEqual(MCP_SERVERS.map(({key}) => `neo-mjs-${key}`).sort());
         expect(first.projectMcpAllowRules).toHaveLength(MCP_SERVERS.length);
         for (const artifact of first.artifacts) expect((await fs.stat(artifact.path)).mode & 0o777).toBe(0o600);
@@ -2538,14 +2545,44 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect(projectText).not.toContain(launchAdmission.identity);
 
         const second = await prepareAntigravityArtifacts(options);
-        expect(second.artifacts.map(({status}) => status)).toEqual([WORKSPACE_ARTIFACT_STATES.MATCH, WORKSPACE_ARTIFACT_STATES.MATCH]);
+        expect(second.artifacts.map(({status}) => status)).toEqual([
+            WORKSPACE_ARTIFACT_STATES.MATCH,
+            WORKSPACE_ARTIFACT_STATES.MATCH,
+            WORKSPACE_ARTIFACT_STATES.MATCH
+        ]);
+
+        const appStoragePath = path.join(options.instanceHome, 'app_storage.json');
+        await fs.writeFile(appStoragePath, JSON.stringify({
+            hubSurfaceColor    : 'dark',
+            autoCheckForUpdates: 'true'
+        }, null, 2) + '\n');
+        const suppressed = await prepareAntigravityArtifacts(options);
+        expect(suppressed.artifacts.map(({status}) => status)).toEqual([
+            WORKSPACE_ARTIFACT_STATES.MATCH,
+            WORKSPACE_ARTIFACT_STATES.MATCH,
+            WORKSPACE_ARTIFACT_STATES.UPDATED
+        ]);
+        expect(JSON.parse(await read(appStoragePath))).toEqual({
+            hubSurfaceColor    : 'dark',
+            autoCheckForUpdates: 'false'
+        });
 
         const
             disabled = await prepareAntigravityArtifacts({...options, plan: plan.map(server => ({...server, enabled: false}))});
-        expect(disabled.artifacts.map(({status}) => status)).toEqual([WORKSPACE_ARTIFACT_STATES.UPDATED, WORKSPACE_ARTIFACT_STATES.UPDATED]);
-        for (const artifact of first.artifacts) await expect(fs.stat(artifact.path)).rejects.toMatchObject({code: 'ENOENT'});
+        expect(disabled.artifacts.map(({status}) => status)).toEqual([
+            WORKSPACE_ARTIFACT_STATES.UPDATED,
+            WORKSPACE_ARTIFACT_STATES.UPDATED,
+            WORKSPACE_ARTIFACT_STATES.MATCH
+        ]);
+        for (const artifact of first.artifacts.filter(item => item.path.endsWith('.sh'))) {
+            await expect(fs.stat(artifact.path)).rejects.toMatchObject({code: 'ENOENT'})
+        }
 
         await prepareAntigravityArtifacts(options);
+
+        await fs.writeFile(appStoragePath, '{malformed-json');
+        await expect(prepareAntigravityArtifacts(options)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+        await fs.writeFile(appStoragePath, JSON.stringify({autoCheckForUpdates: 'false'}, null, 2) + '\n');
 
         await fs.writeFile(first.artifacts[0].path, '# resident edit\n');
         await expect(prepareAntigravityArtifacts(options)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
