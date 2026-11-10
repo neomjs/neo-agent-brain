@@ -33,7 +33,7 @@ import {
     resolveResumeHarnessInstancePid
 } from '../../../../../../ai/scripts/lifecycle/resumeHarness.mjs';
 import * as yaml        from 'js-yaml';
-import {buildZodSchema} from '../../../../../../ai/mcp/validation/OpenApiValidator.mjs';
+import {buildZodSchema} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
 import MemoryService    from '../../../../../../ai/services/memory-core/MemoryService.mjs';
 
 test.describe('ai/scripts/resumeHarness', () => {
