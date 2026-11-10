@@ -8836,8 +8836,12 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
             const transitionDesc   = openApiDoc.paths['/mailbox/tasks/transition']?.post?.description || '';
 
             expect(addMessageSchema?.properties?.taggedConcepts?.description).toContain('requestPublish');
+            expect(addMessageSchema?.properties?.requestPublish?.$ref).toBe('#/components/schemas/RequestPublishPayload');
             expect(addMessageSchema?.properties?.task?.description).toContain('revisionDigest');
             expect(addMessageSchema?.properties?.task?.description).toContain('queued → publishing → published | refused | unresolved');
+            expect(addMessageSchema?.properties?.task?.properties?.requestPublish).toBeUndefined();
+            expect(addMessageSchema?.properties?.task?.properties?.revision).toBeUndefined();
+            expect(addMessageSchema?.properties?.task?.properties?.publication).toBeUndefined();
             expect(transitionDesc).toContain('requestPublish');
             expect(transitionDesc).toContain('queued → publishing → published | refused | unresolved');
 
@@ -8891,6 +8895,25 @@ test.describe('Neo.ai.services.memory-core.MailboxService — TTL Sweeper (#1033
                         })
                     )
                 ).rejects.toMatchObject({code: 'refused: secret-field'});
+            }
+
+            // Runtime negative test: output-only revision/publication fields on the input task envelope are refused
+            for (const outputOnlyField of ['revision', 'publication']) {
+                await expect(
+                    RequestContextService.run({agentIdentityNodeId: '@neo-gemini-maryam'}, () =>
+                        MailboxService.addMessage({
+                            to            : '@tobiu',
+                            subject       : `output-only task.${outputOnlyField}`,
+                            body          : 'test',
+                            taggedConcepts: ['requestPublish'],
+                            requestPublish: buildValidPublishPayload(),
+                            task          : {
+                                state            : 'Submitted',
+                                [outputOnlyField]: {}
+                            }
+                        })
+                    )
+                ).rejects.toMatchObject({code: 'refused: unknown-field'});
             }
         });
     });
