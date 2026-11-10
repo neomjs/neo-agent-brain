@@ -20,10 +20,10 @@ import os             from 'os';
 import path           from 'path';
 import {fileURLToPath,
         pathToFileURL}   from 'url';
-import * as yaml   from 'js-yaml';
-import Neo         from 'neo.mjs/src/Neo.mjs';
-import * as core   from 'neo.mjs/src/core/_export.mjs';
-import AiConfig    from '../../../../../../ai/config.template.mjs';
+import * as yaml                                      from 'js-yaml';
+import Neo                                            from 'neo.mjs/src/Neo.mjs';
+import * as core                                      from 'neo.mjs/src/core/_export.mjs';
+import AiConfig                                       from '../../../../../../ai/config.template.mjs';
 import ToolService, {ADVERTISED_SURFACE_DIGEST_LABEL} from '../../../../../../ai/mcp/ToolService.mjs';
 import {
     createDeploymentStateSnapshot,
@@ -599,7 +599,7 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
 
         expect(handbookTool.description.length).toBeLessThanOrEqual(120);
         expect(handbookTool.annotations.readOnlyHint).toBe(true);
-        expect(createIssue.description).toBe('Create a GitLab issue');
+        expect(createIssue.description).toBe('Open a new GitLab issue with body, labels, or assignees; use when filing a scoped ticket.');
         expect(createIssue.description).not.toContain('GitLab GraphQL API');
 
         for (const tool of tools) {
@@ -638,10 +638,10 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
 
         expect(handbookTool.description.length).toBeLessThanOrEqual(120);
         expect(handbookTool.annotations.readOnlyHint).toBe(true);
-        expect(relationship.description).toBe('Create, replace, or remove issue parent-child and blocked-by relationships.');
+        expect(relationship.description).toBe('Set, replace, or remove GitHub parent_child or blocked_by issue edges; use when linking epic subs or ticket blockers.');
         expect(relationship.description).not.toContain('Run `sync_all`');
-        expect(conversation.description).toBe('Fetch PR/issue conversation, or an identity-bound source-owned PR readiness projection.');
-        expect(review.description).toBe('Create or update one formal PR review with body and review state validation.');
+        expect(conversation.description).toBe('Read a live GitHub issue/PR body and comments, or PR merge-readiness; use when inspecting live thread or gate state.');
+        expect(review.description).toBe('Submit or edit a formal GitHub PR review with state and budget gates; use when posting APPROVED, RC, or COMMENT.');
         expect(review.inputSchema.properties.reviewBudgetOverrideReason).toMatchObject({type: 'string'});
         expect(reviewHandbook.handbook).toContain('reviewBudgetOverrideReason');
         expect(reviewHandbook.handbook).toContain('two submitted RCs');
@@ -1074,5 +1074,31 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
             'fixture.blank_summary_tool: missing summary (0 bytes)',
             'fixture.overlong_summary_tool: summary is 121 bytes (max 120)'
         ]);
+    });
+
+    test('github-workflow and gitlab-workflow summaries follow <what>; use when <trigger> without repeating operationId (#1566)', () => {
+        const
+            targetServers  = servers.filter(server => ['github-workflow', 'gitlab-workflow'].includes(server.name)),
+            expectedCounts = {'github-workflow': 25, 'gitlab-workflow': 14};
+
+        for (const server of targetServers) {
+            const
+                operationsById = getOperationsById(server),
+                entries        = Object.entries(operationsById);
+
+            expect(entries.length, `${server.name} operation count`).toBe(expectedCounts[server.name]);
+
+            for (const [operationId, operation] of entries) {
+                const
+                    summary   = operation.summary,
+                    bareTitle = operationId.replace(/_/g, ' ').toLowerCase(),
+                    bytes     = Buffer.byteLength(summary, 'utf8');
+
+                expect(bytes, `${server.name}.${operationId} summary byte length`).toBeLessThanOrEqual(120);
+                expect(summary, `${server.name}.${operationId} must match <what>; use when <trigger>`).toMatch(/^[^;]+; use when [^;]+$/);
+                expect(summary.toLowerCase(), `${server.name}.${operationId} must not repeat operationId`).not.toContain(operationId.toLowerCase());
+                expect(summary.toLowerCase(), `${server.name}.${operationId} must not be the bare title`).not.toBe(bareTitle);
+            }
+        }
     });
 });
