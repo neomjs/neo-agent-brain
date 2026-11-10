@@ -37,7 +37,9 @@ test.describe('claudeDesktopUpdatePolicy', () => {
         const {reason} = readClaudeDesktopUpdatePolicy({plistPath: '/elsewhere/policy.plist', extract: () => null});
 
         expect(reason).toContain('/elsewhere/policy.plist does not set disableAutoUpdates');
-        expect(reason).toContain('node ai/scripts/fleet/claudeDesktopUpdatePolicy.mjs --write <file>')
+        expect(reason).toContain('node ai/scripts/fleet/claudeDesktopUpdatePolicy.mjs --write <file>');
+        // an opened profile waits eight minutes for approval, then macOS discards it
+        expect(reason).toContain('System Settings → General → Device Management within eight minutes')
     });
 
     test('the profile forces disableAutoUpdates in the Claude Desktop domain at System scope, under fixed identifiers', () => {
@@ -78,7 +80,7 @@ test.describe('claudeDesktopUpdatePolicy', () => {
 
             expect(spawnSync('/usr/bin/plutil', ['-lint', file], {encoding: 'utf8'}).status).toBe(0);
 
-            const profile = JSON.parse(spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], {encoding: 'utf8'}).stdout),
+            const profile   = JSON.parse(spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], {encoding: 'utf8'}).stdout),
                   [payload] = profile.PayloadContent;
 
             expect(profile.PayloadScope).toBe('System');

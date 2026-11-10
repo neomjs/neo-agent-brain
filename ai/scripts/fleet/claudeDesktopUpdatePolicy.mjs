@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import {Command}             from 'commander';
-import path                  from 'node:path';
+import {Command} from 'commander';
+import path      from 'node:path';
 import {
     claudeDesktopUpdatePolicyProfile,
     readClaudeDesktopUpdatePolicy
@@ -12,8 +12,9 @@ import {isEntryModule}       from '../../services/shared/isEntryModule.mjs';
  * @module ai/scripts/fleet/claudeDesktopUpdatePolicy
  * @summary The operator's path to Claude Desktop's updater off-switch
  * ({@link Neo.ai.services.fleet.claudeDesktopUpdatePolicy}): it writes the configuration profile and reports
- * whether the policy is in force. Installing the written profile (open it, then approve it in System Settings
- * → Privacy & Security → Profiles) is the operator's step; the Fleet never installs a profile itself.
+ * whether the policy is in force. Installing the written profile is the operator's step, and the Fleet never
+ * installs one itself: open the file, then approve it in System Settings → General → Device Management within
+ * eight minutes, after which macOS discards it.
  *
  * ```
  * claudeDesktopUpdatePolicy.mjs [--write <file.mobileconfig>]

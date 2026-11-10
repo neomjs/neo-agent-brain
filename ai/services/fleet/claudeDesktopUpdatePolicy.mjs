@@ -49,15 +49,17 @@ export function readClaudeDesktopUpdatePolicy({plistPath = CLAUDE_DESKTOP_MANAGE
         inForce,
         path  : plistPath,
         reason: inForce ? null : `${plistPath} does not set disableAutoUpdates, so Claude's own updater still runs; ` +
-            'write the profile with `node ai/scripts/fleet/claudeDesktopUpdatePolicy.mjs --write <file>` and install it'
+            'write the profile with `node ai/scripts/fleet/claudeDesktopUpdatePolicy.mjs --write <file>`, open it, and ' +
+            'approve it in System Settings → General → Device Management within eight minutes'
     }
 }
 
 /**
  * @summary The configuration profile that turns Claude Desktop's updater off on this Mac: a System-scope
  * `com.apple.ManagedClient.preferences` payload that forces `disableAutoUpdates: true` in
- * {@link CLAUDE_DESKTOP_POLICY_DOMAIN}. The operator installs it once (System Settings → Profiles); macOS then
- * writes {@link CLAUDE_DESKTOP_MANAGED_PLIST}. Its identifiers and UUIDs are fixed, so every copy is the same
+ * {@link CLAUDE_DESKTOP_POLICY_DOMAIN}. The operator installs it once: opening the file only queues it, and
+ * macOS discards it unless it is approved in System Settings → General → Device Management within eight
+ * minutes. macOS then writes {@link CLAUDE_DESKTOP_MANAGED_PLIST}. Its identifiers and UUIDs are fixed, so every copy is the same
  * profile, including the one staged for the operator on 2026-11-10.
  * @returns {String} The `.mobileconfig` property list.
  */
