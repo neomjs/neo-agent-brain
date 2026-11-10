@@ -2148,6 +2148,28 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         }
     });
 
+    test('an admission that throws instead of refusing is not kept: the next Start admits the build', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-throw-'));
+        install();
+        try {
+            const {calls} = harnessGenerationFixture(root), store = FleetLifecycleService.harnessGenerationStore, admit = store.materialize;
+            let full = true;
+
+            FleetLifecycleService.harnessGenerationOptIns = {'codex-desktop': true};
+            store.materialize = async options => {
+                if (full) { full = false; calls.push(['materialize']); throw Object.assign(new Error('ENOSPC: no space left on device'), {code: 'ENOSPC'}) }
+                return admit(options)
+            };
+
+            await expect(FleetLifecycleService.assertRemoteMcpCapability({id: 'seat', harnessType: 'codex-desktop'})).rejects.toThrow('ENOSPC');
+            await expect(FleetLifecycleService.assertRemoteMcpCapability({id: 'seat', harnessType: 'codex-desktop'}), 'once the disk has room')
+                .resolves.toMatchObject({harnessGeneration: {generationId: 'a'.repeat(64)}});
+            expect(calls.filter(([call]) => call === 'materialize')).toHaveLength(2)
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
     test('an opted-in Antigravity context proves the selected generation and carries its pin; one without the pin does not validate', async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-antigravity-'));
         install({agents: {seat: agentDef('seat', {harnessType: 'antigravity', metadata: {}})}});

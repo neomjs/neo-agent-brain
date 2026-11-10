@@ -539,7 +539,8 @@ class FleetLifecycleService extends Base {
      * The admission of each installed build this process already tried, keyed by store root, family and
      * version. A build is tried once per Fleet process, and concurrent Starts share its one admission: a
      * rejected build never costs every Start an admission, and the next Fleet build, whose admitting code
-     * may differ, tries it again.
+     * may differ, tries it again. An admission that throws instead of refusing (an unreadable ledger, a
+     * full disk) is dropped, so the next Start tries the build again.
      * @member {Map<String, Promise<Object>>} harnessGenerationAttempts
      * @private
      */
@@ -3554,7 +3555,10 @@ class FleetLifecycleService extends Base {
                     .some(entry => entry.shortVersion === shortVersion && entry.buildVersion === buildVersion);
 
             if (!known && !this.harnessGenerationAttempts.has(attempt)) {
-                this.harnessGenerationAttempts.set(attempt, store.materialize({root, family: harnessType, sourceBundle: installed, source: 'installed'}))
+                const admission = store.materialize({root, family: harnessType, sourceBundle: installed, source: 'installed'});
+
+                this.harnessGenerationAttempts.set(attempt, admission);
+                admission.catch(() => this.harnessGenerationAttempts.delete(attempt))
             }
             await this.harnessGenerationAttempts.get(attempt)
         }
