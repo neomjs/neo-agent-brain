@@ -135,9 +135,9 @@ test.describe('StorageRouter Query Re-Ranker Defensive Handling', () => {
 
         // Seed 3 memories into the isolated collection
         const turns = [
-            {prompt: 'What is Neo.mjs?',    thought: 'Framework analysis.',   response: 'A multi-worker UI framework.'},
-            {prompt: 'How does VDOM work?',  thought: 'Rendering pipeline.',   response: 'Delta-based virtual DOM.'},
-            {prompt: 'What are workers?',    thought: 'Thread architecture.',  response: 'Dedicated threads for App/Data/VDom.'}
+            {prompt: 'What is Neo.mjs?',    decisionContext: 'Framework analysis.',   response: 'A multi-worker UI framework.'},
+            {prompt: 'How does VDOM work?',  decisionContext: 'Rendering pipeline.',   response: 'Delta-based virtual DOM.'},
+            {prompt: 'What are workers?',    decisionContext: 'Thread architecture.',  response: 'Dedicated threads for App/Data/VDom.'}
         ];
 
         const seededIds = [];
@@ -358,7 +358,7 @@ test.describe('SessionService Drift Detection — Timestamp Filtering', () => {
     async function addToolMemory({sessionId, agentIdentity, prompt = 'Externally active session memory'}) {
         const result = await callToolAs(agentIdentity, 'add_memory', {
             prompt,
-            thought        : 'Unit test active-session fixture.',
+            decisionContext: 'Unit test active-session fixture.',
             response       : 'Stored through the MCP add_memory tool shape.',
             sessionId,
             agent          : agentIdentity,

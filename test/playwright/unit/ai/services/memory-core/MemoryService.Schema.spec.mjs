@@ -84,11 +84,11 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
 
     test('addMemory canonicalizes profile-string agent to node-id graph identity', async () => {
         await MemoryService.addMemory({
-            agent    : 'neo-gemini-julia',
-            sessionId: 'session-xyz',
-            prompt   : 'hello',
-            thought  : 'thinking',
-            response : 'hi'
+            agent          : 'neo-gemini-julia',
+            sessionId      : 'session-xyz',
+            prompt         : 'hello',
+            decisionContext: 'thinking',
+            response       : 'hi'
         });
 
         await flushGraphProjection();
@@ -108,11 +108,11 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
 
     test('addMemory preserves canonical node-id graph identity', async () => {
         await MemoryService.addMemory({
-            agent    : '@neo-gemini-julia',
-            sessionId: 'session-xyz',
-            prompt   : 'hello',
-            thought  : 'thinking',
-            response : 'hi'
+            agent          : '@neo-gemini-julia',
+            sessionId      : 'session-xyz',
+            prompt         : 'hello',
+            decisionContext: 'thinking',
+            response       : 'hi'
         });
 
         await flushGraphProjection();
@@ -155,10 +155,10 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
             agentIdentityNodeId: '@neo-gpt-euclid',
             source             : 'env-var'
         }, () => MemoryService.addMemory({
-            sessionId: 'session-abc',
-            prompt   : 'hello',
-            thought  : 'thinking',
-            response : 'hi'
+            sessionId      : 'session-abc',
+            prompt         : 'hello',
+            decisionContext: 'thinking',
+            response       : 'hi'
         }));
 
         // addMemory leaves the record WAL-pending — flush it through the daemon drain path.
@@ -193,10 +193,10 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
             agentIdentityNodeId: null,
             source             : 'unresolved'
         }, () => MemoryService.addMemory({
-            sessionId: 'session-unbound',
-            prompt   : 'hello',
-            thought  : 'thinking',
-            response : 'hi'
+            sessionId      : 'session-unbound',
+            prompt         : 'hello',
+            decisionContext: 'thinking',
+            response       : 'hi'
         }));
 
         // addMemory leaves the record WAL-pending — flush it through the daemon drain path.

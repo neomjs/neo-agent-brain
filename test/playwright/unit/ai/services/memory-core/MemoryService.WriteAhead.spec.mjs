@@ -125,11 +125,11 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
     test('AC1: empty/whitespace fields are rejected before any write', async () => {
         const before = (await readPendingWalRecords({dir: testWalDir})).length;
 
-        const result = await asTenant(() => MemoryService.addMemory({prompt: '', thought: '   ', response: 'real'}));
+        const result = await asTenant(() => MemoryService.addMemory({prompt: '', decisionContext: '   ', response: 'real'}));
 
         expect(result.code).toBe('MEMORY_VALIDATION_ERROR');
         expect(result.message).toContain('prompt');
-        expect(result.message).toContain('thought');
+        expect(result.message).toContain('decisionContext');
         expect(result.message).not.toContain('response');
 
         // Rejected payloads must not reach the WAL (nor, transitively, the embed path).
@@ -140,14 +140,14 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         const SessionService = (await import('../../../../../../ai/services/memory-core/SessionService.mjs')).default;
 
         const rejected = await asTenant(() => MemoryService.addMemory({
-            prompt: '', thought: '   ', response: 'real', sessionId: 'session-1349-rejected'
+            prompt: '', decisionContext: '   ', response: 'real', sessionId: 'session-1349-rejected'
         }));
 
         expect(rejected.code).toBe('MEMORY_VALIDATION_ERROR');
         expect(SessionService.takeSessionWrite('session-1349-rejected')).toBe(false);
 
         const saved = await asTenant(() => MemoryService.addMemory({
-            prompt: 'marker prompt', thought: 'marker thought', response: 'marker response', sessionId: 'session-1349-saved'
+            prompt: 'marker prompt', decisionContext: 'marker thought', response: 'marker response', sessionId: 'session-1349-saved'
         }));
 
         expect(saved.error).toBeUndefined();
@@ -162,7 +162,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         // read as data loss — which on a live deployment cost three sessions and wrote a phantom
         // outage into the corpus as durable history.
         const result = await asTenant(() => MemoryService.addMemory({
-            prompt: 'visibility prompt', thought: 'visibility thought', response: 'visibility response'
+            prompt: 'visibility prompt', decisionContext: 'visibility thought', response: 'visibility response'
         }));
 
         // Durable AND not-yet-SEMANTICALLY-queryable, stated as separate facts rather than one word.
@@ -205,7 +205,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         // into `message`, or makes `queryable` mirror the save's success, and the response silently
         // returns to answering the wrong question while every other test stays green.
         const result = await asTenant(() => MemoryService.addMemory({
-            prompt: 'collapse prompt', thought: 'collapse thought', response: 'collapse response'
+            prompt: 'collapse prompt', decisionContext: 'collapse thought', response: 'collapse response'
         }));
 
         // Independent per-axis fields. A single boolean cannot express "durable, recency-readable now,
@@ -241,7 +241,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         // This drives `describeWriteVisibility` on an ALREADY-MARKED record, so a hard-coded
         // deferral fails here while a marker-derived one passes.
         const result = await asTenant(() => MemoryService.addMemory({
-            prompt: 'race prompt', thought: 'race thought', response: 'race response'
+            prompt: 'race prompt', decisionContext: 'race thought', response: 'race response'
         }));
 
         expect(result.visibility.state).toBe('embed-deferred');
@@ -279,7 +279,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         // report an UNOBSERVED record as reconciled. An id that was never written is the cheapest
         // probe for that: it is absent from the pending set, and must NOT come back queryable.
         const result = await asTenant(() => MemoryService.addMemory({
-            prompt: 'derive prompt', thought: 'derive thought', response: 'derive response'
+            prompt: 'derive prompt', decisionContext: 'derive thought', response: 'derive response'
         }));
 
         const pending = await readPendingWalRecords({dir: testWalDir, ids: [result.id]});
@@ -302,7 +302,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         const touchesBefore = collectionTouches;
 
         const result = await asTenant(() => MemoryService.addMemory({
-            prompt: 'embed-down prompt', thought: 'embed-down thought', response: 'embed-down response'
+            prompt: 'embed-down prompt', decisionContext: 'embed-down thought', response: 'embed-down response'
         }));
 
         expect(result.code).toBeUndefined();
@@ -360,9 +360,9 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
 
         try {
             const result = await asTenant(() => MemoryService.addMemory({
-                prompt  : 'bounded response prompt',
-                thought : 'bounded response thought',
-                response: 'bounded response result'
+                prompt         : 'bounded response prompt',
+                decisionContext: 'bounded response thought',
+                response       : 'bounded response result'
             }));
             const elapsed = Date.now() - startedAt;
 
@@ -401,9 +401,9 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
 
         try {
             const result = await asTenant(() => MemoryService.addMemory({
-                prompt  : 'failed presence prompt',
-                thought : 'failed presence thought',
-                response: 'failed presence result'
+                prompt         : 'failed presence prompt',
+                decisionContext: 'failed presence thought',
+                response       : 'failed presence result'
             }));
 
             expect(result.stageTimings.presenceTerminal).toBe('failed');
@@ -447,9 +447,9 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         expect(beforeRow.terminalState).toBeNull();
 
         const result = await asTenant(() => MemoryService.addMemory({
-            prompt  : 'terminalizing presence prompt',
-            thought : 'terminalizing presence thought',
-            response: 'terminalizing presence result'
+            prompt         : 'terminalizing presence prompt',
+            decisionContext: 'terminalizing presence thought',
+            response       : 'terminalizing presence result'
         }));
 
         expect(result.stageTimings.presenceTerminal).toBe('completed');
@@ -473,9 +473,9 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
 
         try {
             const result = await asTenant(() => MemoryService.addMemory({
-                prompt  : 'deferred reason prompt',
-                thought : 'deferred reason thought',
-                response: 'deferred reason result'
+                prompt         : 'deferred reason prompt',
+                decisionContext: 'deferred reason thought',
+                response       : 'deferred reason result'
             }));
 
             expect(result.stageTimings.presenceTerminal).toBe('deferred');
@@ -495,9 +495,9 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         // `completed` and reason-free. Kept as a classification control, never as terminalization
         // proof — the arm above owns that claim.
         const result = await asTenant(() => MemoryService.addMemory({
-            prompt  : 'completed presence prompt',
-            thought : 'completed presence thought',
-            response: 'completed presence result'
+            prompt         : 'completed presence prompt',
+            decisionContext: 'completed presence thought',
+            response       : 'completed presence result'
         }));
 
         expect(result.stageTimings.presenceTerminal).toBe('completed');
@@ -521,9 +521,9 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
 
         try {
             const result = await asTenant(() => MemoryService.addMemory({
-                prompt  : 'late presence prompt',
-                thought : 'late presence thought',
-                response: 'late presence result'
+                prompt         : 'late presence prompt',
+                decisionContext: 'late presence thought',
+                response       : 'late presence result'
             }));
 
             expect(result.stageTimings.presenceTerminal).toBe('deferred');
@@ -545,7 +545,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         const touchesBefore = collectionTouches;
 
         const result = await asTenant(() => MemoryService.addMemory({
-            prompt: 'hang prompt', thought: 'hang thought', response: 'hang response'
+            prompt: 'hang prompt', decisionContext: 'hang thought', response: 'hang response'
         }));
         // Reaching these assertions at all proves nothing on the write path awaited the hung
         // collection promise — and the touch counter proves it was never even resolved.
@@ -565,7 +565,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
 
         try {
             const result = await asTenant(() => MemoryService.addMemory({
-                prompt: 'graph-down prompt', thought: 'graph-down thought', response: 'graph-down response'
+                prompt: 'graph-down prompt', decisionContext: 'graph-down thought', response: 'graph-down response'
             }));
 
             expect(result.code).toBeUndefined();
@@ -603,7 +603,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
 
         try {
             const result = await asTenant(() => MemoryService.addMemory({
-                prompt: 'graph-drain prompt', thought: 'graph-drain thought', response: 'graph-drain response'
+                prompt: 'graph-drain prompt', decisionContext: 'graph-drain thought', response: 'graph-drain response'
             }));
 
             expect(result.id).toBeTruthy();
@@ -663,7 +663,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
 
         try {
             const result = await asTenant(() => MemoryService.addMemory({
-                prompt: 'authored-by prompt', thought: 'authored-by thought', response: 'authored-by response'
+                prompt: 'authored-by prompt', decisionContext: 'authored-by thought', response: 'authored-by response'
             }));
             await MemoryService.drainPendingGraphProjections({ids: [result.id]});
 
@@ -695,7 +695,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
             // unambiguous under the (timestamp, id) ordering.
             for (let i = 0; i < 5; i++) {
                 writes.push(await asTenant(() => MemoryService.addMemory({
-                    prompt: `ra1 prompt ${i}`, thought: `ra1 thought ${i}`, response: `ra1 response ${i}`
+                    prompt: `ra1 prompt ${i}`, decisionContext: `ra1 thought ${i}`, response: `ra1 response ${i}`
                 })));
                 await new Promise(resolve => setTimeout(resolve, 2));
             }
@@ -721,7 +721,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
 
         const {write, summaryResult, fullResult} = await asTenant(async () => {
             const write = await MemoryService.addMemory({
-                prompt: 'overlay prompt', thought: 'overlay thought', response: 'overlay response'
+                prompt: 'overlay prompt', decisionContext: 'overlay thought', response: 'overlay response'
             });
             return {
                 write,
@@ -750,7 +750,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
 
     test('purge tombstone: a record tombstoned before the drain is never re-embedded', async () => {
         const result = await asTenant(() => MemoryService.addMemory({
-            prompt: 'purge-race prompt', thought: 'purge-race thought', response: 'purge-race response'
+            prompt: 'purge-race prompt', decisionContext: 'purge-race thought', response: 'purge-race response'
         }));
         expect(result.id).toBeTruthy();
 
@@ -771,7 +771,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
 
     test('the daemon drain reconciles a pending record (embedded + marker written)', async () => {
         const result = await asTenant(() => MemoryService.addMemory({
-            prompt: 'happy prompt', thought: 'happy thought', response: 'happy response'
+            prompt: 'happy prompt', decisionContext: 'happy thought', response: 'happy response'
         }));
 
         expect(result.id).toBeTruthy();
@@ -802,9 +802,9 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
 
         try {
             const result = await asTenant(() => MemoryService.addMemory({
-                prompt  : 'stage prompt',
-                thought : 'stage thought',
-                response: 'stage response'
+                prompt         : 'stage prompt',
+                decisionContext: 'stage thought',
+                response       : 'stage response'
             }));
 
             await new Promise(resolve => setImmediate(resolve));

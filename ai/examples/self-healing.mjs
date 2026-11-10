@@ -79,7 +79,7 @@ async function main() {
 
     await Memory_Service.addMemory({
         prompt: `Fix bug #${targetIssue.number}: ${targetIssue.title}`,
-        thought: "Analyzed issue and retrieved context. Formulating fix proposal.",
+        decisionContext: "Analyzed issue and retrieved context. Formulating fix proposal.",
         response: plan,
         sessionId: 'self-healing-demo-v1'
     });

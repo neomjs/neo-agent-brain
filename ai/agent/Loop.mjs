@@ -467,12 +467,12 @@ class Loop extends Base {
                     const sessionId = this.agent?.sessionId || 'default-session';
 
                     await SDK.Memory_Service.addMemory({
-                        prompt   : event.data,
-                        thought  : decision.thought || 'Internal reflection',
-                        response : decision.content || 'Action executed successfully.',
-                        agent    : agentName.toLowerCase(),
-                        model    : modelName,
-                        sessionId: sessionId
+                        prompt         : event.data,
+                        decisionContext: decision.thought || 'Internal reflection',
+                        response       : decision.content || 'Action executed successfully.',
+                        agent          : agentName.toLowerCase(),
+                        model          : modelName,
+                        sessionId      : sessionId
                     });
                 }
             } else {

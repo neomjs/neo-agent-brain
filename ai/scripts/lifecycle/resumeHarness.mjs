@@ -306,9 +306,9 @@ export async function resolveResumeHarnessInstancePid({
  * @returns {String[]} `osascript` argv fragments ending with `payload`.
  */
 export function buildResumeOsascriptArgs({appName, freshSessionShortcut, instancePid, payload, tabShortcut}) {
-    const targetProcessId        = instancePid ? String(instancePid) : '',
-          addressedProcess       = Boolean(instancePid),
-          appActivateLine        = addressedProcess
+    const targetProcessId  = instancePid ? String(instancePid) : '',
+          addressedProcess = Boolean(instancePid),
+          appActivateLine  = addressedProcess
               ? '    tell application "System Events" to set frontmost of application process id targetAutomationId to true'
               : `    tell application "${appName}" to activate`,
           targetProcessOpenLines = indent => addressedProcess
@@ -423,12 +423,12 @@ export function buildResumeOsascriptArgs({appName, freshSessionShortcut, instanc
  * @param {string} originSessionId Memory Core session ID of the just-sunsetted run; falsy → omitted gracefully.
  * @returns {string} The full prompt body that will be pasted into the fresh chat.
  */
-function buildBootGroundingPrompt(identity, reason, originSessionId) {
+export function buildBootGroundingPrompt(identity, reason, originSessionId) {
     const sessionAnchor = originSessionId
         ? `Origin Session ID: ${originSessionId}.`
         : 'Origin Session ID unavailable in recovery payload — pull most recent SUNSET-tagged memory for this identity instead.';
     return [
-        `hi ${identity}, please use the context-recovery skill, then call add_memory once as a boot heartbeat with explicit non-empty prompt/thought/response fields (for example: prompt="Boot heartbeat for ${identity}", thought="Fresh recovery boot; Memory Core write-path health check.", response="Boot heartbeat saved; continuing recovery."), then proceed normally.`,
+        `hi ${identity}, please use the context-recovery skill, then call add_memory once as a boot heartbeat with explicit non-empty prompt/decisionContext/response fields (for example: prompt="Boot heartbeat for ${identity}", decisionContext="Fresh recovery boot; Memory Core write-path health check.", response="Boot heartbeat saved; continuing recovery."), then proceed normally.`,
         `Recovery context: ${reason}.`,
         `${sessionAnchor} Read the latest Memory Core Sandman handoff and your session context to resume swarm coordination from the prior session anchor.`
     ].join(' ');

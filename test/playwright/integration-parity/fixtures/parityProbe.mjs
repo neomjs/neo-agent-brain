@@ -52,9 +52,9 @@ if (action === 'providers') {
 
     try {
         await callJsonTool(client, 'add_memory', {
-            prompt  : `Parity CI probe prompt ${token}`,
-            thought : `Parity CI probe thought ${token}`,
-            response: `Parity CI probe response ${token}`
+            prompt         : `Parity CI probe prompt ${token}`,
+            decisionContext: `Parity CI probe thought ${token}`,
+            response       : `Parity CI probe response ${token}`
         });
 
         let   found    = false;

@@ -136,7 +136,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
 
     test('AC6 freshness: a just-written memory is visible immediately, without a REM cycle', async () => {
         const result = await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'}, async () => {
-            await MemoryService.addMemory({prompt: 'fresh prompt', response: 'fresh response', thought: 'fresh thought'});
+            await MemoryService.addMemory({prompt: 'fresh prompt', response: 'fresh response', decisionContext: 'fresh thought'});
             return MemoryService.queryRecentTurns({agentIdentity: '@me', limit: 1});
         });
 
@@ -152,7 +152,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
 
     test('AC7a isolation: under the private policy tenant B cannot see tenant A\'s recent turns; the default follows the deployment', async () => {
         await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'}, async () => {
-            await MemoryService.addMemory({prompt: 'A-only prompt', response: 'A-only response', thought: 'A-only thought'});
+            await MemoryService.addMemory({prompt: 'A-only prompt', response: 'A-only response', decisionContext: 'A-only thought'});
         });
         const readA = options => RequestContextService.run({userId: 'tenant-b', agentIdentityNodeId: '@agent-b'}, async () =>
             MemoryService.queryRecentTurns({agentIdentity: '@agent-a', limit: 50, ...options}));
@@ -173,7 +173,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
     test('AC7b no-scope fail-closed: no resolvable userId returns EMPTY, not all', async () => {
         // Seed real tenant data so there IS something a fail-open bug could leak.
         await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'}, async () => {
-            await MemoryService.addMemory({prompt: 'tenant data', response: 'r', thought: 't'});
+            await MemoryService.addMemory({prompt: 'tenant data', response: 'r', decisionContext: 't'});
         });
 
         // Query with NO request context (no resolvable userId) — must be empty, never deployment-wide.
@@ -185,7 +185,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
 
     test('detail:full joins Chroma content and the public projection excludes thought', async () => {
         const result = await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'}, async () => {
-            await MemoryService.addMemory({prompt: 'full prompt', response: 'full response', thought: 'secret thought'});
+            await MemoryService.addMemory({prompt: 'full prompt', response: 'full response', decisionContext: 'secret thought'});
             return MemoryService.queryRecentTurns({agentIdentity: '@me', limit: 1, detail: 'full', projection: 'public'});
         });
 
@@ -201,7 +201,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         // null. The write MUST still succeed; the turn MUST still be recallable; and the summary
         // projection falls back to truncated raw so the feed is never content-empty.
         const result = await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'}, async () => {
-            const write = await MemoryService.addMemory({prompt: 'no-summarizer prompt', response: 'r', thought: 't'});
+            const write = await MemoryService.addMemory({prompt: 'no-summarizer prompt', response: 'r', decisionContext: 't'});
             expect(write.error).toBeUndefined();
             return MemoryService.queryRecentTurns({agentIdentity: '@me', limit: 1});
         });
@@ -213,7 +213,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
 
     test('RA1 privacy: own-agent private projection includes thought', async () => {
         const result = await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'}, async () => {
-            await MemoryService.addMemory({prompt: 'own prompt', response: 'own response', thought: 'own secret'});
+            await MemoryService.addMemory({prompt: 'own prompt', response: 'own response', decisionContext: 'own secret'});
             return MemoryService.queryRecentTurns({agentIdentity: '@me', limit: 1, detail: 'full', projection: 'private'});
         });
 
@@ -224,7 +224,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
     test('RA1 privacy: a peer cannot read another agent\'s thought via private (downgraded to public)', async () => {
         // agent-b writes in tenant-a.
         await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-b'}, async () => {
-            await MemoryService.addMemory({prompt: 'b prompt', response: 'b response', thought: 'b secret'});
+            await MemoryService.addMemory({prompt: 'b prompt', response: 'b response', decisionContext: 'b secret'});
         });
         // agent-a (same tenant) requests agent-b's turns with private → must be forced to public.
         const result = await RequestContextService.run({userId: 'tenant-a', agentIdentityNodeId: '@agent-a'}, async () =>

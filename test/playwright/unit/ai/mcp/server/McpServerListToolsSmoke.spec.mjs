@@ -456,7 +456,10 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
         expect(addMemory.description.length).toBeLessThanOrEqual(120);
         expect(resumeSession.description).toBe('Validate whether a session id is safe to resume.');
         expect(resumeSession.description).not.toContain('SESSION_BUSY');
+        expect(addMemory.inputSchema.required).toEqual(['prompt', 'decisionContext', 'response']);
         expect(addMemory.inputSchema.properties.prompt.type).toBe('string');
+        expect(addMemory.inputSchema.properties.decisionContext.type).toBe('string');
+        expect(addMemory.inputSchema.properties.thought).toBeUndefined();
         expect(inspectDeploy.inputSchema.properties.mailboxReadState).toMatchObject({
             type    : 'object',
             required: ['messageId', 'recipient']

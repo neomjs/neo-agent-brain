@@ -50,7 +50,7 @@ This manifest defines the public API for the Neo.mjs AI Infrastructure SDK. Agen
 **Domain:** Long-term agent memory and session management.
 
 ### Memory_Service
-- **`async addMemory({ prompt, response, thought, sessionId? })`**
+- **`async addMemory({ prompt, response, decisionContext, sessionId? })`**
   - Stores an interaction. `sessionId` defaults to current session.
 - **`async queryMemories({ query, nResults, sessionId? })`**
   - Semantic search over past interactions.
