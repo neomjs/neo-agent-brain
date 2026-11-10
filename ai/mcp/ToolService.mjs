@@ -450,12 +450,11 @@ class ToolService_tmp extends Base {
             handbook  = dedicated || fullDescription || operation.summary || toolName;
 
         const entry = {
-            toolId     : toolName,
-            found      : true,
-            title      : operation.summary || toolName,
-            description: operation.description || operation.summary || '',
+            toolId  : toolName,
+            found   : true,
+            title   : operation.summary || toolName,
             handbook,
-            source     : dedicated ? 'x-neo-tool-handbook' : (operation.description ? 'description' : 'summary')
+            source  : dedicated ? 'x-neo-tool-handbook' : (operation.description ? 'description' : 'summary')
         };
 
         if (schemas) {

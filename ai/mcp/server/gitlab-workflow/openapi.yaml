@@ -52,8 +52,6 @@ paths:
                     type: boolean
                   title:
                     type: string
-                  description:
-                    type: string
                   handbook:
                     type: string
                   source:
