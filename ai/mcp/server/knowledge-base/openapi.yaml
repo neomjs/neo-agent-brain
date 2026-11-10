@@ -78,13 +78,12 @@ paths:
 
   /ingestion/progress:
     get:
-      summary: Get Ingestion Progress
+      summary: Ingestion progress for THIS PROCESS only; pull-mode tenant lanes run elsewhere.
       operationId: get_ingestion_progress
       x-neo-tool-tier: extended
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Ingestion progress for THIS PROCESS only; pull-mode tenant lanes run elsewhere.
       description: |
         Returns a read-only snapshot for the active ingestion run, or an idle state with the last
         completed run summary. This diagnostics tool stays separate from `healthcheck` so liveness
@@ -167,13 +166,12 @@ paths:
 
   /deployment/state/snapshot:
     post:
-      summary: Deployment State Snapshot
+      summary: Read the graph-independent deployment-state bridge snapshot.
       operationId: get_deployment_state_snapshot
       x-neo-tool-tier: extended
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Read the graph-independent deployment-state bridge snapshot.
       description: |
         Reads the bounded deployment-state bridge snapshot written by the internal orchestrator.
         This is a read-only public KB surface: it does not expose Docker, shell, exec, restart,
@@ -205,13 +203,12 @@ paths:
 
   /deployment/inspect:
     post:
-      summary: Inspect Deployment
+      summary: Inspect bounded cloud deployment state from the orchestrator bridge.
       operationId: inspect_deployment
       x-neo-tool-tier: extended
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Inspect bounded cloud deployment state from the orchestrator bridge.
       description: |
         Reads the bounded deployment inspection snapshot written by the internal orchestrator.
         This is a read-only public KB surface: it exposes allowlisted service state, bounded
@@ -329,13 +326,12 @@ paths:
 
   /documents/query:
     post:
-      summary: Query Documents
+      summary: Search the Knowledge Base and return ranked source references.
       operationId: query_documents
       x-neo-tool-tier: read
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Search the Knowledge Base and return ranked source references.
       description: |
         Performs a semantic search on the knowledge base using a natural language query.
         Returns a scored and ranked list of the most relevant source files.
@@ -464,11 +460,10 @@ paths:
 
   /knowledge/ask:
     post:
-      summary: Ask Knowledge Base (RAG)
+      summary: Ask the Knowledge Base for a synthesized answer with cited references.
       operationId: ask_knowledge_base
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Ask the Knowledge Base for a synthesized answer with cited references.
       description: |
         Performs a semantic search and uses an LLM to synthesize an answer based on the top results.
         Use this tool to get a high-level answer without manually reading multiple files.
@@ -700,12 +695,11 @@ paths:
 
   /knowledge/hierarchy:
     get:
-      summary: Get Class Hierarchy
-      operationId: get_class_hierarchy
-      # The scope belongs on the DEFAULT-visible tier: `tools/list` shows this line, while the long
+      # The scope belongs on the DEFAULT-visible tier: `tools/list` shows `summary`, while the long
       # `description` below is only served on an explicit `get_mcp_tool_handbook` call. A caller who
       # never fetches the handbook is exactly the caller who would misread the scope.
-      x-neo-tool-summary: Static class-hierarchy map for Neo.mjs code only — not your own or any tenant's repositories.
+      summary: Static class-hierarchy map for Neo.mjs code only — not your own or any tenant's repositories.
+      operationId: get_class_hierarchy
       x-neo-tool-tier: read
       x-pass-as-object: true
       x-annotations:

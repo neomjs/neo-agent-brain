@@ -60,11 +60,10 @@ x-neo-harness-tool-projection:
 paths:
   /community/batches/admit:
     post:
-      summary: Admit hosted community batch
+      summary: Admit a bounded community batch after server-side tenant, source, and epoch resolution.
       operationId: admit_community_batch
       x-neo-tool-tier: write
       x-pass-as-object: true
-      x-neo-tool-summary: Admit a bounded community batch after server-side tenant, source, and epoch resolution.
       description: |
         Hosted Streamable HTTP connector ingress. The authenticated request context supplies tenant
         authority; the neutral provider identity resolves the registered source and current epoch.
@@ -87,11 +86,10 @@ paths:
 
   /community/sources/health:
     post:
-      summary: Get hosted community source health
+      summary: Read bounded readiness for a tenant-scoped registered community source.
       operationId: get_community_source_health
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Read bounded readiness for a tenant-scoped registered community source.
       x-annotations:
         readOnlyHint: true
       description: |
@@ -119,11 +117,10 @@ paths:
 
   /community/activity:
     post:
-      summary: Get community activity
+      summary: Read tenant-scoped community activity metadata with citations and honest coverage.
       operationId: get_community_activity
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Read tenant-scoped community activity metadata with citations and honest coverage.
       x-annotations:
         readOnlyHint: true
       description: |
@@ -145,11 +142,10 @@ paths:
 
   /community/activity/content:
     post:
-      summary: Get community activity content
+      summary: Read one explicitly requested current community-content item through source trust checks.
       operationId: get_community_activity_content
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Read one explicitly requested current community-content item through source trust checks.
       x-annotations:
         readOnlyHint: true
       description: |
@@ -171,11 +167,10 @@ paths:
 
   /community/activity/seen:
     post:
-      summary: Mark community activity seen
+      summary: Idempotently mark one community activity handle seen for the authenticated viewer.
       operationId: mark_community_activity_seen
       x-neo-tool-tier: write
       x-pass-as-object: true
-      x-neo-tool-summary: Idempotently mark one community activity handle seen for the authenticated viewer.
       description: |
         Records a per-viewer presentation marker only. It never changes admission, counts, tasks,
         wake state, or lifecycle authority; tenant and viewer identity are server-derived.
@@ -196,11 +191,10 @@ paths:
 
   /community/activity/claim:
     post:
-      summary: Claim community activity task
+      summary: Atomically validate an eligible community event and bind it to one canonical A2A Task.
       operationId: claim_community_activity_task
       x-neo-tool-tier: write
       x-pass-as-object: true
-      x-neo-tool-summary: Atomically validate an eligible community event and bind it to one canonical A2A Task.
       description: |
         Atomically creates or returns the single canonical A2A Task bound to `(tenant_id, sourceEventId)`
         when the event is admitted, attention-eligible, active, and visible to the authenticated tenant.
@@ -223,11 +217,10 @@ paths:
 
   /community/activity/attention-counts:
     post:
-      summary: Get community activity attention counts
+      summary: Read bounded tenant/source community-attention counts, oldest age, coverage, and watermarks without prose.
       operationId: get_community_activity_attention_counts
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Read bounded tenant/source community-attention counts, oldest age, coverage, and watermarks without prose.
       x-annotations:
         readOnlyHint: true
       description: Projects bounded tenant/source counts and oldest occurrence timestamps over attention-eligible unclaimed events with explicit coverage and measurement fields; excludes prose, ranking scores, assignment hints, and wake thresholds.
@@ -392,13 +385,12 @@ paths:
 
   /deployment/state/snapshot:
     post:
-      summary: Deployment State Snapshot
+      summary: Read the graph-independent deployment-state bridge snapshot.
       operationId: get_deployment_state_snapshot
       x-neo-tool-tier: extended
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Read the graph-independent deployment-state bridge snapshot.
       description: |
         Reads the bounded deployment-state bridge snapshot written by the internal orchestrator.
         This is a read-only public MC surface: it does not expose Docker, shell, exec, restart,
@@ -429,13 +421,12 @@ paths:
 
   /deployment/inspect:
     post:
-      summary: Inspect Deployment
+      summary: Inspect bounded cloud deployment state from the orchestrator bridge.
       operationId: inspect_deployment
       x-neo-tool-tier: extended
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Inspect bounded cloud deployment state from the orchestrator bridge.
       description: |
         Reads the bounded deployment inspection snapshot written by the internal orchestrator.
         This is a read-only public MC surface: it exposes allowlisted service state, bounded
@@ -513,13 +504,12 @@ paths:
 
   /handoff/sandman:
     post:
-      summary: Get Sandman Handoff
+      summary: Read the Sandman handoff (Golden Path by default; gap/consolidation sections on request) with freshness metadata.
       operationId: get_sandman_handoff
       x-neo-tool-tier: read
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Read the Sandman handoff (Golden Path by default; gap/consolidation sections on request) with freshness metadata.
       description: |
         Reads `sandman_handoff.md` at the resolved `handoffFilePath` config leaf
         (`NEO_HANDOFF_FILE_PATH` override honored inside the leaf). The `stale` flag fires past
@@ -574,13 +564,12 @@ paths:
 
   /handoff/computed-route:
     post:
-      summary: Get Computed Route
+      summary: Read the computed Golden Path sidecar (validated route + corpus-projection admission).
       operationId: get_computed_route
       x-neo-tool-tier: read
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Read the computed Golden Path sidecar (validated route + corpus-projection admission).
       description: Reads the computed Golden Path sidecar (`computed-route.json`, the `computed-route.v1` contract) beside the Sandman handoff and returns `{status, reason, details, path, mtimeMs, route, admission}`. `status` is `available` (the route validated and passed through as written), `missing`, `unreadable` or `invalid`, each with a stable `reason` code and never a throw; `admission` is the corpus-projection admission for the `computed-golden-path` consumer (current, or last-known-good with the contract's reason). Read-only, team-visible; the Fleet cockpit's Golden Path panes read the plane's route through this instead of a host file.
       tags: [Diagnostics]
       responses:
@@ -593,13 +582,12 @@ paths:
 
   /fleet/pr-lane-activity:
     post:
-      summary: Get PR Lane Activity
+      summary: Read the Fleet activity feed's PR/lane slot from the corpus the orchestrator materializes.
       operationId: get_pr_lane_activity
       x-neo-tool-tier: read
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Read the Fleet activity feed's PR/lane slot from the corpus the orchestrator materializes.
       description: Serves the Fleet activity feed's PR/lane slot (PR, issue, lane-claim and stall-finding events) from the corpus the orchestrator materializes (`orchestrator.corpusProjection.materializedRoot`), for a Fleet attached to this plane that carries no corpus of its own. Returns the slot's own snapshot `{capability, counts, events, lanes, corpusIndexedAt}` with at most `limit` events. `lanes` is each login's newest lane-claim comment and newest assigned issue among the open issues, read from every issue and never bounded by `limit`. `capability.state` is `wired`, or `degraded` with the reader's reason when the tree is absent, mid-swap or unreadable — never an empty success. The tree is read once per materialization (`_index.json` write), not per call. Read-only, team-visible.
       tags: [Diagnostics]
       requestBody:
@@ -693,10 +681,9 @@ paths:
 
   /who-is-online:
     post:
-      summary: Who Is Online
+      summary: Report recent maintainer activity for review routing and lane handoffs.
       operationId: who_is_online
       x-neo-tool-tier: read
-      x-neo-tool-summary: Report recent maintainer activity for review routing and lane handoffs.
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
@@ -920,11 +907,10 @@ paths:
 
   /memories:
     post:
-      summary: Write a Diary for Future Sessions
+      summary: "Write a turn diary: decisions/facts in decisionContext; outcomes/next steps in response. Recalled via embeddings."
       operationId: add_memory
       x-neo-tool-tier: write
       x-pass-as-object: true
-      x-neo-tool-summary: "Write a turn diary: decisions/facts in decisionContext; outcomes/next steps in response. Recalled via embeddings."
       description: |
         Write a concise turn diary entry for future sessions in the factual register of a commit
         message or decision record.
@@ -1089,11 +1075,10 @@ paths:
 
   /memories/recent:
     get:
-      summary: Query Recent Turns
+      summary: Recall recent turns for recovery; opt in to policy-clamped public peer summaries or team public turns.
       operationId: query_recent_turns
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Recall recent turns for recovery; opt in to policy-clamped public peer summaries or team public turns.
       x-annotations:
         readOnlyHint: true
       description: |
@@ -1187,11 +1172,10 @@ paths:
 
   /lanes/landscape:
     get:
-      summary: Explore Lane Landscape
+      summary: Synthesize a non-authoritative "what IS the lane landscape right now" current-state Bird View.
       operationId: explore_lane_landscape
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Synthesize a non-authoritative "what IS the lane landscape right now" current-state Bird View.
       x-annotations:
         readOnlyHint: true
       description: |
@@ -1363,11 +1347,10 @@ paths:
 
   /memories/history:
     get:
-      summary: Explore Memory History
+      summary: Synthesize a non-authoritative "what happened" Bird View over a Memory/session time window.
       operationId: explore_memory_history
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Synthesize a non-authoritative "what happened" Bird View over a Memory/session time window.
       x-annotations:
         readOnlyHint: true
       description: |
@@ -1493,11 +1476,10 @@ paths:
 
   /pull-requests/history:
     get:
-      summary: Explore Resolved Pull Request History
+      summary: Synthesize a cite-backed Bird View over fully resolved pull-request conversations.
       operationId: explore_pull_request_history
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Synthesize a cite-backed Bird View over fully resolved pull-request conversations.
       x-annotations:
         readOnlyHint: true
       description: |
@@ -1682,11 +1664,10 @@ paths:
 
   /context/frontier:
     get:
-      summary: Get Context Frontier (compact by default)
+      summary: Read the active context frontier (compact counts + top neighbors by default; full topology on request).
       operationId: get_context_frontier
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Read the active context frontier (compact counts + top neighbors by default; full topology on request).
       x-annotations:
         readOnlyHint: true
       description: |
@@ -1974,11 +1955,10 @@ paths:
 
   /sessions/resume:
     post:
-      summary: Validate session resumability
+      summary: Validate whether a session id is safe to resume.
       operationId: resume_session
       x-neo-tool-tier: extended
       x-pass-as-object: true
-      x-neo-tool-summary: Validate whether a session id is safe to resume.
       x-annotations:
         readOnlyHint: true
       description: |
@@ -2291,13 +2271,12 @@ paths:
 
   /graph/scene:
     post:
-      summary: Get Graph Scene
+      summary: Whole-graph columnar scene for Observatory/Cockpit; in agent turns use query_hybrid_graph, get_neighbors, or get_node.
       operationId: get_graph_scene
       x-neo-tool-tier: read
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Whole-graph columnar scene for Observatory/Cockpit; in agent turns use query_hybrid_graph, get_neighbors, or get_node.
       description: >-
         IMPORTANT: Whole-graph columnar scene bulk-read for the Observatory/Cockpit — interactive agent sessions should
         use `query_hybrid_graph`, `get_neighbors`, `get_node`, or `get_context_frontier` instead.
@@ -2557,11 +2536,10 @@ paths:
 
   /mailbox/messages:
     post:
-      summary: Send Message
+      summary: Send an A2A message to one peer or an agent broadcast.
       operationId: add_message
       x-neo-tool-tier: write
       x-pass-as-object: true
-      x-neo-tool-summary: Send an A2A message to one peer or an agent broadcast.
       description: |
         Sends a message or optional Task. A successful response means the accepted message is
         durable in the message WAL; Native Edge Graph projection may still be pending and is
@@ -2706,11 +2684,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     get:
-      summary: List Messages
+      summary: List one PAGE of A2A mailbox messages, newest-first.
       operationId: list_messages
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: List one PAGE of A2A mailbox messages, newest-first.
       description: |
         Returns a page, not a set. Use `totalCount` / `truncated` / `nextOffset` to tell a complete
         answer from a truncated one — an empty `messages` array proves absence only when
@@ -3016,13 +2993,12 @@ paths:
 
   /mailbox/messages/query:
     post:
-      summary: Query Messages
+      summary: Semantic recall over A2A messages you can open, ranked by similarity; list_messages filters and sorts.
       operationId: query_messages
       x-neo-tool-tier: read
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
-      x-neo-tool-summary: Semantic recall over A2A messages you can open, ranked by similarity; list_messages filters and sorts.
       description: |
         Searches A2A messages by meaning, returning only messages `get_message` would open for you:
         - your own sends;
@@ -3099,11 +3075,10 @@ paths:
 
   /mailbox/messages/read:
     post:
-      summary: Mark Message Read
+      summary: Mark selected A2A messages read, or drain the unread messages you were actually shown.
       operationId: mark_read
       x-neo-tool-tier: write
       x-pass-as-object: true
-      x-neo-tool-summary: Mark selected A2A messages read, or drain the unread messages you were actually shown.
       description: |
         Marks selected messages read, or drains a snapshot of the caller's unread inbox. Pass exactly one of `messageId` (a string or array) and `all: true`. Array mode returns per-id results and one stale or unauthorized id never fails the batch.
 
@@ -3281,11 +3256,10 @@ paths:
 
   /turn-presence/record:
     post:
-      summary: Record Turn Presence
+      summary: Record active-turn liveness for the current agent session.
       operationId: record_turn_presence
       x-neo-tool-tier: write
       x-pass-as-object: true
-      x-neo-tool-summary: Record active-turn liveness for the current agent session.
       description: |
         Records a bounded `AGENT_TURN_PRESENCE` interval for the request-bound AgentIdentity.
         This is the turn-start/progress/terminal writer surface for #13498 Substrate A.
@@ -3430,11 +3404,10 @@ paths:
   # better and does: it stamps an authenticated `custodian` the caller cannot supply.
   /neural-link/transactions/save:
     post:
-      summary: Save NL transaction archive
+      summary: Archive one committed Neural Link transaction; answers a named refusal instead of throwing.
       operationId: save_nl_transaction
       x-neo-tool-tier: extended
       x-pass-as-object: true
-      x-neo-tool-summary: Archive one committed Neural Link transaction; answers a named refusal instead of throwing.
       description: "Requires status committed, at least one op, and an originWriter carrying agentId and sessionId. The container mints archiveId. A refusal answers saved false with a named reason."
       tags: [NeuralLink]
       requestBody:
@@ -3453,11 +3426,10 @@ paths:
 
   /neural-link/transactions/get:
     post:
-      summary: Read NL transaction archive
+      summary: Read one archived Neural Link transaction by archiveId; status found, not-found, or unavailable.
       operationId: get_nl_transaction
       x-neo-tool-tier: extended
       x-pass-as-object: true
-      x-neo-tool-summary: Read one archived Neural Link transaction by archiveId; status found, not-found, or unavailable.
       description: "The record travels flat on the found arm. not-found means the store answered and held no such record; unavailable means it could not be read, and carries a reason."
       tags: [NeuralLink]
       requestBody:
@@ -3476,11 +3448,10 @@ paths:
 
   /neural-link/transactions/replayed:
     post:
-      summary: Mark NL transaction replayed
+      summary: Mark one Neural Link archive replayed; answers the new replayCount or a named failure.
       operationId: mark_nl_transaction_replayed
       x-neo-tool-tier: extended
       x-pass-as-object: true
-      x-neo-tool-summary: Mark one Neural Link archive replayed; answers the new replayCount or a named failure.
       description: "Increments replayCount and stamps lastReplayedAt. updated false carries status not-found or unavailable; an unknown archiveId is never created."
       tags: [NeuralLink]
       requestBody:
@@ -3499,11 +3470,10 @@ paths:
 
   /neural-link/actions/admit:
     post:
-      summary: Admit NL action telemetry
+      summary: Write-only admission for Neural Link action telemetry; drops every field outside the admitted set.
       operationId: admit_nl_actions
       x-neo-tool-tier: extended
       x-pass-as-object: true
-      x-neo-tool-summary: Write-only admission for Neural Link action telemetry; drops every field outside the admitted set.
       description: "The CALLER mints sequenceId as a bare-UUID correlation token; the container mints the storage row id. Admits only sequenceId, sessionId, timestamp, tool, success, durationMs, appName and targets of classNames plus componentIds. A row that cannot be stored is counted as refused, never thrown. No read companion exists."
       tags: [NeuralLink]
       requestBody:

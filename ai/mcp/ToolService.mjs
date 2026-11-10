@@ -52,7 +52,7 @@ class ToolService_tmp extends Base {
          */
         compactToolSchemas: false,
         /**
-         * Maximum description length emitted through compact `tools/list`.
+         * Maximum length for the OpenAPI `summary` line emitted through compact `tools/list`.
          * @member {Number} toolListDescriptionMaxLength=160
          */
         toolListDescriptionMaxLength: 160,
@@ -195,12 +195,11 @@ class ToolService_tmp extends Base {
 
                     const fullDescription = operation.description || operation.summary || toolName;
                     const listDescription = me.compactToolDescriptions
-                        ? me.buildToolListDescription(operation, fullDescription)
+                        ? me.buildToolListDescription(operation)
                         : fullDescription;
 
                     const tool = {
                         name        : toolName,
-                        title       : operation.summary || toolName,
                         description : listDescription,
                         zodSchema   : inputZodSchema,
                         toolTier,
@@ -231,7 +230,6 @@ class ToolService_tmp extends Base {
 
                     const toolForListing = {
                         name       : tool.name,
-                        title      : tool.title,
                         description: tool.description,
                         inputSchema: listedInputSchema
                     };
@@ -345,15 +343,14 @@ class ToolService_tmp extends Base {
     }
 
     /**
-     * @summary Builds the compact description emitted through `tools/list`.
-     * @param {Object} operation       Parsed OpenAPI operation.
-     * @param {String} fullDescription Full operation description fallback.
+     * @summary Builds the compact description emitted through `tools/list` from `operation.summary` alone.
+     * @param {Object} operation Parsed OpenAPI operation.
      * @returns {String}
      * @protected
      */
-    buildToolListDescription(operation, fullDescription) {
+    buildToolListDescription(operation) {
         const
-            source     = operation['x-neo-tool-summary'] || operation.summary || fullDescription || '',
+            source     = operation.summary || '',
             singleLine = String(source).replace(/\s+/g, ' ').trim(),
             maxLength  = this.toolListDescriptionMaxLength;
 
@@ -434,7 +431,7 @@ class ToolService_tmp extends Base {
     }
 
     /**
-     * @summary Builds one lazy-loaded handbook entry from OpenAPI metadata.
+     * @summary Builds one lazy-loaded handbook entry from OpenAPI metadata (`title` is `toolName`).
      * @param {String} toolName        The operation id.
      * @param {Object} operation       Parsed OpenAPI operation.
      * @param {String} fullDescription Full operation description fallback.
@@ -452,7 +449,7 @@ class ToolService_tmp extends Base {
         const entry = {
             toolId  : toolName,
             found   : true,
-            title   : operation.summary || toolName,
+            title   : toolName,
             handbook,
             source  : dedicated ? 'x-neo-tool-handbook' : (operation.description ? 'description' : 'summary')
         };

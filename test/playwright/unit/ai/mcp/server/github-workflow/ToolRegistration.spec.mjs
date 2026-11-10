@@ -150,8 +150,8 @@ test.describe('GitHub Workflow MCP Server Tool Registration', () => {
         const belief       = doc.components.schemas.PullRequestBelief;
         const reasons      = belief.properties.unverifiable.items.properties.reason.enum;
 
-        expect(operation['x-neo-tool-summary']).toContain('believedOpen');
-        expect(operation['x-neo-tool-summary'].length).toBeLessThanOrEqual(120);
+        expect(operation.summary).toContain('believedOpen');
+        expect(operation.summary.length).toBeLessThanOrEqual(120);
         expect(operation.description.length).toBeLessThanOrEqual(1024);
         expect(believedOpen.schema).toMatchObject({
             type       : 'array',

@@ -272,6 +272,7 @@ test.describe('ToolService compactToolSchemas — the schema-prose projection (#
 
             for (const tool of tools) {
                 const entry = service.getToolHandbook(tool.name);
+                expect(entry.title).toBe(tool.name);
                 expect(entry.description, `${tool.name} handbook entry must not duplicate prose in a description key`).toBeUndefined();
                 expect(typeof entry.handbook).toBe('string');
                 expect(entry.handbook.length).toBeGreaterThan(0);

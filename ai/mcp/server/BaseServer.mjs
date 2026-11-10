@@ -408,7 +408,6 @@ class BaseServer extends Base {
 
                 const mcpTools = tools.map(tool => ({
                     name        : tool.name,
-                    title       : tool.title,
                     description : tool.description,
                     inputSchema : tool.inputSchema,
                     outputSchema: tool.outputSchema,
