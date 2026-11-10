@@ -261,11 +261,21 @@ test.describe('ToolService compactToolSchemas — the schema-prose projection (#
             const described = tools.filter(tool => collectDescriptions(tool.inputSchema).length > 0);
             expect(described.length, 'default-off keeps the descriptions on the listing').toBeGreaterThan(0);
 
-            // …and the handbook entry shape is untouched — no relocated schema keys.
+            // …and the handbook entry shape is untouched — no relocated schema keys, and no duplicate description key.
             const handbook = service.getToolHandbook(tools[0].name);
             expect(handbook.inputSchema).toBeUndefined();
             expect(handbook.outputSchema).toBeUndefined();
-            expect(Object.keys(handbook).sort()).toEqual(['description', 'found', 'handbook', 'source', 'title', 'toolId'])
+            expect(handbook.description).toBeUndefined();
+            expect(typeof handbook.handbook).toBe('string');
+            expect(handbook.handbook.length).toBeGreaterThan(0);
+            expect(Object.keys(handbook).sort()).toEqual(['found', 'handbook', 'source', 'title', 'toolId']);
+
+            for (const tool of tools) {
+                const entry = service.getToolHandbook(tool.name);
+                expect(entry.description, `${tool.name} handbook entry must not duplicate prose in a description key`).toBeUndefined();
+                expect(typeof entry.handbook).toBe('string');
+                expect(entry.handbook.length).toBeGreaterThan(0);
+            }
         })
     });
 
