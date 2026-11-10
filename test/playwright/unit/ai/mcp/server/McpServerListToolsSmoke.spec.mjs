@@ -316,7 +316,7 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
             handbookTool = byName.get_mcp_tool_handbook;
 
         expect(handbookTool.description.length).toBeLessThanOrEqual(120);
-        expect(readFile.description).toBe('Read a workspace file by absolute path.');
+        expect(readFile.description).toBe('Read the full text of a workspace file by absolute path; use when inspecting a file inside the jailed project root.');
         expect(readFile.description).not.toContain('directory traversal outside');
         expect(readFile.inputSchema.properties.absolutePath.type).toBe('string');
         expect(healthcheck.annotations.readOnlyHint).toBe(true);
@@ -354,9 +354,9 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
             handbookTool = byName.get_mcp_tool_handbook;
 
         expect(handbookTool.description.length).toBeLessThanOrEqual(120);
-        expect(queryDocs.description).toBe('Search the Knowledge Base and return ranked source references.');
+        expect(queryDocs.description).toBe('Return ranked KB source references without LLM synthesis; use when enumerating >5 matches or listing matching files.');
         expect(queryDocs.description).not.toContain('Prefer `ask_knowledge_base`');
-        expect(askKnowledge.description).toBe('Ask the Knowledge Base for a synthesized answer with cited references.');
+        expect(askKnowledge.description).toBe('Synthesize a grounded Neo.mjs answer with top-5 cited refs; use when asking how a concept works or which files own it.');
         expect(askKnowledge.description).not.toContain('zero-cost RAG subagent');
         expect(handbookTool.annotations.readOnlyHint).toBe(true);
 
@@ -1126,5 +1126,32 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
         }
 
         expect(summaries.size, 'memory-core summaries must be distinct across all 55 tools').toBe(55);
+    });
+
+    test('knowledge-base and file-system summaries follow <what>; use when <trigger> without repeating operationId (#1567)', () => {
+        const
+            targetServers  = servers.filter(server => ['knowledge-base', 'file-system'].includes(server.name)),
+            expectedCounts = {'knowledge-base': 13, 'file-system': 7};
+
+        for (const server of targetServers) {
+            const
+                operationsById = getOperationsById(server),
+                entries        = Object.entries(operationsById);
+
+            expect(entries.length, `${server.name} operation count`).toBe(expectedCounts[server.name]);
+
+            for (const [operationId, operation] of entries) {
+                const
+                    summary   = operation.summary,
+                    bareTitle = operationId.replace(/_/g, ' ').toLowerCase(),
+                    bytes     = Buffer.byteLength(summary, 'utf8');
+
+                expect(bytes, `${server.name}.${operationId} summary byte length`).toBeLessThanOrEqual(120);
+                expect(summary, `${server.name}.${operationId} must match <what>; use when <trigger>`).toMatch(/^[^;]+; use when [^;]+$/);
+                expect(summary.toLowerCase(), `${server.name}.${operationId} must not repeat operationId`).not.toContain(operationId.toLowerCase());
+                expect(summary.toLowerCase(), `${server.name}.${operationId} must not be the bare title`).not.toBe(bareTitle);
+            }
+        }
+    });
     });
 });

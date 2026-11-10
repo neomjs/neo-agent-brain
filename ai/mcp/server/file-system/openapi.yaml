@@ -40,7 +40,7 @@ tags:
 paths:
   /healthcheck:
     get:
-      summary: Health Check
+      summary: Probe file-system server liveness; use when file or test calls fail.
       operationId: healthcheck
       x-annotations:
         readOnlyHint: true
@@ -60,7 +60,7 @@ paths:
 
   /tool/handbook:
     post:
-      summary: Tool Handbook
+      summary: Fetch full usage docs and schemas for one file-system MCP tool; use when a listed summary is not enough to call it.
       operationId: get_mcp_tool_handbook
       description: Returns lazy-loaded usage detail for one file-system MCP tool.
       tags: [Health]
@@ -104,7 +104,7 @@ paths:
 
   /read_file:
     post:
-      summary: Read a workspace file by absolute path.
+      summary: Read the full text of a workspace file by absolute path; use when inspecting a file inside the jailed project root.
       operationId: read_file
       description: Reads the complete text of a file from the workspace. Throws a 403 on directory escape attempts.
       x-neo-tool-handbook: |
@@ -138,7 +138,7 @@ paths:
 
   /write_file:
     post:
-      summary: Writes or overwrites a file.
+      summary: Write or overwrite a workspace file by absolute path; use when creating or replacing a file inside the project root.
       operationId: write_file
       description: Writes content to a specific file. Throws a 403 on directory escape attempts.
       tags: [IO]
@@ -163,7 +163,7 @@ paths:
 
   /list_directory:
     post:
-      summary: Lists the content of a directory.
+      summary: List files and folders in a workspace directory by absolute path; use when inspecting a folder inside the project root.
       operationId: list_directory
       description: Returns an array of file/folder names inside the given directory path.
       tags: [IO]
@@ -185,7 +185,7 @@ paths:
 
   /check_syntax:
     post:
-      summary: Checks target JS file for syntax errors.
+      summary: Run a syntax/AST check on a JavaScript file by absolute path; use when verifying a modified JS/MJS file parses cleanly.
       operationId: check_syntax
       description: Runs a native AST/syntax check against a file. Returns empty if valid, else returns the syntax error preventing execution.
       tags: [Execution]
@@ -210,7 +210,7 @@ paths:
       # `tools/list` is compacted on this server (max 120 chars) and reads `summary`, never the
       # description below — so the warning has to exist in BOTH places or the ordinary discovery
       # surface keeps describing runner isolation while the real limit lives one call away.
-      summary: "Executes one Playwright spec. EXECUTION IS NOT JAILED — the spec runs with this server's host trust."
+      summary: "Run one Playwright spec (EXECUTION IS NOT JAILED: runs with host trust); use when running a spec file by absolute path."
       operationId: run_playwright_test
       description: |
         Runs the Playwright runner isolated to the requested spec file to test pass/fail conditions.
