@@ -547,6 +547,15 @@ export function buildTaskDefinitions({
             pidFileName    : 'data-integrity-sweep.pid',
             expectedCommand: 'DataIntegrityDiagnosisService',
             serviceTask    : true
+        },
+        // Daily in-process container-plane lane that reads the `dated-items.v1` register and delivers
+        // overdue rows to their owners via A2A. The entry exists for the persisted state envelope
+        // (`lastRunAt`, `lastRunDate`, `lastCompletion`).
+        'dated-items-overdue': {
+            label          : 'Dated-items overdue notification',
+            pidFileName    : 'dated-items-overdue.pid',
+            expectedCommand: 'DatedItemsOverdue',
+            serviceTask    : true
         }
     };
 

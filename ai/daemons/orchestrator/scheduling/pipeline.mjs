@@ -1,5 +1,6 @@
 import {collectDueCandidates}                                  from './collector.mjs';
 import {pickNextCandidate}                                     from './picker.mjs';
+import {runDatedItemsOverdue}                                  from './datedItemsOverdue.mjs';
 import {evaluateStallAlarm, getEmbedDrainPendingAge}           from './embedDrainLivenessWatchdog.mjs';
 import {evaluateConsolidationStallAlarm, getRemCycleStaleness} from './remConsolidationLivenessWatchdog.mjs';
 import {describeHolderYield, evaluateWaiterStarvation}         from './heavyMaintenanceStarvationWatchdog.mjs';
@@ -174,7 +175,9 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
                 goldenPathGetDueTask                : orchestrator.goldenPathGetDueTask,
                 swarmHeartbeatGetDueTask            : orchestrator.swarmHeartbeatGetDueTask,
                 swarmHeartbeatInitFailed            : !!orchestrator.swarmHeartbeatService.initFailed,
-                embedDrainLivenessWatchdogGetDueTask: orchestrator.embedDrainLivenessWatchdogGetDueTask
+                embedDrainLivenessWatchdogGetDueTask: orchestrator.embedDrainLivenessWatchdogGetDueTask,
+                datedItemsOverdueGetDueTask         : orchestrator.datedItemsOverdueGetDueTask,
+                datedItemsSourcePath                : orchestrator.datedItemsSourcePath
             }
         }),
         services: {
@@ -191,7 +194,8 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
             communityReconciliationService         : orchestrator.communityReconciliationService,
             embedDrainLivenessAlarmDispatcher      : orchestrator.embedDrainLivenessAlarmDispatcher,
             remConsolidationLivenessAlarmDispatcher: orchestrator.remConsolidationLivenessAlarmDispatcher,
-            dataIntegrityDiagnosisService          : orchestrator.dataIntegrityDiagnosisService
+            dataIntegrityDiagnosisService          : orchestrator.dataIntegrityDiagnosisService,
+            datedItemsOverdueSendMessage           : orchestrator.datedItemsOverdueSendMessage
         },
         runtime: {
             goldenPathRepoEnrichmentEnabled: orchestrator.goldenPathRepoEnrichmentEnabled,
@@ -215,6 +219,8 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
             remConfiguredCadenceMs                  : config.orchestrator.intervals.dreamMs,
             remOverflowThreshold                    : config.orchestrator.intervals.dreamOverflowThreshold,
             heavyMaintenanceStarvationDegradeAfterMs: orchestrator.heavyMaintenanceStarvationDegradeAfterMs,
+            datedItemsSourcePath                    : orchestrator.datedItemsSourcePath,
+            db                                      : orchestrator.db,
             writeLog                                : orchestrator.writeLog.bind(orchestrator)
         }
     };
@@ -544,7 +550,8 @@ function executeInProcessCandidate({candidate, activeHeavyTask, services, runtim
             services,
             repoEnrichmentEnabled: runtime.goldenPathRepoEnrichmentEnabled
         }),
-        'swarm-heartbeat': (taskName, reason) => runSwarmHeartbeatTask({taskName, reason, services})
+        'swarm-heartbeat'    : (taskName, reason) => runSwarmHeartbeatTask({taskName, reason, services}),
+        'dated-items-overdue': (taskName, reason) => runDatedItemsOverdueTask({taskName, reason, services, runtime})
     };
 
     const executeFn = runners[candidate.taskName];
@@ -567,7 +574,7 @@ function executeInProcessCandidate({candidate, activeHeavyTask, services, runtim
         });
     }
 
-    if (candidate.taskName === 'swarm-heartbeat') {
+    if (candidate.taskName === 'swarm-heartbeat' || candidate.taskName === 'dated-items-overdue') {
         return executeFn(candidate.taskName, candidate.trigger.reason);
     }
 
@@ -759,6 +766,47 @@ async function runSwarmHeartbeatTask({taskName, reason, services}) {
         services.healthService?.recordTaskOutcome?.(taskName, 'completed', {
             reason,
             completedAt: new Date().toISOString()
+        });
+    } catch (e) {
+        const state = services.taskStateService.getTaskState(taskName);
+        if (state) state.lastReason = e.message;
+        services.taskStateService.markFailed(taskName, 1);
+        services.healthService?.recordTaskOutcome?.(taskName, 'failed', {
+            reason,
+            error   : e.message,
+            failedAt: new Date().toISOString()
+        });
+    }
+}
+
+async function runDatedItemsOverdueTask({taskName, reason, services, runtime}) {
+    services.taskStateService.markStarted(taskName, reason);
+    services.healthService?.recordTaskOutcome?.(taskName, 'running', {reason, startedAt: new Date().toISOString()});
+    try {
+        const taskState = services.taskStateService.getTaskState(taskName),
+              outcome   = await runDatedItemsOverdue({
+                  sourcePath : runtime.datedItemsSourcePath,
+                  state      : taskState,
+                  sendMessage: services.datedItemsOverdueSendMessage,
+                  db         : runtime.db,
+                  writeLog   : runtime.writeLog
+              });
+
+        const completedAt = new Date().toISOString();
+        services.taskStateService.markCompleted(taskName, {
+            completedAt,
+            date       : outcome.today,
+            status     : outcome.status,
+            sentCount  : outcome.sentCount,
+            failedCount: outcome.failedCount
+        });
+        services.healthService?.recordTaskOutcome?.(taskName, 'completed', {
+            reason,
+            completedAt,
+            date       : outcome.today,
+            status     : outcome.status,
+            sentCount  : outcome.sentCount,
+            failedCount: outcome.failedCount
         });
     } catch (e) {
         const state = services.taskStateService.getTaskState(taskName);
