@@ -161,7 +161,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * @param {Object}    options
  * @param {Object}    options.lifecycleService The `FleetLifecycleService` (or a stub) that supervises
  *                                             the process — supplies `getRegistry()`, `isRunning(id)`,
- *                                             `status(id)`, and `start(id, {cwd})`.
+ *                                             `status(id)`, `resolveHarnessGeneration(harnessType)`,
+ *                                             and `start(id, {cwd})`.
  * @param {String}    options.agentId          The Fleet Manager agent id to start.
  * @param {String}   [options.managedRoot]     The absolute, trusted fleet-managed checkout root —
  *                                             required only when the agent carries `metadata.repo`.
@@ -382,6 +383,11 @@ async function provisionAgent({
     if (repo && (typeof agentosRuntimeRoot !== 'string' || !path.isAbsolute(agentosRuntimeRoot))) {
         throw new Error(`startAgentProvisioned: 'agentosRuntimeRoot' must be an absolute path for agent '${agentId}'.`)
     }
+
+    // A family that starts from harness generations admits a new installed build here, before anything reads the
+    // harness (the catalog, the capability proof) or touches the checkout; one with no admitted build refuses here.
+    await lifecycleService.resolveHarnessGeneration(agent.harnessType);
+    startSignal.throwIfAborted();
 
     // Resolve Antigravity's selected native build, profile environment, and registry before credential reads or
     // checkout effects. The profile probe remains a closed-seat gate below, before any managed file is touched.
