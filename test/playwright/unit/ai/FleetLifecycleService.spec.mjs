@@ -203,6 +203,10 @@ function testSeams({spawnStub, registry} = {}) {
         // Reset the curated-launch resolution fields too — fallback tests set them explicitly.
         instanceRoot                 : null,
         harnessBinaryPaths           : null,
+        harnessGenerationOptIns      : null,
+        harnessGenerationRoot        : null,
+        harnessGenerationStore       : null,
+        harnessGenerationAttempts    : new Map(),
         codexDesktopCapabilityProbeFn: null,
         antigravityRuntimeProbeFn    : null,
         codexDesktopCleanupFn        : null,
@@ -2042,6 +2046,105 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
             ['--version'],
             ['--version']
         ])
+    });
+
+    /**
+     * An installed ChatGPT.app under `root` with an executable main binary and bundled CLI, plus a generation
+     * store double that admits by copying the bundle (or refuses with `rejectAs`), and the store's call log.
+     */
+    function harnessGenerationFixture(root, {rejectAs = null} = {}) {
+        const
+            installed = path.join(root, 'Applications', 'ChatGPT.app'),
+            storeRoot = path.join(root, 'harnesses'),
+            ledger    = {version: 1, admitted: [], rejected: []},
+            calls     = [];
+
+        for (const relative of ['Contents/MacOS/ChatGPT', 'Contents/Resources/codex-cli/bin/codex']) {
+            fs.mkdirSync(path.dirname(path.join(installed, relative)), {recursive: true});
+            fs.symlinkSync(process.execPath, path.join(installed, relative));
+        }
+
+        FleetLifecycleService.harnessBinaryPaths     = {'codex-desktop': path.join(installed, 'Contents/MacOS/ChatGPT'),
+            codex: path.join(installed, 'Contents/Resources/codex-cli/bin/codex')};
+        FleetLifecycleService.harnessGenerationRoot  = storeRoot;
+        FleetLifecycleService.harnessGenerationStore = {
+            readBundleInfo: bundle => { calls.push(['readBundleInfo', bundle]); return {shortVersion: '26.1103', buildVersion: '25894'} },
+            readLedger    : ({root: at, family}) => { calls.push(['readLedger', at, family]); return structuredClone(ledger) },
+            materialize   : async ({root: at, family, sourceBundle, source}) => {
+                calls.push(['materialize', at, family, sourceBundle, source]);
+                if (rejectAs) {
+                    ledger.rejected.push({id: null, shortVersion: '26.1103', buildVersion: '25894', source, reason: rejectAs});
+                    return {admitted: false, reason: rejectAs}
+                }
+                const id = 'a'.repeat(64);
+                fs.cpSync(sourceBundle, path.join(at, family, id, 'ChatGPT.app'), {recursive: true, verbatimSymlinks: true});
+                ledger.admitted.push({id, appName: 'ChatGPT.app', executable: 'ChatGPT', shortVersion: '26.1103', buildVersion: '25894'});
+                return {admitted: true, id}
+            },
+            select        : ({root: at, family}) => {
+                const entry = ledger.admitted.at(-1), appBundle = entry && path.join(at, family, entry.id, entry.appName);
+                return entry ? {id: entry.id, appBundle, binaryPath: path.join(appBundle, 'Contents', 'MacOS', entry.executable),
+                    shortVersion: entry.shortVersion, buildVersion: entry.buildVersion} : null
+            }
+        };
+        FleetLifecycleService.execFileFn = (command, args, opts, callback) => callback(null, 'Usage: mcp add --url <URL> --bearer-token-env-var <ENV>', '');
+
+        return {installed, storeRoot, calls}
+    }
+
+    test('a family that has not opted in to harness generations proves its harnessBinaries paths and never reads the store', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-off-'));
+        install();
+        try {
+            const {installed, calls} = harnessGenerationFixture(root);
+            await expect(FleetLifecycleService.assertRemoteMcpCapability({id: 'seat', harnessType: 'codex-desktop'})).resolves.toEqual({
+                harnessType     : 'codex-desktop',
+                binaryPath      : path.join(installed, 'Contents/Resources/codex-cli/bin/codex'),
+                launchBinaryPath: path.join(installed, 'Contents/MacOS/ChatGPT')
+            });
+            expect(calls).toEqual([])
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
+    test('an opted-in Codex Desktop Start admits a new installed build once, then proves the app and its CLI inside the selected generation', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-on-'));
+        install();
+        try {
+            const {installed, storeRoot, calls} = harnessGenerationFixture(root), copy = path.join(storeRoot, 'codex-desktop', 'a'.repeat(64), 'ChatGPT.app');
+            FleetLifecycleService.harnessGenerationOptIns = {'codex-desktop': true};
+
+            const expected = {
+                harnessType      : 'codex-desktop',
+                binaryPath       : path.join(copy, 'Contents/Resources/codex-cli/bin/codex'),
+                launchBinaryPath : path.join(copy, 'Contents/MacOS/ChatGPT'),
+                harnessGeneration: {family: 'codex-desktop', generationId: 'a'.repeat(64), shortVersion: '26.1103', buildVersion: '25894'}
+            };
+            await expect(FleetLifecycleService.assertRemoteMcpCapability({id: 'seat', harnessType: 'codex-desktop'})).resolves.toEqual(expected);
+            await expect(FleetLifecycleService.assertRemoteMcpCapability({id: 'peer', harnessType: 'codex-desktop'}), 'the same installed build again')
+                .resolves.toEqual(expected);
+            expect(calls.filter(([call]) => call === 'materialize')).toEqual([['materialize', storeRoot, 'codex-desktop', installed, 'installed']])
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
+    test('an opted-in Start with no admitted generation refuses by name with the latest rejection and never proves the installed bundle', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-none-'));
+        install();
+        try {
+            const {calls} = harnessGenerationFixture(root, {rejectAs: 'probe-refused:updater-disable-predicate-missing'});
+            FleetLifecycleService.harnessGenerationOptIns = {'codex-desktop': true};
+
+            for (const id of ['seat', 'peer']) {
+                await expect(FleetLifecycleService.assertRemoteMcpCapability({id, harnessType: 'codex-desktop'}))
+                    .rejects.toThrow("'codex-desktop' starts from admitted harness generations and has none; the latest rejection: probe-refused:updater-disable-predicate-missing.")
+            }
+            expect(calls.filter(([call]) => call === 'materialize'), 'a rejected build is tried once per Fleet process').toHaveLength(1)
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
     });
 
     test('rejects missing flags, wrong bridge kinds, unknown families, and unavailable binaries', async () => {

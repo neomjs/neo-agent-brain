@@ -26,11 +26,13 @@ import McpLaunchAdmissionService                                                
 import {LAUNCH_ADMISSION_REASONS}                                                         from '../../../src/fleet/contract/launchAdmission.mjs';
 import {isOnInstance}                                                                     from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities}                       from './manageCodexDesktopRuntime.mjs';
-import {GIT_IDENTITY_ENV, gitIdentityEnv}                                                 from './seatGitIdentity.mjs';
-import {runtimeGenerationPin, readRuntimeGeneration, readRuntimeGenerationRecord}         from './runtimeGeneration.mjs';
-import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences}            from './runtimeGenerationLease.mjs';
-import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot}           from './seatRuntimeRecord.mjs';
-import {writeFileAtomicSync}                                                              from '../shared/atomicFileWrite.mjs';
+import {HARNESS_GENERATION_FAMILIES, materializeHarnessGeneration, readHarnessBundleInfo,
+        readHarnessGenerationLedger, selectHarnessGeneration}                              from './harnessGeneration.mjs';
+import {GIT_IDENTITY_ENV, gitIdentityEnv}                                         from './seatGitIdentity.mjs';
+import {runtimeGenerationPin, readRuntimeGeneration, readRuntimeGenerationRecord} from './runtimeGeneration.mjs';
+import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences}    from './runtimeGenerationLease.mjs';
+import {createSeatRuntimeRecord, isBridgeSigningAuthority, seatRuntimeSnapshot}   from './seatRuntimeRecord.mjs';
+import {writeFileAtomicSync}                                                      from '../shared/atomicFileWrite.mjs';
 
 import {createResidentMcpInputOwner, createBridgeTokenOwner, restoreLaunchCredentialOwner} from './launchCredentialOwners.mjs';
 import {recoverLaunchProfileGrants}                                                        from './launchProfileCustody.mjs';
@@ -150,6 +152,25 @@ const HARNESS_BINARY_LEAF_KEYS = {
     'kimi-code'     : 'kimiCode',
     'opencode'      : 'openCode'
 };
+
+// The harness-generation store calls an opted-in Start makes; `harnessGenerationStore` replaces them in specs.
+const HARNESS_GENERATION_STORE = Object.freeze({
+    materialize   : materializeHarnessGeneration,
+    readBundleInfo: readHarnessBundleInfo,
+    readLedger    : readHarnessGenerationLedger,
+    select        : selectHarnessGeneration
+});
+
+/**
+ * @summary The outermost `.app` bundle a harness binary path lies in, or `null` for a path outside one.
+ * @param {String|null} binaryPath
+ * @returns {String|null}
+ */
+function appBundleOf(binaryPath) {
+    const at = typeof binaryPath === 'string' ? binaryPath.indexOf('.app/') : -1;
+
+    return at > 0 ? binaryPath.slice(0, at + 4) : null
+}
 
 // The ONLY ambient parent-env vars that cross into a spawned harness. The FM's own environment
 // carries operator secrets (provider API keys, tokens, session vars) that must never leak into
@@ -491,6 +512,38 @@ class FleetLifecycleService extends Base {
      * @member {Object|null} harnessBinaryPaths=null
      */
     harnessBinaryPaths = null
+
+    /**
+     * Per-family harness-generation opt-in overrides, keyed by `harnessType` (e.g. `{'codex-desktop': true}`).
+     * `null` / missing key ⇒ the family's AiConfig `fleet.harnessGenerations.*` leaf. The test /
+     * per-tenant override seam, as {@link harnessBinaryPaths} is for the binary path.
+     * @member {Object|null} harnessGenerationOptIns=null
+     */
+    harnessGenerationOptIns = null
+
+    /**
+     * Harness-generation store root override; `null` ⇒ the AiConfig `fleet.harnessGenerations.root` leaf.
+     * @member {String|null} harnessGenerationRoot=null
+     */
+    harnessGenerationRoot = null
+
+    /**
+     * The store calls an opted-in Start makes, `{materialize, readBundleInfo, readLedger, select}` with
+     * `harnessGeneration.mjs`'s signatures. Defaults to that module; injectable so unit specs never copy,
+     * sign-check or probe a vendor bundle.
+     * @member {Object|null} harnessGenerationStore=null
+     */
+    harnessGenerationStore = null
+
+    /**
+     * The admission of each installed build this process already tried, keyed by store root, family and
+     * version. A build is tried once per Fleet process, and concurrent Starts share its one admission: a
+     * rejected build never costs every Start an admission, and the next Fleet build, whose admitting code
+     * may differ, tries it again.
+     * @member {Map<String, Promise<Object>>} harnessGenerationAttempts
+     * @private
+     */
+    harnessGenerationAttempts = new Map()
 
     /**
      * Grace period after `SIGTERM` before `stop` escalates to `SIGKILL`.
@@ -1049,7 +1102,8 @@ class FleetLifecycleService extends Base {
             codexDesktopCapability = null;
 
         if (agent.harnessType === 'codex-desktop' && launch.instanceHome) {
-            const configuredAuthCommand = this.getHarnessBinaryPath('codex');
+            // the CLI the capability proof bound, so a pinned generation's app and CLI stay one build
+            const configuredAuthCommand = opts.remoteMcpCapability?.binaryPath ?? this.getHarnessBinaryPath('codex');
 
             authCommand = configuredAuthCommand && this.resolveExecutable(configuredAuthCommand, env.PATH, opts.cwd);
 
@@ -1240,8 +1294,10 @@ class FleetLifecycleService extends Base {
             profileArg         : survivesFleetExit ? args.find(arg => arg.startsWith('--user-data-dir=')) ?? null : null,
             admissionGeneration: null,
             runtimeGeneration  : opts.runtimeGeneration ?? null,
-            stopRequested      : false,
-            exitReason         : null
+            // the admitted vendor build this Start launched; a running seat keeps it until its next Start
+            harnessGeneration: opts.remoteMcpCapability?.harnessGeneration ?? null,
+            stopRequested    : false,
+            exitReason       : null
         };
         this.processes.set(id, record);
 
@@ -3383,6 +3439,73 @@ class FleetLifecycleService extends Base {
     }
 
     /**
+     * @summary The admitted generation an opted-in GUI family starts its seats from, or `null` when the
+     * family has not opted in. The installed build, the `.app` around the family's `harnessBinaries` path,
+     * goes through admission first when the family's ledger has not admitted its version and this process
+     * has not tried it. An opted-in Start never falls back to the installed bundle.
+     * @param {String} harnessType
+     * @returns {Promise<Object|null>} `{family, id, appBundle, binaryPath, shortVersion, buildVersion}`.
+     * @throws {Error} When the family opted in and holds no admitted generation; names its latest rejection.
+     */
+    async resolveHarnessGeneration(harnessType) {
+        if (!Object.hasOwn(HARNESS_GENERATION_FAMILIES, harnessType) ||
+            !(this.harnessGenerationOptIns?.[harnessType] ?? AiConfig.fleet.harnessGenerations[HARNESS_BINARY_LEAF_KEYS[harnessType]])) {
+            return null
+        }
+
+        const
+            store     = this.harnessGenerationStore || HARNESS_GENERATION_STORE,
+            root      = this.harnessGenerationRoot || AiConfig.fleet.harnessGenerations.root,
+            installed = appBundleOf(this.getHarnessBinaryPath(harnessType));
+
+        if (installed && fs.existsSync(installed)) {
+            const
+                {shortVersion, buildVersion} = store.readBundleInfo(installed),
+                attempt                      = [root, harnessType, shortVersion, buildVersion].join('\0'),
+                known                        = store.readLedger({root, family: harnessType}).admitted
+                    .some(entry => entry.shortVersion === shortVersion && entry.buildVersion === buildVersion);
+
+            if (!known && !this.harnessGenerationAttempts.has(attempt)) {
+                this.harnessGenerationAttempts.set(attempt, store.materialize({root, family: harnessType, sourceBundle: installed, source: 'installed'}))
+            }
+            await this.harnessGenerationAttempts.get(attempt)
+        }
+
+        const selected = store.select({root, family: harnessType});
+
+        if (!selected) {
+            const latest = store.readLedger({root, family: harnessType}).rejected.at(-1);
+
+            throw new Error(`FleetLifecycleService: '${harnessType}' starts from admitted harness generations and has none` +
+                `${latest ? `; the latest rejection: ${latest.reason}` : ''}.`)
+        }
+
+        return {family: harnessType, ...selected}
+    }
+
+    /**
+     * @summary A family binary inside an admitted generation: the path the configured binary has inside the
+     * installed `.app`, re-rooted at the generation's copy. This is how a Codex Desktop seat's app and its
+     * bundled CLI come from one build.
+     * @param {Object} generation {@link resolveHarnessGeneration}'s result.
+     * @param {String} binaryFamily The family whose `harnessBinaries` path is re-rooted (`codex` for the CLI).
+     * @returns {String}
+     * @throws {Error} When that configured binary lies outside the installed bundle.
+     */
+    harnessGenerationBinaryPath(generation, binaryFamily) {
+        const
+            configured = this.getHarnessBinaryPath(binaryFamily),
+            installed  = appBundleOf(configured);
+
+        if (!installed || path.basename(installed) !== path.basename(generation.appBundle)) {
+            throw new Error(`FleetLifecycleService: the '${binaryFamily}' binary '${configured}' is not inside the installed ` +
+                `${path.basename(generation.appBundle)}, so it cannot come from the ${generation.family} generation.`)
+        }
+
+        return path.join(generation.appBundle, path.relative(installed, configured))
+    }
+
+    /**
      * @summary Prove the installed harness can encode Fleet's remote MCP grammar before any repo or
      * home mutation. This is a blocking admission gate, not the later best-effort version surface:
      * each family is checked against the exact grammar Fleet will generate.
@@ -3390,6 +3513,8 @@ class FleetLifecycleService extends Base {
      * @returns {Promise<Object>} Non-secret `{harnessType,binaryPath,launchBinaryPath}` proof. For
      *     Codex Desktop, `binaryPath` is the bundled Codex config consumer and
      *     `launchBinaryPath` is the desktop harness executable; other families use one path for both.
+     *     A family that opted in to harness generations proves paths inside its selected generation,
+     *     and the proof carries that pin as `harnessGeneration`.
      */
     async assertRemoteMcpCapability(agent, {antigravityStartContext} = {}) {
         if (agent?.harnessType === 'antigravity') {
@@ -3402,10 +3527,13 @@ class FleetLifecycleService extends Base {
 
         const
             {harnessType, id} = agent,
+            generation        = await this.resolveHarnessGeneration(harnessType),
+            pin               = generation && {family: generation.family, generationId: generation.id,
+                shortVersion: generation.shortVersion, buildVersion: generation.buildVersion},
             binaryFamily      = harnessType === 'codex-desktop' ? 'codex' : harnessType,
-            configured        = this.getHarnessBinaryPath(binaryFamily),
+            configured        = generation ? this.harnessGenerationBinaryPath(generation, binaryFamily) : this.getHarnessBinaryPath(binaryFamily),
             binaryPath        = configured && this.resolveExecutable(configured, process.env.PATH),
-            configuredLaunch  = this.getHarnessBinaryPath(harnessType),
+            configuredLaunch  = generation ? generation.binaryPath : this.getHarnessBinaryPath(harnessType),
             launchBinaryPath  = configuredLaunch && this.resolveExecutable(configuredLaunch, process.env.PATH);
 
         if (!binaryPath) {
@@ -3415,9 +3543,9 @@ class FleetLifecycleService extends Base {
             throw new Error(`FleetLifecycleService.assertRemoteMcpCapability: launch binary '${configuredLaunch || harnessType}' is unavailable for agent '${id}'.`)
         }
 
-        if (harnessType === 'claude-desktop') {
-            return {harnessType, binaryPath, launchBinaryPath}
-        }
+        const proof = pin ? {harnessType, binaryPath, launchBinaryPath, harnessGeneration: pin} : {harnessType, binaryPath, launchBinaryPath};
+
+        if (harnessType === 'claude-desktop') return proof;
 
         let args;
         let accepts;
@@ -3450,7 +3578,7 @@ class FleetLifecycleService extends Base {
             throw new Error(`FleetLifecycleService.assertRemoteMcpCapability: installed '${harnessType}' does not expose Fleet's required remote MCP grammar for agent '${id}'.`)
         }
 
-        return {harnessType, binaryPath, launchBinaryPath}
+        return proof
     }
 
     /**

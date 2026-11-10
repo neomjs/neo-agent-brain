@@ -197,6 +197,16 @@ export function selectHarnessGeneration({root, family} = {}) {
 }
 
 /**
+ * @summary Reads a bundle's identity fields from its `Info.plist` with the read admission runs on a copy,
+ * so a caller can tell whether a build is new to a ledger without copying it.
+ * @param {String} appBundle Absolute path of a `.app`.
+ * @returns {{bundleId: String, shortVersion: String, buildVersion: String, executable: String}}
+ */
+export function readHarnessBundleInfo(appBundle) {
+    return HOST_SEAMS.readBundleInfo(appBundle)
+}
+
+/**
  * @summary Copies a candidate bundle into the family's store and admits it only if, ON THE COPY, its
  * bundle id and signing Team ID match the family's vendor, `codesign --verify --deep --strict` and
  * the Gatekeeper assessment pass, and the family's capability probe answers `available`.
