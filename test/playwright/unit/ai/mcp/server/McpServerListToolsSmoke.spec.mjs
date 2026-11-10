@@ -24,7 +24,7 @@ import * as yaml   from 'js-yaml';
 import Neo         from 'neo.mjs/src/Neo.mjs';
 import * as core   from 'neo.mjs/src/core/_export.mjs';
 import AiConfig    from '../../../../../../ai/config.template.mjs';
-import ToolService from '../../../../../../ai/mcp/ToolService.mjs';
+import ToolService, {ADVERTISED_SURFACE_DIGEST_LABEL} from '../../../../../../ai/mcp/ToolService.mjs';
 import {
     createDeploymentStateSnapshot,
     writeDeploymentStateSnapshot
@@ -260,7 +260,7 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
 
             for (const tool of tools) {
                 const baseDescription = tool.name === 'healthcheck'
-                    ? tool.description.split('\n\nAdvertised-surface digest at attach:')[0]
+                    ? tool.description.split(`\n\n${ADVERTISED_SURFACE_DIGEST_LABEL}`)[0]
                     : tool.description;
 
                 expect(tool.name, `${server.name} tool name`).toEqual(expect.any(String));
