@@ -339,7 +339,7 @@ paths:
 
   /component/rect/get:
     post:
-      summary: Read rendered bounding-box DOMRects for one or more component IDs; use when checking on-screen size, position, or clip.
+      summary: Read rendered bounding-box DOMRects for one or more component IDs; use when checking on-screen size and position.
       operationId: get_dom_rect
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -649,7 +649,7 @@ paths:
 
   /data/record/get:
     post:
-      summary: Read all fields of a single model record from a store by key or index; use when inspecting one row's full payload.
+      summary: Read all fields of one model record by its id, optionally scoped to a store; use when inspecting one row's full payload.
       operationId: get_record
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -675,7 +675,7 @@ paths:
 
   /data/state/inspect:
     post:
-      summary: Read a state.Provider's hierarchical data bindings and values; use when checking view-model state on a component tree.
+      summary: Read a state.Provider's data, stores, owner component and parent id; use when checking the view-model state of a view.
       operationId: inspect_state_provider
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1121,7 +1121,7 @@ paths:
 
   /component/create:
     post:
-      summary: Add a child UI component to an existing container by parentId; use when inserting a widget under write-locked access.
+      summary: Add a child UI component to an existing container by parentId; use when inserting one widget into a live container.
       operationId: create_component
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1163,7 +1163,7 @@ paths:
 
   /instance/create:
     post:
-      summary: Instantiate any JSON-safe Neo class or ntype (standalone or parented); use when creating stores, models, or widgets.
+      summary: Instantiate any JSON-safe Neo class or ntype (standalone or parented); use when creating stores, models, or controllers.
       operationId: create_instance
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -2190,7 +2190,7 @@ paths:
 
   /runtime/config/manage:
     post:
-      summary: Read or update global Neo.config keys in a live session or window; use when inspecting or toggling engine flags.
+      summary: Read global Neo.config (per session or window) or update its keys; use when inspecting or toggling engine flags.
       operationId: manage_neo_config
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -2244,7 +2244,7 @@ paths:
 
   /interaction/drive_drag:
     post:
-      summary: Execute a full engine-sensed physical pointer drag from source to target; use when testing real drag-and-drop flows.
+      summary: Execute a full engine-owned physical pointer drag from source to target; use when testing real drag-and-drop flows.
       operationId: drive_drag
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
