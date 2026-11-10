@@ -210,7 +210,7 @@ paths:
       # `tools/list` is compacted on this server (max 120 chars) and reads `summary`, never the
       # description below — so the warning has to exist in BOTH places or the ordinary discovery
       # surface keeps describing runner isolation while the real limit lives one call away.
-      summary: "Run one Playwright spec (EXECUTION IS NOT JAILED: runs with host trust); use when running a spec file by absolute path."
+      summary: "Run one test/playwright/ spec with the default config (EXECUTION IS NOT JAILED); use when executing a single spec file."
       operationId: run_playwright_test
       description: |
         Runs the Playwright runner isolated to the requested spec file to test pass/fail conditions.

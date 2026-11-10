@@ -78,7 +78,7 @@ paths:
 
   /ingestion/progress:
     get:
-      summary: Read ingestion progress for THIS PROCESS only (not pull lanes); use when checking in-process KB ingestion status.
+      summary: Read ingestion progress for THIS PROCESS only (not scheduled repo sync); use when checking in-process KB ingest.
       operationId: get_ingestion_progress
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -166,7 +166,7 @@ paths:
 
   /deployment/state/snapshot:
     post:
-      summary: Read the orchestrator deployment-state bridge snapshot via KB; use when Memory Core is down or checking repo-sync state.
+      summary: Read the orchestrator deployment and repo-sync snapshot via KB; use when Memory Core is down or checking sync state.
       operationId: get_deployment_state_snapshot
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -238,7 +238,7 @@ paths:
 
   /db/data/manage:
     post:
-      summary: Create, embed, sync, or delete the KB vector corpus; use when syncing a small KB diff (<50 chunks) or resetting Chroma.
+      summary: Create, embed, sync, or delete the KB vector corpus; use when running full corpus admin or resetting ChromaDB.
       operationId: manage_knowledge_base
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -326,7 +326,7 @@ paths:
 
   /documents/query:
     post:
-      summary: Return ranked KB source references without LLM synthesis; use when enumerating >5 matches or listing matching files.
+      summary: Return ranked KB source references without synthesis; use when enumerating all matching chunks or >5 results.
       operationId: query_documents
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -460,7 +460,7 @@ paths:
 
   /knowledge/ask:
     post:
-      summary: Synthesize a grounded Neo.mjs answer with top-5 cited refs; use when asking how a concept works or which files own it.
+      summary: Synthesize one grounded Neo.mjs answer with top-5 cited refs; use when asking how a concept works or where it lives.
       operationId: ask_knowledge_base
       x-neo-tool-tier: read
       x-pass-as-object: true

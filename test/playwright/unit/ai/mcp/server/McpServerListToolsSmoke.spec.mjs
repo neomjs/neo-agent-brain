@@ -354,9 +354,9 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
             handbookTool = byName.get_mcp_tool_handbook;
 
         expect(handbookTool.description.length).toBeLessThanOrEqual(120);
-        expect(queryDocs.description).toBe('Return ranked KB source references without LLM synthesis; use when enumerating >5 matches or listing matching files.');
+        expect(queryDocs.description).toBe('Return ranked KB source references without synthesis; use when enumerating all matching chunks or >5 results.');
         expect(queryDocs.description).not.toContain('Prefer `ask_knowledge_base`');
-        expect(askKnowledge.description).toBe('Synthesize a grounded Neo.mjs answer with top-5 cited refs; use when asking how a concept works or which files own it.');
+        expect(askKnowledge.description).toBe('Synthesize one grounded Neo.mjs answer with top-5 cited refs; use when asking how a concept works or where it lives.');
         expect(askKnowledge.description).not.toContain('zero-cost RAG subagent');
         expect(handbookTool.annotations.readOnlyHint).toBe(true);
 
@@ -1152,6 +1152,5 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
                 expect(summary.toLowerCase(), `${server.name}.${operationId} must not be the bare title`).not.toBe(bareTitle);
             }
         }
-    });
     });
 });
