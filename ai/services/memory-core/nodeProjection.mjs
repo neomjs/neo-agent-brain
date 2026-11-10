@@ -40,13 +40,13 @@ const LEGACY_MEMORY_DESCRIPTION_PREFIX = 'Agent thought flow inside session ';
 const MEMORY_DESCRIPTION_PREFIX        = 'Turn diary entry inside session ';
 
 /**
- * @summary Rewrites legacy AGENT_MEMORY node descriptions to the turn-diary form on read.
+ * @summary Rewrites legacy raw-memory (`AGENT_MEMORY` or `MEMORY`) node descriptions to the turn-diary form on read.
  * @param {String|null|undefined} label Node label/type.
  * @param {String|null|undefined} description Stored node description.
  * @returns {String|null|undefined}
  */
 export function normalizeNodeDescription(label, description) {
-    if (label === 'AGENT_MEMORY' && typeof description === 'string' && description.startsWith(LEGACY_MEMORY_DESCRIPTION_PREFIX)) {
+    if ((label === 'AGENT_MEMORY' || label === 'MEMORY') && typeof description === 'string' && description.startsWith(LEGACY_MEMORY_DESCRIPTION_PREFIX)) {
         return MEMORY_DESCRIPTION_PREFIX + description.slice(LEGACY_MEMORY_DESCRIPTION_PREFIX.length)
     }
 

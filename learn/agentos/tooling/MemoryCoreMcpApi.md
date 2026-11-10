@@ -20,7 +20,7 @@ The server uses `@modelcontextprotocol/sdk` through Neo's shared MCP server infr
 The Memory Core manages two primary ChromaDB collections:
 
 #### 1. Memories Collection (`neo-agent-memory`)
-Stores authored diary entries for future sessions. Read projections expose `prompt`, `decisionContext` (on authorized `private` reads), and `response`:
+Stores authored diary entries for future sessions. Stored Chroma metadata retains the physical `thought` key (and canonical `Agent Thought:` turn text) for revision-digest stability, while MCP read projections expose `prompt`, `decisionContext` (on authorized `private` reads, omitted on `public` reads), and `response`:
 ```json
 {
   "id": "mem_2025-10-08T12:00:00.000Z",

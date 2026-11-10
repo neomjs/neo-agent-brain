@@ -5,6 +5,7 @@ import {
     canonicalizeSessionTurnInput,
     composeTurnDocumentText,
     computeSessionTurnInputRevision,
+    formatTurnDocumentForRead,
     isReconstructableTurn,
     resolveTurnDocumentForRead,
     toChromaRecordSets
@@ -176,8 +177,25 @@ test.describe('computeSessionTurnInputRevision — Dream raw-input frontier (#16
         const storedDigest        = computeSessionTurnInputRevision({ids: ['m-1580'], documents: [storedDocument], metadatas: [turnMeta]}),
               reconstructedDigest = computeSessionTurnInputRevision({ids: ['m-1580'], documents: [reconstructed], metadatas: [turnMeta]});
 
-        expect(storedDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+        expect(storedDigest).toBe('sha256:26d0b37469a08d475fd6814a9d180686fe9a180aa65d8369768b0f4fcf66a8c9');
         expect(reconstructedDigest).toBe(storedDigest)
+    })
+});
+
+test.describe('formatTurnDocumentForRead — single-sourced read-label formatter (#1580)', () => {
+    test('rewrites composed and multi-turn Agent Thought: line headers while leaving inline mentions and non-strings untouched', () => {
+        const composed = composeTurnDocumentText({
+            prompt  : 'Check inline Agent Thought: mention',
+            thought : 'Decided to single-source the formatter',
+            response: 'Done'
+        });
+
+        expect(formatTurnDocumentForRead(composed))
+            .toBe('User Prompt: Check inline Agent Thought: mention\nDecision Context: Decided to single-source the formatter\nAgent Response: Done');
+        expect(formatTurnDocumentForRead('Agent Thought: Leading header\n---\nAgent Thought: Second turn header'))
+            .toBe('Decision Context: Leading header\n---\nDecision Context: Second turn header');
+        expect(formatTurnDocumentForRead(null)).toBeNull();
+        expect(formatTurnDocumentForRead(undefined)).toBeUndefined()
     })
 });
 

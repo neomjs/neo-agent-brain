@@ -2133,7 +2133,7 @@ paths:
       x-annotations:
         readOnlyHint: true
       description: |
-        Retrieves bounded, deterministically ordered adjacent nodes (neighbors) alongside connecting edge metadata and pagination counters (`totalCount`, `truncated`, `nextOffset`). Supports filtering by traversal `direction` (`both`, `inbound`, `outbound`), adjacent node `types`, and edge `relationships`.
+        Retrieves bounded, deterministically ordered adjacent nodes (neighbors) alongside connecting edge metadata and pagination counters (`totalCount`, `truncated`, `nextOffset`). Supports filtering by traversal `direction` (`both`, `inbound`, `outbound`), adjacent node `types`, and edge `relationships`; on high-degree identity or frontier nodes, pass `types` or `relationships` to scope the page.
       tags: [Graph]
       parameters:
         - name: id

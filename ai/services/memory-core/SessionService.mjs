@@ -9,6 +9,7 @@ import {verifyPersistedVector}                       from './helpers/verifyPersi
 import {
     canonicalizeSessionTurnInput,
     computeSessionTurnInputRevision,
+    formatTurnDocumentForRead,
     resolveTurnDocumentForRead
 } from './helpers/turnDocumentText.mjs';
 import {
@@ -42,16 +43,6 @@ import RequestContextService, {
 import MemoryCoreRecorderService from './MemoryCoreRecorderService.mjs';
 
 const CHROMA_SESSION_READ_TIMEOUT_MS = 10000;
-
-/**
- * @summary Rewrites legacy `Agent Thought:` turn headers to `Decision Context:` for summarization prompts without mutating stored turn documents or input-revision digests.
- * @param {String|null|undefined} text Session turn text.
- * @returns {String}
- */
-export function formatSessionContentForSummaryPrompt(text) {
-    if (typeof text !== 'string') return '';
-    return text.replace(/(^|\n)Agent Thought: /g, '$1Decision Context: ');
-}
 
 const NEO_REPO_ALIASES = new Set([
     CORPUS_PROJECTION_ORIGIN,
@@ -787,7 +778,7 @@ Unique Tools Utilized: ${Array.from(allToolsUsed).join(', ') || 'none recorded'}
 
 ---
 
-${formatSessionContentForSummaryPrompt(sessionContent)}
+${formatTurnDocumentForRead(sessionContent) ?? ''}
 `;
 
         // Consumer-Friction Channel: wrap the summarization LLM invocation with a bidirectional
@@ -876,7 +867,7 @@ ${formatSessionContentForSummaryPrompt(sessionContent)}
                           timestamp  : Number(memories.metadatas?.[index]?.timestamp) || index
                       }))
                       .sort((a, b) => a.timestamp - b.timestamp)
-                      .map(turn => (turn.miniSummary || formatSessionContentForSummaryPrompt(turn.document).slice(0, FALLBACK_CHARS)).trim())
+                      .map(turn => (turn.miniSummary || (formatTurnDocumentForRead(turn.document) ?? '').slice(0, FALLBACK_CHARS)).trim())
                       .filter(Boolean);
 
             if (degradedEntries.length > 0) {

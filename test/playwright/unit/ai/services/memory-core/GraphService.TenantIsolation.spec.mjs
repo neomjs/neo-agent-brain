@@ -791,4 +791,38 @@ test.describe('GraphService — bounded getNeighbors & AGENT_MEMORY description 
         expect(byIdTopo.get('mem-1580')).toBe(diaryDesc);
         expect(byIdTopo.get('issue-1580')).toBe(legacyDesc);
     });
+
+    test('computes totalCount strictly after RLS visibility filtering and preserves real zero edge weights (#1580)', () => {
+        requester.value = '@seat-a';
+
+        GraphService.db = makeFakeDb(
+            [
+                node('hub', {type: 'AgentIdentity', sharedEntity: true}),
+                node('vis-default', {type: 'ISSUE', sharedEntity: true}),
+                node('vis-zero',    {type: 'MESSAGE', sharedEntity: true}),
+                node('hidden-node', {type: 'AGENT_MEMORY', userId: 'seat-b'}),
+                node('hidden-edge-target', {type: 'ISSUE', sharedEntity: true})
+            ],
+            [
+                edge('e-default',     'hub', 'vis-default',        undefined, {},                  'GUIDES'),
+                edge('e-zero',        'hub', 'vis-zero',           0,         {},                  'SENT_TO'),
+                edge('e-hidden-node', 'hub', 'hidden-node',        0.95,      {},                  'AUTHORED_BY'),
+                edge('e-hidden-edge', 'hub', 'hidden-edge-target', 0.90,      {userId: 'seat-b'},  'MENTIONS')
+            ]
+        );
+
+        const page = GraphService.getNeighbors({id: 'hub', limit: 1});
+        expect(page.totalCount).toBe(2);
+        expect(page.truncated).toBe(true);
+        expect(page.nextOffset).toBe(1);
+        expect(page.neighbors).toHaveLength(1);
+        expect(page.neighbors[0]).toMatchObject({id: 'vis-default', weight: 1.0});
+
+        const page2 = GraphService.getNeighbors({id: 'hub', limit: 5, offset: 1});
+        expect(page2.totalCount).toBe(2);
+        expect(page2.truncated).toBe(false);
+        expect(page2.nextOffset).toBeNull();
+        expect(page2.neighbors).toHaveLength(1);
+        expect(page2.neighbors[0]).toMatchObject({id: 'vis-zero', weight: 0});
+    });
 });

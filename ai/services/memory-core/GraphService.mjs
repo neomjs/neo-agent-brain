@@ -1826,17 +1826,19 @@ class GraphService extends Base {
                     description     : normalizeNodeDescription(node.label, node.properties?.description),
                     semanticVectorId: node.properties?.semanticVectorId,
                     relationship    : e.type,
-                    weight          : e.properties?.weight || 1.0,
+                    weight          : e.properties?.weight ?? 1.0,
                     source          : e.source,
                     target          : e.target
                 });
             }
         });
 
+        const compareCodeUnits = (left, right) => left < right ? -1 : left > right ? 1 : 0;
+
         results.sort((a, b) =>
             (b.weight - a.weight) ||
-            String(a.id).localeCompare(String(b.id)) ||
-            String(a.relationship).localeCompare(String(b.relationship))
+            compareCodeUnits(String(a.id), String(b.id)) ||
+            compareCodeUnits(String(a.relationship), String(b.relationship))
         );
 
         const totalCount = results.length,

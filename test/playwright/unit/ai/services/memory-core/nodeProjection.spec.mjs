@@ -131,8 +131,10 @@ test.describe('memory-core nodeProjection — the lean/full policy (#15430)', ()
         expect(full.properties.githubLogin).toBe('@neo-fable-mnemosyne')
     });
 
-    test('#1580 normalizeNodeDescription and projectNode rewrite legacy AGENT_MEMORY descriptions only', () => {
+    test('#1580 normalizeNodeDescription and projectNode rewrite legacy AGENT_MEMORY and MEMORY descriptions only', () => {
         expect(normalizeNodeDescription('AGENT_MEMORY', 'Agent thought flow inside session sess-42.'))
+            .toBe('Turn diary entry inside session sess-42.');
+        expect(normalizeNodeDescription('MEMORY', 'Agent thought flow inside session sess-42.'))
             .toBe('Turn diary entry inside session sess-42.');
         expect(normalizeNodeDescription('AGENT_MEMORY', 'Custom turn note'))
             .toBe('Custom turn note');
@@ -145,6 +147,13 @@ test.describe('memory-core nodeProjection — the lean/full policy (#15430)', ()
             properties: {name: 'Memory: 2026-11-10', description: 'Agent thought flow inside session sess-42.'}
         });
         expect(memoryProjected.description).toBe('Turn diary entry inside session sess-42.');
+
+        const legacyMemoryProjected = projectNode({
+            id        : 'memory:m-43',
+            label     : 'MEMORY',
+            properties: {name: 'm-43', description: 'Agent thought flow inside session sess-43.'}
+        });
+        expect(legacyMemoryProjected.description).toBe('Turn diary entry inside session sess-43.');
 
         const issueProjected = projectNode({
             id        : 'issue-42',

@@ -26,7 +26,11 @@ import {
     readWalMarkedIds
 } from './helpers/memoryWalStore.mjs';
 
-import {composeTurnDocumentText, resolveTurnDocumentForRead}    from './helpers/turnDocumentText.mjs';
+import {
+    composeTurnDocumentText,
+    formatTurnDocumentForRead,
+    resolveTurnDocumentForRead
+} from './helpers/turnDocumentText.mjs';
 import {isCollectionQuarantined}                                from './helpers/quarantineStore.mjs';
 import {buildChatModel}                                         from '../../provider/buildChatModel.mjs';
 import aiConfig                                                 from '../../mcp/server/memory-core/config.mjs';
@@ -49,16 +53,6 @@ import {readCorpusProjectionReceipt} from '../graph/corpusProjectionReceiptStore
 
 const CONTEXT_FRONTIER_PROJECTION_CACHE_MAX = 64;
 const contextFrontierProjectionCache        = new Map();
-
-/**
- * @summary Rewrites legacy `Agent Thought:` headers to `Decision Context:` at the MCP read boundary.
- * @param {String|null|undefined} document Raw or reconstructed turn document text.
- * @returns {String|null|undefined}
- */
-function formatTurnDocumentForRead(document) {
-    if (typeof document !== 'string') return document;
-    return document.replace(/(^|\n)Agent Thought: /g, '$1Decision Context: ');
-}
 
 /**
  * @summary Builds a tenant-and-source-disjoint cache key for last-known-good Context Frontier views.
@@ -2905,16 +2899,10 @@ class MemoryService extends Base {
 
                 if (projection === 'public') {
                     const {decisionContext, thought, ...publicRow} = row;
-                    if (typeof publicRow.document === 'string') {
-                        publicRow.document = formatTurnDocumentForRead(publicRow.document);
-                    }
                     return publicRow;
                 }
 
                 const {thought, ...privateRow} = row;
-                if (typeof privateRow.document === 'string') {
-                    privateRow.document = formatTurnDocumentForRead(privateRow.document);
-                }
                 return privateRow;
             };
 
@@ -3387,4 +3375,4 @@ export default Neo.setupClass(MemoryService);
 // `test/playwright/unit/ai/services/memory-core/MailboxService.spec.mjs` regression coverage.
 // Not part of the public service surface; consumers outside the test suite should call
 // `MemoryService.addMemory` and read the `mailbox` property on the response.
-export {buildMailboxDelta, formatTurnDocumentForRead};
+export {buildMailboxDelta};

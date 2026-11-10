@@ -11,12 +11,13 @@ setup({
     }
 });
 
-import {expect, test}                             from '@playwright/test';
-import Neo                                        from 'neo.mjs/src/Neo.mjs';
-import * as core                                  from 'neo.mjs/src/core/_export.mjs';
-import GraphService                               from '../../../../../../ai/services/memory-core/GraphService.mjs';
-import MemoryService, {formatTurnDocumentForRead} from '../../../../../../ai/services/memory-core/MemoryService.mjs';
-import StorageRouter                              from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
+import {expect, test}              from '@playwright/test';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
+import GraphService                from '../../../../../../ai/services/memory-core/GraphService.mjs';
+import MemoryService               from '../../../../../../ai/services/memory-core/MemoryService.mjs';
+import {formatTurnDocumentForRead} from '../../../../../../ai/services/memory-core/helpers/turnDocumentText.mjs';
+import StorageRouter               from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
 
 /**
  * @summary In-memory Chroma read seam for the session-scoped summary contract.
