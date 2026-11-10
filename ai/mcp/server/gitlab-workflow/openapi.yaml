@@ -383,7 +383,7 @@ paths:
   /local/issues/{issue_number}:
     get:
       operationId: get_local_issue_by_id
-      summary: Read a synced local GitLab issue markdown mirror by number (scaffolded); use when reading offline archived tickets.
+      summary: Stub for a future local GitLab issue mirror that returns no issue yet; use when checking whether its syncer has landed.
       description: Retrieves a local GitLab issue markdown file by issue number. Scaffolded until syncer subtasks land.
       tags: [Local Files]
       x-pass-as-object: true

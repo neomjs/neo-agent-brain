@@ -2048,7 +2048,7 @@ paths:
 
   /system/state/transition:
     post:
-      summary: Emit a headless orchestrator state trap (PR_OPENED, BLOCKED, HANDOFF); use when signaling autonomous turn transitions.
+      summary: Emit a headless orchestrator state trap (PR_OPENED, BLOCKED, HANDOFF); use when an orchestrated run ends its turn.
       operationId: signal_state_transition
       x-neo-tool-tier: write
       x-pass-as-object: true
