@@ -195,7 +195,7 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
             embedDrainLivenessAlarmDispatcher      : orchestrator.embedDrainLivenessAlarmDispatcher,
             remConsolidationLivenessAlarmDispatcher: orchestrator.remConsolidationLivenessAlarmDispatcher,
             dataIntegrityDiagnosisService          : orchestrator.dataIntegrityDiagnosisService,
-            datedItemsOverdueSendMessage           : orchestrator.datedItemsOverdueSendMessage
+            datedItemsOverdueSendMessage           : orchestrator.datedItemsOverdueSendMessage?.bind(orchestrator)
         },
         runtime: {
             goldenPathRepoEnrichmentEnabled: orchestrator.goldenPathRepoEnrichmentEnabled,

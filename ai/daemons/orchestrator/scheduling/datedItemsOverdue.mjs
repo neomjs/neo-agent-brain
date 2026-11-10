@@ -1,8 +1,8 @@
 import {
-    agentIdentitiesOf,
+    memberLoginsOf,
+    participationStatusOf,
     readAgentIdentityNodes
 } from '../../../graph/agentIdentityParticipation.mjs';
-import {IDENTITIES}              from '../../../graph/identityRoots.mjs';
 import {
     computeDaysOverdue,
     readDatedItems,
@@ -13,7 +13,7 @@ import {
  * @module ai/daemons/orchestrator/scheduling/datedItemsOverdue
  * @summary Daily container-plane scheduled lane that reads the `dated-items.v1` register and sends
  * one direct A2A message per owner with overdue rows (`[overdue · <n> rows]`) and one `AGENT:*`
- * message for overdue rows whose owner is `'unowned'` or not a known identity.
+ * message for overdue rows whose owner is `'unowned'` or not an active identity on the plane.
  *
  * Contract (ADR 0019 [not-ticket-ref: decision-record authority] §10.8):
  * - **Authority class:** `container-plane` (registered in `scheduling/registry.mjs` and `taskAuthority.mjs`).
@@ -22,11 +22,16 @@ import {
  *   empty (`''`), the lane reads nothing, sends nothing, and logs no error.
  * - **Once-per-day idempotency:** Runs at most once per UTC calendar day (`YYYY-MM-DD`). A second run
  *   on the same UTC day sends nothing. A failed send is logged and retried on the next day's run.
+ * - **Plane-graph owner resolution:** Addressable owners come solely from the plane's active
+ *   `AgentIdentity` graph nodes ({@link readAgentIdentityNodes}), never from `identityRoots.mjs` or a
+ *   hardcoded operator handle. When the graph read fails, the lane logs a `WARN` and routes overdue
+ *   rows to `AGENT:*`.
  * - **Direct message wake & fallback:** Each addressable owner receives a single direct message
  *   (`to: '@<owner>'`, waking the owner) with subject `[overdue · <n> rows]`, one line per overdue
  *   row (`<id> · due <date> · <n> days`), and one sentence with the rule:
  *   `a row leaves with a receipt or with a new date in the register.` Overdue rows that are
- *   `'unowned'`, or whose owner is no known identity, are grouped into one `AGENT:*` message.
+ *   `'unowned'`, or whose owner is not an active identity in the plane's graph, are grouped into one
+ *   `AGENT:*` message.
  */
 
 /**
@@ -35,12 +40,6 @@ import {
  */
 export const DATED_ITEMS_OVERDUE_RULE_SENTENCE =
     'a row leaves with a receipt or with a new date in the register.';
-
-/**
- * Default human operator handle recognized alongside `IDENTITIES` when resolving addressable owners.
- * @type {String}
- */
-const DEFAULT_OPERATOR_HANDLE = '@tobiu';
 
 /**
  * @summary Normalizes an A2A handle (with or without leading `@`) into canonical `@<handle>` form,
@@ -63,14 +62,21 @@ export function normalizeOwnerHandle(rawOwner) {
 }
 
 /**
- * @summary Builds the known-identity set (`@<handle>`) from injectable `knownIdentities`, canonical
- * `IDENTITIES` roots, and optional graph `AGENT_IDENTITY` nodes.
+ * @summary Builds the addressable owner set (`@<handle>`) from the plane's active `AgentIdentity`
+ * graph nodes ({@link readAgentIdentityNodes}), or from an explicit test override (`knownIdentities`).
+ *
+ * Only nodes whose participation status is `'active'` ({@link participationStatusOf}) and whose
+ * `accountType` is `'agent'` or `'human'` ({@link memberLoginsOf}) are addressable. When the graph
+ * store cannot answer, a `WARN` is logged and an empty set is returned so overdue rows fall back to
+ * `AGENT:*`.
+ *
  * @param {Object} [options={}]
- * @param {Iterable<String>|null} [options.knownIdentities=null] Explicit known identities override.
- * @param {Object|null} [options.db=null] Optional SQLite handle for `readAgentIdentityNodes(db)`.
- * @returns {Set<String>} Canonical `@<handle>` set.
+ * @param {Iterable<String>|null} [options.knownIdentities=null] Explicit known identities override for tests.
+ * @param {Object|null} [options.db=null] SQLite handle for `readAgentIdentityNodes(db)`.
+ * @param {Function} [options.writeLog] Logger `(level, message) => void`.
+ * @returns {Set<String>} Canonical `@<handle>` set of active plane members.
  */
-export function resolveKnownIdentities({knownIdentities = null, db = null} = {}) {
+export function resolveKnownIdentities({knownIdentities = null, db = null, writeLog = () => {}} = {}) {
     if (knownIdentities) {
         const explicit = new Set();
         for (const item of knownIdentities) {
@@ -82,34 +88,33 @@ export function resolveKnownIdentities({knownIdentities = null, db = null} = {})
         return explicit;
     }
 
-    const known = new Set([DEFAULT_OPERATOR_HANDLE]);
+    const known = new Set();
 
-    for (const entry of IDENTITIES) {
-        const primary = normalizeOwnerHandle(entry?.id);
-        if (primary) {
-            known.add(primary);
+    try {
+        const activeNodes = readAgentIdentityNodes(db).filter(
+            node => participationStatusOf(node) === 'active'
+        );
+
+        for (const login of memberLoginsOf(activeNodes, {formerLogins: true})) {
+            const normalized = normalizeOwnerHandle(login);
+            if (normalized) {
+                known.add(normalized);
+            }
         }
-        if (Array.isArray(entry?.aliases)) {
-            for (const alias of entry.aliases) {
-                const normalizedAlias = normalizeOwnerHandle(alias);
-                if (normalizedAlias) {
-                    known.add(normalizedAlias);
+
+        for (const node of activeNodes) {
+            if (node?.properties?.accountType === 'agent' || node?.properties?.accountType === 'human') {
+                const normalizedId = normalizeOwnerHandle(node.id);
+                if (normalizedId) {
+                    known.add(normalizedId);
                 }
             }
         }
-    }
-
-    if (db) {
-        try {
-            for (const id of agentIdentitiesOf(readAgentIdentityNodes(db))) {
-                const normalized = normalizeOwnerHandle(id);
-                if (normalized) {
-                    known.add(normalized);
-                }
-            }
-        } catch {
-            // Best-effort DB augmentation; static identity roots remain authoritative.
-        }
+    } catch (error) {
+        writeLog(
+            'WARN',
+            `[DatedItemsOverdue] Failed to read AgentIdentity nodes from graph; routing overdue rows to AGENT:*: ${error?.message || String(error)}`
+        );
     }
 
     return known;
@@ -304,7 +309,7 @@ export async function runDatedItemsOverdue({
         };
     }
 
-    const knownSet        = resolveKnownIdentities({knownIdentities, db}),
+    const knownSet        = resolveKnownIdentities({knownIdentities, db, writeLog}),
           rowsByOwner     = new Map(),
           unaddressedRows = [];
 

@@ -13,13 +13,17 @@ setup({
     }
 });
 
-import fs               from 'node:fs';
-import os               from 'node:os';
-import path             from 'node:path';
-import {test, expect}   from '@playwright/test';
-import Neo              from 'neo.mjs/src/Neo.mjs';
-import * as core        from 'neo.mjs/src/core/_export.mjs';
-import memoryCoreConfig from '../../../../../../ai/mcp/server/memory-core/config.template.mjs';
+import fs                    from 'node:fs';
+import os                    from 'node:os';
+import path                  from 'node:path';
+import Database              from 'better-sqlite3';
+import {test, expect}        from '@playwright/test';
+import Neo                   from 'neo.mjs/src/Neo.mjs';
+import * as core             from 'neo.mjs/src/core/_export.mjs';
+import memoryCoreConfig      from '../../../../../../ai/mcp/server/memory-core/config.template.mjs';
+import {Orchestrator}        from '../../../../../../ai/daemons/orchestrator/Orchestrator.mjs';
+import MailboxService        from '../../../../../../ai/services/memory-core/MailboxService.mjs';
+import RequestContextService from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 import {
     DATED_ITEMS_NEXT_LIMIT,
     DATED_ITEMS_SCHEMA,
@@ -34,6 +38,7 @@ import {
     getDueTask,
     hasRunOnUtcDate,
     normalizeOwnerHandle,
+    resolveKnownIdentities,
     runDatedItemsOverdue
 } from '../../../../../../ai/daemons/orchestrator/scheduling/datedItemsOverdue.mjs';
 import {TASK_REGISTRY}                  from '../../../../../../ai/daemons/orchestrator/scheduling/registry.mjs';
@@ -55,6 +60,20 @@ function writeRegisterFixture(dir, payload, name = 'dated-items.json') {
     const filePath = path.join(dir, name);
     fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
     return filePath;
+}
+
+function createIdentityGraphDb(nodes = []) {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE Nodes (id TEXT PRIMARY KEY, data TEXT)');
+    const insert = db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)');
+    for (const node of nodes) {
+        insert.run(node.id, JSON.stringify({
+            id        : node.id,
+            label     : 'AgentIdentity',
+            properties: node.properties || {}
+        }));
+    }
+    return db;
 }
 
 test.describe('datedItemsSection & dated-items-overdue lane (#1576)', () => {
@@ -341,91 +360,316 @@ test.describe('datedItemsSection & dated-items-overdue lane (#1576)', () => {
         const state = {'dated-items-overdue': {}};
         const sent  = [];
         const logs  = [];
-
-        expect(getDueTask({state, now: TODAY, sourcePath: file})).toEqual({
-            taskName: 'dated-items-overdue',
-            source  : 'daily-dated-items-overdue',
-            reason  : `daily-dated-items-overdue:${TODAY}`
-        });
-
-        const firstRun = await runDatedItemsOverdue({
-            sourcePath : file,
-            now        : `${TODAY}T08:00:00.000Z`,
-            state,
-            sendMessage: async payload => {
-                sent.push(payload);
-            },
-            writeLog   : (level, message) => {
-                logs.push({level, message});
+        const db    = createIdentityGraphDb([{
+            id        : '@neo-fable-mnemosyne',
+            properties: {
+                accountType        : 'agent',
+                githubLogin        : '@neo-fable-mnemosyne',
+                participationStatus: 'active'
             }
-        });
+        }]);
 
-        expect(firstRun.status).toBe('ok');
-        expect(firstRun.today).toBe(TODAY);
-        expect(firstRun.sentCount).toBe(2);
-        expect(firstRun.failedCount).toBe(0);
-        expect(logs).toEqual([]);
-        expect(sent).toEqual([
+        try {
+            expect(getDueTask({state, now: TODAY, sourcePath: file})).toEqual({
+                taskName: 'dated-items-overdue',
+                source  : 'daily-dated-items-overdue',
+                reason  : `daily-dated-items-overdue:${TODAY}`
+            });
+
+            const firstRun = await runDatedItemsOverdue({
+                sourcePath : file,
+                now        : `${TODAY}T08:00:00.000Z`,
+                state,
+                db,
+                sendMessage: async payload => {
+                    sent.push(payload);
+                },
+                writeLog   : (level, message) => {
+                    logs.push({level, message});
+                }
+            });
+
+            expect(firstRun.status).toBe('ok');
+            expect(firstRun.today).toBe(TODAY);
+            expect(firstRun.sentCount).toBe(2);
+            expect(firstRun.failedCount).toBe(0);
+            expect(logs).toEqual([]);
+            expect(sent).toEqual([
+                {
+                    to     : '@neo-fable-mnemosyne',
+                    subject: '[overdue · 2 rows]',
+                    body   : [
+                        'mnemosyne-row-1 · due 2026-11-05 · 5 days',
+                        'mnemosyne-row-2 · due 2026-11-08 · 2 days',
+                        DATED_ITEMS_OVERDUE_RULE_SENTENCE
+                    ].join('\n')
+                },
+                {
+                    to     : 'AGENT:*',
+                    subject: '[overdue · 1 rows]',
+                    body   : [
+                        'unowned-overdue-row · due 2026-11-07 · 3 days',
+                        DATED_ITEMS_OVERDUE_RULE_SENTENCE
+                    ].join('\n')
+                }
+            ]);
+
+            // Second run on the same UTC day sends nothing and is not due.
+            expect(getDueTask({state, now: `${TODAY}T18:30:00.000Z`, sourcePath: file})).toBeNull();
+
+            const secondRun = await runDatedItemsOverdue({
+                sourcePath : file,
+                now        : `${TODAY}T18:30:00.000Z`,
+                state,
+                db,
+                sendMessage: async payload => {
+                    sent.push(payload);
+                }
+            });
+
+            expect(secondRun.status).toBe('already-ran-today');
+            expect(secondRun.sentCount).toBe(0);
+            expect(sent).toHaveLength(2);
+
+            // Next UTC day: due again, and a failed send is logged and retried on the following day.
+            expect(getDueTask({state, now: `${TOMORROW}T08:00:00.000Z`, sourcePath: file})).toEqual({
+                taskName: 'dated-items-overdue',
+                source  : 'daily-dated-items-overdue',
+                reason  : `daily-dated-items-overdue:${TOMORROW}`
+            });
+
+            const failedDayLogs = [];
+            const failedRun     = await runDatedItemsOverdue({
+                sourcePath : file,
+                now        : `${TOMORROW}T08:00:00.000Z`,
+                state,
+                db,
+                sendMessage: async () => {
+                    throw new Error('simulated mailbox transport failure');
+                },
+                writeLog   : (level, message) => {
+                    failedDayLogs.push({level, message});
+                }
+            });
+
+            expect(failedRun.status).toBe('ok');
+            expect(failedRun.sentCount).toBe(0);
+            expect(failedRun.failedCount).toBe(2);
+            expect(failedDayLogs).toHaveLength(2);
+            expect(failedDayLogs[0].level).toBe('ERROR');
+        } finally {
+            db.close();
+        }
+    });
+
+    test('RA-1: the injected identity graph alone decides addressability; benched or unseeded roots and failed graph reads route to AGENT:* with a WARN log', async () => {
+        const db = createIdentityGraphDb([
             {
-                to     : '@neo-fable-mnemosyne',
-                subject: '[overdue · 2 rows]',
-                body   : [
-                    'mnemosyne-row-1 · due 2026-11-05 · 5 days',
-                    'mnemosyne-row-2 · due 2026-11-08 · 2 days',
-                    DATED_ITEMS_OVERDUE_RULE_SENTENCE
-                ].join('\n')
+                id        : '@neo-fable-mnemosyne',
+                properties: {
+                    accountType        : 'agent',
+                    githubLogin        : '@neo-fable-mnemosyne',
+                    participationStatus: 'active'
+                }
             },
             {
-                to     : 'AGENT:*',
-                subject: '[overdue · 1 rows]',
-                body   : [
-                    'unowned-overdue-row · due 2026-11-07 · 3 days',
-                    DATED_ITEMS_OVERDUE_RULE_SENTENCE
-                ].join('\n')
+                id        : '@external-operator',
+                properties: {
+                    accountType: 'human',
+                    githubLogin: '@external-operator'
+                }
+            },
+            {
+                id        : '@neo-kimi-iris',
+                properties: {
+                    accountType        : 'agent',
+                    githubLogin        : '@neo-kimi-iris',
+                    participationStatus: 'operator_benched'
+                }
             }
         ]);
 
-        // Second run on the same UTC day sends nothing and is not due.
-        expect(getDueTask({state, now: `${TODAY}T18:30:00.000Z`, sourcePath: file})).toBeNull();
+        const file = writeRegisterFixture(tmpDir, {
+            schema: DATED_ITEMS_SCHEMA,
+            rows  : [
+                {
+                    id   : 'active-agent-row',
+                    state: 'open',
+                    owner: 'neo-fable-mnemosyne',
+                    due  : '2026-11-05'
+                },
+                {
+                    id   : 'active-human-row',
+                    state: 'open',
+                    owner: 'external-operator',
+                    due  : '2026-11-06'
+                },
+                {
+                    id   : 'benched-seat-row',
+                    state: 'open',
+                    owner: 'neo-kimi-iris',
+                    due  : '2026-11-07'
+                },
+                {
+                    id   : 'unseeded-root-row',
+                    state: 'open',
+                    owner: 'tobiu',
+                    due  : '2026-11-08'
+                }
+            ]
+        }, 'ra1-graph-addressability.json');
 
-        const secondRun = await runDatedItemsOverdue({
-            sourcePath : file,
-            now        : `${TODAY}T18:30:00.000Z`,
-            state,
-            sendMessage: async payload => {
-                sent.push(payload);
+        try {
+            expect([...resolveKnownIdentities({db})]).toEqual([
+                '@neo-fable-mnemosyne',
+                '@external-operator'
+            ]);
+
+            const sent = [];
+            const logs = [];
+
+            const outcome = await runDatedItemsOverdue({
+                sourcePath : file,
+                now        : TODAY,
+                db,
+                sendMessage: async msg => sent.push(msg),
+                writeLog   : (level, message) => logs.push({level, message})
+            });
+
+            expect(outcome.status).toBe('ok');
+            expect(outcome.sentCount).toBe(3);
+            expect(logs).toEqual([]);
+            expect(sent).toEqual([
+                {
+                    to     : '@neo-fable-mnemosyne',
+                    subject: '[overdue · 1 rows]',
+                    body   : [
+                        'active-agent-row · due 2026-11-05 · 5 days',
+                        DATED_ITEMS_OVERDUE_RULE_SENTENCE
+                    ].join('\n')
+                },
+                {
+                    to     : '@external-operator',
+                    subject: '[overdue · 1 rows]',
+                    body   : [
+                        'active-human-row · due 2026-11-06 · 4 days',
+                        DATED_ITEMS_OVERDUE_RULE_SENTENCE
+                    ].join('\n')
+                },
+                {
+                    to     : 'AGENT:*',
+                    subject: '[overdue · 2 rows]',
+                    body   : [
+                        'benched-seat-row · due 2026-11-07 · 3 days',
+                        'unseeded-root-row · due 2026-11-08 · 2 days',
+                        DATED_ITEMS_OVERDUE_RULE_SENTENCE
+                    ].join('\n')
+                }
+            ]);
+
+            // Close the DB so readAgentIdentityNodes(db) fails: must log WARN and route all rows to AGENT:*.
+            db.close();
+
+            const degradedSent = [];
+            const degradedLogs = [];
+
+            const degradedOutcome = await runDatedItemsOverdue({
+                sourcePath : file,
+                now        : TODAY,
+                db,
+                sendMessage: async msg => degradedSent.push(msg),
+                writeLog   : (level, message) => degradedLogs.push({level, message})
+            });
+
+            expect(degradedOutcome.status).toBe('ok');
+            expect(degradedOutcome.sentCount).toBe(1);
+            expect(degradedLogs).toHaveLength(1);
+            expect(degradedLogs[0].level).toBe('WARN');
+            expect(degradedLogs[0].message).toContain('[DatedItemsOverdue] Failed to read AgentIdentity nodes from graph');
+            expect(degradedSent).toEqual([
+                {
+                    to     : 'AGENT:*',
+                    subject: '[overdue · 4 rows]',
+                    body   : [
+                        'active-agent-row · due 2026-11-05 · 5 days',
+                        'active-human-row · due 2026-11-06 · 4 days',
+                        'benched-seat-row · due 2026-11-07 · 3 days',
+                        'unseeded-root-row · due 2026-11-08 · 2 days',
+                        DATED_ITEMS_OVERDUE_RULE_SENTENCE
+                    ].join('\n')
+                }
+            ]);
+        } finally {
+            try { db.close(); } catch {}
+        }
+    });
+
+    test('RA-2: Orchestrator.datedItemsOverdueSendMessage dispatches as @system (principalClass: system) without reading NEO_AGENT_IDENTITY', async () => {
+        const originalAddMessage = MailboxService.addMessage;
+        const originalEnv        = process.env.NEO_AGENT_IDENTITY;
+        const calls              = [];
+
+        try {
+            process.env.NEO_AGENT_IDENTITY = '@neo-gemini-maryam';
+
+            MailboxService.addMessage = async payload => {
+                calls.push({
+                    payload,
+                    identity      : RequestContextService.getAgentIdentityNodeId(),
+                    principalClass: RequestContextService.get()?.principalClass,
+                    sessionId     : RequestContextService.get()?.sessionId
+                });
+                return {messageId: `MESSAGE:${calls.length}`};
+            };
+
+            const directReceipt = await Orchestrator.prototype.datedItemsOverdueSendMessage({
+                to     : '@neo-fable-mnemosyne',
+                subject: '[overdue · 1 rows]',
+                body   : `mnemosyne-row-1 · due 2026-11-05 · 5 days\n${DATED_ITEMS_OVERDUE_RULE_SENTENCE}`
+            });
+
+            const broadcastReceipt = await Orchestrator.prototype.datedItemsOverdueSendMessage({
+                to     : 'AGENT:*',
+                subject: '[overdue · 1 rows]',
+                body   : `unowned-row · due 2026-11-07 · 3 days\n${DATED_ITEMS_OVERDUE_RULE_SENTENCE}`
+            });
+
+            expect(directReceipt).toEqual({messageId: 'MESSAGE:1'});
+            expect(broadcastReceipt).toEqual({messageId: 'MESSAGE:2'});
+            expect(calls).toEqual([
+                {
+                    identity      : '@system',
+                    principalClass: 'system',
+                    sessionId     : 'dated-items-overdue',
+                    payload       : {
+                        to            : '@neo-fable-mnemosyne',
+                        subject       : '[overdue · 1 rows]',
+                        body          : `mnemosyne-row-1 · due 2026-11-05 · 5 days\n${DATED_ITEMS_OVERDUE_RULE_SENTENCE}`,
+                        priority      : 'normal',
+                        wakeSuppressed: false
+                    }
+                },
+                {
+                    identity      : '@system',
+                    principalClass: 'system',
+                    sessionId     : 'dated-items-overdue',
+                    payload       : {
+                        to            : 'AGENT:*',
+                        subject       : '[overdue · 1 rows]',
+                        body          : `unowned-row · due 2026-11-07 · 3 days\n${DATED_ITEMS_OVERDUE_RULE_SENTENCE}`,
+                        priority      : 'normal',
+                        wakeSuppressed: true
+                    }
+                }
+            ]);
+        } finally {
+            MailboxService.addMessage = originalAddMessage;
+            if (originalEnv === undefined) {
+                delete process.env.NEO_AGENT_IDENTITY;
+            } else {
+                process.env.NEO_AGENT_IDENTITY = originalEnv;
             }
-        });
-
-        expect(secondRun.status).toBe('already-ran-today');
-        expect(secondRun.sentCount).toBe(0);
-        expect(sent).toHaveLength(2);
-
-        // Next UTC day: due again, and a failed send is logged and retried on the following day.
-        expect(getDueTask({state, now: `${TOMORROW}T08:00:00.000Z`, sourcePath: file})).toEqual({
-            taskName: 'dated-items-overdue',
-            source  : 'daily-dated-items-overdue',
-            reason  : `daily-dated-items-overdue:${TOMORROW}`
-        });
-
-        const failedDayLogs = [];
-        const failedRun     = await runDatedItemsOverdue({
-            sourcePath : file,
-            now        : `${TOMORROW}T08:00:00.000Z`,
-            state,
-            sendMessage: async () => {
-                throw new Error('simulated mailbox transport failure');
-            },
-            writeLog   : (level, message) => {
-                failedDayLogs.push({level, message});
-            }
-        });
-
-        expect(failedRun.status).toBe('ok');
-        expect(failedRun.sentCount).toBe(0);
-        expect(failedRun.failedCount).toBe(2);
-        expect(failedDayLogs).toHaveLength(2);
-        expect(failedDayLogs[0].level).toBe('ERROR');
+        }
     });
 
     test('AC-4: the authority audit at boot lists dated-items-overdue with class container-plane and exactly one owner', () => {

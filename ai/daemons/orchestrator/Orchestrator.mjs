@@ -464,19 +464,15 @@ export class Orchestrator extends Base {
     }
 
     /**
-     * @summary Sends one overdue-register A2A message from the container plane.
+     * @summary Sends one overdue-register A2A message from the container plane as the `@system` principal.
      * Direct messages (`to: '@<owner>'`) wake the owner (`wakeSuppressed: false`); fallback `AGENT:*`
      * broadcasts carry `wakeSuppressed: true`.
      * @param {{to: String, subject: String, body: String}} message
      * @returns {Promise<Object>}
      */
-    datedItemsOverdueSendMessage = async ({to, subject, body}) => {
-        const sender = process.env.NEO_AGENT_IDENTITY
-            ? normalizeAgentIdentityNodeId(process.env.NEO_AGENT_IDENTITY)
-            : '@system';
-
+    async datedItemsOverdueSendMessage({to, subject, body}) {
         return RequestContextService.run({
-            agentIdentityNodeId: sender,
+            agentIdentityNodeId: '@system',
             principalClass     : 'system',
             sessionId          : 'dated-items-overdue'
         }, () => MailboxService.addMessage({
