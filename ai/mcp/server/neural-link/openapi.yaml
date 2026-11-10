@@ -53,7 +53,7 @@ x-neo-exact-tool-profiles:
 paths:
   /health:
     post:
-      summary: Health Check
+      summary: Check Neural Link bridge health; use when verifying live sessions.
       operationId: healthcheck
       x-neo-tool-tier: read
       x-annotations:
@@ -89,7 +89,7 @@ paths:
 
   /tool/handbook:
     post:
-      summary: Tool Handbook
+      summary: Read full usage guidance and examples for one Neural Link tool; use when a tool's compact schema needs deeper detail.
       operationId: get_mcp_tool_handbook
       x-neo-tool-tier: read
       x-annotations:
@@ -136,7 +136,7 @@ paths:
 
   /check_namespace:
     post:
-      summary: Checks if a namespace exists in the current environment.
+      summary: Test whether a dotted Neo namespace resolves in the App Worker; use when checking if a class or package is loaded.
       operationId: check_namespace
       x-neo-tool-tier: read
       x-handler: check_namespace
@@ -169,7 +169,7 @@ paths:
 
   /instance/find:
     post:
-      summary: Find Instances
+      summary: Search Neo.manager.Instance by selector across all live instances; use when finding stores, providers, or controllers.
       operationId: find_instances
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -213,7 +213,7 @@ paths:
 
   /get_namespace_tree:
     post:
-      summary: Retrieves the loaded namespace tree from the runtime.
+      summary: Read the loaded Neo namespace tree under an optional root; use when browsing runtime packages or loaded classes.
       operationId: get_namespace_tree
       x-neo-tool-tier: read
       x-handler: get_namespace_tree
@@ -246,7 +246,7 @@ paths:
 
   /instance/properties/get:
     post:
-      summary: Get Instance Properties
+      summary: Read selected config and property paths from one instance by ID; use when inspecting live state on a known object.
       operationId: get_instance_properties
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -298,7 +298,7 @@ paths:
 
   /component/styles/get:
     post:
-      summary: Get Computed Styles
+      summary: Read browser getComputedStyle values or CSS variables on a component; use when verifying live theming, colors, or CSS.
       operationId: get_computed_styles
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -339,7 +339,7 @@ paths:
 
   /component/rect/get:
     post:
-      summary: Get Component DOM Rects
+      summary: Read rendered bounding-box DOMRects for one or more component IDs; use when checking on-screen size, position, or clip.
       operationId: get_dom_rect
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -382,7 +382,7 @@ paths:
 
   /component/dom/events/get:
     post:
-      summary: Get DOM Event Listeners
+      summary: List registered DOM event listeners on a specific component; use when debugging delegated click or key handling.
       operationId: get_dom_event_listeners
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -425,7 +425,7 @@ paths:
 
   /component/dom/events/summary:
     post:
-      summary: Get DOM Event Summary
+      summary: Summarize global DomEvent manager listener counts across the app; use when auditing overall event registration load.
       operationId: get_dom_event_summary
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -469,7 +469,7 @@ paths:
 
   /component/tree:
     post:
-      summary: Get Component Tree
+      summary: Serialize the live UI component hierarchy from mainView or rootId; use when mapping parent-child widget structure.
       operationId: get_component_tree
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -507,7 +507,7 @@ paths:
 
   /component/render-tree/inspect:
     post:
-      summary: Inspect Component Render Tree
+      summary: Read a component's VDOM tree, mounted VNode tree, or both; use when debugging virtual-to-rendered node structure.
       operationId: inspect_component_render_tree
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -561,7 +561,7 @@ paths:
 
   /data/store/inspect:
     post:
-      summary: Inspect Store
+      summary: Read a data.Store's records, count, filters, and sorters by ID; use when checking loaded collection contents or order.
       operationId: inspect_store
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -608,7 +608,7 @@ paths:
 
   /data/store/list:
     post:
-      summary: List Stores
+      summary: List all active Neo.data.Store instances in the App Worker; use when discovering store IDs, models, and record counts.
       operationId: list_stores
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -649,7 +649,7 @@ paths:
 
   /data/record/get:
     post:
-      summary: Get Record
+      summary: Read all fields of a single model record from a store by key or index; use when inspecting one row's full payload.
       operationId: get_record
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -675,7 +675,7 @@ paths:
 
   /data/state/inspect:
     post:
-      summary: Inspect State Provider
+      summary: Read a state.Provider's hierarchical data bindings and values; use when checking view-model state on a component tree.
       operationId: inspect_state_provider
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -706,7 +706,7 @@ paths:
 
   /data/state/modify:
     post:
-      summary: Modify State Provider
+      summary: Update reactive data keys on a live state.Provider instance; use when driving bound UI state without editing widgets.
       operationId: modify_state_provider
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -735,7 +735,7 @@ paths:
 
   /drag/state:
     post:
-      summary: Get Drag State
+      summary: Read active DragCoordinator state for an in-flight drag; use when checking what item is currently dragged and where.
       operationId: get_drag_state
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -764,7 +764,7 @@ paths:
 
   /drag/trace:
     post:
-      summary: Get Drag Trace
+      summary: Read recorded SortZone drag-lifecycle decision traces; use when debugging item switches, scroll, or lock verdicts.
       operationId: get_drag_trace
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -796,7 +796,7 @@ paths:
 
   /dock/diffDockTopology:
     post:
-      summary: Diff Dock Topology
+      summary: Diff a prior dock layout document against a live dock workspace; use when verifying semantic moves, splits, or resizes.
       operationId: diff_dock_topology
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -832,7 +832,7 @@ paths:
 
   /dock/executeDockOperation:
     post:
-      summary: Execute Dock Operation
+      summary: Apply one dockZone.v1 layout operation to a live dock workspace; use when docking, splitting, or resizing panes.
       operationId: execute_dock_operation
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -865,7 +865,7 @@ paths:
 
   /dock/getDockTopology:
     post:
-      summary: Get Dock Topology
+      summary: Read a live dock workspace's layout document and allowed operations; use when inspecting or planning dock pane changes.
       operationId: get_dock_topology
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -895,7 +895,7 @@ paths:
 
   /dock/capturePerspective:
     post:
-      summary: Capture Perspective
+      summary: Save a live dock workspace or window topology as a named perspective; use when recording a reusable layout preset.
       operationId: capture_perspective
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -941,7 +941,7 @@ paths:
 
   /dock/listPerspectives:
     post:
-      summary: List Perspectives
+      summary: List a dock workspace's declared and stored layout perspectives; use when checking available presets or dirty state.
       operationId: list_perspectives
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -971,7 +971,7 @@ paths:
 
   /dock/restorePerspective:
     post:
-      summary: Restore Perspective
+      summary: Apply a named declared or saved perspective to a dock workspace; use when switching or resetting a multi-pane layout.
       operationId: restore_perspective
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1004,7 +1004,7 @@ paths:
 
   /component/observeMotion:
     post:
-      summary: Observe Motion
+      summary: Sample component or DOM-node client rects over a bounded time window; use when verifying animations or drag motion.
       operationId: observe_motion
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1055,7 +1055,7 @@ paths:
 
   /component/verifyConsistency:
     post:
-      summary: Verify Component Consistency
+      summary: Compare a container's items, VDOM children, and live DOM order; use when diagnosing engine-vs-DOM child desync bugs.
       operationId: verify_component_consistency
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1089,7 +1089,7 @@ paths:
 
   /component/query:
     post:
-      summary: Query Components
+      summary: Find live UI components matching a selector (optionally under rootId); use when locating widgets by ntype or config.
       operationId: query_component
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1121,7 +1121,7 @@ paths:
 
   /component/create:
     post:
-      summary: Create Component
+      summary: Add a child UI component to an existing container by parentId; use when inserting a widget under write-locked access.
       operationId: create_component
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1163,7 +1163,7 @@ paths:
 
   /instance/create:
     post:
-      summary: Create Instance
+      summary: Instantiate any JSON-safe Neo class or ntype (standalone or parented); use when creating stores, models, or widgets.
       operationId: create_instance
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1210,7 +1210,7 @@ paths:
 
   /component/remove:
     post:
-      summary: Remove Component
+      summary: Destroy a live UI component by ID and detach it from parent VDOM; use when removing a mounted widget cleanly.
       operationId: remove_component
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1248,7 +1248,7 @@ paths:
 
   /component/vdom/query:
     post:
-      summary: Query VDOM
+      summary: Find the first VDOM child node matching attributes inside a component; use when targeting inner markup lacking an ID.
       operationId: query_vdom
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1282,7 +1282,7 @@ paths:
 
   /page/reload:
     post:
-      summary: Reload Page
+      summary: Trigger a full browser reload on a connected application window; use when resetting runtime state to a clean boot.
       operationId: reload_page
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -1315,7 +1315,7 @@ paths:
 
   /navigation/history:
     post:
-      summary: Get Route History
+      summary: Read the browser hash-route stack and active route of a window; use when checking navigation history or current view.
       operationId: get_route_history
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1362,7 +1362,7 @@ paths:
 
   /navigation/route/set:
     post:
-      summary: Set Route
+      summary: Navigate a connected application window to a target hash route; use when driving view transitions via URL routing.
       operationId: set_route
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1405,7 +1405,7 @@ paths:
 
   /connection/manage:
     post:
-      summary: Manage WebSocket Server
+      summary: Start or stop the Neural Link WebSocket bridge server; use when recovering a stopped bridge or simulating disconnect.
       operationId: manage_connection
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -1453,7 +1453,7 @@ paths:
 
   /console/logs/get:
     post:
-      summary: Get Console Logs
+      summary: Read captured App Worker console logs, warnings, and errors; use when diagnosing runtime exceptions or log output.
       operationId: get_console_logs
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1501,7 +1501,7 @@ paths:
 
   /worker/topology:
     post:
-      summary: Get Worker Topology
+      summary: List connected App Workers with their session IDs and environments; use when selecting a target sessionId to drive.
       operationId: get_worker_topology
       x-neo-tool-tier: read
       description: |
@@ -1541,7 +1541,7 @@ paths:
 
   /window/topology:
     post:
-      summary: Get Window Topology
+      summary: List connected browser windows with dimensions and popup capabilities; use when mapping multi-window app topology.
       operationId: get_window_topology
       x-neo-tool-tier: read
       description: |
@@ -1589,7 +1589,7 @@ paths:
 
   /window/component/open:
     post:
-      summary: Open Component Window
+      summary: Pop out a live component into a separate browser window via app support; use when detaching a multi-window pane.
       operationId: open_component_window
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1623,7 +1623,7 @@ paths:
 
   /window/close:
     post:
-      summary: Close Window
+      summary: Close an owner-granted topology-known browser popup and await exit; use when tearing down a detached app window.
       operationId: close_window
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1658,7 +1658,7 @@ paths:
 
   /window/position:
     post:
-      summary: Position Window
+      summary: Move a topology-known browser popup to screen coordinates when supported; use when arranging multi-window layouts.
       operationId: position_window
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1692,7 +1692,7 @@ paths:
 
   /window/focus:
     post:
-      summary: Focus Window
+      summary: Bring a topology-known browser popup to the foreground when supported; use when activating a detached app window.
       operationId: focus_window
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1726,7 +1726,7 @@ paths:
 
   /instance/properties/set:
     post:
-      summary: Set Instance Properties
+      summary: Mutate reactive configs or properties on a live instance by ID; use when updating widget text, cls, or store filters.
       operationId: set_instance_properties
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1760,7 +1760,7 @@ paths:
 
   /instance/undo:
     post:
-      summary: Undo Last Mutation
+      summary: Revert the caller's latest committed runtime mutation; use when rolling back the last Neural Link write.
       operationId: undo
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1789,7 +1789,7 @@ paths:
 
   /instance/redo:
     post:
-      summary: Redo Last Undone Mutation
+      summary: Re-apply the caller's latest reverted runtime mutation; use when restoring a rolled-back Neural Link write.
       operationId: redo
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1818,7 +1818,7 @@ paths:
 
   /instance/transactions:
     post:
-      summary: List Transactions
+      summary: List the caller's committed and redo-branch mutation batches; use when auditing transaction history before rollback.
       operationId: list_transactions
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1847,7 +1847,7 @@ paths:
 
   /instance/save_transaction:
     post:
-      summary: Save Transaction
+      summary: Persist a committed writer transaction snapshot to the Brain archive; use when preserving live edits across reconnects.
       operationId: save_transaction
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1876,7 +1876,7 @@ paths:
 
   /instance/replay_transaction:
     post:
-      summary: Replay Transaction
+      summary: Re-run an archived transaction's forward mutations in the live App Worker; use when re-applying saved runtime edits.
       operationId: replay_transaction
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1905,7 +1905,7 @@ paths:
 
   /instance/abort_transaction:
     post:
-      summary: Abort Named Transaction
+      summary: Discard the caller's open named transaction batch without committing; use when canceling grouping while keeping edits.
       operationId: abort_transaction
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1934,7 +1934,7 @@ paths:
 
   /instance/begin_transaction:
     post:
-      summary: Begin Named Transaction
+      summary: Open a named mutation batch for the caller; use when grouping multiple Neural Link writes into one rollback unit.
       operationId: begin_transaction
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1963,7 +1963,7 @@ paths:
 
   /instance/commit_transaction:
     post:
-      summary: Commit Named Transaction
+      summary: Seal the caller's open named mutation batch as one rollback unit; use when finishing a grouped sequence of writes.
       operationId: commit_transaction
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -1992,7 +1992,7 @@ paths:
 
   /instance/method/call:
     post:
-      summary: Call Instance Method
+      summary: Invoke a method with JSON arguments on a live instance by ID; use when triggering imperative behavior like store.load.
       operationId: call_method
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -2033,7 +2033,7 @@ paths:
 
   /component/highlight:
     post:
-      summary: Highlight Component
+      summary: Flash a visual debug outline over a live component in the browser; use when confirming which widget an ID refers to.
       operationId: highlight_component
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -2067,7 +2067,7 @@ paths:
 
   /class/inspect:
     post:
-      summary: Inspect Class
+      summary: Read a Neo class blueprint (superclass chain, mixins, configs, methods); use when checking API shape in live runtime.
       operationId: inspect_class
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -2102,7 +2102,7 @@ paths:
 
   /code/source/get:
     post:
-      summary: Get Method Source
+      summary: Read the live JavaScript source of a method on a Neo class; use when preparing to hot-patch or debug runtime logic.
       operationId: get_method_source
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -2145,7 +2145,7 @@ paths:
 
   /code/patch:
     post:
-      summary: Patch Code
+      summary: Hot-replace a method on a live Neo class prototype when enabled; use when testing a runtime fix without rebuilding.
       operationId: patch_code
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -2190,7 +2190,7 @@ paths:
 
   /runtime/config/manage:
     post:
-      summary: Manage Neo Config
+      summary: Read or update global Neo.config keys in a live session or window; use when inspecting or toggling engine flags.
       operationId: manage_neo_config
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -2244,7 +2244,7 @@ paths:
 
   /interaction/drive_drag:
     post:
-      summary: Drive Physical Drag Gesture
+      summary: Execute a full engine-sensed physical pointer drag from source to target; use when testing real drag-and-drop flows.
       operationId: drive_drag
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
@@ -2304,7 +2304,7 @@ paths:
 
   /interaction/simulate_event:
     post:
-      summary: Simulate DOM Event
+      summary: Dispatch synthetic DOM click, key, or pointer events on a component; use when driving discrete UI interactions in E2E.
       operationId: simulate_event
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
