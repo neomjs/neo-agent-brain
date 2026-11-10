@@ -33,10 +33,10 @@ import * as core       from 'neo.mjs/src/core/_export.mjs';
  * `tools/list` line for `manage_issue_comment`.
  *
  * These guards assert the DERIVED tiers rather than the YAML text, because the two differ.
- * `ToolService.buildToolListDescription` sources `x-neo-tool-summary` → `summary` → description and
- * then TRUNCATES past the cap instead of failing — and this label's operative clause ("not a
- * comment") sits at the very END, so a silent cut would keep the phrase that reads like compliance
- * while dropping the instruction. Hence the tail pin and the ellipsis check.
+ * `ToolService.buildToolListDescription` sources `summary` alone and then TRUNCATES past the cap
+ * instead of failing — and this label's operative clause ("not a comment") sits at the very END, so
+ * a silent cut would keep the phrase that reads like compliance while dropping the instruction.
+ * Hence the tail pin and the ellipsis check.
  */
 test.describe('github-workflow manage_issue_comment — BODY-vs-COMMENT guidance reaches both description tiers (#16602)', () => {
 
@@ -76,34 +76,30 @@ test.describe('github-workflow manage_issue_comment — BODY-vs-COMMENT guidance
         expect(tool.description, 'an over-long summary is silently truncated, not rejected').not.toContain('...');
         expect(tool.description, 'the instruction, not just the topic, must survive the cap').toContain('not a comment');
 
-        // Precedence control: the compact tier resolves `x-neo-tool-summary` → `summary` →
-        // description, so a listed description EQUAL to `summary` proves the annotation was dropped
-        // and the guidance silently fell back to the bare title.
+        // Control: a listed description EQUAL to the bare legacy title proves the guidance silently
+        // fell back to the bare title.
         expect(tool.description, 'the guidance must beat the bare title').not.toBe(legacyLabel);
     });
 
-    test('the imperative is emitted ONCE — the title stays the stable 34-char name', async () => {
+    test('the imperative is emitted ONCE — no duplicate title field is projected on the listed record', async () => {
         const
             {tools}    = await listTools(),
             tool       = tools.find(item => item.name === 'manage_issue_comment'),
             openApiDoc = yaml.load(fs.readFileSync(path.join(serverDir, 'openapi.yaml'), 'utf8')),
             operation  = openApiDoc.paths['/comments/manage'].post;
 
-        // `ToolService` sets `title: operation.summary` AND falls back to `summary` for the compact
-        // description. So putting the imperative in `summary` emits it in BOTH fields: measured at
-        // +118 chars on the projected record rather than the +59 the label alone suggests. Measuring
-        // the yaml field instead of the emitted record is what hid that, and this guard exists
-        // because the cheap measurement and the real cost differ by a factor of two.
-        expect(tool.title, 'the title must stay the stable name, not carry the guidance').toBe(legacyLabel);
-        expect(operation.summary, 'summary is the title source and must not carry the imperative').toBe(legacyLabel);
-        expect(operation['x-neo-tool-summary'], 'the imperative belongs in the annotation, emitted once').toContain('not a comment');
+        // `ToolService` omits `title` on listed tools and sources the compact description
+        // from `operation.summary` alone, so the imperative is emitted once on the projected record.
+        expect(tool.title, 'listed tools must not carry a duplicate title field').toBeUndefined();
+        expect(operation.summary, 'summary is the single source for the compact line').toContain('not a comment');
+        expect(tool.description).toBe(operation.summary);
 
-        // The record cost, asserted rather than trusted: title + description, with the imperative
-        // appearing exactly once across the pair.
-        const emitted     = `${tool.title}${tool.description}`,
+        // The record cost, asserted rather than trusted: the imperative appears exactly once across
+        // the serialized listed record.
+        const emitted     = JSON.stringify(tool),
               occurrences = emitted.split('corrections go in the BODY').length - 1;
 
-        expect(occurrences, 'the imperative must appear exactly once across title + description').toBe(1);
+        expect(occurrences, 'the imperative must appear exactly once on the listed tool record').toBe(1);
     });
 
     test('the handbook tier carries the reasons and the BODY-vs-COMMENT distinction', async () => {

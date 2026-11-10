@@ -172,10 +172,9 @@ paths:
 
   /pull-requests:
     get:
-      summary: List Pull Requests
+      summary: List PRs; optionally falsify exact PR numbers supplied through believedOpen.
       operationId: list_pull_requests
       x-neo-tool-tier: read
-      x-neo-tool-summary: List PRs; optionally falsify exact PR numbers supplied through believedOpen.
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
@@ -389,10 +388,9 @@ paths:
 
   /pull-requests/{pr_number}/conversation:
     get:
-      summary: Get Conversation (Issue or PR)
+      summary: Fetch PR/issue conversation, or an identity-bound source-owned PR readiness projection.
       operationId: get_conversation
       x-neo-tool-tier: read
-      x-neo-tool-summary: Fetch PR/issue conversation, or an identity-bound source-owned PR readiness projection.
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
@@ -539,13 +537,9 @@ paths:
 
   /comments/manage:
     post:
-      summary: Manage Comments (Create or Update)
-      # The compact `tools/list` description, and it MUST live here rather than in `summary`.
-      # `ToolService` emits `title: operation.summary` AND falls back to `summary` for the compact
-      # description, so putting the imperative in `summary` ships it twice — measured at +118 chars
-      # on the projected record instead of +59. This annotation carries it once and leaves the title
-      # stable at the tool's 34-char name.
-      x-neo-tool-summary: Manage Comments (Create or Update) — dialogue only; corrections go in the BODY, not a comment
+      # `ToolService` reads `summary` alone for the compact `tools/list` description and omits
+      # `title` from listed tools, so this imperative is emitted once on the projected record.
+      summary: Manage Comments (Create or Update) — dialogue only; corrections go in the BODY, not a comment
       operationId: manage_issue_comment
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -656,8 +650,7 @@ paths:
 
   /issues/body/update:
     post:
-      summary: Update Issue or Pull Request Body
-      x-neo-tool-summary: Replace an issue or PR body in place (author/assignee guard; pass acknowledgedForeignBody to override).
+      summary: Replace an issue or PR body in place (author/assignee guard; pass acknowledgedForeignBody to override).
       operationId: update_issue_body
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -933,10 +926,9 @@ paths:
 
   /pulls/review/validate:
     post:
-      summary: Validate PR Review Body
+      summary: Read-only shape and optional Round-2 carry check for a PR review body.
       operationId: validate_pr_review_body
       x-neo-tool-tier: read
-      x-neo-tool-summary: Read-only shape and optional Round-2 carry check for a PR review body.
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
@@ -1012,10 +1004,9 @@ paths:
 
   /pulls/{pr_number}/review/manage:
     post:
-      summary: Manage PR Review (Create or Update — atomic body + formal-state in one call)
+      summary: Create or update one formal PR review with body and review state validation.
       operationId: manage_pr_review
       x-neo-tool-tier: write
-      x-neo-tool-summary: Create or update one formal PR review with body and review state validation.
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: false
@@ -1925,10 +1916,9 @@ paths:
 
   /issues/relationship:
     post:
-      summary: Manage Issue Relationships (Parent-Child and Blocked-By)
+      summary: Create, replace, or remove issue parent-child and blocked-by relationships.
       operationId: update_issue_relationship
       x-neo-tool-tier: write
-      x-neo-tool-summary: Create, replace, or remove issue parent-child and blocked-by relationships.
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: false

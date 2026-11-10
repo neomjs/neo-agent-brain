@@ -28,14 +28,13 @@ import * as core       from 'neo.mjs/src/core/_export.mjs';
  *
  * The scope claim has to live on the tier an agent actually reads. The KB server emits TWO
  * description tiers (`ToolService.buildToolListDescription` / `buildToolHandbookEntry`): the compact
- * `tools/list` line — capped at 120 chars, sourced `x-neo-tool-summary` → `summary` → description —
- * and the long `description`, served only on an explicit `get_mcp_tool_handbook` call. Stating the
- * scope in `description` alone leaves the default surface reading `Get Class Hierarchy`, which tells
- * a caller nothing; the caller who never fetches the handbook is exactly the one who misreads it.
+ * `tools/list` line — capped at 120 chars, sourced from `summary` alone — and the long
+ * `description`, served only on an explicit `get_mcp_tool_handbook` call. Stating the scope in
+ * `description` alone leaves the default surface reading `Get Class Hierarchy`, which tells a
+ * caller nothing; the caller who never fetches the handbook is exactly the one who misreads it.
  *
- * So these guards assert the DERIVED listed description rather than the YAML text, and pin the
- * precedence: drop `x-neo-tool-summary` and the compact line silently falls back to the bare
- * `summary` title, which the second assertion in the first test is there to catch.
+ * So these guards assert the DERIVED listed description rather than the YAML text, and pin that
+ * the compact line carries the scope rather than the bare title.
  */
 test.describe('knowledge-base get_class_hierarchy — the scope claim reaches the default-visible tier (#16065)', () => {
 
@@ -58,6 +57,7 @@ test.describe('knowledge-base get_class_hierarchy — the scope claim reaches th
             operation  = openApiDoc.paths['/knowledge/hierarchy'].get;
 
         expect(tool, 'get_class_hierarchy must be listed').toBeTruthy();
+        expect(tool.title).toBeUndefined();
         expect(tool.description).toContain('Neo.mjs code only');
         expect(tool.description.length, 'the compact tier is capped at 120').toBeLessThanOrEqual(120);
 
@@ -67,9 +67,9 @@ test.describe('knowledge-base get_class_hierarchy — the scope claim reaches th
         expect(tool.description, 'an over-long summary is silently truncated, not rejected').not.toContain('...');
         expect(tool.description).toContain("not your own or any tenant's repositories");
 
-        // The precedence control: `summary` is the fallback source, so a listed description EQUAL to
-        // it proves `x-neo-tool-summary` was dropped and the scope silently left the default tier.
-        expect(tool.description, 'the scope must beat the bare title through x-neo-tool-summary').not.toBe(operation.summary);
+        // `summary` is the single source for the compact tier and must not regress to the bare title.
+        expect(tool.description).toBe(operation.summary);
+        expect(tool.description).not.toBe('Get Class Hierarchy');
     });
 
     test('the handbook tier carries the not-covered clause, and neither tier seeds the framework category', async () => {

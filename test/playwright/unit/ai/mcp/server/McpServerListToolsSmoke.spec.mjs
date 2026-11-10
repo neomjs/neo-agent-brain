@@ -24,7 +24,7 @@ import * as yaml   from 'js-yaml';
 import Neo         from 'neo.mjs/src/Neo.mjs';
 import * as core   from 'neo.mjs/src/core/_export.mjs';
 import AiConfig    from '../../../../../../ai/config.template.mjs';
-import ToolService from '../../../../../../ai/mcp/ToolService.mjs';
+import ToolService, {ADVERTISED_SURFACE_DIGEST_LABEL} from '../../../../../../ai/mcp/ToolService.mjs';
 import {
     createDeploymentStateSnapshot,
     writeDeploymentStateSnapshot
@@ -251,16 +251,24 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
 
     for (const server of servers) {
         test(`${server.name}: real toolService.listTools() returns well-formed unique tools`, async () => {
-            const {tools} = await listTools(server);
+            const
+                {tools}        = await listTools(server),
+                operationsById = getOperationsById(server);
 
             expect(tools.length, `${server.name} should expose at least one MCP tool`).toBeGreaterThan(0);
             expect(new Set(tools.map(tool => tool.name)).size, `${server.name} has duplicate tool names`).toBe(tools.length);
 
             for (const tool of tools) {
+                const baseDescription = tool.name === 'healthcheck'
+                    ? tool.description.split(`\n\n${ADVERTISED_SURFACE_DIGEST_LABEL}`)[0]
+                    : tool.description;
+
                 expect(tool.name, `${server.name} tool name`).toEqual(expect.any(String));
                 expect(tool.name.length, `${server.name} tool name length`).toBeGreaterThan(0);
+                expect(tool.title, `${server.name}.${tool.name} must not emit a title field`).toBeUndefined();
                 expect(tool.description, `${server.name}.${tool.name} description`).toEqual(expect.any(String));
                 expect(tool.description.length, `${server.name}.${tool.name} description length`).toBeGreaterThan(0);
+                expect(baseDescription, `${server.name}.${tool.name} description must equal operation.summary`).toBe(operationsById[tool.name].summary);
                 expect(tool.inputSchema, `${server.name}.${tool.name} inputSchema`).toEqual(expect.any(Object));
                 expect(Array.isArray(tool.inputSchema), `${server.name}.${tool.name} inputSchema must be object-shaped`).toBe(false);
 
@@ -982,5 +990,89 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
         // neither set → null (unforced → full developer/operator surface)
         expect(resolveToolProjectionMode(null,      {})).toBeNull();
         expect(resolveToolProjectionMode(undefined, {})).toBeNull();
+    });
+
+    /**
+     * @summary Validates that every OpenAPI operation has a non-empty summary within the UTF-8 byte budget.
+     * @param {Array<{name: String, doc: Object}>} openApiDocuments Parsed server OpenAPI documents.
+     * @param {Number} [maxBytes=120] Maximum UTF-8 byte length for `operation.summary`.
+     * @returns {String[]} Human-readable failure messages naming each offending operation and its byte count.
+     */
+    function validateOpenApiOperationSummaries(openApiDocuments, maxBytes = 120) {
+        const failures = [];
+
+        for (const {name, doc} of openApiDocuments) {
+            for (const pathItem of Object.values(doc?.paths || {})) {
+                for (const operation of Object.values(pathItem || {})) {
+                    if (!operation || typeof operation !== 'object' || !operation.operationId) {
+                        continue;
+                    }
+
+                    const
+                        summary = typeof operation.summary === 'string' ? operation.summary.trim() : '',
+                        bytes   = Buffer.byteLength(summary, 'utf8');
+
+                    if (!summary) {
+                        failures.push(`${name}.${operation.operationId}: missing summary (0 bytes)`);
+                    } else if (bytes > maxBytes) {
+                        failures.push(`${name}.${operation.operationId}: summary is ${bytes} bytes (max ${maxBytes})`);
+                    }
+                }
+            }
+        }
+
+        return failures;
+    }
+
+    test('every operation across all six OpenAPI contracts carries a non-empty summary of at most 120 bytes (#1563)', () => {
+        const
+            openApiDocuments = servers.map(server => ({
+                name: server.name,
+                doc : yaml.load(fs.readFileSync(path.join(repoRoot, server.openApiPath), 'utf8'))
+            })),
+            failures = validateOpenApiOperationSummaries(openApiDocuments, 120);
+
+        expect(failures, failures.join('\n')).toEqual([]);
+    });
+
+    test('OpenAPI summary validator fails on a missing or >120-byte summary and names the operation and byte count (#1563)', () => {
+        const
+            fixtureDocs = [{
+                name: 'fixture',
+                doc : {
+                    paths: {
+                        '/missing': {
+                            post: {
+                                operationId: 'missing_summary_tool'
+                            }
+                        },
+                        '/blank': {
+                            post: {
+                                operationId: 'blank_summary_tool',
+                                summary    : '   '
+                            }
+                        },
+                        '/overlong': {
+                            post: {
+                                operationId: 'overlong_summary_tool',
+                                summary    : 'x'.repeat(121)
+                            }
+                        },
+                        '/valid': {
+                            post: {
+                                operationId: 'valid_summary_tool',
+                                summary    : 'x'.repeat(120)
+                            }
+                        }
+                    }
+                }
+            }],
+            failures = validateOpenApiOperationSummaries(fixtureDocs, 120);
+
+        expect(failures).toEqual([
+            'fixture.missing_summary_tool: missing summary (0 bytes)',
+            'fixture.blank_summary_tool: missing summary (0 bytes)',
+            'fixture.overlong_summary_tool: summary is 121 bytes (max 120)'
+        ]);
     });
 });

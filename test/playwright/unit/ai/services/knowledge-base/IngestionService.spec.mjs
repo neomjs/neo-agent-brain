@@ -763,13 +763,13 @@ test.describe('IngestionService.ingestSourceFiles', () => {
         expect(schema.slice(0, 2500)).toContain('crossProcessHint');
 
         // The caller-visible tier too. `description` is handbook-only; an agent choosing whether to
-        // trust a negative answer sees `x-neo-tool-summary` in `tools/list` and nothing else, so the
-        // scope caveat has to live there or no agent ever reads it.
-        const summaryLine = spec.split('\n').find(line => line.includes('x-neo-tool-summary') && /ngestion progress/i.test(line));
+        // trust a negative answer sees `summary` in `tools/list` and nothing else, so the scope
+        // caveat has to live there or no agent ever reads it.
+        const summaryLine = spec.split('\n').find(line => line.includes('summary:') && /ngestion progress/i.test(line));
 
         expect(summaryLine).toBeTruthy();
         expect(summaryLine).toMatch(/THIS PROCESS/);
-        expect(summaryLine.split('x-neo-tool-summary:')[1].trim().length).toBeLessThanOrEqual(120);
+        expect(summaryLine.split('summary:')[1].trim().length).toBeLessThanOrEqual(120);
 
         const ingestSchema = spec.slice(
             spec.indexOf('IngestSourceFilesResponse:'),

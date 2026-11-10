@@ -25,7 +25,7 @@ import Tier1ConfigBase, {PLANE_MEMBER_PATHS as TIER1_MEMBER_PATHS} from '../../.
 import {derivePlaneMemberPaths}                                    from '../../../../../../ai/planeConfig.mjs';
 import BaseServer                                                  from '../../../../../../ai/mcp/server/BaseServer.mjs';
 // The committed template, never `ai/config.mjs` — tests resolve committed config templates and never a
-// repo-local ignored overlay. ticket-ref-ok: ADR-0019 B1/C3 is the authority lint-config-template-ssot
+// repo-local ignored overlay. ADR-0019 [not-ticket-ref: B1/C3 authority enforced by lint-config-template-ssot] B1/C3 is the authority lint-config-template-ssot
 // enforces this import against, so a reader reverting it needs the citation, not just the rule.
 // Imported after the core export so it resolves against a fully initialised `Neo`.
 import AiConfig                                                    from '../../../../../../ai/config.template.mjs';
@@ -76,7 +76,6 @@ function makeTestServerClass(overrides = {}) {
                 listTools: ({cursor, limit} = {}) => ({
                     tools: [{
                         name        : 'sample',
-                        title       : 'Sample Tool',
                         description : 'A test tool',
                         inputSchema : {type: 'object'},
                         outputSchema: {type: 'object'},
@@ -407,12 +406,12 @@ test.describe('Neo.ai.mcp.server.BaseServer — setupRequestHandlers wiring', ()
         expect(result.tools).toHaveLength(1);
         expect(result.tools[0]).toMatchObject({
             name        : 'sample',
-            title       : 'Sample Tool',
             description : 'A test tool',
             inputSchema : {type: 'object'},
             outputSchema: {type: 'object'},
             annotations : {readOnly: true}
         });
+        expect(result.tools[0].title).toBeUndefined();
     });
 
     test('ListTools handler passes projection context into per-server toolService', async () => {
@@ -429,7 +428,6 @@ test.describe('Neo.ai.mcp.server.BaseServer — setupRequestHandlers wiring', ()
                     return {
                         tools: [{
                             name       : 'sample',
-                            title      : 'Sample Tool',
                             description: 'A test tool',
                             inputSchema: {type: 'object'}
                         }]
@@ -918,7 +916,7 @@ test.describe('Neo.ai.mcp.server.BaseServer — plane-member boundary (#15799)',
             // an anchored leaf with no planeMember decision fails the derivation itself, so the
             // forget-to-edit class fails here rather than shipping green. No literal to bump on
             // legitimate membership changes.
-            // ticket-ref-ok: #15932 is the completeness mechanism this line enforces; #15872's
+            // #15932 [not-ticket-ref: completeness mechanism this line enforces] is the completeness mechanism this line enforces; #15872 [not-ticket-ref: graph-SQLite omission regression shape]'s
             // graph-SQLite omission is its first confirmed instance — named because the
             // regression's shape is the point.
             expect(new Set(TIER1_MEMBER_PATHS))
