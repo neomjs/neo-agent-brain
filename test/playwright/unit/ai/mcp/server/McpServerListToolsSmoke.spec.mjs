@@ -698,7 +698,7 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
 
         expect(handbookTool.description.length).toBeLessThanOrEqual(120);
         expect(handbookTool.annotations.readOnlyHint).toBe(true);
-        expect(findInstances.description).toBe('Find Instances');
+        expect(findInstances.description).toBe('Search Neo.manager.Instance by selector across all live instances; use when finding stores, providers, or controllers.');
         expect(findInstances.description).not.toContain('StateProviders');
 
         for (const tool of tools) {
@@ -1076,10 +1076,10 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
         ]);
     });
 
-    test('github-workflow and gitlab-workflow summaries follow <what>; use when <trigger> without repeating operationId (#1566)', () => {
+    test('github-workflow, gitlab-workflow, and neural-link summaries follow <what>; use when <trigger> without repeating operationId (#1566, #1565)', () => {
         const
-            targetServers  = servers.filter(server => ['github-workflow', 'gitlab-workflow'].includes(server.name)),
-            expectedCounts = {'github-workflow': 25, 'gitlab-workflow': 14};
+            targetServers  = servers.filter(server => ['github-workflow', 'gitlab-workflow', 'neural-link'].includes(server.name)),
+            expectedCounts = {'github-workflow': 25, 'gitlab-workflow': 14, 'neural-link': 60};
 
         for (const server of targetServers) {
             const
