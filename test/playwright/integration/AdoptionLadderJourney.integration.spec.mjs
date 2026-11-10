@@ -131,10 +131,10 @@ test.describe('Adoption-ladder journey proof — #11725 Sub D (milestones 0-7)',
             expect(health.status, 'MC healthcheck before the round-trip').toBe('healthy');
 
             const written = await callJsonTool(client, 'add_memory', {
-                prompt  : `adoption-ladder milestone 1 — ${sentinel}`,
-                thought : 'journey-proof write path reached over remote MCP',
-                response: sentinel,
-                agent   : 'journey-operator'
+                prompt         : `adoption-ladder milestone 1 — ${sentinel}`,
+                decisionContext: 'journey-proof write path reached over remote MCP',
+                response       : sentinel,
+                agent          : 'journey-operator'
             });
             expect(written.id, 'add_memory returns a persisted memory id').toBeTruthy();
 

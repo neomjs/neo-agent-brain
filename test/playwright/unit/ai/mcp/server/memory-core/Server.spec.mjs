@@ -1088,7 +1088,7 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
             const memoryResult = await callTool({
                 params: {
                     name     : 'add_memory',
-                    arguments: {prompt: 'p', thought: 't', response: 'r'}
+                    arguments: {prompt: 'p', decisionContext: 't', response: 'r'}
                 }
             });
 
@@ -1111,7 +1111,7 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
             expect(healthCalls).toEqual([]);
             expect(toolCalls).toEqual([
                 {name: 'list_messages',         args: {status: 'unread'}},
-                {name: 'add_memory',            args: {prompt: 'p', thought: 't', response: 'r'}},
+                {name: 'add_memory',            args: {prompt: 'p', decisionContext: 't', response: 'r'}},
                 {name: 'record_turn_presence',  args: {action: 'start', turnId: 'turn-1'}}
             ]);
 

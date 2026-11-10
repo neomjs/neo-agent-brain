@@ -561,9 +561,9 @@ test.describe('SessionService validateSessionForResume (#10725)', () => {
 
         await RequestContextService.run({sessionId}, async () => {
             await SDK.Memory_Service.addMemory({
-                prompt  : 'resume validation prompt',
-                response: 'resume validation response',
-                thought : 'resume validation thought'
+                prompt         : 'resume validation prompt',
+                response       : 'resume validation response',
+                decisionContext: 'resume validation thought'
             });
         });
 
@@ -642,9 +642,9 @@ test.describe('SessionService validateSessionForResume (#10725)', () => {
         // Plant a memory so the resumable path has a non-zero count + last activity.
         await RequestContextService.run({sessionId}, async () => {
             await SDK.Memory_Service.addMemory({
-                prompt  : 'expired-lease prompt',
-                response: 'expired-lease response',
-                thought : 'expired-lease thought'
+                prompt         : 'expired-lease prompt',
+                response       : 'expired-lease response',
+                decisionContext: 'expired-lease thought'
             });
         });
 

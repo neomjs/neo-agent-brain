@@ -365,9 +365,9 @@ test.describe('Neo.ai.services.memory-core.TurnPresenceService', () => {
         }));
 
         const result = await asAgent(() => MemoryService.addMemory({
-            prompt  : 'turn-presence prompt',
-            thought : 'turn-presence thought',
-            response: 'turn-presence response'
+            prompt         : 'turn-presence prompt',
+            decisionContext: 'turn-presence thought',
+            response       : 'turn-presence response'
         }));
 
         expect(result.message).toBe(MEMORY_ACCEPTED_MESSAGE);

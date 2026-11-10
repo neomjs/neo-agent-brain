@@ -42,13 +42,13 @@ export const WITNESS_READ_LIMIT = 20;
  * @param {String} options.runId
  * @param {String} options.planeId
  * @param {String} options.marker
- * @returns {{prompt: String, thought: String, response: String}}
+ * @returns {{prompt: String, decisionContext: String, response: String}}
  */
 export function witnessContent({runId, planeId, marker}) {
     return {
-        prompt  : `first-run witness · run ${runId} · plane ${planeId} · marker ${marker}`,
-        thought : 'The setup wizard writes one memory through the served plane to witness that the plane it provisioned persists and recalls; the marker binds this row to one consented attempt of one run.',
-        response: `witness ${marker}: written through the served plane under the run it names`
+        prompt         : `first-run witness · run ${runId} · plane ${planeId} · marker ${marker}`,
+        decisionContext: 'The setup wizard writes one memory through the served plane to witness that the plane it provisioned persists and recalls; the marker binds this row to one consented attempt of one run.',
+        response       : `witness ${marker}: written through the served plane under the run it names`
     };
 }
 
@@ -59,7 +59,7 @@ export function witnessContent({runId, planeId, marker}) {
  * @returns {Boolean}
  */
 export function rowCarriesMarker(row, marker) {
-    return ['prompt', 'response', 'thought', 'summary', 'document'].some(field => typeof row?.[field] === 'string' && row[field].includes(marker));
+    return ['prompt', 'response', 'decisionContext', 'thought', 'summary', 'document'].some(field => typeof row?.[field] === 'string' && row[field].includes(marker));
 }
 
 /**

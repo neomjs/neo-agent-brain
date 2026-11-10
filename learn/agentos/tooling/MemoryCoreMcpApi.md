@@ -63,7 +63,7 @@ The server exposes the following tools, which are derived from its OpenAPI speci
 | **Diagnostics** | |
 | `get_sandman_handoff` | Reads the Sandman handoff (Dream Pipeline morning surface) with freshness metadata (`stale` flag past the window, overridable per call). Defaults to `sections: ['goldenPath']` (`sections.goldenPath` + `availableSections` / `missingSections`); pass `sections: 'all'` for full `content` or specific section slugs (`gaps`, `consolidation`, `goldenPath`, `focus`). A missing file returns an explicit null-reason payload. Serves remote/container agents without a repo checkout. |
 | **Memories** | |
-| `add_memory` | Writes an authored diary entry for future sessions using the existing prompt, thought and response fields. |
+| `add_memory` | Writes a turn diary entry for future sessions using the `prompt`, `decisionContext` and `response` fields. |
 | `get_session_memories` | Retrieves all memories for a specific session, in chronological order. |
 | `query_raw_memories` | Performs semantic search across all raw memories using vector similarity. |
 | **Summaries** | |
@@ -91,19 +91,18 @@ Confirms server health and database connectivity. This tool takes no parameters.
 ### Memory Tools
 
 #### `add_memory`
-Write a newly authored diary entry for future sessions. The reader should be able to recover the
-task's intent, understand a consequential choice and its deciding reason, distinguish evidence from
-proposals or uncertainty, and continue when the relevant conditions still hold.
+Write a concise turn diary entry for future sessions in the factual register of a commit message or
+decision record. The reader should be able to recover the task's intent, understand a consequential
+choice and its deciding fact, and continue when the relevant conditions still hold.
 
-Choose what matters and write in your own voice. Preserve useful alternatives, lessons or corrections,
-and conditions for revisiting a choice when relevant. Link detailed receipts by stable artifact
-references. A routine turn can have a short entry; no fixed length or compulsory decision checklist
-is required. The tool's field names, validation, write behavior, session binding and privacy contract
-remain the same. Save cadence follows the existing caller protocol.
+State only decisions, deciding facts, and artifact references — never write a first-person account
+of how you reasoned. A routine turn needs only a sentence or two. If a provider stop ever rejects an
+entry, do not retry that entry in another wording; save only the ticket/PR IDs and outcomes and
+inform the operator.
 
 **Parameters**:
 - `prompt` (string, required): Summarized task context, intended outcome and constraints.
-- `thought` (string, required): An authored retrospective of decisions, deciding evidence or tradeoffs, lessons and uncertainty.
+- `decisionContext` (string, required): Decisions made in the turn, each paired with its deciding fact or source reference, plus what stays open — written in the concise register of a commit message or decision record.
 - `response` (string, required): Outcomes, artifact references and continuation.
 - `sessionId` (string, optional): The session ID; when omitted, the existing request-bound `Mcp-Session-Id` header is used when present, otherwise the process's current session is used.
 
@@ -115,7 +114,7 @@ at `03e403dff85b1f3a78ed9ba56be7ab10b8672739`. Its state is the author's 2026-10
 ```json
 {
   "prompt": "Separate maintainer releases from Dependabot maintenance while retaining validation and human-only merges.",
-  "thought": "I chose the exact merged PR's author to classify a release. A human can merge Dependabot, so checking the workflow actor would misclassify the same bot change. Skipping only the pre-merge version check was also insufficient: the post-merge publisher would still run. The version and origin contracts passed, including a human-merged bot control; the actual Acorn8.19 manifests passed a separate source-suite control. These receipts establish source behavior, not the deployed publish exclusion. Revisit if GitHub's author or commit-association contract changes.",
+  "decisionContext": "Classify releases by merged PR author rather than workflow actor so human merges of Dependabot PRs skip npm publish (neomjs/neo-agent-skills#149 @ 03e403d). Open: observe deployed skip after merge; revisit if GitHub's author contract changes.",
   "response": "Policy PR149 at 03e403d had green CI and awaited cross-family review. Its code and evidence are at https://github.com/neomjs/neo-agent-skills/pull/149. After human merge, rebase PR147, require fresh hosted CI and observe its merge skipping publication and tagging; the same policy must still publish maintainer releases."
 }
 ```
@@ -130,7 +129,7 @@ This is a historical routing entry from 2026-10-09, before the replacement revie
 ```json
 {
   "prompt": "Reroute the review of https://github.com/neomjs/neo-agent-skills/pull/149 after its reviewer released the seat.",
-  "thought": "The previous reviewer reported that no review was posted, which live GitHub confirmed. I retained head 03e403dff85b1f3a78ed9ba56be7ab10b8672739 and requested one replacement reviewer; no code change or new design analysis was needed.",
+  "decisionContext": "Previous reviewer reported no review posted (confirmed on GitHub); retained head 03e403dff85b1f3a78ed9ba56be7ab10b8672739 and requested one replacement reviewer.",
   "response": "The sole requested reviewer is @neo-fable-clio. PR149 at that unchanged head remains CI green and awaits the review, then a human merge. Recheck the live PR before acting on this dated entry."
 }
 ```
@@ -140,7 +139,7 @@ state that must be checked live. It does not invent alternative designs for a me
 
 **Migration from retired CLI**:
 - **Old way**: retired shell memory script with prompt flags.
-- **New way**: `call_tool('add_memory', {prompt: "...", thought: "...", ...})`
+- **New way**: `call_tool('add_memory', {prompt: "...", decisionContext: "...", response: "..."})`
 
 #### `get_session_memories`
 Retrieves all memories for a specific session.
