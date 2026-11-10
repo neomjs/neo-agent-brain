@@ -71,7 +71,8 @@ export function unofferedDeclaration(catalog, {model, reasoningEffort} = {}) {
  * @param {Object}   options
  * @param {Object}   options.agent            The seat's record
  * @param {String}   options.instanceRoot     The harness-home root
- * @param {Object}   options.lifecycleService Supplies the harness binaries and the per-home login check
+ * @param {Object}   options.lifecycleService Supplies the harness binaries, the selected harness generation and the
+ *                                            per-home login check
  * @param {Function} [options.readCodex]      Codex catalog seam
  * @param {Function} [options.runHelp]        `claude-code` help seam
  * @returns {Promise<Object>} `{state: 'complete'|'partial'|'unavailable'|'unsupported', models, efforts?, reason}`
@@ -98,5 +99,8 @@ export async function readSeatModelCatalog({agent, instanceRoot, lifecycleServic
         return {state: 'unavailable', models: [], reason: 'the seat has no Codex login yet; its catalog is read once it has one'}
     }
 
-    return readCodex({binaryPath: lifecycleService.getHarnessBinaryPath('codex'), codexHome})
+    // a family that starts from harness generations asks the CLI inside the generation its next Start launches
+    const generation = lifecycleService.selectedHarnessGeneration(agent.harnessType);
+
+    return readCodex({binaryPath: generation ? lifecycleService.harnessGenerationLaunch(agent.harnessType, generation).binaryPath : lifecycleService.getHarnessBinaryPath('codex'), codexHome})
 }

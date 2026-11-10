@@ -172,6 +172,26 @@ export function readHarnessGenerationLedger({root, family} = {}) {
 }
 
 /**
+ * @summary The family's admitted generations whose copy is present, newest admission first, each with
+ * the paths derived from the store root and its ledger entry. A seat that runs any of them is a seat
+ * of this family, whichever one is selected now.
+ * @param {Object} options
+ * @param {String} options.root Absolute store root.
+ * @param {String} options.family A key of {@link HARNESS_GENERATION_FAMILIES}.
+ * @returns {Array<{id: String, appBundle: String, binaryPath: String, shortVersion: String, buildVersion: String}>}
+ */
+export function listHarnessGenerations({root, family} = {}) {
+    const directory = familyDirectory(root, family);
+
+    return [...readLedger(directory).admitted].reverse().map(entry => {
+        const appBundle = path.join(directory, entry.id, entry.appName);
+
+        return {id: entry.id, appBundle, binaryPath: path.join(appBundle, 'Contents', 'MacOS', entry.executable),
+            shortVersion: entry.shortVersion, buildVersion: entry.buildVersion}
+    }).filter(generation => fs.existsSync(generation.binaryPath))
+}
+
+/**
  * @summary The family's selected generation: the most recently admitted build whose copy is present.
  * Re-admitting a known build never reorders the ledger, so an older bundle seen again (for example
  * the untouched `/Applications` copy) cannot displace a newer admitted one.
@@ -181,19 +201,7 @@ export function readHarnessGenerationLedger({root, family} = {}) {
  * @returns {{id: String, appBundle: String, binaryPath: String, shortVersion: String, buildVersion: String}|null}
  */
 export function selectHarnessGeneration({root, family} = {}) {
-    const directory = familyDirectory(root, family);
-
-    for (const entry of [...readLedger(directory).admitted].reverse()) {
-        const
-            appBundle  = path.join(directory, entry.id, entry.appName),
-            binaryPath = path.join(appBundle, 'Contents', 'MacOS', entry.executable);
-
-        if (fs.existsSync(binaryPath)) {
-            return {id: entry.id, appBundle, binaryPath, shortVersion: entry.shortVersion, buildVersion: entry.buildVersion}
-        }
-    }
-
-    return null
+    return listHarnessGenerations({root, family})[0] ?? null
 }
 
 /**

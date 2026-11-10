@@ -26,8 +26,8 @@ import McpLaunchAdmissionService                                                
 import {LAUNCH_ADMISSION_REASONS}                                                         from '../../../src/fleet/contract/launchAdmission.mjs';
 import {isOnInstance}                                                                     from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities}                       from './manageCodexDesktopRuntime.mjs';
-import {HARNESS_GENERATION_FAMILIES, materializeHarnessGeneration, readHarnessBundleInfo,
-        readHarnessGenerationLedger, selectHarnessGeneration}                              from './harnessGeneration.mjs';
+import {HARNESS_GENERATION_FAMILIES, listHarnessGenerations, materializeHarnessGeneration,
+        readHarnessBundleInfo, readHarnessGenerationLedger}                                from './harnessGeneration.mjs';
 import {GIT_IDENTITY_ENV, gitIdentityEnv}                                         from './seatGitIdentity.mjs';
 import {runtimeGenerationPin, readRuntimeGeneration, readRuntimeGenerationRecord} from './runtimeGeneration.mjs';
 import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences}    from './runtimeGenerationLease.mjs';
@@ -153,12 +153,12 @@ const HARNESS_BINARY_LEAF_KEYS = {
     'opencode'      : 'openCode'
 };
 
-// The harness-generation store calls an opted-in Start makes; `harnessGenerationStore` replaces them in specs.
+// The harness-generation store calls the lifecycle makes; `harnessGenerationStore` replaces them in specs.
 const HARNESS_GENERATION_STORE = Object.freeze({
+    list          : listHarnessGenerations,
     materialize   : materializeHarnessGeneration,
     readBundleInfo: readHarnessBundleInfo,
-    readLedger    : readHarnessGenerationLedger,
-    select        : selectHarnessGeneration
+    readLedger    : readHarnessGenerationLedger
 });
 
 /**
@@ -960,6 +960,12 @@ class FleetLifecycleService extends Base {
         const agent = this.getRegistry().getDefinition(id);
         if (!agent) throw new Error(`FleetLifecycleService.start: unknown agent '${id}'.`);
 
+        // A Start that brings no capability proof (no repository, or no remote MCP) launches an opted-in family's
+        // selected generation all the same, and refuses with the family when it holds none.
+        const generation = opts.remoteMcpCapability === undefined && !agent.metadata?.launch && this.selectedHarnessGeneration(agent.harnessType);
+
+        if (generation) opts = {...opts, remoteMcpCapability: this.harnessGenerationLaunch(agent.harnessType, generation)};
+
         const resolvedProcessEnvironment = Object.hasOwn(opts, 'resolvedProcessEnvironment')
             ? this.validateResolvedProcessEnvironment(opts.resolvedProcessEnvironment)
             : this.snapshotAmbientProcessEnvironment();
@@ -1747,6 +1753,8 @@ class FleetLifecycleService extends Base {
      *     declared model in its harness's catalog ({@link setSeatModel}); `null` before a start read one.
      *     `runtimeGeneration` carries the original Start's runtime and retention pin; missing original
      *     bindings are explicitly unknown, even when this Fleet has a newer installed runtime.
+     *     `harnessGeneration` is the vendor build the seat launched from (`{family, generationId, shortVersion,
+     *     buildVersion}`), `null` for a family that has not opted in; a later admission never changes it.
      *     `windowPlacement` carries the GUI seat's window restore disposition (`none | pending | kept | restored | refused | unsupported`),
      *     including macOS Accessibility / AppleEvents refusal reasons (`-25211`, `-1743`, `-10004`).
      */
@@ -1754,7 +1762,7 @@ class FleetLifecycleService extends Base {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, windowPlacement: null, repos: null, dependencies: this.dependenciesOf(id), sessionFolder: null, exitReason: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, windowPlacement: null, repos: null, dependencies: this.dependenciesOf(id), sessionFolder: null, exitReason: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null), harnessGeneration: null};
 
         this.refreshAdoptedSeat(record);
 
@@ -1798,6 +1806,7 @@ class FleetLifecycleService extends Base {
             seatModel        : this.seatModelOf(id),
             launchAdmission  : this.launchAdmissionOf(id, record),
             runtimeGeneration: this.runtimeGenerationOf(record),
+            harnessGeneration: record.harnessGeneration ? {...record.harnessGeneration} : null,
             windowPlacement  : record.windowPlacement ? structuredClone(record.windowPlacement) : null
         };
     }
@@ -2176,16 +2185,22 @@ class FleetLifecycleService extends Base {
         }
 
         // The seat can write its own lease, so the lease supplies only what nothing else knows: the
-        // pid, its start time, startedAt and the checkout. Commands, profile and homes derive from
-        // the registry and AiConfig exactly as `start` derives them.
+        // pid, its start time, startedAt, the checkout and a generation id. Commands, profile and homes
+        // derive from the registry and AiConfig exactly as `start` derives them, and a generation's
+        // binaries from this Fleet's own ledger entry for that id; an id it has not admitted voids the lease.
+        const
+            generationId = lease?.harnessGenerationId ?? null,
+            generation   = generationId === null ? null : this.harnessGenerationsOf(harnessType).find(({id}) => id === generationId) ?? null,
+            pinned       = generation && this.harnessGenerationLaunch(harnessType, generation);
+
         record.cwd       = typeof lease?.cwd === 'string' && path.isAbsolute(lease.cwd) ? lease.cwd : null;
         record.startedAt = typeof lease?.startedAt === 'string' && !Number.isNaN(Date.parse(lease.startedAt)) ? lease.startedAt : null;
 
         try {
-            launch = deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath: this.getHarnessBinaryPath(harnessType), cwd: record.cwd})
+            launch = deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath: pinned ? pinned.launchBinaryPath : this.getHarnessBinaryPath(harnessType), cwd: record.cwd})
         } catch {}
 
-        if (!launch || lease?.agentId !== agent.id || !Number.isInteger(lease.pid) || typeof lease.pidStartedAt !== 'string') {
+        if (!launch || (generationId !== null && !pinned) || lease?.agentId !== agent.id || !Number.isInteger(lease.pid) || typeof lease.pidStartedAt !== 'string') {
             this.removeSeatLease(record);
             this.processes.set(agent.id, {...record, state: 'stopped', failureReason: 'the seat lease is invalid'});
             return
@@ -2214,7 +2229,8 @@ class FleetLifecycleService extends Base {
             adopted           : true,
             state             : 'running',
             authHome          : launch.authHome ?? (HARNESS_AUTH_MARKERS[harnessType] ? instanceHome : null),
-            authCommand       : harnessType === 'codex-desktop' ? this.resolveExecutable(this.getHarnessBinaryPath('codex'), process.env.PATH, record.cwd) : null,
+            authCommand       : harnessType === 'codex-desktop' ? this.resolveExecutable(pinned ? pinned.binaryPath : this.getHarnessBinaryPath('codex'), process.env.PATH, record.cwd) : null,
+            harnessGeneration : pinned ? pinned.harnessGeneration : null,
             electronProfile   : launch.electronProfile ?? null,
             crashpadExecutable: harnessType === 'codex-desktop' ? this.probeCrashpadExecutable(record.launchCommand) : null,
             binaryVersion     : null,
@@ -2248,7 +2264,7 @@ class FleetLifecycleService extends Base {
     /**
      * @summary Lease a surviving seat's pid in its harness home, with the facts only this spawn knows:
      * the pid and its start time (without which a later server cannot tell the seat from a reused
-     * pid), startedAt and the checkout.
+     * pid), startedAt, the checkout and the id of the harness generation it launched from.
      * @param {Object} record Fresh lifecycle record of an app-bundle seat.
      * @returns {String|null} why the seat could not be leased, or `null` once the lease is written.
      * @private
@@ -2268,7 +2284,8 @@ class FleetLifecycleService extends Base {
                 pid        : record.pid,
                 pidStartedAt,
                 startedAt  : record.startedAt,
-                cwd        : record.cwd
+                cwd        : record.cwd,
+                ...(record.harnessGeneration && {harnessGenerationId: record.harnessGeneration.generationId})
             }, null, 4), {mode: 0o600, fsync: true});
             record.pidStartedAt = pidStartedAt;
             return null
@@ -2698,22 +2715,28 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * @summary Whether a process runs a Claude Desktop or Antigravity seat's profile: the seat's launch
-     * binary with its own `--user-data-dir` as a whole word, the proof the lease uses ({@link probeSeat}).
-     * Helpers carry the argument too, but not the binary, so they do not count. Start rewrites the profile's MCP rows
-     * only when this answers `false`.
+     * @summary Whether a process runs a Claude Desktop or Antigravity seat's profile: a launch binary of the seat
+     * (the configured one or any admitted generation's) with its own `--user-data-dir` as a whole word, the proof
+     * the lease uses ({@link probeSeat}). Helpers carry the argument too, but not the binary, so they do not count.
+     * Start rewrites the profile's MCP rows only when this answers `false`.
      * @param {Object} agent Raw registry definition of a Desktop seat.
      * @returns {Boolean|null} `null` when the process table cannot be read.
      */
     desktopProfileInUse(agent) {
         const
-            instanceHome  = deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: agent.id, harnessType: agent.harnessType}),
-            launch        = deriveHarnessLaunchSpec({harnessType: agent.harnessType, instanceHome, binaryPath: this.getHarnessBinaryPath(agent.harnessType)}),
-            launchCommand = this.resolveExecutable(launch.command, process.env.PATH),
-            seat          = {launchCommand, launchInterpreter: readShebangLine(launchCommand), profileArg: launch.args.find(arg => arg.startsWith('--user-data-dir=')) ?? null},
+            {harnessType} = agent,
+            instanceHome  = deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: agent.id, harnessType}),
+            binaries      = [this.getHarnessBinaryPath(harnessType), ...this.harnessGenerationsOf(harnessType).map(({binaryPath}) => binaryPath)],
+            seats         = binaries.map(binaryPath => {
+                const
+                    launch        = deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath}),
+                    launchCommand = this.resolveExecutable(launch.command, process.env.PATH);
+
+                return {launchCommand, launchInterpreter: readShebangLine(launchCommand), profileArg: launch.args.find(arg => arg.startsWith('--user-data-dir=')) ?? null}
+            }),
             commands      = (this.processListFn || listProcessCommands)();
 
-        return Array.isArray(commands) ? commands.some(command => runsSeatLaunch(command, seat)) : null
+        return Array.isArray(commands) ? commands.some(command => seats.some(seat => runsSeatLaunch(command, seat))) : null
     }
 
     /** @returns {Function} process inspection behind the seat lease. @private */
@@ -3439,23 +3462,86 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * @summary The admitted generation an opted-in GUI family starts its seats from, or `null` when the
-     * family has not opted in. The installed build, the `.app` around the family's `harnessBinaries` path,
-     * goes through admission first when the family's ledger has not admitted its version and this process
-     * has not tried it. An opted-in Start never falls back to the installed bundle.
+     * @summary Whether a GUI family starts its seats from admitted harness generations: its
+     * `fleet.harnessGenerations` leaf, unless `harnessGenerationOptIns` overrides it.
      * @param {String} harnessType
-     * @returns {Promise<Object|null>} `{family, id, appBundle, binaryPath, shortVersion, buildVersion}`.
+     * @returns {Boolean}
+     * @private
+     */
+    harnessGenerationsOptedIn(harnessType) {
+        return Object.hasOwn(HARNESS_GENERATION_FAMILIES, harnessType) &&
+            (this.harnessGenerationOptIns?.[harnessType] ?? AiConfig.fleet.harnessGenerations[HARNESS_BINARY_LEAF_KEYS[harnessType]]) === true
+    }
+
+    /**
+     * @summary The harness-generation store calls: the injected seam, else the engine's.
+     * @returns {Object}
+     * @private
+     */
+    getHarnessGenerationStore() {
+        return this.harnessGenerationStore || HARNESS_GENERATION_STORE;
+    }
+
+    /**
+     * @summary The harness-generation store root: the override, else the `fleet.harnessGenerations.root` leaf.
+     * @returns {String}
+     * @private
+     */
+    getHarnessGenerationRoot() {
+        return this.harnessGenerationRoot || AiConfig.fleet.harnessGenerations.root;
+    }
+
+    /**
+     * @summary A GUI family's admitted generations whose copy is present, newest first, whether or not the
+     * family opts in now: a seat started while it did still runs from one. Empty for every other family.
+     * @param {String} harnessType
+     * @returns {Object[]} `{family, id, appBundle, binaryPath, shortVersion, buildVersion}` each.
+     * @private
+     */
+    harnessGenerationsOf(harnessType) {
+        if (!Object.hasOwn(HARNESS_GENERATION_FAMILIES, harnessType)) return [];
+
+        return this.getHarnessGenerationStore().list({root: this.getHarnessGenerationRoot(), family: harnessType})
+            .map(generation => ({family: harnessType, ...generation}))
+    }
+
+    /**
+     * @summary The generation an opted-in family's next Start launches, admitting nothing: its newest admitted
+     * generation, or `null` when the family has not opted in. A Start reaches it through
+     * {@link resolveHarnessGeneration}, which admits a new installed build first.
+     * @param {String} harnessType
+     * @returns {Object|null} One of {@link harnessGenerationsOf}.
      * @throws {Error} When the family opted in and holds no admitted generation; names its latest rejection.
      */
-    async resolveHarnessGeneration(harnessType) {
-        if (!Object.hasOwn(HARNESS_GENERATION_FAMILIES, harnessType) ||
-            !(this.harnessGenerationOptIns?.[harnessType] ?? AiConfig.fleet.harnessGenerations[HARNESS_BINARY_LEAF_KEYS[harnessType]])) {
-            return null
+    selectedHarnessGeneration(harnessType) {
+        if (!this.harnessGenerationsOptedIn(harnessType)) return null;
+
+        const [selected] = this.harnessGenerationsOf(harnessType);
+
+        if (!selected) {
+            const latest = this.getHarnessGenerationStore().readLedger({root: this.getHarnessGenerationRoot(), family: harnessType}).rejected.at(-1);
+
+            throw new Error(`FleetLifecycleService: '${harnessType}' starts from admitted harness generations and has none` +
+                `${latest ? `; the latest rejection: ${latest.reason}` : ''}.`)
         }
 
+        return selected
+    }
+
+    /**
+     * @summary {@link selectedHarnessGeneration} after admission. The installed build, the `.app` around the
+     * family's `harnessBinaries` path, goes through admission first when the family's ledger has not admitted
+     * its version and this process has not tried it. An opted-in Start never falls back to the installed bundle.
+     * @param {String} harnessType
+     * @returns {Promise<Object|null>}
+     * @throws {Error} As {@link selectedHarnessGeneration}.
+     */
+    async resolveHarnessGeneration(harnessType) {
+        if (!this.harnessGenerationsOptedIn(harnessType)) return null;
+
         const
-            store     = this.harnessGenerationStore || HARNESS_GENERATION_STORE,
-            root      = this.harnessGenerationRoot || AiConfig.fleet.harnessGenerations.root,
+            store     = this.getHarnessGenerationStore(),
+            root      = this.getHarnessGenerationRoot(),
             installed = appBundleOf(this.getHarnessBinaryPath(harnessType));
 
         if (installed && fs.existsSync(installed)) {
@@ -3471,23 +3557,32 @@ class FleetLifecycleService extends Base {
             await this.harnessGenerationAttempts.get(attempt)
         }
 
-        const selected = store.select({root, family: harnessType});
+        return this.selectedHarnessGeneration(harnessType)
+    }
 
-        if (!selected) {
-            const latest = store.readLedger({root, family: harnessType}).rejected.at(-1);
-
-            throw new Error(`FleetLifecycleService: '${harnessType}' starts from admitted harness generations and has none` +
-                `${latest ? `; the latest rejection: ${latest.reason}` : ''}.`)
+    /**
+     * @summary The binaries a seat launched from a generation runs, in the shape of a capability proof: the
+     * generation's main binary, the bundled Codex CLI from the same copy for Codex Desktop (the main binary
+     * for every other family), and the pin its lifecycle record carries.
+     * @param {String} harnessType
+     * @param {Object} generation One of {@link harnessGenerationsOf}.
+     * @returns {{harnessType: String, binaryPath: String, launchBinaryPath: String, harnessGeneration: Object}}
+     *     `harnessGeneration` is `{family, generationId, shortVersion, buildVersion}`.
+     */
+    harnessGenerationLaunch(harnessType, generation) {
+        return {
+            harnessType,
+            binaryPath       : harnessType === 'codex-desktop' ? this.harnessGenerationBinaryPath(generation, 'codex') : generation.binaryPath,
+            launchBinaryPath : generation.binaryPath,
+            harnessGeneration: {family: harnessType, generationId: generation.id, shortVersion: generation.shortVersion, buildVersion: generation.buildVersion}
         }
-
-        return {family: harnessType, ...selected}
     }
 
     /**
      * @summary A family binary inside an admitted generation: the path the configured binary has inside the
      * installed `.app`, re-rooted at the generation's copy. This is how a Codex Desktop seat's app and its
      * bundled CLI come from one build.
-     * @param {Object} generation {@link resolveHarnessGeneration}'s result.
+     * @param {Object} generation One of {@link harnessGenerationsOf}.
      * @param {String} binaryFamily The family whose `harnessBinaries` path is re-rooted (`codex` for the CLI).
      * @returns {String}
      * @throws {Error} When that configured binary lies outside the installed bundle.
@@ -3528,12 +3623,11 @@ class FleetLifecycleService extends Base {
         const
             {harnessType, id} = agent,
             generation        = await this.resolveHarnessGeneration(harnessType),
-            pin               = generation && {family: generation.family, generationId: generation.id,
-                shortVersion: generation.shortVersion, buildVersion: generation.buildVersion},
+            pinned            = generation && this.harnessGenerationLaunch(harnessType, generation),
             binaryFamily      = harnessType === 'codex-desktop' ? 'codex' : harnessType,
-            configured        = generation ? this.harnessGenerationBinaryPath(generation, binaryFamily) : this.getHarnessBinaryPath(binaryFamily),
+            configured        = pinned ? pinned.binaryPath : this.getHarnessBinaryPath(binaryFamily),
             binaryPath        = configured && this.resolveExecutable(configured, process.env.PATH),
-            configuredLaunch  = generation ? generation.binaryPath : this.getHarnessBinaryPath(harnessType),
+            configuredLaunch  = pinned ? pinned.launchBinaryPath : this.getHarnessBinaryPath(harnessType),
             launchBinaryPath  = configuredLaunch && this.resolveExecutable(configuredLaunch, process.env.PATH);
 
         if (!binaryPath) {
@@ -3543,7 +3637,7 @@ class FleetLifecycleService extends Base {
             throw new Error(`FleetLifecycleService.assertRemoteMcpCapability: launch binary '${configuredLaunch || harnessType}' is unavailable for agent '${id}'.`)
         }
 
-        const proof = pin ? {harnessType, binaryPath, launchBinaryPath, harnessGeneration: pin} : {harnessType, binaryPath, launchBinaryPath};
+        const proof = pinned ? {harnessType, binaryPath, launchBinaryPath, harnessGeneration: pinned.harnessGeneration} : {harnessType, binaryPath, launchBinaryPath};
 
         if (harnessType === 'claude-desktop') return proof;
 
@@ -3584,7 +3678,9 @@ class FleetLifecycleService extends Base {
     /**
      * @summary Resolve one curated Antigravity Start against a copied benign environment and the
      * installed-runtime fingerprint that has native workspace-MCP evidence. No path, profile, or
-     * global config is written here; unsupported or unidentifiable builds refuse before Start.
+     * global config is written here; unsupported or unidentifiable builds refuse before Start. When
+     * Antigravity opted in to harness generations, the build is its selected generation and the
+     * capability carries the pin as `harnessGeneration`.
      * @param {Object} agent Raw registry definition.
      * @returns {Promise<Object>} `{capability, processEnvironment, registryDirectory}` with no credentials.
      */
@@ -3601,7 +3697,9 @@ class FleetLifecycleService extends Base {
         }
 
         const
-            configuredBinary = this.getHarnessBinaryPath('antigravity'),
+            generation       = await this.resolveHarnessGeneration('antigravity'),
+            pinned           = generation && this.harnessGenerationLaunch('antigravity', generation),
+            configuredBinary = pinned ? pinned.launchBinaryPath : this.getHarnessBinaryPath('antigravity'),
             launchBinaryPath = configuredBinary && this.resolveExecutable(configuredBinary, processEnvironment.PATH);
 
         if (!launchBinaryPath) {
@@ -3618,7 +3716,8 @@ class FleetLifecycleService extends Base {
             harnessType: 'antigravity',
             binaryPath : launchBinaryPath,
             launchBinaryPath,
-            nativeRuntime
+            nativeRuntime,
+            ...(pinned && {harnessGeneration: pinned.harnessGeneration})
         };
 
         return {
@@ -3646,12 +3745,14 @@ class FleetLifecycleService extends Base {
         }
 
         const
-            configuredBinary = this.getHarnessBinaryPath('antigravity'),
+            generation       = this.selectedHarnessGeneration('antigravity'),
+            configuredBinary = generation ? generation.binaryPath : this.getHarnessBinaryPath('antigravity'),
             selectedBinary   = configuredBinary && this.resolveExecutable(configuredBinary, environment.PATH),
             capability       = context.capability;
 
         if (!selectedBinary || capability?.harnessType !== 'antigravity' ||
             capability.binaryPath !== selectedBinary || capability.launchBinaryPath !== selectedBinary ||
+            (capability.harnessGeneration?.generationId ?? null) !== (generation?.id ?? null) ||
             capability.nativeRuntime?.available !== true ||
             context.registryDirectory !== path.join(environment.HOME, '.gemini', 'config', 'projects')) {
             throw new Error('FleetLifecycleService.assertRemoteMcpCapability: the Antigravity runtime proof does not match its selected binary and profile context.')

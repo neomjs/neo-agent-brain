@@ -132,6 +132,7 @@ function makeLifecycle({
             }
         },
         getInstanceRoot          : () => '/instances',
+        resolveHarnessGeneration : async () => null,
         // the default catalog read answers without a harness: no seat home here has a Codex login, and no CLI is there
         authRequiredForHome      : () => true,
         getHarnessBinaryPath     : harnessType => `/nonexistent/${harnessType}`,

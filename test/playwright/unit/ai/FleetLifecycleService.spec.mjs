@@ -204,7 +204,8 @@ function testSeams({spawnStub, registry} = {}) {
         instanceRoot                 : null,
         harnessBinaryPaths           : null,
         harnessGenerationOptIns      : null,
-        harnessGenerationRoot        : null,
+        // a store no host holds: the profile check reads the ledger of every Desktop family
+        harnessGenerationRoot        : '/nonexistent/fleet-spec-harness-generations',
         harnessGenerationStore       : null,
         harnessGenerationAttempts    : new Map(),
         codexDesktopCapabilityProbeFn: null,
@@ -2081,11 +2082,11 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
                 ledger.admitted.push({id, appName: 'ChatGPT.app', executable: 'ChatGPT', shortVersion: '26.1103', buildVersion: '25894'});
                 return {admitted: true, id}
             },
-            select        : ({root: at, family}) => {
-                const entry = ledger.admitted.at(-1), appBundle = entry && path.join(at, family, entry.id, entry.appName);
-                return entry ? {id: entry.id, appBundle, binaryPath: path.join(appBundle, 'Contents', 'MacOS', entry.executable),
-                    shortVersion: entry.shortVersion, buildVersion: entry.buildVersion} : null
-            }
+            list          : ({root: at, family}) => [...ledger.admitted].reverse().map(entry => {
+                const appBundle = path.join(at, family, entry.id, entry.appName);
+                return {id: entry.id, appBundle, binaryPath: path.join(appBundle, 'Contents', 'MacOS', entry.executable),
+                    shortVersion: entry.shortVersion, buildVersion: entry.buildVersion}
+            })
         };
         FleetLifecycleService.execFileFn = (command, args, opts, callback) => callback(null, 'Usage: mcp add --url <URL> --bearer-token-env-var <ENV>', '');
 
@@ -2142,6 +2143,40 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
                     .rejects.toThrow("'codex-desktop' starts from admitted harness generations and has none; the latest rejection: probe-refused:updater-disable-predicate-missing.")
             }
             expect(calls.filter(([call]) => call === 'materialize'), 'a rejected build is tried once per Fleet process').toHaveLength(1)
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
+    test('an opted-in Antigravity context proves the selected generation and carries its pin; one without the pin does not validate', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-antigravity-'));
+        install({agents: {seat: agentDef('seat', {harnessType: 'antigravity', metadata: {}})}});
+        try {
+            const
+                appBundle = path.join(root, 'antigravity', 'a'.repeat(64), 'Antigravity.app'),
+                binary    = path.join(appBundle, 'Contents', 'MacOS', 'Electron');
+
+            fs.mkdirSync(path.dirname(binary), {recursive: true});
+            fs.symlinkSync(process.execPath, binary);
+            FleetLifecycleService.harnessBinaryPaths        = {antigravity: process.execPath};
+            FleetLifecycleService.harnessGenerationOptIns   = {antigravity: true};
+            FleetLifecycleService.harnessGenerationRoot     = root;
+            FleetLifecycleService.harnessGenerationStore    = {
+                list      : () => [{id: 'a'.repeat(64), appBundle, binaryPath: binary, shortVersion: '1.23', buildVersion: '1.23.0'}],
+                readLedger: () => ({version: 1, admitted: [], rejected: []})
+            };
+            FleetLifecycleService.antigravityRuntimeProbeFn = async () => ({available: true, reason: null, fingerprints: {}});
+
+            const
+                agent   = FleetLifecycleService.getRegistry().getDefinition('seat'),
+                context = await FleetLifecycleService.resolveAntigravityStartContext(agent),
+                {harnessGeneration, ...unpinned} = context.capability;
+
+            expect(context.capability).toMatchObject({binaryPath: binary, launchBinaryPath: binary});
+            expect(harnessGeneration).toEqual({family: 'antigravity', generationId: 'a'.repeat(64), shortVersion: '1.23', buildVersion: '1.23.0'});
+            await expect(FleetLifecycleService.assertRemoteMcpCapability(agent, {antigravityStartContext: context})).resolves.toBe(context.capability);
+            await expect(FleetLifecycleService.assertRemoteMcpCapability(agent, {antigravityStartContext: {...context, capability: unpinned}}))
+                .rejects.toThrow('the Antigravity runtime proof does not match its selected binary and profile context')
         } finally {
             fs.rmSync(root, {recursive: true, force: true})
         }
@@ -3437,6 +3472,83 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
 
             expect(FleetLifecycleService.status('seat'), name).toMatchObject({state: 'stopped', adopted: false, failureReason: 'the seat lease is invalid'});
             expect(fs.existsSync(path.join(home, LEASE_FILE)), name).toBe(false)
+        }
+    });
+
+    /** A store double over real executable Claude Desktop copies under the seat's agents root, listed newest first. */
+    function claudeGenerationCopies() {
+        const root = path.join(FleetLifecycleService.instanceRoot, 'harnesses'), generations = [];
+
+        FleetLifecycleService.harnessGenerationRoot  = root;
+        FleetLifecycleService.harnessGenerationStore = {
+            list      : ({family}) => family === 'claude-desktop' ? [...generations].reverse() : [],
+            readLedger: () => ({version: 1, admitted: [], rejected: []})
+        };
+
+        return {
+            admit(id, buildVersion = '1') {
+                const appBundle = path.join(root, 'claude-desktop', id, 'Claude.app'), binaryPath = path.join(appBundle, 'Contents', 'MacOS', 'Claude');
+
+                fs.mkdirSync(path.dirname(binaryPath), {recursive: true});
+                fs.symlinkSync(process.execPath, binaryPath);
+                generations.push({id, appBundle, binaryPath, shortVersion: '1.0', buildVersion});
+                return binaryPath
+            }
+        }
+    }
+
+    const claudePin = (id, buildVersion = '1') => ({family: 'claude-desktop', generationId: id, shortVersion: '1.0', buildVersion});
+
+    test('a Start from a harness generation launches it and pins it in the status and the lease; a later admission never re-pins the running seat', () => {
+        const {spawn, home} = installSeat('claude-desktop'), copies = claudeGenerationCopies(), first = copies.admit('a'.repeat(64));
+
+        FleetLifecycleService.harnessGenerationOptIns = {'claude-desktop': true};
+        FleetLifecycleService.processInspectFn        = () => ({startedAt: STARTED_AT, command: `${first} --user-data-dir=${home}`});
+        FleetLifecycleService.start('seat', {cwd: CHECKOUT});
+
+        expect(spawn.calls[0].command).toBe(first);
+        expect(FleetLifecycleService.status('seat').harnessGeneration).toEqual(claudePin('a'.repeat(64)));
+        expect(JSON.parse(fs.readFileSync(path.join(home, LEASE_FILE), 'utf8')).harnessGenerationId).toBe('a'.repeat(64));
+
+        copies.admit('b'.repeat(64), '2');
+
+        expect(FleetLifecycleService.status('seat').harnessGeneration, 'the seat keeps the build it launched from').toEqual(claudePin('a'.repeat(64)))
+    });
+
+    test('an opted-in Start that brings no proof and finds no admitted generation refuses by name and spawns nothing', () => {
+        const {spawn} = installSeat('claude-desktop');
+
+        claudeGenerationCopies();
+        FleetLifecycleService.harnessGenerationOptIns = {'claude-desktop': true};
+
+        expect(() => FleetLifecycleService.start('seat', {cwd: CHECKOUT})).toThrow("'claude-desktop' starts from admitted harness generations and has none.");
+        expect(spawn.calls).toEqual([])
+    });
+
+    test('a fresh Fleet server re-adopts a seat running from its leased generation, opted in or not; an id the ledger has not admitted voids the lease', () => {
+        for (const [name, leasedId] of [['admitted', 'a'.repeat(64)], ['unknown', 'c'.repeat(64)]]) {
+            const {home, profile} = installSeat('claude-desktop'), binary = claudeGenerationCopies().admit('a'.repeat(64));
+
+            writeLease(home, {harnessGenerationId: leasedId});
+            stubProcessTable({4242: {alive: true, startedAt: STARTED_AT, command: `${binary} --user-data-dir=${profile}`}});
+
+            expect(FleetLifecycleService.status('seat'), name).toMatchObject(name === 'admitted'
+                ? {state: 'running', adopted: true, launchCommand: binary, harnessGeneration: claudePin(leasedId)}
+                : {state: 'stopped', adopted: false, failureReason: 'the seat lease is invalid'})
+        }
+    });
+
+    test('a Desktop profile is in use when the configured binary or any admitted generation of the family runs it', () => {
+        const {home} = installSeat('claude-desktop'), agent = FleetLifecycleService.registry.getDefinition('seat'), binary = claudeGenerationCopies().admit('a'.repeat(64));
+
+        for (const [lines, expected] of [
+            [[`${binary} --user-data-dir=${home}`], true],
+            [[`${process.execPath} --user-data-dir=${home}`], true],
+            [[`${binary} --user-data-dir=${home}-other`], false]
+        ]) {
+            FleetLifecycleService.processListFn = () => lines;
+
+            expect(FleetLifecycleService.desktopProfileInUse(agent), JSON.stringify(lines)).toBe(expected)
         }
     });
 

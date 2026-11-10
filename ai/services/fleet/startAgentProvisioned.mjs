@@ -383,6 +383,11 @@ async function provisionAgent({
         throw new Error(`startAgentProvisioned: 'agentosRuntimeRoot' must be an absolute path for agent '${agentId}'.`)
     }
 
+    // A family that starts from harness generations admits a new installed build here, before anything reads the
+    // harness (the catalog, the capability proof) or touches the checkout; one with no admitted build refuses here.
+    await lifecycleService.resolveHarnessGeneration(agent.harnessType);
+    startSignal.throwIfAborted();
+
     // Resolve Antigravity's selected native build, profile environment, and registry before credential reads or
     // checkout effects. The profile probe remains a closed-seat gate below, before any managed file is touched.
     let antigravityStartContext = null;

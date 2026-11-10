@@ -13,13 +13,15 @@ const CLAUDE_HELP = [
  * @summary A lifecycle stand-in: the binaries it would resolve, and a login check that records the homes it was
  * asked about.
  */
-function makeLifecycle({loggedIn = true} = {}) {
+function makeLifecycle({loggedIn = true, generation = null} = {}) {
     const homes = [];
 
     return {
         homes,
-        authRequiredForHome : (harnessType, home) => { homes.push(home); return !loggedIn },
-        getHarnessBinaryPath: harnessType => `/bin/${harnessType}`
+        authRequiredForHome      : (harnessType, home) => { homes.push(home); return !loggedIn },
+        getHarnessBinaryPath     : harnessType => `/bin/${harnessType}`,
+        selectedHarnessGeneration: () => generation,
+        harnessGenerationLaunch  : (harnessType, selected) => ({binaryPath: path.join(selected.appBundle, 'Contents', 'Resources', 'codex')})
     }
 }
 
@@ -38,6 +40,19 @@ test.describe('seatModelCatalog — what a seat\'s harness offers to declare', (
         expect(catalog.state).toBe('complete');
         expect(asked).toEqual([{binaryPath: '/bin/codex', codexHome: path.join('/agents', 'sophie', 'harness', 'codex-desktop', 'codex-home')}]);
         expect(lifecycle.homes).toEqual([asked[0].codexHome]);
+    });
+
+    test('a Codex Desktop family that starts from harness generations asks the CLI inside the selected generation', async () => {
+        const asked = [];
+
+        await readSeatModelCatalog({
+            agent           : {id: 'sophie', harnessType: 'codex-desktop'},
+            instanceRoot    : '/agents',
+            lifecycleService: makeLifecycle({generation: {appBundle: '/harnesses/codex-desktop/g1/ChatGPT.app'}}),
+            readCodex       : options => { asked.push(options.binaryPath); return {state: 'complete', models: [], reason: null} }
+        });
+
+        expect(asked).toEqual(['/harnesses/codex-desktop/g1/ChatGPT.app/Contents/Resources/codex']);
     });
 
     test('a Codex home without a login answers its state, never the bundled catalog', async () => {
