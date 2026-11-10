@@ -3451,6 +3451,7 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
                 finishStart() {},
                 isRunning                    : () => false,
                 status                       : id => ({id, running: false, state: 'stopped'}),
+                resolveHarnessGeneration     : async () => null,
                 getInstanceRoot              : () => instanceRoot,
                 resolveResidentMcpEnvironment: () => options(makeAgent('claude-code')).residentMcpEnv,
                 getRegistry                  : () => ({getAgent: () => agent, getDefinition: () => agent, resolveCredential: () => 'ghp_fixture_only'}),

@@ -161,7 +161,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * @param {Object}    options
  * @param {Object}    options.lifecycleService The `FleetLifecycleService` (or a stub) that supervises
  *                                             the process — supplies `getRegistry()`, `isRunning(id)`,
- *                                             `status(id)`, and `start(id, {cwd})`.
+ *                                             `status(id)`, `resolveHarnessGeneration(harnessType)`,
+ *                                             and `start(id, {cwd})`.
  * @param {String}    options.agentId          The Fleet Manager agent id to start.
  * @param {String}   [options.managedRoot]     The absolute, trusted fleet-managed checkout root —
  *                                             required only when the agent carries `metadata.repo`.
