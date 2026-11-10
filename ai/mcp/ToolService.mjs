@@ -43,10 +43,13 @@ class ToolService_tmp extends Base {
          */
         compactToolDescriptions: false,
         /**
-         * Strips `description` prose from the schemas emitted through `tools/list`, recursively,
-         * while preserving every shape-bearing key — `description` is a JSON Schema annotation and
-         * is never asserted, so the projected schema validates the identical accept/reject set.
-         * The fully-described schema relocates into `getToolHandbook()` — relocated, not deleted.
+         * Strips `description` prose from `inputSchema` and omits `outputSchema` on the default
+         * `tools/list` route while preserving every shape-bearing input key — `description` is a
+         * JSON Schema annotation and is never asserted, so the projected `inputSchema` validates
+         * the identical accept/reject set, and LLM function-calling declarations never consume
+         * `outputSchema`. The fully-described `inputSchema` and `outputSchema` relocate into
+         * `getToolHandbook()` (and remain on exact-profile routes where the handbook is
+         * policy-refused) — relocated, not deleted.
          * Sibling of `compactToolDescriptions`: same default-off, same per-server opt-in.
          * @member {Boolean} compactToolSchemas=false
          */
@@ -224,19 +227,14 @@ class ToolService_tmp extends Base {
                         ? me.stripSchemaDescriptions(inputJsonSchema)
                         : inputJsonSchema;
 
-                    let listedOutputSchema = outputJsonSchema;
-                    if (me.compactToolSchemas && outputJsonSchema !== null) {
-                        listedOutputSchema = me.stripSchemaDescriptions(outputJsonSchema)
-                    }
-
                     const toolForListing = {
                         name       : tool.name,
                         title      : tool.title,
                         description: tool.description,
                         inputSchema: listedInputSchema
                     };
-                    if (listedOutputSchema !== null) {
-                        toolForListing.outputSchema = listedOutputSchema;
+                    if (!me.compactToolSchemas && outputJsonSchema !== null) {
+                        toolForListing.outputSchema = outputJsonSchema;
                     }
                     if (operation['x-annotations'] !== null) {
                         toolForListing.annotations = operation['x-annotations'];
@@ -700,17 +698,21 @@ class ToolService_tmp extends Base {
 
         if (exactProfile) {
             return Object.entries(exactProfile.tools).map(([toolName, profileTool]) => {
-                const tool = me.allToolsForListing.find(candidate => candidate.name === toolName);
+                const
+                    tool         = me.allToolsForListing.find(candidate => candidate.name === toolName),
+                    outputSchema = tool?.outputSchema ?? me.toolHandbookMapping[toolName]?.outputSchema;
 
                 // Exact-profile schemas are served DESCRIBED by design, compaction or not: a
                 // profile is a curated minimal surface (local-readonly-probe exposes 3 tools),
                 // and `get_mcp_tool_handbook` itself is policy-refused inside the projection —
                 // so the listing is the ONLY surface where the profile's constraint prose
-                // (depth bounds, forced flags) can reach a projected seat. Compaction targets
-                // the full default listing, never these.
-                return profileTool.inputJsonSchema
-                    ? {...tool, inputSchema: profileTool.inputJsonSchema}
-                    : tool;
+                // (depth bounds, forced flags) and outputSchema can reach a projected seat.
+                // Compaction targets the full default listing, never these.
+                return {
+                    ...tool,
+                    ...(profileTool.inputJsonSchema ? {inputSchema: profileTool.inputJsonSchema} : null),
+                    ...(outputSchema ? {outputSchema} : null)
+                };
             });
         }
 

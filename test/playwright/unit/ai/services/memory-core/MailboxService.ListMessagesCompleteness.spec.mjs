@@ -440,13 +440,15 @@ test.describe('MailboxService.listMessages — projection (full | compact | coun
         }
     });
 
-    test('every projection (omitted, full, compact, counts) validates against the listed list_messages outputSchema via AjvJsonSchemaValidator', async () => {
+    test('every projection (omitted, full, compact, counts) validates against the handbook list_messages outputSchema via AjvJsonSchemaValidator', async () => {
         const
             {tools}  = listTools(),
             tool     = tools.find(item => item.name === 'list_messages'),
-            validate = new AjvJsonSchemaValidator().getValidator(tool.outputSchema);
+            handbook = await callTool('get_mcp_tool_handbook', {toolId: 'list_messages'}),
+            validate = new AjvJsonSchemaValidator().getValidator(handbook.outputSchema);
 
-        expect(tool?.outputSchema).toBeDefined();
+        expect(tool?.outputSchema).toBeUndefined();
+        expect(handbook?.outputSchema).toBeDefined();
 
         const [omitted, full, compact, counts] = await Promise.all([
             asProjRecipient(() => callTool('list_messages', {box: 'inbox', status: 'unread', limit: 3})),

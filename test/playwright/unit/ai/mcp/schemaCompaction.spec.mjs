@@ -214,27 +214,30 @@ test.describe('ToolService compactToolSchemas — the schema-prose projection (#
             ({tools}       = await fsService.listTools())
         });
 
-        test('AC-1: no description key survives anywhere in a listed schema', () => {
+        test('AC-1: no description key survives in a listed inputSchema, and outputSchema is omitted on the compact listing', () => {
             expect(tools.length).toBeGreaterThan(0);
 
             for (const tool of tools) {
                 expect(collectDescriptions(tool.inputSchema), `${tool.name}.inputSchema`).toEqual([]);
-
-                if (tool.outputSchema) {
-                    expect(collectDescriptions(tool.outputSchema), `${tool.name}.outputSchema`).toEqual([])
-                }
+                expect(tool.outputSchema, `${tool.name}.outputSchema omitted from compact listing`).toBeUndefined()
             }
         });
 
-        test('AC-3: the handbook payload carries the fully-described schema — relocated, not deleted', async () => {
+        test('AC-3: the handbook payload carries the fully-described inputSchema and outputSchema — relocated, not deleted', async () => {
             // The file-system contract authors 27 description fields; at least one tool must pair
-            // a prose-free listing with a prose-carrying handbook entry.
-            let paired = 0;
+            // a prose-free, outputSchema-free listing with a prose-carrying handbook entry.
+            let paired      = 0,
+                outputCount = 0;
 
             for (const tool of tools) {
                 const handbook  = await fsService.callTool('get_mcp_tool_handbook', {toolId: tool.name}),
                       inSchema  = collectDescriptions(handbook.inputSchema),
                       outSchema = handbook.outputSchema ? collectDescriptions(handbook.outputSchema) : [];
+
+                if (handbook.outputSchema) {
+                    outputCount++;
+                    expect(tool.outputSchema).toBeUndefined()
+                }
 
                 if (inSchema.length + outSchema.length > 0) {
                     paired++;
@@ -242,6 +245,7 @@ test.describe('ToolService compactToolSchemas — the schema-prose projection (#
                 }
             }
 
+            expect(outputCount, 'the handbook must still surface outputSchema when compact listing omits it').toBeGreaterThan(0);
             expect(paired, 'the authored prose must reach the handbook of at least one tool').toBeGreaterThan(0)
         })
     });
@@ -257,9 +261,11 @@ test.describe('ToolService compactToolSchemas — the schema-prose projection (#
             expect(tools.length).toBeGreaterThan(0);
             expect(service.compactToolSchemas).toBe(false);
 
-            // the listing still carries prose…
-            const described = tools.filter(tool => collectDescriptions(tool.inputSchema).length > 0);
+            // the listing still carries prose and outputSchema…
+            const described  = tools.filter(tool => collectDescriptions(tool.inputSchema).length > 0),
+                  withOutput = tools.filter(tool => Boolean(tool.outputSchema));
             expect(described.length, 'default-off keeps the descriptions on the listing').toBeGreaterThan(0);
+            expect(withOutput.length, 'default-off keeps outputSchema on the listing').toBeGreaterThan(0);
 
             // …and the handbook entry shape is untouched — no relocated schema keys.
             const handbook = service.getToolHandbook(tools[0].name);
@@ -289,6 +295,10 @@ test.describe('ToolService compactToolSchemas — the schema-prose projection (#
                 collectDescriptions(tree.inputSchema).length,
                 'the profile schema keeps its prose — a projected seat has no other surface for it'
             ).toBeGreaterThan(0);
+            expect(
+                tree.outputSchema,
+                'the profile listing keeps outputSchema — get_mcp_tool_handbook is policy-refused in-profile'
+            ).toEqual(expect.any(Object));
 
             // the exception's premise, asserted: the handbook is genuinely unreachable in-profile
             expect(() => service.assertToolProjectionAllows('get_mcp_tool_handbook', 'local-readonly-probe'))

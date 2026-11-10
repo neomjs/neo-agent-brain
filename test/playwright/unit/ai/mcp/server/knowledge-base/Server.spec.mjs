@@ -103,14 +103,14 @@ test.describe('Neo.ai.mcp.server.knowledge-base.Server', () => {
     });
 
     test('healthcheck surfaces the latest Knowledge Base death without changing the verdict', async () => {
-        const {composeKnowledgeBaseHealthcheck, listTools} = await import('../../../../../../../ai/mcp/server/knowledge-base/toolService.mjs'),
-              death = {at: '2024-03-09T16:00:01.000Z', exitCode: 137, oomKilled: true},
-              result = composeKnowledgeBaseHealthcheck({
-                  health: {status: 'healthy', details: ['All features are operational']},
-                  plane : {id: 'test-plane', dataRoot: '/test-data'},
+        const {callTool, composeKnowledgeBaseHealthcheck, listTools} = await import('../../../../../../../ai/mcp/server/knowledge-base/toolService.mjs'),
+              death                                                  = {at: '2024-03-09T16:00:01.000Z', exitCode: 137, oomKilled: true},
+              result                                                 = composeKnowledgeBaseHealthcheck({
+                  health              : {status: 'healthy', details: ['All features are operational']},
+                  plane               : {id: 'test-plane', dataRoot: '/test-data'},
                   deploymentInspection: {
-                      ok: true,
-                      status: 'available',
+                      ok      : true,
+                      status  : 'available',
                       snapshot: {services: [{serviceKey: 'kb-server', deaths: [death]}]}
                   }
               });
@@ -118,8 +118,12 @@ test.describe('Neo.ai.mcp.server.knowledge-base.Server', () => {
         expect(result.lastDeath).toEqual({status: 'available', record: death, reason: null});
         expect(result.status).toBe('healthy');
 
-        const {tools} = await listTools(),
-              schema = tools.find(item => item.name === 'healthcheck').outputSchema.properties.lastDeath;
+        const {tools}    = await listTools(),
+              listedTool = tools.find(item => item.name === 'healthcheck'),
+              handbook   = await callTool('get_mcp_tool_handbook', {toolId: 'healthcheck'}),
+              schema     = handbook.outputSchema.properties.lastDeath;
+
+        expect(listedTool.outputSchema).toBeUndefined();
 
         expect(schema.properties.status.enum).toEqual(['available', 'stale', 'degraded', 'unavailable', 'disabled', 'unknown']);
         expect(schema.properties.record.nullable).toBe(true);
@@ -146,9 +150,9 @@ test.describe('Neo.ai.mcp.server.knowledge-base.Server', () => {
     // separately — a guard proven on one lane and assumed on the other is how the two drift.
     test.describe('the Knowledge Base last-death projection keeps the states apart (#466 RA-1)', () => {
         const project = async (deploymentInspection, channelEnabled) => (await import('../../../../../../../ai/mcp/server/knowledge-base/toolService.mjs')).composeKnowledgeBaseHealthcheck({
-            health               : {status: 'healthy', details: ['ok']},
-            plane                : {id: 'test-plane', dataRoot: '/test-data'},
-            serviceKey           : 'kb-server',
+            health    : {status: 'healthy', details: ['ok']},
+            plane     : {id: 'test-plane', dataRoot: '/test-data'},
+            serviceKey: 'kb-server',
             deploymentInspection,
             ...(channelEnabled === undefined ? {} : {deathChannelEnabled: channelEnabled})
         });

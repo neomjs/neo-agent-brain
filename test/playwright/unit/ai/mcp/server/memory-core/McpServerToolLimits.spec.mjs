@@ -149,32 +149,35 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
     test('get_neighbors output schema exposes semanticVectorId contract (#11680)', async () => {
         const { tools } = await toolService.listTools();
         const tool      = tools.find(item => item.name === 'get_neighbors');
-        const neighbor  = tool.outputSchema.properties.neighbors.items;
+
+        // Under compactToolSchemas, outputSchema relocates off the default listing into the handbook.
+        expect(tool.outputSchema).toBeUndefined();
+
+        const handbook = await toolService.callTool('get_mcp_tool_handbook', {toolId: 'get_neighbors'});
+        const neighbor = handbook.outputSchema.properties.neighbors.items;
 
         expect(neighbor.properties.semanticVectorId.type).toBe('string');
         expect(neighbor.additionalProperties).not.toBe(false);
-
-        // The description relocated to the handbook payload — the listing keeps shape only.
-        const handbook = await toolService.callTool('get_mcp_tool_handbook', {toolId: 'get_neighbors'});
-
-        expect(handbook.outputSchema.properties.neighbors.items.properties.semanticVectorId.description)
+        expect(neighbor.properties.semanticVectorId.description)
             .toContain('semantic vector identifier');
     });
 
     test('get_rem_pipeline_state surfaces the REM axis-count output contract (#12087)', async () => {
         const { tools } = await toolService.listTools();
         const tool      = tools.find(item => item.name === 'get_rem_pipeline_state');
+        const handbook  = await toolService.callTool('get_mcp_tool_handbook', {toolId: 'get_rem_pipeline_state'});
 
         expect(tool).toBeTruthy();
         expect(tool.annotations.readOnlyHint).toBe(true);
-        expect(tool.outputSchema.properties.undigested.type).toBe('integer');
-        expect(tool.outputSchema.properties.digested.type).toBe('integer');
-        expect(tool.outputSchema.properties.sessionNodes.type).toBe('integer');
-        expect(tool.outputSchema.properties.topologyConflicts.type).toBe('integer');
-        expect(tool.outputSchema.properties.recentCycles.type).toBe('array');
-        expect(tool.outputSchema.properties.recentCycles.items.properties.runId.type).toBe('string');
-        expect(tool.outputSchema.properties.recentCycles.items.properties.cycleOverflowSignal.type).toBe('boolean');
-        const perSessionSchema = tool.outputSchema.properties.perSession;
+        expect(tool.outputSchema).toBeUndefined();
+        expect(handbook.outputSchema.properties.undigested.type).toBe('integer');
+        expect(handbook.outputSchema.properties.digested.type).toBe('integer');
+        expect(handbook.outputSchema.properties.sessionNodes.type).toBe('integer');
+        expect(handbook.outputSchema.properties.topologyConflicts.type).toBe('integer');
+        expect(handbook.outputSchema.properties.recentCycles.type).toBe('array');
+        expect(handbook.outputSchema.properties.recentCycles.items.properties.runId.type).toBe('string');
+        expect(handbook.outputSchema.properties.recentCycles.items.properties.cycleOverflowSignal.type).toBe('boolean');
+        const perSessionSchema = handbook.outputSchema.properties.perSession;
         const perSession       = perSessionSchema.type === 'object'
             ? perSessionSchema
             : perSessionSchema.anyOf.find(item => item.type === 'object');
@@ -212,18 +215,20 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
     test('get_sqlite_holder_diagnostics exposes read-only grouped holder contract (#13475)', async () => {
         const { tools } = await toolService.listTools();
         const tool      = tools.find(item => item.name === 'get_sqlite_holder_diagnostics');
+        const handbook  = await toolService.callTool('get_mcp_tool_handbook', {toolId: 'get_sqlite_holder_diagnostics'});
 
         expect(tool).toBeTruthy();
         expect(tool.annotations.readOnlyHint).toBe(true);
         expect(tool.inputSchema.properties).toEqual({});
-        expect(tool.outputSchema.properties.status.enum).toEqual(['ok', 'degraded']);
-        expect(tool.outputSchema.properties.totalProcesses.type).toBe('integer');
-        expect(tool.outputSchema.properties.byHarness.additionalProperties.type).toBe('integer');
-        expect(tool.outputSchema.properties.groups.items.properties.harness.type).toBe('string');
-        expect(tool.outputSchema.properties.groups.items.properties.processes.type).toBe('array');
-        expect(tool.outputSchema.properties.processes.items.properties.pid.type).toBe('integer');
-        expect(tool.outputSchema.properties.processes.items.properties.chain.type).toBe('array');
-        expect(tool.outputSchema.properties.warnings.items.properties.code.type).toBe('string');
+        expect(tool.outputSchema).toBeUndefined();
+        expect(handbook.outputSchema.properties.status.enum).toEqual(['ok', 'degraded']);
+        expect(handbook.outputSchema.properties.totalProcesses.type).toBe('integer');
+        expect(handbook.outputSchema.properties.byHarness.additionalProperties.type).toBe('integer');
+        expect(handbook.outputSchema.properties.groups.items.properties.harness.type).toBe('string');
+        expect(handbook.outputSchema.properties.groups.items.properties.processes.type).toBe('array');
+        expect(handbook.outputSchema.properties.processes.items.properties.pid.type).toBe('integer');
+        expect(handbook.outputSchema.properties.processes.items.properties.chain.type).toBe('array');
+        expect(handbook.outputSchema.properties.warnings.items.properties.code.type).toBe('string');
     });
 
     test('get_sandman_handoff exposes the read-only handoff freshness and sections contract (#15599, #1251)', async () => {
@@ -244,16 +249,18 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
         // discover the instrument it was being pointed at.
         const { tools } = await toolService.listTools();
         const tool      = tools.find(item => item.name === 'healthcheck');
+        const handbook  = await toolService.callTool('get_mcp_tool_handbook', {toolId: 'healthcheck'});
 
         expect(tool).toBeTruthy();
+        expect(tool.outputSchema).toBeUndefined();
 
         // POSITIVE CONTROL on the assertion mechanism: `plane` was already declared, so if this
         // lookup path were wrong, the control fails and the real assertion below cannot pass
         // vacuously.
-        expect(tool.outputSchema.properties.plane).toBeTruthy();
-        expect(tool.outputSchema.properties.plane.properties.dataRoot.type).toBe('string');
+        expect(handbook.outputSchema.properties.plane).toBeTruthy();
+        expect(handbook.outputSchema.properties.plane.properties.dataRoot.type).toBe('string');
 
-        const declared = tool.outputSchema.properties.memoryWalDrain;
+        const declared = handbook.outputSchema.properties.memoryWalDrain;
 
         expect(declared).toBeTruthy();
         expect(declared.properties.observable.type).toBe('boolean');
@@ -287,9 +294,8 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
     });
 
     test('healthcheck declares the source-bound projection freshness surface (#17627)', async () => {
-        const {tools}  = await toolService.listTools();
-        const declared = tools.find(item => item.name === 'healthcheck')
-            .outputSchema.properties.corpusProjectionFreshness;
+        const handbook = await toolService.callTool('get_mcp_tool_handbook', {toolId: 'healthcheck'}),
+              declared = handbook.outputSchema.properties.corpusProjectionFreshness;
 
         expect(declared.properties.status.enum).toEqual([
             'current', 'lagging', 'breached', 'unavailable', 'disabled'
@@ -361,8 +367,8 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
     });
 
     test('healthcheck declares the bounded last-death diagnostic', async () => {
-        const {tools} = await toolService.listTools(),
-              schema  = tools.find(item => item.name === 'healthcheck').outputSchema.properties.lastDeath;
+        const handbook = await toolService.callTool('get_mcp_tool_handbook', {toolId: 'healthcheck'}),
+              schema   = handbook.outputSchema.properties.lastDeath;
 
         // The status vocabulary is what makes a healthcheck honest about its own reachability, so it
         // is part of the contract rather than an implementation detail: a consumer has to be able to
@@ -649,8 +655,8 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
         expect(combined.details.some(detail => detail.includes('Memory WAL embed drain is stalled'))).toBe(true);
         expect(combined.details.some(detail => detail.includes('Backup maintenance is degraded'))).toBe(true);
 
-        const {tools}  = await toolService.listTools();
-        const declared = tools.find(item => item.name === 'healthcheck').outputSchema.properties.maintenance;
+        const handbook = await toolService.callTool('get_mcp_tool_handbook', {toolId: 'healthcheck'}),
+              declared = handbook.outputSchema.properties.maintenance;
 
         expect(declared).toBeTruthy();
         expect(declared.properties.observationStatus.enum).toEqual(['available', 'stale', 'degraded', 'unavailable']);

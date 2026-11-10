@@ -163,11 +163,14 @@ test.describe('GitHub Workflow MCP Server Tool Registration', () => {
             }
         });
 
-        const {listTools}   = await import('../../../../../../../ai/mcp/server/github-workflow/toolService.mjs');
-        const listedTool    = listTools().tools.find(tool => tool.name === 'list_pull_requests');
-        const toolSchema    = listedTool.inputSchema.properties.believedOpen;
-        const listedReasons = listedTool.outputSchema.properties.belief.properties
+        const {listTools, callTool} = await import('../../../../../../../ai/mcp/server/github-workflow/toolService.mjs');
+        const listedTool            = listTools().tools.find(tool => tool.name === 'list_pull_requests');
+        const handbook              = await callTool('get_mcp_tool_handbook', {toolId: 'list_pull_requests'});
+        const toolSchema            = listedTool.inputSchema.properties.believedOpen;
+        const listedReasons         = handbook.outputSchema.properties.belief.properties
             .unverifiable.items.properties.reason.enum;
+
+        expect(listedTool.outputSchema).toBeUndefined();
 
         expect(toolSchema).toMatchObject({
             type       : 'array',
@@ -203,8 +206,9 @@ test.describe('GitHub Workflow MCP Server Tool Registration', () => {
             body                   : {type: 'string'},
             acknowledgedForeignBody: {type: 'string'}
         });
-         expect(listedTool.outputSchema.required).toBeUndefined();
-        expect(listedTool.outputSchema.anyOf).toEqual([
+        expect(listedTool.outputSchema).toBeUndefined();
+        expect(handbook.outputSchema.required).toBeUndefined();
+        expect(handbook.outputSchema.anyOf).toEqual([
             {required: [
                 'message',
                 'id',
