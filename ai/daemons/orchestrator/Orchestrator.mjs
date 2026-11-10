@@ -28,6 +28,7 @@ import {getDueTask as primaryDevSyncGetDueTaskImport}                           
 import {getDueTask as goldenPathGetDueTaskImport}                                 from './scheduling/goldenPath.mjs';
 import {getDueTask as dreamGetDueTaskImport}                                      from './scheduling/dream.mjs';
 import {getDueTask as embedDrainLivenessWatchdogGetDueTaskImport}                 from './scheduling/embedDrainLivenessWatchdog.mjs';
+import {getDueTask as datedItemsOverdueGetDueTaskImport}                          from './scheduling/datedItemsOverdue.mjs';
 import memoryCoreConfig                                                           from '../../mcp/server/memory-core/config.mjs';
 import {resolveVectorGenerationElectionDir}                                       from '../../services/shared/vector/generationElectionStore.mjs';
 import MailboxService                                                             from '../../services/memory-core/MailboxService.mjs';
@@ -297,6 +298,7 @@ export class Orchestrator extends Base {
     dreamGetDueTask          = dreamGetDueTaskImport
     goldenPathGetDueTask     = goldenPathGetDueTaskImport
     embedDrainLivenessWatchdogGetDueTask = embedDrainLivenessWatchdogGetDueTaskImport
+    datedItemsOverdueGetDueTask          = datedItemsOverdueGetDueTaskImport
     buildConfiguredTaskDefinitionsService = buildConfiguredTaskDefinitionsImport
     inspectHeavyMaintenanceLeaseFn = inspectHeavyMaintenanceLeaseSync
     recordBootIdentityFactFn       = recordBootIdentityFact
@@ -459,6 +461,27 @@ export class Orchestrator extends Base {
                 this.writeLog('ERROR', `[Orchestrator] REM consolidation stall-alarm wake pulse failed: ${e.message}`);
             }
         }
+    }
+
+    /**
+     * @summary Sends one overdue-register A2A message from the container plane as the `@system` principal.
+     * Direct messages (`to: '@<owner>'`) wake the owner (`wakeSuppressed: false`); fallback `AGENT:*`
+     * broadcasts carry `wakeSuppressed: true`.
+     * @param {{to: String, subject: String, body: String}} message
+     * @returns {Promise<Object>}
+     */
+    async datedItemsOverdueSendMessage({to, subject, body}) {
+        return RequestContextService.run({
+            agentIdentityNodeId: '@system',
+            principalClass     : 'system',
+            sessionId          : 'dated-items-overdue'
+        }, () => MailboxService.addMessage({
+            to,
+            subject,
+            body,
+            priority      : 'normal',
+            wakeSuppressed: to === 'AGENT:*'
+        }));
     }
 
     /**
@@ -1380,6 +1403,7 @@ export class Orchestrator extends Base {
     get embedDrainLivenessWatchdogThresholdMs() { return memoryCoreConfig.memoryWal.embedDrainStallThresholdMs; }
     get remConsolidationWatchdogRunStateDir()   { return memoryCoreConfig.remRunStateDir; }
     get remConsolidationWatchdogThresholdMs()   { return memoryCoreConfig.remConsolidationStallThresholdMs; }
+    get datedItemsSourcePath()                  { return memoryCoreConfig.datedItemsSourcePath; }
     get heavyMaintenanceStarvationDegradeAfterMs() { return AiConfig.orchestrator.heavyMaintenanceLease.starvationDegradeAfterMs; }
     /** @summary The Memory Core compose-service id targeted by data-integrity diagnoses. */
     get dataIntegrityServiceId() { return 'mc-server'; }

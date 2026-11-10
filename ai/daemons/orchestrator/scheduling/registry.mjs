@@ -12,6 +12,7 @@ import {getDueTask as getEmbedDrainLivenessWatchdogDueTask}         from './embe
 import {getDueTask as getRemConsolidationLivenessWatchdogDueTask}   from './remConsolidationLivenessWatchdog.mjs';
 import {getDueTask as getHeavyMaintenanceStarvationWatchdogDueTask} from './heavyMaintenanceStarvationWatchdog.mjs';
 import {getDueTask as getDataIntegritySweepDueTask}                 from './dataIntegritySweep.mjs';
+import {getDueTask as getDatedItemsOverdueDueTask}                  from './datedItemsOverdue.mjs';
 import {getTaskAuthorityClass}                                      from '../taskAuthority.mjs';
 
 function toTimestampMs(value) {
@@ -416,6 +417,25 @@ const taskRegistry = [
                 state                    : state['data-integrity-sweep'] ?? {},
                 now,
                 dataIntegritySweepCheckMs: intervals.dataIntegritySweepCheck
+            });
+        }
+    },
+    {
+        // Daily container-plane lane: reads the `dated-items.v1` register from
+        // `memoryCoreConfig.datedItemsSourcePath` and sends one direct A2A message per
+        // addressable owner with overdue rows (`[overdue · <n> rows]`) and one `AGENT:*` fallback for
+        // `unowned` or unknown-identity rows. Inert (`null`) when `datedItemsSourcePath` is empty (`''`)
+        // or when the lane has already run on the current UTC calendar day.
+        taskName        : 'dated-items-overdue',
+        executionKind   : 'in-process-async',
+        maintenanceClass: 'lightweight-signal',
+        backpressure    : 'none',
+        dependencies    : [],
+        getDueTask({state, now, hooks}) {
+            return (hooks?.datedItemsOverdueGetDueTask || getDatedItemsOverdueDueTask)({
+                state     : state['dated-items-overdue'] ?? {},
+                now,
+                sourcePath: hooks?.datedItemsSourcePath
             });
         }
     }

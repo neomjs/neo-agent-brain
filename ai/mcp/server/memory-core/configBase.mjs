@@ -647,6 +647,18 @@ class ConfigBase extends ConfigProvider {
              */
             outboundLedgerSourcePath: leaf('', 'NEO_OUTBOUND_LEDGER_SOURCE_PATH', 'string'),
             /**
+             * File path of the business repository's `strategy/dated-items.json`
+             * (`dated-items.v1` schema) read by the daily overdue-register lane, as this process
+             * sees it (for example, a read-only mount of a host checkout at
+             * `<mount>/strategy/dated-items.json`; never the tenant mirror, which is a bare clone
+             * holding no working-tree file a reader could open). Empty by default: a deployment
+             * without the register leaves it unset, and the lane reads nothing, sends nothing, and
+             * logs no error. Not a plane member: an operator-placed private file outside the plane
+             * root by default, like `businessFocusSourcePath` and `outboundLedgerSourcePath` above.
+             * @type {string}
+             */
+            datedItemsSourcePath: leaf('', 'NEO_DATED_ITEMS_SOURCE_PATH', 'string'),
+            /**
              * Stale-assignment idle threshold used by `GoldenPathSynthesizer` when rendering
              * Sandman handoff candidates. Defaults to the ticket-intake 7-day reassignment rule.
              * @type {number}
