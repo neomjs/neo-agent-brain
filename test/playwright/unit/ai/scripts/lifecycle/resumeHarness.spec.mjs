@@ -27,10 +27,14 @@ import {
     resolveHarnessTargetForIdentity
 } from '../../../../../../ai/scripts/lifecycle/harnessRouting.mjs';
 import {
+    buildBootGroundingPrompt,
     buildResumeOsascriptArgs,
     resolveResumeHarnessInstanceAddress,
     resolveResumeHarnessInstancePid
 } from '../../../../../../ai/scripts/lifecycle/resumeHarness.mjs';
+import * as yaml        from 'js-yaml';
+import {buildZodSchema} from '../../../../../../ai/mcp/validation/OpenApiValidator.mjs';
+import MemoryService    from '../../../../../../ai/services/memory-core/MemoryService.mjs';
 
 test.describe('ai/scripts/resumeHarness', () => {
     test.describe.configure({mode: 'serial'});
@@ -444,13 +448,53 @@ test.describe('ai/scripts/resumeHarness', () => {
         const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
         expect(scriptContent).toContain('please use the context-recovery skill');
         expect(scriptContent).not.toContain('AGENTS_STARTUP');
-        expect(scriptContent).toContain('explicit non-empty prompt/thought/response fields');
+        expect(scriptContent).toContain('explicit non-empty prompt/decisionContext/response fields');
+        expect(scriptContent).not.toContain('prompt/thought/response');
+        expect(scriptContent).not.toContain('thought=');
         expect(scriptContent).toContain('Boot heartbeat for ${identity}');
         expect(scriptContent).not.toContain('call add_memory once as a boot heartbeat, then proceed normally');
         expect(scriptContent).toContain('latest Memory Core Sandman handoff');
         expect(scriptContent).toContain('Origin Session ID');
         // Negative assertion: the old Q1a prose payload must be gone
         expect(scriptContent).not.toContain('Auto-Wakeup Substrate: Resuming sunsetted session.');
+
+        // Discriminating admission control: render buildBootGroundingPrompt, extract the
+        // advertised add_memory heartbeat example, and verify it satisfies AddMemoryRequest
+        // while a legacy thought-only payload is rejected by MemoryService.addMemory.
+        const renderedPrompt = buildBootGroundingPrompt('@neo-opus-ada', 'Scheduled interval recovery', 'session-123');
+        expect(renderedPrompt).not.toContain('thought=');
+        const extractedExample = Object.fromEntries(
+            Array.from(renderedPrompt.matchAll(/(\b(?:prompt|decisionContext|thought|response))="([^"]+)"/g), ([, key, value]) => [key, value])
+        );
+        const openApiDoc = yaml.load(
+            fs.readFileSync(path.resolve(process.cwd(), 'ai/mcp/server/memory-core/openapi.yaml'), 'utf-8')
+        );
+        const addMemorySchema    = openApiDoc.components.schemas.AddMemoryRequest;
+        const addMemoryZodSchema = buildZodSchema(
+            openApiDoc,
+            openApiDoc.paths['/memories'].post
+        );
+
+        expect(Object.keys(extractedExample).sort()).toEqual([...addMemorySchema.required].sort());
+        expect(extractedExample.decisionContext).toBe('Fresh recovery boot; Memory Core write-path health check.');
+        expect(extractedExample.thought).toBeUndefined();
+        expect(addMemoryZodSchema.safeParse(extractedExample).success).toBe(true);
+        expect(addMemoryZodSchema.safeParse({
+            prompt  : extractedExample.prompt,
+            thought : extractedExample.decisionContext,
+            response: extractedExample.response
+        }).success).toBe(false);
+
+        const legacyAttempt = await MemoryService.addMemory({
+            prompt  : extractedExample.prompt,
+            thought : extractedExample.decisionContext,
+            response: extractedExample.response
+        });
+        expect(legacyAttempt).toMatchObject({
+            code : 'MEMORY_VALIDATION_ERROR',
+            error: 'Invalid memory payload'
+        });
+        expect(legacyAttempt.message).toContain('decisionContext');
     });
 
     test('Claude recovery: osascript adapter sends Cmd+3 (Tab 3) then Cmd+N (fresh chat) before paste', async () => {

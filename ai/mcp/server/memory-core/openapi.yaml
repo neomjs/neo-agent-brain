@@ -940,9 +940,8 @@ paths:
         operator.
 
         Example: a release-policy entry notes classifying releases by merged PR author rather than
-        workflow actor (`neomjs/neo-agent-skills#149 @ 03e403d`) and leaves the deployed skip as
-        the post-merge check. A routine reroute records who released the review seat, who now owns
-        it, and the unchanged PR head.
+        workflow actor and leaves the deployed skip as the post-merge check. A routine reroute
+        records who released the review seat, who now owns it, and the unchanged PR head.
 
         **MANDATORY FINAL STEP:** You MUST call this tool at the end of every turn, *before* generating your final response to the user.
         **CRITICAL:** This is the primary endpoint for making agents stateful. Forgetting to call this results in permanent data loss for the session.
@@ -1110,7 +1109,7 @@ paths:
         joining Chroma with a pending-embed WAL overlay when missing/rejected; collection.get has no
         local timeout). An explicit memorySharing request is narrowed by deployment policy: effective
         team sharing accepts public summaries or public full prompt/response (projection=public, omitting
-        private decisionContext), whereas effective legacy (including team clamped to legacy) and implicit peer reads
+        the private thought field populated from decisionContext), whereas effective legacy (including team clamped to legacy) and implicit peer reads
         accept public summaries only. Effective shared policies refuse projection=private before reads;
         omitted sharing preserves tenant-scoped recovery and own-private recall.
       tags: [Memories]
@@ -1158,7 +1157,7 @@ paths:
         - name: projection
           in: query
           required: false
-          description: "'public' (default) excludes the private decisionContext field; 'private' includes it (own-agent tenant recovery only; refused on effective team/legacy before reads)"
+          description: "'public' (default) excludes the private thought field (populated from decisionContext); 'private' includes it (own-agent tenant recovery only; refused on effective team/legacy before reads)"
           schema:
             type: string
             enum: [public, private]
@@ -4995,11 +4994,11 @@ components:
         decisionContext:
           type: string
           description: "Decisions made in the turn, each paired with its deciding fact or source reference, plus what stays open — written in the concise register of a commit message or decision record."
-          example: "Classify releases by merged PR author rather than workflow actor so human merges of Dependabot PRs skip npm publish (neomjs/neo-agent-skills#149 @ 03e403d). Open: observe deployed skip after merge; revisit if GitHub's author contract changes."
+          example: "Classify releases by merged PR author rather than workflow actor so human merges of Dependabot PRs skip npm publish. Open: observe deployed skip after merge; revisit if the platform author contract changes."
         response:
           type: string
           description: "Outcomes, supporting artifact references and continuation: next actions, open owners or conditions that reopen the decision."
-          example: "Policy PR: https://github.com/neomjs/neo-agent-skills/pull/149. It has green CI and awaits cross-family review. After human merge, rebase PR147, run fresh CI and observe that its merge skips publication and tagging."
+          example: "Opened policy PR with green CI and requested cross-family review. After human merge, rebase the pending Dependabot PR, run fresh CI, and verify that merge skips publication and tagging."
         sessionId:
           type: string
           description: Session ID for grouping related memories. Optional; if omitted, defaults to the request-bound Mcp-Session-Id header (when present) or the process-global currentSessionId.
@@ -5388,7 +5387,7 @@ components:
         projection:
           type: string
           enum: [public, private]
-          description: "'public' omits the private decisionContext field on detail='full'; 'private' preserves it."
+          description: "'public' omits the private thought field (populated from decisionContext) on detail='full'; 'private' preserves it."
 
     QueryMemoriesResponse:
       type: object
