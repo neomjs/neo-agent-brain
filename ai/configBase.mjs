@@ -639,6 +639,36 @@ class ConfigBase extends ConfigProvider {
                      * @type {string}
                      */
                     codexDesktop: leaf('/Applications/ChatGPT.app/Contents/MacOS/ChatGPT', 'NEO_FLEET_CODEX_DESKTOP_BIN', 'string')
+                },
+                /**
+                 * Admitted vendor-harness builds (`harnessGeneration.mjs`). A family that opts in starts its
+                 * seats from the family's selected generation instead of its `harnessBinaries` path, and
+                 * admits the installed build first when that build is new to the family's ledger.
+                 */
+                harnessGenerations: {
+                    /**
+                     * The generation store: `<root>/<family>/ledger.json` plus one immutable copy per
+                     * admitted build. Fleet is its only writer.
+                     * @type {string}
+                     */
+                    root: leaf(path.resolve(os.homedir(), '.neo-ai', 'harnesses'), 'NEO_FLEET_HARNESS_GENERATIONS_ROOT', 'string', {planeMember: false, planeMemberReason: 'vendor app copies, not plane data — a seat started from one must outlive any plane, so every machine places the store explicitly'}),
+                    /**
+                     * Antigravity seats start from the selected generation.
+                     * @type {boolean}
+                     */
+                    antigravity: leaf(false, 'NEO_FLEET_HARNESS_GENERATIONS_ANTIGRAVITY', 'boolean'),
+                    /**
+                     * Claude Desktop seats start from the selected generation. The family has no
+                     * admission probe yet, so opting in refuses every Start until one exists.
+                     * @type {boolean}
+                     */
+                    claudeDesktop: leaf(false, 'NEO_FLEET_HARNESS_GENERATIONS_CLAUDE_DESKTOP', 'boolean'),
+                    /**
+                     * Codex Desktop seats start from the selected generation, the app and its bundled
+                     * CLI from the same copy.
+                     * @type {boolean}
+                     */
+                    codexDesktop: leaf(false, 'NEO_FLEET_HARNESS_GENERATIONS_CODEX_DESKTOP', 'boolean')
                 }
             },
             /**
