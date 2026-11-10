@@ -64,7 +64,7 @@ paths:
 
   /healthcheck:
     get:
-      summary: Check GitHub CLI Health
+      summary: Probe GitHub CLI and server liveness; use when GitHub calls fail.
       operationId: healthcheck
       x-neo-tool-tier: read
       x-annotations:
@@ -91,7 +91,7 @@ paths:
 
   /tool/handbook:
     post:
-      summary: Tool Handbook
+      summary: Fetch full usage docs and schemas for one GitHub workflow tool; use when a listed summary is not enough to call it.
       operationId: get_mcp_tool_handbook
       x-neo-tool-tier: read
       x-annotations:
@@ -138,7 +138,7 @@ paths:
 
   /labels:
     get:
-      summary: List Repository Labels
+      summary: List valid label names and descriptions in a GitHub repo; use when checking exact label names before create or triage.
       operationId: list_labels
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -172,7 +172,7 @@ paths:
 
   /pull-requests:
     get:
-      summary: List PRs; optionally falsify exact PR numbers supplied through believedOpen.
+      summary: List GitHub PRs by state or falsify believedOpen numbers; use when checking open queues or verifying PR state.
       operationId: list_pull_requests
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -246,7 +246,7 @@ paths:
 
   /pull-requests/{pr_number}/checkout:
     post:
-      summary: Checkout PR Branch
+      summary: Check out a GitHub PR branch into explicit caller repoPath; use when running local tests or builds on a PR head.
       operationId: checkout_pull_request
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -295,7 +295,7 @@ paths:
 
   /pull-requests/{pr_number}/diff:
     get:
-      summary: Get PR Diff
+      summary: Fetch a read-only GitHub PR diff or changed-file list (sha requires file); use when reviewing code without checkout.
       operationId: get_pull_request_diff
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -388,7 +388,7 @@ paths:
 
   /pull-requests/{pr_number}/conversation:
     get:
-      summary: Fetch PR/issue conversation, or an identity-bound source-owned PR readiness projection.
+      summary: Read a live GitHub issue/PR body and comments, or PR merge-readiness; use when inspecting live thread or gate state.
       operationId: get_conversation
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -539,7 +539,7 @@ paths:
     post:
       # `ToolService` reads `summary` alone for the compact `tools/list` description and omits
       # `title` from listed tools, so this imperative is emitted once on the projected record.
-      summary: Manage Comments (Create or Update) — dialogue only; corrections go in the BODY, not a comment
+      summary: Post or edit a GitHub issue/PR comment (corrections go in the BODY, not a comment); use when replying in dialogue.
       operationId: manage_issue_comment
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -650,7 +650,7 @@ paths:
 
   /issues/body/update:
     post:
-      summary: Replace an issue or PR body in place (author/assignee guard; pass acknowledgedForeignBody to override).
+      summary: Replace a GitHub issue or PR body in place with author/SHA guards; use when updating state or revised ACs in the body.
       operationId: update_issue_body
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -738,7 +738,7 @@ paths:
 
   /issues/{issue_number}/labels/manage:
     post:
-      summary: Manage Issue Labels (Add or Remove)
+      summary: Add or remove exact label names on a GitHub issue or PR; use when triaging or updating ticket classification.
       operationId: manage_issue_labels
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -813,7 +813,7 @@ paths:
 
   /issues/{issue_number}/assignees/manage:
     post:
-      summary: Manage Issue Assignees (Single Guarded MCP Operation — Add or Remove)
+      summary: Assign or unassign GitHub issue owners with conflict guard; use when claiming a lane with @me or releasing one.
       operationId: manage_issue_assignees
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -926,7 +926,7 @@ paths:
 
   /pulls/review/validate:
     post:
-      summary: Read-only shape and optional Round-2 carry check for a PR review body.
+      summary: Dry-run check a GitHub PR review body against template and Round-2 rules; use when pre-validating before submitting.
       operationId: validate_pr_review_body
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1004,7 +1004,7 @@ paths:
 
   /pulls/{pr_number}/review/manage:
     post:
-      summary: Create or update one formal PR review with body and review state validation.
+      summary: Submit or edit a formal GitHub PR review with state and budget gates; use when posting APPROVED, RC, or COMMENT.
       operationId: manage_pr_review
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -1141,7 +1141,7 @@ paths:
 
   /pulls/{pr_number}/reviewers/manage:
     post:
-      summary: Manage PR Reviewers (Add or Remove)
+      summary: Invite or remove requested reviewers on a mergeable GitHub PR; use when routing a green PR or clearing seats.
       operationId: manage_pr_reviewers
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -1218,7 +1218,7 @@ paths:
 
   /issues/{issue_number}/content:
     get:
-      summary: Get Local Issue Content by ID
+      summary: Read a synced local GitHub issue markdown mirror by number (may lag live); use when reading offline archived tickets.
       operationId: get_local_issue_by_id
       x-neo-tool-tier: read
       x-annotations:
@@ -1260,7 +1260,7 @@ paths:
 
   /issues:
     get:
-      summary: List Issues
+      summary: List live GitHub issues by state, assignee, or ALL-of labels; use when scanning queues or checking live ownership.
       operationId: list_issues
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1350,7 +1350,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
     post:
-      summary: Create a new GitHub issue
+      summary: Open a new GitHub issue with body, labels, assignees, or ProjectV2 links; use when filing a scoped ticket.
       operationId: create_issue
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -1423,7 +1423,7 @@ paths:
 
   /issues/{issue_number}/projects/manage:
     post:
-      summary: Manage Issue ProjectV2 Memberships (Add, Remove, or Update Field)
+      summary: Add, remove, or update org ProjectV2 board fields on a GitHub issue; use when managing release or board membership.
       operationId: manage_issue_projects
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -1515,7 +1515,7 @@ paths:
 
   /discussions:
     post:
-      summary: Create a new GitHub Discussion
+      summary: Open a new GitHub Discussion in Ideas or Q&A; use when starting an Ideation Sandbox proposal before filing tickets.
       operationId: create_discussion
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -1566,7 +1566,7 @@ paths:
 
   /discussions/manage:
     post:
-      summary: Manage GitHub Discussions (Update Body, Close)
+      summary: Replace a GitHub Discussion body in place or close it with a reason; use when updating sandbox state or graduating.
       operationId: manage_discussion
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -1664,7 +1664,7 @@ paths:
 
   /discussions/conversation:
     get:
-      summary: Get Discussion Conversation
+      summary: Read a GitHub Discussion body, comments, and replies (or comment_id delta); use when polling a Sandbox thread.
       operationId: get_discussion_conversation
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1846,7 +1846,7 @@ paths:
 
   /discussions/comments/manage:
     post:
-      summary: Manage Discussion Comments (Create or Update)
+      summary: Post or edit a top-level GitHub Discussion comment (25-comment cap); use when replying in an Ideation Sandbox thread.
       operationId: manage_discussion_comment
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -1916,7 +1916,7 @@ paths:
 
   /issues/relationship:
     post:
-      summary: Create, replace, or remove issue parent-child and blocked-by relationships.
+      summary: Set, replace, or remove GitHub parent_child or blocked_by issue edges; use when linking epic subs or ticket blockers.
       operationId: update_issue_relationship
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -2007,7 +2007,7 @@ paths:
 
   /repository/viewer-permission:
     get:
-      summary: Get Viewer Permission
+      summary: Read the authenticated viewer repository permission tier (ADMIN to READ); use when gating write-only triage or claims.
       operationId: get_viewer_permission
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -2048,7 +2048,7 @@ paths:
 
   /system/state/transition:
     post:
-      summary: Signal State Transition
+      summary: Emit a headless orchestrator state trap (PR_OPENED, BLOCKED, HANDOFF); use when an orchestrated run ends its turn.
       operationId: signal_state_transition
       x-neo-tool-tier: write
       x-pass-as-object: true

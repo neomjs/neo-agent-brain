@@ -6,7 +6,7 @@ paths:
   /healthcheck:
     get:
       operationId: healthcheck
-      summary: Healthcheck
+      summary: Probe GitLab server liveness; use when GitLab workflow calls fail.
       description: Returns scaffold-level GitLab Workflow MCP server health.
       tags: [System]
       x-annotations:
@@ -22,7 +22,7 @@ paths:
   /tool/handbook:
     post:
       operationId: get_mcp_tool_handbook
-      summary: Tool Handbook
+      summary: Fetch full usage docs and schemas for one GitLab workflow tool; use when a listed summary is not enough to call it.
       description: Returns lazy-loaded usage detail for one GitLab Workflow MCP tool.
       tags: [System]
       x-annotations:
@@ -68,7 +68,7 @@ paths:
   /issues:
     get:
       operationId: list_issues
-      summary: List GitLab issues
+      summary: List live GitLab issues by state, assignee, or labels; use when scanning queues or checking live ownership.
       description: Lists GitLab project issues via the GitLab GraphQL API, with optional state / label / assignee filters.
       tags: [Issues]
       x-pass-as-object: true
@@ -113,7 +113,7 @@ paths:
                 $ref: '#/components/schemas/ListResponse'
     post:
       operationId: create_issue
-      summary: Create a GitLab issue
+      summary: Open a new GitLab issue with body, labels, or assignees; use when filing a scoped ticket.
       description: Creates a GitLab issue via the GitLab GraphQL API; optionally assigns labels (by name) and assignees (by username).
       tags: [Issues]
       x-pass-as-object: true
@@ -157,7 +157,7 @@ paths:
   /merge-requests:
     get:
       operationId: list_merge_requests
-      summary: List GitLab merge requests
+      summary: List GitLab merge requests by state or author; use when checking open queues or reviewing past MRs.
       description: Lists GitLab merge requests for the configured project via the GitLab GraphQL API.
       tags: [Merge Requests]
       x-pass-as-object: true
@@ -198,7 +198,7 @@ paths:
   /merge-requests/{merge_request_iid}:
     get:
       operationId: get_merge_request
-      summary: Get a GitLab merge request
+      summary: Read a single live GitLab merge request by IID; use when inspecting MR metadata, body, or state.
       description: Reads a single GitLab merge request by iid via the GitLab GraphQL API.
       tags: [Merge Requests]
       x-pass-as-object: true
@@ -222,7 +222,7 @@ paths:
   /merge-requests/comments/manage:
     post:
       operationId: manage_mr_comment
-      summary: Manage GitLab merge request comments
+      summary: Post or edit a GitLab MR comment (corrections go in the MR body, not a comment); use when replying on an MR.
       description: Creates or updates a GitLab merge request comment (note) via the GitLab GraphQL API.
       tags: [Merge Requests]
       x-pass-as-object: true
@@ -260,7 +260,7 @@ paths:
   /merge-requests/{merge_request_iid}/labels/manage:
     post:
       operationId: manage_mr_labels
-      summary: Manage GitLab merge request labels
+      summary: Add or remove exact label names on a GitLab merge request; use when updating MR classification.
       description: Adds or removes GitLab merge request labels (by name) via the GitLab GraphQL API.
       tags: [Merge Requests]
       x-pass-as-object: true
@@ -301,7 +301,7 @@ paths:
   /merge-requests/{merge_request_iid}/assignees/manage:
     post:
       operationId: manage_mr_assignees
-      summary: Manage GitLab merge request assignees
+      summary: Assign or unassign GitLab merge request owners by username; use when setting or clearing MR ownership.
       description: Adds or removes GitLab merge request assignees (by username) via the GitLab GraphQL API.
       tags: [Merge Requests]
       x-pass-as-object: true
@@ -342,7 +342,7 @@ paths:
   /merge-requests/{merge_request_iid}/reviewers/manage:
     post:
       operationId: manage_mr_reviewers
-      summary: Manage GitLab merge request reviewers
+      summary: Invite or remove requested reviewers on a GitLab merge request; use when routing an MR for review or clearing seats.
       description: Adds or removes GitLab merge request reviewers (by username) via the GitLab GraphQL API.
       tags: [Merge Requests]
       x-pass-as-object: true
@@ -383,7 +383,7 @@ paths:
   /local/issues/{issue_number}:
     get:
       operationId: get_local_issue_by_id
-      summary: Get a local GitLab issue file
+      summary: Stub for a future local GitLab issue mirror that returns no issue yet; use when checking whether its syncer has landed.
       description: Retrieves a local GitLab issue markdown file by issue number. Scaffolded until syncer subtasks land.
       tags: [Local Files]
       x-pass-as-object: true
@@ -407,7 +407,7 @@ paths:
   /comments/manage:
     post:
       operationId: manage_issue_comment
-      summary: Manage GitLab issue comments
+      summary: Post or edit a GitLab issue comment (corrections go in the BODY, not a comment); use when replying in dialogue.
       description: Creates or updates a GitLab issue comment (note) via the GitLab GraphQL API.
       tags: [Issues]
       x-pass-as-object: true
@@ -445,7 +445,7 @@ paths:
   /issues/{issue_number}/labels/manage:
     post:
       operationId: manage_issue_labels
-      summary: Manage GitLab issue labels
+      summary: Add or remove exact label names on a GitLab issue; use when triaging or updating ticket classification.
       description: Adds or removes GitLab issue labels (by name) via the GitLab GraphQL API.
       tags: [Issues]
       x-pass-as-object: true
@@ -486,7 +486,7 @@ paths:
   /issues/{issue_number}/assignees/manage:
     post:
       operationId: manage_issue_assignees
-      summary: Manage GitLab issue assignees
+      summary: Assign or unassign GitLab issue owners by username; use when claiming an issue lane or releasing one.
       description: Adds or removes GitLab issue assignees (by username) via the GitLab GraphQL API.
       tags: [Issues]
       x-pass-as-object: true
