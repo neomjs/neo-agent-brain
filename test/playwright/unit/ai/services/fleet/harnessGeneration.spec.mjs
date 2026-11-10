@@ -4,6 +4,7 @@ import os             from 'node:os';
 import path           from 'node:path';
 import {
     harnessGenerationId,
+    listHarnessGenerations,
     materializeHarnessGeneration,
     selectHarnessGeneration
 } from '../../../../../../ai/services/fleet/harnessGeneration.mjs';
@@ -139,6 +140,24 @@ test.describe('harnessGeneration', () => {
         expect(ledger().admitted.map(entry => entry.id)).toEqual([older.id, newer.id]);
         expect(selectHarnessGeneration({root, family: 'codex-desktop'}).id).toBe(newer.id);
         expect(staging()).toEqual([])
+    });
+
+    test('lists every admitted generation whose copy is present, newest first; a removed copy drops out of the list and the selection', async () => {
+        const source = makeSource(roots);
+        const older  = await materializeHarnessGeneration({root, family: 'codex-desktop', sourceBundle: source, seams: build()});
+        const newer  = await materializeHarnessGeneration({
+            root, family: 'codex-desktop', sourceBundle: source, seams: build({shortVersion: '26.1110.1', buildVersion: '26000', cdhash: 'e'.repeat(64)})
+        });
+
+        expect(listHarnessGenerations({root, family: 'codex-desktop'})).toMatchObject([
+            {id: newer.id, binaryPath: newer.binaryPath, shortVersion: '26.1110.1', buildVersion: '26000'},
+            {id: older.id, binaryPath: older.binaryPath}
+        ]);
+
+        fs.rmSync(path.join(familyDir(), newer.id), {recursive: true, force: true});
+
+        expect(listHarnessGenerations({root, family: 'codex-desktop'}).map(({id}) => id)).toEqual([older.id]);
+        expect(selectHarnessGeneration({root, family: 'codex-desktop'}).id).toBe(older.id)
     });
 
     test('a published copy whose seal no longer verifies is reported, never replaced', async () => {
