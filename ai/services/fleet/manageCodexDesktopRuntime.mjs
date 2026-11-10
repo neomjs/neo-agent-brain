@@ -1,11 +1,14 @@
-import {execFileSync}  from 'node:child_process';
-import fs              from 'node:fs';
-import {createRequire} from 'node:module';
-import path            from 'node:path';
+import {execFileSync} from 'node:child_process';
+import path           from 'node:path';
+import {
+    assertExecutableFile,
+    assertReadableFile,
+    bundleFs,
+    physicalRealpath,
+    scanBundleMarkers
+} from './inspectAppBundle.mjs';
 
 const
-    // Electron virtualizes ASAR paths; bundle inspection needs their physical bytes.
-    bundleFs = process.versions.electron ? createRequire(import.meta.url)('original-fs') : fs,
     SPARKLE_ENV_MARKER = 'CODEX_SPARKLE_ENABLED',
     SPARKLE_WINDOW_RADIUS = 64,
     ASAR_MARKERS = Object.freeze([
@@ -52,7 +55,7 @@ export function probeCodexDesktopCapabilities({binaryPath, fsImpl = bundleFs} = 
     let mainBinary;
 
     try {
-        mainBinary = realpath(fsImpl, binaryPath);
+        mainBinary = physicalRealpath(fsImpl, binaryPath);
         assertExecutableFile(fsImpl, mainBinary);
     } catch {
         return unavailable('packaged-main-unavailable');
@@ -77,7 +80,7 @@ export function probeCodexDesktopCapabilities({binaryPath, fsImpl = bundleFs} = 
     try {
         assertReadableFile(fsImpl, appAsar);
         assertReadableFile(fsImpl, framework);
-        crashpadExecutable = realpath(fsImpl, crashpadSymlink);
+        crashpadExecutable = physicalRealpath(fsImpl, crashpadSymlink);
         assertExecutableFile(fsImpl, crashpadExecutable);
     } catch {
         return unavailable('required-app-bundle-resource-unavailable', {binaryPath: mainBinary, appBundle});
@@ -93,7 +96,7 @@ export function probeCodexDesktopCapabilities({binaryPath, fsImpl = bundleFs} = 
         return unavailable('updater-disable-predicate-missing', {binaryPath: mainBinary, appBundle});
     }
 
-    const frameworkMissing = missingMarkers(framework, FRAMEWORK_MARKERS, fsImpl);
+    const frameworkMissing = scanBundleMarkers(framework, FRAMEWORK_MARKERS, fsImpl).missing;
 
     if (frameworkMissing.length) {
         return unavailable(`chromium-contract-marker-missing:${frameworkMissing.join(',')}`, {binaryPath: mainBinary, appBundle});
@@ -365,11 +368,6 @@ function isStrictlyContained(root, target) {
     return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
-/** @returns {String[]} @private */
-function missingMarkers(file, markers, fsImpl) {
-    return scanMarkers(file, markers, fsImpl).missing;
-}
-
 /**
  * Single-pass streaming scan of `app.asar` for required contract markers and a semantic
  * `CODEX_SPARKLE_ENABLED` vs `false` comparison within a `±64`-byte window. Exits early as soon as
@@ -378,7 +376,7 @@ function missingMarkers(file, markers, fsImpl) {
  * @private
  */
 function scanAsarContracts(file, markers, fsImpl) {
-    const scan = scanMarkers(file, markers, fsImpl, {
+    const scan = scanBundleMarkers(file, markers, fsImpl, {
         windowMarker   : SPARKLE_ENV_MARKER,
         windowRadius   : SPARKLE_WINDOW_RADIUS,
         windowPredicate: matchesUpdaterDisablePredicate
@@ -394,90 +392,6 @@ function scanAsarContracts(file, markers, fsImpl) {
 function matchesUpdaterDisablePredicate(windowText) {
     return UPDATER_DISABLE_LHS_PATTERN.test(windowText)
         || UPDATER_DISABLE_RHS_PATTERN.test(windowText);
-}
-
-/**
- * Memory-bounded binary marker scan with optional bounded-window predicate matching.
- * A tail preserves marker and window matches split across 1 MiB chunk boundaries.
- * @returns {{missing: String[], windowMatched: Boolean}}
- * @private
- */
-function scanMarkers(file, markers, fsImpl, {windowMarker = null, windowRadius = 0, windowPredicate = null} = {}) {
-    const
-        pending          = new Map(markers.map(marker => [marker, Buffer.from(marker)])),
-        windowMarkerBuf  = windowMarker ? Buffer.from(windowMarker) : null,
-        found            = new Set(),
-        chunk            = Buffer.allocUnsafe(1024 * 1024),
-        maxMarkerLen     = Math.max(...[...pending.values()].map(marker => marker.length), 1),
-        windowTailLength = windowMarkerBuf ? (2 * windowRadius) + windowMarkerBuf.length - 1 : 0,
-        tailSize         = Math.max(maxMarkerLen - 1, windowTailLength),
-        descriptor       = fsImpl.openSync(file, 'r');
-
-    let tail          = Buffer.alloc(0),
-        position      = 0,
-        windowMatched = !windowMarkerBuf;
-
-    try {
-        while (pending.size || !windowMatched) {
-            const bytesRead = fsImpl.readSync(descriptor, chunk, 0, chunk.length, position);
-            if (!bytesRead) break;
-
-            position += bytesRead;
-
-            const haystack = Buffer.concat([tail, chunk.subarray(0, bytesRead)]);
-
-            for (const [text, marker] of pending) {
-                if (haystack.indexOf(marker) !== -1) {
-                    found.add(text);
-                    pending.delete(text);
-                }
-            }
-
-            if (!windowMatched) {
-                for (
-                    let offset = haystack.indexOf(windowMarkerBuf);
-                    offset !== -1;
-                    offset = haystack.indexOf(windowMarkerBuf, offset + 1)
-                ) {
-                    const
-                        windowStart = Math.max(0, offset - windowRadius),
-                        windowEnd   = Math.min(haystack.length, offset + windowMarkerBuf.length + windowRadius),
-                        windowText  = haystack.subarray(windowStart, windowEnd).toString('utf8');
-
-                    if (windowPredicate(windowText)) {
-                        windowMatched = true;
-                        break;
-                    }
-                }
-            }
-
-            tail = tailSize ? haystack.subarray(Math.max(0, haystack.length - tailSize)) : Buffer.alloc(0);
-        }
-    } finally {
-        fsImpl.closeSync(descriptor);
-    }
-
-    return {
-        missing: markers.filter(marker => !found.has(marker)),
-        windowMatched
-    };
-}
-
-/** @private */
-function assertReadableFile(fsImpl, file) {
-    if (!fsImpl.statSync(file).isFile()) throw new Error('not a file');
-    fsImpl.accessSync(file, fs.constants.R_OK);
-}
-
-/** @private */
-function assertExecutableFile(fsImpl, file) {
-    if (!fsImpl.statSync(file).isFile()) throw new Error('not a file');
-    fsImpl.accessSync(file, fs.constants.X_OK);
-}
-
-/** @returns {String} @private */
-function realpath(fsImpl, file) {
-    return (fsImpl.realpathSync.native ?? fsImpl.realpathSync)(file);
 }
 
 /** @private */

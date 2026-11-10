@@ -27,7 +27,7 @@ import {LAUNCH_ADMISSION_REASONS}                                               
 import {isOnInstance}                                                                     from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities}                       from './manageCodexDesktopRuntime.mjs';
 import {HARNESS_GENERATION_FAMILIES, listHarnessGenerations, materializeHarnessGeneration,
-        readHarnessBundleInfo, readHarnessGenerationLedger}                                from './harnessGeneration.mjs';
+        readHarnessBundleInfo, readHarnessGenerationLedger, readHarnessHostGate}           from './harnessGeneration.mjs';
 import {GIT_IDENTITY_ENV, gitIdentityEnv}                                         from './seatGitIdentity.mjs';
 import {runtimeGenerationPin, readRuntimeGeneration, readRuntimeGenerationRecord} from './runtimeGeneration.mjs';
 import {assertRuntimeGenerationReferences, waitForRuntimeGenerationReferences}    from './runtimeGenerationLease.mjs';
@@ -534,6 +534,14 @@ class FleetLifecycleService extends Base {
      * @member {Object|null} harnessGenerationStore=null
      */
     harnessGenerationStore = null
+
+    /**
+     * The host check an opted-in family's Start makes before it admits or selects a generation, with
+     * `readHarnessHostGate`'s signature (`({family}) => {ready, reason}`). Defaults to it; injectable so unit
+     * specs never read the host's managed preferences.
+     * @member {Function|null} harnessHostGate=null
+     */
+    harnessHostGate = null
 
     /**
      * The admission of each installed build this process already tried, keyed by store root, family and
@@ -3509,15 +3517,31 @@ class FleetLifecycleService extends Base {
     }
 
     /**
+     * @summary Refuses an opted-in family whose host does not let its seats run generations, before any
+     * admission or ledger write: Claude Desktop's seats need its own updater off by policy.
+     * @param {String} harnessType
+     * @throws {Error} Naming the family and what the host lacks.
+     * @private
+     */
+    assertHarnessHostGate(harnessType) {
+        const {ready, reason} = (this.harnessHostGate || readHarnessHostGate)({family: harnessType});
+
+        if (!ready) throw new Error(`FleetLifecycleService: '${harnessType}' cannot start from admitted harness generations: ${reason}.`)
+    }
+
+    /**
      * @summary The generation an opted-in family's next Start launches, admitting nothing: its newest admitted
      * generation, or `null` when the family has not opted in. A Start reaches it through
      * {@link resolveHarnessGeneration}, which admits a new installed build first.
      * @param {String} harnessType
      * @returns {Object|null} One of {@link harnessGenerationsOf}.
-     * @throws {Error} When the family opted in and holds no admitted generation; names its latest rejection.
+     * @throws {Error} When the family opted in and its host gate does not hold ({@link assertHarnessHostGate}),
+     * or when it holds no admitted generation; then it names the latest rejection.
      */
     selectedHarnessGeneration(harnessType) {
         if (!this.harnessGenerationsOptedIn(harnessType)) return null;
+
+        this.assertHarnessHostGate(harnessType);
 
         const [selected] = this.harnessGenerationsOf(harnessType);
 
@@ -3537,10 +3561,12 @@ class FleetLifecycleService extends Base {
      * its version and this process has not tried it. An opted-in Start never falls back to the installed bundle.
      * @param {String} harnessType
      * @returns {Promise<Object|null>}
-     * @throws {Error} As {@link selectedHarnessGeneration}.
+     * @throws {Error} As {@link selectedHarnessGeneration}; a host gate that does not hold refuses before admission.
      */
     async resolveHarnessGeneration(harnessType) {
         if (!this.harnessGenerationsOptedIn(harnessType)) return null;
+
+        this.assertHarnessHostGate(harnessType);
 
         const
             store     = this.getHarnessGenerationStore(),
