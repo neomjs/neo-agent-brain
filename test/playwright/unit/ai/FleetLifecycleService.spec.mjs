@@ -3064,10 +3064,27 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         }
     });
 
-    // The refusals the handoff keeps: neither is one seat's unprovable fact.
+    test('a record that a refused Start left holds no process: the handoff passes it over and seals for the running seat', async () => {
+        const fixture = await admittedDesktopSeats(['seat']), stages = [];
+        try {
+            // what a Codex Desktop Start leaves when its capability probe refuses the installed build before spawn
+            FleetLifecycleService.publishUnavailable({id: 'refused', launch: {}, resolvedCommand: process.execPath, reason: 'updater-disable-predicate-missing'});
+            expect(await FleetLifecycleService.handoffRuntimeCustody({verifyRuntime: fixture.runtime, onStage: stage => stages.push(stage)})).toEqual({state: 'handed-off'});
+            expect(stages).toContain('survivor seat: verified');
+            expect(dispositions(fixture.sealed())).toEqual({seat: ['active', {'neural-link': 'active'}]})
+        } finally {
+            await fixture.teardown()
+        }
+    });
+
+    // The refusals the handoff keeps: none is one seat's unprovable fact. A `failed` label alone never passes a seat over.
     for (const [label, arrange, reason] of [
         ['a Start still pending', () => FleetLifecycleService.pendingStarts.set('late', new Map()), 'a Start is pending'],
-        ['a seat without a generation-bound Start', ({seats}) => { delete seats.peer.record.runtimeStart }, 'seat peer is not a live original Start']
+        ['a seat without a generation-bound Start', ({seats}) => { delete seats.peer.record.runtimeStart }, 'seat peer is not a live original Start'],
+        ['a held seat without a generation-bound Start', ({seats}) => {
+            delete seats.peer.record.runtimeStart;
+            FleetLifecycleService.holdUnidentifiedSeat(seats.peer.record)
+        }, 'seat peer is not a live original Start']
     ]) {
         test(`${label} still refuses the whole handoff, and the refusal revokes nothing`, async () => {
             const fixture = await admittedDesktopSeats(['seat', 'peer']), stages = [];
