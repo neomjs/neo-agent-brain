@@ -60,7 +60,7 @@ x-neo-harness-tool-projection:
 paths:
   /community/batches/admit:
     post:
-      summary: Admit a bounded community batch after server-side tenant, source, and epoch resolution.
+      summary: "Ingest a bounded community event batch over streamable-http; use when a hosted connector pushes new source events."
       operationId: admit_community_batch
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -86,7 +86,7 @@ paths:
 
   /community/sources/health:
     post:
-      summary: Read bounded readiness for a tenant-scoped registered community source.
+      summary: "Read lifecycle, epoch, and receipt readiness for a community source; use when checking hosted connector health."
       operationId: get_community_source_health
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -117,7 +117,7 @@ paths:
 
   /community/activity:
     post:
-      summary: Read tenant-scoped community activity metadata with citations and honest coverage.
+      summary: "List community activity metadata and citation handles for a time window; use when browsing tenant-scoped source events."
       operationId: get_community_activity
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -142,7 +142,7 @@ paths:
 
   /community/activity/content:
     post:
-      summary: Read one explicitly requested current community-content item through source trust checks.
+      summary: "Fetch current text content for one community activity handle; use when source-trust inspection of one event is needed."
       operationId: get_community_activity_content
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -167,7 +167,7 @@ paths:
 
   /community/activity/seen:
     post:
-      summary: Idempotently mark one community activity handle seen for the authenticated viewer.
+      summary: "Mark one community activity handle seen for the current viewer; use when dismissing an event in UI presentation only."
       operationId: mark_community_activity_seen
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -191,7 +191,7 @@ paths:
 
   /community/activity/claim:
     post:
-      summary: Atomically validate an eligible community event and bind it to one canonical A2A Task.
+      summary: "Bind an eligible community event atomically to one canonical A2A Task; use when claiming an unclaimed community item."
       operationId: claim_community_activity_task
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -217,7 +217,7 @@ paths:
 
   /community/activity/attention-counts:
     post:
-      summary: Read bounded tenant/source community-attention counts, oldest age, coverage, and watermarks without prose.
+      summary: "Read unclaimed community-attention counts, oldest age, and watermarks; use when polling source triage backlog badges."
       operationId: get_community_activity_attention_counts
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -241,7 +241,7 @@ paths:
 
   /healthcheck:
     get:
-      summary: Health Check
+      summary: "Probe plane health and WAL drain; use when checking MCP readiness."
       operationId: healthcheck
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -292,7 +292,7 @@ paths:
 
   /tool/handbook:
     post:
-      summary: Tool Handbook
+      summary: "Load full usage docs and schemas for one Memory Core tool; use when calling an unfamiliar tool or checking edge rules."
       operationId: get_mcp_tool_handbook
       x-neo-tool-tier: read
       x-annotations:
@@ -339,7 +339,7 @@ paths:
 
   /diagnostics/tool-metrics:
     post:
-      summary: Get Memory Core Tool Metrics
+      summary: "Read redacted per-tool call, latency, slow-call, and WAL metrics; use when auditing Memory Core load or tool adoption."
       operationId: get_memory_core_tool_metrics
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -385,7 +385,7 @@ paths:
 
   /deployment/state/snapshot:
     post:
-      summary: Read the graph-independent deployment-state bridge snapshot.
+      summary: "Read the orchestrator bridge snapshot of service health and backups; use when checking container deployment status."
       operationId: get_deployment_state_snapshot
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -421,7 +421,7 @@ paths:
 
   /deployment/inspect:
     post:
-      summary: Inspect bounded cloud deployment state from the orchestrator bridge.
+      summary: "Inspect orchestrator service logs/diagnoses plus optional mailboxReadState; use when debugging plane or inbox state."
       operationId: inspect_deployment
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -504,7 +504,7 @@ paths:
 
   /handoff/sandman:
     post:
-      summary: Read the Sandman handoff (Golden Path by default; gap/consolidation sections on request) with freshness metadata.
+      summary: "Read sandman_handoff.md sections with staleness metadata; use when checking Dream Pipeline Golden Path or gap notes."
       operationId: get_sandman_handoff
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -564,7 +564,7 @@ paths:
 
   /handoff/computed-route:
     post:
-      summary: Read the computed Golden Path sidecar (validated route + corpus-projection admission).
+      summary: "Read the validated computed-route.json Golden Path sidecar; use when a UI or caller needs structured route admission."
       operationId: get_computed_route
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -582,7 +582,7 @@ paths:
 
   /fleet/pr-lane-activity:
     post:
-      summary: Read the Fleet activity feed's PR/lane slot from the corpus the orchestrator materializes.
+      summary: "Read PR, issue, lane-claim, and stall events from the materialized corpus; use when feeding the Fleet activity view."
       operationId: get_pr_lane_activity
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -614,7 +614,7 @@ paths:
 
   /rem/pipeline-state:
     post:
-      summary: Get REM Pipeline State
+      summary: "Read the 5-axis REM digestion, session-node, and conflict snapshot; use when diagnosing Dream/REM pipeline backlog."
       operationId: get_rem_pipeline_state
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -651,7 +651,7 @@ paths:
 
   /diagnostics/sqlite-holders:
     get:
-      summary: Get SQLite Holder Diagnostics
+      summary: "List OS processes currently holding Memory Core SQLite files open; use when debugging database locks on the host."
       operationId: get_sqlite_holder_diagnostics
       x-neo-tool-tier: extended
       x-annotations:
@@ -681,7 +681,7 @@ paths:
 
   /who-is-online:
     post:
-      summary: Report recent maintainer activity for review routing and lane handoffs.
+      summary: "Report recent maintainer turn activity, wake reachability, and review load; use when routing reviews or handoffs."
       operationId: who_is_online
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -907,7 +907,7 @@ paths:
 
   /memories:
     post:
-      summary: "Write a turn diary: decisions/facts in decisionContext; outcomes/next steps in response. Recalled via embeddings."
+      summary: "Save the turn diary (WAL-immediate, embedding recall deferred); use when finishing every turn before responding."
       operationId: add_memory
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -979,7 +979,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     get:
-      summary: Get Session Memories
+      summary: "List turn diaries of one known sessionId in chronological order; use when auditing a single session's turn history."
       operationId: get_session_memories
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1035,7 +1035,7 @@ paths:
 
   /memories/query:
     post:
-      summary: Search Raw Memories
+      summary: "Semantic vector search over turn-level diaries (summary or full); use when mining prior decisions or bugs by meaning."
       operationId: query_raw_memories
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1075,7 +1075,7 @@ paths:
 
   /memories/recent:
     get:
-      summary: Recall recent turns for recovery; opt in to policy-clamped public peer summaries or team public turns.
+      summary: "Reverse-chronological recall of recent turns from WAL and store; use when recovering context or checking peer recency."
       operationId: query_recent_turns
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1172,7 +1172,7 @@ paths:
 
   /lanes/landscape:
     get:
-      summary: Synthesize a non-authoritative "what IS the lane landscape right now" current-state Bird View.
+      summary: "Synthesize a live Bird View of open epics, blockers, and unassigned work; use when orienting before picking a lane."
       operationId: explore_lane_landscape
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1347,7 +1347,7 @@ paths:
 
   /memories/history:
     get:
-      summary: Synthesize a non-authoritative "what happened" Bird View over a Memory/session time window.
+      summary: "Synthesize a temporal Bird View over turn diaries and summaries; use when asking what happened across a time window."
       operationId: explore_memory_history
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1476,7 +1476,7 @@ paths:
 
   /pull-requests/history:
     get:
-      summary: Synthesize a cite-backed Bird View over fully resolved pull-request conversations.
+      summary: "Synthesize a cite-backed Bird View over merged or closed PR threads; use when reviewing historical PR arcs by window."
       operationId: explore_pull_request_history
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1664,7 +1664,7 @@ paths:
 
   /context/frontier:
     get:
-      summary: Read the active context frontier (compact counts + top neighbors by default; full topology on request).
+      summary: "Read the active Frontier node and its top weighted graph neighbors; use when priming current project priority context."
       operationId: get_context_frontier
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1715,7 +1715,7 @@ paths:
 
   /context/frontier/mutate:
     post:
-      summary: Mutate Context Frontier
+      summary: "Update the active Frontier node's priority edges in the graph; use when project or milestone focus explicitly pivots."
       operationId: mutate_frontier
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -1764,7 +1764,7 @@ paths:
 
   /context/pre_brief:
     post:
-      summary: Contextual Pre-Briefing
+      summary: "Hydrate top-weight graph neighbors and linked summaries for a node targetId; use when priming context on a graph node."
       operationId: pre_brief_session
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -1812,7 +1812,7 @@ paths:
 
   /summaries:
     get:
-      summary: Get All Summaries
+      summary: "List compressed session summaries newest-first with agent/category filters; use when browsing recent session rollups."
       operationId: get_all_summaries
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1871,7 +1871,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
   /summaries/query:
     post:
-      summary: Search Summaries
+      summary: "Semantic search over compressed session summaries; use when finding past sessions by topic faster than turn diaries."
       operationId: query_summaries
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -1911,7 +1911,7 @@ paths:
 
   /sessions/purge:
     post:
-      summary: Purge Session
+      summary: "Permanently delete all raw turn diaries and summaries for one sessionId; use when admin cleanup removes a bad session."
       operationId: purge_session
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -1955,7 +1955,7 @@ paths:
 
   /sessions/resume:
     post:
-      summary: Validate whether a session id is safe to resume.
+      summary: "Check read-only whether a candidate sessionId is safe to reconnect; use when validating session state before resume."
       operationId: resume_session
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -2026,7 +2026,7 @@ paths:
 
   /sessions/set_id:
     post:
-      summary: Set Session ID
+      summary: "Override the legacy process-global active session ID; use when rebinding a single-tenant stdio session after restart."
       operationId: set_session_id
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -2080,7 +2080,7 @@ paths:
 
   /graph/nodes/{id}:
     get:
-      summary: Get Node by ID
+      summary: "Fetch one knowledge-graph node record by exact ID (lean or full facts); use when inspecting a known entity or agent."
       operationId: get_node
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -2126,7 +2126,7 @@ paths:
 
   /graph/neighbors/{id}:
     get:
-      summary: Get Node Neighbors
+      summary: "List 1-hop adjacent graph nodes and edge metadata for one node ID; use when inspecting direct edges without traversal."
       operationId: get_neighbors
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -2192,7 +2192,7 @@ paths:
 
   /graph/search:
     get:
-      summary: Search Graph Nodes
+      summary: "Substring search over knowledge-graph node IDs, names, and descriptions; use when finding a node without its exact ID."
       operationId: search_nodes
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -2229,7 +2229,7 @@ paths:
 
   /graph/topology:
     post:
-      summary: Query Hybrid Graph
+      summary: "Traverse multi-hop (maxDepth) graph nodes and edges around a nodeId; use when 1-hop neighbor lookup is too shallow."
       operationId: query_hybrid_graph
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -2271,7 +2271,7 @@ paths:
 
   /graph/scene:
     post:
-      summary: Whole-graph columnar scene for Observatory/Cockpit; in agent turns use query_hybrid_graph, get_neighbors, or get_node.
+      summary: "Bulk-read the full columnar graph scene; use when rendering Observatory/Cockpit views (never in routine agent turns)."
       operationId: get_graph_scene
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -2414,7 +2414,7 @@ paths:
 
   /permissions/grant:
     post:
-      summary: Grant Permission
+      summary: "Grant a permission edge (to, scope) from the caller; use when delegating mailbox or graph access to another identity."
       operationId: grant_permission
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -2459,7 +2459,7 @@ paths:
 
   /permissions/revoke:
     post:
-      summary: Revoke Permission
+      summary: "Revoke a permission edge (to, scope) granted by the caller; use when withdrawing delegated access from an identity."
       operationId: revoke_permission
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -2504,7 +2504,7 @@ paths:
 
   /permissions:
     get:
-      summary: List Permissions
+      summary: "List permission edges for an identity (caller by default); use when checking active mailbox or access delegations."
       operationId: list_permissions
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -2536,7 +2536,7 @@ paths:
 
   /mailbox/messages:
     post:
-      summary: Send an A2A message to one peer or an agent broadcast.
+      summary: "Send a 1:1 DM, AGENT:* broadcast, or A2A Task; use when notifying peers, routing reviews, or broadcasting lane claims."
       operationId: add_message
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -2684,7 +2684,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     get:
-      summary: List one PAGE of A2A mailbox messages, newest-first.
+      summary: "List a newest-first mailbox page or unread counts (inbox/outbox); use when checking unread A2A or paging by filter."
       operationId: list_messages
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -2917,7 +2917,7 @@ paths:
 
   /mailbox/messages/{messageId}:
     get:
-      summary: Get Message
+      summary: "Fetch the full body and metadata of one A2A message by messageId; use when reading a specific DM or handover payload."
       operationId: get_message
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -2993,7 +2993,7 @@ paths:
 
   /mailbox/messages/query:
     post:
-      summary: Semantic recall over A2A messages you can open, ranked by similarity; list_messages filters and sorts.
+      summary: "Semantic vector search over authorized A2A messages by meaning; use when recalling past peer threads without exact IDs."
       operationId: query_messages
       x-neo-tool-tier: read
       x-pass-as-object: true
@@ -3075,7 +3075,7 @@ paths:
 
   /mailbox/messages/read:
     post:
-      summary: Mark selected A2A messages read, or drain the unread messages you were actually shown.
+      summary: "Stamp selected A2A message IDs (or shown unread inbox) as read; use when digesting unread DMs or broadcasts in a turn."
       operationId: mark_read
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -3126,7 +3126,7 @@ paths:
 
   /mailbox/messages/{messageId}/archive:
     post:
-      summary: Archive Message (receiver-side)
+      summary: "Hide an A2A message from the recipient's default inbox without deleting it; use when decluttering a processed thread."
       operationId: archive_message
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -3161,7 +3161,7 @@ paths:
 
   /mailbox/messages/{messageId}/delete:
     post:
-      summary: Delete Message (sender-side retraction)
+      summary: "Retract a sent A2A message's subject and body while keeping thread edges; use when the sender must redact a mistake."
       operationId: delete_message
       x-neo-tool-tier: admin
       x-pass-as-object: true
@@ -3196,7 +3196,7 @@ paths:
 
   /mailbox/tasks/transition:
     post:
-      summary: Transition A2A Task State
+      summary: "Advance an A2A Task state with optimistic locking; use when claiming, completing, blocking, or failing a routed task."
       operationId: transition_task
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -3256,7 +3256,7 @@ paths:
 
   /turn-presence/record:
     post:
-      summary: Record active-turn liveness for the current agent session.
+      summary: "Write a start, progress, or terminal turn-presence heartbeat; use when hooks or seats report active session liveness."
       operationId: record_turn_presence
       x-neo-tool-tier: write
       x-pass-as-object: true
@@ -3303,7 +3303,7 @@ paths:
 
   /wake-subscriptions/manage:
     post:
-      summary: Manage WAKE_SUBSCRIPTION
+      summary: "Register, update, list, or rotate agent wake-event subscriptions; use when Fleet or daemons wire seat wake delivery."
       operationId: manage_wake_subscription
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -3404,7 +3404,7 @@ paths:
   # better and does: it stamps an authenticated `custodian` the caller cannot supply.
   /neural-link/transactions/save:
     post:
-      summary: Archive one committed Neural Link transaction; answers a named refusal instead of throwing.
+      summary: "Archive one committed Neural Link transaction to the graph store; use when persisting a completed live UI edit batch."
       operationId: save_nl_transaction
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -3426,7 +3426,7 @@ paths:
 
   /neural-link/transactions/get:
     post:
-      summary: Read one archived Neural Link transaction by archiveId; status found, not-found, or unavailable.
+      summary: "Fetch one archived Neural Link transaction by archiveId; use when inspecting or preparing a saved UI edit for replay."
       operationId: get_nl_transaction
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -3448,7 +3448,7 @@ paths:
 
   /neural-link/transactions/replayed:
     post:
-      summary: Mark one Neural Link archive replayed; answers the new replayCount or a named failure.
+      summary: "Increment replayCount and stamp lastReplayedAt on a Neural Link archive; use when a saved UI transaction replays."
       operationId: mark_nl_transaction_replayed
       x-neo-tool-tier: extended
       x-pass-as-object: true
@@ -3470,7 +3470,7 @@ paths:
 
   /neural-link/actions/admit:
     post:
-      summary: Write-only admission for Neural Link action telemetry; drops every field outside the admitted set.
+      summary: "Record write-only Neural Link tool-action telemetry rows; use when the host bridge flushes bounded UI call metadata."
       operationId: admit_nl_actions
       x-neo-tool-tier: extended
       x-pass-as-object: true

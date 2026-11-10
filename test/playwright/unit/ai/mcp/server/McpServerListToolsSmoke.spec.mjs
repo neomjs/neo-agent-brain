@@ -462,7 +462,7 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
         expect(addMemory.description).toMatch(/semantic|embed/i);            // still discloses the deferral
         expect(addMemory.description).not.toMatch(/not queryable/i);         // and does not over-claim it
         expect(addMemory.description.length).toBeLessThanOrEqual(120);
-        expect(resumeSession.description).toBe('Validate whether a session id is safe to resume.');
+        expect(resumeSession.description).toBe('Check read-only whether a candidate sessionId is safe to reconnect; use when validating session state before resume.');
         expect(resumeSession.description).not.toContain('SESSION_BUSY');
         expect(addMemory.inputSchema.required).toEqual(['prompt', 'decisionContext', 'response']);
         expect(addMemory.inputSchema.properties.prompt.type).toBe('string');
@@ -1100,5 +1100,31 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
                 expect(summary.toLowerCase(), `${server.name}.${operationId} must not be the bare title`).not.toBe(bareTitle);
             }
         }
+    });
+
+    test('memory-core summaries follow <what>; use when <trigger> without repeating operationId (#1564)', () => {
+        const
+            server         = servers.find(item => item.name === 'memory-core'),
+            operationsById = getOperationsById(server),
+            entries        = Object.entries(operationsById),
+            summaries      = new Set();
+
+        expect(entries.length, 'memory-core operation count').toBe(55);
+
+        for (const [operationId, operation] of entries) {
+            const
+                summary   = operation.summary,
+                bareTitle = operationId.replace(/_/g, ' ').toLowerCase(),
+                bytes     = Buffer.byteLength(summary, 'utf8'),
+                maxBytes  = operationId === 'healthcheck' ? 68 : 120;
+
+            expect(bytes, `memory-core.${operationId} summary byte length`).toBeLessThanOrEqual(maxBytes);
+            expect(summary, `memory-core.${operationId} must match <what>; use when <trigger>`).toMatch(/^[^;]+; use when [^;]+$/);
+            expect(summary.toLowerCase(), `memory-core.${operationId} must not repeat operationId`).not.toContain(operationId.toLowerCase());
+            expect(summary.toLowerCase(), `memory-core.${operationId} must not be the bare title`).not.toBe(bareTitle);
+            summaries.add(summary);
+        }
+
+        expect(summaries.size, 'memory-core summaries must be distinct across all 55 tools').toBe(55);
     });
 });
