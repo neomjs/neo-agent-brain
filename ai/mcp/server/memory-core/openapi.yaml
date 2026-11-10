@@ -986,10 +986,10 @@ paths:
       x-annotations:
         readOnlyHint: true
       description: |
-        Retrieves all memories for a specific session, in chronological order.
+        Retrieves all memories for a specific session in chronological order, returning prompt, decisionContext (concise decisions and deciding facts), and response fields.
 
         **When to Use:**
-        Useful for reviewing the full, unabridged history of a single work session, for example, during a session recovery operation.
+        Useful for reviewing the chronological history of a single work session, for example during session recovery.
       tags: [Memories]
       parameters:
         - name: sessionId
@@ -1045,7 +1045,7 @@ paths:
         Performs semantic search across all raw memories using vector similarity. This is Stage 2 of the Two-Stage Query Protocol.
 
         **When to Use:**
-        After using the Knowledge Base to understand the technical "how," use this tool to search your own history to understand the "why." It helps you recall past decisions, user requirements, and approaches you may have already tried.
+        After using the Knowledge Base to understand the technical "how," use this tool to search prior turns (`prompt`, `decisionContext` on `projection='private'`, and `response`) to recall recorded decisions, deciding facts, user requirements, and approaches already tried.
       tags: [Memories]
       requestBody:
         required: true
@@ -1092,7 +1092,7 @@ paths:
         joining Chroma with a pending-embed WAL overlay when missing/rejected; collection.get has no
         local timeout). An explicit memorySharing request is narrowed by deployment policy: effective
         team sharing accepts public summaries or public full prompt/response (projection=public, omitting
-        the private thought field populated from decisionContext), whereas effective legacy (including team clamped to legacy) and implicit peer reads
+        the private decisionContext field of concise decisions and deciding facts), whereas effective legacy (including team clamped to legacy) and implicit peer reads
         accept public summaries only. Effective shared policies refuse projection=private before reads;
         omitted sharing preserves tenant-scoped recovery and own-private recall.
       tags: [Memories]
@@ -1140,7 +1140,7 @@ paths:
         - name: projection
           in: query
           required: false
-          description: "'public' (default) excludes the private thought field (populated from decisionContext); 'private' includes it (own-agent tenant recovery only; refused on effective team/legacy before reads)"
+          description: "'public' (default) excludes the private decisionContext field (concise decisions and deciding facts); 'private' includes it (own-agent tenant recovery only; refused on effective team/legacy before reads)"
           schema:
             type: string
             enum: [public, private]
@@ -2126,14 +2126,14 @@ paths:
 
   /graph/neighbors/{id}:
     get:
-      summary: "List 1-hop adjacent graph nodes and edge metadata for one node ID; use when inspecting direct edges without traversal."
+      summary: "List bounded 1-hop adjacent graph nodes with edge filters; use when inspecting direct edges without traversal."
       operationId: get_neighbors
       x-neo-tool-tier: read
       x-pass-as-object: true
       x-annotations:
         readOnlyHint: true
       description: |
-        Retrieves adjacent connected nodes (neighbors) alongside relationship metadata.
+        Retrieves bounded, deterministically ordered adjacent nodes (neighbors) alongside connecting edge metadata and pagination counters (`totalCount`, `truncated`, `nextOffset`). Supports filtering by traversal `direction` (`both`, `inbound`, `outbound`), adjacent node `types`, and edge `relationships`.
       tags: [Graph]
       parameters:
         - name: id
@@ -2142,9 +2142,50 @@ paths:
           description: The unique ID of the source node.
           schema:
             type: string
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of neighbors to return per page (clamped 1..200).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          description: Zero-based pagination offset into the matched neighbor set.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: direction
+          in: query
+          required: false
+          description: Edge traversal direction relative to the source node.
+          schema:
+            type: string
+            enum: [both, inbound, outbound]
+            default: both
+        - name: types
+          in: query
+          required: false
+          description: Optional adjacent node label filter (e.g. ['ISSUE', 'PULL_REQUEST', 'AGENT_MEMORY']).
+          schema:
+            type: array
+            items:
+              type: string
+        - name: relationships
+          in: query
+          required: false
+          description: Optional connecting edge relationship type filter (e.g. ['ORIGINATES_IN', 'DISCUSSED_IN']).
+          schema:
+            type: array
+            items:
+              type: string
       responses:
         '200':
-          description: List of connected Node objects with edge relationship mapping.
+          description: Paginated page of connected Node objects with edge relationship mapping and pagination metadata.
           content:
             application/json:
               schema:
@@ -2183,6 +2224,22 @@ paths:
                         semanticVectorId:
                           type: string
                           description: The adjacent node's semantic vector identifier, when present.
+                  totalCount:
+                    type: integer
+                    description: Total visible neighbors matching the active filters before pagination.
+                  truncated:
+                    type: boolean
+                    description: True when additional matched neighbors exist beyond offset + neighbors.length.
+                  nextOffset:
+                    type: integer
+                    nullable: true
+                    description: Next pagination offset when truncated is true, otherwise null.
+                  limit:
+                    type: integer
+                    description: Effective page limit applied to this response (1..200).
+                  offset:
+                    type: integer
+                    description: Effective zero-based pagination offset applied to this response.
         '500':
           description: Internal server error.
           content:
@@ -5273,9 +5330,11 @@ components:
         prompt:
           type: string
           example: "How do I create a new Neo.mjs component?"
-        thought:
+        decisionContext:
           type: string
-          example: "The user needs guidance..."
+          nullable: true
+          description: "Concise decisions and deciding facts recorded for the turn (omitted on public projections)."
+          example: "Chose Neo.component.Base over container.Base because the widget renders a single leaf VDOM node."
         response:
           type: string
           example: "To create a new Neo.mjs component..."
@@ -5349,7 +5408,7 @@ components:
         projection:
           type: string
           enum: [public, private]
-          description: "'public' omits the private thought field (populated from decisionContext) on detail='full'; 'private' preserves it."
+          description: "'public' omits the private decisionContext field (concise decisions and deciding facts) on detail='full'; 'private' preserves it."
 
     QueryMemoriesResponse:
       type: object

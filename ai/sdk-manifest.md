@@ -51,10 +51,17 @@ This manifest defines the public API for the Neo.mjs AI Infrastructure SDK. Agen
 
 ### Memory_Service
 - **`async addMemory({ prompt, response, decisionContext, sessionId? })`**
-  - Stores an interaction. `sessionId` defaults to current session.
-- **`async queryMemories({ query, nResults, sessionId? })`**
-  - Semantic search over past interactions.
+  - Stores a turn diary entry. `sessionId` defaults to current session.
+- **`async queryMemories({ query, nResults, sessionId?, detail?, projection? })`**
+  - Semantic search over past interactions (`decisionContext` included on private reads, omitted when `projection='public'`).
+- **`async queryRecentTurns({ agentIdentity?, limit?, before?, detail?, projection?, memorySharing? })`**
+  - Reverse-chronological turn recall (`decisionContext` included only when `detail='full'` and `projection='private'`).
 - **`async listMemories({ sessionId, limit, offset })`**
+  - Chronological session turn history (`prompt`, `decisionContext`, `response`).
+
+### Memory_GraphService
+- **`getNeighbors({ id, limit?, offset?, direction?, types?, relationships? })`**
+  - Bounded (`limit` default `50`, max `200`), filtered adjacent-node lookup returning `{ neighbors, totalCount, truncated, nextOffset, limit, offset }`.
 
 ### Memory_SessionService
 - **`async summarizeSessions({ sessionId? })`**

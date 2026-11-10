@@ -51,6 +51,16 @@ const CONTEXT_FRONTIER_PROJECTION_CACHE_MAX = 64;
 const contextFrontierProjectionCache        = new Map();
 
 /**
+ * @summary Rewrites legacy `Agent Thought:` headers to `Decision Context:` at the MCP read boundary.
+ * @param {String|null|undefined} document Raw or reconstructed turn document text.
+ * @returns {String|null|undefined}
+ */
+function formatTurnDocumentForRead(document) {
+    if (typeof document !== 'string') return document;
+    return document.replace(/(^|\n)Agent Thought: /g, '$1Decision Context: ');
+}
+
+/**
  * @summary Builds a tenant-and-source-disjoint cache key for last-known-good Context Frontier views.
  * @param {Object} config Resolved corpus-projection config.
  * @param {Object} [options={}]
@@ -1096,7 +1106,7 @@ class MemoryService extends Base {
             id              : graphNodeId,
             type            : RAW_MEMORY_NODE_LABEL,
             name            : `Memory: ${timestamp}`,
-            description     : `Agent thought flow inside session ${sessionId}.`,
+            description     : `Turn diary entry inside session ${sessionId}.`,
             semanticVectorId: graphNodeId,
             // Archive-aware: a tombstone set while this record was graph-pending (the projection-lag
             // window) is replayed onto the node here, so a deferred projection cannot reintroduce an
@@ -1433,7 +1443,7 @@ class MemoryService extends Base {
     }
 
     /**
-     * Retrieves all memories for a session and returns a paginated payload.
+     * @summary Retrieves all memories for a session and returns a paginated payload.
      * Each returned row carries `miniSummary` plus `summaryFallback`: `false` means the compact
      * value came from the graph, while `true` names the bounded raw-content fallback used before
      * backfill reaches that turn.
@@ -1516,7 +1526,7 @@ class MemoryService extends Base {
                     sessionId      : metadata.sessionId,
                     timestamp,
                     prompt         : metadata.prompt,
-                    thought        : metadata.thought,
+                    decisionContext: metadata.thought ?? metadata.decisionContext ?? null,
                     response       : metadata.response,
                     type           : metadata.type,
                     agent          : metadata.agent || null,
@@ -1790,7 +1800,7 @@ class MemoryService extends Base {
      * @param {String} [options.before.timestamp]    ISO timestamp of the last turn on the previous page.
      * @param {String} [options.before.id]           Node id of the last turn on the previous page (tiebreaks equal timestamps).
      * @param {String} [options.detail='summary']    `'summary'` → compact `miniSummary` straight from the graph (no Chroma join); `'full'` → join Chroma (with pending-embed WAL overlay when missing/rejected; `collection.get` has no local timeout) for `prompt`/`response`.
-     * @param {String} [options.projection='public'] `'public'` (default) excludes the private `thought` field; `'private'` includes it (own-agent tenant recovery only; refused on effective `team`/`legacy` before reads and clamped to `'public'` on `private`-policy peer reads).
+     * @param {String} [options.projection='public'] `'public'` (default) excludes the private `decisionContext` field; `'private'` includes it (own-agent tenant recovery only; refused on effective `team`/`legacy` before reads and clamped to `'public'` on `private`-policy peer reads).
      * @param {String} [options.memorySharing] Explicit private/team/legacy policy, never broader than the configured default. Effective `team` permits `detail:'summary'|'full'` with `projection:'public'`; effective `legacy` (including clamped `team`) and `implicitTeam` accept `detail:'summary'` with `projection:'public'` only.
      * @returns {Promise<{count: number, turns: Object[], nextCursor: {timestamp: String, id: String}|null, memorySharing?: Object, hint?: String}>} Reverse-chronological turns; `nextCursor` is the compound cursor to pass as `before` for the next page, or `null` when no further turns remain. `hint` explains an empty page for another identity under an owner-scoped policy.
      */
@@ -1917,7 +1927,7 @@ class MemoryService extends Base {
     /**
      * @summary Joins `AGENT_MEMORY` rows to their Chroma content for the `detail:'full'` projection.
      * The graph node id equals the Chroma document id (both are the memory's UUID), so the join key
-     * is `row.id`. The private `thought` field is included only for the explicit `'private'` projection.
+     * is `row.id`. The private `decisionContext` field is included only for the explicit `'private'` projection.
      *
      * **Pending-overlay:** turns whose embed is still deferred (or failing) have no Chroma
      * document yet — their payload is filled from the WAL instead, and a Chroma outage degrades to
@@ -1925,7 +1935,7 @@ class MemoryService extends Base {
      * even under the exact contention the decoupled write path exists for.
      *
      * @param {Object[]} rows       Graph rows from {@link queryRecentTurns}.
-     * @param {String}   projection `'public'` (default, strips `thought`) | `'private'`.
+     * @param {String}   projection `'public'` (default, omits `decisionContext`) | `'private'`.
      * @returns {Promise<Object[]>}
      */
     async _hydrateRecentTurnContent(rows, projection) {
@@ -1966,10 +1976,10 @@ class MemoryService extends Base {
                 prompt           : meta.prompt   ?? null,
                 response         : meta.response ?? null
             };
-            // Privacy: the private `thought` field is included only when the caller passed the
+            // Privacy: the private `decisionContext` field is included only when the caller passed the
             // already-authorized 'private' projection (own-agent recall — gated in queryRecentTurns).
             if (projection === 'private') {
-                turn.thought = meta.thought ?? null;
+                turn.decisionContext = meta.thought ?? meta.decisionContext ?? null;
             }
             return turn;
         });
@@ -2717,8 +2727,8 @@ class MemoryService extends Base {
      * @param {String} [options.minTrustTier] Optional minimum accepted provenance trust tier.
      * @param {Boolean} [options.conceptWalk] Optional concept-graph walk enrichment flag.
      * @param {String} [options.agentIdentity] Optional author identity filter (`'@me'`, `'@<handle>'`, or `'all'`).
-     * @param {String} [options.detail='full'] `'full'` (default) or `'summary'` (omits prompt/thought/response).
-     * @param {String} [options.projection] `'public'` (omits thought on full detail) or `'private'`.
+     * @param {String} [options.detail='full'] `'full'` (default) or `'summary'` (omits prompt/decisionContext/response).
+     * @param {String} [options.projection] `'public'` (omits decisionContext on full detail) or `'private'`.
      * @returns {Promise<{query: string, count: number, reRanked: boolean, results: Object[]}>}
      */
     async queryMemories({query, nResults, sessionId, memorySharing, minTrustTier, conceptWalk, agentIdentity, detail = 'full', projection}) {
@@ -2894,11 +2904,18 @@ class MemoryService extends Base {
                 }
 
                 if (projection === 'public') {
-                    const {thought, ...publicRow} = row;
+                    const {decisionContext, thought, ...publicRow} = row;
+                    if (typeof publicRow.document === 'string') {
+                        publicRow.document = formatTurnDocumentForRead(publicRow.document);
+                    }
                     return publicRow;
                 }
 
-                return row;
+                const {thought, ...privateRow} = row;
+                if (typeof privateRow.document === 'string') {
+                    privateRow.document = formatTurnDocumentForRead(privateRow.document);
+                }
+                return privateRow;
             };
 
             const memories = ids.map((id, index) => {
@@ -2918,13 +2935,13 @@ class MemoryService extends Base {
 
                 return shapeMemoryRow({
                     id,
-                    sessionId    : metadata.sessionId,
+                    sessionId      : metadata.sessionId,
                     timestamp,
-                    prompt       : metadata.prompt,
-                    thought      : metadata.thought,
-                    response     : metadata.response,
-                    type         : metadata.type,
-                    agentIdentity: rowIdentity,
+                    prompt         : metadata.prompt,
+                    decisionContext: metadata.thought ?? metadata.decisionContext ?? null,
+                    response       : metadata.response,
+                    type           : metadata.type,
+                    agentIdentity  : rowIdentity,
                     trustTier,
                     distance,
                     relevanceScore,
@@ -2965,7 +2982,7 @@ class MemoryService extends Base {
                     ? this._getMiniSummariesByIds(filteredCandidates.map(c => c.id))
                     : null;
                 const scopedCandidates = filteredCandidates.map(c =>
-                    (detail === 'summary' && !('summaryFallback' in c)) || (detail === 'full' && projection === 'public' && 'thought' in c)
+                    (detail === 'summary' && !('summaryFallback' in c)) || (detail === 'full' && projection === 'public' && ('decisionContext' in c || 'thought' in c))
                         ? shapeMemoryRow(c, c, walkSummaryMap)
                         : c
                 );
@@ -3110,7 +3127,7 @@ class MemoryService extends Base {
                             const metadata = result.metadatas ? result.metadatas[0] : null;
                             // Field↔document de-dup: prefer the stored document, else reconstruct from split
                             // metadata (turns only) when it was dropped — single-sourced in turnDocumentText.
-                            const content = resolveTurnDocumentForRead({documents: result.documents, metadata});
+                            const content = formatTurnDocumentForRead(resolveTurnDocumentForRead({documents: result.documents, metadata}));
 
                             if (content) {
                                 const trustTier     = this.constructor.resolveSummaryTrustTier(metadata);
@@ -3232,8 +3249,7 @@ class MemoryService extends Base {
     }
 
     /**
-     * Instantly contextualizes the agent by targeting a specific Epic or Graph Node,
-     * loading its high-weight semantic relationships and returning a structured brief.
+     * @summary Contextualizes an agent by loading high-weight neighbors and episodic context for a target node.
      * @param {Object} options
      * @param {String} options.targetId The Target Epic / Node ID to brief against.
      * @param {Number} [options.limit=5] Max context neighbors to pull.
@@ -3249,7 +3265,7 @@ class MemoryService extends Base {
                  };
             }
 
-            let {neighbors} = GraphService.getNeighbors({ id: targetId });
+            let {neighbors} = GraphService.getNeighbors(limit > 50 ? { id: targetId, limit } : { id: targetId });
 
             // Focus purely on highest-weight semantic and architectural relationships
             neighbors = Array.isArray(neighbors)
@@ -3284,7 +3300,7 @@ class MemoryService extends Base {
                         const metadata = result.metadatas ? result.metadatas[0] : null;
                         // Field↔document de-dup: prefer the stored document, else reconstruct from split
                         // metadata (turns only) when it was dropped — single-sourced in turnDocumentText.
-                        episodicContext = resolveTurnDocumentForRead({documents: result.documents, metadata});
+                        episodicContext = formatTurnDocumentForRead(resolveTurnDocumentForRead({documents: result.documents, metadata}));
                     } catch (e) {
                          // Missing vector is fine, we still have structural graph data
                     }
@@ -3371,4 +3387,4 @@ export default Neo.setupClass(MemoryService);
 // `test/playwright/unit/ai/services/memory-core/MailboxService.spec.mjs` regression coverage.
 // Not part of the public service surface; consumers outside the test suite should call
 // `MemoryService.addMemory` and read the `mailbox` property on the response.
-export {buildMailboxDelta};
+export {buildMailboxDelta, formatTurnDocumentForRead};

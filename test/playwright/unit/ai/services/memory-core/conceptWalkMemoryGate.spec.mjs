@@ -142,16 +142,18 @@ test.describe('Neo.ai.services.memory-core.conceptWalkMemoryGate (#14504)', () =
               }),
               g   = build({collection: col, userId: 'u1', policy: 'private'});
 
-        expect(await g('m1', {neighborLabel: 'AGENT_MEMORY'})).toEqual({
-            id           : 'm1',
-            sessionId    : 's9',
-            timestamp    : '2026-03-03T00:00:00.000Z',
-            prompt       : 'P',
-            thought      : 'T',
-            response     : 'R',
-            type         : 'agent-interaction',
-            agentIdentity: '@neo-opus-vega',
-            trustTier    : 'self'
+        const hydrated = await g('m1', {neighborLabel: 'AGENT_MEMORY'});
+        expect(hydrated).toEqual({
+            id             : 'm1',
+            sessionId      : 's9',
+            timestamp      : '2026-03-03T00:00:00.000Z',
+            prompt         : 'P',
+            decisionContext: 'T',
+            response       : 'R',
+            type           : 'agent-interaction',
+            agentIdentity  : '@neo-opus-vega',
+            trustTier      : 'self'
         });
+        expect('thought' in hydrated).toBe(false);
     });
 });

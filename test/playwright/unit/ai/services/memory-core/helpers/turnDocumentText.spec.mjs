@@ -156,6 +156,28 @@ test.describe('computeSessionTurnInputRevision — Dream raw-input frontier (#16
             documents: [],
             metadatas: [metadata]
         })).toThrow(/equal lengths/)
+    });
+
+    test('#1580 preserves identical sha256 revision digests across stored Agent Thought documents and metadata-reconstructed turns', () => {
+        const turnMeta = {
+            type         : 'agent-interaction',
+            sessionId    : 's-1580',
+            timestamp    : 1700000000000,
+            agentIdentity: '@neo-gemini-julia',
+            prompt       : 'Bound get_neighbors',
+            thought      : 'Clamp limit to 1..200 with default 50',
+            response     : 'Implemented and verified'
+        };
+        const storedDocument = 'User Prompt: Bound get_neighbors\nAgent Thought: Clamp limit to 1..200 with default 50\nAgent Response: Implemented and verified';
+        const reconstructed  = resolveTurnDocumentForRead({documents: [null], metadata: turnMeta});
+
+        expect(reconstructed).toBe(storedDocument);
+
+        const storedDigest        = computeSessionTurnInputRevision({ids: ['m-1580'], documents: [storedDocument], metadatas: [turnMeta]}),
+              reconstructedDigest = computeSessionTurnInputRevision({ids: ['m-1580'], documents: [reconstructed], metadatas: [turnMeta]});
+
+        expect(storedDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+        expect(reconstructedDigest).toBe(storedDigest)
     })
 });
 

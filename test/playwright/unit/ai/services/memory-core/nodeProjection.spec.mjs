@@ -1,5 +1,5 @@
-import {test, expect} from '@playwright/test';
-import {projectNode}  from '../../../../../../ai/services/memory-core/nodeProjection.mjs';
+import {test, expect}                          from '@playwright/test';
+import {normalizeNodeDescription, projectNode} from '../../../../../../ai/services/memory-core/nodeProjection.mjs';
 
 /**
  * @summary The graph read verb's projection POLICY, witnessed hermetically — no service, no
@@ -129,5 +129,28 @@ test.describe('memory-core nodeProjection — the lean/full policy (#15430)', ()
         expect(lean.properties).toBeUndefined();
         expect(full.properties.formerLogins).toEqual(['@neo-fable']);
         expect(full.properties.githubLogin).toBe('@neo-fable-mnemosyne')
+    });
+
+    test('#1580 normalizeNodeDescription and projectNode rewrite legacy AGENT_MEMORY descriptions only', () => {
+        expect(normalizeNodeDescription('AGENT_MEMORY', 'Agent thought flow inside session sess-42.'))
+            .toBe('Turn diary entry inside session sess-42.');
+        expect(normalizeNodeDescription('AGENT_MEMORY', 'Custom turn note'))
+            .toBe('Custom turn note');
+        expect(normalizeNodeDescription('SESSION', 'Agent thought flow inside session sess-42.'))
+            .toBe('Agent thought flow inside session sess-42.');
+
+        const memoryProjected = projectNode({
+            id        : 'memory:m-42',
+            label     : 'AGENT_MEMORY',
+            properties: {name: 'Memory: 2026-11-10', description: 'Agent thought flow inside session sess-42.'}
+        });
+        expect(memoryProjected.description).toBe('Turn diary entry inside session sess-42.');
+
+        const issueProjected = projectNode({
+            id        : 'issue-42',
+            label     : 'ISSUE',
+            properties: {name: 'Issue 42', description: 'Agent thought flow inside session sess-42.'}
+        });
+        expect(issueProjected.description).toBe('Agent thought flow inside session sess-42.')
     })
 });

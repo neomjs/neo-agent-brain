@@ -69,4 +69,18 @@ test.describe('Neo.ai.context.Assembler', () => {
         expect(finalPrompt).toContain('<agent_skills>MockSkill</agent_skills>');
         expect(finalPrompt).toContain(rag);
     });
+
+    test('formatMessages renders Decision Context from decisionContext with legacy thought fallback', () => {
+        const formatted = assembler.formatMessages([
+            {prompt: 'P1', decisionContext: 'DC1', response: 'R1', agent: 'antigravity', model: 'gemini'},
+            {prompt: 'P2', thought: 'LegacyT2', response: 'R2'}
+        ]);
+
+        expect(formatted).toEqual([
+            {role: 'user', content: 'P1'},
+            {role: 'model', content: '[Agent: antigravity | Model: gemini]\nDecision Context: DC1\n\nR1'},
+            {role: 'user', content: 'P2'},
+            {role: 'model', content: 'Decision Context: LegacyT2\n\nR2'}
+        ]);
+    });
 });

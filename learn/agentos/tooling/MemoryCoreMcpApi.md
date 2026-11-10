@@ -20,14 +20,14 @@ The server uses `@modelcontextprotocol/sdk` through Neo's shared MCP server infr
 The Memory Core manages two primary ChromaDB collections:
 
 #### 1. Memories Collection (`neo-agent-memory`)
-Stores authored diary entries for future sessions. The existing fields carry context, a retrospective and continuation:
+Stores authored diary entries for future sessions. Read projections expose `prompt`, `decisionContext` (on authorized `private` reads), and `response`:
 ```json
 {
   "id": "mem_2025-10-08T12:00:00.000Z",
   "sessionId": "session_1696800000000",
   "timestamp": "2025-10-08T12:00:00.000Z",
   "prompt": "Summarized task context and constraints",
-  "thought": "Authored retrospective of decisions, rationale, lessons and uncertainty",
+  "decisionContext": "Concise decisions and deciding facts recorded for the turn",
   "response": "Outcomes, artifact references and continuation",
   "type": "agent-interaction"
 }
@@ -64,8 +64,11 @@ The server exposes the following tools, which are derived from its OpenAPI speci
 | `get_sandman_handoff` | Reads the Sandman handoff (Dream Pipeline morning surface) with freshness metadata (`stale` flag past the window, overridable per call). Defaults to `sections: ['goldenPath']` (`sections.goldenPath` + `availableSections` / `missingSections`); pass `sections: 'all'` for full `content` or specific section slugs (`gaps`, `consolidation`, `goldenPath`, `focus`). A missing file returns an explicit null-reason payload. Serves remote/container agents without a repo checkout. |
 | **Memories** | |
 | `add_memory` | Writes a turn diary entry for future sessions using the `prompt`, `decisionContext` and `response` fields. |
-| `get_session_memories` | Retrieves all memories for a specific session, in chronological order. |
-| `query_raw_memories` | Performs semantic search across all raw memories using vector similarity. |
+| `get_session_memories` | Retrieves all memories for a specific session in chronological order (`prompt`, `decisionContext`, `response`). |
+| `query_raw_memories` | Performs semantic search across raw memories (`decisionContext` included on `projection='private'`, omitted on `'public'`). |
+| `query_recent_turns` | Recalls recent turns in reverse-chronological order (`detail='summary'|'full'`, `projection='public'|'private'`). |
+| **Graph** | |
+| `get_neighbors` | Retrieves bounded, filtered, deterministically ordered adjacent graph nodes and pagination metadata. |
 | **Summaries** | |
 | `get_all_summaries` | Retrieves all session summaries, sorted by timestamp. |
 | `query_summaries` | Performs semantic search across session summaries. |
@@ -142,7 +145,7 @@ state that must be checked live. It does not invent alternative designs for a me
 - **New way**: `call_tool('add_memory', {prompt: "...", decisionContext: "...", response: "..."})`
 
 #### `get_session_memories`
-Retrieves all memories for a specific session.
+Retrieves all memories for a specific session in chronological order, returning `prompt`, `decisionContext` (concise decisions and deciding facts), `response`, and `miniSummary`.
 
 **Parameters**:
 - `sessionId` (string, required): The session to retrieve memories for.
@@ -150,16 +153,42 @@ Retrieves all memories for a specific session.
 - `offset` (integer, optional): Pagination offset (default: 0).
 
 #### `query_raw_memories`
-Performs semantic search across all memories.
+Performs semantic search across raw memories. On `detail='full'`, returns `decisionContext` on authorized `private` reads and omits `decisionContext` when `projection='public'`. Legacy `Agent Thought:` headers in raw/reconstructed turn documents are normalized to `Decision Context:` at the read boundary.
 
 **Parameters**:
 - `query` (string, required): The natural language search query.
 - `nResults` (integer, optional): Number of results to return (default: 10).
 - `sessionId` (string, optional): An optional session ID to scope the search.
+- `detail` (`'full' | 'summary'`, optional): `'full'` (default) or compact `'summary'`.
+- `projection` (`'public' | 'private'`, optional): `'public'` omits `decisionContext`; `'private'` preserves it.
 
 **Migration from retired CLI**:
 - **Old way**: retired shell memory-query script with query flags.
 - **New way**: `call_tool('query_raw_memories', {query: "search query"})`
+
+#### `query_recent_turns`
+Recalls recent turns in reverse-chronological order for post-compaction recovery or scoped peer inspection. On `detail='full'`, `projection='private'` (own-agent tenant recovery only) includes `decisionContext`, while `projection='public'` (default) omits it.
+
+**Parameters**:
+- `agentIdentity` (string, optional): Whose turns to recall (`'@me'` default).
+- `limit` (integer, optional): Maximum turns to return (`1..100`, default: `20`).
+- `before` (`{timestamp, id}`, optional): Compound pagination cursor (`nextCursor` from prior page).
+- `detail` (`'summary' | 'full'`, optional): `'summary'` (default) or `'full'`.
+- `projection` (`'public' | 'private'`, optional): `'public'` (default) or `'private'`.
+- `memorySharing` (`'private' | 'team' | 'legacy'`, optional): Explicit narrow-only sharing override.
+
+### Graph Tools
+
+#### `get_neighbors`
+Retrieves a bounded, deterministically ordered page of adjacent graph nodes (`weight` descending, then `id` ascending, then `relationship` ascending) alongside pagination metadata (`{neighbors, totalCount, truncated, nextOffset, limit, offset}`). Self-loop edges on `direction='both'` are deduplicated, and `AGENT_MEMORY` descriptions use `"Turn diary entry inside session <sessionId>."`.
+
+**Parameters**:
+- `id` (string, required): Source graph node ID.
+- `limit` (integer, optional): Page size clamped to `1..200` (default: `50`).
+- `offset` (integer, optional): Non-negative zero-based pagination offset (default: `0`).
+- `direction` (`'both' | 'inbound' | 'outbound'`, optional): Edge traversal direction (default: `'both'`).
+- `types` (`string[]`, optional): Adjacent node label filter (e.g. `['ISSUE', 'PULL_REQUEST', 'AGENT_MEMORY']`).
+- `relationships` (`string[]`, optional): Connecting edge relationship filter (e.g. `['ORIGINATES_IN', 'DISCUSSED_IN']`).
 
 ### Summary Tools
 

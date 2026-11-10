@@ -1,18 +1,18 @@
-import path                            from 'path';
-import aiConfig                        from '../../mcp/server/memory-core/config.mjs';
-import logger                          from '../../mcp/server/memory-core/logger.mjs';
-import Base                            from 'neo.mjs/src/core/Base.mjs';
-import CoreDatabase                    from '../../../ai/graph/Database.mjs';
-import SQLite                          from '../../../ai/graph/storage/SQLite.mjs';
-import {normalizeAgentIdentityNodeId}  from '../../graph/normalizeAgentIdentityNodeId.mjs';
-import {createGraphBootSeedManifest}   from '../../../ai/graph/bootSeedManifest.mjs';
-import {createGraphBootSeedNodeRecord} from '../../../ai/graph/bootSeedManifest.mjs';
-import {getGraphBootSeedNodeSpec}      from '../../../ai/graph/bootSeedManifest.mjs';
-import { normalizeUserId }             from '../../mcp/server/shared/services/RequestContextService.mjs';
-import fsExtra                         from 'fs-extra';
-import {isDeepStrictEqual}             from 'node:util';
-import {projectNode}                   from './nodeProjection.mjs';
-import {LEGACY_RAW_MEMORY_NODE_LABEL}  from './helpers/rawMemoryGraphIdentity.mjs';
+import path                                    from 'path';
+import aiConfig                                from '../../mcp/server/memory-core/config.mjs';
+import logger                                  from '../../mcp/server/memory-core/logger.mjs';
+import Base                                    from 'neo.mjs/src/core/Base.mjs';
+import CoreDatabase                            from '../../../ai/graph/Database.mjs';
+import SQLite                                  from '../../../ai/graph/storage/SQLite.mjs';
+import {normalizeAgentIdentityNodeId}          from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {createGraphBootSeedManifest}           from '../../../ai/graph/bootSeedManifest.mjs';
+import {createGraphBootSeedNodeRecord}         from '../../../ai/graph/bootSeedManifest.mjs';
+import {getGraphBootSeedNodeSpec}              from '../../../ai/graph/bootSeedManifest.mjs';
+import { normalizeUserId }                     from '../../mcp/server/shared/services/RequestContextService.mjs';
+import fsExtra                                 from 'fs-extra';
+import {isDeepStrictEqual}                     from 'node:util';
+import {normalizeNodeDescription, projectNode} from './nodeProjection.mjs';
+import {LEGACY_RAW_MEMORY_NODE_LABEL}          from './helpers/rawMemoryGraphIdentity.mjs';
 
 /**
  * @summary Applies canonical row visibility to a node or edge snapshot.
@@ -1752,41 +1752,78 @@ class GraphService extends Base {
     }
 
     /**
-     * Retrieves adjacent connected nodes (neighbors) alongside relationship metadata.
+     * @summary Retrieves bounded, filtered, deterministically ordered adjacent nodes with pagination metadata.
      * @param {Object} data
-     * @param {String} data.id
-     * @returns {Object} Object containing connected Node objects with edge relationship mapping.
-     *     Neighbor objects include `semanticVectorId` when present on the adjacent node,
-     *     enabling vector-backed consumers such as `preBriefSession` to hydrate context.
+     * @param {String} data.id Source node ID.
+     * @param {Number} [data.limit=50] Page size clamped to `1..200`.
+     * @param {Number} [data.offset=0] Non-negative pagination offset.
+     * @param {'both'|'inbound'|'outbound'} [data.direction='both'] Edge traversal direction.
+     * @param {String[]} [data.types] Optional adjacent node label filter.
+     * @param {String[]} [data.relationships] Optional connecting edge relationship filter.
+     * @returns {{neighbors: Object[], totalCount: Number, truncated: Boolean, nextOffset: Number|null, limit: Number, offset: Number}}
      */
-    getNeighbors({id}) {
-        // Guarantee lazy-loading vicinity topology securely
-        this.db.getAdjacentNodes(id, 'both');
+    getNeighbors({id, limit = 50, offset = 0, direction = 'both', types, relationships}) {
+        const parsedLimit         = limit == null ? NaN : Number(limit),
+              normalizedLimit     = Number.isFinite(parsedLimit) ? Math.min(200, Math.max(1, Math.trunc(parsedLimit))) : 50,
+              parsedOffset        = offset == null ? NaN : Number(offset),
+              normalizedOffset    = Number.isFinite(parsedOffset) ? Math.max(0, Math.trunc(parsedOffset)) : 0,
+              normalizedDirection = (direction === 'inbound' || direction === 'outbound' || direction === 'both') ? direction : 'both';
 
-        // RLS: resolve the requester once; do not expose the vicinity of a node the
-        // requester cannot see, and filter each neighbor by node + edge visibility.
+        this.db.getAdjacentNodes(id, normalizedDirection);
+
         let rlsUserId = resolveRlsUserId(this.db.storage?.RequestContextService),
             rootNode  = this.db.nodes.get(id);
 
         if (!rootNode || !isRlsVisible(rootNode, rlsUserId)) {
-            return {neighbors: []};
+            return {
+                neighbors : [],
+                totalCount: 0,
+                truncated : false,
+                nextOffset: null,
+                limit     : normalizedLimit,
+                offset    : normalizedOffset
+            };
         }
 
-        let results  = [],
-            inbound  = this.db.edges.getByIndex('target', id),
-            outbound = this.db.edges.getByIndex('source', id);
+        let edges = [];
 
-        [...inbound, ...outbound].forEach(e => {
-            let adjacentId = e.source === id ? e.target : e.source;
-            let node       = this.db.nodes.get(adjacentId);
-            // A neighbor is exposed only when BOTH the adjacent node and the connecting
-            // edge are RLS-visible — a private edge between visible nodes still leaks.
-            if (node && isRlsVisible(node, rlsUserId) && isRlsVisible(e, rlsUserId)) {
+        if (normalizedDirection === 'inbound') {
+            edges = this.db.edges.getByIndex('target', id);
+        } else if (normalizedDirection === 'outbound') {
+            edges = this.db.edges.getByIndex('source', id);
+        } else {
+            const inbound  = this.db.edges.getByIndex('target', id),
+                  outbound = this.db.edges.getByIndex('source', id),
+                  seenIds  = new Set();
+
+            for (const e of outbound) {
+                if (e?.id !== undefined) seenIds.add(e.id);
+                edges.push(e);
+            }
+            for (const e of inbound) {
+                if (e.source === id && e.target === id) continue;
+                if (e?.id !== undefined && seenIds.has(e.id)) continue;
+                edges.push(e);
+            }
+        }
+
+        const typeSet         = Array.isArray(types) && types.length > 0 ? new Set(types) : null,
+              relationshipSet = Array.isArray(relationships) && relationships.length > 0 ? new Set(relationships) : null;
+
+        let results = [];
+
+        edges.forEach(e => {
+            if (relationshipSet && !relationshipSet.has(e.type)) return;
+
+            let adjacentId = e.source === id ? e.target : e.source,
+                node       = this.db.nodes.get(adjacentId);
+
+            if (node && (!typeSet || typeSet.has(node.label)) && isRlsVisible(node, rlsUserId) && isRlsVisible(e, rlsUserId)) {
                 results.push({
                     id              : node.id,
                     type            : node.label,
                     name            : node.properties?.name,
-                    description     : node.properties?.description,
+                    description     : normalizeNodeDescription(node.label, node.properties?.description),
                     semanticVectorId: node.properties?.semanticVectorId,
                     relationship    : e.type,
                     weight          : e.properties?.weight || 1.0,
@@ -1796,11 +1833,29 @@ class GraphService extends Base {
             }
         });
 
-        return {neighbors: results};
+        results.sort((a, b) =>
+            (b.weight - a.weight) ||
+            String(a.id).localeCompare(String(b.id)) ||
+            String(a.relationship).localeCompare(String(b.relationship))
+        );
+
+        const totalCount = results.length,
+              neighbors  = results.slice(normalizedOffset, normalizedOffset + normalizedLimit),
+              truncated  = normalizedOffset + neighbors.length < totalCount,
+              nextOffset = truncated ? normalizedOffset + neighbors.length : null;
+
+        return {
+            neighbors,
+            totalCount,
+            truncated,
+            nextOffset,
+            limit : normalizedLimit,
+            offset: normalizedOffset
+        };
     }
 
     /**
-     * Performs a text-based fuzzy search across node topology to find structural entities.
+     * @summary Performs a text-based fuzzy search across node topology to find structural entities.
      * @param {Object} data
      * @param {String} data.query
      * @returns {Object} List of matching Nodes.
@@ -1836,7 +1891,7 @@ class GraphService extends Base {
                 id         : node.id,
                 type       : node.label,
                 name       : node.properties?.name,
-                description: node.properties?.description
+                description: normalizeNodeDescription(node.label, node.properties?.description)
             });
         }
 
@@ -1881,7 +1936,7 @@ class GraphService extends Base {
                 id              : frontierNode.id,
                 type            : frontierNode.label,
                 name            : frontierNode.properties?.name,
-                description     : frontierNode.properties?.description,
+                description     : normalizeNodeDescription(frontierNode.label, frontierNode.properties?.description),
                 semanticVectorId: frontierNode.properties?.semanticVectorId
             },
             strategicNeighbors: []
@@ -1903,7 +1958,7 @@ class GraphService extends Base {
                         id              : node.id,
                         type            : node.label,
                         name            : node.properties?.name,
-                        description     : node.properties?.description,
+                        description     : normalizeNodeDescription(node.label, node.properties?.description),
                         semanticVectorId: node.properties?.semanticVectorId,
                         relationship    : e.type,
                         weight,
@@ -1924,7 +1979,7 @@ class GraphService extends Base {
     }
 
     /**
-     * Retrieves the structural topology surrounding a specific node.
+     * @summary Retrieves the structural topology surrounding a specific node.
      * @param {Object} args
      * @param {String} args.nodeId The ID of the root node.
      * @param {Number} [args.maxDepth=2] The traversal depth from the root.
@@ -1950,7 +2005,7 @@ class GraphService extends Base {
                 id              : rootNode.id,
                 type            : rootNode.label,
                 name            : rootNode.properties?.name,
-                description     : rootNode.properties?.description,
+                description     : normalizeNodeDescription(rootNode.label, rootNode.properties?.description),
                 semanticVectorId: rootNode.properties?.semanticVectorId
             },
             nodes: [],
@@ -1999,7 +2054,7 @@ class GraphService extends Base {
                             id              : n.id,
                             type            : n.label,
                             name            : n.properties?.name,
-                            description     : n.properties?.description,
+                            description     : normalizeNodeDescription(n.label, n.properties?.description),
                             semanticVectorId: n.properties?.semanticVectorId
                         });
                     }
@@ -2337,6 +2392,6 @@ class GraphService extends Base {
     }
 }
 
-export {isRlsVisible, resolveRlsUserId};
+export {isRlsVisible, normalizeNodeDescription, resolveRlsUserId};
 
 export default Neo.setupClass(GraphService);

@@ -282,8 +282,8 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
     test('records bounded metadata without raw Memory Core payloads', () => {
         MemoryCoreRecorderService.logToolCall({
             toolName    : 'add_memory',
-            args        : {prompt: secret, thought: secret, metadata: {safe: true}},
-            result      : {response: secret},
+            args        : {prompt: secret, decisionContext: secret, thought: secret, metadata: {safe: true}},
+            result      : {response: secret, decisionContext: secret},
             success     : false,
             error       : new Error(`provider echoed ${secret}`),
             failureStage: 'dispatch',

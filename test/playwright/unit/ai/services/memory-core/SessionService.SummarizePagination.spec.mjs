@@ -260,7 +260,8 @@ test.describe('SessionService.summarizeSession — memory-fetch pagination (clos
             metadata: {type: 'agent-interaction', sessionId: SESSION, timestamp: 1, prompt: 'PROMPT-X', thought: 'THOUGHT-Y', response: 'RESPONSE-Z'}
         };
 
-        let synthesisPrompt = null;
+        let synthesisPrompt = null,
+            upsertedSummary = null;
 
         svc.memoryCollection.get = async ({offset = 0, limit} = {}) => {
             const page = offset === 0 ? [TURN] : [];
@@ -280,16 +281,30 @@ test.describe('SessionService.summarizeSession — memory-fetch pagination (clos
             }
         };
 
-        svc.sessionsCollection = {upsert: async () => {}, get: async () => ({ids: [], metadatas: []})};
+        svc.sessionsCollection = {
+            upsert: async payload => { upsertedSummary = payload; },
+            get   : async () => ({ids: [], metadatas: []})
+        };
 
         try {
+            const {computeSessionTurnInputRevision, composeTurnDocumentText} = await import('../../../../../../ai/services/memory-core/helpers/turnDocumentText.mjs');
+            const expectedRevision                                           = computeSessionTurnInputRevision({
+                ids      : ['d0'],
+                documents: [composeTurnDocumentText(TURN.metadata)],
+                metadatas: [TURN.metadata]
+            });
+
             await svc.summarizeSession(SESSION);
 
-            // The dropped document was reconstructed from split metadata (via resolveTurnDocumentForRead) and
-            // fed to synthesis as the byte-exact canonical turn-document text — NOT null context.
+            // Reconstructed turn text is rewritten to `Decision Context:` for the LLM prompt ONLY,
+            // while `dreamInputRevision` preserves exact SHA-256 stability over canonical turn text.
             expect(synthesisPrompt).toContain('User Prompt: PROMPT-X');
-            expect(synthesisPrompt).toContain('Agent Thought: THOUGHT-Y');
+            expect(synthesisPrompt).toContain('Decision Context: THOUGHT-Y');
+            expect(synthesisPrompt).not.toContain('Agent Thought:');
             expect(synthesisPrompt).toContain('Agent Response: RESPONSE-Z');
+            expect(synthesisPrompt).toContain('recorded decisions, deciding facts');
+            expect(synthesisPrompt).toContain('Explicitly avoid chain-of-thought');
+            expect(upsertedSummary?.metadatas?.[0]?.dreamInputRevision).toBe(expectedRevision);
         } finally {
             svc.memoryCollection.get         = origMemGet;
             svc.model                        = origModel;

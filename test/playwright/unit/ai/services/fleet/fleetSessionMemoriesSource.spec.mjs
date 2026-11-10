@@ -8,13 +8,13 @@ const HEALTHY_RESULT = {
     memories : [
         {
             id           : 'mem-2', sessionId: '7ee47ccf-d1c7-469d-a75e-15cebf3b5ea5', timestamp: '2026-08-17T21:58:50.000Z',
-            prompt       : 'Operator: sunset', thought: 'Consolidating the day.', response: 'Session closed with handover.',
+            prompt       : 'Operator: sunset', decisionContext: 'Consolidating the day.', response: 'Session closed with handover.',
             agentIdentity: '@neo-fable-clio', amountToolCalls: 4,
             miniSummary  : 'Session sunset and handover', summaryFallback: false
         },
         {
             id           : 'mem-1', sessionId: '7ee47ccf-d1c7-469d-a75e-15cebf3b5ea5', timestamp: '2026-08-17T13:25:00.000Z',
-            prompt       : 'Operator: good morning', thought: 'Recovering context.', response: 'Recovered, lane claimed.',
+            prompt       : 'Operator: good morning', decisionContext: 'Recovering context.', response: 'Recovered, lane claimed.',
             agentIdentity: '@neo-fable-clio', amountToolCalls: 9,
             miniSummary  : 'Operator: good morning — Recovered, lane claimed.', summaryFallback: true
         }
