@@ -34,6 +34,10 @@ import RepositoryClassHierarchyResolver
                             from './helpers/repositoryClassHierarchyResolver.mjs';
 import {isChromaConnectionError}
                             from '../shared/vector/chromaClientPrimitives.mjs';
+import {
+    createBundlePayloadWriteStream,
+    endBundlePayload
+}                           from '../shared/bundlePayload.mjs';
 import {resolveEmbeddingAdmissionBand}
                             from '../../embeddingSafeBand.mjs';
 import {
@@ -54,11 +58,13 @@ import {buildEmbeddingInputText}
                        from './helpers/embeddingInputFormat.mjs';
 import aiConfig        from '../../mcp/server/knowledge-base/config.mjs';
 import crypto          from 'crypto';
+import {once}          from 'events';
 import fs              from 'fs-extra';
 import logger          from '../../mcp/server/knowledge-base/logger.mjs';
 import mcConfig        from '../../mcp/server/memory-core/config.mjs';
 import os              from 'os';
 import path            from 'path';
+import {finished}      from 'stream/promises';
 import * as yaml       from 'js-yaml';
 import {fileURLToPath} from 'url';
 import {IMPLEMENTED_EMBEDDING_PROVIDERS, resolveEmbeddingProviderModel}
@@ -3109,9 +3115,16 @@ class IngestionService extends Base {
     }
 
     /**
-     * @summary Writes an embedding batch to a temporary JSONL file for VectorService.
+     * @summary Writes an embedding batch to a temporary JSONL file for VectorService, one record at a time.
+     *
+     * A batch is one repository's whole accepted population, and a profile that is not delta-safe
+     * sends the whole repository on every advance. The batch therefore never exists as one string,
+     * which V8 caps at `buffer.constants.MAX_STRING_LENGTH`: each record is serialized on its own and
+     * waits for the stream's drain. The bytes stay the reader's contract: records separated by
+     * `\n`, no trailing newline.
+     *
      * @param {Array<Object>} chunks Parsed chunks.
-     * @returns {Promise<String>} Temporary file path.
+     * @returns {Promise<String>} Temporary file path. A failed write removes the partial file and rejects.
      * @protected
      */
     async writeTempJsonl(chunks) {
@@ -3119,7 +3132,27 @@ class IngestionService extends Base {
         const file = path.join(dir, `ingest-${process.pid}-${Date.now()}-${crypto.randomUUID()}.jsonl`);
 
         await fs.ensureDir(dir);
-        await fs.writeFile(file, chunks.map(chunk => JSON.stringify(chunk)).join('\n'), 'utf8');
+
+        const stream = createBundlePayloadWriteStream(file);
+
+        try {
+            for (let index = 0; index < chunks.length; index++) {
+                const line = JSON.stringify(chunks[index]);
+
+                if (!stream.write(index === 0 ? line : `\n${line}`)) {
+                    await once(stream, 'drain')
+                }
+            }
+
+            await endBundlePayload(stream)
+        } catch (error) {
+            stream.destroy();
+            // `close` follows a pending open: removing before it can leave an empty file behind.
+            await finished(stream).catch(() => {});
+            await fs.remove(file).catch(() => {});
+
+            throw error
+        }
 
         return file;
     }
