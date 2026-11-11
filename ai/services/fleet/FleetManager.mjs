@@ -30,29 +30,56 @@ import path                             from 'node:path';
 export {REPLACE_SEAT_CREDENTIAL_SCOPES};
 
 /**
- * @summary Bounds one of the roster's plane-sourced reads: past `timeoutMs` it rejects with a reason naming the
- * wait, which the axis adapter's own fail-honest path reports as pending, while the call runs on. A call that
- * settles after the bound logs its duration once, the one witness of how slow the plane was.
+ * @summary Bounds one of the roster's plane-sourced reads: past `timeoutMs` it serves an unexpired
+ * retained observation when configured, else rejects naming the wait while the plane call runs on.
+ * A call that settles after the bound refreshes retention and logs its duration once.
  * @param {Function} read `() => Promise`, the axis's reader
  * @param {String} axis `'presence'` or `'wake'`, named in the reason and the log line
  * @param {Number} timeoutMs
+ * @param {Object} [retention={}]
+ * @param {Number} [retention.maxRetainedAgeMs=0]
+ * @param {Function} [retention.now=Date.now]
+ * @param {Function|null} [retention.readRetained=null]
+ * @param {Function|null} [retention.writeRetained=null]
  * @returns {Function} The bounded reader
  * @private
  */
-function boundRosterRead(read, axis, timeoutMs) {
+function boundRosterRead(read, axis, timeoutMs, {
+    maxRetainedAgeMs = 0,
+    now              = Date.now,
+    readRetained     = null,
+    writeRetained    = null
+} = {}) {
+    const nowMs = () => {
+        const value = now();
+
+        return typeof value === 'number' ? value : new Date(value).getTime()
+    };
+
     return () => {
-        const startedAt = Date.now(), call = Promise.resolve().then(read);
-        let late = false, timerId;
+        const startedAt = nowMs(), call = Promise.resolve().then(read);
+        let   late      = false, timerId;
 
-        const settled = outcome => late && console.log(`[fleet] roster ${axis} read ${outcome} after ${Date.now() - startedAt} ms (bound ${timeoutMs} ms)`);
+        const settled = outcome => late && console.log(`[fleet] roster ${axis} read ${outcome} after ${nowMs() - startedAt} ms (bound ${timeoutMs} ms)`);
 
-        call.then(() => settled('answered'), () => settled('failed'));
+        call.then(payload => {
+            writeRetained?.(payload, nowMs());
+            settled('answered')
+        }, () => settled('failed'));
 
         return Promise.race([
             call.finally(() => clearTimeout(timerId)),
             new Promise((resolve, reject) => {
                 timerId = setTimeout(() => {
                     late = true;
+
+                    const retained = readRetained?.();
+
+                    if (retained && nowMs() - retained.settledAtMs <= maxRetainedAgeMs) {
+                        resolve(retained.payload);
+                        return
+                    }
+
                     reject(new Error(`${axis} read still pending after ${timeoutMs} ms`))
                 }, timeoutMs)
             })
@@ -308,6 +335,12 @@ class FleetManager extends Base {
      * @member {Object|null} presenceStateOptions=null
      */
     presenceStateOptions = null
+    /**
+     * Latest settled presence payload retained across bounded roster poll timeouts for the active reader.
+     * @member {Object|null} retainedPresenceSnapshot=null
+     * @private
+     */
+    retainedPresenceSnapshot = null
     /**
      * Seat wake-arming composer seam. Defaults (via {@link getWakeArmFn}) to `armFleetSeatWake`;
      * inject a recording stub for tests. Plain field, mirroring {@link provisionAndStartFn}.
@@ -825,21 +858,59 @@ class FleetManager extends Base {
      * {@link #member-presenceStateOptions}. Fail-honest: with no injected reader every row reads
      * `unknown` under a `degraded/none` capability — "we cannot see presence" stays distinguishable
      * from "the fleet is dark"; a band is never invented. The roster reads this view, so its reader,
-     * a plane call in plane mode, is bounded: a read still out at `timeoutMs` leaves every seat
-     * `unknown` and its participation unread, with the wait as the reason.
+     * a plane call in plane mode, is bounded: a read still out at `timeoutMs` serves the active reader's
+     * latest settled observation while within `4 * timeoutMs` (preserving `payload.generatedAt`), and
+     * past that horizon leaves every seat `unknown` and its participation unread, naming the wait.
      * @param {Object} [options={}]
      * @param {Number} [options.timeoutMs=AiConfig.fleet.rosterAxisTimeoutMs]
+     * @param {Function} [options.now] Clock seam returning epoch ms or an ISO/Date instant.
      * @returns {Promise<{capability: Object, states: Object[]}>} Adapter snapshot: per-agent
      * `{agentId, presence, lastSeenAt, confidence, source}` rows (+ `reason` on `unknown`) and the
      * capability envelope.
      */
-    fleetPresenceStatus({timeoutMs = AiConfig.fleet.rosterAxisTimeoutMs} = {}) {
-        const options = this.presenceStateOptions || {}, {readPresence} = options;
+    fleetPresenceStatus({timeoutMs = AiConfig.fleet.rosterAxisTimeoutMs, now} = {}) {
+        const {
+            readPresence,
+            now: optionsNow,
+            ...adapterOptions
+        } = this.presenceStateOptions || {};
+
+        if (!readPresence) {
+            this.retainedPresenceSnapshot = null;
+
+            return readFleetPresenceSnapshot({
+                agents: this.getLifecycleService().getRegistry().listAgents(),
+                ...adapterOptions
+            })
+        }
+
+        if (this.retainedPresenceSnapshot?.reader !== readPresence) {
+            this.retainedPresenceSnapshot = null
+        }
+
+        const clock = typeof now === 'function'
+            ? now
+            : typeof optionsNow === 'function'
+                ? optionsNow
+                : typeof this.now === 'function'
+                    ? this.now
+                    : Date.now;
 
         return readFleetPresenceSnapshot({
-            agents: this.getLifecycleService().getRegistry().listAgents(),
-            ...options,
-            ...(readPresence && {readPresence: boundRosterRead(readPresence, 'presence', timeoutMs)})
+            agents      : this.getLifecycleService().getRegistry().listAgents(),
+            ...adapterOptions,
+            readPresence: boundRosterRead(readPresence, 'presence', timeoutMs, {
+                maxRetainedAgeMs: 4 * timeoutMs,
+                now             : clock,
+                readRetained    : () => this.retainedPresenceSnapshot?.reader === readPresence
+                    ? this.retainedPresenceSnapshot
+                    : null,
+                writeRetained   : (payload, settledAtMs) => {
+                    if (Array.isArray(payload?.agents) && this.presenceStateOptions?.readPresence === readPresence) {
+                        this.retainedPresenceSnapshot = {reader: readPresence, payload, settledAtMs}
+                    }
+                }
+            })
         });
     }
 

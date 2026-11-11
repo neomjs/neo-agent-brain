@@ -145,6 +145,54 @@ test.describe('fleetPresenceStateAdapter — capability envelope (producer healt
 
         expect(capability.capturedAt).toBe('2026-08-09T12:00:00.000Z')
     })
+
+    test('when options.capturedAt is omitted, a valid payload.generatedAt becomes the single snapshot and beacon bound', async () => {
+        const
+            roster      = [{id: 'seat', githubUsername: 'seat'}],
+            generatedAt = '2020-08-11T00:15:00.000Z',
+            payload     = {
+                generatedAt,
+                agents: [{
+                    identity: '@seat',
+                    state   : 'online',
+                    signals : {
+                        turnPresence: {
+                            fresh     : true,
+                            freshUntil: '2020-08-11T00:30:00.000Z',
+                            expiresAt : '2020-08-11T01:00:00.000Z'
+                        }
+                    }
+                }]
+            }
+
+        const adopted = await readFleetPresenceSnapshot({
+            agents      : roster,
+            readPresence: () => payload
+        })
+
+        expect(adopted.capability.capturedAt).toBe(generatedAt)
+        expect(adopted.states[0]).toMatchObject({presence: 'active-turn', beacon: 'fresh'})
+
+        const overridden = await readFleetPresenceSnapshot({
+            agents      : roster,
+            readPresence: () => payload,
+            capturedAt  : '2020-08-11T00:45:00.000Z'
+        })
+
+        expect(overridden.capability.capturedAt).toBe('2020-08-11T00:45:00.000Z')
+        expect(overridden.states[0]).toMatchObject({presence: 'fresh', beacon: 'stale'})
+
+        const invalidBefore = Date.now(),
+              invalid       = await readFleetPresenceSnapshot({
+                  agents      : roster,
+                  readPresence: () => ({generatedAt: 'not-a-timestamp', agents: []})
+              }),
+              invalidAfter  = Date.now(),
+              fallbackMs    = Date.parse(invalid.capability.capturedAt)
+
+        expect(fallbackMs).toBeGreaterThanOrEqual(invalidBefore)
+        expect(fallbackMs).toBeLessThanOrEqual(invalidAfter)
+    })
 })
 
 test.describe('fleetPresenceStateAdapter — healthy report (band join)', () => {
@@ -161,8 +209,8 @@ test.describe('fleetPresenceStateAdapter — healthy report (band join)', () => 
         // the emitted vocabulary is the GRADE: online-without-a-fresh-beacon reads `fresh`
         // (recent durable activity), the plane's idle window reads `recent`
         expect(states[0]).toEqual({
-            agentId   : 'neo-fable-clio',
-            presence  : 'fresh',
+            agentId : 'neo-fable-clio',
+            presence: 'fresh',
             // the row carried no turnPresence: the grade folds that in, the facet keeps it
             beacon    : 'absent',
             lastSeenAt: '2026-08-09T11:00:00.000Z',

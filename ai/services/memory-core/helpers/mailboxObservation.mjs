@@ -104,7 +104,25 @@ function jsonMembership(params, key, values) {
 }
 
 /**
+ * @summary Checks whether the SQLite handle exposes the composite newest-first `MESSAGE:%` partial index.
+ * @param {Object} sqlite SQLite handle.
+ * @returns {Boolean}
+ * @private
+ */
+function hasMessageSentAtIndex(sqlite) {
+    const row = sqlite.prepare(`
+        SELECT sql FROM sqlite_master
+        WHERE type = 'index' AND name = 'idx_nodes_message_sent_at'
+        LIMIT 1
+    `).get?.();
+
+    return Boolean(row?.sql && /\bDESC\s*,\s*id\s+DESC\b/i.test(row.sql))
+}
+
+/**
  * @summary Builds the one server-owned message population before count, page or detail selection.
+ * Unfiltered `scope: 'all', policy: 'team'` newest-first list reads ride `idx_nodes_message_sent_at`
+ * directly when present so `COUNT(*)` is a covering-index scan and pagination avoids a temp B-tree.
  * @param {Object} options Observer and filter inputs.
  * @param {String[]} options.viewerVariants Transport-stamped viewer spellings.
  * @param {String[]} options.grantedInboxVariants Independently admitted inbox target spellings.
@@ -115,7 +133,8 @@ function jsonMembership(params, key, values) {
  * @param {String[][]} options.taggedConceptGroups Optional AND-of-OR concept filter groups.
  * @param {String[]} [options.taskStates] Optional pre-page Task-state filter.
  * @param {String} [options.taskOrder] Optional Task order.
- * @returns {{cte: String, params: Object, orderBy: String}}
+ * @param {Boolean} [options.useMessageSentAtIndex=false] Whether list count/page may ride `idx_nodes_message_sent_at`.
+ * @returns {{cte: String, params: Object, orderBy: String, countSql: String, pageSql: String}}
  * @private
  */
 function buildObservationQuery({
@@ -127,9 +146,22 @@ function buildObservationQuery({
     threadId,
     taggedConceptGroups,
     taskStates,
-    taskOrder
+    taskOrder,
+    useMessageSentAtIndex = false
 }) {
-    const params = {},
+    const params = {};
+
+    if (useMessageSentAtIndex) {
+        return {
+            cte     : '',
+            params,
+            orderBy : 'sentAt DESC, messageId DESC',
+            countSql: `SELECT COUNT(*) AS count FROM Nodes n INDEXED BY idx_nodes_message_sent_at WHERE n.id LIKE 'MESSAGE:%'`,
+            pageSql : `SELECT n.id AS messageId, n.data FROM Nodes n INDEXED BY idx_nodes_message_sent_at WHERE n.id LIKE 'MESSAGE:%' ORDER BY json_extract(n.data, '$.properties.sentAt') DESC, n.id DESC LIMIT @limit OFFSET @offset`
+        }
+    }
+
+    const
         viewer   = scope === 'all' && policy === 'team'
             ? null
             : jsonMembership(params, 'viewerVariants', viewerVariants),
@@ -249,12 +281,16 @@ function buildObservationQuery({
         FROM eligible JOIN Nodes n ON n.id = eligible.messageId
     )`;
 
+    const orderBy = taskOrder === 'priority-age'
+        ? 'priorityRank ASC, sentAt ASC, messageId ASC'
+        : 'sentAt DESC, messageId DESC';
+
     return {
         cte,
         params,
-        orderBy: taskOrder === 'priority-age'
-            ? 'priorityRank ASC, sentAt ASC, messageId ASC'
-            : 'sentAt DESC, messageId DESC'
+        orderBy,
+        countSql: `${cte} SELECT COUNT(*) AS count FROM filtered`,
+        pageSql : `${cte} SELECT messageId, data FROM filtered ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`
     }
 }
 
@@ -444,13 +480,20 @@ export function readMailboxObservation({
         throw new TypeError('mailbox observation messageId must be a non-empty string')
     }
 
-    const query                = buildObservationQuery({viewerVariants, grantedInboxVariants, scope, policy, fromVariants, threadId, taggedConceptGroups, taskStates, taskOrder}),
-        {cte, params, orderBy} = query;
+    const isUnfilteredTeamAllList = messageId === undefined
+        && scope === 'all'
+        && policy === 'team'
+        && !fromVariants.length
+        && threadId === undefined
+        && !taggedConceptGroups.length
+        && taskStates === undefined
+        && taskOrder === undefined;
 
     return sqlite.transaction(() => {
         if (messageId !== undefined) {
-            const row = sqlite.prepare(`${cte} SELECT messageId, data FROM filtered WHERE messageId = @messageId LIMIT 1`)
-                .get({...params, messageId});
+            const {cte, params} = buildObservationQuery({viewerVariants, grantedInboxVariants, scope, policy, fromVariants, threadId, taggedConceptGroups, taskStates, taskOrder}),
+                row             = sqlite.prepare(`${cte} SELECT messageId, data FROM filtered WHERE messageId = @messageId LIMIT 1`)
+                    .get({...params, messageId});
 
             if (!row) return null;
 
@@ -459,9 +502,20 @@ export function readMailboxObservation({
             return projectMessage(row, edges, viewerVariants, true)
         }
 
-        const totalCount = sqlite.prepare(`${cte} SELECT COUNT(*) AS count FROM filtered`).get(params).count,
-            pageRows     = sqlite.prepare(`${cte} SELECT messageId, data FROM filtered ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`)
-                .all({...params, limit, offset}),
+        const {countSql, pageSql, params} = buildObservationQuery({
+                viewerVariants,
+                grantedInboxVariants,
+                scope,
+                policy,
+                fromVariants,
+                threadId,
+                taggedConceptGroups,
+                taskStates,
+                taskOrder,
+                useMessageSentAtIndex: isUnfilteredTeamAllList && hasMessageSentAtIndex(sqlite)
+            }),
+            totalCount = sqlite.prepare(countSql).get(params).count,
+            pageRows   = sqlite.prepare(pageSql).all({...params, limit, offset}),
             messages = pageRows.map(row => {
                 const edges = sourceObservationEdges(sqlite, row.messageId);
 

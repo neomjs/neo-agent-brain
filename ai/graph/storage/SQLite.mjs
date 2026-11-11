@@ -102,20 +102,32 @@ class SQLite extends Base {
             );
         `);
 
-        // Three expression indexes over the JSON column, for the reads every tool boundary makes:
-        // the label scans (\`json_extract(data, '$.label') = ?\` — AgentIdentity, WAKE_SUBSCRIPTION,
-        // MESSAGE, …), the mailbox trail's horizon read in \`who_is_online\`, and the same roster's
-        // per-agent activity recency (\`MAX(timestamp)\` over one agent's AGENT_MEMORY rows, which the
-        // label index alone still walks in full: 36k rows per identity on the local plane). Without
-        // them each read parses every row's blob; on a 240k-node plane the identity scan alone took
-        // 0.56 s and the trail read 1.3 s per call. SQLite maintains all three on write.
+        // Four expression indexes over the JSON column for hot tool-boundary reads:
+        // label scans (`json_extract(data, '$.label') = ?`), newest-first `MESSAGE:%` pagination
+        // and horizon scans (`idx_nodes_message_sent_at`), per-agent `AGENT_MEMORY` recency, and
+        // deployment-wide `SESSION` node counts (`idx_nodes_session_user_id`). Legacy single-column
+        // `idx_nodes_message_sent_at` definitions are rebuilt in place so tie-break `id DESC` sorts
+        // avoid a temporary B-tree.
+        const existingMessageSentAtIndex = this.db.prepare(`
+            SELECT sql FROM sqlite_master
+            WHERE type = 'index' AND name = 'idx_nodes_message_sent_at'
+            LIMIT 1
+        `).get();
+
+        if (existingMessageSentAtIndex?.sql && !/\bDESC\s*,\s*id\s+DESC\b/i.test(existingMessageSentAtIndex.sql)) {
+            this.db.exec('DROP INDEX idx_nodes_message_sent_at');
+        }
+
         this.db.exec(`
             CREATE INDEX IF NOT EXISTS idx_nodes_label ON Nodes(json_extract(data, '$.label'));
             CREATE INDEX IF NOT EXISTS idx_nodes_message_sent_at
-                ON Nodes(json_extract(data, '$.properties.sentAt')) WHERE id LIKE 'MESSAGE:%';
+                ON Nodes(json_extract(data, '$.properties.sentAt') DESC, id DESC) WHERE id LIKE 'MESSAGE:%';
             CREATE INDEX IF NOT EXISTS idx_nodes_agent_memory_recency
                 ON Nodes(json_extract(data, '$.properties.agentIdentity'), json_extract(data, '$.properties.timestamp'))
                 WHERE json_extract(data, '$.label') = 'AGENT_MEMORY';
+            CREATE INDEX IF NOT EXISTS idx_nodes_session_user_id
+                ON Nodes(json_extract(data, '$.label'), COALESCE(json_extract(data, '$.properties.userId'), ''))
+                WHERE json_extract(data, '$.label') = 'SESSION';
         `);
 
         // We store the structured relationships natively

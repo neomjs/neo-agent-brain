@@ -77,3 +77,62 @@ test.describe('Neo.ai.graph.storage.SQLite — WAL size limit', () => {
         expect(fs.statSync(`${dbPath}-wal`).size).toBeLessThanOrEqual(WAL_LIMIT);
     });
 });
+
+test.describe('Neo.ai.graph.storage.SQLite — expression indexes and schema migration', () => {
+    const tmpDir = path.resolve(process.cwd(), 'tmp'),
+          dbPath = path.join(tmpDir, `graph-index-migration-test-${process.pid}.sqlite`),
+          remove = () => ['', '-wal', '-shm'].forEach(suffix => fs.rmSync(dbPath + suffix, {force: true}));
+
+    let storage;
+
+    test.beforeEach(async () => {
+        await fs.ensureDir(tmpDir);
+        remove();
+    });
+
+    test.afterEach(() => {
+        storage?.db?.close();
+        storage?.destroy?.();
+        storage = null;
+        remove();
+    });
+
+    test('migrates legacy single-column idx_nodes_message_sent_at and creates idx_nodes_session_user_id idempotently', async () => {
+        const seedDb = new BetterSqlite(dbPath);
+
+        seedDb.exec(`
+            CREATE TABLE Nodes (
+                id TEXT PRIMARY KEY,
+                user_id TEXT DEFAULT NULL,
+                data TEXT NOT NULL
+            );
+            CREATE INDEX idx_nodes_message_sent_at
+                ON Nodes(json_extract(data, '$.properties.sentAt')) WHERE id LIKE 'MESSAGE:%';
+        `);
+        seedDb.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(
+            'MESSAGE:legacy',
+            JSON.stringify({id: 'MESSAGE:legacy', label: 'MESSAGE', properties: {sentAt: '2026-11-11T00:00:00.000Z'}})
+        );
+        seedDb.close();
+
+        storage = Neo.create(SQLite, {dbPath});
+        await storage.initAsync();
+
+        const readIndexSql = name => storage.db.prepare(`
+            SELECT sql FROM sqlite_master
+            WHERE type = 'index' AND name = ?
+        `).get(name)?.sql;
+
+        const migratedMessageIndex = readIndexSql('idx_nodes_message_sent_at'),
+              sessionUserIndex     = readIndexSql('idx_nodes_session_user_id');
+
+        expect(migratedMessageIndex).toContain("json_extract(data, '$.properties.sentAt') DESC, id DESC");
+        expect(migratedMessageIndex).toContain("WHERE id LIKE 'MESSAGE:%'");
+        expect(sessionUserIndex).toContain("COALESCE(json_extract(data, '$.properties.userId'), '')");
+        expect(sessionUserIndex).toContain("WHERE json_extract(data, '$.label') = 'SESSION'");
+
+        storage.initSchema();
+        expect(readIndexSql('idx_nodes_message_sent_at')).toBe(migratedMessageIndex);
+        expect(readIndexSql('idx_nodes_session_user_id')).toBe(sessionUserIndex);
+    });
+});

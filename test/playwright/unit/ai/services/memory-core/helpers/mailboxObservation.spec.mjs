@@ -21,6 +21,8 @@ function createDatabase() {
         CREATE TABLE Nodes (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE Edges (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL, type TEXT NOT NULL, data TEXT NOT NULL);
         CREATE INDEX idx_nodes_label ON Nodes(json_extract(data, '$.label'));
+        CREATE INDEX idx_nodes_message_sent_at
+            ON Nodes(json_extract(data, '$.properties.sentAt') DESC, id DESC) WHERE id LIKE 'MESSAGE:%';
         CREATE INDEX idx_edges_source ON Edges(source);
         CREATE INDEX idx_edges_target ON Edges(target);
     `);
@@ -167,18 +169,28 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
         expect(JSON.stringify(storedRows(db, 'Edges'))).toBe(JSON.stringify(before.edges))
     });
 
-    test('team all starts from the graph label index; own starts from indexed route candidates', () => {
+    test('team all rides idx_nodes_message_sent_at without a temp B-tree; detail stays O(1); own starts from indexed route candidates', () => {
         for (let i = 0; i < 500; i++) {
             const id = `IDENTITY:${i}`;
 
             db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(id, JSON.stringify({id, label: 'AgentIdentity', properties: {}}))
         }
-        const messageId = addMessage(db, {
-                id        : 'MESSAGE:indexed',
+        const tieLow = addMessage(db, {id: 'MESSAGE:tie-a', sentAt: '2026-10-09T08:00:00.000Z'}),
+            tieHigh  = addMessage(db, {
+                id        : 'MESSAGE:tie-b',
+                sentAt    : '2026-10-09T08:00:00.000Z',
                 extraEdges: [{type: 'UNRELATED', target: '@unrelated'}]
             }),
-            executed = [],
-            sqlite = {
+            nullSentAt  = addMessage(db, {id: 'MESSAGE:null-sent-at', sentAt: null}),
+            omittedId   = 'MESSAGE:omitted-sent-at';
+
+        db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(
+            omittedId,
+            JSON.stringify({id: omittedId, label: 'MESSAGE', properties: {subject: 'omitted', bodyText: 'body', priority: 'normal'}})
+        );
+
+        const executed = [],
+            sqlite     = {
                 prepare(sql) {
                     executed.push(sql);
                     return db.prepare(sql)
@@ -186,13 +198,30 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
                 transaction: callback => db.transaction(callback)
             };
 
-        expect(observe(sqlite, {scope: 'all', policy: 'team'}).messages[0].messageId).toBe(messageId);
+        const teamPage = observe(sqlite, {scope: 'all', policy: 'team', limit: 4, offset: 0});
 
-        const teamCountSql = executed.find(sql => sql.includes('WITH eligible AS') && sql.includes('COUNT(*)')),
-            teamDetails    = db.prepare(`EXPLAIN QUERY PLAN ${teamCountSql}`).all().map(row => row.detail).join('\n');
+        expect(teamPage.totalCount).toBe(4);
+        expect(teamPage.messages.map(row => row.messageId)).toEqual([tieHigh, tieLow, omittedId, nullSentAt]);
 
-        expect(teamDetails).toContain('idx_nodes_label');
+        const teamCountSql = executed.find(sql => sql.includes('INDEXED BY idx_nodes_message_sent_at') && sql.includes('COUNT(*)')),
+            teamPageSql    = executed.find(sql => sql.includes('INDEXED BY idx_nodes_message_sent_at') && sql.includes('LIMIT @limit OFFSET @offset')),
+            teamCountPlan  = db.prepare(`EXPLAIN QUERY PLAN ${teamCountSql}`).all().map(row => row.detail).join('\n'),
+            teamPagePlan   = db.prepare(`EXPLAIN QUERY PLAN ${teamPageSql}`).all({limit: 4, offset: 0}).map(row => row.detail).join('\n');
 
+        expect(teamCountPlan).toContain('SCAN n USING COVERING INDEX idx_nodes_message_sent_at');
+        expect(teamPagePlan).toContain('SCAN n USING INDEX idx_nodes_message_sent_at');
+        expect(teamPagePlan).not.toContain('USE TEMP B-TREE');
+
+        executed.length = 0;
+        expect(observe(sqlite, {scope: 'all', policy: 'team', messageId: tieHigh})?.messageId).toBe(tieHigh);
+
+        const detailSql = executed.find(sql => sql.includes('WHERE messageId = @messageId LIMIT 1')),
+            detailPlan  = db.prepare(`EXPLAIN QUERY PLAN ${detailSql}`).all({messageId: tieHigh}).map(row => row.detail).join('\n');
+
+        expect(detailPlan).toContain('sqlite_autoindex_Nodes_1');
+        expect(detailPlan).not.toContain('idx_nodes_message_sent_at');
+
+        executed.length = 0;
         observe(sqlite, {scope: 'own', policy: 'private'});
 
         const ownCountSql = executed.find(sql => sql.includes('WITH candidate_ids AS') && sql.includes('COUNT(*)')),
@@ -205,6 +234,24 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
         expect(ownDetails).not.toContain('SEARCH n USING INDEX idx_nodes_label');
         expect(edgeSql).toContain("type IN ('SENT_BY', 'SENT_TO', 'DELIVERED_TO', 'PART_OF_THREAD', 'REFERENCES_TICKET')");
         expect(edgeSql).not.toContain('UNRELATED')
+    });
+
+    test('team all falls back to the label CTE when idx_nodes_message_sent_at is absent or single-column legacy', () => {
+        const first  = addMessage(db, {id: 'MESSAGE:first', sentAt: '2026-10-09T07:00:00.000Z'}),
+            second   = addMessage(db, {id: 'MESSAGE:second', sentAt: '2026-10-09T08:00:00.000Z'}),
+            nullSent = addMessage(db, {id: 'MESSAGE:null-sent', sentAt: null}),
+            indexed  = observe(db, {scope: 'all', policy: 'team'});
+
+        db.exec('DROP INDEX idx_nodes_message_sent_at');
+        const withoutIndex = observe(db, {scope: 'all', policy: 'team'});
+
+        expect(withoutIndex).toEqual(indexed);
+        expect(withoutIndex.messages.map(row => row.messageId)).toEqual([second, first, nullSent]);
+
+        db.exec("CREATE INDEX idx_nodes_message_sent_at ON Nodes(json_extract(data, '$.properties.sentAt')) WHERE id LIKE 'MESSAGE:%'");
+        const withLegacySingleColumn = observe(db, {scope: 'all', policy: 'team'});
+
+        expect(withLegacySingleColumn).toEqual(indexed)
     });
 
     test('private and legacy all clamp to the viewer sender/inbox, server-granted inboxes and canonical legacy broadcasts', () => {
