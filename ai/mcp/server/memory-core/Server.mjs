@@ -179,6 +179,9 @@ class Server extends BaseServer {
             'healthcheck',
             'add_memory',
             'add_message',
+            // The open-work intake ends in the same mailbox WAL write as `add_message`; gating it would
+            // drop a wake the Fleet round has already admitted and never replays.
+            'admit_open_work_wake',
             'list_messages',
             'get_message',
             'mark_read',
