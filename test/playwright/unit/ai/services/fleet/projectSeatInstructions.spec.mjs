@@ -1,14 +1,17 @@
-import {test, expect} from '@playwright/test';
-import path           from 'path';
-import {generate}     from 'neo-agent-skills/agents-md';
+import {test, expect}  from '@playwright/test';
+import fs              from 'fs';
+import path            from 'path';
+import {createRequire} from 'module';
+import {generate}      from 'neo-agent-skills/agents-md';
 import {
+    AGENTS_MD_POINTER_MARKER,
     HOME_INSTRUCTION_FILES,
     SEAT_INSTRUCTION_STATES,
     projectSeatInstructions
 } from '../../../../../../ai/services/fleet/projectSeatInstructions.mjs';
 
-// Reads the checkout through injected `stat`, `lstat` and `access` and writes nothing, so every case runs on a
-// fake filesystem.
+// Reads the checkout through injected `stat`, `lstat`, `access` and `readFile` and writes nothing, so every case
+// runs on a fake filesystem.
 
 const
     {NOT_APPLICABLE, PROJECTED, REPOSITORY_SUPPLIED} = SEAT_INSTRUCTION_STATES,
@@ -39,8 +42,10 @@ function fakeFileSystem(entries = []) {
             if (kinds[filePath] === 'unreadable') throw failed('EACCES', filePath)
         },
         readFile: async filePath => {
-            if (!(filePath in contents)) throw failed('ENOENT', filePath);
-            return contents[filePath]
+            if (filePath in contents) return contents[filePath];
+            // A readable checkout file with no content given holds rules
+            if (kinds[filePath] === 'file') return '# Rules\n';
+            throw failed('ENOENT', filePath)
         }
     }
 }
@@ -79,7 +84,7 @@ test.describe('projectSeatInstructions (a seat\'s maintainer instructions in its
     test('a checkout supplies a seat\'s instructions only through the files that seat\'s harness reads', async () => {
         const
             supplies = {
-                'claude-code'  : ['CLAUDE.md', path.join('.claude', 'CLAUDE.md')],
+                'claude-code'  : ['CLAUDE.md', path.join('.claude', 'CLAUDE.md'), 'AGENTS.md'],
                 'codex'        : ['AGENTS.override.md', 'AGENTS.md'],
                 'codex-desktop': ['AGENTS.override.md', 'AGENTS.md']
             },
@@ -136,6 +141,36 @@ test.describe('projectSeatInstructions (a seat\'s maintainer instructions in its
 
         expect(await project({fileSystem, harnessType: 'codex', repoSlug: 'neomjs/neo'}))
             .toMatchObject({state: REPOSITORY_SUPPLIED, reason: 'the checkout carries AGENTS.md'})
+    });
+
+    test('the Engine\'s AGENTS.md pointer supplies nothing: a failed generation still gets the home copy', async () => {
+        const
+            pointer   = `${AGENTS_MD_POINTER_MARKER}\nIMPORTANT: this file is generated.\n`,
+            agentsMd  = path.join(REPO, 'AGENTS.md'),
+            claudeMd  = path.join(REPO, '.claude', 'CLAUDE.md'),
+            why       = 'the pointer: no rules were generated',
+            generated = {contents: {[agentsMd]: '# AI Agent Per-Turn Operational Mandates\n'}, [agentsMd]: 'file'};
+
+        // The Engine links .claude/CLAUDE.md to AGENTS.md, so a Claude seat meets the pointer twice
+        expect(await project({fileSystem: fakeFileSystem({contents: {[agentsMd]: pointer, [claudeMd]: pointer}, [agentsMd]: 'file', [claudeMd]: 'file'}), repoSlug: 'neomjs/neo'}))
+            .toMatchObject({state: PROJECTED, ignored: [`${path.join('.claude', 'CLAUDE.md')} (${why})`, `AGENTS.md (${why})`]});
+
+        expect(await project({fileSystem: fakeFileSystem({contents: {[agentsMd]: pointer}, [agentsMd]: 'file'}), harnessType: 'codex', repoSlug: 'neomjs/neo'}))
+            .toMatchObject({state: PROJECTED, ignored: [`AGENTS.md (${why})`]});
+
+        // The generated rules in the same file supply a Claude seat that has no CLAUDE.md
+        expect(await project({fileSystem: fakeFileSystem(generated), repoSlug: 'neomjs/neo'}))
+            .toMatchObject({state: REPOSITORY_SUPPLIED, reason: 'the checkout carries AGENTS.md'})
+    });
+
+    test('the pointer marker is the first line the pinned Engine commits', async () => {
+        const pointerModule = path.join(path.dirname(createRequire(import.meta.url).resolve('neo.mjs/package.json')), 'buildScripts/util/agentsMdPointer.mjs');
+
+        test.skip(!fs.existsSync(pointerModule), 'the pinned Engine predates the AGENTS.md pointer (neomjs/neo#20749)');
+
+        const {AGENTS_MD_POINTER} = await import(pointerModule);
+
+        expect(AGENTS_MD_POINTER.split('\n')[0]).toBe(AGENTS_MD_POINTER_MARKER)
     });
 
     test('only ENOENT means absent: a checkout path that cannot be observed fails loud', async () => {
