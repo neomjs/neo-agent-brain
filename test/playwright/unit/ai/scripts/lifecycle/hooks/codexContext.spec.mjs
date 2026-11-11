@@ -62,10 +62,11 @@ function seatWith({context = null, contextIsDirectory = false} = {}) {
 /**
  * @summary Runs the projected hook as a real process with an empty payload on stdin.
  * @param {String} seat
+ * @param {String[]} [args=[]]
  * @returns {{code: Number, stdout: String, stderr: String}}
  */
-function run(seat) {
-    const result = spawnSync(process.execPath, [path.join(seat, '.codex/hooks/codex-context.mjs')], {
+function run(seat, args = []) {
+    const result = spawnSync(process.execPath, [path.join(seat, '.codex/hooks/codex-context.mjs'), ...args], {
         cwd     : seat,
         encoding: 'utf8',
         input   : '{}'
@@ -82,7 +83,7 @@ test.afterAll(() => {
 /**
  * `.codex/CODEX.md` is the TARGET's file — tracked in the Engine, never in this repository — so
  * `projectSeatHooks` deliberately does not place it and a seat that authors none is a legitimate
- * shape. Before #250 that could not matter: the hook only ran from inside the Engine, where the file
+ * shape. Before cross-checkout projection that could not matter: the hook only ran from inside the Engine, where the file
  * always exists. Projecting it into arbitrary checkouts turned a guaranteed read into an optional
  * one, and an unguarded `readFileSync` made the optional case fatal.
  *
@@ -111,11 +112,24 @@ test.describe('codex-context — a projected seat without a context file', () =>
     test('a non-ENOENT read failure still throws', () => {
         // The discrimination the disposition requires. A directory where the file belongs yields
         // EISDIR, which describes a BROKEN seat rather than an unconfigured one. Catching every error
-        // would convert that into a silent empty context — the same silent-success shape #250 exists
-        // to remove, reintroduced by the fix for it.
+        // would convert that into a silent empty context — the same silent-success shape cross-checkout
+        // projection exists to remove, reintroduced by the fix for it.
         const {code, stderr} = run(seatWith({contextIsDirectory: true}));
 
         expect(code, 'EISDIR was swallowed — the catch is too wide').not.toBe(0);
         expect(stderr).toMatch(/EISDIR|illegal operation on a directory/)
+    })
+});
+
+test.describe('codex-context — SessionStart preflight reminder', () => {
+    test('--session-start emits the counts-projection mailbox preflight alone', () => {
+        const {code, stdout, stderr} = run(seatWith({context: 'CONTEXT-PAYLOAD-PRESENT\n'}), ['--session-start']);
+
+        expect(code, stderr).toBe(0);
+        expect(stdout).toBe(
+            'Core preflight: call `list_messages({status:\'unread\', projection:\'counts\'})` now. ' +
+            'Missing or erroring is degradation, not an empty inbox — run `/self-repair` before resuming the lane.\n'
+        );
+        expect(stderr).toBe('')
     })
 });

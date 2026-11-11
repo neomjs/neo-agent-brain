@@ -241,7 +241,7 @@ export function readCodexContext() {
  * green throughout the 2026-08-20 incident), so this is a reminder, not a health oracle.
  * @type {String}
  */
-const CORE_PREFLIGHT = 'Core preflight: call `list_messages({status:\'unread\'})` now. Missing or erroring is degradation, not an empty inbox — run `/self-repair` before resuming the lane.';
+const CORE_PREFLIGHT = 'Core preflight: call `list_messages({status:\'unread\', projection:\'counts\'})` now. Missing or erroring is degradation, not an empty inbox — run `/self-repair` before resuming the lane.';
 
 /**
  * @summary Hook entry. Two paths: a lifecycle reset re-injects one sentence, an operator prompt
