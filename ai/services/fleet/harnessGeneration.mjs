@@ -203,7 +203,8 @@ export function listHarnessGenerations({root, family} = {}) {
 /**
  * @summary The family's selected generation: the most recently admitted build whose copy is present.
  * Re-admitting a known build never reorders the ledger, so an older bundle seen again (for example
- * the untouched `/Applications` copy) cannot displace a newer admitted one.
+ * the untouched `/Applications` copy) cannot displace a newer admitted one. An older build admitted
+ * for the first time would, so the Fleet admits the installed copy only to bootstrap a family that holds none.
  * @param {Object} options
  * @param {String} options.root Absolute store root.
  * @param {String} options.family A key of {@link HARNESS_GENERATION_FAMILIES}.

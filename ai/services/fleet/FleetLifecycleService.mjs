@@ -3532,7 +3532,7 @@ class FleetLifecycleService extends Base {
     /**
      * @summary The generation an opted-in family's next Start launches, admitting nothing: its newest admitted
      * generation, or `null` when the family has not opted in. A Start reaches it through
-     * {@link resolveHarnessGeneration}, which admits a new installed build first.
+     * {@link resolveHarnessGeneration}, which bootstraps a family that holds none from its installed build.
      * @param {String} harnessType
      * @returns {Object|null} One of {@link harnessGenerationsOf}.
      * @throws {Error} When the family opted in and its host gate does not hold ({@link assertHarnessHostGate}),
@@ -3557,8 +3557,10 @@ class FleetLifecycleService extends Base {
 
     /**
      * @summary {@link selectedHarnessGeneration} after admission. The installed build, the `.app` around the
-     * family's `harnessBinaries` path, goes through admission first when the family's ledger has not admitted
-     * its version and this process has not tried it. An opted-in Start never falls back to the installed bundle.
+     * family's `harnessBinaries` path, only bootstraps: it goes through admission while the family holds no
+     * generation, once per version and process. After that the Fleet's acquisition is the family's only source,
+     * so an older installed bundle never displaces a newer admitted build. An opted-in Start never falls back
+     * to the installed bundle.
      * @param {String} harnessType
      * @returns {Promise<Object|null>}
      * @throws {Error} As {@link selectedHarnessGeneration}; a host gate that does not hold refuses before admission.
@@ -3573,7 +3575,7 @@ class FleetLifecycleService extends Base {
             root      = this.getHarnessGenerationRoot(),
             installed = appBundleOf(this.getHarnessBinaryPath(harnessType));
 
-        if (installed && fs.existsSync(installed)) {
+        if (installed && fs.existsSync(installed) && !this.harnessGenerationsOf(harnessType).length) {
             const
                 {shortVersion, buildVersion} = store.readBundleInfo(installed),
                 attempt                      = [root, harnessType, shortVersion, buildVersion].join('\0'),
