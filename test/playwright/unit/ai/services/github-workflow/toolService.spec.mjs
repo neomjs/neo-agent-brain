@@ -428,7 +428,7 @@ test.describe('Neo.ai.services.github-workflow.toolService — write identity gu
         )).toBe(true);
     });
 
-    test('#17420: exactly the 20 remote-forge operations advertise the shared repository target', async () => {
+    test('#17420: exactly the 21 remote-forge operations advertise the shared repository target', async () => {
         const {listTools} = await import('../../../../../../ai/mcp/server/github-workflow/toolService.mjs');
         const tools       = new Map(listTools().tools.map(tool => [tool.name, tool]));
         const targeted    = [
@@ -438,6 +438,7 @@ test.describe('Neo.ai.services.github-workflow.toolService — write identity gu
             'get_conversation',
             'manage_issue_comment',
             'update_issue_body',
+            'manage_issue_state',
             'manage_issue_labels',
             'manage_issue_assignees',
             'manage_pr_review',
@@ -471,12 +472,12 @@ test.describe('Neo.ai.services.github-workflow.toolService — write identity gu
             expect(tools.get(toolName)?.inputSchema?.properties?.repo, toolName).toBeUndefined();
         }
 
-        expect(targeted).toHaveLength(20);
+        expect(targeted).toHaveLength(21);
         expect([...REPOSITORY_TARGET_TOOLS].sort()).toEqual([...targeted].sort());
         const openApiSource = readFileSync('ai/mcp/server/github-workflow/openapi.yaml', 'utf8'),
               sharedRefs    = openApiSource.match(/\$ref: '#\/components\/schemas\/RepositoryTarget'/g) || [];
 
-        expect(sharedRefs).toHaveLength(20);
+        expect(sharedRefs).toHaveLength(21);
     });
 
     test('classifies the public GitHub write boundary explicitly', () => {
@@ -489,6 +490,7 @@ test.describe('Neo.ai.services.github-workflow.toolService — write identity gu
             'manage_issue_comment',
             'manage_issue_labels',
             'manage_issue_projects',
+            'manage_issue_state',
             'manage_pr_review',
             'manage_pr_reviewers',
             'signal_state_transition',

@@ -21,6 +21,8 @@ import {
     GET_PULL_REQUEST_BODY_TARGET,
     UPDATE_ISSUE_BODY,
     UPDATE_PULL_REQUEST_BODY,
+    GET_ISSUE_CLOSE_TARGET,
+    CLOSE_ISSUE,
     ADD_COMMENT,
     UPDATE_COMMENT,
     GET_PROJECT_V2_METADATA,
@@ -30,6 +32,33 @@ import {
     UPDATE_PROJECT_V2_ITEM_SINGLE_SELECT,
     GET_ISSUE_COMMENT_TARGET
 } from './queries/mutations.mjs';
+
+/**
+ * The reasons GitHub's `closeIssue` accepts (`IssueClosedStateReason`).
+ * @type {String[]}
+ */
+const CLOSE_REASONS = ['COMPLETED', 'NOT_PLANNED', 'DUPLICATE'];
+
+/**
+ * Whether a value can be an issue number: GitHub numbers issues from 1.
+ * @param {*} value
+ * @returns {Boolean}
+ */
+const isIssueNumber = value => Number.isInteger(value) && value > 0;
+
+/**
+ * `.catch()` handler for a lookup whose target may not exist: GitHub answers a number that is no
+ * issue with a `NOT_FOUND` error beside the null field, and `GraphqlService.query` throws on it.
+ * @param {Error} error
+ * @returns {null} For `NOT_FOUND`; any other error is rethrown.
+ */
+const nullIfNotFound = error => {
+    if (error?.graphqlErrors?.some(item => item.type === 'NOT_FOUND')) {
+        return null
+    }
+
+    throw error
+};
 
 /**
  * @summary Service for interacting with GitHub issues via the GraphQL API.
@@ -1295,6 +1324,197 @@ class IssueService extends Base {
             return result;
         } catch (error) {
             logger.error(`Error updating body on ${target.fullName} ${isPR ? 'PR' : 'issue'} #${number} via GraphQL:`, error);
+            return {
+                error  : 'GraphQL API request failed',
+                message: error.message,
+                code   : 'GRAPHQL_API_ERROR'
+            };
+        }
+    }
+
+    /**
+     * @summary Dispatches the issue state actions of `manage_issue_state`; `close` is the only one.
+     * @param {Object} options
+     * @param {String} options.action                     The action to perform: 'close'.
+     * @param {Number} options.issue_number               The number of the issue.
+     * @param {String} options.reason                     COMPLETED, NOT_PLANNED or DUPLICATE.
+     * @param {Number} [options.duplicate_of]             DUPLICATE only: the number of the surviving issue.
+     * @param {String} [options.acknowledgedForeignClose] Why a caller who is neither author nor assignee closes it.
+     * @param {String} [options.repo]                     Optional bare name or owner/name repository target.
+     * @returns {Promise<Object>}
+     */
+    async manageIssueState({action, issue_number, reason, duplicate_of, acknowledgedForeignClose, repo} = {}) {
+        const target = resolveRepositoryTarget(repo, {owner: aiConfig.owner, repo: aiConfig.repo});
+
+        if (target.error) return target;
+
+        if (action !== 'close') {
+            return {
+                error  : 'Bad Request',
+                message: "Invalid action. Must be 'close'.",
+                code   : 'INVALID_ARGUMENTS'
+            };
+        }
+
+        return this.closeIssue({issue_number, reason, duplicate_of, acknowledgedForeignClose, target});
+    }
+
+    /**
+     * @summary Closes an issue with a reason, honouring the rule that its author or an assignee closes it.
+     *
+     * A seat needs this write on the server: a harness that classifies actions refuses `gh issue close`
+     * for any issue the session did not create, while this server's tools run unclassified.
+     *
+     * One read resolves the issue and the authenticated viewer before anything mutates:
+     * 1. An already-closed issue returns its current state with `alreadyClosed: true` and no mutation.
+     * 2. A caller who is neither the author nor a current assignee is refused with
+     *    `FOREIGN_CLOSE_FORBIDDEN`, unless a non-empty `acknowledgedForeignClose` states why. The same
+     *    shape as {@link #updateIssueBody}'s `acknowledgedForeignBody`: the override is explicit and echoed.
+     * 3. `DUPLICATE` resolves the surviving issue first; an unknown one closes nothing.
+     *
+     * @param {Object} options
+     * @param {Number} options.issue_number               The number of the issue to close.
+     * @param {String} options.reason                     COMPLETED, NOT_PLANNED or DUPLICATE.
+     * @param {Number} [options.duplicate_of]             DUPLICATE only: the number of the surviving issue.
+     * @param {String} [options.acknowledgedForeignClose] Explicit reason required when the caller is neither author nor assignee.
+     * @param {Object} options.target                     The resolved repository target.
+     * @returns {Promise<Object>} {issueId, number, url, closed, stateReason} plus `alreadyClosed`, `duplicateOf` or
+     * the echoed `acknowledgedForeignClose` where they apply, or a structured error.
+     * @protected
+     */
+    async closeIssue({issue_number, reason, duplicate_of, acknowledgedForeignClose, target}) {
+        if (issue_number == null || !reason) {
+            return {
+                error  : 'Bad Request',
+                message: "Missing required argument: 'issue_number' and 'reason' are required for closing an issue.",
+                code   : 'MISSING_ARGUMENTS'
+            };
+        }
+
+        if (!isIssueNumber(issue_number) || duplicate_of != null && !isIssueNumber(duplicate_of)) {
+            return {
+                error  : 'Bad Request',
+                message: "'issue_number' and 'duplicate_of' must be positive integers.",
+                code   : 'INVALID_ARGUMENTS'
+            };
+        }
+
+        if (!CLOSE_REASONS.includes(reason)) {
+            return {
+                error  : 'Bad Request',
+                message: `Invalid reason '${reason}'. Must be one of ${CLOSE_REASONS.join(', ')}.`,
+                code   : 'INVALID_ARGUMENTS'
+            };
+        }
+
+        const isDuplicate = reason === 'DUPLICATE';
+
+        if (isDuplicate ? duplicate_of == null || duplicate_of === issue_number : duplicate_of != null) {
+            return {
+                error  : 'Bad Request',
+                message: "'duplicate_of' names the surviving issue: required for reason DUPLICATE, different from 'issue_number', and refused with any other reason.",
+                code   : 'INVALID_ARGUMENTS'
+            };
+        }
+
+        try {
+            const lookupData = await GraphqlService.query(GET_ISSUE_CLOSE_TARGET, {
+                      owner : target.owner,
+                      repo  : target.repo,
+                      number: issue_number
+                  }).catch(nullIfNotFound),
+                  issue       = lookupData?.repository?.issue,
+                  viewerLogin = lookupData?.viewer?.login || null;
+
+            if (!issue?.id) {
+                return {
+                    error  : 'Not Found',
+                    message: `Issue #${issue_number} was not found in ${target.fullName}.`,
+                    code   : 'NOT_FOUND'
+                };
+            }
+
+            if (issue.closed) {
+                return {
+                    issueId      : issue.id,
+                    number       : issue_number,
+                    url          : issue.url,
+                    closed       : true,
+                    stateReason  : issue.stateReason,
+                    alreadyClosed: true
+                };
+            }
+
+            const authorLogin      = issue.author?.login || null,
+                  assigneeLogins   = (issue.assignees?.nodes || []).map(node => node?.login).filter(Boolean),
+                  normalizedViewer = viewerLogin ? viewerLogin.toLowerCase() : null,
+                  isOwn            = Boolean(normalizedViewer) && [authorLogin, ...assigneeLogins]
+                      .some(login => login?.toLowerCase() === normalizedViewer),
+                  trimmedAck       = typeof acknowledgedForeignClose === 'string' ? acknowledgedForeignClose.trim() : '';
+
+            if (!isOwn && !trimmedAck) {
+                return {
+                    error  : 'Foreign Close Refused',
+                    code   : 'FOREIGN_CLOSE_FORBIDDEN',
+                    message: [
+                        `Issue #${issue_number} in ${target.fullName} is authored by ${authorLogin ? `@${authorLogin}` : 'an unknown author'} `,
+                        `and assigned to [${assigneeLogins.length > 0 ? assigneeLogins.map(u => `@${u}`).join(', ') : 'unassigned'}]; `,
+                        `caller ${viewerLogin ? `@${viewerLogin}` : '(unresolved viewer)'} is neither the author nor a current assignee. `,
+                        `Under the authorship rule, the author or a current assignee closes an issue: post the verdict as a comment. `,
+                        `For an intentional foreign close (such as two agreeing peers on an unreachable author's ticket), `,
+                        `pass \`acknowledgedForeignClose: '<reason>'\`.`
+                    ].join(''),
+                    number   : issue_number,
+                    author   : authorLogin,
+                    assignees: assigneeLogins,
+                    viewerLogin
+                };
+            }
+
+            const variables = {issueId: issue.id, stateReason: reason};
+
+            if (isDuplicate) {
+                const duplicateData = await GraphqlService.query(GET_ISSUE_ID, {
+                    owner : target.owner,
+                    repo  : target.repo,
+                    number: duplicate_of
+                }).catch(nullIfNotFound);
+
+                variables.duplicateIssueId = duplicateData?.repository?.issue?.id;
+
+                if (!variables.duplicateIssueId) {
+                    return {
+                        error  : 'Not Found',
+                        message: `The surviving issue #${duplicate_of} was not found in ${target.fullName}; #${issue_number} stays open.`,
+                        code   : 'NOT_FOUND'
+                    };
+                }
+            }
+
+            const result = await GraphqlService.query(CLOSE_ISSUE, variables),
+                  closed = result?.closeIssue?.issue;
+
+            if (!closed?.closed) {
+                return {
+                    error  : 'GraphQL API request failed',
+                    message: `closeIssue returned no closed issue for ${target.fullName}#${issue_number}.`,
+                    code   : 'GRAPHQL_API_ERROR'
+                };
+            }
+
+            logger.info(`Closed GitHub issue ${target.fullName}#${issue_number} as ${reason}: ${closed.url}`);
+
+            return {
+                issueId    : closed.id,
+                number     : issue_number,
+                url        : closed.url,
+                closed     : true,
+                stateReason: closed.stateReason,
+                ...(isDuplicate ? {duplicateOf: duplicate_of} : {}),
+                ...(isOwn ? {} : {acknowledgedForeignClose: trimmedAck})
+            };
+        } catch (error) {
+            logger.error(`Error closing ${target.fullName} issue #${issue_number} via GraphQL:`, error);
             return {
                 error  : 'GraphQL API request failed',
                 message: error.message,

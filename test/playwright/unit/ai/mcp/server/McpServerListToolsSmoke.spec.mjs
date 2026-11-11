@@ -1100,7 +1100,7 @@ test.describe('Neo MCP servers — cross-server listTools smoke (#11687)', () =>
     test('all six MCP server OpenAPI contracts follow <what>; use when <trigger> without repeating operationId (#1566, #1565, #1564, #1567)', () => {
         const expectedCounts = {
             'file-system'    : 7,
-            'github-workflow': 25,
+            'github-workflow': 26,
             'gitlab-workflow': 14,
             'knowledge-base' : 13,
             'memory-core'    : 55,
