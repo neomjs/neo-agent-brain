@@ -13,28 +13,11 @@
  * transition leaves the producer's bounded history. Admitted merges need no permanent seen set: the
  * saved pulse excludes their original observations on the next round.
  */
-import {createHash}            from 'node:crypto';
-import {openWorkFreshness}     from './fleetOpenWorkSource.mjs';
-import {holderOf}              from './openWorkHolder.mjs';
-import {OPEN_WORK_QUERY_COSTS} from '../github-workflow/queries/openWorkQueries.mjs';
-
-const REASONS = Object.freeze({
-    'repair-ci'       : 'CI is red on your head',
-    'address-changes' : 'changes are requested on your head',
-    rebase            : 'your approved head has conflicts to rebase',
-    review            : 'your review is due on the current head',
-    'route-review'    : 'CI is green; request a reviewer for your head',
-    'triage-outside'  : 'an untouched outside contributor pull request has finished CI',
-    'approve-runs'    : 'an outside contributor pull request has workflow runs awaiting approval',
-    'post-merge'      : 'your pull request was merged'
-});
-
-/**
- * @summary Human-readable reason for a wake action kind.
- * @param {String} kind
- * @returns {String|null}
- */
-export const reasonOf = kind => REASONS[kind] ?? null;
+import {createHash}                        from 'node:crypto';
+import {openWorkFreshness}                 from './fleetOpenWorkSource.mjs';
+import {holderOf}                          from './openWorkHolder.mjs';
+import {OPEN_WORK_WAKE_REASONS as REASONS} from './openWorkWakeMessage.mjs';
+import {OPEN_WORK_QUERY_COSTS}             from '../github-workflow/queries/openWorkQueries.mjs';
 
 /**
  * @summary Deterministic rotation seat selection from the participating roster, advancing to the first reachable seat.

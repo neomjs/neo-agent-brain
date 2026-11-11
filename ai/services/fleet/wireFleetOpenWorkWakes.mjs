@@ -1,8 +1,9 @@
 /**
  * @module ai/services/fleet/wireFleetOpenWorkWakes
- * @summary Persist holder-action admissions before sending through the already verified plane.
- * The existing producer invokes this callback; it owns cadence. The entrypoint owns enablement.
- * An admitted attempt is never proof of delivery, and an ambiguous send is never replayed.
+ * @summary Persist holder-action admissions before submitting them to the already verified plane, which composes
+ * each wake and sends it as `@system` (`openWorkWakeMessage.mjs`). The existing producer invokes this callback; it
+ * owns cadence. The entrypoint owns enablement. An admitted attempt is never proof of delivery, and an ambiguous
+ * submission is never replayed.
  */
 import path                            from 'path';
 import {OPEN_WORK_FAILED_CHECKS}       from '../github-workflow/queries/openWorkQueries.mjs';
@@ -78,43 +79,15 @@ export function failedChecksOf(data) {
 }
 
 /**
- * @summary What a `repair-ci` wake says failed: the first three names in its subject, all of them in its body.
- * @param {String[]|null} names The failing checks read at the send; null when they could not be read.
- * @returns {{subject: String, body: String}}
- * @private
- */
-function failingOf(names) {
-    if (!names) return {subject: 'unknown', body: 'unknown; the names could not be read'};
-    if (!names.length) return {subject: 'none at send time', body: 'none when this wake was sent'};
-
-    return {subject: names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : ''), body: names.join(', ')}
-}
-
-/**
- * @summary Describe the observed action and retain its complete task identity for live revalidation.
- * A `repair-ci` wake also names its head's failing checks. The message asks to wake its seat: the plane
- * stamps the viewer as its sender, and for a human sender an omitted `wakeSuppressed` defaults to quiet.
+ * @summary The observation the plane's open-work intake admits for one wake: tokens only, never text.
  * @param {Object} wake The planner's admission.
- * @param {String[]|null} [failedChecks] A `repair-ci` wake's failing checks; null when they could not be read.
- * @returns {Object} Payload for the injected same-plane add_message sender.
+ * @param {String[]|null} failedChecks A `repair-ci` wake's failing checks; null when unread or another kind.
+ * @returns {Object} The `admit_open_work_wake` arguments.
  */
-export function wakeMessageOf(wake, failedChecks = null) {
-    const failing = wake.kind === 'repair-ci' ? failingOf(failedChecks) : null;
+export function observationOf(wake, failedChecks) {
+    const {repo, number, head, kind, episode, to} = wake;
 
-    return {
-        to     : wake.to,
-        subject: `[open-work:${wake.kind}] ${wake.pr}: observed ${wake.reason}${failing ? ` — failing: ${failing.subject}` : ''}`,
-        body   : `https://github.com/${wake.repo}/pull/${wake.number}\nHead: ${wake.head}\n` +
-            `Observed action: ${wake.kind} — ${wake.reason}.\n${failing ? `Failing checks: ${failing.body}.\n` : ''}Episode: ${wake.episode}\n\n` +
-            'Re-check the live pull request, head, checks and review state before acting. ' +
-            'This message describes a producer observation, not a guarantee of the current state.',
-        relatedTickets: [wake.pr],
-        wakeSuppressed: false,
-        task          : {
-            id  : `open-work:${wake.key}`, state: 'Submitted', producerRole: 'fleet-open-work',
-            kind: wake.kind, head: wake.head, episode: wake.episode
-        }
-    }
+    return {repo, number, head, kind, episode, to, failedChecks}
 }
 
 /**
@@ -241,13 +214,14 @@ function freshWake(wake, state, now) {
 
 /**
  * @summary Create one serial post-pulse consumer. Route skips remain pending; admission is persisted
- * before any sender call. Freshness is checked after route/persistence waits and before each send;
- * an expired reservation remains admitted but sends nothing. stop() refuses new work, drops queued
+ * before any submission. Freshness is checked after route/persistence waits and before each submission;
+ * an expired reservation remains admitted but submits nothing. stop() refuses new work, drops queued
  * work and awaits the active round. Certification latches in the ledger; later gate refusals cannot
- * erase it or pending actions. The enablement getter still guards every sender boundary.
+ * erase it or pending actions. The enablement getter still guards every submission boundary.
  * @param {Object} options
  * @param {{load: Function, save: Function}} options.store Durable ledger; only absence returns null.
- * @param {Function} options.sendMessage Same verified plane's sender, injected by the entrypoint.
+ * @param {Function} options.admitWake `(observation) → Promise`: the same verified plane's open-work intake,
+ *     injected by the entrypoint. The plane composes the wake and sends it as `@system`.
  * @param {Function} [options.readUndeliverable] Seat-to-nullable-reason map; membership means unreachable.
  *     An unreadable or absent whole map means unknown.
  * @param {Function} [options.now] Epoch milliseconds.
@@ -260,7 +234,7 @@ function freshWake(wake, state, now) {
  * @param {Object} [options.log] Bounded diagnostics; sender error contents are never logged.
  * @returns {Function} Post-pulse callback with an async stop() method; persistence errors reject.
  */
-export function createOpenWorkWakeRound({store, sendMessage, readUndeliverable = async () => null,
+export function createOpenWorkWakeRound({store, admitWake, readUndeliverable = async () => null,
     now = Date.now, routesTtlMs = ROUTES_TTL_MS, gateOf = wakeGateOf, isEnabled = () => true, rotationSeats, readFailedChecks = null, log = console}) {
     let running = null, queued = null, stopped = false, routes = null;
 
@@ -364,7 +338,7 @@ export function createOpenWorkWakeRound({store, sendMessage, readUndeliverable =
                 expired++;
                 continue
             }
-            try { await sendMessage(wakeMessageOf(wake, failedChecks)) } catch {
+            try { await admitWake(observationOf(wake, failedChecks)) } catch {
                 sendErrors++;
                 log.error?.('[fleet] open-work wake attempt failed or is ambiguous; admission retained',
                     {pr: wake.pr.slice(0, 160), kind: wake.kind.slice(0, 40)})
@@ -430,7 +404,7 @@ function failedChecksReader({listDefinitions, resolveCredential, createQuery}) {
  * @param {Object} options
  * @param {{getDataDir: Function, listAgents: Function, resolveCredential: Function}} options.registry Fleet-owned
  *     durable root, and the seats whose PATs read a `repair-ci` wake's failing checks.
- * @param {Function} options.sendMessage Already verified same-plane sender.
+ * @param {Function} options.admitWake The already verified plane's open-work intake.
  * @param {Function} [options.readUndeliverable]
  * @param {Function} [options.now]
  * @param {Function} [options.gateOf] Test seam only.
@@ -438,10 +412,10 @@ function failedChecksReader({listDefinitions, resolveCredential, createQuery}) {
  * @param {Array<String|Object>|Function} [options.rotationSeats]
  * @param {Function} [options.createQuery] `(token) → query`; replaces the GitHub call (tests).
  * @param {Object} [options.log]
- * @returns {Function|null} onPulse with stop(), or null without the required registry/sender.
+ * @returns {Function|null} onPulse with stop(), or null without the required registry/intake.
  */
-export function wireFleetOpenWorkWakes({registry, sendMessage, readUndeliverable, now, gateOf, isEnabled, rotationSeats, createQuery, log} = {}) {
-    if (typeof registry?.getDataDir !== 'function' || typeof sendMessage !== 'function') return null;
+export function wireFleetOpenWorkWakes({registry, admitWake, readUndeliverable, now, gateOf, isEnabled, rotationSeats, createQuery, log} = {}) {
+    if (typeof registry?.getDataDir !== 'function' || typeof admitWake !== 'function') return null;
     return createOpenWorkWakeRound({
         store           : fileStore(path.join(registry.getDataDir(), 'open-work-wakes.json')),
         readFailedChecks: failedChecksReader({
@@ -449,7 +423,7 @@ export function wireFleetOpenWorkWakes({registry, sendMessage, readUndeliverable
             resolveCredential: id => registry.resolveCredential?.(id) ?? null,
             createQuery
         }),
-        sendMessage, readUndeliverable, now, gateOf, isEnabled, rotationSeats, log
+        admitWake, readUndeliverable, now, gateOf, isEnabled, rotationSeats, log
     })
 }
 

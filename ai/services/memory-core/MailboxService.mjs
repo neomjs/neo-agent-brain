@@ -760,14 +760,31 @@ function setRecordProperties(record, properties) {
  * @param {Object} db The graph database (GraphService.requireDb result).
  * @param {String} identityId Canonical `@`-form identity node id.
  * @returns {String} One of `'agent' | 'human' | 'system' | 'unclassified'`.
- * @private
  */
-function resolvePrincipalClass(db, identityId) {
+export function resolvePrincipalClass(db, identityId) {
     db.getAdjacentNodes(identityId, 'outbound');
 
     const accountType = db.nodes.get(identityId)?.properties?.accountType;
 
     return KNOWN_PRINCIPAL_CLASSES.has(accountType) ? accountType : 'unclassified'
+}
+
+/**
+ * @summary Whether an identity is the Fleet's registered human operator: an AgentIdentity node of a human account
+ * that is not external and not marked `operator: false`. Read from the graph, never from caller input.
+ * @param {Object} db The graph database (GraphService.requireDb result).
+ * @param {String} identityId Canonical `@`-form identity node id.
+ * @returns {Boolean}
+ */
+export function isHumanOperatorIdentity(db, identityId) {
+    db.getAdjacentNodes(identityId, 'both');
+
+    const
+        node       = db.nodes.get(identityId),
+        properties = getRecordProperties(node);
+
+    return !!node && getRecordField(node, 'label') === 'AgentIdentity' && properties.accountType === 'human' &&
+        properties.trustTier !== 'external' && properties.operator !== false
 }
 
 /**
@@ -3378,18 +3395,7 @@ class MailboxService extends Base {
                 );
             }
 
-            db.getAdjacentNodes(to, 'both');
-            const
-                recipientNode  = db.nodes.get(to),
-                recipientProps = getRecordProperties(recipientNode);
-
-            if (
-                !recipientNode ||
-                getRecordField(recipientNode, 'label') !== 'AgentIdentity' ||
-                recipientProps.accountType !== 'human' ||
-                recipientProps.trustTier === 'external' ||
-                recipientProps.operator === false
-            ) {
+            if (!isHumanOperatorIdentity(db, to)) {
                 throw refuseRequestPublish(
                     'refused: recipient',
                     `requestPublish recipient '${to}' is not the Fleet's registered human operator AgentIdentity.`
@@ -3491,6 +3497,10 @@ class MailboxService extends Base {
         // In `'blocked'` mode, non-broadcast DMs to a specific AgentIdentity require either
         // a prior `CAN_REPLY_TO` grant or the reachable-counterparty trust-lift.
         //
+        // The plane's own `'system'` sender is exempt. Its messages are notices the plane
+        // composes (an overdue register, an open-work wake), not contact a peer initiates, and a fresh
+        // seat has no history with it that the trust-lift could read.
+        //
         // In `'open'` mode (homogeneous trusted-frontier swarm default), the check is
         // skipped — all authenticated peers can DM each other. The PermissionService
         // primitives remain live and callable; `CAN_REPLY_TO` edges are still created
@@ -3514,7 +3524,7 @@ class MailboxService extends Base {
             }
         }
 
-        if (strictReplyPolicy && !isRequestPublish && !isRoleOrHuman && to !== 'AGENT:*' && !sameMailboxIdentity(to, sentBy)) {
+        if (strictReplyPolicy && !isRequestPublish && senderPrincipalClass !== 'system' && !isRoleOrHuman && to !== 'AGENT:*' && !sameMailboxIdentity(to, sentBy)) {
             let canReply = PermissionService.hasPermission(sentBy, to, 'CAN_REPLY_TO');
 
             // Reachable Counterparty trust lift: if `to` ever sent a message that reached the
