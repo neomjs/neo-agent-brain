@@ -658,8 +658,9 @@ class ConfigBase extends ConfigProvider {
                      */
                     antigravity: leaf(false, 'NEO_FLEET_HARNESS_GENERATIONS_ANTIGRAVITY', 'boolean'),
                     /**
-                     * Claude Desktop seats start from the selected generation. The family has no
-                     * admission probe yet, so opting in refuses every Start until one exists.
+                     * Claude Desktop seats start from the selected generation, and only while the host
+                     * turns Claude's own updater off by policy (`disableAutoUpdates`); without it, every
+                     * Start refuses and names the profile that turns it off.
                      * @type {boolean}
                      */
                     claudeDesktop: leaf(false, 'NEO_FLEET_HARNESS_GENERATIONS_CLAUDE_DESKTOP', 'boolean'),
