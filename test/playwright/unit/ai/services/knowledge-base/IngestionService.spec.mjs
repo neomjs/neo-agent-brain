@@ -28,6 +28,10 @@ import {
 } from '../../../../../../ai/services/knowledge-base/helpers/embedFailureClassification.mjs';
 import {createTenantRepoMaterializationDigest}
     from '../../../../../../ai/services/knowledge-base/helpers/tenantRepoIngestEnvelopeBuilder.mjs';
+import {
+    closeBundlePayload,
+    openBundlePayload
+} from '../../../../../../ai/services/shared/bundlePayload.mjs';
 
 const TEST_EXTRACTION_IDENTITY = 'e'.repeat(64);
 
@@ -2892,5 +2896,79 @@ test.describe('IngestionService.listConfiguredTenantRepos (#12145)', () => {
         });
         expect(JSON.stringify(configDiagnostics)).not.toContain('token-secret');
         expect(JSON.stringify(configDiagnostics)).not.toContain('/srv/private');
+    });
+});
+
+test.describe('IngestionService.writeTempJsonl', () => {
+    const tempDir = path.join(os.tmpdir(), 'neo-kb-ingestion');
+
+    let Service;
+
+    /** @summary Names this process's ingestion temp files: `writeTempJsonl` stamps its pid into each name. */
+    const ownTempFiles = () => fs.pathExistsSync(tempDir)
+        ? fs.readdirSync(tempDir).filter(name => name.startsWith(`ingest-${process.pid}-`))
+        : [];
+
+    test.beforeAll(async () => {
+        Service = (await import('../../../../../../ai/services/knowledge-base/IngestionService.mjs')).default;
+    });
+
+    test('puts each record on disk before it serializes the next', async () => {
+        // A batch is one repository's whole accepted population, so it must never exist as one
+        // string. Records larger than the stream's buffer make every write wait for its drain: the
+        // size on disk while a record is serialized is exactly the bytes of the records before it.
+        const
+            before = new Set(ownTempFiles()),
+            plain  = [
+                'a'.repeat(1 << 20),
+                `line separator ${'b'.repeat(1 << 20)}`,
+                `paragraph separator ${'c'.repeat(1 << 20)}`
+            ].map((content, index) => ({id: `chunk-${index}`, content})),
+            lines   = plain.map(record => JSON.stringify(record)),
+            onDisk  = [],
+            records = plain.map(record => ({
+                toJSON() {
+                    const [name] = ownTempFiles().filter(candidate => !before.has(candidate));
+
+                    onDisk.push(name ? fs.statSync(path.join(tempDir, name)).size : 0);
+
+                    return record
+                }
+            }));
+
+        const file = await Service.writeTempJsonl(records);
+
+        try {
+            expect(onDisk).toEqual([
+                0,
+                Buffer.byteLength(lines[0]),
+                Buffer.byteLength(lines[0]) + 1 + Buffer.byteLength(lines[1])
+            ]);
+            expect(await fs.readFile(file, 'utf8')).toBe(lines.join('\n'));
+
+            const
+                reader = openBundlePayload(file),
+                read   = [];
+
+            try {
+                for await (const line of reader) {
+                    read.push(JSON.parse(line))
+                }
+            } finally {
+                closeBundlePayload(reader)
+            }
+
+            expect(read).toEqual(plain)
+        } finally {
+            await fs.remove(file)
+        }
+    });
+
+    test('a record that cannot be serialized rejects and leaves no temp file', async () => {
+        const before = new Set(ownTempFiles());
+
+        await expect(Service.writeTempJsonl([{content: 'a'}, {content: 1n}])).rejects.toThrow(TypeError);
+
+        expect(ownTempFiles().filter(name => !before.has(name))).toEqual([])
     });
 });
