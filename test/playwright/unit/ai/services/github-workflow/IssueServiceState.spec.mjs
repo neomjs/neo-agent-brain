@@ -45,18 +45,36 @@ test.describe('Neo.ai.services.github-workflow.IssueService — manageIssueState
     });
 
     /**
+     * Builds the error `GraphqlService.query` throws when GitHub answers `NOT_FOUND`. An unknown
+     * number and a pull request's number both read this way, beside a null `issue` field.
+     * @param {Number} number
+     * @returns {Error}
+     */
+    function notFound(number) {
+        const message = `Could not resolve to an Issue with the number of ${number}.`;
+
+        return Object.assign(new Error(`GitHub API error: ${message}`), {
+            graphqlErrors: [{type: 'NOT_FOUND', path: ['repository', 'issue'], message}]
+        });
+    }
+
+    /**
      * Stubs `GraphqlService.query` by operation name and records every call.
-     * @param {Object} [issue] The issue the close-target lookup answers; `survivor: null` makes the
-     *     surviving issue of a DUPLICATE close unknown.
+     * @param {Object} [issue] The issue the close-target lookup answers. `missing: true` makes it
+     *     unknown, `survivor: null` the surviving issue of a DUPLICATE close; both throw as GitHub does.
      * @returns {Object[]} The recorded `{query, variables}` calls.
      */
-    function stubClose({author = 'neo-opus-vega', assignees = [], viewer = 'neo-opus-vega', closed = false, stateReason = null, survivor = SURVIVOR_NODE_ID} = {}) {
+    function stubClose({author = 'neo-opus-vega', assignees = [], viewer = 'neo-opus-vega', closed = false, stateReason = null, survivor = SURVIVOR_NODE_ID, missing = false} = {}) {
         const calls = [];
 
         GraphqlService.query = async (query, variables) => {
             calls.push({query, variables});
 
             if (query.includes('GetIssueCloseTarget')) {
+                if (missing) {
+                    throw notFound(variables.number);
+                }
+
                 return {
                     viewer    : {login: viewer},
                     repository: {
@@ -73,7 +91,11 @@ test.describe('Neo.ai.services.github-workflow.IssueService — manageIssueState
             }
 
             if (query.includes('GetIssueId')) {
-                return {repository: {issue: survivor ? {id: survivor} : null}};
+                if (!survivor) {
+                    throw notFound(variables.number);
+                }
+
+                return {repository: {issue: {id: survivor}}};
             }
 
             if (query.includes('CloseIssue')) {
@@ -171,10 +193,13 @@ test.describe('Neo.ai.services.github-workflow.IssueService — manageIssueState
     for (const [label, options, code] of [
         ['a missing reason',                        {},                                             'MISSING_ARGUMENTS'],
         ['a missing issue number',                  {issue_number: undefined, reason: 'COMPLETED'}, 'MISSING_ARGUMENTS'],
+        ['a zero issue number',                     {issue_number: 0, reason: 'COMPLETED'},         'INVALID_ARGUMENTS'],
+        ['an issue number that is no integer',      {issue_number: '1616', reason: 'COMPLETED'},    'INVALID_ARGUMENTS'],
         ['an unknown reason',                       {reason: 'completed'},                          'INVALID_ARGUMENTS'],
         ['an unknown action',                       {action: 'reopen', reason: 'COMPLETED'},        'INVALID_ARGUMENTS'],
         ['a DUPLICATE without its surviving issue', {reason: 'DUPLICATE'},                          'INVALID_ARGUMENTS'],
         ['a DUPLICATE of itself',                   {reason: 'DUPLICATE', duplicate_of: 1616},      'INVALID_ARGUMENTS'],
+        ['a duplicate_of below one',                {reason: 'DUPLICATE', duplicate_of: -132},      'INVALID_ARGUMENTS'],
         ['a duplicate_of with another reason',      {reason: 'COMPLETED', duplicate_of: 132},       'INVALID_ARGUMENTS']
     ]) {
         test(`${label} is refused before any GraphQL call`, async () => {
@@ -186,10 +211,28 @@ test.describe('Neo.ai.services.github-workflow.IssueService — manageIssueState
         });
     }
 
-    test('a number that is no issue of the repository returns NOT_FOUND', async () => {
-        GraphqlService.query = async () => ({viewer: {login: 'neo-opus-vega'}, repository: {issue: null}});
+    test('a call without arguments is refused before any GraphQL call', async () => {
+        const calls  = stubClose(),
+              result = await IssueService.manageIssueState();
 
-        expect((await close({reason: 'COMPLETED'})).code).toBe('NOT_FOUND');
+        expect(result.code).toBe('INVALID_ARGUMENTS');
+        expect(calls).toHaveLength(0);
+    });
+
+    test('a number that is no issue of the repository returns NOT_FOUND', async () => {
+        const calls  = stubClose({missing: true}),
+              result = await close({reason: 'COMPLETED'});
+
+        expect(result.code).toBe('NOT_FOUND');
+        expect(calls).toHaveLength(1);
+    });
+
+    test('a lookup error other than NOT_FOUND stays GRAPHQL_API_ERROR', async () => {
+        GraphqlService.query = async () => {
+            throw Object.assign(new Error('GitHub API error: Resource not accessible'), {graphqlErrors: [{type: 'FORBIDDEN'}]});
+        };
+
+        expect((await close({reason: 'COMPLETED'})).code).toBe('GRAPHQL_API_ERROR');
     });
 
     test('a mutation that throws is reported as GRAPHQL_API_ERROR', async () => {

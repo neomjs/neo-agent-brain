@@ -40,6 +40,27 @@ import {
 const CLOSE_REASONS = ['COMPLETED', 'NOT_PLANNED', 'DUPLICATE'];
 
 /**
+ * Whether a value can be an issue number: GitHub numbers issues from 1.
+ * @param {*} value
+ * @returns {Boolean}
+ */
+const isIssueNumber = value => Number.isInteger(value) && value > 0;
+
+/**
+ * `.catch()` handler for a lookup whose target may not exist: GitHub answers a number that is no
+ * issue with a `NOT_FOUND` error beside the null field, and `GraphqlService.query` throws on it.
+ * @param {Error} error
+ * @returns {null} For `NOT_FOUND`; any other error is rethrown.
+ */
+const nullIfNotFound = error => {
+    if (error?.graphqlErrors?.some(item => item.type === 'NOT_FOUND')) {
+        return null
+    }
+
+    throw error
+};
+
+/**
  * @summary Service for interacting with GitHub issues via the GraphQL API.
  *
  * This service provides a high-level abstraction for managing GitHub issues.
@@ -1322,7 +1343,7 @@ class IssueService extends Base {
      * @param {String} [options.repo]                     Optional bare name or owner/name repository target.
      * @returns {Promise<Object>}
      */
-    async manageIssueState({action, issue_number, reason, duplicate_of, acknowledgedForeignClose, repo}) {
+    async manageIssueState({action, issue_number, reason, duplicate_of, acknowledgedForeignClose, repo} = {}) {
         const target = resolveRepositoryTarget(repo, {owner: aiConfig.owner, repo: aiConfig.repo});
 
         if (target.error) return target;
@@ -1362,11 +1383,19 @@ class IssueService extends Base {
      * @protected
      */
     async closeIssue({issue_number, reason, duplicate_of, acknowledgedForeignClose, target}) {
-        if (!issue_number || !reason) {
+        if (issue_number == null || !reason) {
             return {
                 error  : 'Bad Request',
                 message: "Missing required argument: 'issue_number' and 'reason' are required for closing an issue.",
                 code   : 'MISSING_ARGUMENTS'
+            };
+        }
+
+        if (!isIssueNumber(issue_number) || duplicate_of != null && !isIssueNumber(duplicate_of)) {
+            return {
+                error  : 'Bad Request',
+                message: "'issue_number' and 'duplicate_of' must be positive integers.",
+                code   : 'INVALID_ARGUMENTS'
             };
         }
 
@@ -1380,7 +1409,7 @@ class IssueService extends Base {
 
         const isDuplicate = reason === 'DUPLICATE';
 
-        if (isDuplicate ? !duplicate_of || duplicate_of === issue_number : duplicate_of != null) {
+        if (isDuplicate ? duplicate_of == null || duplicate_of === issue_number : duplicate_of != null) {
             return {
                 error  : 'Bad Request',
                 message: "'duplicate_of' names the surviving issue: required for reason DUPLICATE, different from 'issue_number', and refused with any other reason.",
@@ -1393,7 +1422,7 @@ class IssueService extends Base {
                       owner : target.owner,
                       repo  : target.repo,
                       number: issue_number
-                  }),
+                  }).catch(nullIfNotFound),
                   issue       = lookupData?.repository?.issue,
                   viewerLogin = lookupData?.viewer?.login || null;
 
@@ -1449,7 +1478,7 @@ class IssueService extends Base {
                     owner : target.owner,
                     repo  : target.repo,
                     number: duplicate_of
-                });
+                }).catch(nullIfNotFound);
 
                 variables.duplicateIssueId = duplicateData?.repository?.issue?.id;
 

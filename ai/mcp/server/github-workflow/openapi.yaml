@@ -777,6 +777,7 @@ paths:
                   example: close
                 issue_number:
                   type: integer
+                  minimum: 1
                   description: The number of the issue to close.
                   example: 1616
                 reason:
@@ -786,6 +787,7 @@ paths:
                   example: COMPLETED
                 duplicate_of:
                   type: integer
+                  minimum: 1
                   description: For reason DUPLICATE only — the number of the surviving issue in the same repository.
                   example: 132
                 acknowledgedForeignClose:

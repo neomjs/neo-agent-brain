@@ -199,9 +199,9 @@ test.describe('GitHub Workflow MCP Server Tool Registration', () => {
         expect(listedTool.inputSchema.properties).toMatchObject({
             repo                    : {type: 'string'},
             action                  : {type: 'string', enum: ['close']},
-            issue_number            : {type: 'integer'},
+            issue_number            : {type: 'integer', minimum: 1},
             reason                  : {type: 'string', enum: ['COMPLETED', 'NOT_PLANNED', 'DUPLICATE']},
-            duplicate_of            : {type: 'integer'},
+            duplicate_of            : {type: 'integer', minimum: 1},
             acknowledgedForeignClose: {type: 'string'}
         });
 
