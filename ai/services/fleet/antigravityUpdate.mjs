@@ -486,7 +486,8 @@ export function compareDottedVersions(left, right) {
  * or installed `Antigravity.app` bundle.
  * @param {Object} [options]
  * @param {String|null} [options.root=null] Optional harness generation store root to inspect admitted versions.
- * @param {String} [options.appBundle='/Applications/Antigravity.app'] Reference bundle providing `app-update.yml`.
+ * @param {String} [options.appBundle='/Applications/Antigravity.app'] The installed bundle. Its `app-update.yml`
+ * names the feed only until `root` holds a selected generation, whose copy names it from then on.
  * @param {Function} [options.fetchImpl=globalThis.fetch] Fetch implementation (`(url, options) => Promise<Response>`).
  * @param {Object} [options.fsImpl]
  * @param {String} [options.architecture=process.arch]
@@ -509,8 +510,11 @@ export async function checkAntigravityUpdate({
     }
 
     const
-        config   = readAntigravityUpdateConfig(appBundle, {fsImpl, architecture, readPlistKey}),
-        response = await fetchImpl(config.manifestUrl, {
+        storeRoot          = typeof root === 'string' && path.isAbsolute(root) ? root : null,
+        selectedGeneration = storeRoot ? selectHarnessGeneration({root: storeRoot, family: ANTIGRAVITY_FAMILY}) : null,
+        // the selected build names the feed; the installed bundle only until a generation is selected
+        config             = readAntigravityUpdateConfig(selectedGeneration?.appBundle ?? appBundle, {fsImpl, architecture, readPlistKey}),
+        response           = await fetchImpl(config.manifestUrl, {
             headers: {
                 'Accept': 'text/yaml, text/plain, */*'
             }
@@ -521,17 +525,10 @@ export async function checkAntigravityUpdate({
     }
 
     const
-        yamlText  = await response.text(),
-        candidate = parseAntigravityUpdateManifest(yamlText, {manifestUrl: config.manifestUrl});
-
-    let selectedGeneration = null,
-        alreadyAdmitted    = false;
-
-    if (typeof root === 'string' && path.isAbsolute(root)) {
-        selectedGeneration = selectHarnessGeneration({root, family: ANTIGRAVITY_FAMILY});
-        const ledger = readLedger({root, family: ANTIGRAVITY_FAMILY});
-        alreadyAdmitted    = ledger.admitted.some(gen => gen.shortVersion === candidate.version)
-    }
+        yamlText        = await response.text(),
+        candidate       = parseAntigravityUpdateManifest(yamlText, {manifestUrl: config.manifestUrl}),
+        alreadyAdmitted = storeRoot !== null &&
+            readLedger({root: storeRoot, family: ANTIGRAVITY_FAMILY}).admitted.some(gen => gen.shortVersion === candidate.version);
 
     const
         currentVersion     = selectedGeneration?.shortVersion ?? config.shortVersion,
@@ -579,7 +576,8 @@ function findExtractedAppBundle(directory, fsImpl) {
  *
  * @param {Object} options
  * @param {String} options.root Absolute directory for the harness generation store.
- * @param {String} [options.appBundle='/Applications/Antigravity.app'] Reference bundle providing `app-update.yml`.
+ * @param {String} [options.appBundle='/Applications/Antigravity.app'] The installed bundle. Its `app-update.yml`
+ * names the feed only until `root` holds a selected generation, whose copy names it from then on.
  * @param {Function} [options.fetchImpl=globalThis.fetch]
  * @param {Object} [options.fsImpl]
  * @param {String} [options.architecture=process.arch]

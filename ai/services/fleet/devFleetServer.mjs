@@ -288,7 +288,8 @@ async function boot() {
         const stopped = await Promise.allSettled([
             Promise.resolve().then(() => fleetWakeStreamConsumer?.stop()),
             Promise.resolve().then(() => openWork?.stop()),
-            Promise.resolve().then(() => wakeRound?.stop())
+            Promise.resolve().then(() => wakeRound?.stop()),
+            Promise.resolve().then(() => harnessAcquisition?.stop())
         ]);
         await planeClient?.close();
         const failed = stopped.find(result => result.status === 'rejected');

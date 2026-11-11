@@ -29,6 +29,9 @@ export const HARNESS_ACQUIRERS = Object.freeze({
 // Starts that run at boot finish first; a run copies, signs-checks and probes several hundred MB.
 const BOOT_DELAY_MS = 2 * 60 * 1000;
 
+// Node runs a timer longer than this after 1 ms instead, which would poll the vendor feeds in a tight loop.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
 /**
  * @summary Wire the acquisition job: one run per family soon after boot, then one every `intervalMs`.
  * Runs for one family never overlap, and a run that throws is recorded for its family without stopping
@@ -42,7 +45,8 @@ const BOOT_DELAY_MS = 2 * 60 * 1000;
  * @param {Function} [options.select=selectHarnessGeneration] Reads the family's selected generation.
  * @param {Function} [options.now] Clock seam.
  * @param {Object} [options.log=console]
- * @returns {{pulse: Function, status: Function, stop: Function}|null} `null` without a context or a positive interval.
+ * @returns {{pulse: Function, status: Function, stop: Function}|null} `null` without a context, a positive finite
+ * interval or a finite boot delay. A delay longer than a Node timer holds (about 24.8 days) runs at that length.
  */
 export function wireFleetHarnessAcquisition({
     context,
@@ -53,7 +57,8 @@ export function wireFleetHarnessAcquisition({
     now         = () => new Date(),
     log         = console
 } = {}) {
-    if (typeof context !== 'function' || !(intervalMs > 0)) return null;
+    if (typeof context !== 'function' || !(Number.isFinite(intervalMs) && intervalMs > 0) ||
+        !(Number.isFinite(bootDelayMs) && bootDelayMs >= 0)) return null;
 
     const
         families = Object.keys(HARNESS_GENERATION_FAMILIES),
@@ -105,8 +110,8 @@ export function wireFleetHarnessAcquisition({
 
     const
         pulse     = () => Promise.all(families.map(runFamily)),
-        bootTimer = setTimeout(pulse, bootDelayMs),
-        timer     = setInterval(pulse, intervalMs);
+        bootTimer = setTimeout(pulse, Math.min(bootDelayMs, MAX_TIMER_MS)),
+        timer     = setInterval(pulse, Math.min(intervalMs, MAX_TIMER_MS));
 
     bootTimer.unref?.();
     timer.unref?.();

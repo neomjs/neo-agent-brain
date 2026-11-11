@@ -243,6 +243,36 @@ test.describe('antigravityUpdate', () => {
         }])
     });
 
+    test('the selected generation names the feed, not a stale installed bundle', async () => {
+        const
+            storeRoot = path.join(root, 'generations'),
+            movedFeed = 'https://antigravity-feed.example/manifest/',
+            installed = makeAntigravityBundle(path.join(root, 'installed')),
+            fedBuild  = makeAntigravityBundle(path.join(root, 'fed'), {shortVersion: '2.31.0', buildVersion: '2.31.0', feedUrl: movedFeed}),
+            payload   = Buffer.from('antigravity-2.31.0-archive'),
+            yaml      = buildManifestYaml({version: '2.31.0', sha512: createHash('sha512').update(payload).digest('base64'), size: payload.length}),
+            urls      = [];
+
+        await materializeHarnessGeneration({root: storeRoot, family: 'antigravity', sourceBundle: fedBuild, seams: {
+            copyBundle      : (source, target) => fs.cpSync(source, target, {recursive: true}),
+            readBundleInfo  : () => ({bundleId: 'com.google.antigravity', shortVersion: '2.31.0', buildVersion: '2.31.0', executable: 'Antigravity'}),
+            inspectSignature: () => ({verified: true, teamId: 'EQHXZ8M8AV', cdhash: 'b'.repeat(64)}),
+            assessGatekeeper: () => true,
+            probe           : async () => ({available: true, reason: null})
+        }});
+
+        const result = await acquireAntigravityUpdate({
+            root        : storeRoot,
+            appBundle   : installed,
+            fetchImpl   : async url => { urls.push(url); return {ok: true, status: 200, text: async () => yaml} },
+            architecture: 'arm64',
+            readPlistKey: readFakePlistKey
+        });
+
+        expect(urls).toEqual([`${movedFeed}latest-arm64-mac.yml`]);
+        expect(result.check).toMatchObject({currentVersion: '2.31.0', alreadyAdmitted: true, updateAvailable: false})
+    });
+
     test('streams archive to disk, verifies SHA-512, extracts, admits a new Antigravity generation, and cleans staging, a killed run\'s included', async () => {
         const
             storeRoot = path.join(root, 'generations'),

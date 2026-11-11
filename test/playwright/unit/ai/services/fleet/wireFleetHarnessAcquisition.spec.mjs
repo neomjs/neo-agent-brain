@@ -134,9 +134,28 @@ test.describe('wireFleetHarnessAcquisition', () => {
         expect(calls, 'nothing runs after stop').toHaveLength(stoppedAt)
     });
 
-    test('wires nothing without a context or a positive interval', () => {
+    test('an interval longer than a Node timer holds waits the longest delay Node keeps, never 1 ms', async () => {
+        const calls = [], handle = wire({
+            context    : contextFor(['codex-desktop']),
+            acquirers  : {'codex-desktop': acquirer('codex-desktop', calls, () => ({status: 'up-to-date'}))},
+            bootDelayMs: 10,
+            intervalMs : 720 * 3_600_000 // 30 days, past the 2^31 - 1 ms a timer holds
+        });
+
+        handles.push(handle);
+
+        await sleep(120);
+        expect(calls, 'the boot run only').toHaveLength(1)
+    });
+
+    test('wires nothing without a context, a positive finite interval or a finite boot delay', () => {
+        const context = contextFor([]);
+
         expect(wireFleetHarnessAcquisition({intervalMs: 1000})).toBe(null);
-        expect(wireFleetHarnessAcquisition({context: contextFor([]), intervalMs: 0})).toBe(null)
+        expect(wireFleetHarnessAcquisition({context, intervalMs: 0})).toBe(null);
+        expect(wireFleetHarnessAcquisition({context, intervalMs: Infinity})).toBe(null);
+        expect(wireFleetHarnessAcquisition({context, intervalMs: NaN})).toBe(null);
+        expect(wireFleetHarnessAcquisition({context, intervalMs: 1000, bootDelayMs: Infinity})).toBe(null)
     });
 
     test('Codex and Antigravity have an acquisition; Claude Desktop has none until its source lands', () => {

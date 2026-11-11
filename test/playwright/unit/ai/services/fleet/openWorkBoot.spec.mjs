@@ -87,11 +87,12 @@ test.describe('Fleet open-work boot custody (#761)', () => {
                 fleetWakeStreamConsumer: {stop() { events.push('stream') }},
                 openWork               : {stop: () => { events.push('observer'); return active }},
                 wakeRound              : {stop: async () => { events.push('wake'); throw new Error('stop failure') }},
+                harnessAcquisition     : {stop() { events.push('acquisition') }},
                 planeClient            : {close: async () => { events.push('plane') }}
             }),
             running = stop();
         await Promise.resolve();
-        expect(events).toEqual(['stream', 'observer', 'wake']);
+        expect(events).toEqual(['stream', 'observer', 'wake', 'acquisition']);
         release();
         await expect(running).rejects.toThrow('stop failure');
         expect(events.at(-1)).toBe('plane');
