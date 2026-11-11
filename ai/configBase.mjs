@@ -671,7 +671,14 @@ class ConfigBase extends ConfigProvider {
                      * CLI from the same copy.
                      * @type {boolean}
                      */
-                    codexDesktop: leaf(false, 'NEO_FLEET_HARNESS_GENERATIONS_CODEX_DESKTOP', 'boolean')
+                    codexDesktop: leaf(false, 'NEO_FLEET_HARNESS_GENERATIONS_CODEX_DESKTOP', 'boolean'),
+                    /**
+                     * Hours between the Fleet's checks for new builds of every opted-in family. The first
+                     * check runs shortly after the Fleet server starts; a seat adopts a new build at its
+                     * next Start.
+                     * @type {number}
+                     */
+                    checkIntervalHours: leaf(6, 'NEO_FLEET_HARNESS_CHECK_INTERVAL_HOURS', 'number')
                 }
             },
             /**

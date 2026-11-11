@@ -2105,6 +2105,22 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         return {installed, storeRoot, calls}
     }
 
+    test('the background acquisition reads the same opt-in, store root and installed bundle a Start reads', () => {
+        install();
+        FleetLifecycleService.harnessGenerationOptIns = {'codex-desktop': true, antigravity: false};
+        FleetLifecycleService.harnessBinaryPaths      = {
+            'codex-desktop': '/Vendor/ChatGPT.app/Contents/MacOS/ChatGPT',
+            antigravity    : '/Vendor/Antigravity.app/Contents/MacOS/Electron'
+        };
+
+        expect(FleetLifecycleService.harnessAcquisitionContext('codex-desktop')).toEqual({
+            optedIn: true, root: '/nonexistent/fleet-spec-harness-generations', installedBundle: '/Vendor/ChatGPT.app'
+        });
+        expect(FleetLifecycleService.harnessAcquisitionContext('antigravity')).toEqual({
+            optedIn: false, root: '/nonexistent/fleet-spec-harness-generations', installedBundle: '/Vendor/Antigravity.app'
+        })
+    });
+
     test('a family that has not opted in to harness generations proves its harnessBinaries paths and never reads the store', async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-generation-off-'));
         install();
