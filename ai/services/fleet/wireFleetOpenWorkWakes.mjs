@@ -83,8 +83,9 @@ export function failedChecksOf(data) {
  * @param {Object} wake The planner's admission.
  * @param {String[]|null} failedChecks A `repair-ci` wake's failing checks; null when unread or another kind.
  * @returns {Object} The `admit_open_work_wake` arguments.
+ * @private
  */
-export function observationOf(wake, failedChecks) {
+function observationOf(wake, failedChecks) {
     const {repo, number, head, kind, episode, to} = wake;
 
     return {repo, number, head, kind, episode, to, failedChecks}
