@@ -1,4 +1,5 @@
-import {TASK_STATES} from '../taskAssignmentContract.mjs';
+import {isCompositeMessageSentAtIndexSql} from '../../../graph/storage/SQLite.mjs';
+import {TASK_STATES}                      from '../taskAssignmentContract.mjs';
 
 /**
  * @module ai/services/memory-core/helpers/mailboxObservation
@@ -109,14 +110,14 @@ function jsonMembership(params, key, values) {
  * @returns {Boolean}
  * @private
  */
-function hasMessageSentAtIndex(sqlite) {
+function hasCompositeMessageSentAtIndex(sqlite) {
     const row = sqlite.prepare(`
         SELECT sql FROM sqlite_master
-        WHERE type = 'index' AND name = 'idx_nodes_message_sent_at'
+        WHERE type = 'index' AND name = ?
         LIMIT 1
-    `).get?.();
+    `).get('idx_nodes_message_sent_at');
 
-    return Boolean(row?.sql && /\bDESC\s*,\s*id\s+DESC\b/i.test(row.sql))
+    return isCompositeMessageSentAtIndexSql(row?.sql)
 }
 
 /**
@@ -512,7 +513,7 @@ export function readMailboxObservation({
                 taggedConceptGroups,
                 taskStates,
                 taskOrder,
-                useMessageSentAtIndex: isUnfilteredTeamAllList && hasMessageSentAtIndex(sqlite)
+                useMessageSentAtIndex: isUnfilteredTeamAllList && hasCompositeMessageSentAtIndex(sqlite)
             }),
             totalCount = sqlite.prepare(countSql).get(params).count,
             pageRows   = sqlite.prepare(pageSql).all({...params, limit, offset}),

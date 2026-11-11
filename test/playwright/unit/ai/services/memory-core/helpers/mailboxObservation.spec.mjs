@@ -1,5 +1,24 @@
+import {setup} from '../../../../../setup.mjs';
+
+setup({
+    neoConfig: {
+        unitTestMode: true
+    },
+    appConfig: {
+        name             : 'MailboxObservationTest',
+        isMounted        : () => true,
+        vnodeInitialising: false
+    }
+});
+
 import {test, expect} from '@playwright/test';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
+import SQLite         from '../../../../../../../ai/graph/storage/SQLite.mjs';
 import Database       from 'better-sqlite3';
+import fs             from 'fs-extra';
+import os             from 'os';
+import path           from 'path';
 import {
     normalizeMailboxObserver,
     readMailboxObservation
@@ -426,5 +445,43 @@ test.describe('mailboxObservation — one policy-bounded, non-stamping read', ()
         expect(detailResult.revision.revisionDigest).toBe('sha256:rev2');
         expect(detailResult.revisions).toHaveLength(2);
         expect(detailResult.revisionDigest).toBe('sha256:rev2');
+    });
+
+    test('executes INDEXED BY idx_nodes_message_sent_at against a live SQLite#initSchema database', async () => {
+        const dbPath = path.join(os.tmpdir(), `mailbox-obs-schema-${process.pid}-${Date.now()}.sqlite`),
+            storage  = Neo.create(SQLite, {dbPath});
+
+        try {
+            await storage.initAsync();
+
+            for (const identity of ['@sender', VIEWER]) {
+                storage.db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(
+                    identity,
+                    JSON.stringify({id: identity, label: 'AgentIdentity', properties: {}})
+                )
+            }
+
+            addMessage(storage.db, {id: 'MESSAGE:older', sentAt: '2026-11-11T01:00:00.000Z'});
+            addMessage(storage.db, {id: 'MESSAGE:newer', sentAt: '2026-11-11T02:00:00.000Z'});
+
+            const executed = [],
+                sqlite     = {
+                    prepare(sql) {
+                        executed.push(sql);
+                        return storage.db.prepare(sql)
+                    },
+                    transaction: callback => storage.db.transaction(callback)
+                },
+                result = observe(sqlite, {scope: 'all', policy: 'team', limit: 2, offset: 0});
+
+            expect(result.totalCount).toBe(2);
+            expect(result.messages.map(row => row.messageId)).toEqual(['MESSAGE:newer', 'MESSAGE:older']);
+            expect(executed.some(sql => sql.includes('INDEXED BY idx_nodes_message_sent_at') && sql.includes('COUNT(*)'))).toBe(true);
+            expect(executed.some(sql => sql.includes('INDEXED BY idx_nodes_message_sent_at') && sql.includes('LIMIT @limit OFFSET @offset'))).toBe(true)
+        } finally {
+            storage.db?.close();
+            storage.destroy?.();
+            ['', '-wal', '-shm'].forEach(suffix => fs.rmSync(dbPath + suffix, {force: true}))
+        }
     });
 });

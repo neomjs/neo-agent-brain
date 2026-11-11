@@ -2,9 +2,20 @@ import Base                                           from './Base.mjs';
 import { SQLITE_IN_CLAUSE_BATCH_SIZE }                from './constants.mjs';
 import { isDisposableStorePath, isTestRunnerContext } from '../../services/shared/storeWriteGuard.mjs';
 
-const GRAPH_SCHEMA_VERSION    = 1;
-const GRAPH_SCHEMA_VERSION_ID = 'graph';
-const GRAPH_SCHEMA_WIPE_ENV   = 'NEO_ALLOW_SCHEMA_WIPE';
+const GRAPH_SCHEMA_VERSION                   = 1;
+const GRAPH_SCHEMA_VERSION_ID                = 'graph';
+const GRAPH_SCHEMA_WIPE_ENV                  = 'NEO_ALLOW_SCHEMA_WIPE';
+const COMPOSITE_MESSAGE_SENT_AT_INDEX_SQL_RE = /ON\s+Nodes\s*\(\s*json_extract\(\s*data\s*,\s*'\$\.properties\.sentAt'\s*\)\s+DESC\s*,\s*id\s+DESC\s*\)\s*WHERE\s+id\s+LIKE\s+'MESSAGE:%'/i;
+
+/**
+ * @summary Checks whether a `sqlite_master.sql` definition declares the composite newest-first
+ * `idx_nodes_message_sent_at` partial index (`(json_extract(data, '$.properties.sentAt') DESC, id DESC) WHERE id LIKE 'MESSAGE:%'`).
+ * @param {String|null|undefined} sql Index DDL read from `sqlite_master`.
+ * @returns {Boolean}
+ */
+export function isCompositeMessageSentAtIndexSql(sql) {
+    return typeof sql === 'string' && COMPOSITE_MESSAGE_SENT_AT_INDEX_SQL_RE.test(sql)
+}
 
 /**
  * @summary Maps a narrow UPDATE's result to whether a row matched and was updated.
@@ -106,22 +117,27 @@ class SQLite extends Base {
         // label scans (`json_extract(data, '$.label') = ?`), newest-first `MESSAGE:%` pagination
         // and horizon scans (`idx_nodes_message_sent_at`), per-agent `AGENT_MEMORY` recency, and
         // deployment-wide `SESSION` node counts (`idx_nodes_session_user_id`). Legacy single-column
-        // `idx_nodes_message_sent_at` definitions are rebuilt in place so tie-break `id DESC` sorts
-        // avoid a temporary B-tree.
-        const existingMessageSentAtIndex = this.db.prepare(`
-            SELECT sql FROM sqlite_master
-            WHERE type = 'index' AND name = 'idx_nodes_message_sent_at'
-            LIMIT 1
-        `).get();
+        // `idx_nodes_message_sent_at` definitions are rebuilt inside one immediate transaction so
+        // concurrent openers serialize cleanly and tie-break `id DESC` sorts avoid a temp B-tree.
+        this.db.transaction(() => {
+            const existingMessageSentAtIndex = this.db.prepare(`
+                SELECT sql FROM sqlite_master
+                WHERE type = 'index' AND name = ?
+                LIMIT 1
+            `).get('idx_nodes_message_sent_at');
 
-        if (existingMessageSentAtIndex?.sql && !/\bDESC\s*,\s*id\s+DESC\b/i.test(existingMessageSentAtIndex.sql)) {
-            this.db.exec('DROP INDEX idx_nodes_message_sent_at');
-        }
+            if (existingMessageSentAtIndex?.sql && !isCompositeMessageSentAtIndexSql(existingMessageSentAtIndex.sql)) {
+                this.db.exec('DROP INDEX IF EXISTS idx_nodes_message_sent_at');
+            }
+
+            this.db.exec(`
+                CREATE INDEX IF NOT EXISTS idx_nodes_message_sent_at
+                    ON Nodes(json_extract(data, '$.properties.sentAt') DESC, id DESC) WHERE id LIKE 'MESSAGE:%';
+            `);
+        }).immediate();
 
         this.db.exec(`
             CREATE INDEX IF NOT EXISTS idx_nodes_label ON Nodes(json_extract(data, '$.label'));
-            CREATE INDEX IF NOT EXISTS idx_nodes_message_sent_at
-                ON Nodes(json_extract(data, '$.properties.sentAt') DESC, id DESC) WHERE id LIKE 'MESSAGE:%';
             CREATE INDEX IF NOT EXISTS idx_nodes_agent_memory_recency
                 ON Nodes(json_extract(data, '$.properties.agentIdentity'), json_extract(data, '$.properties.timestamp'))
                 WHERE json_extract(data, '$.label') = 'AGENT_MEMORY';

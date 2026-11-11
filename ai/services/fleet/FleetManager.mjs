@@ -859,8 +859,10 @@ class FleetManager extends Base {
      * `unknown` under a `degraded/none` capability — "we cannot see presence" stays distinguishable
      * from "the fleet is dark"; a band is never invented. The roster reads this view, so its reader,
      * a plane call in plane mode, is bounded: a read still out at `timeoutMs` serves the active reader's
-     * latest settled observation while within `4 * timeoutMs` (preserving `payload.generatedAt`), and
-     * past that horizon leaves every seat `unknown` and its participation unread, naming the wait.
+     * latest settled observation while within `4 * timeoutMs` (`16 s` at the `4000 ms`
+     * `AiConfig.fleet.rosterAxisTimeoutMs` default, spanning `11–15 s` synchronized cockpit-poll stalls
+     * across up to three `5 s` roster ticks while bounding staleness; preserving `payload.generatedAt`),
+     * and past that horizon leaves every seat `unknown` and its participation unread, naming the wait.
      * @param {Object} [options={}]
      * @param {Number} [options.timeoutMs=AiConfig.fleet.rosterAxisTimeoutMs]
      * @param {Function} [options.now] Clock seam returning epoch ms or an ISO/Date instant.
@@ -871,7 +873,6 @@ class FleetManager extends Base {
     fleetPresenceStatus({timeoutMs = AiConfig.fleet.rosterAxisTimeoutMs, now} = {}) {
         const {
             readPresence,
-            now: optionsNow,
             ...adapterOptions
         } = this.presenceStateOptions || {};
 
@@ -888,17 +889,12 @@ class FleetManager extends Base {
             this.retainedPresenceSnapshot = null
         }
 
-        const clock = typeof now === 'function'
-            ? now
-            : typeof optionsNow === 'function'
-                ? optionsNow
-                : typeof this.now === 'function'
-                    ? this.now
-                    : Date.now;
+        const clock = typeof now === 'function' ? now : Date.now;
 
         return readFleetPresenceSnapshot({
             agents      : this.getLifecycleService().getRegistry().listAgents(),
             ...adapterOptions,
+            // 4 * timeoutMs (16 s at the 4000 ms default) spans 11-15 s synchronized-poll stalls across up to three 5 s ticks.
             readPresence: boundRosterRead(readPresence, 'presence', timeoutMs, {
                 maxRetainedAgeMs: 4 * timeoutMs,
                 now             : clock,

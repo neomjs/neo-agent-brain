@@ -11,13 +11,13 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import SQLite         from '../../../../../ai/graph/storage/SQLite.mjs';
-import BetterSqlite   from 'better-sqlite3';
-import fs             from 'fs-extra';
-import path           from 'path';
+import {test, expect}                             from '@playwright/test';
+import Neo                                        from 'neo.mjs/src/Neo.mjs';
+import * as core                                  from 'neo.mjs/src/core/_export.mjs';
+import SQLite, {isCompositeMessageSentAtIndexSql} from '../../../../../ai/graph/storage/SQLite.mjs';
+import BetterSqlite                               from 'better-sqlite3';
+import fs                                         from 'fs-extra';
+import path                                       from 'path';
 
 const WAL_LIMIT = 64 * 1024 * 1024;
 
@@ -118,21 +118,82 @@ test.describe('Neo.ai.graph.storage.SQLite — expression indexes and schema mig
         storage = Neo.create(SQLite, {dbPath});
         await storage.initAsync();
 
-        const readIndexSql = name => storage.db.prepare(`
-            SELECT sql FROM sqlite_master
+        const readIndexEntry = name => storage.db.prepare(`
+            SELECT sql, rootpage FROM sqlite_master
             WHERE type = 'index' AND name = ?
-        `).get(name)?.sql;
+        `).get(name);
 
-        const migratedMessageIndex = readIndexSql('idx_nodes_message_sent_at'),
-              sessionUserIndex     = readIndexSql('idx_nodes_session_user_id');
+        const migratedMessageIndex = readIndexEntry('idx_nodes_message_sent_at'),
+              sessionUserIndex     = readIndexEntry('idx_nodes_session_user_id');
 
-        expect(migratedMessageIndex).toContain("json_extract(data, '$.properties.sentAt') DESC, id DESC");
-        expect(migratedMessageIndex).toContain("WHERE id LIKE 'MESSAGE:%'");
-        expect(sessionUserIndex).toContain("COALESCE(json_extract(data, '$.properties.userId'), '')");
-        expect(sessionUserIndex).toContain("WHERE json_extract(data, '$.label') = 'SESSION'");
+        expect(isCompositeMessageSentAtIndexSql(migratedMessageIndex?.sql)).toBe(true);
+        expect(isCompositeMessageSentAtIndexSql("CREATE INDEX idx_nodes_message_sent_at ON Nodes(json_extract(data, '$.properties.sentAt')) WHERE id LIKE 'MESSAGE:%'")).toBe(false);
+        expect(migratedMessageIndex.sql).toContain("json_extract(data, '$.properties.sentAt') DESC, id DESC");
+        expect(migratedMessageIndex.sql).toContain("WHERE id LIKE 'MESSAGE:%'");
+        expect(sessionUserIndex.sql).toContain("COALESCE(json_extract(data, '$.properties.userId'), '')");
+        expect(sessionUserIndex.sql).toContain("WHERE json_extract(data, '$.label') = 'SESSION'");
 
         storage.initSchema();
-        expect(readIndexSql('idx_nodes_message_sent_at')).toBe(migratedMessageIndex);
-        expect(readIndexSql('idx_nodes_session_user_id')).toBe(sessionUserIndex);
+        expect(readIndexEntry('idx_nodes_message_sent_at')).toEqual(migratedMessageIndex);
+        expect(readIndexEntry('idx_nodes_session_user_id')).toEqual(sessionUserIndex);
+    });
+
+    test('tolerates concurrent two-opener migration and missing-index drop races without throwing', async () => {
+        const seedDb = new BetterSqlite(dbPath);
+
+        seedDb.exec(`
+            CREATE TABLE Nodes (
+                id TEXT PRIMARY KEY,
+                user_id TEXT DEFAULT NULL,
+                data TEXT NOT NULL
+            );
+            CREATE INDEX idx_nodes_message_sent_at
+                ON Nodes(json_extract(data, '$.properties.sentAt')) WHERE id LIKE 'MESSAGE:%';
+        `);
+        seedDb.close();
+
+        const openerB = Neo.create(SQLite, {dbPath});
+
+        try {
+            storage = Neo.create(SQLite, {dbPath});
+            await Promise.all([storage.initAsync(), openerB.initAsync()]);
+
+            const entryA = storage.db.prepare("SELECT sql, rootpage FROM sqlite_master WHERE type = 'index' AND name = 'idx_nodes_message_sent_at'").get(),
+                  entryB = openerB.db.prepare("SELECT sql, rootpage FROM sqlite_master WHERE type = 'index' AND name = 'idx_nodes_message_sent_at'").get();
+
+            expect(isCompositeMessageSentAtIndexSql(entryA?.sql)).toBe(true);
+            expect(entryB).toEqual(entryA);
+
+            // Simulate a stale sqlite_master observation where another opener dropped the legacy index right before DROP runs.
+            storage.db.exec('DROP INDEX idx_nodes_message_sent_at');
+            const realPrepare          = openerB.db.prepare.bind(openerB.db);
+            let   simulatedStaleLookup = false;
+
+            openerB.db.prepare = sql => {
+                if (!simulatedStaleLookup && sql.includes('FROM sqlite_master') && sql.includes('type = \'index\'')) {
+                    simulatedStaleLookup = true;
+                    return {
+                        get: () => ({
+                            sql: "CREATE INDEX idx_nodes_message_sent_at ON Nodes(json_extract(data, '$.properties.sentAt')) WHERE id LIKE 'MESSAGE:%'"
+                        })
+                    }
+                }
+
+                return realPrepare(sql)
+            };
+
+            try {
+                expect(() => openerB.initSchema()).not.toThrow();
+            } finally {
+                openerB.db.prepare = realPrepare
+            }
+
+            expect(simulatedStaleLookup).toBe(true);
+            const rebuilt = openerB.db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_nodes_message_sent_at'").get();
+            expect(isCompositeMessageSentAtIndexSql(rebuilt?.sql)).toBe(true);
+        } finally {
+            openerB.db?.close();
+            openerB.destroy?.()
+        }
     });
 });
