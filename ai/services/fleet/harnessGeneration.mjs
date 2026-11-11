@@ -4,8 +4,10 @@ import nodeFs                          from 'node:fs';
 import {createRequire}                 from 'node:module';
 import path                            from 'node:path';
 import {writeFileAtomicSync}           from '../shared/atomicFileWrite.mjs';
+import {readClaudeDesktopUpdatePolicy} from './claudeDesktopUpdatePolicy.mjs';
 import {probeCodexDesktopCapabilities} from './manageCodexDesktopRuntime.mjs';
 import {probeAntigravityRuntime}       from './probeAntigravityRuntime.mjs';
+import {probeClaudeDesktopRuntime}     from './probeClaudeDesktopRuntime.mjs';
 
 /**
  * @module ai/services/fleet/harnessGeneration
@@ -39,8 +41,15 @@ export const HARNESS_GENERATION_FAMILIES = Object.freeze({
 // The capability contract each family's seats depend on, run against the copy. A family without
 // one is refused rather than admitted on its signature alone.
 const FAMILY_PROBES = {
-    'antigravity'  : ({binaryPath}) => probeAntigravityRuntime({selectedBinaryPath: binaryPath}),
-    'codex-desktop': ({binaryPath}) => probeCodexDesktopCapabilities({binaryPath})
+    'antigravity'   : ({binaryPath}) => probeAntigravityRuntime({selectedBinaryPath: binaryPath}),
+    'claude-desktop': ({binaryPath}) => probeClaudeDesktopRuntime({binaryPath}),
+    'codex-desktop' : ({binaryPath}) => probeCodexDesktopCapabilities({binaryPath})
+};
+
+// What the host must hold before a family's seats may run its generations, as `(seams) => {inForce, reason}`.
+// Claude Desktop's updater has no per-seat switch, only a machine policy the operator installs once.
+const FAMILY_HOST_GATES = {
+    'claude-desktop': readClaudeDesktopUpdatePolicy
 };
 
 /** @summary A named refusal for invalid arguments or an unreadable store. */
@@ -202,6 +211,28 @@ export function listHarnessGenerations({root, family} = {}) {
  */
 export function selectHarnessGeneration({root, family} = {}) {
     return listHarnessGenerations({root, family})[0] ?? null
+}
+
+/**
+ * @summary Whether this host lets a family's seats run its admitted generations. A family without a host
+ * gate is always ready. Claude Desktop is ready only while its own updater is off by policy, because that
+ * updater would replace the bundle under its seats and relaunch the default app.
+ * @param {Object} options
+ * @param {String} options.family A key of {@link HARNESS_GENERATION_FAMILIES}.
+ * @param {Object} [options.seams] Passed to the family's gate (Claude Desktop: `plistPath`, `extract`).
+ * @returns {{ready: Boolean, reason: String|null}} `reason` says what the host lacks and how to supply it.
+ * @throws {Error} `unknown-family`.
+ */
+export function readHarnessHostGate({family, seams = {}} = {}) {
+    if (!Object.hasOwn(HARNESS_GENERATION_FAMILIES, family)) throw refusal('unknown-family', String(family));
+
+    const gate = FAMILY_HOST_GATES[family];
+
+    if (!gate) return {ready: true, reason: null};
+
+    const {inForce, reason} = gate(seams);
+
+    return {ready: inForce, reason}
 }
 
 /**

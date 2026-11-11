@@ -6,6 +6,7 @@ import {
     harnessGenerationId,
     listHarnessGenerations,
     materializeHarnessGeneration,
+    readHarnessHostGate,
     selectHarnessGeneration
 } from '../../../../../../ai/services/fleet/harnessGeneration.mjs';
 
@@ -119,13 +120,55 @@ test.describe('harnessGeneration', () => {
         expect(ledger().admitted).toHaveLength(1)
     });
 
-    test('a family without a capability probe is refused, not admitted on its signature alone', async () => {
+    test('a family whose capability probe is missing is refused, not admitted on its signature alone', async () => {
         const result = await materializeHarnessGeneration({
             root, family: 'claude-desktop', sourceBundle: makeSource(roots, 'Claude'),
             seams: {...build({bundleId: 'com.anthropic.claudefordesktop', teamId: 'Q6L2SF6YDW', executable: 'Claude'}), probe: undefined}
         });
 
         expect(result).toMatchObject({admitted: false, reason: 'family-probe-unavailable'})
+    });
+
+    test('Claude Desktop admission runs its registered probe on the copy and refuses a build that drops the updater gate', async () => {
+        const
+            gate         = 'Auto-updates disabled by enterprise policy',
+            markers      = ['/Library/Managed Preferences/com.anthropic.claudefordesktop.plist', 'disableAutoUpdates', gate],
+            // every host step but the probe, so the family's own probe runs
+            {probe, ...claude} = build({bundleId: 'com.anthropic.claudefordesktop', teamId: 'Q6L2SF6YDW', executable: 'Claude'}),
+            claudeSource = asar => {
+                const appBundle = makeSource(roots, 'Claude'), contents = path.join(appBundle, 'Contents');
+
+                fs.mkdirSync(path.join(contents, 'Resources'));
+                fs.writeFileSync(path.join(contents, 'Resources', 'app.asar'), asar.join('\n'));
+                fs.mkdirSync(path.join(contents, 'Frameworks', 'Electron Framework.framework'), {recursive: true});
+                fs.writeFileSync(path.join(contents, 'Frameworks', 'Electron Framework.framework', 'Electron Framework'), 'user-data-dir');
+                return appBundle
+            };
+
+        const admitted = await materializeHarnessGeneration({root, family: 'claude-desktop', sourceBundle: claudeSource(markers), seams: claude});
+
+        expect(admitted).toMatchObject({admitted: true, reason: null});
+
+        const refused = await materializeHarnessGeneration({
+            root, family: 'claude-desktop', sourceBundle: claudeSource(markers.filter(marker => marker !== gate)),
+            seams: {...claude, readBundleInfo: () => ({bundleId: 'com.anthropic.claudefordesktop', shortVersion: '5.2', buildVersion: '5.2', executable: 'Claude'}),
+                inspectSignature: () => ({verified: true, teamId: 'Q6L2SF6YDW', cdhash: 'f'.repeat(64)})}
+        });
+
+        expect(refused).toMatchObject({admitted: false, reason: `probe-refused:app-contract-marker-missing:${gate}`});
+        expect(selectHarnessGeneration({root, family: 'claude-desktop'}).id).toBe(admitted.id)
+    });
+
+    test('the host gate holds for every family but Claude Desktop, which needs its updater off by policy', () => {
+        expect(readHarnessHostGate({family: 'codex-desktop'})).toEqual({ready: true, reason: null});
+        expect(readHarnessHostGate({family: 'antigravity'})).toEqual({ready: true, reason: null});
+        expect(readHarnessHostGate({family: 'claude-desktop', seams: {extract: () => 'true'}})).toEqual({ready: true, reason: null});
+
+        const blocked = readHarnessHostGate({family: 'claude-desktop', seams: {extract: () => null}});
+
+        expect(blocked.ready).toBe(false);
+        expect(blocked.reason).toContain('does not set disableAutoUpdates');
+        expect(() => readHarnessHostGate({family: 'codex'})).toThrow(/unknown-family/)
     });
 
     test('re-admitting a known build is a no-op that never displaces a newer selection', async () => {

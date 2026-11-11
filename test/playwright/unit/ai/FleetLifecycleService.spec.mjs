@@ -208,6 +208,8 @@ function testSeams({spawnStub, registry} = {}) {
         harnessGenerationRoot        : '/nonexistent/fleet-spec-harness-generations',
         harnessGenerationStore       : null,
         harnessGenerationAttempts    : new Map(),
+        // no spec reads the host's managed preferences; one opts in to a gate that refuses
+        harnessHostGate              : () => ({ready: true, reason: null}),
         codexDesktopCapabilityProbeFn: null,
         antigravityRuntimeProbeFn    : null,
         codexDesktopCleanupFn        : null,
@@ -3562,6 +3564,24 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
 
         expect(() => FleetLifecycleService.start('seat', {cwd: CHECKOUT})).toThrow("'claude-desktop' starts from admitted harness generations and has none.");
         expect(spawn.calls).toEqual([])
+    });
+
+    test('an opted-in Claude Start refuses while its host gate does not hold, before any admission, and spawns nothing', async () => {
+        const {spawn} = installSeat('claude-desktop'), copies = claudeGenerationCopies(), store = FleetLifecycleService.harnessGenerationStore, calls = [];
+
+        copies.admit('a'.repeat(64));
+        store.readBundleInfo = () => { calls.push('readBundleInfo'); return {} };
+        store.materialize    = async () => { calls.push('materialize'); return {admitted: false} };
+
+        FleetLifecycleService.harnessGenerationOptIns = {'claude-desktop': true};
+        FleetLifecycleService.harnessHostGate         = ({family}) => ({ready: false, reason: `the ${family} policy is not in force`});
+
+        const refusal = "'claude-desktop' cannot start from admitted harness generations: the claude-desktop policy is not in force.";
+
+        expect(() => FleetLifecycleService.start('seat', {cwd: CHECKOUT})).toThrow(refusal);
+        await expect(FleetLifecycleService.assertRemoteMcpCapability({id: 'seat', harnessType: 'claude-desktop'})).rejects.toThrow(refusal);
+        expect(spawn.calls).toEqual([]);
+        expect(calls, 'no admission ran and no ledger was written').toEqual([])
     });
 
     test('a fresh Fleet server re-adopts a seat running from its leased generation, opted in or not; an id the ledger has not admitted voids the lease', () => {
