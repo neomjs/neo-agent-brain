@@ -739,6 +739,119 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /issues/state/manage:
+    post:
+      summary: Close a GitHub issue with a reason under an author-or-assignee guard; use when its verdict is posted on the ticket.
+      operationId: manage_issue_state
+      x-neo-tool-tier: write
+      x-pass-as-object: true
+      x-annotations:
+        readOnlyHint: false
+      description: |
+        Changes an issue's state. Works where a harness blocks `gh issue close`.
+
+        **Action: 'close'**
+        - Closes an issue with `reason` COMPLETED, NOT_PLANNED or DUPLICATE, once its verdict has been posted as a comment.
+        - `DUPLICATE` names the surviving issue of the same repository in `duplicate_of`; no other reason accepts it.
+        - **`FOREIGN_CLOSE_FORBIDDEN`:** the author or a current assignee closes an issue. Any other caller is refused unless a non-empty `acknowledgedForeignClose` states why (echoed in the result).
+        - An already-closed issue returns its current state unchanged, with `alreadyClosed: true`.
+        - A pull request number is not an issue and answers `NOT_FOUND`.
+      tags: [Issues]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - action
+                - issue_number
+                - reason
+              properties:
+                repo:
+                  $ref: '#/components/schemas/RepositoryTarget'
+                action:
+                  type: string
+                  enum: [close]
+                  description: The action to perform.
+                  example: close
+                issue_number:
+                  type: integer
+                  description: The number of the issue to close.
+                  example: 1616
+                reason:
+                  type: string
+                  enum: [COMPLETED, NOT_PLANNED, DUPLICATE]
+                  description: Why the issue closes.
+                  example: COMPLETED
+                duplicate_of:
+                  type: integer
+                  description: For reason DUPLICATE only — the number of the surviving issue in the same repository.
+                  example: 132
+                acknowledgedForeignClose:
+                  type: string
+                  description: The reason for closing an issue you neither authored nor are assigned to.
+                  example: "author and a cross-family peer agreed on the thread"
+      responses:
+        '200':
+          description: Issue closed, or already closed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  issueId:
+                    type: string
+                    description: The canonical GitHub global node ID of the issue.
+                    example: "I_kwDOUBzDFM8AAAABOXFAbA"
+                  number:
+                    type: integer
+                    description: The issue number.
+                    example: 1616
+                  url:
+                    type: string
+                    description: The canonical HTTP URL of the issue on github.com.
+                    example: "https://github.com/neomjs/neo-agent-brain/issues/1616"
+                  closed:
+                    type: boolean
+                    description: Whether the issue is now closed.
+                  stateReason:
+                    type: string
+                    description: The close reason GitHub records (COMPLETED, NOT_PLANNED or DUPLICATE).
+                  alreadyClosed:
+                    type: boolean
+                    description: True when the issue was already closed and nothing was changed.
+                  duplicateOf:
+                    type: integer
+                    description: The surviving issue's number, echoed for a DUPLICATE close.
+                  acknowledgedForeignClose:
+                    type: string
+                    description: The stated reason, echoed when a caller who is neither author nor assignee closed the issue.
+        '400':
+          description: Bad Request (unknown action or reason, or a `duplicate_of` that does not fit the reason).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Foreign close refused without acknowledgedForeignClose.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The issue, or the surviving issue of a DUPLICATE close, was not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error, e.g., GraphQL failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /issues/{issue_number}/labels/manage:
     post:
       summary: Add or remove exact label names on a GitHub issue or PR; use when triaging or updating ticket classification.

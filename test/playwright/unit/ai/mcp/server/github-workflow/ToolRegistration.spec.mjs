@@ -187,6 +187,32 @@ test.describe('GitHub Workflow MCP Server Tool Registration', () => {
         expect(operations.some(value => value.operationId === 'falsify_pull_request_belief')).toBe(false);
     });
 
+    test('#1616 registers manage_issue_state and publishes its close contract in the handbook', async () => {
+        const {listTools, callTool} = await import('../../../../../../../ai/mcp/server/github-workflow/toolService.mjs');
+        const listedTool            = listTools().tools.find(tool => tool.name === 'manage_issue_state');
+        const handbook              = await callTool('get_mcp_tool_handbook', {toolId: 'manage_issue_state'});
+
+        expect(listedTool).toBeTruthy();
+        expect(listedTool.annotations.readOnlyHint).toBe(false);
+        expect(listedTool.description.length).toBeLessThanOrEqual(120);
+        expect(listedTool.inputSchema.required).toEqual(['action', 'issue_number', 'reason']);
+        expect(listedTool.inputSchema.properties).toMatchObject({
+            repo                    : {type: 'string'},
+            action                  : {type: 'string', enum: ['close']},
+            issue_number            : {type: 'integer'},
+            reason                  : {type: 'string', enum: ['COMPLETED', 'NOT_PLANNED', 'DUPLICATE']},
+            duplicate_of            : {type: 'integer'},
+            acknowledgedForeignClose: {type: 'string'}
+        });
+
+        expect(handbook.found).toBe(true);
+        expect(handbook.handbook).toContain('COMPLETED, NOT_PLANNED or DUPLICATE');
+        expect(handbook.handbook).toContain('FOREIGN_CLOSE_FORBIDDEN');
+        expect(handbook.handbook).toContain('acknowledgedForeignClose');
+        expect(handbook.handbook).toContain('duplicate_of');
+        expect(handbook.handbook).toContain('once its verdict has been posted as a comment');
+    });
+
     test('#1425 registers update_issue_body and publishes its authorship/assignee guard in the handbook', async () => {
         const {listTools, callTool} = await import('../../../../../../../ai/mcp/server/github-workflow/toolService.mjs');
         const listedTool            = listTools().tools.find(tool => tool.name === 'update_issue_body');

@@ -283,6 +283,64 @@ export const UPDATE_PULL_REQUEST_BODY = `
 `;
 
 /**
+ * Query to fetch an issue's closed state, author, assignees, and the authenticated viewer login
+ * before closing it via `manage_issue_state`. The author-or-assignee rule compares the logins; an
+ * already-closed issue is answered from this read alone.
+ *
+ * `enableDuplicate` makes GitHub report a duplicate as `DUPLICATE`; without it the same issue
+ * reads as `NOT_PLANNED`.
+ *
+ * Variables required:
+ * - $owner: String!
+ * - $repo: String!
+ * - $number: Int!
+ */
+export const GET_ISSUE_CLOSE_TARGET = `
+  query GetIssueCloseTarget($owner: String!, $repo: String!, $number: Int!) {
+    viewer {
+      login
+    }
+    repository(owner: $owner, name: $repo) {
+      issue(number: $number) {
+        id
+        url
+        closed
+        stateReason(enableDuplicate: true)
+        author {
+          login
+        }
+        assignees(first: 20) {
+          nodes {
+            login
+          }
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * Mutation to close an issue with a reason.
+ *
+ * Variables required:
+ * - $issueId: ID! - The global node ID of the issue to close
+ * - $stateReason: IssueClosedStateReason! - COMPLETED, NOT_PLANNED or DUPLICATE
+ * - $duplicateIssueId: ID - DUPLICATE only: the global node ID of the surviving issue
+ */
+export const CLOSE_ISSUE = `
+  mutation CloseIssue($issueId: ID!, $stateReason: IssueClosedStateReason!, $duplicateIssueId: ID) {
+    closeIssue(input: {issueId: $issueId, stateReason: $stateReason, duplicateIssueId: $duplicateIssueId}) {
+      issue {
+        id
+        url
+        closed
+        stateReason(enableDuplicate: true)
+      }
+    }
+  }
+`;
+
+/**
  * Builds a query that resolves several issues' open/closed state in ONE round trip.
  *
  * Aliased per number rather than issued per issue, because the cost objection to checking A+FU
