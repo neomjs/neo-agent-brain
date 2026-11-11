@@ -2775,6 +2775,22 @@ class TenantRepoSyncService extends Base {
                     credentialRef: repo.credentialRef
                 });
 
+                // A refused bulk prefetch does not fail the run: its blobs were read one round trip
+                // each, which is the difference between seconds and hours on a cold mirror. Logged
+                // here, ahead of the ingest, so a run that fails later still says it. The reason is
+                // a bounded code or `unclassified`, never the adapter's message.
+                const unavailablePrefetches = envelope?.unavailablePrefetches ?? [];
+
+                if (unavailablePrefetches.length > 0) {
+                    const reasons = [...new Set(unavailablePrefetches.map(({reason}) =>
+                        BOUNDED_KB_ERROR_CODE_PATTERN.test(reason) ? reason : 'unclassified'))].sort();
+
+                    writeLog?.('WARN', `[TenantRepoSync] ${repoLabel} blob prefetch unavailable: ` +
+                        `prefetches=${unavailablePrefetches.length} ` +
+                        `requested=${unavailablePrefetches.reduce((sum, {requested}) => sum + requested, 0)} ` +
+                        `reasons=${reasons.join(',')}`)
+                }
+
                 if (
                     repo.extractionIdentity
                     && envelope?.extractionIdentity !== repo.extractionIdentity

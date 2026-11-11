@@ -84,6 +84,45 @@ test.describe('repository revision reader (#261)', () => {
         });
     });
 
+    test('keeps every prefetch that ended unavailable, whichever scope asked', async () => {
+        const
+            entries  = [
+                entry('src/executable.mjs', '100755', 'blob', 'a'),
+                entry('src/plain.mjs',      '100644', 'blob', 'b')
+            ],
+            outcomes = [
+                {status: 'unavailable',   requested: 1, reason: 'KB_GITMIRROR_PREFETCH_FETCH_FAILED'},
+                {status: 'prefetched',    requested: 1, reason: null},
+                {status: 'already-local', requested: 1, reason: null},
+                {status: 'unavailable',   requested: 2, reason: 'KB_GITMIRROR_PREFETCH_PROBE_FAILED'}
+            ],
+            reader   = createRepositoryRevisionReader({
+                gitMirror : {
+                    listRevisionEntries  : async () => entries,
+                    readRevisionBlob     : async ({sourcePath}) => Buffer.from(sourcePath),
+                    prefetchRevisionBlobs: async () => outcomes.shift()
+                },
+                mirrorRoot: '/fixture',
+                tenantId  : 'tenant-a',
+                repoSlug  : 'org/repo',
+                revision  : 'f'.repeat(40)
+            }),
+            scoped   = await reader.scope([entries[1]]);
+
+        expect(reader.unavailablePrefetches).toEqual([]);
+
+        await scoped.prefetch(['src/plain.mjs']);
+        await reader.prefetch(['src/plain.mjs']);
+        await reader.prefetch(['src/executable.mjs']);
+        await reader.prefetch(['src/executable.mjs', 'src/plain.mjs']);
+
+        expect(reader.unavailablePrefetches).toEqual([
+            {requested: 1, reason: 'KB_GITMIRROR_PREFETCH_FETCH_FAILED'},
+            {requested: 2, reason: 'KB_GITMIRROR_PREFETCH_PROBE_FAILED'}
+        ]);
+        expect(scoped.unavailablePrefetches).toEqual(reader.unavailablePrefetches);
+    });
+
     test('a reader and its scopes share one batch session, reading per file only what it cannot answer (#432)', async () => {
         const calls     = {opened: 0, closed: 0, perFile: []};
         const gitMirror = {

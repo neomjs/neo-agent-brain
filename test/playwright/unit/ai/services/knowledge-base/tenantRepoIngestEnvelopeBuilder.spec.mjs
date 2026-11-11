@@ -635,6 +635,37 @@ exec ${JSON.stringify(realGitPath)} "$@"
             expect(calls.at(-1).kind).toBe('close')
         });
 
+        test('a refused prefetch is carried on the envelope, and the files still arrive', async () => {
+            const source  = await createSourceRepo(),
+                  options = await createMirror(source),
+                  newHead = await resolveHead({...options, ref: 'main'}),
+                  build   = gitMirror => buildIngestEnvelope({
+                      ...options,
+                      newHead,
+                      rootKind     : 'bare-repo',
+                      credentialRef: null,
+                      gitMirror
+                  });
+
+            const served   = await build(GitMirror),
+                  fallback = await build({
+                      ...GitMirror,
+                      prefetchRevisionBlobs: async ({sourcePaths}) => ({
+                          status   : 'unavailable',
+                          requested: sourcePaths.length,
+                          missing  : 0,
+                          chunks   : 0,
+                          reason   : 'KB_GITMIRROR_PREFETCH_FETCH_FAILED'
+                      })
+                  });
+
+            expect(served).not.toHaveProperty('unavailablePrefetches');
+            expect(fallback.unavailablePrefetches).toEqual([
+                {requested: served.files.length, reason: 'KB_GITMIRROR_PREFETCH_FETCH_FAILED'}
+            ]);
+            expect(fallback.files).toEqual(served.files)
+        });
+
         test('the batched envelope is byte-identical to the per-file one (#432)', async () => {
             const source = await createSourceRepo();
 

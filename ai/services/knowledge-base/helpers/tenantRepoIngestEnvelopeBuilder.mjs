@@ -375,7 +375,8 @@ function createLegacyChunkHash(chunk) {
  *     repo. Reaches the content acquisition only, on both tiers: the bulk `prefetchRevisionBlobs` and,
  *     for anything it did not localize, the per-file `show <rev>:<path>` promisor fetch. Omitted, both
  *     are anonymous — correct for a public remote, fatal for a private one.
- * @returns {Promise<Object>}
+ * @returns {Promise<Object>} The envelope. `unavailablePrefetches` is present only when a bulk
+ *     prefetch was refused and the reads behind it went one round trip per blob.
  */
 export async function buildIngestEnvelope({
     tenantId,
@@ -510,6 +511,12 @@ export async function buildIngestEnvelope({
         admissionAvailable       : execution.admissionAvailable !== false,
         admissionUnavailablePaths: execution.admissionUnavailablePaths || []
     };
+
+    // Neither an extractor nor the hierarchy resolver looks at a prefetch outcome, so the envelope
+    // is where a refused one reaches the run.
+    if (repositoryReader.unavailablePrefetches.length) {
+        envelope.unavailablePrefetches = repositoryReader.unavailablePrefetches
+    }
 
     if (fullMaterialization) {
         envelope.manifestSnapshot = {
