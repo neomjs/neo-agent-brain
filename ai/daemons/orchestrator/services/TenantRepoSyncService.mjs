@@ -302,7 +302,8 @@ function hashTenantRepoAccessConfig(repo) {
 }
 
 /**
- * @summary Returns the stable internal key for one effective tenant repository.
+ * @summary Returns the stable internal key for one effective tenant repository. The access-readiness cache and the
+ * persisted revisions manifest are both keyed by it.
  * @param {Object} repo Effective tenant-repo entry.
  * @returns {String}
  * @private
@@ -2208,7 +2209,7 @@ class TenantRepoSyncService extends Base {
         // An episode gets one bypass: a consumed generation whose outcome repeated proves the canary
         // passes while the batch does not, so from then on only the ordinary backoff retries the repo.
         const
-            configuredRepoLabels    = new Set(repos.map(repo => `${repo.tenantId}/${repo.repoSlug}`)),
+            configuredRepoLabels    = new Set(repos.map(createTenantRepoAccessKey)),
             awaitingRecoveryEntries = onlyRepoSlugs
                 ? []
                 : Object.entries(persistedRevisions)
@@ -2437,7 +2438,7 @@ class TenantRepoSyncService extends Base {
         if (seedBootstrap && !onlyRepoSlugs) {
             const sweepStartedMs = Date.now();
             for (const repo of repos) {
-                const repoLabel = `${repo.tenantId}/${repo.repoSlug}`;
+                const repoLabel = createTenantRepoAccessKey(repo);
                 if (!persistedRevisions[repoLabel]) {
                     const baseCadenceMs = (Number.isFinite(repo.cadenceMs) && repo.cadenceMs > 0)
                         ? repo.cadenceMs
@@ -2472,7 +2473,7 @@ class TenantRepoSyncService extends Base {
             const dueLegacyRepos      = repos
                 .map(repo => {
                     const
-                        repoLabel  = `${repo.tenantId}/${repo.repoSlug}`,
+                        repoLabel  = createTenantRepoAccessKey(repo),
                         priorState = persistedRevisions[repoLabel] || null,
                         dueState   = isRepoDue({
                             repo,
@@ -2509,7 +2510,7 @@ class TenantRepoSyncService extends Base {
 
         const syncRepo = async (repo) => {
             const
-                repoLabel            = `${repo.tenantId}/${repo.repoSlug}`,
+                repoLabel            = createTenantRepoAccessKey(repo),
                 priorState           = persistedRevisions[repoLabel] || null,
                 checkpointStatus     = classifyTenantRepoCheckpoint(priorState),
                 revalidationRequired = requiresTenantRepoCheckpointRevalidation(
@@ -3541,10 +3542,10 @@ class TenantRepoSyncService extends Base {
         // prioritized migration work.
         const
             admittedRevalidationRepos = repos.filter(repo =>
-                revalidationAdmissionLabels.has(`${repo.tenantId}/${repo.repoSlug}`)
+                revalidationAdmissionLabels.has(createTenantRepoAccessKey(repo))
             ),
             remainingRepos = repos.filter(repo =>
-                !revalidationAdmissionLabels.has(`${repo.tenantId}/${repo.repoSlug}`)
+                !revalidationAdmissionLabels.has(createTenantRepoAccessKey(repo))
             );
 
         await Promise.all(admittedRevalidationRepos.map(syncRepo));
@@ -4067,6 +4068,10 @@ class TenantRepoSyncService extends Base {
      * completed no-op from a misspelled selector, which is the ambiguity this whole path exists to
      * remove.
      *
+     * The manifest is keyed per tenant, `<tenantId>/<repoSlug>`, by the function the sweep uses. A
+     * selected slug therefore clears the entry of every tenant that configures it, and each outcome
+     * row names its tenant.
+     *
      * @param {Object} [options]
      * @param {String[]|null} [options.onlyRepoSlugs=null] Restrict to these configured slugs; omit for every configured repo. An unknown slug is refused, never silently skipped.
      * @param {Object|null} [options.tenantReposConfig=null] Injected repo config; defaults to {@link #resolveTenantReposConfig} across graph, `kb-config.yaml`, and `AiConfig` tiers.
@@ -4092,9 +4097,9 @@ class TenantRepoSyncService extends Base {
             return {status: 'failed', details: unknownSelectors}
         }
 
-        const targetSlugs = onlyRepoSlugs?.length > 0 ? onlyRepoSlugs : knownSlugs;
+        const targetRepos = onlyRepoSlugs?.length > 0 ? allRepos.filter(repo => onlyRepoSlugs.includes(repo.repoSlug)) : allRepos;
 
-        if (targetSlugs.length === 0) {
+        if (targetRepos.length === 0) {
             writeLog?.('INFO', '[TenantRepoSync] clear-backoff: no tenantRepos configured; nothing to clear.');
 
             return {status: 'completed', details: {reason: 'no-tenant-repos-configured', cleared: [], unchanged: []}}
@@ -4109,12 +4114,15 @@ class TenantRepoSyncService extends Base {
               unchanged = [],
               clearedAt = new Date().toISOString();
 
-        for (const slug of targetSlugs) {
-            const state  = revisions[slug],
-                  streak = state?.consecutiveFailures ?? 0;
+        for (const repo of targetRepos) {
+            // The sweep's own key: under the bare slug the manifest holds nothing a sweep wrote.
+            const key                  = createTenantRepoAccessKey(repo),
+                  {repoSlug, tenantId} = repo,
+                  state                = revisions[key],
+                  streak               = state?.consecutiveFailures ?? 0;
 
             if (!state || streak === 0) {
-                unchanged.push({repoSlug: slug, consecutiveFailures: streak, reason: state ? 'already-clear' : 'no-persisted-state'});
+                unchanged.push({repoSlug, tenantId, consecutiveFailures: streak, reason: state ? 'already-clear' : 'no-persisted-state'});
                 continue
             }
 
@@ -4123,20 +4131,20 @@ class TenantRepoSyncService extends Base {
             // operator reads without shell access. Recording what the streak WAS matters as much as
             // when — "cleared at 12:40" tells you an intervention happened, "cleared 42 → 0 at
             // 12:40" tells you whether the suppression it removed was the one you were chasing.
-            revisions[slug] = {
+            revisions[key] = {
                 ...state,
                 consecutiveFailures       : 0,
                 backoffClearedAt          : clearedAt,
                 backoffClearedFromFailures: streak
             };
-            cleared.push({repoSlug: slug, previousConsecutiveFailures: streak})
+            cleared.push({repoSlug, tenantId, previousConsecutiveFailures: streak})
         }
 
         if (cleared.length > 0) {
             await this.writePersistedRevisions({filePath, revisions})
         }
 
-        writeLog?.('INFO', `[TenantRepoSync] clear-backoff: cleared ${cleared.length} of ${targetSlugs.length} selected repo(s)${cleared.length ? ` (${cleared.map(entry => `${entry.repoSlug} ${entry.previousConsecutiveFailures}->0`).join(', ')})` : ''}; ${unchanged.length} already clear.`);
+        writeLog?.('INFO', `[TenantRepoSync] clear-backoff: cleared ${cleared.length} of ${targetRepos.length} selected repo(s)${cleared.length ? ` (${cleared.map(entry => `${entry.tenantId}/${entry.repoSlug} ${entry.previousConsecutiveFailures}->0`).join(', ')})` : ''}; ${unchanged.length} unchanged.`);
 
         return {status: 'completed', details: {cleared, unchanged, filePath}}
     }
